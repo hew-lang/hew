@@ -186,6 +186,7 @@ fn vec_index_i64_mir() -> RawMirFunction {
         ],
         blocks: vec![entry_block, trap_block, cont_block],
         decisions: vec![],
+        intrinsic_id: None,
     }
 }
 
@@ -354,11 +355,14 @@ fn vec_index_mir_wraps_in_pipeline_without_errors() {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     };
     // No diagnostics from the hand-built MIR (it is already valid).
     assert!(

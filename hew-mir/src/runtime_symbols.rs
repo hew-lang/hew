@@ -79,6 +79,12 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // targets return immediately with a DOWN signal; ref_id is still non-zero.
     // Codegen struct-wrapping (MonitorRef { ref_id }) requires Cluster 2 spine.
     "hew_actor_monitor",
+    // `hew_actor_self() -> *mut HewActor` (`hew-runtime/src/actor.rs:3862`).
+    // Returns the actor installed in the current dispatch context, or null
+    // when called outside one. The MIR producer synthesizes this as ABI
+    // arg0 (the implicit `self` subject) for the 1-arg `link`/`monitor`
+    // builtins; the borrowed handle carries no drop obligation.
+    "hew_actor_self",
     "hew_actor_send_by_id",
     "hew_actor_spawn",
     // --- Auto-injected mutex substrate  -----------------

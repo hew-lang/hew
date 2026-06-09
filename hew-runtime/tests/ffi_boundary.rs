@@ -26,12 +26,6 @@ use std::time::{Duration, Instant};
 
 // Re-export the C ABI functions under test.
 use hew_runtime::actor::{hew_actor_free, hew_actor_send, hew_actor_spawn};
-use hew_runtime::hashmap::{
-    hew_hashmap_contains_key, hew_hashmap_free_impl, hew_hashmap_get_f64, hew_hashmap_get_i32,
-    hew_hashmap_get_i64, hew_hashmap_get_str_impl, hew_hashmap_insert_f64, hew_hashmap_insert_i64,
-    hew_hashmap_insert_impl, hew_hashmap_is_empty, hew_hashmap_len, hew_hashmap_new_impl,
-    hew_hashmap_remove,
-};
 use hew_runtime::iter::{
     hew_iter_free, hew_iter_next, hew_iter_reset, hew_iter_value_i32, hew_iter_vec,
 };
@@ -55,12 +49,12 @@ use hew_runtime::result::{
 use hew_runtime::string::{
     hew_bool_to_string, hew_float_to_string, hew_int_to_string, hew_string_byte_length,
     hew_string_char_at, hew_string_char_at_utf8, hew_string_char_count, hew_string_clone,
-    hew_string_concat, hew_string_contains, hew_string_ends_with, hew_string_equals,
-    hew_string_find, hew_string_from_char, hew_string_index_of, hew_string_is_ascii,
-    hew_string_length, hew_string_repeat, hew_string_replace, hew_string_reverse_utf8,
-    hew_string_slice, hew_string_split, hew_string_starts_with, hew_string_substring_utf8,
-    hew_string_to_bytes, hew_string_to_int, hew_string_to_lowercase, hew_string_to_uppercase,
-    hew_string_trim,
+    hew_string_concat, hew_string_contains, hew_string_drop, hew_string_ends_with,
+    hew_string_equals, hew_string_find, hew_string_from_char, hew_string_index_of,
+    hew_string_is_ascii, hew_string_length, hew_string_repeat, hew_string_replace,
+    hew_string_reverse_utf8, hew_string_slice, hew_string_split, hew_string_starts_with,
+    hew_string_substring_utf8, hew_string_to_bytes, hew_string_to_int, hew_string_to_lowercase,
+    hew_string_to_uppercase, hew_string_trim,
 };
 use hew_runtime::vec::{
     hew_vec_clear, hew_vec_clone, hew_vec_contains_f64, hew_vec_contains_i32, hew_vec_contains_i64,
@@ -92,11 +86,39 @@ unsafe fn read_cstr<'a>(p: *const c_char) -> &'a str {
         .expect("invalid UTF-8")
 }
 
-/// Free a malloc'd C string.
-unsafe fn free_cstr(p: *mut c_char) {
+/// Free a header-aware Hew `String` producer result.
+///
+/// Every `-> string` C-ABI producer (`concat`, `slice`, case, `trim`,
+/// `replace`, `repeat`, `clone`, numeric-to-string, `substring_utf8`,
+/// `reverse_utf8`, `from_char`, ...) now returns a header-aware allocation
+/// (`[CStringHeader][data]`, data pointer = `base+16`). Such results MUST be
+/// released through the public `hew_string_drop` consumer (which recovers the
+/// base via `data-16`, validates the magic sentinel, and skips static strings)
+/// — never via bare `libc::free`, which would interior-free `base+16` and
+/// corrupt the heap. Genuinely raw `libc::malloc` results (e.g.
+/// `hew_reply_wait` payloads) keep bare `libc::free`.
+unsafe fn free_hew_string(p: *mut c_char) {
     if !p.is_null() {
-        unsafe { libc::free(p.cast()) };
+        unsafe { hew_string_drop(p) };
     }
+}
+
+/// Read a *retained* string-vec element owner (`hew_vec_get_str` /
+/// `hew_vec_pop_str` result) into an owned `String`, then release it via
+/// `hew_string_drop`. The typed string-vec getters hand back a retained owner
+/// (refcount bump) the caller MUST release; reading inline through `read_cstr`
+/// and discarding the pointer leaks that owner (`ASan` flags the leak). The value
+/// is copied out first so it outlives the release.
+unsafe fn read_str_and_drop(p: *const c_char) -> String {
+    assert!(!p.is_null(), "unexpected null string element");
+    // SAFETY: `p` is a live, NUL-terminated, retained element owner.
+    let owned = unsafe { CStr::from_ptr(p) }
+        .to_str()
+        .expect("invalid UTF-8")
+        .to_owned();
+    // SAFETY: `p` is a retained header-aware owner; release exactly once.
+    unsafe { free_hew_string(p.cast_mut()) };
+    owned
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -223,6 +245,9 @@ fn vec_str_lifecycle() {
         let v = hew_vec_new_str();
         assert!(hew_vec_is_empty(v));
 
+        // Producers may hand push_str a C string of any provenance (here plain
+        // headerless `CString`s); the vec stores an independent header-aware
+        // copy, so the caller keeps owning and dropping its own buffers.
         let hello = cstr("hello");
         let world = cstr("world");
         let hew = cstr("hew");
@@ -231,13 +256,22 @@ fn vec_str_lifecycle() {
         hew_vec_push_str(v, world.as_ptr());
         assert_eq!(hew_vec_len(v), 2);
 
-        assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "hello");
-        assert_eq!(read_cstr(hew_vec_get_str(v, 1)), "world");
+        // get_str returns a retained owner — read it, then release via the
+        // universal String consumer (header-aware free-at-zero / static skip).
+        let g0 = hew_vec_get_str(v, 0);
+        assert_eq!(read_cstr(g0), "hello");
+        free_hew_string(g0.cast_mut());
+        let g1 = hew_vec_get_str(v, 1);
+        assert_eq!(read_cstr(g1), "world");
+        free_hew_string(g1.cast_mut());
 
-        // Set replaces and frees old string.
+        // Set replaces and releases the old element; the new value is copied in.
         hew_vec_set_str(v, 0, hew.as_ptr());
-        assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "hew");
+        let g0b = hew_vec_get_str(v, 0);
+        assert_eq!(read_cstr(g0b), "hew");
+        free_hew_string(g0b.cast_mut());
 
+        // Freeing the vec releases every stored element exactly once.
         hew_vec_free(v);
     }
 }
@@ -261,7 +295,7 @@ fn string_concat() {
         let b = cstr("world");
         let result = hew_string_concat(a.as_ptr(), b.as_ptr());
         assert_eq!(read_cstr(result), "hello world");
-        free_cstr(result);
+        free_hew_string(result);
     }
 }
 
@@ -272,29 +306,39 @@ fn string_concat_with_null() {
         // null + string → just the string
         let r1 = hew_string_concat(ptr::null(), a.as_ptr());
         assert_eq!(read_cstr(r1), "hello");
-        free_cstr(r1);
+        free_hew_string(r1);
 
         // string + null → just the string
         let r2 = hew_string_concat(a.as_ptr(), ptr::null());
         assert_eq!(read_cstr(r2), "hello");
-        free_cstr(r2);
+        free_hew_string(r2);
 
         // null + null → empty string
         let r3 = hew_string_concat(ptr::null(), ptr::null());
         assert_eq!(read_cstr(r3), "");
-        free_cstr(r3);
+        free_hew_string(r3);
     }
 }
 
 #[test]
-fn string_clone_returns_distinct_copy() {
+fn string_clone_shares_buffer_via_retain() {
     unsafe {
         let original = hew_string_concat(cstr("hello").as_ptr(), cstr(" world").as_ptr());
+        // `String` is immutable-shareable: clone is a refcount retain, so the
+        // returned pointer ALIASES the same buffer (the copy-on-write win),
+        // rather than a distinct deep copy.
         let cloned = hew_string_clone(original);
-        assert_ne!(original as usize, cloned as usize);
-        assert_eq!(read_cstr(original), read_cstr(cloned));
-        free_cstr(original);
-        free_cstr(cloned);
+        assert_eq!(
+            original as usize, cloned as usize,
+            "hew_string_clone now retains (shares one buffer), not deep-copies"
+        );
+        assert_eq!(read_cstr(original), "hello world");
+        // Releasing one owner must NOT free the shared buffer; the other owner
+        // still reads it intact (rc went 2 -> 1).
+        free_hew_string(cloned);
+        assert_eq!(read_cstr(original), "hello world");
+        // Final owner releases -> freed (verified clean under ASan).
+        free_hew_string(original);
     }
 }
 
@@ -336,17 +380,17 @@ fn string_slice() {
         let s = cstr("hello world");
         let sliced = hew_string_slice(s.as_ptr(), 6, 11);
         assert_eq!(read_cstr(sliced), "world");
-        free_cstr(sliced);
+        free_hew_string(sliced);
 
         // Clamped: start < 0, end > len.
         let full = hew_string_slice(s.as_ptr(), -5, 999);
         assert_eq!(read_cstr(full), "hello world");
-        free_cstr(full);
+        free_hew_string(full);
 
         // Null input → empty string.
         let empty = hew_string_slice(ptr::null(), 0, 5);
         assert_eq!(read_cstr(empty), "");
-        free_cstr(empty);
+        free_hew_string(empty);
     }
 }
 
@@ -399,11 +443,11 @@ fn string_conversions() {
         // int → string
         let s = hew_int_to_string(42);
         assert_eq!(read_cstr(s), "42");
-        free_cstr(s);
+        free_hew_string(s);
 
         let neg = hew_int_to_string(-7);
         assert_eq!(read_cstr(neg), "-7");
-        free_cstr(neg);
+        free_hew_string(neg);
 
         // string → int
         let n = cstr("123");
@@ -414,16 +458,16 @@ fn string_conversions() {
         let fs = hew_float_to_string(3.14);
         let fs_str = read_cstr(fs);
         assert!(fs_str.starts_with("3.14"), "got: {fs_str}");
-        free_cstr(fs);
+        free_hew_string(fs);
 
         // bool → string
         let t = hew_bool_to_string(true);
         assert_eq!(read_cstr(t), "true");
-        free_cstr(t);
+        free_hew_string(t);
 
         let f = hew_bool_to_string(false);
         assert_eq!(read_cstr(f), "false");
-        free_cstr(f);
+        free_hew_string(f);
     }
 }
 
@@ -471,12 +515,12 @@ fn string_trim() {
         let s = cstr("  hello  ");
         let trimmed = hew_string_trim(s.as_ptr());
         assert_eq!(read_cstr(trimmed), "hello");
-        free_cstr(trimmed);
+        free_hew_string(trimmed);
 
         // Null → empty.
         let empty = hew_string_trim(ptr::null());
         assert_eq!(read_cstr(empty), "");
-        free_cstr(empty);
+        free_hew_string(empty);
     }
 }
 
@@ -488,130 +532,18 @@ fn string_replace() {
         let new = cstr("XX");
         let result = hew_string_replace(s.as_ptr(), old.as_ptr(), new.as_ptr());
         assert_eq!(read_cstr(result), "aaXXcc");
-        free_cstr(result);
+        free_hew_string(result);
 
         // Replace with empty.
         let empty = cstr("");
         let r2 = hew_string_replace(s.as_ptr(), old.as_ptr(), empty.as_ptr());
         assert_eq!(read_cstr(r2), "aacc");
-        free_cstr(r2);
+        free_hew_string(r2);
 
         // Null source → empty.
         let r3 = hew_string_replace(ptr::null(), old.as_ptr(), new.as_ptr());
         assert_eq!(read_cstr(r3), "");
-        free_cstr(r3);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// HashMap via C ABI
-// ═══════════════════════════════════════════════════════════════════════
-
-#[test]
-fn hashmap_i32_lifecycle() {
-    unsafe {
-        let m = hew_hashmap_new_impl();
-        assert!(!m.is_null());
-        assert!(hew_hashmap_is_empty(m));
-        assert_eq!(hew_hashmap_len(m), 0);
-
-        let key_a = cstr("a");
-        let key_b = cstr("b");
-
-        hew_hashmap_insert_impl(m, key_a.as_ptr(), 42, ptr::null());
-        hew_hashmap_insert_impl(m, key_b.as_ptr(), 99, ptr::null());
-        assert_eq!(hew_hashmap_len(m), 2);
-        assert!(!hew_hashmap_is_empty(m));
-
-        assert_eq!(hew_hashmap_get_i32(m, key_a.as_ptr()), 42);
-        assert_eq!(hew_hashmap_get_i32(m, key_b.as_ptr()), 99);
-
-        assert!(hew_hashmap_contains_key(m, key_a.as_ptr()));
-
-        let missing = cstr("missing");
-        assert!(!hew_hashmap_contains_key(m, missing.as_ptr()));
-        assert_eq!(hew_hashmap_get_i32(m, missing.as_ptr()), 0);
-
-        // Update existing.
-        hew_hashmap_insert_impl(m, key_a.as_ptr(), 100, ptr::null());
-        assert_eq!(hew_hashmap_get_i32(m, key_a.as_ptr()), 100);
-        assert_eq!(hew_hashmap_len(m), 2); // no new entry
-
-        // Remove.
-        assert!(hew_hashmap_remove(m, key_a.as_ptr()));
-        assert!(!hew_hashmap_contains_key(m, key_a.as_ptr()));
-        assert_eq!(hew_hashmap_len(m), 1);
-
-        // Remove non-existent.
-        assert!(!hew_hashmap_remove(m, missing.as_ptr()));
-
-        hew_hashmap_free_impl(m);
-    }
-}
-
-#[test]
-fn hashmap_str_values() {
-    unsafe {
-        let m = hew_hashmap_new_impl();
-        let key = cstr("greeting");
-        let val = cstr("hello");
-
-        hew_hashmap_insert_impl(m, key.as_ptr(), 0, val.as_ptr());
-        let got = hew_hashmap_get_str_impl(m, key.as_ptr());
-        assert_eq!(read_cstr(got), "hello");
-
-        // Overwrite string value.
-        let val2 = cstr("world");
-        hew_hashmap_insert_impl(m, key.as_ptr(), 0, val2.as_ptr());
-        let got2 = hew_hashmap_get_str_impl(m, key.as_ptr());
-        assert_eq!(read_cstr(got2), "world");
-
-        hew_hashmap_free_impl(m);
-    }
-}
-
-#[test]
-fn hashmap_i64_and_f64() {
-    unsafe {
-        let m = hew_hashmap_new_impl();
-        let key = cstr("num");
-
-        hew_hashmap_insert_i64(m, key.as_ptr(), i64::MAX);
-        assert_eq!(hew_hashmap_get_i64(m, key.as_ptr()), i64::MAX);
-
-        hew_hashmap_insert_f64(m, key.as_ptr(), 2.718);
-        assert!((hew_hashmap_get_f64(m, key.as_ptr()) - 2.718).abs() < f64::EPSILON);
-
-        hew_hashmap_free_impl(m);
-    }
-}
-
-#[test]
-fn hashmap_growth_past_load_factor() {
-    unsafe {
-        let m = hew_hashmap_new_impl();
-        // Insert enough keys to force resize (initial cap is 8, load factor 75%).
-        for i in 0..20 {
-            let key = CString::new(format!("key_{i}")).unwrap();
-            hew_hashmap_insert_impl(m, key.as_ptr(), i, ptr::null());
-        }
-        assert_eq!(hew_hashmap_len(m), 20);
-
-        // Verify all entries survived the resize.
-        for i in 0..20 {
-            let key = CString::new(format!("key_{i}")).unwrap();
-            assert!(hew_hashmap_contains_key(m, key.as_ptr()));
-            assert_eq!(hew_hashmap_get_i32(m, key.as_ptr()), i);
-        }
-
-        hew_hashmap_free_impl(m);
-    }
-}
-
-#[test]
-fn hashmap_free_null_is_noop() {
-    unsafe {
-        hew_hashmap_free_impl(ptr::null_mut());
+        free_hew_string(r3);
     }
 }
 
@@ -824,6 +756,7 @@ unsafe extern "C-unwind" fn test_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     let mut count = DISPATCH_SIGNAL.0.lock().unwrap();
     *count += 1;
@@ -936,6 +869,7 @@ fn actor_send_multiple_messages() {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         let mut count = MULTI_SIGNAL.0.lock().unwrap();
         *count += 1;
@@ -995,6 +929,7 @@ fn actor_dispatch_receives_correct_data() {
         _msg_type: i32,
         data: *mut c_void,
         data_size: usize,
+        _borrow_mode: i32,
     ) {
         if !data.is_null() && data_size >= size_of::<i32>() {
             let val = unsafe { *(data.cast::<i32>()) };
@@ -1040,140 +975,6 @@ fn actor_dispatch_receives_correct_data() {
         assert_eq!(received, 12345);
 
         hew_actor_free(actor);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// HashMap extended operations via C ABI
-// ═══════════════════════════════════════════════════════════════════════
-
-mod hashmap_extended {
-    use super::*;
-    use hew_runtime::hashmap::{
-        hew_hashmap_clear, hew_hashmap_get_or_default_i32, hew_hashmap_keys,
-        hew_hashmap_values_i32, hew_hashmap_values_str,
-    };
-
-    #[test]
-    fn keys_returns_all_keys() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let ka = cstr("alpha");
-            let kb = cstr("beta");
-            hew_hashmap_insert_impl(m, ka.as_ptr(), 1, ptr::null());
-            hew_hashmap_insert_impl(m, kb.as_ptr(), 2, ptr::null());
-
-            let keys = hew_hashmap_keys(m);
-            assert_eq!(hew_vec_len(keys), 2);
-
-            let k0 = read_cstr(hew_vec_get_str(keys, 0));
-            let k1 = read_cstr(hew_vec_get_str(keys, 1));
-            let mut got = vec![k0, k1];
-            got.sort_unstable();
-            assert_eq!(got, vec!["alpha", "beta"]);
-
-            hew_vec_free(keys);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn values_i32_returns_all_values() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let ka = cstr("x");
-            let kb = cstr("y");
-            hew_hashmap_insert_impl(m, ka.as_ptr(), 10, ptr::null());
-            hew_hashmap_insert_impl(m, kb.as_ptr(), 20, ptr::null());
-
-            let vals = hew_hashmap_values_i32(m);
-            assert_eq!(hew_vec_len(vals), 2);
-
-            let mut got = vec![hew_vec_get_i32(vals, 0), hew_vec_get_i32(vals, 1)];
-            got.sort_unstable();
-            assert_eq!(got, vec![10, 20]);
-
-            hew_vec_free(vals);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn values_str_returns_all_string_values() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let ka = cstr("a");
-            let kb = cstr("b");
-            let va = cstr("hello");
-            let vb = cstr("world");
-            hew_hashmap_insert_impl(m, ka.as_ptr(), 0, va.as_ptr());
-            hew_hashmap_insert_impl(m, kb.as_ptr(), 0, vb.as_ptr());
-
-            let vals = hew_hashmap_values_str(m);
-            assert_eq!(hew_vec_len(vals), 2);
-
-            let v0 = read_cstr(hew_vec_get_str(vals, 0));
-            let v1 = read_cstr(hew_vec_get_str(vals, 1));
-            let mut got = vec![v0, v1];
-            got.sort_unstable();
-            assert_eq!(got, vec!["hello", "world"]);
-
-            hew_vec_free(vals);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn clear_removes_all_entries() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let ka = cstr("one");
-            let kb = cstr("two");
-            hew_hashmap_insert_impl(m, ka.as_ptr(), 1, ptr::null());
-            hew_hashmap_insert_impl(m, kb.as_ptr(), 2, ptr::null());
-            assert_eq!(hew_hashmap_len(m), 2);
-
-            hew_hashmap_clear(m);
-            assert_eq!(hew_hashmap_len(m), 0);
-            assert!(hew_hashmap_is_empty(m));
-            assert!(!hew_hashmap_contains_key(m, ka.as_ptr()));
-            assert!(!hew_hashmap_contains_key(m, kb.as_ptr()));
-
-            // Can reinsert after clear.
-            hew_hashmap_insert_impl(m, ka.as_ptr(), 99, ptr::null());
-            assert_eq!(hew_hashmap_len(m), 1);
-            assert_eq!(hew_hashmap_get_i32(m, ka.as_ptr()), 99);
-
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn get_or_default_returns_value_when_present() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let k = cstr("present");
-            hew_hashmap_insert_impl(m, k.as_ptr(), 42, ptr::null());
-
-            assert_eq!(hew_hashmap_get_or_default_i32(m, k.as_ptr(), -1), 42);
-
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn get_or_default_returns_default_when_absent() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let missing = cstr("absent");
-
-            assert_eq!(
-                hew_hashmap_get_or_default_i32(m, missing.as_ptr(), -99),
-                -99
-            );
-
-            hew_hashmap_free_impl(m);
-        }
     }
 }
 
@@ -1616,11 +1417,11 @@ mod vec_extended {
             hew_vec_push_str(v, world.as_ptr());
             let c = hew_vec_clone(v);
             assert_eq!(hew_vec_len(c), 2);
-            assert_eq!(read_cstr(hew_vec_get_str(c, 0)), "hello");
-            assert_eq!(read_cstr(hew_vec_get_str(c, 1)), "world");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(c, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(c, 1)), "world");
             // Freeing original should not invalidate clone.
             hew_vec_free(v);
-            assert_eq!(read_cstr(hew_vec_get_str(c, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(c, 0)), "hello");
             hew_vec_free(c);
         }
     }
@@ -1803,7 +1604,7 @@ mod vec_extended {
             hew_vec_push_str(v, c.as_ptr());
             hew_vec_truncate(v, 1);
             assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "aaa");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "aaa");
             hew_vec_free(v);
         }
     }
@@ -1859,9 +1660,9 @@ mod string_extended {
             let d = cstr(",");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
             assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "a");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 1)), "b");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 2)), "c");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "a");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "b");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "c");
             hew_vec_free(v);
         }
     }
@@ -1873,7 +1674,7 @@ mod string_extended {
             let d = cstr(",");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
             assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "hello");
             hew_vec_free(v);
         }
     }
@@ -1885,9 +1686,9 @@ mod string_extended {
             let d = cstr("::");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
             assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "a");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 1)), "b");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 2)), "c");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "a");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "b");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "c");
             hew_vec_free(v);
         }
     }
@@ -1899,9 +1700,9 @@ mod string_extended {
             let d = cstr(",");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
             assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "a");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 1)), "b");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 2)), "");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "a");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "b");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "");
             hew_vec_free(v);
         }
     }
@@ -1922,7 +1723,7 @@ mod string_extended {
             let s = cstr("hello");
             let v = hew_string_split(s.as_ptr(), ptr::null());
             assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "hello");
             hew_vec_free(v);
         }
     }
@@ -1934,7 +1735,7 @@ mod string_extended {
             let d = cstr("");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
             assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "hello");
             hew_vec_free(v);
         }
     }
@@ -1945,7 +1746,7 @@ mod string_extended {
             let s = cstr("Hello WORLD 123");
             let r = hew_string_to_lowercase(s.as_ptr());
             assert_eq!(read_cstr(r), "hello world 123");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -1954,7 +1755,7 @@ mod string_extended {
         unsafe {
             let r = hew_string_to_lowercase(ptr::null());
             assert_eq!(read_cstr(r), "");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -1964,7 +1765,7 @@ mod string_extended {
             let s = cstr("Hello world 123");
             let r = hew_string_to_uppercase(s.as_ptr());
             assert_eq!(read_cstr(r), "HELLO WORLD 123");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -1973,7 +1774,7 @@ mod string_extended {
         unsafe {
             let r = hew_string_to_uppercase(ptr::null());
             assert_eq!(read_cstr(r), "");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -2002,7 +1803,7 @@ mod string_extended {
         unsafe {
             let r = hew_string_from_char(i32::from(b'Z'));
             assert_eq!(read_cstr(r), "Z");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -2012,7 +1813,7 @@ mod string_extended {
             let s = cstr("ab");
             let r = hew_string_repeat(s.as_ptr(), 3);
             assert_eq!(read_cstr(r), "ababab");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -2022,11 +1823,11 @@ mod string_extended {
             let s = cstr("x");
             let r0 = hew_string_repeat(s.as_ptr(), 0);
             assert_eq!(read_cstr(r0), "");
-            free_cstr(r0);
+            free_hew_string(r0);
 
             let rn = hew_string_repeat(s.as_ptr(), -1);
             assert_eq!(read_cstr(rn), "");
-            free_cstr(rn);
+            free_hew_string(rn);
         }
     }
 
@@ -2035,7 +1836,7 @@ mod string_extended {
         unsafe {
             let r = hew_string_repeat(ptr::null(), 5);
             assert_eq!(read_cstr(r), "");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -2045,7 +1846,7 @@ mod string_extended {
             let s = cstr("hello");
             let r = hew_string_repeat(s.as_ptr(), 1);
             assert_eq!(read_cstr(r), "hello");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -2902,7 +2703,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "hello");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2913,7 +2714,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "éll");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2923,7 +2724,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "本語");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2947,7 +2748,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "olleh");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2957,7 +2758,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "olléh");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2967,7 +2768,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "語本日");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2977,7 +2778,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "b🦀a");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -3117,6 +2918,7 @@ mod file_io_tests {
         hew_file_append, hew_file_delete, hew_file_exists, hew_file_read, hew_file_size,
         hew_file_write, hew_path_exists,
     };
+    use hew_runtime::string::hew_string_drop;
 
     fn tmp_path(name: &str) -> std::path::PathBuf {
         let pid = std::process::id();
@@ -3135,8 +2937,11 @@ mod file_io_tests {
             .to_str()
             .expect("invalid UTF-8")
             .to_owned();
-        // SAFETY: `p` was allocated by `libc::strdup`.
-        unsafe { libc::free(p.cast()) };
+        // SAFETY: `hew_file_read` produces a header-aware allocation via
+        // `str_to_malloc`; release it through the public `hew_string_drop`
+        // consumer (recovers the base, validates the header), never bare
+        // `libc::free` which would interior-free `base+16`.
+        unsafe { hew_string_drop(p) };
         s
     }
 
@@ -3619,6 +3424,7 @@ mod rest_for_one_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -3764,6 +3570,7 @@ mod supervisor_escalation_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -3773,6 +3580,7 @@ mod supervisor_escalation_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         let mut count = NESTED_DISPATCH_COUNT.0.lock().unwrap();
         *count += 1;
@@ -3785,6 +3593,7 @@ mod supervisor_escalation_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         let mut count = SIBLING_DISPATCH_COUNT.0.lock().unwrap();
         *count += 1;
@@ -4178,6 +3987,7 @@ mod circuit_breaker_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -4256,6 +4066,7 @@ mod dynamic_supervision_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
     }
 

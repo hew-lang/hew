@@ -265,6 +265,21 @@ pub fn dump_hir(module: &HirModule) -> String {
                 )
                 .expect("write to string");
             }
+            HirItem::Const(c) => {
+                let value = match &c.value {
+                    crate::node::HirConstValue::Integer(v) => v.to_string(),
+                    crate::node::HirConstValue::String(s) => format!("{s:?}"),
+                };
+                writeln!(
+                    out,
+                    "const {} {}: {} = {}",
+                    c.id,
+                    c.name,
+                    c.ty.user_facing(),
+                    value,
+                )
+                .expect("write to string");
+            }
         }
     }
     out
@@ -898,6 +913,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                             variant_match.type_name, variant_match.variant_name
                         )
                     }
+                    crate::node::HirMatchArmPredicate::Literal { lit, ty } => {
+                        format!("literal {lit:?}: {ty:?}")
+                    }
                     crate::node::HirMatchArmPredicate::Regex { pattern, .. } => {
                         format!("re{pattern:?}")
                     }
@@ -944,6 +962,19 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             )
             .expect("write to string");
             dump_expr(out, scrutinee, indent + 4);
+            dump_block(out, body, indent + 4);
+        }
+        HirExprKind::Break { label, value } => {
+            writeln!(out, "{pad}  break label={label:?}").expect("write to string");
+            if let Some(value) = value {
+                dump_expr(out, value, indent + 4);
+            }
+        }
+        HirExprKind::Continue { label } => {
+            writeln!(out, "{pad}  continue label={label:?}").expect("write to string");
+        }
+        HirExprKind::Loop { body } => {
+            writeln!(out, "{pad}  loop").expect("write to string");
             dump_block(out, body, indent + 4);
         }
     }

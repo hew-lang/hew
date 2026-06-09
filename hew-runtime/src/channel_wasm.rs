@@ -693,7 +693,7 @@ mod tests {
             let msg = hew_channel_try_recv(rx);
             assert!(!msg.is_null());
             assert_eq!(CStr::from_ptr(msg).to_str().unwrap(), "first");
-            libc::free(msg.cast()); // ALLOCATOR-PAIRING: libc
+            crate::cabi::free_cstring(msg); // CSTRING-FREE: str-open (test frees hew_channel_recv string output; header-aware in S1)
 
             let mut valid = -1;
             let value = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
@@ -789,7 +789,7 @@ mod tests {
                 "first",
                 "first message should be dequeued"
             );
-            libc::free(msg.cast()); // ALLOCATOR-PAIRING: libc
+            crate::cabi::free_cstring(msg); // CSTRING-FREE: str-open (test frees hew_channel_recv string output; header-aware in S1)
 
             // The second message must have been dropped (not enqueued).
             let nothing = hew_channel_try_recv(rx);

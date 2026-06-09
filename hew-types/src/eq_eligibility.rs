@@ -62,6 +62,7 @@ fn eq_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<EqE
         | Ty::Function { .. }
         | Ty::Closure { .. }
         | Ty::Pointer { .. }
+        | Ty::Borrow { .. }
         | Ty::TraitObject { .. }
         | Ty::Task(_)
         | Ty::AssocType { .. } => Some(EqEligibility::IneligibleOwned(ty.clone())),

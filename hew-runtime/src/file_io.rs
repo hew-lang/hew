@@ -3,7 +3,7 @@
 //! Synchronous file I/O operations with C ABI.
 //!
 //! All functions that return `*mut c_char` allocate via `libc::malloc`. The
-//! caller owns the returned pointer and must free it with `libc::free`.
+//! caller owns the returned pointer and must free it with `hew_string_drop`.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -24,7 +24,7 @@ use std::ffi::{c_char, CStr, CString};
 ///
 /// # Ownership
 ///
-/// The caller owns the returned pointer and must free it with `libc::free`.
+/// The caller owns the returned pointer and must free it with `hew_string_drop`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_read(path: *const c_char) -> *mut c_char {
     if path.is_null() {
@@ -197,7 +197,7 @@ pub unsafe extern "C" fn hew_file_size(path: *const c_char) -> i64 {
 ///
 /// # Ownership
 ///
-/// The caller owns the returned pointer and must free it with `libc::free`.
+/// The caller owns the returned pointer and must free it with `hew_string_drop`.
 #[no_mangle]
 pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
     let mut buf = String::new();
@@ -499,8 +499,8 @@ mod tests {
         );
         // SAFETY: ptr was returned by libc::strdup → valid, NUL-terminated C string.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated by libc::strdup; returning ownership to the C heap.
-        unsafe { libc::free(ptr.cast()) };
+        // SAFETY: ptr was allocated header-aware by str_to_malloc (hew_file_read).
+        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test consumer of str_to_malloc output; header-aware in S1)
         s
     }
 

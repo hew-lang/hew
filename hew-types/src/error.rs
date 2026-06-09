@@ -284,6 +284,30 @@ impl TypeError {
         }
     }
 
+    /// Create an infinitely-sized recursive value type error.
+    #[must_use]
+    pub fn recursive_value_type(
+        span: Span,
+        type_kind: &str,
+        type_name: &str,
+        member_desc: &str,
+        referenced_type: &str,
+    ) -> Self {
+        Self::new(
+            TypeErrorKind::RecursiveValueType {
+                type_name: type_name.to_string(),
+                referenced_type: referenced_type.to_string(),
+            },
+            span,
+            format!(
+                "{type_kind} `{type_name}` is infinitely sized: {member_desc} contains \
+                 `{referenced_type}` by value; recursive value types are not supported \
+                 in v0.5"
+            ),
+        )
+        .with_suggestion("use a reference or other heap-owning indirection to break the cycle")
+    }
+
     /// Create an or-pattern binding symmetry error.
     #[must_use]
     pub fn or_pattern_binding_mismatch(
@@ -386,6 +410,14 @@ pub enum TypeErrorKind {
     YieldOutsideGenerator,
     /// Actor types form a reference cycle via `ActorRef` fields
     ActorRefCycle,
+    /// A value-typed enum/record/struct contains itself by value, directly or
+    /// through another inline value type, making its layout infinitely sized.
+    RecursiveValueType {
+        /// Recursive type being rejected.
+        type_name: String,
+        /// Value type reached by the reported field/variant edge.
+        referenced_type: String,
+    },
     /// Variable defined but never used
     UnusedVariable,
     /// Variable declared `var` but never reassigned
@@ -816,6 +848,7 @@ impl TypeErrorKind {
             Self::UseAfterMove => "UseAfterMove",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::ActorRefCycle => "ActorRefCycle",
+            Self::RecursiveValueType { .. } => "RecursiveValueType",
             Self::UnusedVariable => "UnusedVariable",
             Self::UnusedMut => "UnusedMut",
             Self::StyleSuggestion => "StyleSuggestion",

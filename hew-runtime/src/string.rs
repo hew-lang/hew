@@ -1,14 +1,18 @@
 //! Hew runtime: `string` module.
 //!
 //! String operations exposed with C ABI for use by compiled Hew programs.
-//! All returned strings are allocated with `libc::malloc` so callers can free
-//! them with `libc::free`.
+//! Returned strings are header-aware, refcounted allocations produced through
+//! the shared `hew-cabi` C-string allocator (`alloc_cstring*`); callers MUST
+//! release them through [`hew_string_drop`] (which decrements the refcount and
+//! frees at zero), never bare `libc::free`. `String` is immutable-shareable, so
+//! [`hew_string_clone`] is a refcount **retain** (it shares one buffer), not a
+//! deep copy.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::cabi::{cstr_to_str, malloc_cstring};
+use crate::cabi::{alloc_cstring_data, cstr_to_str, cstring_retain, free_cstring, malloc_cstring};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -25,7 +29,7 @@ unsafe fn cstr_len(s: *const c_char) -> usize {
     unsafe { libc::strlen(s) }
 }
 
-/// Concatenate two C strings. Caller must `free` the result.
+/// Concatenate two C strings. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -44,8 +48,8 @@ pub unsafe extern "C" fn hew_string_concat(a: *const c_char, b: *const c_char) -
         // SAFETY: abort is always safe to call.
         unsafe { libc::abort() };
     };
-    // SAFETY: Requesting alloc_size bytes from malloc.
-    let result = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
+    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
+    let result = alloc_cstring_data(alloc_size).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_concat — header-aware)
     cabi_guard!(result.is_null(), result.cast::<c_char>());
     if la > 0 {
         // SAFETY: a is valid for la bytes; result has total+1 bytes allocated.
@@ -60,7 +64,7 @@ pub unsafe extern "C" fn hew_string_concat(a: *const c_char, b: *const c_char) -
     result.cast::<c_char>()
 }
 
-/// Extract a substring `[start, end)`. Caller must `free` the result.
+/// Extract a substring `[start, end)`. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -204,7 +208,7 @@ pub unsafe extern "C" fn hew_string_is_empty(s: *const c_char) -> bool {
     unsafe { *s == 0 }
 }
 
-/// Convert an `i32` to its decimal string representation. Caller must `free`.
+/// Convert an `i32` to its decimal string representation. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -222,7 +226,7 @@ pub unsafe extern "C" fn hew_int_to_string(n: i32) -> *mut c_char {
     unsafe { malloc_cstring(buf.as_ptr(), len) }
 }
 
-/// Convert a `u32` to its decimal string representation. Caller must `free`.
+/// Convert a `u32` to its decimal string representation. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -240,7 +244,7 @@ pub unsafe extern "C" fn hew_uint_to_string(n: u32) -> *mut c_char {
     unsafe { malloc_cstring(buf.as_ptr(), len) }
 }
 
-/// Convert an `i64` to its decimal string representation. Caller must `free`.
+/// Convert an `i64` to its decimal string representation. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -258,7 +262,7 @@ pub unsafe extern "C" fn hew_i64_to_string(n: i64) -> *mut c_char {
     unsafe { malloc_cstring(buf.as_ptr(), len) }
 }
 
-/// Convert a `u64` to its decimal string representation. Caller must `free`.
+/// Convert a `u64` to its decimal string representation. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -296,7 +300,7 @@ pub unsafe extern "C" fn hew_string_to_int(s: *const c_char) -> i64 {
     parse_strict_i64(bytes)
 }
 
-/// Convert an `f64` to its string representation. Caller must `free`.
+/// Convert an `f64` to its string representation. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -328,7 +332,7 @@ pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut c_char {
     unsafe { malloc_cstring(buf.as_ptr(), len) }
 }
 
-/// Convert a `bool` to `"true"` or `"false"`. Caller must `free`.
+/// Convert a `bool` to `"true"` or `"false"`. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -340,7 +344,7 @@ pub unsafe extern "C" fn hew_bool_to_string(b: bool) -> *mut c_char {
     unsafe { malloc_cstring(s.as_ptr(), s.len()) }
 }
 
-/// Trim leading and trailing ASCII whitespace. Caller must `free`.
+/// Trim leading and trailing ASCII whitespace. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -364,7 +368,7 @@ pub unsafe extern "C" fn hew_string_trim(s: *const c_char) -> *mut c_char {
     unsafe { malloc_cstring(trimmed.as_ptr(), trimmed.len()) }
 }
 
-/// Replace all occurrences of `old_str` with `new_str`. Caller must `free`.
+/// Replace all occurrences of `old_str` with `new_str`. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -434,8 +438,8 @@ pub unsafe extern "C" fn hew_string_replace(
         // SAFETY: abort is always safe to call.
         None => unsafe { libc::abort() },
     };
-    // SAFETY: Allocating result_len + 1 bytes via malloc.
-    let result = unsafe { libc::malloc(result_len + 1) }.cast::<u8>();
+    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
+    let result = alloc_cstring_data(result_len + 1).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_replace — header-aware)
     if result.is_null() {
         return result.cast::<c_char>();
     }
@@ -479,7 +483,7 @@ pub unsafe extern "C" fn hew_string_replace(
     result.cast::<c_char>()
 }
 
-/// Convert a single character code point to a one-byte C string. Caller must `free`.
+/// Convert a single character code point to a one-byte C string. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -491,8 +495,8 @@ pub unsafe extern "C" fn hew_string_replace(
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_char_to_string(c: i32) -> *mut c_char {
-    // SAFETY: Allocating 2 bytes via malloc.
-    let ptr = unsafe { libc::malloc(2) }.cast::<u8>();
+    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
+    let ptr = alloc_cstring_data(2).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_char_to_string — header-aware)
     cabi_guard!(ptr.is_null(), ptr.cast::<c_char>());
     // SAFETY: ptr is a valid 2-byte allocation.
     unsafe {
@@ -604,8 +608,10 @@ pub unsafe extern "C" fn hew_string_split(
             }
             // SAFETY: v is a valid HewVec and part is a valid C string.
             unsafe { crate::vec::hew_vec_push_str(v, part) };
-            // SAFETY: part was allocated by malloc_copy.
-            unsafe { libc::free(part.cast()) };
+            // SAFETY: part was allocated header-aware by malloc_cstring and was
+            // copied (not shared) into the vec by push_str — release our sole
+            // owner directly.
+            unsafe { free_cstring(part) }; // CSTRING-FREE: str-open (hew_string_split part = malloc_cstring temp, copied-in by push_str)
             start += pos + dlen;
         } else {
             let tail_len = s_bytes.len() - start;
@@ -619,8 +625,10 @@ pub unsafe extern "C" fn hew_string_split(
             }
             // SAFETY: v is a valid HewVec and part is a valid C string.
             unsafe { crate::vec::hew_vec_push_str(v, part) };
-            // SAFETY: part was allocated by malloc_copy.
-            unsafe { libc::free(part.cast()) };
+            // SAFETY: part was allocated header-aware by malloc_cstring and was
+            // copied (not shared) into the vec by push_str — release our sole
+            // owner directly.
+            unsafe { free_cstring(part) }; // CSTRING-FREE: str-open (hew_string_split tail part, copied-in by push_str)
             break;
         }
     }
@@ -657,8 +665,10 @@ pub unsafe extern "C" fn hew_string_lines(s: *const c_char) -> *mut crate::vec::
             }
             // SAFETY: v is a valid HewVec and part is a valid C string.
             unsafe { crate::vec::hew_vec_push_str(v, part) };
-            // SAFETY: part was allocated by malloc_copy.
-            unsafe { libc::free(part.cast()) };
+            // SAFETY: part was allocated header-aware by malloc_cstring and was
+            // copied (not shared) into the vec by push_str — release our sole
+            // owner directly.
+            unsafe { free_cstring(part) }; // CSTRING-FREE: str-open (hew_string_lines part, copied-in by push_str)
             start = i + 1;
         }
     }
@@ -676,8 +686,9 @@ pub unsafe extern "C" fn hew_string_lines(s: *const c_char) -> *mut crate::vec::
     }
     // SAFETY: v is a valid HewVec and part is a valid C string.
     unsafe { crate::vec::hew_vec_push_str(v, part) };
-    // SAFETY: part was allocated by malloc_copy.
-    unsafe { libc::free(part.cast()) };
+    // SAFETY: part was allocated header-aware by malloc_cstring and was copied
+    // (not shared) into the vec by push_str — release our sole owner directly.
+    unsafe { free_cstring(part) }; // CSTRING-FREE: str-open (hew_string_lines tail part, copied-in by push_str)
     v
 }
 
@@ -707,7 +718,7 @@ pub unsafe extern "C" fn hew_string_chars(s: *const c_char) -> *mut crate::vec::
 }
 
 /// Join a `Vec<String>` into a single string with `sep` between elements.
-/// Caller must `free` the result.
+/// Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -737,21 +748,22 @@ pub unsafe extern "C" fn hew_vec_join_str(
     let mut total: usize = 0;
     for i in 0..len {
         // SAFETY: i is within bounds per hew_vec_len contract.
-        // hew_vec_get_str returns a strdup'd copy — free after measuring.
+        // hew_vec_get_str returns a retained owner — release after measuring.
         let s = unsafe { crate::vec::hew_vec_get_str(v, i) };
         if !s.is_null() {
             // SAFETY: s is a valid NUL-terminated C string.
             total += unsafe { CStr::from_ptr(s) }.to_bytes().len();
-            // SAFETY: s was strdup'd by hew_vec_get_str — we own it.
-            unsafe { libc::free(s as *mut _) };
+            // SAFETY: s is a retained String owner from hew_vec_get_str — release
+            // one owner via the header-aware path (free-at-zero / static skip).
+            unsafe { hew_string_drop(s.cast_mut()) }; // CSTRING-FREE: str-open (hew_vec_get_str retained owner — release via hew_string_drop, P2b-vec)
         }
         if i < len - 1 {
             total += sep_bytes.len();
         }
     }
 
-    // SAFETY: Allocating total+1 bytes.
-    let buf = unsafe { libc::malloc(total + 1) }.cast::<u8>();
+    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
+    let buf = alloc_cstring_data(total + 1).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_vec_join_str result buffer — header-aware)
     if buf.is_null() {
         // SAFETY: abort is always safe to call.
         unsafe { libc::abort() };
@@ -759,7 +771,7 @@ pub unsafe extern "C" fn hew_vec_join_str(
     let mut offset = 0;
     for i in 0..len {
         // SAFETY: i is within bounds per hew_vec_len contract.
-        // hew_vec_get_str returns a strdup'd copy — free after copying.
+        // hew_vec_get_str returns a retained owner — release after copying.
         let s = unsafe { crate::vec::hew_vec_get_str(v, i) };
         if !s.is_null() {
             // SAFETY: s is a valid NUL-terminated C string.
@@ -767,8 +779,9 @@ pub unsafe extern "C" fn hew_vec_join_str(
             // SAFETY: offset + bytes.len() <= total.
             unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.add(offset), bytes.len()) };
             offset += bytes.len();
-            // SAFETY: s was strdup'd by hew_vec_get_str — we own it.
-            unsafe { libc::free(s as *mut _) };
+            // SAFETY: s is a retained String owner from hew_vec_get_str — release
+            // one owner via the header-aware path (free-at-zero / static skip).
+            unsafe { hew_string_drop(s.cast_mut()) }; // CSTRING-FREE: str-open (hew_vec_get_str retained owner — release via hew_string_drop, P2b-vec)
         }
         if i < len - 1 {
             // SAFETY: offset + sep_bytes.len() <= total.
@@ -787,7 +800,7 @@ pub unsafe extern "C" fn hew_vec_join_str(
     buf.cast::<c_char>()
 }
 
-/// Convert a C string to ASCII lowercase. Caller must `free` the result.
+/// Convert a C string to ASCII lowercase. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -799,8 +812,8 @@ pub unsafe extern "C" fn hew_string_to_lowercase(s: *const c_char) -> *mut c_cha
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     let len = bytes.len();
-    // SAFETY: Allocating len+1 bytes.
-    let result = unsafe { libc::malloc(len + 1) }.cast::<u8>();
+    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
+    let result = alloc_cstring_data(len + 1).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_to_lowercase — header-aware)
     cabi_guard!(result.is_null(), result.cast::<c_char>());
     for (i, &b) in bytes.iter().enumerate() {
         // SAFETY: i < len, result is valid for len bytes.
@@ -811,7 +824,7 @@ pub unsafe extern "C" fn hew_string_to_lowercase(s: *const c_char) -> *mut c_cha
     result.cast::<c_char>()
 }
 
-/// Convert a C string to ASCII uppercase. Caller must `free` the result.
+/// Convert a C string to ASCII uppercase. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -823,8 +836,8 @@ pub unsafe extern "C" fn hew_string_to_uppercase(s: *const c_char) -> *mut c_cha
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     let len = bytes.len();
-    // SAFETY: Allocating len+1 bytes.
-    let result = unsafe { libc::malloc(len + 1) }.cast::<u8>();
+    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
+    let result = alloc_cstring_data(len + 1).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_to_uppercase — header-aware)
     cabi_guard!(result.is_null(), result.cast::<c_char>());
     for (i, &b) in bytes.iter().enumerate() {
         // SAFETY: i < len, result is valid for len bytes.
@@ -876,7 +889,7 @@ pub unsafe extern "C" fn hew_string_abort_oob(index: i64, len: i64) -> ! {
     }
 }
 
-/// Create a one-character string from a character code. Caller must `free`.
+/// Create a one-character string from a character code. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -888,8 +901,8 @@ pub unsafe extern "C" fn hew_string_abort_oob(index: i64, len: i64) -> ! {
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_from_char(c: i32) -> *mut c_char {
-    // SAFETY: Allocating 2 bytes via malloc.
-    let ptr = unsafe { libc::malloc(2) }.cast::<u8>();
+    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
+    let ptr = alloc_cstring_data(2).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_from_char — header-aware)
     cabi_guard!(ptr.is_null(), ptr.cast::<c_char>());
     // SAFETY: ptr is a valid 2-byte allocation.
     unsafe {
@@ -899,7 +912,7 @@ pub unsafe extern "C" fn hew_string_from_char(c: i32) -> *mut c_char {
     ptr.cast::<c_char>()
 }
 
-/// Repeat a string `count` times. Caller must `free` the result.
+/// Repeat a string `count` times. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -921,8 +934,8 @@ pub unsafe extern "C" fn hew_string_repeat(s: *const c_char, count: i32) -> *mut
         // SAFETY: abort is always safe to call.
         unsafe { libc::abort() };
     };
-    // SAFETY: Allocating total+1 bytes.
-    let result = unsafe { libc::malloc(total + 1) }.cast::<u8>();
+    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
+    let result = alloc_cstring_data(total + 1).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_repeat — header-aware)
     cabi_guard!(result.is_null(), result.cast::<c_char>());
     for i in 0..n {
         // SAFETY: Each copy writes len bytes at offset i*len, within total bytes.
@@ -1043,6 +1056,24 @@ fn static_string_bounds() -> (usize, usize) {
             let cmdsize = unsafe { *((cmd_ptr + 4) as *const u32) } as usize;
             // LC_SEGMENT_64 = 0x19
             if cmd == 0x19 {
+                // segment_command_64.segname is a 16-byte fixed field at +8.
+                // `__PAGEZERO` is the reserved guard segment the loader maps at
+                // vmaddr 0 with a ~4 GiB vmsize and no file backing. Folding it
+                // into the extent collapses `lo` to 0, which then makes
+                // `slide = header - lo = header` and yields a bogus ~4 GiB
+                // "static" window `[header, header + 4 GiB)`. Real heap strings
+                // (malloc/alloc_cstring) land just above the image base, inside
+                // that window, so `is_static_string` would wrongly classify them
+                // as immortal literals — silently turning every COW retain/release
+                // (hew_string_clone / hew_string_drop) into a no-op (leaks) and
+                // making all macOS ASan refcount validation vacuous. Excluding
+                // __PAGEZERO restores the true image base as `lo`.
+                //
+                // SAFETY: segname is 16 bytes at offset +8 within a
+                // segment_command_64; reading them as a byte array is in bounds.
+                let segname: [u8; 16] = unsafe { *((cmd_ptr + 8) as *const [u8; 16]) };
+                // Canonical reserved name, NUL-padded to the 16-byte segname field.
+                let is_pagezero = segname == *b"__PAGEZERO\0\0\0\0\0\0";
                 #[expect(
                     clippy::cast_possible_truncation,
                     reason = "64-bit platform only; Mach-O is macOS-specific"
@@ -1055,14 +1086,26 @@ fn static_string_bounds() -> (usize, usize) {
                 )]
                 // SAFETY: vmsize is at offset +32 within a segment_command_64.
                 let vmsize = unsafe { *((cmd_ptr + 32) as *const u64) } as usize;
-                if vmsize > 0 {
+                // Also defensively skip any zero-vmaddr reserved segment: the
+                // real loaded image (__TEXT/__DATA/__DATA_CONST/__LINKEDIT/…)
+                // always has a non-zero vmaddr, so a vmaddr==0 segment can only
+                // be page-zero-like reserved space that must not widen `lo`.
+                if vmsize > 0 && !is_pagezero && vmaddr != 0 {
                     lo = lo.min(vmaddr);
                     hi = hi.max(vmaddr + vmsize);
                 }
             }
             cmd_ptr += cmdsize;
         }
+        // Fail closed (CLAUDE §2): if the Mach-O walk found no real loaded
+        // segment the bounds would be nonsense; never return a bogus range.
+        assert!(
+            lo != usize::MAX && hi != 0,
+            "static_string_bounds: no non-__PAGEZERO LC_SEGMENT_64 found in Mach-O header"
+        );
         // The file vmaddrs are relative to the image base; add the slide.
+        // With __PAGEZERO excluded, `lo` is __TEXT's vmaddr, so the slide is the
+        // genuine (small) ASLR slide and the bounds cover only the loaded image.
         let slide = header as usize - lo;
         (lo + slide, hi + slide)
     })
@@ -1099,46 +1142,58 @@ fn static_string_bounds() -> (usize, usize) {
     (0, (&raw const __heap_base) as usize)
 }
 
-/// Free a string if it was heap-allocated.  Safe to call with null or
-/// with pointers to string literals embedded in the binary — those are
-/// detected via linker symbols and silently skipped.
+/// Release one owner of a string. `String` is refcounted (P2a): this decrements
+/// the refcount and frees the allocation only when the last owner drops it.
+/// Safe to call with null or with pointers to string literals embedded in the
+/// binary — those are detected via linker symbols and silently skipped (they
+/// are immortal and carry no refcount header).
 ///
 /// # Safety
 ///
 /// `s` must be null, a pointer into the binary's read-only data, or a
-/// pointer previously returned by `malloc` / `hew_string_*` allocating
-/// functions.
+/// pointer previously returned by the `hew-cabi` header-aware allocator
+/// (`malloc_cstring` / `str_to_malloc` / `alloc_cstring*`).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_drop(s: *mut c_char) {
     cabi_guard!(s.is_null() || is_static_string(s.cast()));
-    // SAFETY: Not null and not a static string — must be heap-allocated.
-    unsafe { libc::free(s.cast()) };
+    // SAFETY: Not null and not a static string — must be a live header-aware
+    // heap string produced by malloc_cstring / alloc_cstring* (the universal
+    // String allocator path); free_cstring recovers the base, validates the
+    // header, and releases one owner (free at refcount zero). The
+    // is_static_string skip (incl. the wasm32 __heap_base branch) runs BEFORE
+    // any header/refcount logic.
+    unsafe { free_cstring(s) }; // CSTRING-FREE: str-open (hew_string_drop — THE universal String consumer; release, is_static_string skip kept BEFORE free_cstring)
 }
 
-/// Duplicate a string, returning a fresh heap allocation.
-/// Caller must `free` the result (or pass it to `hew_string_drop`).
+/// Retain (share) a string. `String` is immutable-shareable, so cloning is a
+/// refcount bump that returns the **same** data pointer — both owners alias one
+/// buffer (the copy-on-write win). The result must still be released with
+/// [`hew_string_drop`], which decrements the refcount and frees only when the
+/// last owner drops it.
+///
+/// Static string literals (rodata, no refcount header) are immortal and carry
+/// no header, so the retain is skipped and the same pointer is returned —
+/// `hew_string_drop` likewise skips them. This `is_static_string` check MUST
+/// run **before** any refcount-header access, exactly as in [`hew_string_drop`].
 ///
 /// # Safety
 ///
-/// `s` must be null or a valid NUL-terminated C string pointer.
+/// `s` must be null, a pointer into the binary's read-only data, or a live
+/// header-aware string produced by the `hew-cabi` allocator.
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_clone(s: *const c_char) -> *mut c_char {
     if s.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: s is a valid NUL-terminated C string per contract.
-    let len = unsafe { cstr_len(s) };
-    let alloc_size = len + 1;
-    // SAFETY: Requesting alloc_size bytes from malloc.
-    let result = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
-    cabi_guard!(result.is_null(), result.cast::<c_char>());
-    if len > 0 {
-        // SAFETY: s is valid for len bytes; result has alloc_size bytes.
-        unsafe { std::ptr::copy_nonoverlapping(s.cast::<u8>(), result, len) };
+    // Static literals have no header — sharing an immortal string is just the
+    // pointer itself. The skip must precede any header/refcount access.
+    if is_static_string(s.cast()) {
+        return s.cast_mut();
     }
-    // SAFETY: result + len is within the allocated region.
-    unsafe { *result.add(len) = 0 };
-    result.cast::<c_char>()
+    // Header-aware heap string: retain (bump rc) and alias the same buffer.
+    // SAFETY: not null and not static — a live header-aware allocation.
+    unsafe { cstring_retain(s.cast_mut()) }; // CSTRING-RETAIN: str-open (hew_string_clone — COW share, is_static_string skip kept BEFORE retain)
+    s.cast_mut()
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,7 +1277,7 @@ pub unsafe extern "C" fn hew_string_char_at_utf8(s: *const c_char, index: i32) -
 /// heap-allocated C string. Returns null on error (null input, invalid UTF-8,
 /// or invalid indices).
 ///
-/// Caller must `free` the result.
+/// Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -1257,7 +1312,7 @@ pub unsafe extern "C" fn hew_string_substring_utf8(
 /// Reverse a UTF-8 string by codepoints (not bytes). Returns a heap-allocated
 /// C string. Returns null for null input or invalid UTF-8.
 ///
-/// Caller must `free` the result.
+/// Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -1303,7 +1358,7 @@ pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> *mut crate::ve
 /// Join a `Vec<String>` into a single string with `sep` between elements.
 ///
 /// Convenience alias for [`hew_vec_join_str`] used by the `string_join` builtin.
-/// Caller must `free` the result.
+/// Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -1464,7 +1519,120 @@ pub unsafe extern "C" fn hew_string_slice_codepoints(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use crate::cabi::alloc_cstring_from_str;
     use std::ffi::CString;
+
+    // ── macOS static-string detection: __PAGEZERO exclusion ───────────────
+    //
+    // Regression guard for the Mach-O `static_string_bounds()` walk. Folding
+    // the reserved `__PAGEZERO` segment (vmaddr 0, ~4 GiB vmsize) into the
+    // extent collapsed `lo` to 0 and produced a bogus ~4 GiB "static" window
+    // starting at the image base. Heap strings land inside that window, so they
+    // were wrongly classified as immortal literals — silently turning every
+    // COW retain/release (hew_string_clone / hew_string_drop) into a no-op
+    // (leaks) and making all macOS ASan refcount validation vacuous.
+
+    /// Read the live refcount of a header-aware Hew string by reading the
+    /// `rc:AtomicU32` field at offset 8 of the 16-byte header preceding `data`
+    /// (`[magic:u64 | rc:AtomicU32 | reserved:u32]`).
+    ///
+    /// # Safety
+    /// `data` must be a live header-aware allocation from `alloc_cstring*`.
+    #[cfg(target_os = "macos")]
+    unsafe fn header_rc(data: *const c_char) -> u32 {
+        // SAFETY: data is a live header-aware allocation; rc lives at base+8.
+        unsafe { *((data as usize - 16 + 8) as *const u32) }
+    }
+
+    /// Proof #1: the corrected bounds are tight (the real loaded image, a few
+    /// dozen MB) — NOT the ~4 GiB false window — and the classifier agrees in
+    /// both directions: a freshly heap-allocated string is NON-static while a
+    /// genuine `&str` literal (in `__TEXT`/`__cstring`) is still static.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_static_bounds_exclude_pagezero_classify_heap_nonstatic() {
+        let (lo, hi) = static_string_bounds();
+        assert!(
+            lo < hi,
+            "bounds must be a non-empty range, got [{lo:#x}, {hi:#x})"
+        );
+        let width = hi - lo;
+        // The genuine loaded image is megabytes wide. The __PAGEZERO bug made
+        // this ~4 GiB. Assert well below 1 GiB to lock the regression out while
+        // tolerating large debug/ASan builds.
+        assert!(
+            width < 1usize << 30,
+            "static window must be the real image (MB), not the ~4 GiB __PAGEZERO \
+             window; width={width:#x} ({} MB)",
+            width / (1024 * 1024),
+        );
+
+        // Heap string → NON-static (the bug classified these as static).
+        let heap = alloc_cstring_from_str("a freshly allocated heap string");
+        assert!(!heap.is_null());
+        assert!(
+            !is_static_string(heap.cast()),
+            "heap string {heap:p} must be classified NON-static; bounds=[{lo:#x}, {hi:#x})",
+        );
+        // SAFETY: heap is a live header-aware allocation.
+        unsafe { free_cstring(heap) };
+
+        // Genuine literal → still static (must not break literal detection).
+        let lit: &str = "a genuine string literal that lives in read-only data";
+        assert!(
+            is_static_string(lit.as_ptr()),
+            "string literal {:p} must be classified static; bounds=[{lo:#x}, {hi:#x})",
+            lit.as_ptr(),
+        );
+    }
+
+    /// Proof #2: the COW refcount path is now LIVE on macOS. `hew_string_clone`
+    /// on a heap string bumps the refcount (1→2) and aliases the same buffer;
+    /// `hew_string_drop` decrements (2→1) without freeing while a co-owner
+    /// remains, and frees only at the final release (1→0). On the pre-fix base
+    /// the heap string classified static, so clone returned the pointer WITHOUT
+    /// a retain (rc stayed 1) and drop was a silent no-op (leak).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_heap_string_clone_bumps_refcount() {
+        let s = alloc_cstring_from_str("shared heap string");
+        assert!(!s.is_null());
+        // SAFETY: s is a live header-aware allocation.
+        let rc_fresh = unsafe { header_rc(s) };
+        assert_eq!(rc_fresh, 1, "fresh allocation starts at rc 1");
+
+        // Clone → COW alias (same pointer) with a refcount bump.
+        // SAFETY: s is a valid NUL-terminated header-aware C string.
+        let cloned = unsafe { hew_string_clone(s) };
+        assert_eq!(cloned, s, "String clone is a COW alias of the same buffer");
+        // SAFETY: s is a live header-aware allocation.
+        let rc_after_clone = unsafe { header_rc(s) };
+        assert_eq!(
+            rc_after_clone, 2,
+            "clone must retain: refcount 1→2 (no-op on the pre-fix base)",
+        );
+
+        // First drop releases one owner; the buffer survives (co-owner remains).
+        // SAFETY: s is a live header-aware allocation, not static.
+        unsafe { hew_string_drop(s) };
+        // SAFETY: s aliases the still-live allocation at rc 1.
+        let rc_after_first_drop = unsafe { header_rc(s) };
+        assert_eq!(
+            rc_after_first_drop, 1,
+            "first drop: refcount 2→1, not freed"
+        );
+        // Buffer is still valid and readable through the surviving alias.
+        // SAFETY: cloned aliases s, still live at rc 1.
+        let alive = unsafe { CStr::from_ptr(cloned) }
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(alive, "shared heap string");
+
+        // Final drop releases the last owner and frees (rc 1→0).
+        // SAFETY: cloned aliases the still-live allocation at rc 1.
+        unsafe { hew_string_drop(cloned) };
+    }
 
     unsafe fn read_and_free(ptr: *mut c_char) -> String {
         if ptr.is_null() {
@@ -1474,8 +1642,8 @@ mod tests {
         let s = unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned();
-        // SAFETY: ptr was allocated by libc::malloc in the FFI function.
-        unsafe { libc::free(ptr.cast()) };
+        // SAFETY: ptr was allocated header-aware by the FFI string producer.
+        unsafe { free_cstring(ptr) }; // CSTRING-FREE: str-open (test read_and_free of String FFI output)
         s
     }
 
@@ -1932,9 +2100,9 @@ mod tests {
             .to_str()
             .unwrap()
             .to_owned();
-        // SAFETY: joined was malloc'd.
-        unsafe { libc::free(joined.cast()) };
-        // SAFETY: v is a valid HewVec.
+        // SAFETY: joined was allocated header-aware by hew_string_join.
+        unsafe { free_cstring(joined) }; // CSTRING-FREE: str-open (test frees hew_string_join output)
+                                         // SAFETY: v is a valid HewVec.
         unsafe { crate::vec::hew_vec_free(v) };
         assert_eq!(result, "a,b,c");
     }
@@ -1983,9 +2151,9 @@ mod tests {
         assert!(!slice.is_null());
         assert_ne!(slice as usize, input as usize);
         // SAFETY: input was malloc'd above.
-        unsafe { libc::free(input.cast()) };
-        // After freeing the input, slice is still valid.
-        // SAFETY: read_and_free takes ownership of the malloc'd slice.
+        unsafe { libc::free(input.cast()) }; // CSTRING-FREE: libc-bytes (test-local raw libc::malloc(6); not a Hew String)
+                                             // After freeing the input, slice is still valid.
+                                             // SAFETY: read_and_free takes ownership of the malloc'd slice.
         assert_eq!(unsafe { read_and_free(slice) }, "ell");
     }
 

@@ -715,5 +715,6 @@ fn build_drop_shim_function(shim_name: &str, state_ty: ResolvedTy) -> RawMirFunc
         locals,
         blocks: vec![entry],
         decisions: Vec::new(),
+        intrinsic_id: None,
     }
 }

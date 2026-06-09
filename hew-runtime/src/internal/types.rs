@@ -4,13 +4,33 @@ use crate::execution_context::HewExecutionContext;
 
 /// Actor dispatch function signature (context-leading canonical).
 ///
-/// `void (*dispatch)(HewExecutionContext *ctx, void *state, int msg_type, void *data, size_t data_size)`
+/// `void (*dispatch)(HewExecutionContext *ctx, void *state, int msg_type, void *data, size_t data_size, int32_t borrow_mode)`
+///
+/// # `borrow_mode` (P5-RX sub-stage 1 — dormant receive-ABI scaffolding)
+///
+/// Copy-mode receipt (`borrow_mode == 0`): `data`/`data_size` carry the
+/// payload buffer the message node owns; the generated trampoline loads the
+/// handler param value from `data` exactly as before.
+///
+/// Borrow-mode receipt (`borrow_mode == 1`): reserved for the envelope-mode
+/// (aliased) receive path. In that mode `data` carries the
+/// [`crate::mailbox::HewMsgEnvelope`] pointer and the trampoline resolves the
+/// borrowed payload via `hew_msg_envelope_payload_ptr` rather than treating
+/// `data` as the buffer directly. The single drop stays owned by
+/// `hew_msg_envelope_release`.
+///
+/// This sub-stage wires the parameter and the trampoline's borrow-load path
+/// but leaves it **dormant**: the scheduler passes `0` unconditionally and the
+/// envelope-mode dispatch guard still fails closed before any envelope node
+/// reaches dispatch, so the `borrow_mode == 1` arm is unreachable at runtime
+/// until the live send/guard-removal sub-stages land.
 pub type HewDispatchFn = unsafe extern "C-unwind" fn(
     ctx: *mut HewExecutionContext,
     state: *mut std::ffi::c_void,
     msg_type: i32,
     data: *mut std::ffi::c_void,
     data_size: usize,
+    borrow_mode: i32,
 );
 
 /// Crash handler function signature for supervised actors.

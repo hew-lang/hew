@@ -176,6 +176,49 @@ pub enum HirItem {
     /// before user functions are declared so the `Terminator::Call` lookup
     /// resolves transparently.
     ExternFn(HirExternFn),
+    /// Lowered module-level `const NAME: T = <expr>;` declaration.
+    ///
+    /// The initializer expression is constant-folded during HIR lowering into
+    /// a concrete [`HirConstValue`] (integer or string). A reference to the
+    /// const elsewhere in the module lowers to
+    /// `HirExprKind::BindingRef { resolved: ResolvedRef::Const(id), .. }`,
+    /// where `id` matches this item's [`HirConst::id`]; MIR/codegen resolve
+    /// that id back to the descriptor.
+    ///
+    /// WHY fold in HIR: there is no checker-authored const-value table on
+    /// `TypeCheckOutput` and the checker's `ConstValue` is `pub(super)` to
+    /// hew-types and only recognises bare literals. The fold here is a
+    /// self-contained, fail-closed evaluator over the parser AST (integer
+    /// arithmetic + string literals). Any non-foldable initializer emits a
+    /// `HirDiagnosticKind::NotYetImplemented` rather than producing a silent
+    /// or fabricated value (LESSONS: fail-closed producers).
+    Const(HirConst),
+}
+
+/// Constant-folded value carried by a [`HirConst`]. v0.5 admits integer and
+/// string constants; floats, booleans, and aggregate consts are out of scope
+/// for this slice and fail closed at fold time.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirConstValue {
+    /// Folded integer value. The declared width lives in [`HirConst::ty`]
+    /// (`I32`/`I64`); this carries the value as `i64` and downstream codegen
+    /// truncates/zero-extends to the declared width.
+    Integer(i64),
+    /// Folded string literal value (UTF-8, as written in source).
+    String(String),
+}
+
+/// Lowered module-level constant declaration — see [`HirItem::Const`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirConst {
+    pub id: ItemId,
+    pub node: HirNodeId,
+    pub name: String,
+    /// Declared, checker-resolved type of the const (`i64`, `String`, ...).
+    pub ty: ResolvedTy,
+    /// Constant-folded initializer value.
+    pub value: HirConstValue,
+    pub span: Span,
 }
 
 /// Lowered extern function declaration — see [`HirItem::ExternFn`].
@@ -751,6 +794,22 @@ pub struct HirFn {
     pub return_ty: ResolvedTy,
     pub body: HirBlock,
     pub span: Span,
+    /// When `Some(catalog_key)`, this function is a `#[intrinsic("key")]`
+    /// floor declaration (W5.005 / F1b) whose source body is a bodyless
+    /// placeholder. The lowered `body` (and the MIR derived from it) is NOT
+    /// the source of truth — codegen synthesizes the trampoline body from
+    /// the catalog key. The key is threaded HIR → MIR
+    /// (`RawMirFunction::intrinsic_id`) → codegen (`lower_fn`), where a
+    /// central authority dispatches it to a real lowering. Fail-closed
+    /// (D343): an id codegen does not recognise is a hard `CodegenError`,
+    /// never a silent empty-body no-op.
+    ///
+    /// Only the callable memory-intrinsic floor (`mem.*`, catalog linkage
+    /// `CalleeNameDispatchOnly`) is tagged here. Numeric `math.*` intrinsics
+    /// (linkage `CompilerIntrinsic`) route through builtin method-rewrites
+    /// and are never emitted as a `HirItem::Function`, so they never carry
+    /// an `intrinsic_id`.
+    pub intrinsic_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1481,6 +1540,48 @@ pub enum HirExprKind {
         /// Loop body.
         body: HirBlock,
     },
+    /// `break;` / `break <value>;` — early exit from the innermost enclosing
+    /// loop, transferring control to the loop's exit block.
+    ///
+    /// The expression type is always `Unit`; `break` never produces a value
+    /// in the surrounding expression position (loop-as-expression value
+    /// return is out of scope for v0.5).
+    ///
+    /// **Scope (v0.5)**: only the unlabeled form is lowered here. Labeled
+    /// `break @lbl` is rejected at HIR lowering with a structured
+    /// `NotYetImplemented` diagnostic (`label` resolution to a non-innermost
+    /// loop is a follow-up lane), so `label` is always `None` on a node that
+    /// reaches MIR.
+    ///
+    /// `value` carries the operand of `break <value>` so MIR can lower it for
+    /// its side effects (and move-checker correctness) before emitting the
+    /// jump; the produced Place is discarded — loop-value semantics are a
+    /// follow-up.
+    Break {
+        label: Option<String>,
+        value: Option<Box<HirExpr>>,
+    },
+    /// `continue;` — skip to the next iteration of the innermost enclosing
+    /// loop, transferring control to that loop's continue target (the
+    /// condition/bounds-check header for `while`/`while_let`, the dedicated
+    /// increment block for `for`-range, or the body block for a bare `loop`).
+    ///
+    /// The expression type is always `Unit`. Only the unlabeled form is
+    /// lowered here; labeled `continue @lbl` is rejected at HIR lowering with
+    /// a structured `NotYetImplemented` diagnostic, so `label` is always
+    /// `None` on a node that reaches MIR.
+    Continue {
+        label: Option<String>,
+    },
+    /// Bare `loop { body }` — an unconditional loop with no header condition.
+    ///
+    /// The expression type is always `Unit`; an infinite loop only ends via a
+    /// `break` inside its body. MIR lowering emits a body block with an
+    /// unconditional back-edge to itself and an exit block that is the target
+    /// of every enclosed `break`. The continue target is the body block.
+    Loop {
+        body: HirBlock,
+    },
     Unsupported(String),
 }
 
@@ -1519,7 +1620,8 @@ pub struct HirRegexLiteral {
 /// `Wildcard` replaces the `None` dual in the old two-field encoding.
 /// `EnumVariant` carries the data that was previously split across
 /// `variant_match: Option<VariantMatch>` and `variant_idx: Option<u32>`.
-/// `Regex` is the new regex-pattern arm added for string-scrutinee matches.
+/// `Literal` is the scalar literal arm for top-level i64 / bool / char matches.
+/// `Regex` is the regex-pattern arm added for string-scrutinee matches.
 ///
 /// MIR lowering (slice 4) dispatches on this enum; codegen (slice 5) drives
 /// the predicate to the runtime ABI. Paths that are not yet wired must
@@ -1539,6 +1641,12 @@ pub enum HirMatchArmPredicate {
         variant_match: VariantMatch,
         variant_idx: u32,
     },
+    /// A top-level scalar literal pattern arm (e.g. `0`, `true`, `'a'`).
+    ///
+    /// Stage 2 supports only i64 / bool / char. `ty` is the checker-resolved
+    /// scrutinee/comparand type so MIR can allocate the constant local at the
+    /// same integer width as the scrutinee before emitting `IntCmp Eq`.
+    Literal { lit: HirLiteral, ty: ResolvedTy },
     /// A regex literal pattern `re"..."` in a string-scrutinee match arm.
     ///
     /// `literal_id` is the index into `HirModule::regex_literals` for the

@@ -9,7 +9,10 @@
 )]
 
 use crate::vec::{ElemKind, HewVec};
-use crate::{cabi::str_to_malloc, util::cstr_to_str};
+use crate::{
+    cabi::{free_cstring, str_to_malloc},
+    util::cstr_to_str,
+};
 use std::os::raw::c_char;
 use std::process::Command;
 
@@ -43,12 +46,16 @@ fn bytes_to_malloc(bytes: &[u8]) -> *mut c_char {
     str_to_malloc(&s)
 }
 
-/// Free a C string allocated by `strdup`/`malloc` if present.
+/// Release a retained `String` owner returned by [`crate::vec::hew_vec_get_str`].
+///
+/// As of W5.011 P2b-vec, `hew_vec_get_str` returns a header-aware **retained**
+/// owner (refcount share / static passthrough), not a headerless `strdup`, so it
+/// must be released through the universal `String` consumer — never bare
+/// `libc::free`, which would free `data` instead of the allocation base.
 unsafe fn free_c_string(ptr: *const c_char) {
-    if !ptr.is_null() {
-        // SAFETY: ptr was allocated by strdup/malloc and is owned by the caller.
-        unsafe { libc::free(ptr.cast_mut().cast()) };
-    }
+    // SAFETY: ptr is null or a retained String owner from hew_vec_get_str;
+    // hew_string_drop performs the static-literal skip before any header access.
+    unsafe { crate::string::hew_string_drop(ptr.cast_mut()) }; // CSTRING-FREE: str-open (release hew_vec_get_str retained owner, P2b-vec)
 }
 
 /// Build a [`HewProcessResult`] from an [`std::process::Output`].
@@ -151,18 +158,18 @@ unsafe fn hewvec_string_args(arg_vec: *mut HewVec, context: &str) -> Option<Vec<
             crate::set_last_error(format!("{context}: args length exceeds Hew index range"));
             return None;
         };
-        // SAFETY: index_i64 was derived from an in-bounds usize index and get_str
-        // returns an owned strdup of the string element.
+        // SAFETY: index_i64 was derived from an in-bounds usize index; get_str
+        // returns a retained header-aware String owner for this slot.
         let raw_arg = unsafe { crate::vec::hew_vec_get_str(arg_vec, index_i64) };
         let arg_context = format!("{context}: args[{index}]");
-        // SAFETY: raw_arg is the strdup returned by hew_vec_get_str for this slot.
+        // SAFETY: raw_arg is the retained owner returned by hew_vec_get_str.
         let Some(arg_text) = (unsafe { cstr_to_str(&raw_arg, &arg_context) }) else {
-            // SAFETY: raw_arg came from hew_vec_get_str and must be released here.
+            // SAFETY: raw_arg is a retained owner and must be released here.
             unsafe { free_c_string(raw_arg) };
             return None;
         };
         owned_args.push(arg_text.to_owned());
-        // SAFETY: raw_arg came from hew_vec_get_str and must be released here.
+        // SAFETY: raw_arg is a retained owner and must be released here.
         unsafe { free_c_string(raw_arg) };
     }
 
@@ -454,12 +461,12 @@ pub unsafe extern "C" fn hew_process_result_free(r: *mut HewProcessResult) {
     // SAFETY: r was allocated with Box::into_raw and has not been freed.
     let result = unsafe { Box::from_raw(r) };
     if !result.stdout.is_null() {
-        // SAFETY: stdout was allocated with libc::malloc.
-        unsafe { libc::free(result.stdout.cast()) };
+        // SAFETY: stdout was allocated header-aware by str_to_malloc.
+        unsafe { free_cstring(result.stdout) }; // CSTRING-FREE: str-open (HewProcessResult.stdout = str_to_malloc; header-aware in S1)
     }
     if !result.stderr.is_null() {
-        // SAFETY: stderr was allocated with libc::malloc.
-        unsafe { libc::free(result.stderr.cast()) };
+        // SAFETY: stderr was allocated header-aware by str_to_malloc.
+        unsafe { free_cstring(result.stderr) }; // CSTRING-FREE: str-open (HewProcessResult.stderr = str_to_malloc; header-aware in S1)
     }
 }
 

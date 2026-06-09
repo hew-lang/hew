@@ -1723,14 +1723,10 @@ pub unsafe extern "C" fn hew_quic_event_free(event: *mut HewQuicEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{c_void, CStr, CString};
+    use std::ffi::{CStr, CString};
     use std::thread;
 
     use hew_cabi::vec::{hew_vec_free, hwvec_to_u8, u8_to_hwvec};
-
-    unsafe extern "C" {
-        fn free(ptr: *mut c_void);
-    }
 
     unsafe fn take_event_kind(event: *mut HewQuicEvent) -> i32 {
         assert!(!event.is_null(), "event pointer must not be null");
@@ -1757,8 +1753,8 @@ mod tests {
         let value = unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned();
-        // SAFETY: ptr was allocated via libc::malloc.
-        unsafe { free(ptr.cast()) };
+        // SAFETY: ptr was allocated header-aware by str_to_malloc.
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (take_string test helper frees str_to_malloc output; header-aware in S1)
         value
     }
 

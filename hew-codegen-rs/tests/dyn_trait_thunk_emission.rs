@@ -71,6 +71,7 @@ fn impl_method_stub(
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     }
 }
 
@@ -128,11 +129,14 @@ fn pipeline_with(raw_mir: Vec<RawMirFunction>, registry: Vec<DynVtableInstance>)
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: registry,
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 

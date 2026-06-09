@@ -800,6 +800,7 @@ unsafe extern "C-unwind" fn native_dispatch_context_probe(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     push_dispatch_context_snapshot(ctx, crate::scheduler::hew_actor_cooperate());
 }
@@ -810,6 +811,7 @@ unsafe extern "C-unwind" fn wasm_dispatch_context_probe(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     push_dispatch_context_snapshot(ctx, crate::scheduler_wasm::hew_actor_cooperate());
 }
@@ -893,6 +895,7 @@ unsafe extern "C-unwind" fn request_wasm_stop_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     // SAFETY: scheduler_wasm installs a non-null canonical context before
     // entering dispatch.
@@ -912,6 +915,7 @@ unsafe extern "C-unwind" fn close_wasm_mailbox_then_cooperate_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     // SAFETY: scheduler_wasm installs a non-null canonical context before
     // entering dispatch.
@@ -1461,6 +1465,7 @@ unsafe extern "C-unwind" fn stamp_then_panic_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     // SAFETY: scheduler installs a non-null canonical context before dispatch.
     unsafe {
@@ -1483,6 +1488,7 @@ unsafe extern "C-unwind" fn hew_trap_with_code_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     if crate::trap_code::stamp_current_actor_error_code(
         crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
@@ -1497,6 +1503,7 @@ unsafe extern "C-unwind" fn hew_panic_wasm_actor_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     assert!(
         !crate::actor::stamp_wasm_actor_panic(),

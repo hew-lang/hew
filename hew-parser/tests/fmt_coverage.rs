@@ -1920,3 +1920,39 @@ fn fmt_tuple_destructure_generic_call_roundtrip() {
     // Tuple pattern on the left, generic-argument call on the right.
     exact_roundtrip("fn main() {\n    let (tx, rx) = duplex_pair<int, string>(16);\n}\n");
 }
+
+// --- &T borrow-marker type syntax (M-COW P0) ----------------------------
+
+#[test]
+fn fmt_borrow_type_in_param_roundtrip() {
+    // `&T` in a function parameter — canonical borrow-marker placement.
+    exact_roundtrip("fn foo(x: &string) -> i32 {\n    return 0;\n}\n");
+}
+
+#[test]
+fn fmt_borrow_type_nested_generic_roundtrip() {
+    // `&Vec<i32>` — borrow over a generic type must round-trip without
+    // collapsing to `*const Vec<i32>`.
+    exact_roundtrip("fn bar(x: &Vec<i32>) -> i32 {\n    return 0;\n}\n");
+}
+
+#[test]
+fn fmt_borrow_type_return_position_roundtrip() {
+    // `&T` is valid in return-type position as well.
+    exact_roundtrip("fn baz() -> &string {\n    return \"\";\n}\n");
+}
+
+#[test]
+fn fmt_borrow_type_preserved_distinct_from_pointer() {
+    // `&T` must NOT be re-formatted as `*const T` — the two are distinct
+    // surface forms and the formatter must preserve each.
+    let borrow_fmt = roundtrip("fn f(x: &i32) -> i32 { return 0; }");
+    assert!(
+        borrow_fmt.contains("&i32"),
+        "borrow type must be formatted as `&i32`, got: {borrow_fmt}",
+    );
+    assert!(
+        !borrow_fmt.contains("*const"),
+        "formatter must not coerce `&T` to `*const T`, got: {borrow_fmt}",
+    );
+}

@@ -78,6 +78,7 @@ fn vec_resolved_impl_call_wrong_arity_panics_fail_closed() {
         return_ty: ResolvedTy::Unit,
         body,
         span: 0..0,
+        intrinsic_id: None,
     })]);
 
     let panic = std::panic::catch_unwind(|| {

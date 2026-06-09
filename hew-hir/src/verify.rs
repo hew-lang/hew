@@ -13,7 +13,10 @@ use std::ops::Range;
 
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, HirNodeId, ResolvedRef, SiteId};
-use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
+use crate::node::{
+    HirBlock, HirExpr, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate, HirModule,
+    HirStmtKind,
+};
 use hew_types::ResolvedTy;
 
 #[must_use]
@@ -126,6 +129,13 @@ impl Verifier {
                     // their own HirNodeId contributes to uniqueness. The
                     // signature is verified by the checker before lowering.
                     self.node(ef.node, ef.span.clone());
+                }
+                HirItem::Const(c) => {
+                    // Const declarations contribute only their HirNodeId
+                    // uniqueness — the initializer was constant-folded into a
+                    // value at lowering time, so there are no bindings, sites,
+                    // or expressions to verify.
+                    self.node(c.node, c.span.clone());
                 }
             }
             self.current_source_module = None;
@@ -281,8 +291,11 @@ impl Verifier {
             | HirExprKind::Literal(_)
             | HirExprKind::RegexLiteralRef { .. }
             | HirExprKind::MachineFieldAccess { .. }
+            | HirExprKind::Continue { .. }
             | HirExprKind::MachineEventFieldAccess { .. } => {}
-            HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => self.block(body),
+            HirExprKind::Scope { body }
+            | HirExprKind::ForkBlock { body, .. }
+            | HirExprKind::Loop { body } => self.block(body),
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.expr(duration);
                 self.block(body);
@@ -492,6 +505,9 @@ impl Verifier {
             HirExprKind::Match { scrutinee, arms } => {
                 self.expr(scrutinee);
                 for arm in arms {
+                    if let HirMatchArmPredicate::Literal { lit, ty } = &arm.predicate {
+                        self.match_literal_predicate(lit, ty, arm.span.clone());
+                    }
                     for binding in &arm.bindings {
                         self.binding(binding.binding, arm.span.clone());
                     }
@@ -526,6 +542,11 @@ impl Verifier {
                 }
                 self.block(body);
             }
+            HirExprKind::Break { value, .. } => {
+                if let Some(value) = value {
+                    self.expr(value);
+                }
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior NotYetImplemented diagnostic.
@@ -549,6 +570,27 @@ impl Verifier {
                 HirDiagnosticKind::DuplicateBindingId { id },
                 span,
                 "binding id reused inside resolved HIR",
+            ));
+        }
+    }
+
+    fn match_literal_predicate(&mut self, lit: &HirLiteral, ty: &ResolvedTy, span: Range<usize>) {
+        let valid = matches!(
+            (lit, ty),
+            (HirLiteral::Integer(_), ResolvedTy::I64)
+                | (HirLiteral::Bool(_), ResolvedTy::Bool)
+                | (HirLiteral::Char(_), ResolvedTy::Char)
+        );
+        if !valid {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "unsupported top-level literal match predicate {lit:?}: {ty:?}"
+                    ),
+                    owning_pass: "match-literal-stage2".to_string(),
+                },
+                span,
+                "literal match predicates are currently limited to i64, bool, and char",
             ));
         }
     }
@@ -587,6 +629,7 @@ impl Verifier {
             HirItem::Supervisor(item) => item.id,
             HirItem::Impl(item) => item.id,
             HirItem::ExternFn(item) => item.id,
+            HirItem::Const(item) => item.id,
         };
         module.diagnostic_source_modules.get(&id).cloned()
     }

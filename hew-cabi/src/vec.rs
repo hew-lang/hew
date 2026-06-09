@@ -14,7 +14,8 @@ use core::mem;
 pub enum HewTypeOwnershipKind {
     /// Elements can be copied and dropped as raw bytes.
     Plain = 0,
-    /// Elements are C string pointers with `strdup`/`free` ownership.
+    /// Elements are C string pointers with refcounted retain/release ownership
+    /// (`hew_string_clone` / `hew_string_drop`).
     String = 1,
     /// Elements require layout-driven clone/drop semantics not implemented yet.
     LayoutManaged = 2,
@@ -41,8 +42,15 @@ pub struct HewTypeLayout {
 pub enum ElemKind {
     /// Plain value type (i32, i64, f64, structs, etc.) — no special handling.
     Plain = 0,
-    /// String (`*const c_char`) — elements are `strdup`'d on push and must be
-    /// individually `free`'d on removal.
+    /// String (`*const c_char`) — elements are header-aware, refcounted
+    /// buffers. On ingress (`hew_vec_push_str`/`set_str`) the producer's bytes
+    /// are **copied in** to a fresh header-bearing allocation (internal
+    /// producers hand over headerless buffers that cannot be retained). On
+    /// internal propagation (`clone`/`slice`/`append`/`get_str`) an element is
+    /// **retained** (refcount bump, same buffer); on removal or drop
+    /// (`free`/`truncate`/`pop_str`) it is **released** (refcount decrement,
+    /// free at zero). Built only through the typed `hew_vec_new_str` family —
+    /// the untyped `hew_vec_new_generic` rejects this kind fail-closed.
     String = 1,
 }
 

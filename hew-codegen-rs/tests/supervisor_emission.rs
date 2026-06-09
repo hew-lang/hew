@@ -90,6 +90,7 @@ fn supervisor_pipeline() -> IrPipeline {
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     };
 
     // `main` exits 42 — the fixture shape. Returns i64 so the produced
@@ -117,6 +118,7 @@ fn supervisor_pipeline() -> IrPipeline {
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     };
 
     let supervisor_layout = SupervisorLayout {
@@ -156,11 +158,14 @@ fn supervisor_pipeline() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -288,6 +293,7 @@ fn on_crash_pipeline() -> IrPipeline {
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     };
 
     let bootstrap_fn = RawMirFunction {
@@ -303,6 +309,7 @@ fn on_crash_pipeline() -> IrPipeline {
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     };
 
     let main_fn = RawMirFunction {
@@ -327,6 +334,7 @@ fn on_crash_pipeline() -> IrPipeline {
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     };
 
     let supervisor_layout = SupervisorLayout {
@@ -362,11 +370,14 @@ fn on_crash_pipeline() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 

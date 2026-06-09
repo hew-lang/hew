@@ -534,7 +534,7 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         // SAFETY: `ptr` was allocated with `libc::malloc` by `hew_tls_last_error`.
-        unsafe { libc::free(ptr.cast::<c_void>()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (frees hew_tls_last_error = str_to_malloc)
         message
     }
 
@@ -550,7 +550,7 @@ mod tests {
     fn free_vec(vec: &HewVec) {
         if !vec.data.is_null() {
             // SAFETY: test vectors are allocated with `libc::malloc` in `build_hew_vec`.
-            unsafe { libc::free(vec.data.cast::<c_void>()) };
+            unsafe { libc::free(vec.data.cast::<c_void>()) }; // CSTRING-FREE: libc-bytes (test build_hew_vec data = malloc_bytes)
         }
     }
 

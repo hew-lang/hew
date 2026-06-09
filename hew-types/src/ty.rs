@@ -210,6 +210,17 @@ pub enum Ty {
         pointee: Box<Ty>,
     },
 
+    /// Immutable borrow `&T` — a first-class, no-retain shared reference to a
+    /// value owned elsewhere. Distinct from `Pointer { is_mutable: false }`:
+    /// a borrow is non-owning, never retained on copy (the M-COW retain-skip
+    /// opt-out), classified `View` for drop purposes, and carries
+    /// borrow-specific send/return-escape semantics. `&mut`/`&var` are rejected
+    /// at parse today, so a borrow is always immutable.
+    Borrow {
+        /// Borrowed (pointee) type
+        pointee: Box<Ty>,
+    },
+
     /// Trait object: `dyn Trait` or `dyn (Trait1 + Trait2)`
     TraitObject {
         /// Trait bounds
@@ -583,6 +594,10 @@ impl Ty {
                 } else {
                     write!(f, "*const ")?;
                 }
+                pointee.fmt_with_numeric_names(f, i64_name, f64_name)
+            }
+            Ty::Borrow { pointee } => {
+                write!(f, "&")?;
                 pointee.fmt_with_numeric_names(f, i64_name, f64_name)
             }
             Ty::TraitObject { traits } => {
@@ -1407,6 +1422,9 @@ impl Ty {
                 is_mutable: *is_mutable,
                 pointee: Box::new(f(pointee)),
             },
+            Ty::Borrow { pointee } => Ty::Borrow {
+                pointee: Box::new(f(pointee)),
+            },
             Ty::TraitObject { traits } => Ty::TraitObject {
                 traits: traits
                     .iter()
@@ -1447,7 +1465,7 @@ impl Ty {
                 ret,
                 captures,
             } => params.iter().any(f) || f(ret) || captures.iter().any(f),
-            Ty::Pointer { pointee, .. } => f(pointee),
+            Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => f(pointee),
             Ty::TraitObject { traits } => traits.iter().any(|bound| {
                 bound.args.iter().any(f) || bound.assoc_bindings.iter().any(|(_, ty)| f(ty))
             }),
@@ -1517,6 +1535,9 @@ impl Ty {
                 pointee,
             } => Ty::Pointer {
                 is_mutable: *is_mutable,
+                pointee: Box::new(pointee.substitute_named_param(param_name, replacement)),
+            },
+            Ty::Borrow { pointee } => Ty::Borrow {
                 pointee: Box::new(pointee.substitute_named_param(param_name, replacement)),
             },
             Ty::TraitObject { traits } => Ty::TraitObject {
@@ -1655,6 +1676,72 @@ mod tests {
             Ty::Function {
                 params: vec![Ty::String],
                 ret: Box::new(Ty::Tuple(vec![Ty::String, Ty::I32])),
+            }
+        );
+    }
+
+    #[test]
+    fn test_borrow_contains_var_recurses_through_pointee() {
+        // Guards the type-inference-boundary invariant: an unresolved `Ty::Var`
+        // inside `&T` must be detected by the occurs/contains check, not skipped.
+        TypeVar::reset();
+        let v = TypeVar::fresh();
+        let borrow = Ty::Borrow {
+            pointee: Box::new(Ty::Var(v)),
+        };
+        assert!(borrow.contains_var(v));
+
+        let concrete_borrow = Ty::Borrow {
+            pointee: Box::new(Ty::String),
+        };
+        assert!(!concrete_borrow.contains_var(v));
+    }
+
+    #[test]
+    fn test_borrow_substitute_named_param_recurses_through_pointee() {
+        // `&T` with `T := string` must become `&string`.
+        let borrow = Ty::Borrow {
+            pointee: Box::new(Ty::Named {
+                builtin: None,
+                name: "T".to_string(),
+                args: vec![],
+            }),
+        };
+
+        let substituted = borrow.substitute_named_param("T", &Ty::String);
+
+        assert_eq!(
+            substituted,
+            Ty::Borrow {
+                pointee: Box::new(Ty::String),
+            }
+        );
+    }
+
+    #[test]
+    fn test_borrow_substitute_recurses_through_nested_pointee() {
+        // `map_children` (via `substitute`) must recurse through a borrow into a
+        // nested generic pointee: `&Vec<$v>` with `$v := i32` becomes `&Vec<i32>`.
+        TypeVar::reset();
+        let v = TypeVar::fresh();
+        let borrow = Ty::Borrow {
+            pointee: Box::new(Ty::Named {
+                builtin: None,
+                name: "Vec".to_string(),
+                args: vec![Ty::Var(v)],
+            }),
+        };
+
+        let result = borrow.substitute(v, &Ty::I32);
+
+        assert_eq!(
+            result,
+            Ty::Borrow {
+                pointee: Box::new(Ty::Named {
+                    builtin: None,
+                    name: "Vec".to_string(),
+                    args: vec![Ty::I32],
+                }),
             }
         );
     }

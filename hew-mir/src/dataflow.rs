@@ -453,6 +453,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         Instr::ContextField { dest, .. }
         | Instr::ConstI64 { dest, .. }
         | Instr::StringLit { dest, .. }
+        | Instr::ConstGlobalLoad { dest, .. }
         | Instr::FloatLit { dest, .. }
         | Instr::CharLit { dest, .. }
         | Instr::UnitLit { dest }
@@ -520,6 +521,11 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         Instr::SpawnTaskDirect { task, .. } => (vec![*task], vec![]),
         Instr::SpawnTaskClosure { task, env, .. } => (vec![*task, *env], vec![]),
         Instr::Drop { place, .. } => (vec![*place], vec![]),
+        Instr::WitnessSizeOf { dest, .. } | Instr::WitnessAlignOf { dest, .. } => {
+            (vec![], vec![*dest])
+        }
+        Instr::WitnessDropGlue { place, .. } => (vec![*place], vec![]),
+        Instr::WitnessMove { dest, src, .. } => (vec![*src], vec![*dest]),
         Instr::RecordInit { fields, dest, .. } => {
             let reads = fields.iter().map(|(_, place)| *place).collect();
             (reads, vec![*dest])

@@ -43,6 +43,28 @@ fn sorted_pattern_bound_names(names: &HashSet<String>) -> Vec<String> {
     names
 }
 
+fn literal_pattern_label(literal: &Literal) -> &'static str {
+    match literal {
+        Literal::Integer { .. } => "integer literal",
+        Literal::Float(_) => "float literal",
+        Literal::String(_) => "string literal",
+        Literal::Bool(_) => "bool literal",
+        Literal::Char(_) => "char literal",
+        Literal::Duration(_) => "duration literal",
+    }
+}
+
+fn literal_pattern_matches_type(literal: &Literal, ty: &Ty) -> bool {
+    match literal {
+        Literal::Integer { .. } => ty.is_integer(),
+        Literal::Float(_) => ty.is_float(),
+        Literal::String(_) => matches!(ty, Ty::String),
+        Literal::Bool(_) => matches!(ty, Ty::Bool),
+        Literal::Char(_) => matches!(ty, Ty::Char),
+        Literal::Duration(_) => matches!(ty, Ty::Duration),
+    }
+}
+
 fn substitute_pattern_field_ty(raw_field_ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
     type_params
         .iter()
@@ -212,7 +234,31 @@ impl Checker {
     ) {
         let ty = &self.subst.resolve(ty);
         match pattern {
-            Pattern::Wildcard | Pattern::Literal(_) => {}
+            Pattern::Wildcard => {}
+            Pattern::Literal(literal) => {
+                if matches!(literal, Literal::Float(_)) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "float literal patterns are not supported in match arms".to_string(),
+                    );
+                } else if !matches!(ty, Ty::Var(_) | Ty::Error)
+                    && !literal_pattern_matches_type(literal, ty)
+                {
+                    let expected = ty.user_facing().to_string();
+                    let actual = literal_pattern_label(literal).to_string();
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: expected.clone(),
+                            actual: actual.clone(),
+                        },
+                        span,
+                        format!(
+                            "literal pattern `{actual}` cannot match scrutinee type `{expected}`"
+                        ),
+                    );
+                }
+            }
             Pattern::Identifier(name) => {
                 let is_constructor_like =
                     name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);

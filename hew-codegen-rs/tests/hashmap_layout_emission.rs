@@ -64,6 +64,7 @@ fn base_pipeline(
             locals,
             blocks: blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -104,11 +105,14 @@ fn base_pipeline(
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -474,6 +478,7 @@ fn hash_thunk_dedup_one_per_record_per_module() {
             locals: vec![named("Point"), ResolvedTy::I64],
             blocks: blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -520,11 +525,14 @@ fn hash_thunk_dedup_one_per_record_per_module() {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     };
     let ll = emit_ll(pipeline, "hash_dedup");
 
@@ -601,6 +609,7 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
             locals: vec![vec_ty, named("Point"), ResolvedTy::I64, ResolvedTy::Bool],
             blocks: blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -647,11 +656,14 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     };
     let ll = emit_ll(pipeline, "shared_eq_dedup");
     let eq_defs = ll
@@ -956,6 +968,7 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
             locals: vec![named("Point"), named("Pair"), ResolvedTy::I64],
             blocks: blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -1002,11 +1015,14 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     };
     let ll = emit_ll(pipeline, "cross_shape_dedup");
     let hash_defs = ll

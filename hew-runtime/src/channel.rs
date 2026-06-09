@@ -8,7 +8,7 @@
 //!
 //! All functions use `#[no_mangle] extern "C"` with opaque pointers.
 //! Received strings are malloc-allocated, NUL-terminated, and owned by the
-//! caller (must be freed with `free()`).
+//! caller (must be freed with `hew_string_drop`).
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -182,7 +182,7 @@ pub unsafe extern "C" fn hew_channel_send_int(sender: *mut HewChannelSender, val
 /// NUL-terminated string. Returns NULL when the channel is closed (all
 /// senders dropped), letting codegen wrap the result as `Option<String>`.
 ///
-/// The caller must `free()` the returned pointer when non-NULL.
+/// The caller must free the returned pointer with `hew_string_drop` when non-NULL.
 ///
 /// # Safety
 ///
@@ -205,7 +205,7 @@ pub unsafe extern "C" fn hew_channel_recv(receiver: *mut HewChannelReceiver) -> 
 /// caller distinguish "received empty string" (`Some("")`) from
 /// "nothing available" (`None`).
 ///
-/// The caller must `free()` the returned pointer when non-NULL.
+/// The caller must free the returned pointer with `hew_string_drop` when non-NULL.
 ///
 /// # Safety
 ///
@@ -388,7 +388,7 @@ mod tests {
             assert!(!result.is_null());
             let received = CStr::from_ptr(result);
             assert_eq!(received.to_bytes(), b"bad");
-            libc::free(result.cast()); // ALLOCATOR-PAIRING: libc
+            crate::cabi::free_cstring(result); // CSTRING-FREE: str-open (test frees hew_channel_recv string output; header-aware in S1)
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
@@ -411,7 +411,7 @@ mod tests {
             assert!(!result.is_null());
             let received = CStr::from_ptr(result);
             assert_eq!(received.to_str().unwrap(), "hello");
-            libc::free(result.cast()); // ALLOCATOR-PAIRING: libc
+            crate::cabi::free_cstring(result); // CSTRING-FREE: str-open (test frees hew_channel_recv string output; header-aware in S1)
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
@@ -471,7 +471,7 @@ mod tests {
             assert!(!result.is_null(), "empty string message should be non-NULL");
             let received = CStr::from_ptr(result);
             assert_eq!(received.to_str().unwrap(), "");
-            libc::free(result.cast()); // ALLOCATOR-PAIRING: libc
+            crate::cabi::free_cstring(result); // CSTRING-FREE: str-open (test frees hew_channel_recv string output; header-aware in S1)
 
             // Now the channel is empty — try_recv should return NULL.
             let result2 = hew_channel_try_recv(rx);
@@ -548,7 +548,7 @@ mod tests {
                     break;
                 }
                 let s = CStr::from_ptr(result).to_str().unwrap().to_owned();
-                libc::free(result.cast()); // ALLOCATOR-PAIRING: libc
+                crate::cabi::free_cstring(result); // CSTRING-FREE: str-open (test frees hew_channel_recv string output; header-aware in S1)
                 messages.push(s);
             }
 

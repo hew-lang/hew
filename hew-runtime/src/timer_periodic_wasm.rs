@@ -317,6 +317,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         // SAFETY: tests install an AtomicU32 state pointer for every TestActor.
         let counter = unsafe { &*(state.cast::<AtomicU32>()) };

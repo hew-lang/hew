@@ -342,6 +342,7 @@ mod tests {
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -351,6 +352,7 @@ mod tests {
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -388,6 +390,7 @@ mod tests {
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -397,6 +400,7 @@ mod tests {
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -445,6 +449,7 @@ mod tests {
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -608,6 +613,7 @@ mod tests {
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -680,6 +686,7 @@ mod tests {
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
+        _borrow_mode: i32,
     ) {
     }
 

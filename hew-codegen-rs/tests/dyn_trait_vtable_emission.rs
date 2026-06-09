@@ -93,6 +93,7 @@ fn impl_method_stub(name: &str, ret: ResolvedTy) -> RawMirFunction {
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     }
 }
 
@@ -144,11 +145,14 @@ fn pipeline_with(raw_mir: Vec<RawMirFunction>, registry: Vec<DynVtableInstance>)
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: registry,
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -479,6 +483,7 @@ fn coercion_site_and_vtable_definition_share_same_symbol() {
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     };
     let inst = vtable_instance(0, "Speak", ResolvedTy::I64, vec![]);
     let vtable_sym = mangle_dyn_vtable_symbol(0, "Speak", &ResolvedTy::I64);

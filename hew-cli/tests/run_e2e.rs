@@ -241,6 +241,208 @@ fn run_string_methods_smoke_matches_expected() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
+/// W5-011 function-scope drop elaboration: a `string` returned from a user
+/// function and an aliasing call result must be freed exactly once, never
+/// twice. `id(s)` returns `s`'s buffer unretained, so `s` and the result
+/// alias the same refcount-1 allocation; the drop elaborator excludes the
+/// argument source from scope-exit drop and frees only the result. The
+/// pre-W5-011 attempt dropped both and double-freed — the runtime's
+/// `free_cstring` header-sentinel check aborts the process on a double-free,
+/// so a clean exit with `done` is the runtime proof that the buffer is freed
+/// exactly once. The structural single-drop proof lives in
+/// `hew-mir/tests/elaborate.rs`
+/// (`call_arg_source_excluded_so_call_result_is_freed_once`); this test is
+/// the behavioural guard that the emitted native binary does not double-free.
+#[test]
+fn run_move_out_string_is_freed_once_no_double_free() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/move_out_no_double_free.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/move_out_no_double_free.expected"),
+    )
+    .expect("read move_out_no_double_free.expected");
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    // A double-free aborts the process (SIGABRT) via the runtime's
+    // `free_cstring` sentinel check, so `success()` is itself the proof.
+    assert!(
+        output.status.success(),
+        "move_out_no_double_free should run cleanly (a double-free would abort); \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// W5-011 P3 alias-wrapper double-free guard: every alias site that moves a
+/// heap-owning `string` into a persistent slot (tuple element, control-flow
+/// join result, call argument, variant payload) must exclude the aliased
+/// source from scope-exit drop. The fail-closed sole-owner derivation
+/// (`derive_cow_sole_owner`) excludes any local read as a source operand
+/// anywhere in the finalized instruction+terminator stream — which every one
+/// of these aliased sources is. A regressed derivation that dropped an aliased
+/// source in addition to its live owner would double-free the shared
+/// refcount-1 buffer; the runtime's `free_cstring` header-sentinel check aborts
+/// the process (SIGABRT) on a double-free, so a clean exit across many
+/// iterations is the behavioural proof. The structural exclusion proofs live in
+/// `hew-mir/tests/elaborate.rs` (the alias-site regression battery); this test
+/// guards that the emitted native binary frees each shared buffer exactly once.
+#[test]
+fn run_alias_wrappers_no_double_free() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/alias_wrappers_no_double_free.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/alias_wrappers_no_double_free.expected"),
+    )
+    .expect("read alias_wrappers_no_double_free.expected");
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    // A double-free aborts the process (SIGABRT) via the runtime's
+    // `free_cstring` sentinel check, so `success()` is itself the proof.
+    assert!(
+        output.status.success(),
+        "alias_wrappers_no_double_free should run cleanly (a double-free would \
+         abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// W5-011 P3 destructure-binder double-free guard: a `match`-destructured
+/// enum payload binds a fresh `string` local that aliases the parent's
+/// refcount-1 buffer with no retain. Two destructures of the same value each
+/// bind such a local; admitting either binder to a scope-exit `hew_string_drop`
+/// would double-free the shared buffer. The fail-closed sole-owner derivation
+/// (`derive_cow_sole_owner`) seeds projection-alias taint on the destination
+/// of any `Move` from an interior projection (`MachineVariant` / `EnumVariant`
+/// / `GenState`), so each binder is excluded. A regressed derivation that
+/// admitted a binder would double-free; the runtime's `free_cstring` sentinel
+/// aborts (SIGABRT) on a double-free, so a clean exit is the behavioural proof.
+/// The structural exclusion proofs live in the `cow_sole_owner_derivation`
+/// unit tests (hew-mir/src/lower.rs); this test guards the emitted native
+/// binary.
+#[test]
+fn run_destructure_payload_no_double_free() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/destructure_payload_no_double_free.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/destructure_payload_no_double_free.expected"),
+    )
+    .expect("read destructure_payload_no_double_free.expected");
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "destructure_payload_no_double_free should run cleanly (a double-free \
+         would abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// W5-011 leak guard: a heap-owning `string` local that never escapes is
+/// freed at function scope exit, so a tight loop that allocates one such
+/// local per iteration must run in bounded memory. Before W5-011 these
+/// helper-locals leaked (the buffer was never freed). This test asserts the
+/// program completes and prints `done` across many iterations; the bounded-RSS
+/// proof (identical peak RSS at 100k vs 2M iterations) is recorded in the
+/// lane's validation evidence.
+#[test]
+fn run_fn_local_string_is_dropped_bounded_memory() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/fn_local_string_dropped.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/fn_local_string_dropped.expected"),
+    )
+    .expect("read fn_local_string_dropped.expected");
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "fn_local_string_dropped should run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// W5-011 P3 actor-context drop-safety guard: a heap-owning `string` moved into
+/// an actor mailbox must NOT be scope-dropped by the sender on any exit path.
+/// The mailbox takes ownership of the buffer (no retain-on-send on the M-COW
+/// spine), so a sender that also scope-dropped it would free a buffer the live
+/// mailbox still owns — a use-after-free on the receiving side or a double-free
+/// when the handler later releases it. The fail-closed sole-owner derivation
+/// excludes the sent string because the send surfaces its backing local as a
+/// terminator/instr source operand (`terminator_source_places` /
+/// `instr_source_places`). A double-free trips the runtime's `free_cstring`
+/// sentinel (SIGABRT); a clean exit across many sends is the behavioural proof.
+#[test]
+fn run_actor_sent_string_not_double_freed() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/actor_sent_string_not_double_freed.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/actor_sent_string_not_double_freed.expected"),
+    )
+    .expect("read actor_sent_string_not_double_freed.expected");
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    // A double-free aborts the process (SIGABRT) via the runtime's
+    // `free_cstring` sentinel check, so `success()` is itself the proof.
+    assert!(
+        output.status.success(),
+        "actor_sent_string_not_double_freed should run cleanly (a double-free \
+         would abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
 /// Stdin round-trip through `std::io`. Guards against the regression that
 /// shipped before this test existed: extern declarations in imported stdlib
 /// modules failed to register in HIR's `fn_registry`, so any program that did

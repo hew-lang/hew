@@ -65,6 +65,7 @@ unsafe extern "C-unwind" fn noop_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _size: usize,
+    _borrow_mode: i32,
 ) {
 }
 
@@ -163,6 +164,7 @@ unsafe extern "C-unwind" fn locked_counter_dispatch(
     _msg_type: i32,
     data: *mut c_void,
     size: usize,
+    _borrow_mode: i32,
 ) {
     if ctx.is_null() || unsafe { (*ctx).lock_seat.is_null() } {
         COUNTER_ERRORS.fetch_add(1, Ordering::Relaxed);
@@ -231,6 +233,7 @@ unsafe extern "C-unwind" fn panic_then_count_dispatch(
     msg_type: i32,
     _data: *mut c_void,
     _size: usize,
+    _borrow_mode: i32,
 ) {
     assert_ne!(
         msg_type, 1,
@@ -269,6 +272,7 @@ unsafe extern "C-unwind" fn null_lock_must_not_enter_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _size: usize,
+    _borrow_mode: i32,
 ) {
     NULL_LOCK_SIGNAL.record();
 }

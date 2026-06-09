@@ -91,6 +91,7 @@ unsafe extern "C-unwind" fn taxonomy_dispatch(
     msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     if msg_type == MSG_CRASH {
         unsafe { hew_trap_with_code(HEW_TRAP_DIVIDE_BY_ZERO) };

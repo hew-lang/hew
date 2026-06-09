@@ -1440,6 +1440,10 @@ impl<'a> Formatter<'a> {
                 self.write(if *is_mutable { "*mut " } else { "*const " });
                 self.format_type_expr(&pointee.0);
             }
+            TypeExpr::Borrow(inner) => {
+                self.write("&");
+                self.format_type_expr(&inner.0);
+            }
             TypeExpr::TraitObject(bounds) => {
                 self.write("dyn ");
                 if bounds.len() == 1 {

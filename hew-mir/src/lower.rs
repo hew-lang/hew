@@ -17,10 +17,10 @@ use std::{
 use hew_hir::stdlib_catalog;
 use hew_hir::{
     named_type_components, named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock,
-    HirExpr, HirExprKind, HirFn, HirItem, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineTransition, HirModule, HirNodeId, HirSelect, HirSelectArmKind, HirStmt, HirStmtKind,
-    HirSupervisorChild, HirSupervisorDecl, IntentKind, ResolvedRef, ResourceMarker, ScopeId,
-    SiteId, ValueClass,
+    HirConstValue, HirExpr, HirExprKind, HirFn, HirItem, HirLifecycleHookKind, HirLiteral,
+    HirMachineDecl, HirMachineTransition, HirModule, HirNodeId, HirSelect, HirSelectArmKind,
+    HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, IntentKind, ResolvedRef,
+    ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_types::{
@@ -33,8 +33,8 @@ use crate::model::{
     ActorHandlerLayout, ActorLayout, BasicBlock, BlockKind, CheckedMirFunction, CmpPred,
     DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath,
     FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm,
-    SelectArmKind, Strategy, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
+    SelectArm, SelectArmKind, Strategy, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 
 type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
@@ -80,6 +80,10 @@ fn context_reader_offset(reader: ExecutionContextReader) -> usize {
         ExecutionContextReader::Supervisor => HEW_CTX_OFFSET_PARENT_SUPERVISOR,
         ExecutionContextReader::TraceSpan => HEW_CTX_OFFSET_TRACE_SPAN,
     }
+}
+
+fn stage2_literal_match_scrutinee_ty(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::I64 | ResolvedTy::Bool | ResolvedTy::Char)
 }
 
 /// Classify a resolved integer type as signed or unsigned. Returns
@@ -461,15 +465,248 @@ fn check_function(
         });
     }
 
-    // Aliasing, GeneratorBorrowAcrossYield, and ActorSendEscape have
-    // no construction surface in the v0.5 integer spine: `Place` has
-    // no projection variants, `Instr` has no borrow ops, and
-    // `Terminator::Yield` / `Terminator::Send` are declared but never
-    // built. The passes are no-ops on the current IR; they populate
-    // when the construction surface for borrows, generators, and
-    // actor sends lands.
+    // WitnessOperandUnresolved. Every witness instruction
+    // (`Instr::WitnessSizeOf` and friends) carries a `ResolvedTy` operand.
+    // The construction boundary (`WitnessOperand::resolve`) already rejects
+    // checker-internal `Ty` leaks; the verifier re-checks the residual
+    // invariant that any `ResolvedTy::TypeParam` operand names a type
+    // parameter declared on the enclosing function. An out-of-scope abstract
+    // type is a lowering bug — surface it as a hard rejection.
+    //
+    // Monomorphic bodies carry no witness ops and no declared type params,
+    // so this pass is a no-op on the codegen-bound pipeline; it guards the
+    // abstract bodies routed to `polymorphic_mir`. Fast-path: skip the scan
+    // (and the set allocation) entirely when no witness instruction is
+    // present, which is every function in a monomorphic program.
+    let has_witness_op = blocks.iter().any(|block| {
+        block.instructions.iter().any(|instr| {
+            matches!(
+                instr,
+                Instr::WitnessSizeOf { .. }
+                    | Instr::WitnessAlignOf { .. }
+                    | Instr::WitnessDropGlue { .. }
+                    | Instr::WitnessMove { .. }
+            )
+        })
+    });
+    if has_witness_op {
+        let declared_type_params: HashSet<String> = func.type_params.iter().cloned().collect();
+        for block in blocks {
+            for instr in &block.instructions {
+                let operand = match instr {
+                    Instr::WitnessSizeOf { ty, .. }
+                    | Instr::WitnessAlignOf { ty, .. }
+                    | Instr::WitnessDropGlue { ty, .. }
+                    | Instr::WitnessMove { ty, .. } => Some(ty),
+                    _ => None,
+                };
+                let Some(ty) = operand else { continue };
+                for name in undeclared_type_params(ty, &declared_type_params) {
+                    checks.push(MirCheck::WitnessOperandUnresolved {
+                        ty: format!("{ty:?}"),
+                        reason: format!(
+                            "witness operand references type parameter `{name}` \
+                             not declared on the enclosing function"
+                        ),
+                    });
+                }
+            }
+        }
+    }
 
     result
+}
+
+/// Collect every `ResolvedTy::TypeParam` name reachable inside `ty` that is
+/// NOT present in `declared`. Used by the MIR witness-operand verifier to
+/// reject abstract operands that escape their declaring scope. Returns names
+/// in first-seen traversal order (deterministic for diagnostics).
+fn undeclared_type_params(ty: &ResolvedTy, declared: &HashSet<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_undeclared_type_params(ty, declared, &mut out);
+    out
+}
+
+fn collect_undeclared_type_params(
+    ty: &ResolvedTy,
+    declared: &HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    match ty {
+        ResolvedTy::TypeParam { name } if !declared.contains(name) && !out.contains(name) => {
+            out.push(name.clone());
+        }
+        ResolvedTy::Tuple(elems) => {
+            for e in elems {
+                collect_undeclared_type_params(e, declared, out);
+            }
+        }
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) | ResolvedTy::Task(inner) => {
+            collect_undeclared_type_params(inner, declared, out);
+        }
+        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
+            collect_undeclared_type_params(pointee, declared, out);
+        }
+        ResolvedTy::TraitObject { traits } => {
+            for bound in traits {
+                for a in &bound.args {
+                    collect_undeclared_type_params(a, declared, out);
+                }
+                for (_, t) in &bound.assoc_bindings {
+                    collect_undeclared_type_params(t, declared, out);
+                }
+            }
+        }
+        ResolvedTy::Named { args, .. } => {
+            for a in args {
+                collect_undeclared_type_params(a, declared, out);
+            }
+        }
+        ResolvedTy::Function { params, ret } => {
+            for p in params {
+                collect_undeclared_type_params(p, declared, out);
+            }
+            collect_undeclared_type_params(ret, declared, out);
+        }
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            for p in params {
+                collect_undeclared_type_params(p, declared, out);
+            }
+            collect_undeclared_type_params(ret, declared, out);
+            for c in captures {
+                collect_undeclared_type_params(c, declared, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[must_use]
+/// True for the concrete integer types a folded integer const may carry.
+/// `ResolvedTy` has no inference-variable form, so reaching this with a
+/// non-integer type means the value/type pair disagreed — a fail-closed
+/// signal handled by the const descriptor build.
+fn is_concrete_integer_ty(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+    )
+}
+
+/// True for the string primitive in either resolved spelling: the bare
+/// `ResolvedTy::String` or the `Named { name: "String" }` builtin form.
+fn is_string_const_ty(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::String)
+        || matches!(ty, ResolvedTy::Named { name, .. } if name == "String")
+}
+
+/// Build the module-level constant descriptors from a lowered [`HirModule`],
+/// mirroring the regex-literal handle-array pattern: one [`MirConst`] per
+/// `HirItem::Const`, in declaration order, with `const_id` as the 0-based
+/// codegen global-slot index.
+///
+/// Returns the descriptors plus any fail-closed diagnostics raised when a
+/// folded value disagrees with its declared type (integer value ⇒ integer
+/// type, string value ⇒ string type). A descriptor is emitted only for a
+/// well-typed const; a mismatched const is dropped with a diagnostic so
+/// codegen never sees a mistyped global.
+///
+/// This is the const-substrate seam: HIR resolves `const` references to
+/// `ResolvedRef::Const(item_id)` and folds declarations to
+/// `HirConstValue`; this converts those into codegen-ready descriptors. The
+/// codegen global-load slice consumes the result to back module globals and
+/// resolve `ResolvedRef::Const(item_id)` references to their slot. It is kept
+/// separate from `lower_hir_module` so the descriptor table can be wired onto
+/// the pipeline together with its codegen consumer.
+///
+/// Risk 3 / type-inference-boundary (P0): `ResolvedTy` has no
+/// inference-variable form, so a structurally non-concrete type cannot appear
+/// here — but the value/type shapes are still asserted to agree and a
+/// mismatch fails closed rather than emitting a mistyped descriptor.
+#[must_use]
+pub fn build_const_descriptors(module: &HirModule) -> (Vec<MirConst>, Vec<MirDiagnostic>) {
+    let mut consts: Vec<MirConst> = Vec::new();
+    let mut diagnostics: Vec<MirDiagnostic> = Vec::new();
+    for item in &module.items {
+        let HirItem::Const(c) = item else {
+            continue;
+        };
+        let value = match &c.value {
+            HirConstValue::Integer(v) => {
+                if !is_concrete_integer_ty(&c.ty) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "const `{}` folded to an integer value but has \
+                                 non-integer type `{:?}`",
+                                c.name, c.ty
+                            ),
+                        },
+                        note: "const descriptor build requires a concrete integer width \
+                               (i8..i64 / u8..u64 / isize / usize) for an integer value"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                MirConstValue::Integer(*v)
+            }
+            HirConstValue::String(s) => {
+                if !is_string_const_ty(&c.ty) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "const `{}` folded to a string value but has \
+                                 non-string type `{:?}`",
+                                c.name, c.ty
+                            ),
+                        },
+                        note: "const descriptor build requires a String type for a \
+                               string value"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                MirConstValue::Str(s.clone())
+            }
+        };
+        let Ok(const_id) = u32::try_from(consts.len()) else {
+            // Fail closed rather than saturating to a sentinel `u32::MAX`
+            // slot (which would alias the descriptor and silently corrupt
+            // codegen). Mirrors the sibling type-mismatch arms above: emit
+            // a diagnostic and drop the descriptor instead of emitting one
+            // with a fabricated id.
+            diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: format!("const `{}` exceeds the u32 const-table index range", c.name),
+                },
+                note: "const descriptor build assigns a u32 const_id; a table with \
+                       more than u32::MAX entries cannot be represented"
+                    .to_string(),
+            });
+            continue;
+        };
+        consts.push(MirConst {
+            const_id,
+            item_id: c.id,
+            name: c.name.clone(),
+            ty: c.ty.clone(),
+            value,
+        });
+    }
+    (consts, diagnostics)
 }
 
 #[must_use]
@@ -480,11 +717,49 @@ fn check_function(
               and module_fn_names construction"
 )]
 pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
+    lower_hir_module_with_facts(module, &HashMap::new())
+}
+
+/// Lower a HIR module to MIR, threading the checker's per-send-site alias
+/// classification so each [`Terminator::Send`] carries the correct
+/// [`crate::model::SendAliasMode`] discriminant at construction time.
+///
+/// This is the preferred entry point for driver glue that has access to a
+/// `TypeCheckOutput`. Pass `tco.actor_send_aliasing` (or the equivalent map
+/// from `CompileOutput`). The returned [`IrPipeline`] will have every
+/// `Terminator::Send.alias_mode` set from the map; sites absent from the map
+/// default to `SendAliasMode::Copy` (fail-closed).
+///
+/// `lower_hir_module` is the backward-compatible wrapper that passes an
+/// empty map and is used by all existing tests; it remains correct because
+/// `Copy` is the safe fallback for every send site.
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "two-phase orchestration: per-fn lowering + per-monomorphisation lowering live \
+              in the same function so the producers share record_field_orders, type_classes, \
+              and module_fn_names construction"
+)]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "callers always supply a standard RandomState HashMap; \
+              generalising S would require threading the type parameter through all \
+              internal free functions which would be more disruptive than the lint value"
+)]
+pub fn lower_hir_module_with_facts(
+    module: &HirModule,
+    actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+) -> IrPipeline {
     let mut thir = Vec::new();
     let mut raw_mir = Vec::new();
     let mut checked_mir = Vec::new();
     let mut elaborated_mir = Vec::new();
     let mut diagnostics = Vec::new();
+    let (user_consts, const_diagnostics) = build_const_descriptors(module);
+    diagnostics.extend(const_diagnostics);
+    // W5.007a: abstract (un-monomorphised) MIR for generic origins. Routed
+    // to `IrPipeline::polymorphic_mir`; never fed to codegen.
+    let mut polymorphic_mir: Vec<crate::model::PolymorphicMirFunction> = Vec::new();
 
     // Build the declaration-order field descriptor table once for the whole module.
     // Keys are record type names; values are (field_name, field_ty) pairs in
@@ -500,6 +775,16 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut machine_layouts: Vec<crate::model::MachineLayout> = Vec::new();
     let mut enum_layouts: Vec<crate::model::EnumLayout> = Vec::new();
     let mut gen_state_layouts: Vec<crate::model::GenStateLayout> = Vec::new();
+    // Actor state-field classification is deferred to a second pass (below,
+    // after generic record/enum instantiations and builtin enums are merged
+    // into `record_layouts`/`enum_layouts`). The classifier must see the
+    // FULLY-populated layout registries so a state field typed as a generic
+    // enum instantiation (`Option<string>`, `Result<i64, string>` → mangled
+    // `Option$$string`, `Result$$i64$string`) resolves to its tagged-union
+    // layout rather than falling to the paired-`None` fail-closed path.
+    // Collected in source order so the resulting `actor_layouts` order is
+    // unchanged from the single-pass form.
+    let mut deferred_actors: Vec<&HirActorDecl> = Vec::new();
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -600,147 +885,18 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     });
                 }
                 // W2.002 Stage 1 — per-actor state-field clone
-                // classification. Run BEFORE constructing the
-                // `ActorLayout` so the classifier outcome decides
-                // whether to populate the `state_clone_fn_symbol` /
-                // `state_drop_fn_symbol` pair (paired Some/None per the
-                // model.rs field doc; substrate-first per dispatch-
-                // invariant #1).
-                //
-                // The classifier sees the cumulative `record_layouts`
-                // built so far; user records declared above the actor
-                // in source order are visible. Records declared *below*
-                // the actor are not — but the v0.5 corpus has no
-                // forward-reference users, and the HIR-side resolution
-                // already rejects forward references at type-resolve
-                // time. If a future amendment lifts the
-                // forward-reference restriction, this loop will need a
-                // two-pass pattern (collect records first, then build
-                // actor layouts) — for now this is the same
-                // declaration-order invariant the rest of the loop
-                // relies on.
-                let state_field_tys: Vec<ResolvedTy> = actor
-                    .state_fields
-                    .iter()
-                    .map(|field| field.ty.clone())
-                    .collect();
-                let classification = crate::state_clone::classify_actor_state_fields(
-                    &state_field_tys,
-                    &record_layouts,
-                );
-                let (clone_sym, drop_sym, clone_kinds) = match classification {
-                    Ok(kinds) => (
-                        Some(crate::state_clone::mangle_actor_state_clone_fn(&actor.name)),
-                        Some(crate::state_clone::mangle_actor_state_drop_fn(&actor.name)),
-                        Some(kinds),
-                    ),
-                    Err(err) => {
-                        // Locate the failing field index by re-running
-                        // the classifier per-field with a fresh visited
-                        // set. This is O(n) on the field count (always
-                        // small — actor state has at most a handful of
-                        // fields in the corpus) and produces a precise
-                        // diagnostic anchor rather than blaming the
-                        // whole actor. If every per-field run somehow
-                        // succeeds (impossible given the collected
-                        // error, but defensive), fall back to index 0
-                        // with a marker reason rather than `unreachable!`.
-                        let mut field_index = 0usize;
-                        let mut field_name = actor
-                            .state_fields
-                            .first()
-                            .map(|f| f.name.clone())
-                            .unwrap_or_default();
-                        let mut found = false;
-                        for (idx, field) in actor.state_fields.iter().enumerate() {
-                            let mut v = std::collections::HashSet::new();
-                            if crate::state_clone::classify_state_field(
-                                &field.ty,
-                                &record_layouts,
-                                &mut v,
-                            )
-                            .is_err()
-                            {
-                                field_index = idx;
-                                field_name.clone_from(&field.name);
-                                found = true;
-                                break;
-                            }
-                        }
-                        let reason = if found {
-                            format!("{err}")
-                        } else {
-                            format!(
-                                "{err} (per-field re-run could not localise; \
-                                 classifier saw an aggregate error)"
-                            )
-                        };
-                        diagnostics.push(crate::model::MirDiagnostic {
-                            kind:
-                                crate::model::MirDiagnosticKind::ActorStateCloneClassificationFailed {
-                                    actor: actor.name.clone(),
-                                    field_index,
-                                    field_name,
-                                    reason: reason.clone(),
-                                },
-                            note: format!(
-                                "actor `{}` state-field classifier failed: {}",
-                                actor.name, reason
-                            ),
-                        });
-                        (None, None, None)
-                    }
-                };
-                actor_layouts.push(crate::model::ActorLayout {
-                    name: actor.name.clone(),
-                    state_field_names: actor
-                        .state_fields
-                        .iter()
-                        .map(|field| field.name.clone())
-                        .collect(),
-                    state_field_tys: actor
-                        .state_fields
-                        .iter()
-                        .map(|field| field.ty.clone())
-                        .collect(),
-                    init_param_names: actor
-                        .init
-                        .as_ref()
-                        .map(|init| init.params.iter().map(|param| param.name.clone()).collect())
-                        .unwrap_or_default(),
-                    init_param_tys: actor
-                        .init
-                        .as_ref()
-                        .map(|init| init.params.iter().map(|param| param.ty.clone()).collect())
-                        .unwrap_or_default(),
-                    init_symbol: actor
-                        .init
-                        .as_ref()
-                        .map(|_| mangle_actor_init_handler(&actor.name)),
-                    on_start_symbol: actor
-                        .lifecycle_hooks
-                        .iter()
-                        .find(|hook| hook.kind == HirLifecycleHookKind::Start)
-                        .map(|_| mangle_actor_start_handler(&actor.name)),
-                    on_stop_symbols: actor
-                        .lifecycle_hooks
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, hook)| hook.kind == HirLifecycleHookKind::Stop)
-                        .map(|(idx, _)| mangle_actor_stop_handler_indexed(&actor.name, idx))
-                        .collect(),
-                    on_crash_symbol: actor
-                        .lifecycle_hooks
-                        .iter()
-                        .find(|hook| hook.kind == HirLifecycleHookKind::Crash)
-                        .map(|_| mangle_actor_crash_handler(&actor.name)),
-                    max_heap_bytes: actor.max_heap_bytes,
-                    cycle_capable: actor.cycle_capable,
-                    handlers: lower_actor_handler_layouts(actor),
-                    state_clone_fn_symbol: clone_sym,
-                    state_drop_fn_symbol: drop_sym,
-                    state_field_clone_kinds: clone_kinds,
-                });
+                // classification is DEFERRED to the second pass below.
+                // Collecting the actor here (rather than classifying inline)
+                // lets the classifier run against the fully-merged
+                // `record_layouts`/`enum_layouts` — including generic record
+                // and enum instantiations from `module.record_layouts` /
+                // `module.enum_layouts` and the builtin monomorphic enums —
+                // so a state field typed as a generic enum instantiation
+                // resolves to its tagged-union layout instead of falling to
+                // the paired-`None` fail-closed path. The actor's own state
+                // `RecordLayout` is still registered inline above so other
+                // records declared later can resolve it.
+                deferred_actors.push(actor);
             }
             HirItem::Supervisor(sup) => {
                 // Supervisors compile to a layout (consumed by codegen for
@@ -857,6 +1013,147 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     // module-graph-loaded stdlib TypeDecl is present; this fills only missing
     // substrate records needed by synthetic MIR construction.
     register_builtin_record_layouts(&mut record_layouts, &mut record_field_orders);
+
+    // Second pass — per-actor state-field clone/drop classification.
+    // Deferred from the item loop so the classifier sees the fully-merged
+    // `record_layouts`/`enum_layouts`: monomorphic user records/enums (item
+    // loop), generic record instantiations (`module.record_layouts`), generic
+    // enum instantiations (`module.enum_layouts`), builtin monomorphic enums,
+    // and builtin record layouts are all registered by now. A state field
+    // typed as a generic enum instantiation (e.g. `Option<string>` →
+    // `Option$$string`, `Result<i64, string>` → `Result$$i64$$string`) thus
+    // resolves to its tagged-union layout and routes through the enum
+    // clone/drop helpers rather than the paired-`None` fail-closed path.
+    // Single classification authority (`state_clone::*`); no duplicate
+    // divergent classifier call sites. `deferred_actors` is in source order,
+    // so `actor_layouts` order matches the pre-refactor single-pass form.
+    for &actor in &deferred_actors {
+        // Run BEFORE constructing the `ActorLayout` so the classifier outcome
+        // decides whether to populate the `state_clone_fn_symbol` /
+        // `state_drop_fn_symbol` pair (paired Some/None per the model.rs field
+        // doc; substrate-first per dispatch-invariant #1).
+        let state_field_tys: Vec<ResolvedTy> = actor
+            .state_fields
+            .iter()
+            .map(|field| field.ty.clone())
+            .collect();
+        let classification = crate::state_clone::classify_actor_state_fields_with_enum_layouts(
+            &state_field_tys,
+            &record_layouts,
+            &enum_layouts,
+        );
+        let (clone_sym, drop_sym, clone_kinds) = match classification {
+            Ok(kinds) => (
+                Some(crate::state_clone::mangle_actor_state_clone_fn(&actor.name)),
+                Some(crate::state_clone::mangle_actor_state_drop_fn(&actor.name)),
+                Some(kinds),
+            ),
+            Err(err) => {
+                // Locate the failing field index by re-running the classifier
+                // per-field with a fresh visited set. This is O(n) on the
+                // field count (always small — actor state has at most a
+                // handful of fields in the corpus) and produces a precise
+                // diagnostic anchor rather than blaming the whole actor. If
+                // every per-field run somehow succeeds (impossible given the
+                // collected error, but defensive), fall back to index 0 with a
+                // marker reason rather than `unreachable!`.
+                let mut field_index = 0usize;
+                let mut field_name = actor
+                    .state_fields
+                    .first()
+                    .map(|f| f.name.clone())
+                    .unwrap_or_default();
+                let mut found = false;
+                for (idx, field) in actor.state_fields.iter().enumerate() {
+                    let mut v = std::collections::HashSet::new();
+                    if crate::state_clone::classify_state_field_with_enum_layouts(
+                        &field.ty,
+                        &record_layouts,
+                        &enum_layouts,
+                        &mut v,
+                    )
+                    .is_err()
+                    {
+                        field_index = idx;
+                        field_name.clone_from(&field.name);
+                        found = true;
+                        break;
+                    }
+                }
+                let reason = if found {
+                    format!("{err}")
+                } else {
+                    format!(
+                        "{err} (per-field re-run could not localise; \
+                         classifier saw an aggregate error)"
+                    )
+                };
+                diagnostics.push(crate::model::MirDiagnostic {
+                    kind: crate::model::MirDiagnosticKind::ActorStateCloneClassificationFailed {
+                        actor: actor.name.clone(),
+                        field_index,
+                        field_name,
+                        reason: reason.clone(),
+                    },
+                    note: format!(
+                        "actor `{}` state-field classifier failed: {}",
+                        actor.name, reason
+                    ),
+                });
+                (None, None, None)
+            }
+        };
+        actor_layouts.push(crate::model::ActorLayout {
+            name: actor.name.clone(),
+            state_field_names: actor
+                .state_fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect(),
+            state_field_tys: actor
+                .state_fields
+                .iter()
+                .map(|field| field.ty.clone())
+                .collect(),
+            init_param_names: actor
+                .init
+                .as_ref()
+                .map(|init| init.params.iter().map(|param| param.name.clone()).collect())
+                .unwrap_or_default(),
+            init_param_tys: actor
+                .init
+                .as_ref()
+                .map(|init| init.params.iter().map(|param| param.ty.clone()).collect())
+                .unwrap_or_default(),
+            init_symbol: actor
+                .init
+                .as_ref()
+                .map(|_| mangle_actor_init_handler(&actor.name)),
+            on_start_symbol: actor
+                .lifecycle_hooks
+                .iter()
+                .find(|hook| hook.kind == HirLifecycleHookKind::Start)
+                .map(|_| mangle_actor_start_handler(&actor.name)),
+            on_stop_symbols: actor
+                .lifecycle_hooks
+                .iter()
+                .enumerate()
+                .filter(|(_, hook)| hook.kind == HirLifecycleHookKind::Stop)
+                .map(|(idx, _)| mangle_actor_stop_handler_indexed(&actor.name, idx))
+                .collect(),
+            on_crash_symbol: actor
+                .lifecycle_hooks
+                .iter()
+                .find(|hook| hook.kind == HirLifecycleHookKind::Crash)
+                .map(|_| mangle_actor_crash_handler(&actor.name)),
+            max_heap_bytes: actor.max_heap_bytes,
+            cycle_capable: actor.cycle_capable,
+            handlers: lower_actor_handler_layouts(actor),
+            state_clone_fn_symbol: clone_sym,
+            state_drop_fn_symbol: drop_sym,
+            state_field_clone_kinds: clone_kinds,
+        });
+    }
 
     let actor_layout_map: HashMap<String, ActorLayout> = actor_layouts
         .iter()
@@ -1003,10 +1300,64 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     for item in &module.items {
         match item {
             HirItem::Function(func) => {
-                // Skip unspecialised generic origins. Their bodies are
-                // emitted via the monomorphisations loop below, once
-                // per concrete instantiation.
+                // Generic origins are not monomorphic and never reach
+                // codegen directly — their concrete instances are emitted
+                // via the monomorphisations loop below. W5.007a additionally
+                // lowers the origin body ONCE against abstract
+                // `ResolvedTy::TypeParam` operands to populate the
+                // representation-substrate `polymorphic_mir` bucket. This is
+                // strictly additive: only the raw MIR is captured, and any
+                // diagnostics produced while lowering the abstract body are
+                // discarded so programs that compile today are unaffected.
                 if !func.type_params.is_empty() {
+                    let abstract_subst: HashMap<String, ResolvedTy> = func
+                        .type_params
+                        .iter()
+                        .map(|name| (name.clone(), ResolvedTy::TypeParam { name: name.clone() }))
+                        .collect();
+                    let lowered = lower_function(
+                        func,
+                        func.name.clone(),
+                        abstract_subst,
+                        &module.type_classes,
+                        &record_field_orders,
+                        &actor_layout_map,
+                        &supervisor_layout_map,
+                        &machine_layout_names,
+                        None,
+                        &module_fn_names,
+                        &module_generic_fn_names,
+                        &trait_impl_index,
+                        &module.call_site_type_args,
+                        &module.supervisor_child_slots,
+                        actor_send_aliasing,
+                        crate::model::FunctionCallConv::Default,
+                        task_entry_adapter_symbols.clone(),
+                    );
+                    // F3 fail-closed guard: an abstract origin declares every
+                    // type parameter it can mention, so the witness verifier
+                    // must find no out-of-scope `TypeParam` operand. Any
+                    // `WitnessOperandUnresolved` here is a lowering bug of the
+                    // exact A622/DI-019 class (a `TypeParam` left un-scoped
+                    // under a composite). The bucket otherwise discards
+                    // diagnostics, so assert on the checks directly rather
+                    // than surfacing a user-facing error for this gated,
+                    // non-codegen body.
+                    debug_assert!(
+                        !lowered
+                            .checked
+                            .checks
+                            .iter()
+                            .any(|c| matches!(c, MirCheck::WitnessOperandUnresolved { .. })),
+                        "abstract generic origin `{}` produced an unresolved \
+                         witness operand: {:?}",
+                        func.name,
+                        lowered.checked.checks
+                    );
+                    polymorphic_mir.push(crate::model::PolymorphicMirFunction {
+                        type_params: func.type_params.clone(),
+                        raw: lowered.raw,
+                    });
                     continue;
                 }
                 let lowered = lower_function(
@@ -1024,6 +1375,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &trait_impl_index,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
+                    actor_send_aliasing,
                     crate::model::FunctionCallConv::Default,
                     task_entry_adapter_symbols.clone(),
                 );
@@ -1055,6 +1407,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &module_generic_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
+                    actor_send_aliasing,
                     &mut emitted_actor_handler_symbols,
                     &task_entry_adapter_symbols,
                     &mut diagnostics,
@@ -1090,6 +1443,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &module_generic_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
+                    actor_send_aliasing,
                     &mut emitted_actor_handler_symbols,
                     &task_entry_adapter_symbols,
                     &mut diagnostics,
@@ -1112,7 +1466,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     diagnostics.extend(lowered.diagnostics);
                 }
             }
-            HirItem::Record(_) | HirItem::TypeDecl(_) | HirItem::Impl(_) | HirItem::ExternFn(_) => {
+            HirItem::Record(_)
+            | HirItem::TypeDecl(_)
+            | HirItem::Impl(_)
+            | HirItem::ExternFn(_)
+            | HirItem::Const(_) => {
                 // Type declarations have no executable MIR bodies. TypeDecl
                 // markers are consumed via `HirModule.type_classes`.
                 //
@@ -1127,6 +1485,12 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 // them as `Terminator::Call`, and the
                 // `IrPipeline.extern_decls` table populated below carries
                 // the signature to codegen for symbol predeclaration.
+                //
+                // Module-level consts have no executable body either: the
+                // folded value is carried structurally on `HirItem::Const`
+                // and the codegen-facing descriptor is built in a later slice.
+                // A const *reference* fails closed at `lower_value` until the
+                // codegen global-load seam lands.
             }
             HirItem::Machine(md) => {
                 // Synthesise the public `<Name>__step(self, event) -> Name`
@@ -1147,6 +1511,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &module_generic_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
+                    actor_send_aliasing,
                 );
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
@@ -1243,6 +1608,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             &trait_impl_index,
             &module.call_site_type_args,
             &module.supervisor_child_slots,
+            actor_send_aliasing,
             crate::model::FunctionCallConv::Default,
             task_entry_adapter_symbols.clone(),
         );
@@ -1336,6 +1702,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         machine_layouts,
         enum_layouts,
         regex_literals,
+        user_consts,
         gen_state_layouts,
         extern_decls,
         dyn_vtable_registry,
@@ -1348,6 +1715,13 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         // TypeCheckOutput leave these empty.
         hashmap_lowering_facts: Vec::new(),
         hashset_lowering_facts: Vec::new(),
+        // The caller-supplied alias classification is stored on the pipeline
+        // for future codegen use (Phase P5.2). The same map was used by
+        // `lower_actor_send` during HIR-to-MIR lowering above to stamp each
+        // `Terminator::Send.alias_mode`; storing it here lets the P5.2
+        // codegen branch consult the flat map without re-walking the MIR.
+        actor_send_aliasing: actor_send_aliasing.clone(),
+        polymorphic_mir,
     }
 }
 
@@ -1365,6 +1739,7 @@ fn lower_actor_receive_handlers(
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     emitted_symbols: &mut HashMap<String, String>,
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
@@ -1434,6 +1809,7 @@ fn lower_actor_receive_handlers(
             return_ty: handler.return_ty.clone(),
             body: handler.body.clone(),
             span: handler.span.clone(),
+            intrinsic_id: None,
         };
         lowered.push(lower_function(
             &synthetic_fn,
@@ -1450,6 +1826,7 @@ fn lower_actor_receive_handlers(
             &HashMap::new(),
             call_site_type_args,
             supervisor_child_slots,
+            actor_send_aliasing,
             crate::model::FunctionCallConv::ActorHandler,
             task_entry_adapter_symbols.clone(),
         ));
@@ -1472,6 +1849,7 @@ fn lower_actor_body_handlers(
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     emitted_symbols: &mut HashMap<String, String>,
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
@@ -1489,6 +1867,7 @@ fn lower_actor_body_handlers(
             module_generic_fn_names,
             call_site_type_args,
             supervisor_child_slots,
+            actor_send_aliasing,
             emitted_symbols,
             task_entry_adapter_symbols,
             diagnostics,
@@ -1506,6 +1885,7 @@ fn lower_actor_body_handlers(
         module_generic_fn_names,
         call_site_type_args,
         supervisor_child_slots,
+        actor_send_aliasing,
         emitted_symbols,
         task_entry_adapter_symbols,
         diagnostics,
@@ -1520,6 +1900,7 @@ fn lower_actor_body_handlers(
         module_generic_fn_names,
         call_site_type_args,
         supervisor_child_slots,
+        actor_send_aliasing,
         emitted_symbols,
         task_entry_adapter_symbols,
         diagnostics,
@@ -1542,6 +1923,7 @@ fn lower_actor_init_handler(
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     emitted_symbols: &mut HashMap<String, String>,
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
@@ -1571,6 +1953,7 @@ fn lower_actor_init_handler(
         return_ty: ResolvedTy::Unit,
         body: init.body.clone(),
         span: actor.span.clone(),
+        intrinsic_id: None,
     };
     Some(lower_function(
         &synthetic_fn,
@@ -1587,6 +1970,7 @@ fn lower_actor_init_handler(
         &HashMap::new(),
         call_site_type_args,
         supervisor_child_slots,
+        actor_send_aliasing,
         crate::model::FunctionCallConv::ActorHandler,
         task_entry_adapter_symbols.clone(),
     ))
@@ -1610,6 +1994,7 @@ fn lower_actor_lifecycle_handlers(
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     emitted_symbols: &mut HashMap<String, String>,
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
@@ -1644,6 +2029,7 @@ fn lower_actor_lifecycle_handlers(
                     return_ty: hook.return_ty.clone(),
                     body: hook.body.clone(),
                     span: hook.span.clone(),
+                    intrinsic_id: None,
                 };
                 lowered.push(lower_function(
                     &synthetic_fn,
@@ -1660,6 +2046,7 @@ fn lower_actor_lifecycle_handlers(
                     &HashMap::new(),
                     call_site_type_args,
                     supervisor_child_slots,
+                    actor_send_aliasing,
                     crate::model::FunctionCallConv::ActorHandler,
                     task_entry_adapter_symbols.clone(),
                 ));
@@ -1684,6 +2071,7 @@ fn lower_actor_lifecycle_handlers(
                     return_ty: hook.return_ty.clone(),
                     body: hook.body.clone(),
                     span: hook.span.clone(),
+                    intrinsic_id: None,
                 };
                 lowered.push(lower_function(
                     &synthetic_fn,
@@ -1700,6 +2088,7 @@ fn lower_actor_lifecycle_handlers(
                     &HashMap::new(),
                     call_site_type_args,
                     supervisor_child_slots,
+                    actor_send_aliasing,
                     crate::model::FunctionCallConv::ActorHandler,
                     task_entry_adapter_symbols.clone(),
                 ));
@@ -1863,6 +2252,7 @@ fn lower_actor_lifecycle_handlers(
                     return_ty: ResolvedTy::I32,
                     body,
                     span: hook.span.clone(),
+                    intrinsic_id: None,
                 };
                 lowered.push(lower_function(
                     &synthetic_fn,
@@ -1879,6 +2269,7 @@ fn lower_actor_lifecycle_handlers(
                     &HashMap::new(),
                     call_site_type_args,
                     supervisor_child_slots,
+                    actor_send_aliasing,
                     crate::model::FunctionCallConv::ActorHandler,
                     task_entry_adapter_symbols.clone(),
                 ));
@@ -2028,6 +2419,7 @@ fn synthesize_machine_step_fn(
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
 ) -> LoweredFunction {
     let emit_name = mangle_machine_step(&md.name);
 
@@ -2071,6 +2463,7 @@ fn synthesize_machine_step_fn(
         module_generic_fn_names: module_generic_fn_names.clone(),
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
+        actor_send_aliasing: actor_send_aliasing.clone(),
         current_function_symbol: emit_name.clone(),
         ..Builder::default()
     };
@@ -2271,6 +2664,7 @@ fn synthesize_machine_step_fn(
         locals,
         blocks: blocks.clone(),
         decisions: Vec::new(),
+        intrinsic_id: None,
     };
 
     let thir = ThirFunction {
@@ -2766,6 +3160,7 @@ fn lower_supervisor_bootstrap(
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     emitted_symbols: &mut HashMap<String, String>,
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
@@ -2968,6 +3363,7 @@ fn lower_supervisor_bootstrap(
         return_ty: local_pid_of(&sup.name),
         body,
         span: sup.span.clone(),
+        intrinsic_id: None,
     };
 
     Some(lower_function(
@@ -2989,6 +3385,7 @@ fn lower_supervisor_bootstrap(
         &HashMap::new(),
         call_site_type_args,
         supervisor_child_slots,
+        actor_send_aliasing,
         // `FunctionCallConv::Default`: codegen replaces the bootstrap body
         // wholesale with the `hew_supervisor_*` call sequence (S-D.3), so
         // the body never reads an execution context. The synthetic call
@@ -3112,6 +3509,7 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::ContextReader { .. }
         | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
+        | HirExprKind::Continue { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
@@ -3156,7 +3554,7 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_unknown_self_fields_in_block(block, state_fields, seen, unknown);
         }
-        HirExprKind::Yield { value, .. } => {
+        HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
             if let Some(value) = value {
                 collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
             }
@@ -3292,6 +3690,9 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(scrutinee, state_fields, seen, unknown);
             collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
         }
+        HirExprKind::Loop { body } => {
+            collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
+        }
     }
 }
 
@@ -3425,6 +3826,7 @@ fn lower_function(
     >,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     call_conv: crate::model::FunctionCallConv,
     task_entry_adapter_symbols: TaskEntryAdapterSymbols,
 ) -> LoweredFunction {
@@ -3463,6 +3865,7 @@ fn lower_function(
         subst,
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
+        actor_send_aliasing: actor_send_aliasing.clone(),
         current_function_symbol: emit_name.clone(),
         current_function_call_conv: call_conv,
         task_entry_adapter_symbols,
@@ -3523,6 +3926,10 @@ fn lower_function(
         locals: builder.locals.clone(),
         blocks,
         decisions: builder.decisions.clone(),
+        // W5.005 / F1b: carry the floor-intrinsic catalog id from HIR so
+        // codegen's `lower_fn` synthesizes the trampoline body instead of
+        // emitting the bodyless placeholder (the D343 fail-OPEN no-op).
+        intrinsic_id: func.intrinsic_id.clone(),
     };
     // Checked MIR's `checks` field is populated by `check_function`
     // from real dataflow over the checker-authority `MirStatement`
@@ -4056,6 +4463,38 @@ struct Builder {
     /// walk the full scope chain on early-return paths, emitting defers for
     /// every enclosing scope that has registered bodies.
     active_scopes: Vec<ScopeId>,
+    /// Stack of enclosing loop control targets, innermost at the end. Each
+    /// entry is `(continue_target_bb, exit_bb, scopes_depth_at_entry)`.
+    ///
+    /// `continue_target_bb` is the block a `continue` jumps to (the header for
+    /// `while`/`while let`, the increment block for `for`, the body for bare
+    /// `loop`). `exit_bb` is the block a `break` jumps to (always allocated,
+    /// even for a `loop` with no `break`, so the post-loop cursor has a home).
+    /// `scopes_depth_at_entry` is `active_scopes.len()` captured *before* the
+    /// loop body scope is pushed; `emit_defers_for_break_continue` flushes
+    /// `active_scopes[scopes_depth_at_entry..]` so break/continue run the
+    /// defers of every scope opened inside the loop body (LIFO) without
+    /// touching the loop's enclosing scopes.
+    ///
+    /// Pushed when entering a loop body, popped after the body walk. Read by
+    /// the `Break`/`Continue` arms of `lower_value`; `.last().expect(..)`
+    /// there is fail-closed — break/continue outside a loop is a type error
+    /// and must never reach MIR (LESSONS `boundary-fail-closed`).
+    loop_stack: Vec<(u32, u32, usize)>,
+    /// Checker's per-send-site alias classification, keyed by the source span
+    /// of each actor-send argument expression (same key as
+    /// `TypeCheckOutput::actor_send_aliasing`). Populated by the caller
+    /// (`lower_function` / `lower_hir_module_with_facts`); empty for the
+    /// backward-compat `lower_hir_module` path.
+    ///
+    /// `lower_actor_send` looks up `SpanKey::from(&args[0].span)` here and
+    /// stamps the resulting `SendAliasMode` onto `Terminator::Send.alias_mode`.
+    /// **Missing entry → `SendAliasMode::Copy`** (fail-closed).
+    ///
+    /// LESSONS: `serializer-fail-closed` (P0) — default MUST be Copy.
+    /// `copy ⊥ sendable` (P0) — derived SOLELY from this table, never from
+    /// a `Copy`-marker check.
+    actor_send_aliasing: HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4076,8 +4515,19 @@ fn runtime_symbol_for_call_expr(
     if crate::runtime_symbols::is_known_runtime_symbol(name) {
         return Some((name.clone(), args, expr.site));
     }
-    if matches!(resolved, ResolvedRef::Item(_)) {
-        return None;
+    // The guard short-circuits the user-name → C-symbol bridge for
+    // `Item`-resolved calls so a *real* user function item that shadows a
+    // builtin name (e.g. a user `fn link(..)`, low `ItemId`) routes to its
+    // own definition rather than the runtime ABI.  Synthetic-builtin
+    // sentinels (`link`/`monitor`/`supervisor_stop`/the `hew_duplex_*`
+    // family, seeded in the `u32::MAX / 2` band) must stay exempt so they
+    // continue to the bridge below — `user_name_to_c_symbol` is the narrow
+    // second gate, so exempting the whole sentinel band cannot mis-route any
+    // name outside its allowlist.
+    if let ResolvedRef::Item(id) = resolved {
+        if !hew_hir::lower::is_synthetic_builtin_item(*id) {
+            return None;
+        }
     }
     crate::runtime_symbols::user_name_to_c_symbol(name)
         .map(|symbol| (symbol.to_string(), args.as_slice(), expr.site))
@@ -4155,6 +4605,39 @@ impl Builder {
                 continue;
             };
             // Clone — do not drain; sibling branches may still need these.
+            let defers = defers.clone();
+            // LIFO within this scope.
+            for body in defers.into_iter().rev() {
+                let _ = self.lower_value(&body);
+            }
+        }
+    }
+
+    /// Emit defers for a `break`/`continue` path. Identical discipline to
+    /// `emit_defers_for_return` but bounded to the *in-loop window*: only
+    /// `active_scopes[loop_scope_depth..]` — the scopes opened inside the
+    /// loop body — flush here. The loop's enclosing scopes stay untouched
+    /// because break/continue does not leave them; they flush via their own
+    /// `emit_pending_defers` at their natural exit.
+    ///
+    /// `loop_scope_depth` is the `scopes_depth_at_entry` recorded in the
+    /// `loop_stack` entry (captured before the loop body scope was pushed),
+    /// so the window includes the loop body scope and every nested block
+    /// scope between it and the break/continue site.
+    ///
+    /// Clone (not drain): a `break` mid-body leaves the body's normal
+    /// scope-exit `emit_pending_defers(body.scope)` to drain the map for the
+    /// (now dead) fall-through path. Both paths flush exactly once at runtime
+    /// because they are mutually exclusive in the CFG (LESSONS
+    /// `cleanup-all-exits`).
+    fn emit_defers_for_break_continue(&mut self, loop_scope_depth: usize) {
+        // Walk the in-loop window from innermost scope outward.
+        for i in (loop_scope_depth..self.active_scopes.len()).rev() {
+            let scope_id = self.active_scopes[i];
+            let Some(defers) = self.pending_defers.get(&scope_id) else {
+                continue;
+            };
+            // Clone — the natural scope-exit drain still needs these.
             let defers = defers.clone();
             // LIFO within this scope.
             for body in defers.into_iter().rev() {
@@ -4867,6 +5350,17 @@ impl Builder {
                     });
                 }
                 place
+            }
+            HirExprKind::BindingRef {
+                name: _,
+                resolved: ResolvedRef::Const(item_id),
+            } => {
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
+                self.instructions.push(Instr::ConstGlobalLoad {
+                    item_id: *item_id,
+                    dest,
+                });
+                Some(dest)
             }
             HirExprKind::BindingRef { .. } => None,
             HirExprKind::Binary { op, left, right } => {
@@ -6272,6 +6766,45 @@ impl Builder {
                 body,
                 ..
             } => self.lower_while_let(scrutinee, *variant_idx, bindings, body),
+            HirExprKind::Loop { body } => self.lower_loop(body),
+            HirExprKind::Break { value, .. } => {
+                // Lower the operand for its side effects — `break value` does
+                // not yield a loop value in this slice (loop-as-expression is
+                // out of scope), so the resulting Place is discarded.
+                if let Some(value) = value {
+                    let _ = self.lower_value(value);
+                }
+                // Fail closed: `break` outside a loop is a type error and must
+                // never reach MIR (LESSONS `boundary-fail-closed`).
+                let (_, exit_bb, loop_scope_depth) = *self
+                    .loop_stack
+                    .last()
+                    .expect("break outside loop — rejected by type checker");
+                // Flush in-loop defers before leaving the loop (cleanup-all-exits).
+                self.emit_defers_for_break_continue(loop_scope_depth);
+                self.finish_current_block(Terminator::Goto { target: exit_bb });
+                // Source following `break` lexically is dead; give it a home.
+                let dead = self.alloc_block();
+                self.start_dead_block(dead);
+                None
+            }
+            HirExprKind::Continue { .. } => {
+                // Fail closed: `continue` outside a loop is a type error and
+                // must never reach MIR (LESSONS `boundary-fail-closed`).
+                let (continue_target, _, loop_scope_depth) = *self
+                    .loop_stack
+                    .last()
+                    .expect("continue outside loop — rejected by type checker");
+                // Flush in-loop defers before the back-edge (cleanup-all-exits).
+                self.emit_defers_for_break_continue(loop_scope_depth);
+                self.finish_current_block(Terminator::Goto {
+                    target: continue_target,
+                });
+                // Source following `continue` lexically is dead; give it a home.
+                let dead = self.alloc_block();
+                self.start_dead_block(dead);
+                None
+            }
             HirExprKind::RegexLiteralRef { .. } => {
                 // Standalone regex literal expressions (as opposed to match-arm
                 // patterns) require a module-level global slot for the compiled
@@ -7231,11 +7764,204 @@ impl Builder {
         let has_regex = arms
             .iter()
             .any(|a| matches!(a.predicate, hew_hir::HirMatchArmPredicate::Regex { .. }));
+        let has_literal = arms
+            .iter()
+            .any(|a| matches!(a.predicate, hew_hir::HirMatchArmPredicate::Literal { .. }));
+        let has_variant = arms.iter().any(|a| {
+            matches!(
+                a.predicate,
+                hew_hir::HirMatchArmPredicate::EnumVariant { .. }
+            )
+        });
+
+        assert!(
+            !(has_literal && has_variant),
+            "checker invariant violated: mixed Literal/Variant arms"
+        );
+        assert!(
+            !(has_literal && has_regex),
+            "checker invariant violated: mixed Literal/Regex arms"
+        );
 
         if has_regex {
             self.lower_match_regex(scrutinee, arms, result_ty)
+        } else if has_literal || stage2_literal_match_scrutinee_ty(&scrutinee.ty) {
+            self.lower_match_literal(scrutinee, arms, result_ty)
         } else {
             self.lower_match_enum_tag(scrutinee, arms, result_ty)
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "literal match lowering is one CFG builder mirroring lower_match_enum_tag; \
+                  splitting it would obscure block allocation and branch topology"
+    )]
+    fn lower_match_literal(
+        &mut self,
+        scrutinee: &HirExpr,
+        arms: &[hew_hir::HirMatchArm],
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let result_place = self.alloc_local(result_ty.clone());
+
+        let mut literal_arms: Vec<&hew_hir::HirMatchArm> = Vec::new();
+        let mut wildcard_arm: Option<&hew_hir::HirMatchArm> = None;
+        for arm in arms {
+            match &arm.predicate {
+                hew_hir::HirMatchArmPredicate::Literal { .. } => {
+                    if wildcard_arm.is_none() {
+                        literal_arms.push(arm);
+                    }
+                }
+                hew_hir::HirMatchArmPredicate::Wildcard => {
+                    if wildcard_arm.is_none() {
+                        wildcard_arm = Some(arm);
+                    }
+                }
+                hew_hir::HirMatchArmPredicate::EnumVariant { .. } => {
+                    panic!("checker invariant violated: mixed Literal/Variant arms");
+                }
+                hew_hir::HirMatchArmPredicate::Regex { .. } => {
+                    panic!("checker invariant violated: mixed Literal/Regex arms");
+                }
+            }
+        }
+
+        let scrutinee_place = self.lower_value(scrutinee)?;
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(n) => n,
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "literal match scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "literal match scrutinee must lower to Place::Local; got {other:?}"
+                    ),
+                });
+                return None;
+            }
+        };
+
+        let join_bb = self.alloc_block();
+        let body_bbs: Vec<u32> = (0..literal_arms.len())
+            .map(|_| self.alloc_block())
+            .collect();
+        let tail_bb = self.alloc_block();
+
+        for (i, arm) in literal_arms.iter().enumerate() {
+            let (lit, ty) = match &arm.predicate {
+                hew_hir::HirMatchArmPredicate::Literal { lit, ty } => (lit, ty),
+                other => {
+                    unreachable!("literal_arms must only contain Literal predicates; got {other:?}")
+                }
+            };
+            let expected = self.lower_match_literal_constant(lit, ty, arm.body.site)?;
+            let cond_local = self.alloc_local(ResolvedTy::Bool);
+            self.instructions.push(Instr::IntCmp {
+                pred: CmpPred::Eq,
+                lhs: Place::Local(scrutinee_local),
+                rhs: expected,
+                dest: cond_local,
+            });
+
+            let next_target = if i + 1 < literal_arms.len() {
+                self.alloc_block()
+            } else {
+                tail_bb
+            };
+            self.finish_current_block(Terminator::Branch {
+                cond: cond_local,
+                then_target: body_bbs[i],
+                else_target: next_target,
+            });
+            self.start_block(next_target);
+        }
+
+        if let Some(wildcard) = wildcard_arm {
+            if let Some(src) = self.lower_value(&wildcard.body) {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            self.finish_current_block(Terminator::Goto { target: join_bb });
+        } else {
+            self.finish_current_block(Terminator::Trap {
+                kind: TrapKind::ExhaustivenessFallthrough,
+            });
+        }
+
+        for (i, arm) in literal_arms.iter().enumerate() {
+            self.start_block(body_bbs[i]);
+            if !arm.bindings.is_empty() {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "bindings in literal match arm".to_string(),
+                        site: arm.body.site,
+                    },
+                    note: "top-level literal match arms do not introduce payload bindings"
+                        .to_string(),
+                });
+                return None;
+            }
+            if let Some(src) = self.lower_value(&arm.body) {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            self.finish_current_block(Terminator::Goto { target: join_bb });
+        }
+
+        self.start_block(join_bb);
+        Some(result_place)
+    }
+
+    fn lower_match_literal_constant(
+        &mut self,
+        lit: &HirLiteral,
+        ty: &ResolvedTy,
+        site: SiteId,
+    ) -> Option<Place> {
+        match (lit, ty) {
+            (HirLiteral::Integer(value), ResolvedTy::I64) => {
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::ConstI64 {
+                    dest,
+                    value: *value,
+                });
+                Some(dest)
+            }
+            (HirLiteral::Bool(value), ResolvedTy::Bool) => {
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::ConstI64 {
+                    dest,
+                    value: i64::from(*value),
+                });
+                Some(dest)
+            }
+            (HirLiteral::Char(value), ResolvedTy::Char) => {
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::CharLit {
+                    value: *value as u32,
+                    dest,
+                });
+                Some(dest)
+            }
+            _ => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!("unsupported literal match predicate {lit:?}: {ty:?}"),
+                        site,
+                    },
+                    note: "literal match lowering is wired only for i64, bool, and char"
+                        .to_string(),
+                });
+                None
+            }
         }
     }
 
@@ -7334,6 +8060,9 @@ impl Builder {
                             .to_string(),
                     });
                     return None;
+                }
+                hew_hir::HirMatchArmPredicate::Literal { .. } => {
+                    panic!("checker invariant violated: mixed Literal/Regex arms");
                 }
             }
         }
@@ -7810,6 +8539,9 @@ impl Builder {
                          should have routed regex arms to lower_match_regex"
                     )
                 }
+                hew_hir::HirMatchArmPredicate::Literal { .. } => {
+                    panic!("checker invariant violated: mixed Literal/Variant arms");
+                }
             }
         }
 
@@ -8020,6 +8752,9 @@ impl Builder {
 
         // Body: lower statements then loop back.
         self.start_block(body_bb);
+        // continue → header (re-checks the condition); break → exit.
+        let loop_scope_depth = self.active_scopes.len();
+        self.loop_stack.push((header_bb, exit_bb, loop_scope_depth));
         self.active_scopes.push(body.scope);
         for stmt in &body.statements {
             self.stmt(stmt);
@@ -8029,6 +8764,7 @@ impl Builder {
         }
         self.emit_pending_defers(body.scope);
         self.active_scopes.pop();
+        self.loop_stack.pop();
         self.finish_current_block(Terminator::Goto { target: header_bb });
 
         // Exit: subsequent lowering continues here.
@@ -8174,6 +8910,9 @@ impl Builder {
         }
 
         self.active_scopes.push(body.scope);
+        // continue → header (re-evaluates scrutinee + tag); break → exit.
+        let loop_scope_depth = self.active_scopes.len() - 1;
+        self.loop_stack.push((header_bb, exit_bb, loop_scope_depth));
         for stmt in &body.statements {
             self.stmt(stmt);
         }
@@ -8182,7 +8921,7 @@ impl Builder {
         }
         self.emit_pending_defers(body.scope);
         self.active_scopes.pop();
-
+        self.loop_stack.pop();
         // Restore the prior `binding_locals` entries so the binding scope
         // ends at the body's end — matches Match-arm body-block semantics.
         for (binding, previous) in overwritten_bindings.into_iter().rev() {
@@ -8223,6 +8962,9 @@ impl Builder {
     /// body_bb:
     ///   binding ← counter       (Move)
     ///   lower(body statements)
+    ///   Goto inc_bb              ← fall-through (also the `continue` target)
+    ///
+    /// inc_bb:
     ///   counter = IntArithChecked(Add, counter, 1) → trap on overflow
     ///   Goto header_bb           ← back-edge
     ///
@@ -8301,9 +9043,14 @@ impl Builder {
             });
         }
 
-        // Allocate loop structure blocks.
+        // Allocate loop structure blocks. `inc_bb` is a dedicated increment
+        // block: the body falls through to it AND `continue` jumps to it, so
+        // the counter advance happens on every path that re-enters the header.
+        // Threading `continue` straight to the header would skip the Add and
+        // spin forever (Risk 1).
         let header_bb = self.alloc_block();
         let body_bb = self.alloc_block();
+        let inc_bb = self.alloc_block();
         let exit_bb = self.alloc_block();
 
         // Jump from entry (or post-inclusive-overflow-check) to the header.
@@ -8341,6 +9088,11 @@ impl Builder {
         });
 
         self.active_scopes.push(body.scope);
+        // continue → inc_bb (advances the counter, then re-checks the header);
+        // break → exit. Depth captured before the body scope push so the
+        // in-loop defer window covers body.scope and any nested block scopes.
+        let loop_scope_depth = self.active_scopes.len() - 1;
+        self.loop_stack.push((inc_bb, exit_bb, loop_scope_depth));
         for stmt in &body.statements {
             self.stmt(stmt);
         }
@@ -8349,6 +9101,9 @@ impl Builder {
         }
         self.emit_pending_defers(body.scope);
         self.active_scopes.pop();
+        self.loop_stack.pop();
+        // Body fall-through → increment block.
+        self.finish_current_block(Terminator::Goto { target: inc_bb });
 
         // Increment: counter = counter + 1 (checked; trap on overflow).
         // WHY checked: a loop that reaches i64::MAX and tries to step past it
@@ -8356,6 +9111,7 @@ impl Builder {
         // minimum and potentially running forever.
         // WHEN obsolete: when Hew introduces explicit wrapping loops or
         // explicit index-type annotations that allow unsigned indices.
+        self.start_block(inc_bb);
         let one = self.alloc_local(ResolvedTy::I64);
         self.instructions.push(Instr::ConstI64 {
             dest: one,
@@ -8371,25 +9127,74 @@ impl Builder {
             overflow_flag,
         });
         let overflow_trap = self.alloc_block();
-        let after_inc = self.alloc_block();
+        // On overflow → trap; otherwise loop back to the header (re-check bound).
         self.finish_current_block(Terminator::Branch {
             cond: overflow_flag,
             then_target: overflow_trap,
-            else_target: after_inc,
+            else_target: header_bb,
         });
         self.start_block(overflow_trap);
         self.finish_current_block(Terminator::Trap {
             kind: TrapKind::IntegerOverflow,
         });
-        self.start_block(after_inc);
-        self.finish_current_block(Terminator::Goto { target: header_bb });
 
         // Exit: subsequent lowering continues here.
         self.start_block(exit_bb);
         None
     }
 
-    /// Lower `lhs && rhs` with short-circuit semantics.
+    /// Lower a bare `loop { body }` to a two-block CFG:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   Goto body_bb
+    ///
+    /// body_bb:
+    ///   lower(body statements)
+    ///   Goto body_bb             ← unconditional back-edge (also `continue`)
+    ///
+    /// exit_bb:
+    ///   (only reachable via `break`; subsequent lowering continues here)
+    /// ```
+    ///
+    /// A bare `loop` has no condition: the sole way out is `break`, so
+    /// `exit_bb` has no predecessor unless the body contains one. We start it
+    /// unconditionally anyway (Risk 4) so the post-loop cursor always has a
+    /// home and `finalize_blocks` can drop it if it stays empty/unreachable.
+    /// `continue` targets `body_bb` directly — there is no header to re-check.
+    ///
+    /// Always returns `None`: `loop {}` is `Unit`-typed at the MIR boundary
+    /// (a `break value` carries its operand for side effects only in this
+    /// slice; loop-as-expression is out of scope — see the plan).
+    fn lower_loop(&mut self, body: &hew_hir::HirBlock) -> Option<Place> {
+        let body_bb = self.alloc_block();
+        let exit_bb = self.alloc_block();
+
+        // Entry → body.
+        self.finish_current_block(Terminator::Goto { target: body_bb });
+
+        // Body: lower statements then loop back unconditionally.
+        self.start_block(body_bb);
+        // continue → body_bb (re-enter the top); break → exit.
+        let loop_scope_depth = self.active_scopes.len();
+        self.loop_stack.push((body_bb, exit_bb, loop_scope_depth));
+        self.active_scopes.push(body.scope);
+        for stmt in &body.statements {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &body.tail {
+            let _ = self.lower_value(tail);
+        }
+        self.emit_pending_defers(body.scope);
+        self.active_scopes.pop();
+        self.loop_stack.pop();
+        self.finish_current_block(Terminator::Goto { target: body_bb });
+
+        // Exit: only reached via `break`. Always started so the post-loop
+        // cursor has a home (Risk 4).
+        self.start_block(exit_bb);
+        None
+    }
     ///
     /// CFG shape:
     ///
@@ -9335,6 +10140,7 @@ impl Builder {
             locals: vec![],
             blocks,
             decisions: vec![],
+            intrinsic_id: None,
         };
         let builder = Builder {
             type_classes: self.type_classes.clone(),
@@ -9347,6 +10153,7 @@ impl Builder {
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
+            actor_send_aliasing: self.actor_send_aliasing.clone(),
             current_function_symbol: adapter_symbol.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::TaskEntry,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
@@ -9877,14 +10684,27 @@ impl Builder {
         site: hew_hir::SiteId,
         context: RuntimeCallContext,
     ) -> Option<Place> {
-        if hir_args.len() != 2 {
+        // ARITY: the user-facing surface is 1-arg — `link(target)` /
+        // `monitor(target)`. The linking/monitoring subject is the implicit
+        // calling actor (`self`), matching Erlang/OTP `link(Pid)` /
+        // `monitor(process, Pid)`. The 2-arg runtime ABI
+        // (`hew_actor_link(parent, child)` / `hew_actor_monitor(watcher,
+        // target)`) is satisfied by synthesizing `hew_actor_self()` as arg0
+        // and the user target as arg1.
+        //
+        // INTERIM (out-of-context window): `hew_actor_self()` returns null
+        // when called outside an actor dispatch context. The companion
+        // "only valid in actor context" fail-closed gate is deferred (it
+        // belongs to the actor-messaging lane); until it lands, calling
+        // link/monitor outside an actor is an interim out-of-context window.
+        if hir_args.len() != 1 {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("runtime call `{symbol}` arity"),
                     site,
                 },
                 note: format!(
-                    "`{symbol}` expects exactly 2 actor-handle arguments, got {}",
+                    "`{symbol}` expects exactly 1 argument (target), got {}",
                     hir_args.len()
                 ),
             });
@@ -9911,12 +10731,24 @@ impl Builder {
             return None;
         }
 
-        let arg0 = self.lower_value(&hir_args[0]);
-        let arg1 = self.lower_value(&hir_args[1]);
-        let (Some(arg0), Some(arg1)) = (arg0, arg1) else {
-            return None;
-        };
-        self.push_runtime_call(symbol, vec![arg0, arg1], None);
+        // arg1: the user-provided target handle. Lower it first so a failure
+        // to lower the target is reported before we emit the self-handle call.
+        let target = self.lower_value(&hir_args[0])?;
+
+        // arg0: synthesize the implicit `self` subject via `hew_actor_self()`.
+        // The result is a *borrowed* `*mut HewActor` (no ownership transfer),
+        // so the destination local carries no drop obligation — `alloc_local`
+        // records type bookkeeping only and never registers a drop.
+        let self_handle = self.alloc_local(ResolvedTy::Named {
+            name: hew_types::BuiltinType::LocalPid
+                .canonical_name()
+                .to_string(),
+            args: vec![ResolvedTy::Unit],
+            builtin: Some(hew_types::BuiltinType::LocalPid),
+        });
+        self.push_runtime_call("hew_actor_self", vec![], Some(self_handle));
+
+        self.push_runtime_call(symbol, vec![self_handle, target], None);
         None
     }
 
@@ -10377,11 +11209,27 @@ impl Builder {
         let actor = self.lower_value(receiver)?;
         let value = self.lower_actor_payload(args, site)?;
         let next = self.alloc_block();
+        // Determine alias mode: look up the first argument's span in the
+        // checker's `actor_send_aliasing` map.  Only an explicit `Alias`
+        // classification promotes the mode; every `Copy(reason)` variant and
+        // every absent entry defaults to `Copy` (fail-closed).
+        let alias_mode = if args.is_empty() {
+            // Zero-arg send (unsupported shape): fail-closed Copy.
+            crate::model::SendAliasMode::Copy
+        } else {
+            let key = hew_types::SpanKey::from(&args[0].span);
+            match self.actor_send_aliasing.get(&key).copied() {
+                Some(hew_types::ActorSendAliasing::Alias) => crate::model::SendAliasMode::Alias,
+                // All Copy(reason) variants and missing entries → Copy (fail-closed).
+                _ => crate::model::SendAliasMode::Copy,
+            }
+        };
         self.finish_current_block(Terminator::Send {
             actor,
             msg_type: info.msg_type,
             value,
             next,
+            alias_mode,
         });
         self.start_block(next);
         None
@@ -11151,6 +11999,7 @@ impl Builder {
             // Propagate the parent module's map so the FieldAccess intercept arm
             // fires correctly for any closure body that contains such an access.
             supervisor_child_slots: self.supervisor_child_slots.clone(),
+            actor_send_aliasing: self.actor_send_aliasing.clone(),
             current_function_symbol: shim_name.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
@@ -11208,12 +12057,14 @@ impl Builder {
             locals: builder.locals.clone(),
             blocks,
             decisions: builder.decisions.clone(),
+            intrinsic_id: None,
         };
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
             name: shim_name.to_string(),
             type_params: Vec::new(),
+            intrinsic_id: None,
             params: params.to_vec(),
             return_ty: ret_ty.clone(),
             body: hew_hir::HirBlock {
@@ -11398,6 +12249,7 @@ impl Builder {
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
+            actor_send_aliasing: self.actor_send_aliasing.clone(),
             current_function_symbol: body_name.clone(),
             current_function_call_conv: crate::model::FunctionCallConv::Default,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
@@ -11531,6 +12383,7 @@ impl Builder {
             locals: body_locals_with_state.clone(),
             blocks: blocks.clone(),
             decisions: body_builder.decisions.clone(),
+            intrinsic_id: None,
         };
 
         // A synthetic HirFn shell so `check_function` has a valid fn descriptor.
@@ -11540,6 +12393,7 @@ impl Builder {
             node: hew_hir::HirNodeId(0),
             name: body_name.clone(),
             type_params: Vec::new(),
+            intrinsic_id: None,
             params: Vec::new(),
             return_ty: return_ty.clone(),
             body: hew_hir::HirBlock {
@@ -11938,10 +12792,19 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
         // corresponding `MirDiagnosticKind` projections will land
         // alongside the construction surface for borrows, generators,
         // and actor sends.
+        //
+        // `WitnessOperandUnresolved` joins this group for a different
+        // reason (W5.007a): witness instructions are produced only into
+        // the gated polymorphic-MIR bucket, whose diagnostics are
+        // discarded, so the finding never reaches a `CheckedMirFunction`
+        // and has no user-visible projection in this slice. Its
+        // fail-closed authority lives at the construction boundary
+        // (`WitnessOperand::resolve`) and the MIR verifier.
         MirCheck::Aliasing { .. }
         | MirCheck::GeneratorBorrowAcrossYield { .. }
         | MirCheck::ActorSendEscape { .. }
-        | MirCheck::ActorAskEscape { .. } => None,
+        | MirCheck::ActorAskEscape { .. }
+        | MirCheck::WitnessOperandUnresolved { .. } => None,
     }
 }
 
@@ -12014,11 +12877,59 @@ fn elaborate(
     // bindings still Live at that block's exit (drops fire only for
     // bindings whose state is Live at the exit; Consumed / Uninit
     // skip; MaybeConsumed is rejected upstream by the move-checker).
+    //
+    // W5-011 P3 — fail-CLOSED sole-owner ALLOW-set for `CowValue`
+    // (heap-owning value-class) `string` locals. The M-COW spine does not
+    // emit retain-on-share, so sharing a string pointer (a call argument, an
+    // aggregate element, a variant payload, an actor payload, a return, or a
+    // plain `let y = s` rebind by value) is a bitwise pointer copy with no
+    // retain: dropping both the source and the alias double-frees the one
+    // `rc==1` buffer. The previous revision suppressed drops via a HIR-shape
+    // deny-list keyed on the lowering arms that *produce* those shares; that
+    // is structurally fail-OPEN — any un-enumerated MIR alias producer leaves
+    // the source drop-eligible and re-opens the double-free.
+    //
+    // This derivation inverts the default to fail-CLOSED: a `string` local is
+    // dropped at scope exit ONLY IF it is *proven sole-owner* by a scan of the
+    // finalised MIR instruction + terminator stream (`derive_cow_sole_owner`).
+    // A binding is sole-owner iff its backing local is NEVER read as a source
+    // operand anywhere (so its pointer is never copied/aliased out) AND its
+    // slot is not a projection alias of a still-live aggregate's interior
+    // pointer. Everything not provably sole-owner is excluded — a future,
+    // un-enumerated MIR producer that shares a string pointer auto-excludes
+    // the source because the share surfaces as a source-operand read in the
+    // scan (the source/operand classifier is a compiler-exhaustive match, so
+    // a new `Instr`/`Terminator` variant cannot be added without classifying
+    // its operands). Worst case the feature drops FEWER strings (leaks, as
+    // before this lane); it can never double-free.
+    //
+    // Consume facts narrow the allow-set further: a binding `Consumed` or
+    // `MaybeConsumed` at any block exit is removed, because `enumerate_exits`
+    // treats `MaybeConsumed` as Live (the move-checker rejects that only for
+    // `MustConsume`/Linear types, not CoW values) and would otherwise fire the
+    // drop on a branch where the buffer was already moved out.
+    let mut cow_drop_allowed = derive_cow_sole_owner(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+    );
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) {
+                cow_drop_allowed.remove(binding);
+            }
+        }
+    }
+
     let lifo_drops = build_lifo_drops(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.type_classes,
         &builder.dyn_trait_storage,
+        &cow_drop_allowed,
     );
     let (elab_blocks, drop_plans) = enumerate_exits(
         &checked.blocks,
@@ -12752,8 +13663,10 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
     match instr {
         Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => Vec::new(),
         Instr::ContextField { dest, .. } => vec![*dest],
-        // ConstI64 and StringLit both produce only their dest place.
-        Instr::ConstI64 { dest, .. } | Instr::StringLit { dest, .. } => vec![*dest],
+        // Const-like producers write only their dest place.
+        Instr::ConstI64 { dest, .. }
+        | Instr::StringLit { dest, .. }
+        | Instr::ConstGlobalLoad { dest, .. } => vec![*dest],
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }
@@ -12787,6 +13700,9 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         } => vec![*dest, *operand, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
         Instr::Drop { place, .. } => vec![*place],
+        Instr::WitnessSizeOf { dest, .. } | Instr::WitnessAlignOf { dest, .. } => vec![*dest],
+        Instr::WitnessDropGlue { place, .. } => vec![*place],
+        Instr::WitnessMove { dest, src, .. } => vec![*dest, *src],
         Instr::CallRuntimeAbi(call) => {
             // Every Place participating in the runtime call surfaces
             // here so the cross-block split-state seed pass can
@@ -12888,6 +13804,482 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
     }
 }
 
+/// Resolve a `Place` to the backing MIR local id it addresses, or `None`
+/// for the synthetic `ReturnSlot` (which has no local id). Every
+/// handle/projection `Place` variant carries the `u32` local it
+/// addresses; this collapses them to that id so the sole-owner scan can
+/// reason about aliasing at local granularity.
+///
+/// W5-011 P3 — used by `derive_cow_sole_owner` to map source operands and
+/// projection-alias dests back to the locals they touch.
+#[must_use]
+fn base_local(place: Place) -> Option<u32> {
+    match place {
+        Place::ReturnSlot => None,
+        Place::Local(n)
+        | Place::DuplexHandle(n)
+        | Place::LambdaActorHandle(n)
+        | Place::ActorHandle(n)
+        | Place::SendHalf(n)
+        | Place::RecvHalf(n)
+        | Place::MachineTag(n)
+        | Place::EnumTag(n) => Some(n),
+        Place::MachineVariant { local, .. }
+        | Place::EnumVariant { local, .. }
+        | Place::GenState { local, .. } => Some(local),
+    }
+}
+
+/// True if reading this `Place` as a `Move` source yields a value that
+/// *aliases interior storage* of a still-live parent aggregate rather than
+/// a standalone slot the move can hand off ownership of.
+///
+/// W5-011 P3 (projection-alias taint). The M-COW spine emits NO retain on
+/// share, so a payload binder bound by destructuring an enum/machine
+/// variant (`Instr::Move { dest, src: Place::MachineVariant { .. } }` /
+/// `EnumVariant` — see `lower_match_enum_tag`, `lower_while_let`) receives
+/// a `string` handle that aliases the parent's rc=1 buffer. Dropping that
+/// binder at scope exit would free a buffer the parent still owns (or that
+/// a second destructure of the same payload also frees) → double-free.
+/// `projection_alias_dest` seeds taint at the four `*FieldLoad` interior
+/// loads, but variant-payload destructures lower as a `Move` *from* an
+/// interior-projection place, which that scan does not see. This
+/// classifier closes that hole: a `Move` whose source is an interior
+/// projection taints its dest in `derive_cow_sole_owner`.
+///
+/// Exhaustive with no wildcard (fail-closed): only `Local` and the
+/// synthetic `ReturnSlot` are plain, non-aliasing slots whose `Move` is an
+/// ownership hand-off (forward-propagated by the fixpoint, not seeded).
+/// Every other variant — the interior-projection loads
+/// (`MachineVariant`/`EnumVariant`/`GenState`) *and* the handle/tag places
+/// — is treated as interior so a future projection-shaped place cannot be
+/// added without deciding it here; over-tainting a handle/tag place only
+/// over-excludes its dest from drop (leaks, never double-frees).
+#[must_use]
+#[allow(
+    clippy::match_same_arms,
+    reason = "the interior-projection arm and the handle/tag arm both return \
+              `true` but are kept separate: they are kept distinct so a future \
+              `Place` variant must be classified deliberately on the correct \
+              side (interior vs hand-off), and so the per-group rationale stays \
+              attached to the variants it covers — folding them would erase the \
+              fail-closed intent"
+)]
+fn place_is_interior_projection(place: Place) -> bool {
+    match place {
+        // Plain ownership-bearing slots: a `Move` from here is a hand-off,
+        // not an interior alias. Forward-propagation in the fixpoint loop
+        // (not this seed) carries taint through `Local` → `Local` copies.
+        Place::Local(_) | Place::ReturnSlot => false,
+        // Interior-projection loads — the payload-destructure forms that
+        // alias parent storage with no retain. These are the variants this
+        // fix exists to catch.
+        Place::MachineVariant { .. } | Place::EnumVariant { .. } | Place::GenState { .. } => true,
+        // Handle/tag places. Tainting these only over-excludes (leaks); kept
+        // on the interior side so the match stays fail-closed and no future
+        // projection-shaped place defaults to the hand-off branch.
+        Place::DuplexHandle(_)
+        | Place::LambdaActorHandle(_)
+        | Place::ActorHandle(_)
+        | Place::SendHalf(_)
+        | Place::RecvHalf(_)
+        | Place::MachineTag(_)
+        | Place::EnumTag(_) => true,
+    }
+}
+
+/// The *source* (read) operands of an instruction — every `Place` whose
+/// value the instruction consumes, excluding the destination(s) it writes.
+///
+/// W5-011 P3 (fail-closed sole-owner derivation). A heap-owning `string`
+/// local whose backing local surfaces here has had its pointer copied or
+/// aliased out of its slot (a `Move` src, a call/runtime/aggregate/variant
+/// operand, a payload, a field store, …) and is therefore NOT the sole
+/// owner of its buffer at scope exit. The match is intentionally
+/// exhaustive with no wildcard: a future `Instr` variant cannot be added
+/// without classifying its operands here, so a new alias-producing
+/// instruction auto-excludes its sources from scope-exit drop (it can
+/// never silently re-open a double-free). When a place's role is
+/// ambiguous, it is classified as a source (over-exclusion leaks, never
+/// double-frees). Mirrors `instr_places` structurally but drops the
+/// write-dest from each arm.
+#[allow(
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    reason = "flat exhaustive match over every Instr variant; the line \
+              count is the variant count, not nesting — the exhaustiveness \
+              is the fail-closed guarantee. Arms with identical bodies are \
+              kept separate per-variant so a future variant cannot be folded \
+              into an existing source-classification by accident"
+)]
+#[must_use]
+pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
+    match instr {
+        // No operands at all.
+        Instr::EnterContext
+        | Instr::ExitContext
+        | Instr::CheckCancellation
+        | Instr::ContextField { .. }
+        | Instr::ConstI64 { .. }
+        | Instr::StringLit { .. }
+        | Instr::ConstGlobalLoad { .. }
+        | Instr::FloatLit { .. }
+        | Instr::CharLit { .. }
+        | Instr::UnitLit { .. }
+        | Instr::DurationLit { .. }
+        // A field load out of the hidden actor-state pointer reads no
+        // operand `Place` — the source is the implicit context arg.
+        | Instr::ActorStateFieldLoad { .. } => Vec::new(),
+        // Binary arithmetic / comparison: both operands are sources, the
+        // dest (and any overflow-flag dest) is a write.
+        Instr::IntAdd { lhs, rhs, .. }
+        | Instr::IntSub { lhs, rhs, .. }
+        | Instr::IntMul { lhs, rhs, .. }
+        | Instr::IntArithCheckedOption { lhs, rhs, .. }
+        | Instr::IntArithSaturating { lhs, rhs, .. }
+        | Instr::IntDiv { lhs, rhs, .. }
+        | Instr::IntRem { lhs, rhs, .. }
+        | Instr::IntBitAnd { lhs, rhs, .. }
+        | Instr::IntBitOr { lhs, rhs, .. }
+        | Instr::IntBitXor { lhs, rhs, .. }
+        | Instr::IntShl { lhs, rhs, .. }
+        | Instr::IntShr { lhs, rhs, .. }
+        | Instr::IntCmp { lhs, rhs, .. }
+        | Instr::IdentityCompare { lhs, rhs, .. }
+        | Instr::IntArithChecked { lhs, rhs, .. }
+        | Instr::FloatAdd { lhs, rhs, .. }
+        | Instr::FloatSub { lhs, rhs, .. }
+        | Instr::FloatMul { lhs, rhs, .. }
+        | Instr::FloatDiv { lhs, rhs, .. }
+        | Instr::FloatRem { lhs, rhs, .. } => vec![*lhs, *rhs],
+        Instr::CancellationTokenIsCancelled { token, .. } => vec![*token],
+        Instr::BoolNot { operand, .. }
+        | Instr::FloatNeg { operand, .. }
+        | Instr::IntBitNot { operand, .. }
+        | Instr::IntNegChecked { operand, .. } => vec![*operand],
+        // The src is read into the dest; the dest is a write.
+        Instr::Move { src, .. } => vec![*src],
+        // A Drop reads the place it releases.
+        Instr::Drop { place, .. } => vec![*place],
+        // Witness size/align read no operand (the type is static metadata,
+        // not a runtime place); drop-glue reads the place it releases; a
+        // witness move reads its source.
+        Instr::WitnessSizeOf { .. } | Instr::WitnessAlignOf { .. } => Vec::new(),
+        Instr::WitnessDropGlue { place, .. } => vec![*place],
+        Instr::WitnessMove { src, .. } => vec![*src],
+        Instr::CallRuntimeAbi(call) => call.args().to_vec(),
+        Instr::AutoLockAcquire { lock } | Instr::AutoLockRelease { lock } => vec![*lock],
+        // Aggregate construction: every field/element value is shared into
+        // the new aggregate; the dest is a write.
+        Instr::RecordInit { fields, .. } => fields.iter().map(|(_, p)| *p).collect(),
+        Instr::TupleConstruct { elements, .. } => elements.clone(),
+        // Field loads: the aggregate is the source; the dest is a write
+        // (and, for the interior-aliasing loads, a projection seed — see
+        // `projection_alias_dest`).
+        Instr::RecordFieldLoad { record, .. } => vec![*record],
+        Instr::TupleFieldLoad { tuple, .. } => vec![*tuple],
+        Instr::ClosureEnvFieldLoad { env, .. } => vec![*env],
+        // Field stores: both the target aggregate and the stored value are
+        // read (the aggregate stays live; the value is shared into it).
+        Instr::RecordFieldStore { record, src, .. } => vec![*record, *src],
+        Instr::ActorStateFieldStore { src, .. } => vec![*src],
+        Instr::MakeClosure { env, .. } => vec![*env],
+        Instr::CallClosure { callee, args, .. } => {
+            let mut places = vec![*callee];
+            places.extend(args.iter().copied());
+            places
+        }
+        Instr::SpawnTaskDirect { task, .. } => vec![*task],
+        Instr::SpawnTaskClosure { task, env, .. } => vec![*task, *env],
+        Instr::SpawnActor {
+            state, init_args, ..
+        } => {
+            let mut places = Vec::new();
+            if let Some(state) = state {
+                places.push(*state);
+            }
+            places.extend(init_args.iter().copied());
+            places
+        }
+        Instr::CoerceToDynTrait { value, .. } => vec![*value],
+        Instr::CallTraitMethod {
+            fat_pointer, args, ..
+        } => {
+            let mut places = vec![*fat_pointer];
+            places.extend(args.iter().copied());
+            places
+        }
+        Instr::MachineEmitPlaceholder { payload, .. } => payload.clone(),
+        Instr::EnumTagLoad { src, .. } => vec![*src],
+        Instr::MachineStateName { src_local, .. } => vec![Place::Local(*src_local)],
+    }
+}
+
+/// The *source* (read) operands of a terminator — every `Place` whose
+/// value crosses the block edge as a read, excluding the slot the
+/// terminator writes (a `Call`'s `dest`, an `Ask`'s `reply_dest`, a
+/// `Select` arm's binding). Same fail-closed exhaustiveness contract as
+/// [`instr_source_places`]: a string surfacing here as an operand (a
+/// returned value moved to `ReturnSlot` earlier, an actor `Send`/`Ask`
+/// payload, a `select` arm payload, a `yield` value) is aliased out and
+/// excluded from scope-exit drop.
+#[allow(
+    clippy::match_same_arms,
+    reason = "exhaustive match over every Terminator variant; Send and Ask \
+              share an operand shape but are kept as separate arms so a \
+              future terminator cannot be folded into an existing \
+              source-classification by accident — the exhaustiveness is the \
+              fail-closed guarantee"
+)]
+#[must_use]
+pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
+    match term {
+        Terminator::Return | Terminator::Goto { .. } | Terminator::Trap { .. } => Vec::new(),
+        Terminator::Branch { cond, .. } => vec![*cond],
+        Terminator::Call { args, .. } => args.clone(),
+        Terminator::Yield { value, .. } => vec![*value],
+        Terminator::Send { actor, value, .. } => vec![*actor, *value],
+        // `reply_dest` is the slot the reply is written into — a write, not
+        // a source.
+        Terminator::Ask { actor, value, .. } => vec![*actor, *value],
+        Terminator::Select { arms, .. } => {
+            let mut places = Vec::new();
+            for arm in arms {
+                match &arm.kind {
+                    SelectArmKind::StreamNext { stream } => places.push(*stream),
+                    SelectArmKind::ActorAsk {
+                        actor, args, value, ..
+                    } => {
+                        places.push(*actor);
+                        places.extend(args.iter().copied());
+                        places.push(*value);
+                    }
+                    SelectArmKind::TaskAwait { task } => places.push(*task),
+                    SelectArmKind::AfterTimer { duration } => places.push(*duration),
+                }
+                // `arm.binding` is the slot the won arm's value is written
+                // into — a write, not a source.
+            }
+            places
+        }
+    }
+}
+
+/// The destination of an instruction that loads an *interior pointer* out
+/// of a still-live aggregate — a record field, a tuple element, a
+/// closure-env capture, or an actor-state field. The loaded value aliases
+/// the parent aggregate's owned heap (no retain is emitted on the M-COW
+/// spine), so a `string` local that ultimately receives such a value is
+/// NOT its own sole owner: dropping it would free a buffer the parent
+/// still owns.
+///
+/// W5-011 P3 — `derive_cow_sole_owner` seeds projection-alias taint at
+/// these dests and propagates it forward through `Move`. The match is
+/// exhaustive with no wildcard so a future aggregate-projection load
+/// cannot be added without deciding whether its dest aliases parent
+/// storage — the same fail-closed guarantee `instr_source_places` carries.
+#[must_use]
+fn projection_alias_dest(instr: &Instr) -> Option<Place> {
+    match instr {
+        Instr::RecordFieldLoad { dest, .. }
+        | Instr::TupleFieldLoad { dest, .. }
+        | Instr::ClosureEnvFieldLoad { dest, .. }
+        | Instr::ActorStateFieldLoad { dest, .. } => Some(*dest),
+        // Everything else either produces a fresh value (literals,
+        // arithmetic, calls, aggregate construction) or writes through a
+        // place that does not alias a live aggregate's interior. Listed
+        // exhaustively (no wildcard) so a new projection-shaped load forces
+        // a classification decision here.
+        Instr::EnterContext
+        | Instr::ExitContext
+        | Instr::CheckCancellation
+        | Instr::ContextField { .. }
+        | Instr::ConstI64 { .. }
+        | Instr::IntAdd { .. }
+        | Instr::IntSub { .. }
+        | Instr::IntMul { .. }
+        | Instr::IntDiv { .. }
+        | Instr::IntRem { .. }
+        | Instr::IntBitAnd { .. }
+        | Instr::IntBitOr { .. }
+        | Instr::IntBitXor { .. }
+        | Instr::BoolNot { .. }
+        | Instr::IntNegChecked { .. }
+        | Instr::FloatNeg { .. }
+        | Instr::IntBitNot { .. }
+        | Instr::IntShl { .. }
+        | Instr::IntShr { .. }
+        | Instr::IntArithChecked { .. }
+        | Instr::IntArithCheckedOption { .. }
+        | Instr::IntArithSaturating { .. }
+        | Instr::IntCmp { .. }
+        | Instr::IdentityCompare { .. }
+        | Instr::CancellationTokenIsCancelled { .. }
+        | Instr::Move { .. }
+        | Instr::CallRuntimeAbi(_)
+        | Instr::AutoLockAcquire { .. }
+        | Instr::AutoLockRelease { .. }
+        | Instr::MakeClosure { .. }
+        | Instr::ActorStateFieldStore { .. }
+        | Instr::SpawnActor { .. }
+        | Instr::CallClosure { .. }
+        | Instr::SpawnTaskDirect { .. }
+        | Instr::SpawnTaskClosure { .. }
+        | Instr::Drop { .. }
+        | Instr::WitnessSizeOf { .. }
+        | Instr::WitnessAlignOf { .. }
+        | Instr::WitnessDropGlue { .. }
+        | Instr::WitnessMove { .. }
+        | Instr::StringLit { .. }
+        | Instr::ConstGlobalLoad { .. }
+        | Instr::RecordInit { .. }
+        | Instr::RecordFieldStore { .. }
+        | Instr::TupleConstruct { .. }
+        | Instr::FloatLit { .. }
+        | Instr::CharLit { .. }
+        | Instr::UnitLit { .. }
+        | Instr::DurationLit { .. }
+        | Instr::FloatAdd { .. }
+        | Instr::FloatSub { .. }
+        | Instr::FloatMul { .. }
+        | Instr::FloatDiv { .. }
+        | Instr::FloatRem { .. }
+        | Instr::CoerceToDynTrait { .. }
+        | Instr::CallTraitMethod { .. }
+        | Instr::MachineEmitPlaceholder { .. }
+        | Instr::EnumTagLoad { .. }
+        | Instr::MachineStateName { .. } => None,
+    }
+}
+
+/// W5-011 P3 — fail-closed sole-owner derivation for heap-owning `string`
+/// value-class locals.
+///
+/// Returns the set of owned-local `BindingId`s whose backing `string`
+/// buffer is *provably* owned by exactly this scope at every exit, and is
+/// therefore safe to release with a scope-exit `hew_string_drop`. The
+/// M-COW spine emits no retain-on-share, so a string pointer that is
+/// copied anywhere (a call/runtime argument, an aggregate element, a
+/// variant or actor payload, a `Move` into another slot or the return
+/// slot) is bit-aliased with no refcount bump — dropping both ends would
+/// double-free. The derivation proves the negative: a binding is allowed
+/// ONLY IF
+///
+///  1. its backing local is never read as a *source operand* anywhere in
+///     the finalised instruction + terminator stream (so its pointer is
+///     never aliased out), AND
+///  2. its backing local is not a *projection alias* — it never receives,
+///     directly or through a `Move` chain, an interior pointer loaded out
+///     of a still-live aggregate (record/tuple/closure-env/actor-state
+///     field).
+///
+/// Everything not positively cleared is excluded by default — including
+/// any binding that lacks a `Place::Local` slot. The two classifiers the
+/// derivation consults (`instr_source_places`, `projection_alias_dest`)
+/// are compiler-exhaustive over the `Instr` enum, so a future
+/// alias-producing or projection-shaped instruction cannot be introduced
+/// without a classification decision: the default direction of every
+/// failure is exclusion (a leak, never a double-free).
+///
+/// Consume facts are folded in by the caller (`elaborate`): a binding
+/// consumed/maybe-consumed on a path is removed from the allow-set after
+/// this returns.
+///
+/// LESSONS: boundary-fail-closed (P0 — the default is no-drop; a drop is
+/// earned only by a positive sole-owner proof), cleanup-all-exits,
+/// raii-null-after-move.
+#[must_use]
+fn derive_cow_sole_owner(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> HashSet<BindingId> {
+    // 1. Every local read as a source operand anywhere — i.e. every local
+    //    whose pointer is copied/aliased out of its slot.
+    let mut read_locals: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            for p in instr_source_places(instr) {
+                if let Some(l) = base_local(p) {
+                    read_locals.insert(l);
+                }
+            }
+        }
+        for p in terminator_source_places(&block.terminator) {
+            if let Some(l) = base_local(p) {
+                read_locals.insert(l);
+            }
+        }
+    }
+
+    // 2. Projection-alias taint. Seed at every interior-pointer load dest,
+    //    then propagate forward through `Move` to a fixpoint — a value
+    //    copied from a tainted local is itself a parent-interior alias.
+    let mut tainted: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Some(dest) = projection_alias_dest(instr) {
+                if let Some(l) = base_local(dest) {
+                    tainted.insert(l);
+                }
+            }
+            // A `Move` *from* an interior projection (enum/machine payload
+            // destructure binder — `lower_match_enum_tag`/`lower_while_let`)
+            // aliases parent storage with no retain. `projection_alias_dest`
+            // only sees the four `*FieldLoad` instrs, so seed the binder dest
+            // here. `base_local(src)` collapses the projection to the parent
+            // scrutinee (marking it read), but the binder dest is a fresh
+            // owned local that must itself be tainted or it is admitted to
+            // drop and double-frees the shared buffer.
+            if let Instr::Move { dest, src } = instr {
+                if place_is_interior_projection(*src) {
+                    if let Some(dl) = base_local(*dest) {
+                        tainted.insert(dl);
+                    }
+                }
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if tainted.contains(&sl) && tainted.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // 3. Allow-set: leaf `string` owned locals that are neither aliased out
+    //    (read) nor aliased in (projection-tainted). Fail-closed: a binding
+    //    without a resolvable `Place::Local` slot is excluded.
+    let mut allowed: HashSet<BindingId> = HashSet::new();
+    for (binding, _name, ty) in owned_locals {
+        if cow_value_leaf_drop_symbol(ty).is_none() {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        if read_locals.contains(&local) || tainted.contains(&local) {
+            continue;
+        }
+        allowed.insert(*binding);
+    }
+    allowed
+}
+
 /// Resolve the `DropKind` for an `ElabDrop` given the addressable
 /// `Place` and the binding's `ResolvedTy`.
 ///
@@ -12969,6 +14361,19 @@ fn drop_kind_for(
                  drop elaboration runs (W3.031 Stage 1)",
             );
             DropKind::TraitObject { storage }
+        }
+        // W5-011 P3 — a `string` owned local shares `Place::Local` /
+        // `Place::ReturnSlot` storage with every other by-value binding, so
+        // (like the `dyn Trait` arm above) it is discriminated by
+        // `ResolvedTy::String` rather than a Place variant. Its function-scope
+        // release is the C-ABI `hew_string_drop` (refcount decrement, free at
+        // zero). This arm is the single source of truth the drop-plan
+        // validator re-derives against, so `build_lifo_drops` must emit the
+        // identical kind (see `cow_value_leaf_drop_symbol`).
+        Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::String) => {
+            DropKind::CowHeap {
+                drop_fn: "hew_string_drop",
+            }
         }
         // Machine tag and variant fields are sub-structure of a machine value,
         // not independent resources. Machine values are `BitCopy` by value
@@ -13135,6 +14540,7 @@ fn build_lifo_drops(
     binding_locals: &HashMap<BindingId, Place>,
     type_classes: &hew_hir::TypeClassTable,
     dyn_trait_storage: &HashMap<BindingId, TraitObjectStorage>,
+    cow_drop_allowed: &HashSet<BindingId>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
@@ -13224,18 +14630,70 @@ fn build_lifo_drops(
                     kind,
                 });
             }
-            // Linear, BitCopy, CowValue, PersistentShare, View, Unknown:
-            // no implicit drop. Linear is enforced by MustConsume; the
-            // rest have no drop semantics by value-class definition.
+            // Linear, BitCopy, PersistentShare, View, Unknown: no implicit
+            // drop. Linear is enforced by MustConsume; the rest have no drop
+            // semantics by value-class definition.
             ValueClass::Linear
             | ValueClass::BitCopy
-            | ValueClass::CowValue
             | ValueClass::PersistentShare
             | ValueClass::View
             | ValueClass::Unknown => {}
+            // CowValue — W5-011 P3. A heap-owning value-class local whose
+            // single owner is this scope. This slice elaborates the
+            // function-scope release for the leaf `string` case only (the
+            // accumulating helper-local leak the lane targets). The drop is
+            // gated fail-CLOSED on the sole-owner ALLOW-set: a binding is
+            // dropped here ONLY IF it appears in `cow_drop_allowed`, which
+            // `elaborate` populates by proving — against the finalised MIR
+            // instruction + terminator stream — that the binding's pointer is
+            // never aliased out (never read as a source operand) and is not a
+            // projection alias of a still-live aggregate, then removing any
+            // binding consumed/maybe-consumed on a path. A binding absent from
+            // the allow-set leaks (as before this lane); it never double-frees.
+            // The default for any binding the prover did not positively clear
+            // is exclusion, so an un-enumerated future alias producer cannot
+            // re-open the double-free. Aggregate/container `CowValue` self-drops
+            // (Vec, HashMap, HashSet, Tuple, Array, Bytes) are deferred to the
+            // retain-on-share follow-on and remain no-ops here.
+            // LESSONS: cleanup-all-exits, raii-null-after-move,
+            // boundary-fail-closed.
+            ValueClass::CowValue => {
+                if cow_value_leaf_drop_symbol(ty).is_some() && cow_drop_allowed.contains(binding) {
+                    if let Some(place) = binding_locals.get(binding) {
+                        // `drop_kind_for` is the single source of truth for the
+                        // Place+type → DropKind mapping (the drop-plan validator
+                        // re-derives against it); route through it so the emitted
+                        // kind cannot drift from the validator's expectation.
+                        drops.push(ElabDrop {
+                            place: *place,
+                            ty: ty.clone(),
+                            drop_fn: None,
+                            kind: drop_kind_for(*place, ty, None),
+                        });
+                    }
+                }
+            }
         }
     }
     drops
+}
+
+/// W5-011 P3 (Slice 2). Map a `CowValue` leaf type to its C-ABI runtime
+/// release symbol for function-scope drop elaboration, or `None` for types
+/// whose scope-exit drop is deferred to a later slice.
+///
+/// Slice 2 is intentionally restricted to the single `string` leaf — the
+/// accumulating helper-local leak this lane targets. Aggregate and container
+/// `CowValue` leaves (`Vec`, `HashMap`, `HashSet`, `Bytes`, tuples, arrays)
+/// own nested heap that, without retain-on-share at element-ingress sites,
+/// cannot be released here without risking a double-free against the
+/// container's own element-release path; they stay `None` (leak-as-before,
+/// never double-free) until the retain-on-share spine lands.
+fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str> {
+    match ty {
+        ResolvedTy::String => Some("hew_string_drop"),
+        _ => None,
+    }
 }
 
 /// Build the elaborated block list + per-`ExitPath` drop plans for a
@@ -13394,6 +14852,7 @@ fn enumerate_exits(
                 msg_type: _,
                 value: _,
                 next,
+                alias_mode: _,
             } => (
                 // `actor` is a Place; the ExitPath::Send slot carries
                 // the callee name. Spine has no Send construction
@@ -13503,6 +14962,7 @@ mod slice3_invariants {
             node: hew_hir::HirNodeId(0),
             name: "handler".to_string(),
             type_params: vec![],
+            intrinsic_id: None,
             params: vec![],
             return_ty: ResolvedTy::Unit,
             body: HirBlock {
@@ -13552,6 +15012,7 @@ mod slice3_invariants {
                 None,
                 &HashSet::new(),
                 &HashSet::new(),
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
@@ -13954,6 +15415,8 @@ mod slice3_invariants {
                     DropKind::DuplexHalfClose(Direction::Recv) => r_count += 1,
                     DropKind::Resource
                     | DropKind::LambdaActorRelease
+                    | DropKind::CowHeap { .. }
+                    | DropKind::AggregateRecursive
                     | DropKind::TraitObject { .. } => {}
                 }
             }
@@ -15368,5 +16831,287 @@ mod enum_layout_tests {
         assert_eq!(layout.variants[0].field_tys, vec![ResolvedTy::I64]);
         assert_eq!(layout.variants[1].name, "None");
         assert!(layout.variants[1].field_tys.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cow_sole_owner_derivation {
+    //! Direct structural tests for `derive_cow_sole_owner` — the fail-closed
+    //! layer-1 allow-set. These poke the derivation with synthetic MIR
+    //! blocks because the buggy shape (an enum/machine payload-destructure
+    //! binder) cannot be built through the `TypeCheckOutput::default()`
+    //! minimal `elaborate.rs` pipeline (variant literals need populated
+    //! `expr_types`), and the runtime liveness layer would mask a layer-1
+    //! admission anyway. Asserting on the allow-set directly is the only
+    //! place the projection-alias-via-`Move` hole is observable.
+    use super::*;
+
+    fn block(instructions: Vec<Instr>) -> BasicBlock {
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions,
+            terminator: Terminator::Return,
+        }
+    }
+
+    /// A `string` owned local whose backing local is never touched by any
+    /// instruction is the canonical sole owner — it must be admitted.
+    #[test]
+    fn untouched_string_local_is_admitted() {
+        let b = BindingId(1);
+        let owned = vec![(b, "s".to_string(), ResolvedTy::String)];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(7));
+
+        let allowed = derive_cow_sole_owner(&[block(vec![])], &owned, &binding_locals);
+        assert!(
+            allowed.contains(&b),
+            "an untouched string local is its own sole owner and must be admitted"
+        );
+    }
+
+    /// Two payload-destructure binders aliasing the same scrutinee
+    /// (`Move {{ dest: Local(d), src: MachineVariant {{ local: scrutinee }} }}`,
+    /// the `lower_match_enum_tag` shape) must BOTH be excluded: each aliases
+    /// the parent's rc=1 buffer with no retain, so admitting either to a
+    /// scope-exit `hew_string_drop` double-frees the shared buffer. This is
+    /// the regression for the projection-alias-via-`Move` hole — before the
+    /// fix `projection_alias_dest` saw only the four `*FieldLoad` instrs and
+    /// these binders were admitted.
+    #[test]
+    fn machine_variant_destructure_binders_are_excluded() {
+        let f = BindingId(10);
+        let g = BindingId(11);
+        let scrutinee = 5u32;
+        let proj = |field_idx| Place::MachineVariant {
+            local: scrutinee,
+            variant_idx: 0,
+            field_idx,
+        };
+        let instrs = vec![
+            Instr::Move {
+                dest: Place::Local(20),
+                src: proj(0),
+            },
+            Instr::Move {
+                dest: Place::Local(21),
+                src: proj(0),
+            },
+        ];
+        let owned = vec![
+            (f, "f".to_string(), ResolvedTy::String),
+            (g, "g".to_string(), ResolvedTy::String),
+        ];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(f, Place::Local(20));
+        binding_locals.insert(g, Place::Local(21));
+
+        let allowed = derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals);
+        assert!(
+            !allowed.contains(&f) && !allowed.contains(&g),
+            "payload-destructure binders alias parent storage (no retain) and \
+             must be excluded from the scope-exit drop plan; got {allowed:?}"
+        );
+    }
+
+    /// The same exclusion holds for the user-enum (`EnumVariant`) and
+    /// generator-state (`GenState`) interior-projection load forms, and the
+    /// taint propagates one `Move` hop further (binder copied into a second
+    /// local).
+    #[test]
+    fn enum_variant_destructure_taint_propagates_through_move() {
+        let payload = BindingId(30);
+        let copy = BindingId(31);
+        let instrs = vec![
+            // copy <- EnumVariant{scrutinee} : payload-destructure binder.
+            Instr::Move {
+                dest: Place::Local(40),
+                src: Place::EnumVariant {
+                    local: 3,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+            },
+            // local 41 <- Local(40) : plain hand-off Move, must carry taint.
+            Instr::Move {
+                dest: Place::Local(41),
+                src: Place::Local(40),
+            },
+        ];
+        let owned = vec![
+            (payload, "p".to_string(), ResolvedTy::String),
+            (copy, "c".to_string(), ResolvedTy::String),
+        ];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(payload, Place::Local(40));
+        binding_locals.insert(copy, Place::Local(41));
+
+        let allowed = derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals);
+        assert!(
+            allowed.is_empty(),
+            "the enum-variant binder and the local it is moved into both alias \
+             parent storage and must be excluded; got {allowed:?}"
+        );
+    }
+
+    /// A plain `Local -> Local` `Move` of an untouched string is an ownership
+    /// hand-off, NOT an interior alias: the destination is the live owner and
+    /// is admitted, while the (read) source is excluded. This guards against
+    /// the fix over-tainting ordinary moves.
+    #[test]
+    fn plain_local_move_handoff_admits_destination_only() {
+        let src = BindingId(50);
+        let dst = BindingId(51);
+        let instrs = vec![Instr::Move {
+            dest: Place::Local(61),
+            src: Place::Local(60),
+        }];
+        let owned = vec![
+            (src, "src".to_string(), ResolvedTy::String),
+            (dst, "dst".to_string(), ResolvedTy::String),
+        ];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(src, Place::Local(60));
+        binding_locals.insert(dst, Place::Local(61));
+
+        let allowed = derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals);
+        assert!(
+            !allowed.contains(&src),
+            "the move source is aliased out and must be excluded"
+        );
+        assert!(
+            allowed.contains(&dst),
+            "the move destination is the live owner and must be admitted (no over-taint)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod witness_verifier_composite_traversal {
+    //! W5.007a fix — the MIR witness-operand verifier must descend EVERY
+    //! composite `ResolvedTy` constructor so an out-of-scope `TypeParam`
+    //! nested under a `Borrow` or `TraitObject` is caught and fails closed
+    //! with `MirCheck::WitnessOperandUnresolved` (A622 / DI-019). The pre-fix
+    //! `collect_undeclared_type_params` fell through `_ => {}` for those two
+    //! composites, so an undeclared parameter underneath them BYPASSED the
+    //! declared-parameter check. These tests FAIL on the pre-fix tree.
+
+    use super::*;
+
+    /// Run the witness-operand verifier over a single `WitnessSizeOf` whose
+    /// operand is `ty`, with `declared` as the enclosing function's binders.
+    /// Returns the `MirCheck`s the verifier produced.
+    fn verify_witness(ty: ResolvedTy, declared: &[&str]) -> Vec<MirCheck> {
+        let builder = Builder::default();
+        let block = BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![Instr::WitnessSizeOf {
+                dest: Place::Local(0),
+                ty,
+            }],
+            terminator: Terminator::Return,
+        };
+        let func = HirFn {
+            id: hew_hir::ItemId(0),
+            node: hew_hir::HirNodeId(0),
+            name: "origin".to_string(),
+            type_params: declared.iter().map(|s| (*s).to_string()).collect(),
+            intrinsic_id: None,
+            params: Vec::new(),
+            return_ty: ResolvedTy::Unit,
+            body: HirBlock {
+                node: hew_hir::HirNodeId(0),
+                scope: hew_hir::ScopeId(0),
+                statements: Vec::new(),
+                tail: None,
+                ty: ResolvedTy::Unit,
+                span: 0..0,
+            },
+            span: 0..0,
+        };
+        check_function(&builder, std::slice::from_ref(&block), &func).checks
+    }
+
+    fn has_witness_unresolved(checks: &[MirCheck]) -> bool {
+        checks
+            .iter()
+            .any(|c| matches!(c, MirCheck::WitnessOperandUnresolved { .. }))
+    }
+
+    /// `&U` with `U` out of scope: the verifier must descend the borrow
+    /// pointee and reject.
+    #[test]
+    fn out_of_scope_type_param_under_borrow_fails_closed() {
+        let ty = ResolvedTy::Borrow {
+            pointee: Box::new(ResolvedTy::TypeParam {
+                name: "U".to_string(),
+            }),
+        };
+        let checks = verify_witness(ty, &[]);
+        assert!(
+            has_witness_unresolved(&checks),
+            "an undeclared TypeParam under a borrow must fail closed; got: {checks:?}"
+        );
+    }
+
+    /// A trait-object operand carrying an undeclared parameter in a trait
+    /// argument must be rejected.
+    #[test]
+    fn out_of_scope_type_param_in_trait_object_arg_fails_closed() {
+        let ty = ResolvedTy::TraitObject {
+            traits: vec![hew_types::ResolvedTraitBound {
+                trait_name: "Into".to_string(),
+                args: vec![ResolvedTy::TypeParam {
+                    name: "U".to_string(),
+                }],
+                assoc_bindings: vec![],
+            }],
+        };
+        let checks = verify_witness(ty, &[]);
+        assert!(
+            has_witness_unresolved(&checks),
+            "an undeclared TypeParam in a trait-object arg must fail closed; got: {checks:?}"
+        );
+    }
+
+    /// A trait-object operand carrying an undeclared parameter in an
+    /// associated-type binding must be rejected.
+    #[test]
+    fn out_of_scope_type_param_in_trait_object_assoc_binding_fails_closed() {
+        let ty = ResolvedTy::TraitObject {
+            traits: vec![hew_types::ResolvedTraitBound {
+                trait_name: "Iterator".to_string(),
+                args: vec![],
+                assoc_bindings: vec![(
+                    "Item".to_string(),
+                    ResolvedTy::TypeParam {
+                        name: "U".to_string(),
+                    },
+                )],
+            }],
+        };
+        let checks = verify_witness(ty, &[]);
+        assert!(
+            has_witness_unresolved(&checks),
+            "an undeclared TypeParam in a trait-object assoc binding must fail closed; got: {checks:?}"
+        );
+    }
+
+    /// A DECLARED parameter under a borrow is admitted — the descent does not
+    /// over-reject in-scope parameters (the abstract-origin happy path).
+    #[test]
+    fn declared_type_param_under_borrow_is_admitted() {
+        let ty = ResolvedTy::Borrow {
+            pointee: Box::new(ResolvedTy::TypeParam {
+                name: "T".to_string(),
+            }),
+        };
+        let checks = verify_witness(ty, &["T"]);
+        assert!(
+            !has_witness_unresolved(&checks),
+            "a declared TypeParam under a borrow must be admitted; got: {checks:?}"
+        );
     }
 }

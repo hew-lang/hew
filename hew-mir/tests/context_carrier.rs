@@ -13,6 +13,7 @@ fn actor_handler(blocks: Vec<BasicBlock>) -> RawMirFunction {
         locals: vec![ResolvedTy::I64],
         blocks,
         decisions: vec![],
+        intrinsic_id: None,
     }
 }
 

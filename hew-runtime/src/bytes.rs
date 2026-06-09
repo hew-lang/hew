@@ -229,7 +229,28 @@ pub extern "C" fn hew_bytes_new(capacity: u32) -> *mut u8 {
     unsafe { alloc_buf(cap) }
 }
 
+/// Refcount saturation threshold, mirroring `std::sync::Arc`'s `MAX_REFCOUNT`
+/// discipline and `hew-cabi`'s `CSTRING_RC_MAX`. A retain that observes an old
+/// count above this is one step from wrapping the `u32`; a later drop would
+/// then free a still-aliased buffer (use-after-free), so we abort first.
+const BYTES_RC_MAX: u32 = u32::MAX / 2;
+
+/// Pure predicate: would retaining a buffer whose current (pre-increment)
+/// refcount is `old` push the count past [`BYTES_RC_MAX`]? Extracted so the
+/// abort condition is unit-testable without `2^31` real retains. Mirrors
+/// `hew-cabi`'s `cstring_rc_would_overflow`.
+#[inline]
+#[must_use]
+fn bytes_rc_would_overflow(old: u32) -> bool {
+    old > BYTES_RC_MAX
+}
+
 /// Atomically increment the refcount of a byte buffer. No-op if `data_ptr` is null.
+///
+/// Overflow is fail-closed: if the pre-increment count is already past
+/// [`BYTES_RC_MAX`] the refcount is about to wrap, so we abort rather than let
+/// a future drop free a buffer that still has live aliases (the
+/// `std::sync::Arc` `MAX_REFCOUNT` discipline).
 ///
 /// # Safety
 ///
@@ -241,7 +262,15 @@ pub unsafe extern "C" fn hew_bytes_clone_ref(data_ptr: *mut u8) {
     }
     // SAFETY: Caller guarantees data_ptr is a valid bytes allocation.
     let rc = unsafe { refcount(data_ptr) };
-    rc.fetch_add(1, Ordering::Relaxed);
+    let old = rc.fetch_add(1, Ordering::Relaxed);
+    if bytes_rc_would_overflow(old) {
+        eprintln!(
+            "hew-runtime: hew_bytes_clone_ref refcount overflow (old={old} > {BYTES_RC_MAX}); \
+             aborting to avoid a use-after-free when the count wraps."
+        );
+        // SAFETY: abort is always safe; it does not return.
+        unsafe { libc::abort() };
+    }
 }
 
 /// Atomically decrement the refcount. If it reaches zero, free the allocation.
@@ -543,15 +572,12 @@ pub unsafe extern "C" fn hew_bytes_eq(
 #[no_mangle]
 pub unsafe extern "C" fn hew_bytes_to_string(triple: BytesTriple) -> *mut std::ffi::c_char {
     if triple.len == 0 || triple.ptr.is_null() {
-        // Return an empty NUL-terminated string.
-        // SAFETY: Allocating 1 byte.
-        let out = unsafe { libc::malloc(1) }.cast::<std::ffi::c_char>();
+        // Return an empty NUL-terminated, header-aware string.
+        let out = crate::cabi::alloc_cstring_from_str(""); // CSTRING-ALLOC: str-open (hew_bytes_to_string empty path — header-aware String result; reaches hew_string_drop)
         if out.is_null() {
             // SAFETY: abort is always safe.
             unsafe { libc::abort() };
         }
-        // SAFETY: out is freshly allocated with 1 byte.
-        unsafe { *out = 0 };
         return out;
     }
 
@@ -560,18 +586,11 @@ pub unsafe extern "C" fn hew_bytes_to_string(triple: BytesTriple) -> *mut std::f
         std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
     };
     let s = String::from_utf8_lossy(data);
-    let bytes = s.as_bytes();
-    let alloc_size = bytes.len() + 1; // +1 for NUL
-                                      // SAFETY: alloc_size > 0.
-    let out = unsafe { libc::malloc(alloc_size) }.cast::<std::ffi::c_char>();
+    // Header-aware (S1): the result reaches hew_string_drop / free_cstring.
+    let out = crate::cabi::alloc_cstring_from_str(&s); // CSTRING-ALLOC: str-open (hew_bytes_to_string — header-aware String result; reaches hew_string_drop)
     if out.is_null() {
         // SAFETY: abort is always safe.
         unsafe { libc::abort() };
-    }
-    // SAFETY: out is freshly allocated with alloc_size bytes; bytes.len() < alloc_size.
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), bytes.len());
-        *out.add(bytes.len()) = 0; // NUL terminator
     }
     out
 }
@@ -1013,7 +1032,7 @@ mod tests {
             });
             assert!(!s.is_null());
             assert_eq!(*s, 0);
-            libc::free(s.cast::<libc::c_void>());
+            crate::cabi::free_cstring(s); // CSTRING-FREE: str-open (test frees hew_bytes_to_string output)
 
             assert!(hew_bytes_eq(std::ptr::null(), 0, 0, std::ptr::null(), 0, 0,));
         }
@@ -1094,7 +1113,7 @@ mod tests {
 
         // SAFETY: All pointers are valid.
         unsafe {
-            libc::free(cstr.cast::<libc::c_void>());
+            crate::cabi::free_cstring(cstr); // CSTRING-FREE: str-open (test frees hew_bytes_to_string output)
             hew_bytes_drop(triple.ptr);
             hew_bytes_drop(round_trip.ptr);
         }
@@ -1282,6 +1301,58 @@ mod tests {
         run_aborting_subprocess("bytes_slice_offset_overflow_aborts");
     }
 
+    /// The refcount-overflow guard in `hew_bytes_clone_ref` actually aborts
+    /// when a retain observes a count already past the saturation threshold —
+    /// proving the wrap guard is wired into the real path (mirrors
+    /// `hew-cabi`'s `cstring_retain_aborts_on_refcount_overflow`).
+    #[test]
+    fn bytes_clone_ref_overflow_aborts() {
+        run_aborting_subprocess("bytes_clone_ref_overflow_aborts");
+    }
+
+    /// The overflow predicate trips exactly above the saturation threshold and
+    /// nowhere below it. Covers the abort condition without `2^31` retains.
+    #[test]
+    fn bytes_rc_would_overflow_predicate_boundaries() {
+        assert!(!bytes_rc_would_overflow(0), "no owners never overflows");
+        assert!(!bytes_rc_would_overflow(1), "a single owner is safe");
+        assert!(
+            !bytes_rc_would_overflow(BYTES_RC_MAX),
+            "at the threshold the count is still representable"
+        );
+        assert!(
+            bytes_rc_would_overflow(BYTES_RC_MAX + 1),
+            "one past the threshold must trip"
+        );
+        assert!(
+            bytes_rc_would_overflow(u32::MAX - 1),
+            "near the wrap must trip"
+        );
+        assert!(bytes_rc_would_overflow(u32::MAX), "at the wrap must trip");
+    }
+
+    /// A retain whose pre-increment count is just below the threshold does NOT
+    /// abort — it bumps the count normally. Seeds the rc directly to avoid the
+    /// `2^31` retains a natural climb would require.
+    #[test]
+    fn bytes_clone_ref_below_threshold_does_not_abort() {
+        // SAFETY: ptr is a fresh header-aware allocation; we seed then restore
+        // the rc and drop the single owner.
+        unsafe {
+            let ptr = hew_bytes_new(16);
+            refcount(ptr).store(BYTES_RC_MAX, Ordering::Relaxed);
+            hew_bytes_clone_ref(ptr); // old == BYTES_RC_MAX → must NOT abort
+            assert_eq!(
+                refcount(ptr).load(Ordering::Relaxed),
+                BYTES_RC_MAX + 1,
+                "retain incremented"
+            );
+            // Restore a sane refcount and free the single owner.
+            refcount(ptr).store(1, Ordering::Relaxed);
+            hew_bytes_drop(ptr);
+        }
+    }
+
     // Spawn ourself with HEW_BYTES_ABORT_CASE set; the matching env-driven
     // test below runs the FFI call that aborts. The parent test asserts
     // (via `should_panic`) that the child exited non-zero (i.e. aborted).
@@ -1372,6 +1443,14 @@ mod tests {
                     len: 10,
                 };
                 let _ = hew_bytes_slice(bad_triple.ptr, bad_triple.offset, bad_triple.len, 3, 10);
+            },
+            "bytes_clone_ref_overflow_aborts" => unsafe {
+                // A real header-aware allocation whose refcount we seed one
+                // past the saturation threshold; the next retain must abort
+                // before the count wraps (Arc MAX_REFCOUNT discipline).
+                let ptr = hew_bytes_new(16);
+                refcount(ptr).store(BYTES_RC_MAX + 1, Ordering::Relaxed);
+                hew_bytes_clone_ref(ptr); // must abort, never returns
             },
             other => panic!("unknown abort case: {other}"),
         }

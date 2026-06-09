@@ -156,6 +156,7 @@ unsafe extern "C-unwind" fn capped_dispatch(
     msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     match msg_type {
         MSG_NORMAL => {

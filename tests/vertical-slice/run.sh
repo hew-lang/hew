@@ -154,6 +154,37 @@ run_accept_expect_status "defer_secures_block_result" 5
 run_accept_expect_status "return_terminates_early" 7
 
 # ---------------------------------------------------------------------------
+# Loop control flow: `break` / `continue` / bare `loop {}` completeness.
+#
+# Each fixture's exit code flows through the loop logic under test — the
+# asserted value only holds if the runtime control flow is correct, and the
+# regression case surfaces as a timeout (infinite loop) or a different exit
+# code, never as a silent pass.
+# ---------------------------------------------------------------------------
+
+# `break` in `while` seals the block at the break site (exit 3, not ~100).
+run_accept_expect_status "break_while" 3
+# `continue` in `for`-range advances the counter via the increment block
+# (Risk 1): 0 + 1 + 3 + 4 = 8 after skipping i == 2. A continue → header
+# regression would skip the increment and hang at i == 2.
+run_accept_expect_status "continue_for" 8
+# bare `loop {}` exits only via `break` (exit 7; missing break would hang).
+run_accept_expect_status "loop_break" 7
+# `break` targets the innermost loop only (inner-only break -> 2 * 3 = 6).
+run_accept_expect_status "break_nested" 6
+# in-loop `defer` fires on the `break` path (cleanup-all-exits): exit 9, not 0.
+run_accept_expect_status "defer_in_loop_break" 9
+
+# WASM parity: the for-range `continue` CFG (increment block + overflow traps,
+# the most complex loop-control shape) must compile under wasm32. Loop control
+# is pure CFG/Goto, so behavioural parity is inherited from the shared
+# MIR->LLVM lower; this gate pins that the wasm target does not regress on it.
+"${HEW}" compile --target wasm32-unknown-unknown \
+  "${ROOT}/tests/vertical-slice/accept/continue_for.hew" >"${accept_output}" 2>&1
+test -s "${ROOT}/.tmp/compile-out/continue_for.wasm"
+
+
+# ---------------------------------------------------------------------------
 # W3.030 Stage 4 — User-resource `close` end-to-end coverage.
 #
 # `#[resource]` types declare `close` in a sibling inherent-impl block

@@ -60,6 +60,7 @@ fn trivial_main() -> RawMirFunction {
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     }
 }
 
@@ -105,11 +106,14 @@ fn pipeline_with(actors: Vec<ActorLayout>, records: Vec<RecordLayout>) -> IrPipe
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -861,4 +865,115 @@ fn state_clone_zero_state_actor_emits_trivial_bodies() {
     assert!(ir.contains("define void @__hew_state_drop_Empty("));
     assert!(ir.contains("ret ptr"));
     assert!(ir.contains("ret void"));
+}
+
+/// W5.006 Slice 3 — actor with an enum state field carrying a heap payload
+/// (`enum Maybe { Just(string); Nothing }`). The synthesised
+/// `__hew_enum_clone_inplace_Maybe` / `__hew_enum_drop_inplace_Maybe`
+/// helpers must tag-dispatch (LLVM `switch`), deep-clone / drop only the
+/// active variant's owned string payload (`hew_string_clone` /
+/// `hew_string_drop`), and trap fail-closed (208) on an out-of-range tag.
+/// The actor clone/drop bodies must route the enum field through those
+/// helpers (mirroring the UserRecord arm).
+#[test]
+fn state_clone_actor_enum_field_tag_dispatches_payload_clone_and_drop() {
+    use hew_mir::{EnumLayout, MachineVariantLayout};
+
+    let maybe_ty = ResolvedTy::Named {
+        name: "Maybe".into(),
+        args: vec![],
+        builtin: None,
+    };
+    let mailbox = classified_actor(
+        "Mailbox",
+        vec!["msg"],
+        vec![maybe_ty.clone()],
+        vec![StateFieldCloneKind::Enum {
+            name: "Maybe".into(),
+        }],
+    );
+    let record = RecordLayout {
+        name: "Mailbox".into(),
+        field_tys: vec![maybe_ty],
+    };
+    let mut pipeline = pipeline_with(vec![mailbox], vec![record]);
+    pipeline.enum_layouts = vec![EnumLayout {
+        name: "Maybe".into(),
+        tag_width: 1,
+        variants: vec![
+            MachineVariantLayout {
+                name: "Just".into(),
+                field_tys: vec![ResolvedTy::String],
+            },
+            MachineVariantLayout {
+                name: "Nothing".into(),
+                field_tys: vec![],
+            },
+        ],
+    }];
+
+    let ir = emit_to_string(&pipeline, "actor-enum-field");
+
+    // Per-enum helpers are synthesised.
+    assert!(
+        ir.contains("define internal i32 @__hew_enum_clone_inplace_Maybe("),
+        "expected enum clone helper; IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("define internal void @__hew_enum_drop_inplace_Maybe("),
+        "expected enum drop helper; IR:\n{ir}"
+    );
+    // Actor bodies route the enum field through the helpers.
+    assert!(
+        ir.contains("call i32 @__hew_enum_clone_inplace_Maybe("),
+        "actor clone must call the enum clone helper; IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("call void @__hew_enum_drop_inplace_Maybe("),
+        "actor drop must call the enum drop helper; IR:\n{ir}"
+    );
+
+    // The clone helper body tag-dispatches and deep-clones the string
+    // payload; the drop helper drops it. Inspect each helper body range.
+    let clone_start = ir
+        .find("define internal i32 @__hew_enum_clone_inplace_Maybe(")
+        .expect("clone helper exists");
+    let clone_end = ir[clone_start..]
+        .find("\n}")
+        .map(|p| clone_start + p)
+        .expect("clone helper terminates");
+    let clone_body = &ir[clone_start..clone_end];
+    assert!(
+        clone_body.contains("switch"),
+        "enum clone helper must tag-dispatch via switch; body:\n{clone_body}"
+    );
+    assert!(
+        clone_body.contains("@hew_string_clone"),
+        "enum clone helper must deep-clone the string payload; body:\n{clone_body}"
+    );
+    assert!(
+        clone_body.contains("call void @hew_trap_with_code(i32 208)"),
+        "enum clone helper must trap (208) on out-of-range tag; body:\n{clone_body}"
+    );
+
+    let drop_start = ir
+        .find("define internal void @__hew_enum_drop_inplace_Maybe(")
+        .expect("drop helper exists");
+    let drop_end = ir[drop_start..]
+        .find("\n}")
+        .map(|p| drop_start + p)
+        .expect("drop helper terminates");
+    let drop_body = &ir[drop_start..drop_end];
+    assert!(
+        drop_body.contains("switch"),
+        "enum drop helper must tag-dispatch via switch; body:\n{drop_body}"
+    );
+    assert!(
+        drop_body.contains("@hew_string_drop"),
+        "enum drop helper must drop the string payload; body:\n{drop_body}"
+    );
+    assert!(
+        drop_body.contains("call void @hew_trap_with_code(i32 208)"),
+        "enum drop helper must trap (208) on out-of-range tag; body:\n{drop_body}"
+    );
 }

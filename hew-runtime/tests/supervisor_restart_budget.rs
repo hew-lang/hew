@@ -43,6 +43,7 @@ unsafe extern "C-unwind" fn counting_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
 }

@@ -129,6 +129,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
             terminator: Terminator::Return,
         }],
         decisions: Vec::new(),
+        intrinsic_id: None,
     };
 
     // `caller()` invokes the step stub with zeroed locals and returns.
@@ -166,6 +167,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
             },
         ],
         decisions: Vec::new(),
+        intrinsic_id: None,
     };
 
     IrPipeline {
@@ -181,11 +183,14 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         machine_layouts: vec![machine_layout],
         enum_layouts: Vec::new(),
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 

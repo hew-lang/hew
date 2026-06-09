@@ -84,6 +84,7 @@ unsafe extern "C-unwind" fn noop_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _size: usize,
+    _borrow_mode: i32,
 ) {
 }
 
@@ -102,6 +103,7 @@ unsafe extern "C-unwind" fn send_recv_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _size: usize,
+    _borrow_mode: i32,
 ) {
     let mut count = SEND_RECV_SIGNAL.count.lock().unwrap();
     *count += 1;
@@ -187,6 +189,7 @@ fn actor_full_lifecycle_spawn_send_close_free() {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         let mut count = LIFECYCLE_SIGNAL.count.lock().unwrap();
         *count += 1;
@@ -314,6 +317,7 @@ unsafe extern "C-unwind" fn echo_double_dispatch(
     _msg_type: i32,
     data: *mut c_void,
     data_size: usize,
+    _borrow_mode: i32,
 ) {
     if data.is_null() || data_size < size_of::<i32>() {
         return;
@@ -484,6 +488,7 @@ unsafe extern "C-unwind" fn slow_dispatch(
     _msg_type: i32,
     data: *mut c_void,
     data_size: usize,
+    _borrow_mode: i32,
 ) {
     std::thread::sleep(Duration::from_millis(500));
 
@@ -572,6 +577,7 @@ unsafe extern "C-unwind" fn order_dispatch(
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
+    _borrow_mode: i32,
 ) {
     let payload = if !data.is_null() && data_size >= size_of::<i32>() {
         unsafe { *(data.cast::<i32>()) }
@@ -637,6 +643,7 @@ unsafe extern "C-unwind" fn state_observing_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _size: usize,
+    _borrow_mode: i32,
 ) {
     // Read the current actor's state during dispatch.
     let me = hew_runtime::actor::hew_actor_self();

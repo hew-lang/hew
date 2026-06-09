@@ -173,6 +173,7 @@ mod tests {
                 terminator: Terminator::Return,
             }],
             decisions: vec![],
+            intrinsic_id: None,
         }
     }
 

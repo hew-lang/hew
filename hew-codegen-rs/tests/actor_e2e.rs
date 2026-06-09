@@ -3,19 +3,16 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 #[test]
-#[ignore = "actor lifecycle fixture deadlocks/SIGSEGVs at runtime; disabled to stop orphaned-process leaks until the lifecycle path is fixed"]
 fn actor_e2e_counter_compile_and_exit_code() {
     compile_and_run_actor_fixture("actor_counter", 42);
 }
 
 #[test]
-#[ignore = "actor lifecycle fixture deadlocks/SIGSEGVs at runtime; disabled to stop orphaned-process leaks until the lifecycle path is fixed"]
 fn actor_init_on_start_compile_and_exit_code() {
     compile_and_run_actor_fixture("actor_counter_init", 42);
 }
 
 #[test]
-#[ignore = "actor lifecycle fixture deadlocks/SIGSEGVs at runtime; disabled to stop orphaned-process leaks until the lifecycle path is fixed"]
 fn actor_on_stop_compile_and_exit_code() {
     compile_and_run_actor_fixture("actor_on_stop", 42);
 }

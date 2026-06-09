@@ -318,6 +318,8 @@ impl Checker {
         if matches!(scrutinee_ty, Ty::Error) {
             return;
         }
+        let scrutinee_ty = self.subst.resolve(scrutinee_ty);
+        let scrutinee_ty = &scrutinee_ty;
 
         let mut has_wildcard = false;
         for arm in arms {
@@ -452,21 +454,32 @@ impl Checker {
             _ => {
                 // For non-enum types (int, float, string, etc.), check for catch-all patterns.
                 let mut has_catch_all = false;
+                let mut has_literal_arm = false;
                 for arm in arms {
                     if arm.guard.is_some() {
                         continue;
                     }
-                    visit_or_patterns(&arm.pattern.0, &mut |pattern| {
-                        if matches!(pattern, Pattern::Identifier(_)) {
+                    visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
+                        Pattern::Identifier(_) => {
                             has_catch_all = true;
                         }
+                        Pattern::Literal(_) => {
+                            has_literal_arm = true;
+                        }
+                        _ => {}
                     });
                     if has_catch_all {
                         break;
                     }
                 }
                 if !has_catch_all {
-                    self.warn_non_exhaustive(span, "consider adding a wildcard `_` arm");
+                    if has_literal_arm
+                        && matches!(scrutinee_ty, Ty::I64 | Ty::IntLiteral | Ty::Char)
+                    {
+                        self.error_non_exhaustive(span, &["_".to_string()], |_| "_".to_string());
+                    } else {
+                        self.warn_non_exhaustive(span, "consider adding a wildcard `_` arm");
+                    }
                 }
             }
         }

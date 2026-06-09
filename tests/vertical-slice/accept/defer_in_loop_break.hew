@@ -1,0 +1,18 @@
+// A `defer` opened INSIDE a loop body must fire when `break` exits the loop
+// (Risk 3, LESSONS `cleanup-all-exits`). The break handler flushes the
+// in-loop defer window (`active_scopes[loop_scope_depth..]`) before jumping
+// to `exit_bb`, so deferred cleanup that was registered inside the loop body
+// still runs on the break path.
+//
+// The deferred `exit(9)` is registered inside the loop body, then `break`
+// leaves the loop. If the in-loop defer fires on break (correct), the process
+// exits 9 and never reaches `return 0`. If the break path failed to flush the
+// in-loop defer window, control would fall through to `return 0` and exit 0.
+// Observing exit code 9 proves the in-loop defer ran on the break path.
+fn main() -> i64 {
+    loop {
+        defer exit(9);
+        break;
+    }
+    return 0;
+}

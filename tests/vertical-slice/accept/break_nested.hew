@@ -1,0 +1,25 @@
+// `break` must target the innermost loop's `exit_bb` (the top of `loop_stack`),
+// never an enclosing loop. This guards against a `break` that escapes too far.
+//
+// The inner `while` breaks when `inner == 2`, so each outer pass contributes
+// exactly 2 to `total` (the `inner == 0` and `inner == 1` iterations). The
+// outer loop runs 3 times, giving 2 * 3 = 6. If `break` escaped to the outer
+// loop instead, the outer loop would terminate after a single pass and
+// `total` would be 2. Observing exit code 6 proves the `break` exited only
+// the inner loop.
+fn main() -> i64 {
+    var total: i64 = 0;
+    var outer: i64 = 0;
+    while outer < 3 {
+        var inner: i64 = 0;
+        while inner < 10 {
+            if inner == 2 {
+                break;
+            }
+            total = total + 1;
+            inner = inner + 1;
+        }
+        outer = outer + 1;
+    }
+    total
+}

@@ -19,11 +19,14 @@ fn empty_pipeline(machine_layouts: Vec<MachineLayout>) -> IrPipeline {
         machine_layouts,
         enum_layouts: Vec::new(),
         regex_literals: Vec::new(),
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -85,6 +88,7 @@ fn traffic_light_uses_i8_tagged_union_struct() {
             terminator: Terminator::Return,
         }],
         decisions: Vec::new(),
+        intrinsic_id: None,
     }];
     let ll = emit_ll(&pipeline, "traffic_light_layout").expect("TrafficLight must emit");
 
@@ -115,6 +119,7 @@ fn repeated_machine_uses_share_one_named_struct_definition() {
             terminator: Terminator::Return,
         }],
         decisions: Vec::new(),
+        intrinsic_id: None,
     }];
 
     let ll = emit_ll(&pipeline, "traffic_light_cache").expect("TrafficLight must emit");
@@ -154,6 +159,7 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
             terminator: Terminator::Return,
         }],
         decisions: Vec::new(),
+        intrinsic_id: None,
     }];
 
     let ll = emit_ll(&pipeline, "wide_tags").expect("WideTags must emit");
@@ -215,6 +221,7 @@ fn constructor_pipeline() -> IrPipeline {
             terminator: Terminator::Return,
         }],
         decisions: Vec::new(),
+        intrinsic_id: None,
     };
 
     let mut pipeline = empty_pipeline(vec![layout]);

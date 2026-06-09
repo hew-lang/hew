@@ -975,6 +975,20 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     }
 
     let mailbox = a.mailbox;
+    // Invariant (teardown-order contract): a non-null `mailbox` pointer must
+    // remain live for the actor's entire scheduler lifetime — i.e. until the
+    // actor has been removed from the run queue by a drain or shutdown.
+    //
+    // The production cleanup path (`free_actor_resources_wasm`) nulls this slot
+    // BEFORE freeing the box; the `if !mailbox.is_null()` guard below then
+    // safely skips the drain for that actor.
+    //
+    // Tests that hand-wire mailboxes onto stack `HewActor` instances must either
+    // call `hew_sched_shutdown()` before `hew_mailbox_free()`, or use the
+    // `drop_test_actor_mailbox` helper (which enforces the same null-before-free
+    // order).  Freeing the mailbox while the actor is still Runnable in
+    // `RUN_QUEUE` is a heap-use-after-free — the pointer remains non-null (so
+    // this guard does not fire) but points to freed memory.
     // Cache the arena pointer now — after dispatch the actor may have been
     // freed by a terminate callback, making `a.arena` a dangling read.
     let actor_arena = a.arena;
@@ -1060,6 +1074,11 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                         msg_ref.msg_type,
                         msg_ref.data,
                         msg_ref.data_size,
+                        // P5-RX sub-stage 1: copy-mode receipt only.
+                        // WASM-TODO(#1451): envelope-mode (aliased) receive
+                        // routing on the WASM scheduler is deferred to the
+                        // WASM send gate; this path stays copy-mode (0).
+                        0,
                     );
                 }));
 
@@ -1594,6 +1613,7 @@ mod tests {
         msg_type: i32,
         data: *mut c_void,
         data_size: usize,
+        _borrow_mode: i32,
     ) {
         // SAFETY: tests initialize `state` to a valid AskDispatchState.
         let state = unsafe { &mut *state.cast::<AskDispatchState>() };
@@ -1627,6 +1647,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         NOISY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
     }
@@ -1637,6 +1658,7 @@ mod tests {
         _msg_type: i32,
         data: *mut c_void,
         data_size: usize,
+        _borrow_mode: i32,
     ) {
         REPLY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
 
@@ -1669,6 +1691,7 @@ mod tests {
         _msg_type: i32,
         data: *mut c_void,
         data_size: usize,
+        _borrow_mode: i32,
     ) {
         REPLY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
 
@@ -2275,6 +2298,54 @@ mod tests {
         a
     }
 
+    /// Tear down a hand-wired stack actor's mailbox in the correct
+    /// production-mirrored order: null the actor's `mailbox` slot *before*
+    /// freeing the box.
+    ///
+    /// This mirrors [`crate::actor::free_actor_resources_wasm`]'s
+    /// null-before-free invariant.  Tests that allocate a mailbox with
+    /// [`hew_mailbox_new`] and wire it onto a stack [`HewActor`] must either
+    /// call [`hew_sched_shutdown`] *before* freeing the mailbox, or use this
+    /// helper *after* shutdown, to prevent a heap-use-after-free during the
+    /// shutdown drain.
+    ///
+    /// # Panics (debug only)
+    ///
+    /// Panics if `actor.mailbox` does not match `mailbox`, or if `mailbox`
+    /// is null (double-free guard).
+    ///
+    /// # Safety
+    ///
+    /// * `actor.mailbox` must equal `mailbox` (ownership must match).
+    /// * `mailbox` must be a live [`HewMailboxWasm`] allocated by
+    ///   [`hew_mailbox_new`].
+    /// * The scheduler must have been drained (i.e. [`hew_sched_shutdown`]
+    ///   called) so no enqueued actor still holds a reference to `mailbox`.
+    #[allow(
+        dead_code,
+        reason = "test helper used selectively; available for future tests"
+    )]
+    unsafe fn drop_test_actor_mailbox(
+        actor: &mut HewActor,
+        mailbox: *mut crate::mailbox_wasm::HewMailboxWasm,
+    ) {
+        debug_assert!(
+            !mailbox.is_null(),
+            "drop_test_actor_mailbox: mailbox is null — already freed?"
+        );
+        debug_assert!(
+            actor.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>() == mailbox,
+            "drop_test_actor_mailbox: actor.mailbox does not match the supplied \
+             mailbox pointer — ownership mismatch"
+        );
+        // Null the slot first (production parity: free_actor_resources_wasm
+        // also nulls before free so the shutdown drain's null-guard fires
+        // correctly for any straggler read of a.mailbox).
+        actor.mailbox = std::ptr::null_mut();
+        // SAFETY: caller guarantees mailbox is live and exclusively owned here.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
+    }
+
     // Dispatch callback that records hew_actor_current_id() into a static.
     static DISPATCH_SAW_ACTOR_ID: std::sync::atomic::AtomicI64 =
         std::sync::atomic::AtomicI64::new(-999);
@@ -2285,6 +2356,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         let id = crate::actor::hew_actor_current_id();
         DISPATCH_SAW_ACTOR_ID.store(id, std::sync::atomic::Ordering::Relaxed);
@@ -2342,6 +2414,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         // Record current actor before triggering inner activation.
         OUTER_ID_BEFORE_INNER.store(
@@ -2364,6 +2437,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         // No-op: sufficient to exercise the nested activation path.
     }
@@ -2783,6 +2857,8 @@ mod tests {
                 msg_ref.msg_type,
                 msg_ref.data,
                 msg_ref.data_size,
+                // P5-RX sub-stage 1: copy-mode receipt (dormant borrow path).
+                0,
             );
             let _ = crate::execution_context::set_current_context(prev_ctx);
             (*msg).reply_channel = ptr::null_mut();
@@ -2884,6 +2960,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         // SAFETY: `state` is a valid `HewActor` pointer set by the test.
         // The actor is in `Running` state during dispatch.
@@ -2903,6 +2980,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         // SAFETY: tests pass the live actor pointer itself as `state`.
         unsafe { crate::actor::actor_self_stop_wasm_impl(state.cast::<crate::actor::HewActor>()) };
@@ -3294,6 +3372,7 @@ mod tests {
             _msg_type: i32,
             _data: *mut c_void,
             _data_size: usize,
+            _borrow_mode: i32,
         ) {
             // Record current arena (as usize) via the internal getter.
             let ptr = crate::arena::set_current_arena(ptr::null_mut()); // read-then-restore
@@ -3365,6 +3444,7 @@ mod tests {
             _msg_type: i32,
             _data: *mut c_void,
             _data_size: usize,
+            _borrow_mode: i32,
         ) {
             // SAFETY: arena is installed by the scheduler before dispatch.
             unsafe { crate::arena::hew_arena_malloc(64) };
@@ -3431,6 +3511,7 @@ mod tests {
             _msg_type: i32,
             _data: *mut c_void,
             _data_size: usize,
+            _borrow_mode: i32,
         ) {
             // SAFETY: state was set to a valid *mut HewActor pointer by the test.
             let inner: *mut HewActor = unsafe { *state.cast::<*mut HewActor>() };
@@ -3646,6 +3727,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         // SAFETY: state was set to a valid *mut HewActor by the test.
         let a = unsafe { &*state.cast::<HewActor>() };
@@ -3976,6 +4058,7 @@ mod tests {
             _msg_type: i32,
             _data: *mut c_void,
             _data_size: usize,
+            _borrow_mode: i32,
         ) {
             // Peek at the current arena without permanently clearing it.
             let ptr = crate::arena::set_current_arena(ptr::null_mut());
@@ -4603,6 +4686,7 @@ mod tests {
             _msg_type: i32,
             _data: *mut c_void,
             _data_size: usize,
+            _borrow_mode: i32,
         ) {
             DISPATCHED.fetch_add(1, Ordering::Relaxed);
             // Simulate sleep_ms(500): record a deadline 500 ms from now.
@@ -4682,9 +4766,22 @@ mod tests {
         );
         assert_eq!(hew_wasm_sleeping_count(), 0, "sleep queue should be empty");
 
-        // SAFETY: mailbox was allocated by hew_mailbox_new above; free to avoid leak.
-        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
+        // Drain the run queue *before* freeing the mailbox.
+        //
+        // After the timer fires at `hew_wasm_timer_tick(deadline_ms)` above, the
+        // actor is re-enqueued in RUN_QUEUE with state Runnable, but no tick has
+        // been taken to drain it.  Calling `hew_mailbox_free` while the actor is
+        // still enqueued leaves a dangling `a.mailbox` pointer in the slot;
+        // `hew_sched_shutdown` → `drain_run_queue_for_shutdown` → `activate_actor_wasm`
+        // would then call `hew_mailbox_try_recv` on the freed box — a heap-UAF.
+        //
+        // Production order (mirroring `free_actor_resources_wasm`): drain/shutdown
+        // first so the run queue is empty, *then* free the mailbox.
         hew_sched_shutdown();
+        // SAFETY: mailbox was allocated by hew_mailbox_new above; the actor has
+        // been fully drained by hew_sched_shutdown so the run queue no longer
+        // holds a reference to it.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
     }
 
     /// [`hew_wasm_sleeping_count`] returns 0 when no actors are sleeping.
@@ -4824,6 +4921,7 @@ mod tests {
             _msg_type: i32,
             _data: *mut c_void,
             _data_size: usize,
+            _borrow_mode: i32,
         ) {
             CRASH_COUNT.fetch_add(1, Ordering::Relaxed);
             // Call request_sleep to write PENDING_SLEEP_DEADLINE_MS ...
@@ -4848,6 +4946,7 @@ mod tests {
             _msg_type: i32,
             _data: *mut c_void,
             _data_size: usize,
+            _borrow_mode: i32,
         ) {
             NORMAL_COUNT.fetch_add(1, Ordering::Relaxed);
         }
@@ -4939,6 +5038,7 @@ mod tests {
             _msg_type: i32,
             data: *mut c_void,
             data_size: usize,
+            _borrow_mode: i32,
         ) {
             // SAFETY: the test payload is either null or a queued i32 message body.
             let should_panic = !data.is_null()
@@ -5071,6 +5171,7 @@ mod tests {
             _msg_type: i32,
             _data: *mut c_void,
             _data_size: usize,
+            _borrow_mode: i32,
         ) {
             DISPATCHED.fetch_add(1, Ordering::Relaxed);
         }
@@ -5230,6 +5331,7 @@ mod tests {
             _msg_type: i32,
             _data: *mut c_void,
             _data_size: usize,
+            _borrow_mode: i32,
         ) {
             DRAIN_DISPATCHED.fetch_add(1, Ordering::Relaxed);
             // Far-future absolute deadline — hangs if not cleared on shutdown.
@@ -5310,6 +5412,7 @@ mod tests {
             msg_type: i32,
             _data: *mut c_void,
             _size: usize,
+            _borrow_mode: i32,
         ) {
             if msg_type == 1 {
                 let ch = hew_get_reply_channel();

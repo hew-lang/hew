@@ -452,7 +452,7 @@ mod tests {
         // SAFETY: `err` was allocated by `hew_smtp_last_error`.
         let text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
         // SAFETY: `err` was allocated via `malloc`.
-        unsafe { libc::free(err.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(err) }; // CSTRING-FREE: str-open (test frees str_to_malloc error)
         text
     }
 

@@ -1702,6 +1702,9 @@ unsafe extern "C-unwind" fn supervisor_dispatch(
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
+    // P5-RX sub-stage 1: copy-vs-borrow receipt discriminant (HewDispatchFn).
+    // The supervisor is an internal copy-mode actor; always 0, ignored.
+    _borrow_mode: i32,
 ) {
     if state.is_null() {
         return;
@@ -2122,6 +2125,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
     }
 

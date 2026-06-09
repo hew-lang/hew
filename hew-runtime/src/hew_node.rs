@@ -2457,6 +2457,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -3373,6 +3374,7 @@ mod tests {
         msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         #[expect(
             clippy::cast_sign_loss,
@@ -3486,6 +3488,7 @@ mod tests {
         msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         #[expect(
             clippy::cast_sign_loss,
@@ -3680,6 +3683,7 @@ mod tests {
         _msg_type: i32,
         data: *mut c_void,
         size: usize,
+        _borrow_mode: i32,
     ) {
         if size < std::mem::size_of::<u32>() {
             return;
@@ -3708,6 +3712,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
@@ -3725,6 +3730,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         crate::actor::hew_actor_self_stop();
     }
@@ -3735,6 +3741,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
     }
 

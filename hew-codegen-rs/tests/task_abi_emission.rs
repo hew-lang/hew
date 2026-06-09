@@ -60,6 +60,7 @@ fn pipeline_with_task_abi_call(
             locals: locals.clone(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -92,11 +93,14 @@ fn pipeline_with_task_abi_call(
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -142,6 +146,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))],
                 blocks: vec![main_block.clone()],
                 decisions: vec![],
+                intrinsic_id: None,
             },
             RawMirFunction {
                 name: "long_op".to_string(),
@@ -151,6 +156,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 locals: vec![ResolvedTy::Unit],
                 blocks: vec![long_op_block.clone()],
                 decisions: vec![],
+                intrinsic_id: None,
             },
         ],
         checked_mir: vec![
@@ -180,11 +186,14 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -221,6 +230,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))],
                 blocks: vec![main_block.clone()],
                 decisions: vec![],
+                intrinsic_id: None,
             },
             RawMirFunction {
                 name: "long_op".to_string(),
@@ -230,6 +240,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 locals: vec![ResolvedTy::Unit],
                 blocks: vec![long_op_block.clone()],
                 decisions: vec![],
+                intrinsic_id: None,
             },
         ],
         checked_mir: vec![
@@ -259,11 +270,14 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -320,6 +334,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit)), env_ty.clone()],
                 blocks: vec![main_block.clone()],
                 decisions: vec![],
+                intrinsic_id: None,
             },
             RawMirFunction {
                 name: "__hew_closure_invoke_main_0".to_string(),
@@ -329,6 +344,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 locals: vec![env_ptr_ty, ResolvedTy::Unit],
                 blocks: vec![closure_block.clone()],
                 decisions: vec![],
+                intrinsic_id: None,
             },
         ],
         checked_mir: vec![
@@ -361,11 +377,14 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -511,6 +530,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
             locals: locals.clone(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -543,11 +563,14 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     };
 
     let tmp = std::env::temp_dir().join("hew-task-abi-task-scope-spawn-paired");

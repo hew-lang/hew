@@ -8,7 +8,7 @@
 // Hew has a browser/WASM networking bridge.
 
 use hew_cabi::{
-    cabi::{cstr_to_str, str_to_malloc},
+    cabi::{alloc_cstring, cstr_to_str, free_cstring, str_to_malloc},
     vec::{ElemKind, HewVec},
 };
 use std::cell::RefCell;
@@ -82,7 +82,10 @@ unsafe fn raw_http_strdup(src: *const c_char) -> *mut c_char {
         return std::ptr::null_mut();
     }
     // SAFETY: the caller guarantees `src` is a valid NUL-terminated C string.
-    unsafe { libc::strdup(src) }
+    let len = unsafe { libc::strlen(src) };
+    // SAFETY: src is valid for len bytes; alloc_cstring copies them header-aware
+    // so the result is released via hew_string_drop / free_cstring.
+    unsafe { alloc_cstring(src.cast::<u8>(), len) } // CSTRING-ALLOC: str-open (raw_http_strdup → header-aware Hew string; S1)
 }
 
 /// Return this actor's last HTTP client error.
@@ -495,7 +498,7 @@ pub unsafe extern "C" fn hew_http_response_free(resp: *mut HewHttpResponse) {
     let response = unsafe { Box::from_raw(resp) };
     if !response.body.is_null() {
         // SAFETY: body was allocated with libc::malloc in str_to_malloc.
-        unsafe { libc::free(response.body.cast()) };
+        unsafe { free_cstring(response.body) }; // CSTRING-FREE: str-open (response.body via raw_http_strdup)
     }
     if !response.headers.is_null() {
         // SAFETY: headers was allocated with Box::into_raw in capture_headers.
@@ -507,12 +510,12 @@ pub unsafe extern "C" fn hew_http_response_free(resp: *mut HewHttpResponse) {
 unsafe fn free_hew_string_pair(pair: &mut HewStringPair) {
     if !pair.name.is_null() {
         // SAFETY: `pair.name` was allocated with libc::malloc-compatible storage.
-        unsafe { libc::free(pair.name.cast()) };
+        unsafe { free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
         pair.name = std::ptr::null_mut();
     }
     if !pair.value.is_null() {
         // SAFETY: `pair.value` was allocated with libc::malloc-compatible storage.
-        unsafe { libc::free(pair.value.cast()) };
+        unsafe { free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
         pair.value = std::ptr::null_mut();
     }
 }
@@ -1026,8 +1029,8 @@ mod tests {
             .unwrap()
             .to_owned();
         // SAFETY: body_ptr was malloc'd by hew_http_response_body (strdup).
-        unsafe { libc::free(body_ptr.cast()) };
-        // SAFETY: resp is still valid (body_ptr is a copy).
+        unsafe { free_cstring(body_ptr) }; // CSTRING-FREE: str-open
+                                           // SAFETY: resp is still valid (body_ptr is a copy).
         unsafe { hew_http_response_free(resp) };
         assert_eq!(body, "hello");
         let err_ptr = hew_http_last_error();
@@ -1038,7 +1041,7 @@ mod tests {
             .unwrap()
             .to_owned();
         // SAFETY: `err_ptr` came from `hew_http_last_error`.
-        unsafe { libc::free(err_ptr.cast()) };
+        unsafe { free_cstring(err_ptr) }; // CSTRING-FREE: str-open
         assert_eq!(err, "");
     }
 
@@ -1056,7 +1059,7 @@ mod tests {
         // SAFETY: `err` is a valid NUL-terminated error string.
         let err_text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
         // SAFETY: `err` was allocated by `hew_http_last_error`.
-        unsafe { libc::free(err.cast()) };
+        unsafe { free_cstring(err) }; // CSTRING-FREE: str-open
         assert!(err_text.contains("hew_http_response_body"));
         assert!(err_text.contains("allocation failed"));
         // SAFETY: resp is still valid after the failed copy attempt.
@@ -1078,8 +1081,8 @@ mod tests {
         // SAFETY: h is a valid malloc'd C string.
         let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
         // SAFETY: h was malloc'd.
-        unsafe { libc::free(h.cast()) };
-        // SAFETY: resp is still valid.
+        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
+                                    // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "application/json");
     }
@@ -1094,8 +1097,8 @@ mod tests {
         // SAFETY: h is a valid malloc'd C string.
         let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
         // SAFETY: h was malloc'd.
-        unsafe { libc::free(h.cast()) };
-        // SAFETY: resp is still valid.
+        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
+                                    // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "");
     }
@@ -1113,8 +1116,8 @@ mod tests {
         // SAFETY: ct is a valid malloc'd C string.
         let val = unsafe { CStr::from_ptr(ct) }.to_str().unwrap().to_owned();
         // SAFETY: ct was malloc'd.
-        unsafe { libc::free(ct.cast()) };
-        // SAFETY: resp is still valid.
+        unsafe { free_cstring(ct) }; // CSTRING-FREE: str-open
+                                     // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "text/plain");
     }
@@ -1213,8 +1216,8 @@ mod tests {
             .unwrap()
             .to_owned();
         // SAFETY: body_ptr was malloc'd by strdup / str_to_malloc.
-        unsafe { libc::free(body_ptr.cast()) };
-        // SAFETY: resp is still valid (body_ptr was a copy).
+        unsafe { free_cstring(body_ptr) }; // CSTRING-FREE: str-open
+                                           // SAFETY: resp is still valid (body_ptr was a copy).
         unsafe { hew_http_response_free(resp) };
         assert_eq!(body, "");
     }
@@ -1230,8 +1233,8 @@ mod tests {
         // SAFETY: h is a valid malloc'd C string.
         let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
         // SAFETY: h was malloc'd.
-        unsafe { libc::free(h.cast()) };
-        // SAFETY: resp is still valid.
+        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
+                                    // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "");
     }
@@ -1245,7 +1248,7 @@ mod tests {
         // SAFETY: h is a valid malloc'd C string.
         let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
         // SAFETY: h was malloc'd.
-        unsafe { libc::free(h.cast()) };
+        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
         assert_eq!(val, "");
     }
 
@@ -1257,7 +1260,7 @@ mod tests {
         // SAFETY: ct is a valid malloc'd C string.
         let val = unsafe { CStr::from_ptr(ct) }.to_str().unwrap().to_owned();
         // SAFETY: ct was malloc'd.
-        unsafe { libc::free(ct.cast()) };
+        unsafe { free_cstring(ct) }; // CSTRING-FREE: str-open
         assert_eq!(val, "");
     }
 
@@ -1276,8 +1279,8 @@ mod tests {
         // SAFETY: h is a valid malloc'd C string.
         let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
         // SAFETY: h was malloc'd.
-        unsafe { libc::free(h.cast()) };
-        // SAFETY: resp is still valid.
+        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
+                                    // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "100");
     }
@@ -1356,9 +1359,9 @@ mod tests {
             }
             // Free the strings before freeing the backing buffer.
             // SAFETY: pair.name was malloc'd by hew_http_response_headers.
-            unsafe { libc::free(pair.name.cast()) };
-            // SAFETY: pair.value was malloc'd by hew_http_response_headers.
-            unsafe { libc::free(pair.value.cast()) };
+            unsafe { free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
+                                                // SAFETY: pair.value was malloc'd by hew_http_response_headers.
+            unsafe { free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
         }
 
         // SAFETY: string elements already freed above; just releases the buffer.
@@ -1385,7 +1388,7 @@ mod tests {
         // SAFETY: `err` is a valid NUL-terminated error string.
         let err_text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
         // SAFETY: `err` was allocated by `hew_http_last_error`.
-        unsafe { libc::free(err.cast()) };
+        unsafe { free_cstring(err) }; // CSTRING-FREE: str-open
         assert!(err_text.contains("hew_http_response_headers"));
         assert!(err_text.contains("allocation failed"));
         // SAFETY: resp remains valid after the failed header-copy attempt.
@@ -1422,9 +1425,9 @@ mod tests {
         assert_eq!(name, "x-custom");
         assert_eq!(value, "my-value");
         // SAFETY: pair.name was malloc'd by hew_http_response_headers.
-        unsafe { libc::free(pair.name.cast()) };
-        // SAFETY: pair.value was malloc'd by hew_http_response_headers.
-        unsafe { libc::free(pair.value.cast()) };
+        unsafe { free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
+                                            // SAFETY: pair.value was malloc'd by hew_http_response_headers.
+        unsafe { free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
 
         // SAFETY: elements freed; safe to release the buffer.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
@@ -1670,7 +1673,7 @@ mod tests {
             .unwrap()
             .to_owned();
         // SAFETY: result was malloc'd by hew_http_get_string.
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_cstring(result) }; // CSTRING-FREE: str-open
         assert_eq!(body, "body only");
         handle.join().unwrap();
     }
@@ -1690,7 +1693,7 @@ mod tests {
             .unwrap()
             .to_owned();
         // SAFETY: result was malloc'd.
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_cstring(result) }; // CSTRING-FREE: str-open
         assert_eq!(s, "post body");
         handle.join().unwrap();
     }
@@ -1868,7 +1871,7 @@ mod tests {
         // SAFETY: h is a valid malloc'd C string.
         let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
         // SAFETY: h was malloc'd.
-        unsafe { libc::free(h.cast()) };
+        unsafe { free_cstring(h) }; // CSTRING-FREE: str-open
         assert_eq!(val, "srv-42");
 
         // SAFETY: resp is still valid.
@@ -1896,7 +1899,7 @@ mod tests {
             .unwrap()
             .to_owned();
         // SAFETY: result was malloc'd by hew_http_request_string_hew.
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_cstring(result) }; // CSTRING-FREE: str-open
         assert_eq!(body, "hew request string");
         handle.join().unwrap();
     }
@@ -1931,8 +1934,8 @@ mod tests {
             .unwrap()
             .to_owned();
         // SAFETY: body_ptr was malloc'd by hew_http_response_body.
-        unsafe { libc::free(body_ptr.cast()) };
-        // SAFETY: resp is still valid; free it last.
+        unsafe { free_cstring(body_ptr) }; // CSTRING-FREE: str-open
+                                           // SAFETY: resp is still valid; free it last.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(body, "primitive chain body");
         handle.join().unwrap();

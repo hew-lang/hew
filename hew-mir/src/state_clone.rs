@@ -76,7 +76,7 @@ use std::collections::HashSet;
 
 use hew_types::ResolvedTy;
 
-use crate::model::RecordLayout;
+use crate::model::{EnumLayout, RecordLayout};
 
 /// One actor-state field's classification for the synthesized
 /// `__hew_state_clone_<A>` / `__hew_state_drop_<A>` body.
@@ -158,6 +158,22 @@ pub enum StateFieldCloneKind {
     /// only the record name so codegen can resolve the helper symbol by
     /// the existing `mangle_state_clone_fn(name)` pattern.
     UserRecord { name: String },
+
+    /// Tagged-union (`enum`) field: `Option<T>`, `Result<T, E>`, or any
+    /// user-declared `enum`. Carries only the registry key of the
+    /// `EnumLayout` (its `name` — the plain decl name for a monomorphic
+    /// enum, or the `hew_hir::mangle`d name for a generic instantiation
+    /// such as `Option$$string`). Codegen (W5.006 Slices 3/4) re-resolves
+    /// the `EnumLayout` from the registry — the SINGLE authority — to
+    /// synthesize the tag-aware clone/drop dispatch, so the clone and drop
+    /// sides can never drift on which variant's payload they act over
+    /// (W4.045 UAF class / `lifecycle-symmetry`). This mirrors the
+    /// name-only `UserRecord` arm: the classifier carries no per-variant
+    /// payload classification here — it only validates (during
+    /// classification) that every variant payload field is itself
+    /// classifiable, then defers symbol selection to the layout-driven
+    /// codegen authority.
+    Enum { name: String },
 }
 
 /// IO-handle subkind. Today the only inhabitant is `Connection`; the
@@ -269,10 +285,34 @@ pub fn classify_actor_state_fields(
     state_field_tys: &[ResolvedTy],
     record_layouts: &[RecordLayout],
 ) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
+    classify_actor_state_fields_with_enum_layouts(state_field_tys, record_layouts, &[])
+}
+
+/// Enum-aware companion to [`classify_actor_state_fields`].
+///
+/// Identical to [`classify_actor_state_fields`] but additionally consults the
+/// `enum_layouts` registry so a tagged-union field (`Option<T>`,
+/// `Result<T, E>`, any user `enum`) classifies as
+/// [`StateFieldCloneKind::Enum`] instead of failing closed as
+/// `MissingRecordLayout`. The MIR producer's actor-state path
+/// (`lower_hir_module`) calls this with the cumulative enum-layout list so
+/// enum-typed actor-state fields are representable. The bare
+/// [`classify_actor_state_fields`] shim retains the pre-W5.006 behaviour
+/// (no enum registry → enum fields fail closed) for call sites that do not
+/// carry an enum-layout registry.
+///
+/// # Errors
+///
+/// Same conditions as [`classify_actor_state_fields`].
+pub fn classify_actor_state_fields_with_enum_layouts(
+    state_field_tys: &[ResolvedTy],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
     let mut visited: HashSet<String> = HashSet::new();
     state_field_tys
         .iter()
-        .map(|ty| classify_state_field(ty, record_layouts, &mut visited))
+        .map(|ty| classify_state_field_impl(ty, record_layouts, enum_layouts, &mut visited))
         .collect()
 }
 
@@ -291,6 +331,36 @@ pub fn classify_actor_state_fields(
 pub fn classify_state_field(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    classify_state_field_impl(ty, record_layouts, &[], visited)
+}
+
+/// Enum-aware companion to [`classify_state_field`]. Consults `enum_layouts`
+/// so a tagged-union field classifies as [`StateFieldCloneKind::Enum`]
+/// instead of failing closed. See
+/// [`classify_actor_state_fields_with_enum_layouts`].
+///
+/// # Errors
+///
+/// Same conditions as [`classify_state_field`].
+#[allow(
+    clippy::implicit_hasher,
+    reason = "the substrate is internally-consumed; callers don't pick the hasher"
+)]
+pub fn classify_state_field_with_enum_layouts(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    classify_state_field_impl(ty, record_layouts, enum_layouts, visited)
+}
+
+fn classify_state_field_impl(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     match ty {
@@ -320,8 +390,10 @@ pub fn classify_state_field(
         // --- Owned-heap primitives ------------------------------------
         ResolvedTy::String => Ok(StateFieldCloneKind::String),
         ResolvedTy::Bytes => Ok(StateFieldCloneKind::Bytes),
-        // --- Container / handle / record arms ------------------------
-        ResolvedTy::Named { name, args, .. } => classify_named(name, args, record_layouts, visited),
+        // --- Container / handle / record / enum arms -----------------
+        ResolvedTy::Named { name, args, .. } => {
+            classify_named(name, args, record_layouts, enum_layouts, visited)
+        }
 
         // --- Closed-set rejection -------------------------------------
         // Pointer, Function, Closure, TraitObject, Tuple, Array, Slice,
@@ -331,15 +403,22 @@ pub fn classify_state_field(
         // we fail-closed (`no-silent-no-op-stubs`) so the bug surfaces
         // as a MIR diagnostic at the actor-decl site rather than as a
         // crash in Stage 3 codegen.
+        //
+        // `TypeParam` joins this group: an abstract parameter has no
+        // concrete clone strategy until monomorphisation substitutes it,
+        // so an actor-state field typed by an unsubstituted parameter is
+        // a producer bug that must fail closed here.
         ResolvedTy::CancellationToken
         | ResolvedTy::Pointer { .. }
+        | ResolvedTy::Borrow { .. }
         | ResolvedTy::Function { .. }
         | ResolvedTy::Closure { .. }
         | ResolvedTy::TraitObject { .. }
         | ResolvedTy::Tuple(_)
         | ResolvedTy::Array(..)
         | ResolvedTy::Slice(_)
-        | ResolvedTy::Task(_) => Err(ClassificationError::Unsupported {
+        | ResolvedTy::Task(_)
+        | ResolvedTy::TypeParam { .. } => Err(ClassificationError::Unsupported {
             rendered: format!("{ty:?}"),
         }),
     }
@@ -349,6 +428,7 @@ fn classify_named(
     name: &str,
     args: &[ResolvedTy],
     record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     // ── record-layouts-first lookup (cross-eco review fix) ──────────
@@ -375,7 +455,7 @@ fn classify_named(
     // discriminator"). Until W4.011 lands, every `Named { name }` arm
     // in this module MUST honour record_layouts-first.
     if record_layouts.iter().any(|r| r.name == name) {
-        return classify_user_record(name, record_layouts, visited);
+        return classify_user_record(name, record_layouts, enum_layouts, visited);
     }
 
     // ── Builtin name arms (only reached when not user-shadowed) ─────
@@ -419,7 +499,7 @@ fn classify_named(
                 .ok_or_else(|| ClassificationError::Unsupported {
                     rendered: format!("Named {{ name: \"Vec\", args: {args:?} }}"),
                 })?;
-            let elem_kind = classify_state_field(elem, record_layouts, visited)?;
+            let elem_kind = classify_state_field_impl(elem, record_layouts, enum_layouts, visited)?;
             Ok(StateFieldCloneKind::Vec {
                 elem: Box::new(elem_kind),
             })
@@ -435,8 +515,8 @@ fn classify_named(
                 .ok_or_else(|| ClassificationError::Unsupported {
                     rendered: format!("Named {{ name: \"HashMap\", args: {args:?} }}"),
                 })?;
-            let key_kind = classify_state_field(key, record_layouts, visited)?;
-            let val_kind = classify_state_field(val, record_layouts, visited)?;
+            let key_kind = classify_state_field_impl(key, record_layouts, enum_layouts, visited)?;
+            let val_kind = classify_state_field_impl(val, record_layouts, enum_layouts, visited)?;
             Ok(StateFieldCloneKind::HashMap {
                 key: Box::new(key_kind),
                 val: Box::new(val_kind),
@@ -448,23 +528,86 @@ fn classify_named(
                 .ok_or_else(|| ClassificationError::Unsupported {
                     rendered: format!("Named {{ name: \"HashSet\", args: {args:?} }}"),
                 })?;
-            let elem_kind = classify_state_field(elem, record_layouts, visited)?;
+            let elem_kind = classify_state_field_impl(elem, record_layouts, enum_layouts, visited)?;
             Ok(StateFieldCloneKind::HashSet {
                 elem: Box::new(elem_kind),
             })
         }
-        // Not a builtin and not in record_layouts → still try
-        // `classify_user_record` so the missing-layout diagnostic
-        // surfaces with the correct field name (rather than a generic
-        // Unsupported). `classify_user_record` returns
-        // `MissingRecordLayout` here; lowering-invariant violation.
-        _ => classify_user_record(name, record_layouts, visited),
+        // Not a builtin container and not a user record. Consult the
+        // enum-layout registry BEFORE the `classify_user_record`
+        // fall-through (closed-set invariant /
+        // `exhaustive-traversal-and-lowering`): `Option<T>`,
+        // `Result<T, E>`, and user `enum`s are registered as
+        // `EnumLayout`s, never as `RecordLayout`s, so without this arm an
+        // enum-typed field would fail closed as `MissingRecordLayout`.
+        // Generic instantiations are keyed by the `hew_hir::mangle`d name
+        // (e.g. `Option$$string`); monomorphic enums by their plain decl
+        // name — mirroring `user_record_layout_key` in `lower.rs`.
+        _ => {
+            if let Some(layout) = lookup_enum_layout(name, args, enum_layouts) {
+                return classify_enum(layout, record_layouts, enum_layouts, visited);
+            }
+            classify_user_record(name, record_layouts, enum_layouts, visited)
+        }
     }
+}
+
+/// Resolve a `Named { name, args }` field type to its registered
+/// [`EnumLayout`], if any. The lookup key mirrors `user_record_layout_key`
+/// (`hew-mir/src/lower.rs`): the plain `name` for a monomorphic enum
+/// (`args` empty), or the `hew_hir::mangle`d symbol for a generic
+/// instantiation (e.g. `Option<string>` → `Option$$string`).
+fn lookup_enum_layout<'a>(
+    name: &str,
+    args: &[ResolvedTy],
+    enum_layouts: &'a [EnumLayout],
+) -> Option<&'a EnumLayout> {
+    let key = if args.is_empty() {
+        name.to_string()
+    } else {
+        hew_hir::mangle(name, args)
+    };
+    enum_layouts.iter().find(|el| el.name == key)
+}
+
+/// Classify a tagged-union (`enum`) field. Mirrors `classify_user_record`:
+/// recurses into every variant's payload field types under the shared
+/// `visited` recursion guard so an unclassifiable payload surfaces here as
+/// a `ClassificationError` (fail-closed) rather than later in codegen, then
+/// returns the name-only [`StateFieldCloneKind::Enum`] carrying the
+/// registry key. Codegen (W5.006 Slices 3/4) re-resolves the `EnumLayout`
+/// to drive tag-aware clone/drop — the single layout authority — so the
+/// classifier need not carry per-variant payload classifications.
+fn classify_enum(
+    layout: &EnumLayout,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    if !visited.insert(layout.name.clone()) {
+        return Err(ClassificationError::RecordCycle {
+            name: layout.name.clone(),
+        });
+    }
+    // Eagerly validate every variant payload field is classifiable. The
+    // result is discarded — codegen re-runs classification against the
+    // same `EnumLayout`. If any payload field is unsupported, this is
+    // where the error surfaces (with the recursion stack preserved).
+    for variant in &layout.variants {
+        for field_ty in &variant.field_tys {
+            let _ = classify_state_field_impl(field_ty, record_layouts, enum_layouts, visited)?;
+        }
+    }
+    visited.remove(&layout.name);
+    Ok(StateFieldCloneKind::Enum {
+        name: layout.name.clone(),
+    })
 }
 
 fn classify_user_record(
     name: &str,
     record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     if !visited.insert(name.to_string()) {
@@ -483,9 +626,11 @@ fn classify_user_record(
     // classification against the same `RecordLayout` to synthesize the
     // nested `__hew_state_clone_<name>` body, and the substrate-level
     // assertion is that the classification *succeeds*. If a nested
-    // field is unsupported, this is where the error surfaces.
+    // field is unsupported, this is where the error surfaces. Enum-typed
+    // record fields are threaded the enum registry so a record holding an
+    // enum classifies, rather than failing closed.
     for field_ty in &layout.field_tys {
-        let _ = classify_state_field(field_ty, record_layouts, visited)?;
+        let _ = classify_state_field_impl(field_ty, record_layouts, enum_layouts, visited)?;
     }
     visited.remove(name);
     Ok(StateFieldCloneKind::UserRecord {
@@ -496,6 +641,7 @@ fn classify_user_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::MachineVariantLayout;
 
     fn no_records() -> Vec<RecordLayout> {
         Vec::new()
@@ -846,5 +992,208 @@ mod tests {
             mangle_actor_state_drop_fn("Counter"),
             "__hew_state_drop_Counter",
         );
+    }
+
+    // ── W5.006 Slice 1: enum-layout consultation ──────────────────────
+
+    /// Build the `Option$$string` layout the HIR mono pass would register:
+    /// `Some(string)` (heap payload) + `None` (unit).
+    fn option_string_layout() -> EnumLayout {
+        EnumLayout {
+            name: hew_hir::mangle("Option", &[ResolvedTy::String]),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Some".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                },
+                MachineVariantLayout {
+                    name: "None".to_string(),
+                    field_tys: vec![],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn option_string_classifies_as_enum() {
+        // `Option<string>` — the long-blocked heap-owning composite. The
+        // enum-aware classifier must consult the registry (keyed by the
+        // mangled `Option$$string`) and return `Enum`, NOT fail closed as
+        // `MissingRecordLayout`.
+        let layouts = vec![option_string_layout()];
+        let ty = ResolvedTy::Named {
+            name: "Option".to_string(),
+            args: vec![ResolvedTy::String],
+            builtin: None,
+        };
+        let mut v = HashSet::new();
+        let result =
+            classify_state_field_with_enum_layouts(&ty, &no_records(), &layouts, &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::Enum {
+                name: "Option$$string".to_string(),
+            },
+        );
+        // Termination invariant: the recursion guard is empty on success.
+        assert!(v.is_empty(), "visited-set leaked after success: {v:?}");
+    }
+
+    #[test]
+    fn result_i64_string_classifies_as_enum() {
+        // `Result<i64, string>`: `Ok(i64)` bitcopy payload + `Err(string)`
+        // heap payload. Both payload field types must classify (the heap
+        // arm proves the recursion validates owned-heap variants).
+        let name = hew_hir::mangle("Result", &[ResolvedTy::I64, ResolvedTy::String]);
+        let layouts = vec![EnumLayout {
+            name: name.clone(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Ok".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                },
+                MachineVariantLayout {
+                    name: "Err".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                },
+            ],
+        }];
+        let ty = ResolvedTy::Named {
+            name: "Result".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::String],
+            builtin: None,
+        };
+        let mut v = HashSet::new();
+        let result =
+            classify_state_field_with_enum_layouts(&ty, &no_records(), &layouts, &mut v).unwrap();
+        assert_eq!(result, StateFieldCloneKind::Enum { name });
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn monomorphic_user_enum_with_heap_variant_classifies_as_enum() {
+        // A monomorphic user enum keyed by its plain decl name (`args`
+        // empty), with a non-param heap-owning variant `Message(string)`
+        // alongside a unit variant. This is the actor-state-field shape
+        // (declared above the actor) that the in-loop classifier resolves.
+        let layouts = vec![EnumLayout {
+            name: "Envelope".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Message".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                },
+                MachineVariantLayout {
+                    name: "Empty".to_string(),
+                    field_tys: vec![],
+                },
+            ],
+        }];
+        let ty = ResolvedTy::Named {
+            name: "Envelope".to_string(),
+            args: vec![],
+            builtin: None,
+        };
+        let mut v = HashSet::new();
+        let result =
+            classify_state_field_with_enum_layouts(&ty, &no_records(), &layouts, &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::Enum {
+                name: "Envelope".to_string(),
+            },
+        );
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn enum_with_unsupported_payload_fails_closed() {
+        // The recursion validates every variant payload: a function-typed
+        // payload field is outside the closed set, so classification fails
+        // closed at the enum arm rather than producing an `Enum` that
+        // codegen could not lower.
+        let layouts = vec![EnumLayout {
+            name: "Bad".to_string(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Holds".to_string(),
+                field_tys: vec![ResolvedTy::Function {
+                    params: vec![],
+                    ret: Box::new(ResolvedTy::Unit),
+                }],
+            }],
+        }];
+        let ty = ResolvedTy::Named {
+            name: "Bad".to_string(),
+            args: vec![],
+            builtin: None,
+        };
+        let mut v = HashSet::new();
+        let result = classify_state_field_with_enum_layouts(&ty, &no_records(), &layouts, &mut v);
+        assert!(
+            matches!(result, Err(ClassificationError::Unsupported { .. })),
+            "expected Unsupported for function-typed enum payload, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn enum_field_without_registry_still_fails_closed() {
+        // The bare (non-enum-aware) entry point must retain the
+        // pre-W5.006 behaviour: with no enum registry, an enum-typed field
+        // falls through to `classify_user_record` and fails closed as
+        // `MissingRecordLayout`. This pins that the additive enum-aware API
+        // does not silently change the legacy call sites (llvm.rs record /
+        // dyn-trait classification) that pass no enum layouts.
+        let ty = ResolvedTy::Named {
+            name: "Option".to_string(),
+            args: vec![ResolvedTy::String],
+            builtin: None,
+        };
+        let mut v = HashSet::new();
+        let result = classify_state_field(&ty, &no_records(), &mut v);
+        assert!(
+            matches!(result, Err(ClassificationError::MissingRecordLayout { .. })),
+            "expected MissingRecordLayout without enum registry, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn record_holding_enum_field_classifies_through() {
+        // A record whose field is an enum: the record recursion threads
+        // the enum registry so `Holder { msg: Envelope }` classifies as
+        // `UserRecord` (with the nested enum validated), not failing closed.
+        let records = vec![RecordLayout {
+            name: "Holder".to_string(),
+            field_tys: vec![ResolvedTy::Named {
+                name: "Envelope".to_string(),
+                args: vec![],
+                builtin: None,
+            }],
+        }];
+        let enums = vec![EnumLayout {
+            name: "Envelope".to_string(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Message".to_string(),
+                field_tys: vec![ResolvedTy::String],
+            }],
+        }];
+        let ty = ResolvedTy::Named {
+            name: "Holder".to_string(),
+            args: vec![],
+            builtin: None,
+        };
+        let mut v = HashSet::new();
+        let result = classify_state_field_with_enum_layouts(&ty, &records, &enums, &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::UserRecord {
+                name: "Holder".to_string(),
+            },
+        );
+        assert!(v.is_empty());
     }
 }

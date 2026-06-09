@@ -1,0 +1,40 @@
+//! W5-011 P3 destructure-binder safety proof — an enum payload that is
+//! `match`-destructured into a fresh `string` binder aliases the parent's
+//! refcount-1 buffer with NO retain (the M-COW spine emits none on share).
+//! Two destructures of the same value each bind a fresh local pointing at
+//! the same buffer; admitting either binder to a scope-exit `hew_string_drop`
+//! would free a buffer the parent still owns (and the sibling destructure
+//! also aliases) — a double-free.
+//!
+//! The fail-closed sole-owner derivation (`derive_cow_sole_owner`,
+//! hew-mir/src/lower.rs) seeds projection-alias taint on the destination of
+//! any `Move` whose source is an interior projection
+//! (`Place::MachineVariant` / `EnumVariant` / `GenState` — the payload-load
+//! shape emitted by `lower_match_enum_tag` / `lower_while_let`), so each
+//! binder is excluded from the drop plan. The buffer is freed exactly once
+//! by its true owner (or held live), never twice.
+//!
+//! Observable contract: the program prints `done` and exits 0 with no abort.
+//! The runtime's `free_cstring` header-sentinel check aborts the process
+//! (SIGABRT) on a double-free, so a clean exit across many iterations is the
+//! behavioural proof. The STRUCTURAL proof that each binder is excluded from
+//! the allow-set lives in the `cow_sole_owner_derivation` unit tests
+//! (hew-mir/src/lower.rs) — those assert directly on `derive_cow_sole_owner`,
+//! which a pure-runtime fixture cannot reach because the independent
+//! liveness layer also excludes the (arm-scoped, dead-at-exit) binders.
+
+enum Box<T> { Full(T); }
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 10000 {
+        let b: Box<string> = Box::Full(string_concat("df-", "payload"));
+        // Two independent destructures of the same payload: each binds a
+        // fresh `string` aliasing the inner buffer with no retain.
+        let _x = match b { Box::Full(f) => 0, };
+        let _y = match b { Box::Full(g) => 0, };
+        i = i + 1;
+    }
+    println("done");
+    0
+}

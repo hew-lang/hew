@@ -246,7 +246,7 @@ mod tests {
         // SAFETY: ptr is a valid NUL-terminated C string from malloc.
         let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
         // SAFETY: ptr was allocated with malloc.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test frees str_to_malloc output)
         s
     }
 

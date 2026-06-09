@@ -851,6 +851,23 @@ unsafe impl Send for HewActor {}
 // Raw-pointer fields are lifecycle-managed by scheduler CAS transitions.
 unsafe impl Sync for HewActor {}
 
+// ── Codegen-mirrored ABI offsets ────────────────────────────────────────
+//
+// Codegen (`hew-codegen-rs/src/llvm.rs`) emits raw GEPs into `HewActor` using
+// hand-copied byte-offset literals so the compiler backend does not link the
+// runtime crate. These `offset_of!`-derived constants are the canonical source
+// of truth those literals mirror; the `abi_offset_parity` test in
+// `hew-codegen-rs` asserts the codegen literals equal these exports so a field
+// reorder (which is how the `state` offset silently drifted 24→16 when
+// `HewActor.pid` was removed) fails closed instead of corrupting actor state
+// pointers at runtime. Mirror of the `HEW_CTX_OFFSET_*` discipline in
+// `execution_context.rs`.
+
+/// Byte offset of [`HewActor::id`].
+pub const HEW_ACTOR_OFFSET_ID: usize = std::mem::offset_of!(HewActor, id);
+/// Byte offset of [`HewActor::state`].
+pub const HEW_ACTOR_OFFSET_STATE: usize = std::mem::offset_of!(HewActor, state);
+
 impl std::fmt::Debug for HewActor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewActor")
@@ -2180,77 +2197,101 @@ pub unsafe extern "C" fn hew_actor_send(
     unsafe { actor_send_internal(actor, msg_type, data, size) };
 }
 
-/// Send an envelope-aliased message to an actor — **fail-closed in
-/// Phase α**.
+/// Send an envelope-aliased message to an actor.
 ///
-/// # Phase α status — DO NOT CALL
+/// The caller transfers exactly one refcount on `envelope`. This is the
+/// runtime entry for the codegen `SendAliasMode::Alias` lowering: the
+/// sender's already-owned payload is wrapped in a refcounted
+/// [`HewMsgEnvelope`] and delivered by reference instead of being
+/// deep-copied, with the move-checker invalidating the sender's binding
+/// so no observable alias survives.
 ///
-/// This entry point is **disabled** in Phase α and aborts via
-/// [`hew_panic`] on every invocation (after releasing the
-/// caller-transferred envelope refcount, if non-null, so the buffer
-/// container does not leak).  The codegen alias lowering is gated off
-/// in `ActorSendOpLowering` and routes every `actor_send` through the
-/// legacy copy path; this FFI body is the runtime-side mirror of that
-/// gate so external JIT / dlopen / C consumers cannot reach the same
-/// ownership hole the codegen branch was disabled for.
+/// # Single-release contract
 ///
-/// The JIT host symbol classification (`scripts/jit-symbol-classification.toml`)
-/// also lists this symbol under `internal`, not `stable`, so JIT
-/// session dylibs cannot link it; the panic here is the second layer
-/// of the same capability boundary for non-JIT FFI consumers.
+/// The envelope refcount is consumed **exactly once** on every exit:
 ///
-/// ## Why fail-closed
+/// - **Null actor** — release the refcount directly and return (an
+///   absent/dead actor is a normal outcome, not a fault, so we do not
+///   panic).
+/// - **Drop-fault injection** (deterministic test harness) — the message
+///   is silently discarded and the receiver never consumes the payload,
+///   so we release the refcount directly.
+/// - **Otherwise** — delegate to [`crate::mailbox::hew_mailbox_send_aliased`],
+///   which consumes the refcount on every outcome (enqueued node → freed
+///   on dispatch/drain; rejected → released immediately). After that call
+///   the envelope must not be touched again.
 ///
-/// `hew_msg_envelope_release` calls `drop_glue` on every final
-/// release, with no "consumed" flag distinguishing:
-///   - Discard paths (closed mailbox, OOM, null actor, drop-fault
-///     injection, shutdown drain) where the receiver never consumed
-///     the moved fields and a `drop_glue` is REQUIRED to free them.
-///   - Success paths where the receiver dispatched the message and
-///     moved owned fields out of the payload bytes; here a
-///     `drop_glue` would DOUBLE-FREE against the receiver's
-///     scope-exit drops.
-///
-/// A correct fix is Phase β work: envelope `header_bits` gain a
-/// CONSUMED bit set by `hew_msg_node_free` after dispatch returns,
-/// and release skips `drop_glue` when CONSUMED is set.  Until then
-/// this entry point cannot deliver a message safely under either
-/// branch, so we refuse to enqueue.
+/// On a successful enqueue the destination actor is woken via
+/// [`schedule_actor_after_enqueue`], mirroring the copy-mode path.
 ///
 /// # Safety
 ///
-/// - All parameters may be any value.  The function never dereferences
-///   `actor` or `msg_type`; it releases `envelope` (if non-null) via
-///   [`hew_msg_envelope_release`] and panics.  The caller's refcount
-///   transfer contract is honoured even on this fail-closed path so
-///   external code that already constructed an envelope does not leak
-///   the buffer container.
+/// - `actor` may be null; if non-null it must be a valid actor pointer
+///   under the same liveness contract as [`hew_actor_send`].
+/// - `envelope` must carry exactly one caller-transferred refcount (from
+///   [`crate::mailbox::hew_msg_envelope_new`] /
+///   [`crate::mailbox::hew_msg_envelope_clone_alias`]), or be null.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send_aliased(
-    _actor: *mut HewActor,
-    _msg_type: i32,
+    actor: *mut HewActor,
+    msg_type: i32,
     envelope: *mut crate::mailbox::HewMsgEnvelope,
 ) {
-    if !envelope.is_null() {
-        // SAFETY: caller transferred one refcount on `envelope` per
-        // the alias-send contract.  Releasing it here drops the
-        // buffer container (and invokes any caller-supplied
-        // `drop_glue`) so the partial allocation does not leak when
-        // we abort below.  Release happens BEFORE the panic so the
-        // refcount accounting is clean even if `hew_panic` recovers
-        // via longjmp into a supervisor.
-        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+    if actor.is_null() {
+        // EXIT(null-actor): no destination. Release the
+        // caller-transferred refcount exactly once so the buffer does
+        // not leak, then return cleanly (a dead/absent actor is normal —
+        // do not panic).
+        if !envelope.is_null() {
+            // SAFETY: caller transferred one refcount on `envelope`.
+            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+        }
+        return;
     }
-    // Phase α capability boundary: the alias send path cannot deliver
-    // a message safely under the current envelope/release contract
-    // (see doc-comment).  Abort rather than silently dropping or
-    // enqueueing into a known-broken path.
-    hew_panic();
+
+    // SAFETY: caller guarantees `actor` is valid (same liveness contract
+    // as `hew_actor_send`).
+    let a = unsafe { &*actor };
+
+    // EXIT(drop-fault-injection): the deterministic harness asks us to
+    // silently discard this message. The receiver never consumes the
+    // payload, so the alias path must release the envelope here — the
+    // copy path has no buffer to free, but we own one refcount.
+    if crate::deterministic::check_drop_fault(a.id) {
+        if !envelope.is_null() {
+            // SAFETY: caller transferred one refcount on `envelope`.
+            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+        }
+        return;
+    }
+
+    let mb = a.mailbox.cast::<crate::mailbox::HewMailbox>();
+    // Delegate to the mailbox alias-enqueue, which consumes the single
+    // envelope refcount on every outcome. We must NOT touch `envelope`
+    // after this call.
+    // SAFETY: `mb` is valid for the actor's lifetime; `envelope` carries
+    // the single caller-transferred refcount.
+    let result = unsafe { crate::mailbox::hew_mailbox_send_aliased(mb, msg_type, envelope) };
+    if result == HewError::Ok as i32 {
+        // SAFETY: `actor`/`a` valid; delivery succeeded so the actor may run.
+        unsafe { schedule_actor_after_enqueue(actor, a, msg_type) };
+    }
 }
 
-/// WASM stub for [`hew_actor_send_aliased`] — **fail-closed in
-/// Phase α** (same rationale as the native entry above).
+/// WASM stub for [`hew_actor_send_aliased`] — **fail-closed**.
+///
+// WASM-TODO(#1451): alias-send WASM routing deferred to the WASM send gate (the gate covers it).
+/// The native entry above delivers aliased sends via the envelope-mode
+/// enqueue, but the WASM mailbox routing for the alias path is not yet
+/// wired. Until then this stub releases the caller-transferred envelope
+/// refcount (so the buffer container does not leak) and aborts via
+/// [`hew_panic`] rather than silently dropping or mis-delivering.
+///
+/// # Safety
+///
+/// - `envelope` may be null; if non-null it carries exactly one
+///   caller-transferred refcount that this stub releases before aborting.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send_aliased(
@@ -3364,6 +3405,24 @@ unsafe fn actor_send_result_internal_reply(
         return result;
     }
 
+    // SAFETY: `actor`/`a` valid; the message is enqueued so the actor
+    // may be scheduled to run.
+    unsafe { schedule_actor_after_enqueue(actor, a, msg_type) };
+
+    HewError::Ok as i32
+}
+
+/// Record the send in the trace log and, if the destination actor is
+/// idle, transition it `Idle → Runnable` and enqueue it on the
+/// scheduler. Shared by the copy-mode delivery path
+/// ([`actor_send_result_internal_reply`]) and the envelope-mode alias
+/// path ([`hew_actor_send_aliased`]) so both wake the actor identically.
+///
+/// # Safety
+///
+/// `actor` must be a valid pointer and `a` must borrow the same actor.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn schedule_actor_after_enqueue(actor: *mut HewActor, a: &HewActor, msg_type: i32) {
     let sender = hew_actor_self();
     let trace_actor_id = if sender.is_null() {
         a.id
@@ -3388,8 +3447,6 @@ unsafe fn actor_send_result_internal_reply(
         a.hibernating.store(0, Ordering::Relaxed);
         scheduler::sched_enqueue(actor);
     }
-
-    HewError::Ok as i32
 }
 
 /// Send a message, returning `true` on success.
@@ -4754,6 +4811,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
     }
 
@@ -4763,6 +4821,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         SEND_BY_ID_DISPATCH_COUNT.fetch_add(1, Ordering::AcqRel);
     }
@@ -4773,6 +4832,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         ASK_SEND_BY_ID_DISPATCH_COUNT.fetch_add(1, Ordering::AcqRel);
         let ch = crate::scheduler::hew_get_reply_channel();
@@ -4797,6 +4857,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         DRAIN_BUSY_LOOP_STARTED.store(true, Ordering::Release);
         while !DRAIN_BUSY_LOOP_RELEASE.load(Ordering::Acquire) {
@@ -4811,6 +4872,7 @@ mod tests {
         msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         if msg_type == -1 {
             // SAFETY: this runs on the actor's own dispatch thread while its context is installed.
@@ -4875,6 +4937,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         let ch = crate::scheduler::hew_get_reply_channel().cast::<reply_channel::HewReplyChannel>();
         LAST_NATIVE_ASK_REPLY_CHANNEL.store(ch, Ordering::Release);
@@ -4887,6 +4950,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
@@ -4910,6 +4974,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let ch = crate::scheduler::hew_get_reply_channel();
@@ -4934,6 +4999,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
@@ -4953,13 +5019,20 @@ mod tests {
     }
 
     fn make_stop_test_actor(initial_state: HewActorState) -> (*mut HewActor, *mut HewMailbox) {
+        make_stop_test_actor_with_id(1, initial_state)
+    }
+
+    fn make_stop_test_actor_with_id(
+        id: u64,
+        initial_state: HewActorState,
+    ) -> (*mut HewActor, *mut HewMailbox) {
         // SAFETY: test helper fully owns the returned actor/mailbox and never publishes them.
         unsafe {
             let mailbox = mailbox::hew_mailbox_new();
             assert!(!mailbox.is_null());
             let actor = Box::into_raw(Box::new(HewActor {
                 sched_link_next: AtomicPtr::new(ptr::null_mut()),
-                id: 1,
+                id,
                 state: ptr::null_mut(),
                 state_size: 0,
                 dispatch: Some(noop_dispatch),
@@ -5660,6 +5733,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         // The handler self-stops (transitions Running → Stopping) and then
         // panics.  Crash recovery must dominate the pending self-stop:
@@ -6169,6 +6243,232 @@ mod tests {
             );
             mailbox::hew_mailbox_free(mailbox);
             drop(Box::from_raw(actor));
+        }
+    }
+
+    /// Live actor-level alias delivery: drive an envelope through
+    /// `hew_actor_send_aliased` to a real (non-null) actor, drain its
+    /// mailbox, and assert the payload is delivered by reference and the
+    /// envelope is released **exactly once**. The actor starts `Running`
+    /// so the wake CAS (`Idle → Runnable`) is a no-op and no scheduler is
+    /// needed. Pins the success exit of the actor-level single-release
+    /// contract.
+    /// Shared serialisation lock for the actor-level alias-send tests:
+    /// the live-delivery test (id 1) and the drop-fault test (its own
+    /// dedicated id) both run `hew_actor_send_aliased` with a process-wide
+    /// drop counter, so they take this lock to keep the counter readings
+    /// unambiguous. The drop-fault test additionally pins a *unique* actor
+    /// id so its armed fault can never be consumed by an unrelated id-1
+    /// sender elsewhere in the suite.
+    static ALIAS_SEND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn actor_send_aliased_delivers_to_live_actor_and_releases_once() {
+        static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_drop_glue(_payload: *mut c_void) {
+            DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let _guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
+        DROP_COUNT.store(0, Ordering::SeqCst);
+
+        let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
+        // SAFETY: actor/mailbox are valid for the test; envelope carries
+        // one refcount that transfers into the alias send.
+        unsafe {
+            let size = 5usize;
+            let payload = libc::malloc(size);
+            assert!(!payload.is_null());
+            libc::memcpy(payload, b"alive".as_ptr().cast(), size);
+            let env = crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
+            assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
+
+            hew_actor_send_aliased(actor, 4, env);
+            // Enqueued, not yet consumed.
+            assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+            assert_eq!(mailbox::hew_mailbox_has_messages(mailbox), 1);
+
+            // Drain (models dispatch); node free releases the envelope once.
+            let node = mailbox::hew_mailbox_try_recv(mailbox);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, 4);
+            let borrowed = crate::mailbox::hew_msg_envelope_payload_ptr((*node).envelope);
+            assert_eq!(
+                borrowed, payload,
+                "payload delivered by reference, not copied"
+            );
+            mailbox::hew_msg_node_free(node);
+            assert_eq!(
+                DROP_COUNT.load(Ordering::SeqCst),
+                1,
+                "live-actor alias send must release the envelope exactly once"
+            );
+
+            mailbox::hew_mailbox_free(mailbox);
+            drop(Box::from_raw(actor));
+        }
+    }
+
+    /// EXIT(drop-fault-injection): when the deterministic harness asks the
+    /// runtime to silently discard a message, `hew_actor_send_aliased`
+    /// never enqueues the node — the receiver will never consume the
+    /// payload — so it must release the caller-transferred envelope
+    /// refcount directly, exactly once. Pins the drop-fault exit of the
+    /// actor-level single-release contract.
+    #[test]
+    fn actor_send_aliased_drop_fault_releases_once() {
+        static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_drop_glue(_payload: *mut c_void) {
+            DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let _guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
+        DROP_COUNT.store(0, Ordering::SeqCst);
+
+        // Use a unique, suite-private actor id so the armed drop fault can
+        // never be consumed by an unrelated id-1 sender running in
+        // parallel (both send paths consult the process-global fault
+        // table, keyed by actor id).
+        let fault_actor_id: u64 = 0x0A11_A5ED_DEAD_0001;
+        let (actor, mailbox) = make_stop_test_actor_with_id(fault_actor_id, HewActorState::Running);
+        // SAFETY: actor/mailbox are valid for the test; envelope carries
+        // one refcount that transfers into the alias send.
+        unsafe {
+            // Arm a single-shot drop fault for this actor. Clear
+            // first/last so the process-global fault table cannot leak
+            // across tests.
+            crate::deterministic::hew_fault_clear(fault_actor_id);
+            crate::deterministic::hew_fault_inject_drop(fault_actor_id, 1);
+
+            let size = 4usize;
+            let payload = libc::malloc(size);
+            assert!(!payload.is_null());
+            libc::memcpy(payload, b"drop".as_ptr().cast(), size);
+            let env = crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
+            assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
+
+            hew_actor_send_aliased(actor, 9, env);
+
+            // Message discarded: nothing enqueued, envelope released once.
+            assert_eq!(
+                mailbox::hew_mailbox_has_messages(mailbox),
+                0,
+                "drop-fault must not enqueue the alias node"
+            );
+            assert_eq!(
+                DROP_COUNT.load(Ordering::SeqCst),
+                1,
+                "drop-fault exit must release the envelope exactly once"
+            );
+
+            crate::deterministic::hew_fault_clear(fault_actor_id);
+            mailbox::hew_mailbox_free(mailbox);
+            drop(Box::from_raw(actor));
+        }
+    }
+
+    /// PROBE (P5-RX Stage 2a, A625): models the codegen contract for an
+    /// escaping borrowed `String` view under both runtime receipt modes, and
+    /// asserts exactly-once release in each. This test was first reinstated in
+    /// its PRE-FIX shape — a naked handler drop of the borrowed handle followed
+    /// by the envelope release — which `ASan` flagged as a heap-use-after-free /
+    /// double-free (the borrowed buffer is owned by the envelope, so the
+    /// handler must NOT free it). The retain-on-escape mechanism flips it green:
+    ///
+    ///   - BORROW arm (`borrow_mode != 0`): at the owned sink the handler takes
+    ///     its OWN retained owner via `hew_string_clone` (a refcount bump on the
+    ///     shared buffer). The handler's owned-drop then releases that clone,
+    ///     and `hew_msg_envelope_release` releases the envelope's original — two
+    ///     decrements against a refcount that the clone raised to two, so the
+    ///     backing buffer is freed exactly once.
+    ///   - COPY arm (`borrow_mode == 0`): ownership of the payload transferred
+    ///     to the handler outright; codegen emits a plain move (no clone), the
+    ///     handler frees its private owner once, and nothing else aliases it.
+    ///
+    /// Wrapped in a 20× loop so a residual double-free or leak is overwhelmingly
+    /// likely to trip `ASan` / the per-iteration single-release assertion.
+    #[test]
+    fn live_borrow_receive_retains_escaping_payload_releases_once() {
+        static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+        unsafe extern "C" fn drop_string_payload(payload: *mut c_void) {
+            // SAFETY: the envelope stores a `*mut c_char` string handle in the
+            // first pointer-sized slot of `payload` (set by the test below);
+            // load it and release one owner.
+            let handle = unsafe { *payload.cast::<*mut std::ffi::c_char>() };
+            // SAFETY: `handle` is a live header-aware String produced by
+            // `hew_string_from_char` (or a clone of it), released exactly once.
+            unsafe { crate::string::hew_string_drop(handle) };
+            DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let _guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
+
+        for _ in 0..20 {
+            // ---- BORROW arm: borrow_mode != 0, retain-on-escape ----
+            DROP_COUNT.store(0, Ordering::SeqCst);
+            // SAFETY: a self-contained envelope lifecycle — allocate a one-slot
+            // payload holding a fresh String handle, wrap it, model the handler
+            // retain/drop, then release the envelope. Every pointer is live for
+            // the block and freed exactly once.
+            unsafe {
+                let s = crate::string::hew_string_from_char(i32::from(b'x'));
+                let slot = std::mem::size_of::<*mut std::ffi::c_char>();
+                let buf = libc::malloc(slot).cast::<*mut std::ffi::c_char>();
+                assert!(!buf.is_null());
+                *buf = s;
+                let env = crate::mailbox::hew_msg_envelope_new(
+                    buf.cast(),
+                    slot,
+                    Some(drop_string_payload),
+                );
+
+                // Handler escapes the borrowed view into an owned sink. The
+                // gated retain hands it a private owner (refcount bump).
+                let borrowed = crate::mailbox::hew_msg_envelope_payload_ptr(env);
+                let received_handle = *borrowed.cast::<*mut std::ffi::c_char>();
+                let retained = crate::string::hew_string_clone(received_handle);
+
+                // Sink's owned-drop releases the handler's clone (1st decrement).
+                crate::string::hew_string_drop(retained);
+                // Envelope releases its original (2nd decrement -> frees once).
+                crate::mailbox::hew_msg_envelope_release(env);
+
+                assert_eq!(
+                    DROP_COUNT.load(Ordering::SeqCst),
+                    1,
+                    "borrow-mode escape must release the shared buffer exactly once"
+                );
+            }
+
+            // ---- COPY arm: borrow_mode == 0, plain move, sole owner ----
+            DROP_COUNT.store(0, Ordering::SeqCst);
+            // SAFETY: same self-contained envelope lifecycle as the borrow arm;
+            // copy mode emits no clone, so the envelope release is the sole free.
+            unsafe {
+                let s = crate::string::hew_string_from_char(i32::from(b'y'));
+                let slot = std::mem::size_of::<*mut std::ffi::c_char>();
+                let buf = libc::malloc(slot).cast::<*mut std::ffi::c_char>();
+                assert!(!buf.is_null());
+                *buf = s;
+                let env = crate::mailbox::hew_msg_envelope_new(
+                    buf.cast(),
+                    slot,
+                    Some(drop_string_payload),
+                );
+
+                // No clone in copy mode: the handler owns the payload outright;
+                // the envelope release is its sole, single free.
+                crate::mailbox::hew_msg_envelope_release(env);
+
+                assert_eq!(
+                    DROP_COUNT.load(Ordering::SeqCst),
+                    1,
+                    "copy-mode receipt must free its owner exactly once"
+                );
+            }
         }
     }
 
@@ -7568,6 +7868,7 @@ mod wasm_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         hew_actor_self_stop();
     }
@@ -7578,6 +7879,7 @@ mod wasm_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         let ch = crate::scheduler_wasm::hew_get_reply_channel();
         let mut value: i32 = 21;
@@ -7596,6 +7898,7 @@ mod wasm_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let ch = crate::scheduler_wasm::hew_get_reply_channel();
@@ -7618,6 +7921,7 @@ mod wasm_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
         let ch = crate::scheduler_wasm::hew_get_reply_channel();
         if !ch.is_null() {
@@ -7868,6 +8172,7 @@ mod wasm_tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
     }
 

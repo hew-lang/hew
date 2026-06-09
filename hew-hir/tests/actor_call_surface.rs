@@ -60,7 +60,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         | HirExprKind::Scope { body: block }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => visit_block(block, out),
-        HirExprKind::Yield { value, .. } => {
+        HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
             if let Some(value) = value {
                 visit_expr(value, out);
             }
@@ -171,6 +171,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(scrutinee, out);
             visit_block(body, out);
         }
+        HirExprKind::Loop { body } => visit_block(body, out),
         HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Select(_)
@@ -179,6 +180,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::Continue { .. }
         | HirExprKind::Unsupported(_)
         | HirExprKind::CallTraitMethodStatic { .. } => {}
     }

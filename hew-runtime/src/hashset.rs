@@ -222,6 +222,23 @@ pub unsafe extern "C" fn hew_hashset_new_with_layout(
 ///
 /// Returns `true` if the element was newly inserted, `false` if already present.
 ///
+/// # String-element ownership: inherits the map key MOVE contract
+///
+/// A `HashSet<T>` is a thin wrapper whose element *is* the underlying map key
+/// (the value layout is the ZST marker). It therefore inherits
+/// `hew_hashmap_insert_layout`'s String-element contract verbatim: for a
+/// `String` element codegen wires the header-aware `hew_layout_key_string`
+/// descriptor, and ingress is an ownership-transfer **MOVE** — the caller's
+/// sole-owned, already-header-aware string is relocated into the slot and
+/// consumed (no retain, no `strdup`). On the vacant path the element is
+/// consumed; on the already-present path the stored element is reused and the
+/// caller's duplicate is NOT consumed here (the map's conditional-key
+/// asymmetry — see `hew_hashmap_insert_layout`). The matched release side is
+/// `hew_hashset_clone_layout` (retain via `hew_string_clone`) /
+/// `hew_hashset_free_layout` / `hew_hashset_remove_layout` (release via the
+/// descriptor `drop_fn`), preserving the clone-retains / drop-releases
+/// symmetry (LESSONS `alias-byte-copy-not-semantic-clone`).
+///
 /// `set` and `elem` must be non-null; either being null panics fail-closed
 /// (LESSONS `boundary-fail-closed` P0).
 ///

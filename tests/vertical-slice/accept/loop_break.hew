@@ -1,0 +1,16 @@
+// A bare `loop {}` has no condition: the only way out is `break`. The MIR
+// lowering emits a two-block CFG (body with an unconditional back-edge, plus
+// an always-started exit block) so codegen has a well-formed exit.
+//
+// The body runs exactly once — `n` becomes 7, then `break` exits the loop.
+// Without a working `break` the unconditional back-edge would loop forever
+// and the harness timeout would fire. Observing exit code 7 proves both that
+// the body executed and that `break` left the otherwise-infinite loop.
+fn main() -> i64 {
+    var n: i64 = 0;
+    loop {
+        n = n + 7;
+        break;
+    }
+    n
+}

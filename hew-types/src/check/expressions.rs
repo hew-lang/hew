@@ -413,25 +413,25 @@ impl Checker {
                 // to Ty::normalize_named rather than returning Ty::Error). Emitting
                 // the context error in this case is a false positive — we cannot
                 // know whether the intended type would have been a Result/Option.
-                let bad_ctx_msg: Option<String> =
-                    self.current_return_type.as_ref().and_then(|ret| {
-                        let r = self.subst.resolve(ret);
-                        if r.as_option().is_some()
-                            || r.as_result().is_some()
-                            || matches!(r, Ty::Var(_) | Ty::Error)
-                            || matches!(&r, Ty::Named { name, .. }
+                let current_return_type = self.current_return_type.clone();
+                let bad_ctx_msg: Option<String> = current_return_type.as_ref().and_then(|ret| {
+                    let r = self.subst.resolve(ret);
+                    if r.as_option().is_some()
+                        || r.as_result().is_some()
+                        || matches!(r, Ty::Var(_) | Ty::Error)
+                        || matches!(&r, Ty::Named { name, .. }
                                 if !Ty::is_named_builtin(name)
                                     && !self.type_defs.contains_key(name)
                                     && !self.type_aliases.contains_key(name))
-                        {
-                            None
-                        } else {
-                            Some(format!(
-                                "`?` cannot be used in a function returning `{r}`; \
+                    {
+                        None
+                    } else {
+                        Some(format!(
+                            "`?` cannot be used in a function returning `{r}`; \
                                  the enclosing function must return `Option` or `Result`"
-                            ))
-                        }
-                    });
+                        ))
+                    }
+                });
                 if let Some(inner_ty) = ty.as_option() {
                     if let Some(msg) = bad_ctx_msg {
                         self.report_error(TypeErrorKind::InvalidOperation, span, msg);
@@ -439,12 +439,37 @@ impl Checker {
                     } else {
                         inner_ty.clone()
                     }
-                } else if let Some((ok, _)) = ty.as_result() {
+                } else if let Some((ok, err)) = ty.as_result() {
+                    let ok_ty = ok.clone();
+                    let err_ty = err.clone();
                     if let Some(msg) = bad_ctx_msg {
                         self.report_error(TypeErrorKind::InvalidOperation, span, msg);
                         Ty::Error
                     } else {
-                        ok.clone()
+                        if let Some(ret) = current_return_type.as_ref() {
+                            let resolved_ret = self.subst.resolve(ret);
+                            if let Some((_, ret_err)) = resolved_ret.as_result() {
+                                let ret_err = ret_err.clone();
+                                let err_ty = self.subst.resolve(&err_ty);
+                                if !matches!(ret_err, Ty::Error) && !matches!(err_ty, Ty::Error) {
+                                    let snapshot = self.subst.snapshot();
+                                    if unify(&mut self.subst, &ret_err, &err_ty).is_err() {
+                                        self.subst.restore(snapshot);
+                                        self.report_error(
+                                            TypeErrorKind::InvalidOperation,
+                                            span,
+                                            format!(
+                                                "`?` error type mismatch: expected `{}`, found `{}`",
+                                                ret_err.user_facing(),
+                                                err_ty.user_facing()
+                                            ),
+                                        );
+                                        return Ty::Error;
+                                    }
+                                }
+                            }
+                        }
+                        ok_ty
                     }
                 } else {
                     self.report_error(
@@ -2844,6 +2869,16 @@ impl Checker {
                 ) {
                     return Some((p.name.clone(), Some((p.name.clone(), "Rc".to_string()))));
                 }
+                // `&T` immutable borrow (F5): a borrow parameter's owner lives in
+                // the caller's scope. Returning the borrow — directly or stored
+                // in a returned local/aggregate — lets the reference outlive its
+                // owner (the owner is dropped at the caller's scope exit while the
+                // returned borrow dangles). Reuse the same return-position escape
+                // analysis as the Rc case, tagged `borrow` for a borrow-specific
+                // diagnostic.
+                if matches!(ty, Ty::Borrow { .. }) {
+                    return Some((p.name.clone(), Some((p.name.clone(), "borrow".to_string()))));
+                }
                 None
             })
             .collect();
@@ -2865,8 +2900,8 @@ impl Checker {
     ) {
         match expr {
             Expr::Identifier(name) => {
-                if let Some((source_param, _tag)) = Self::lookup_dangerous_binding(name, scopes) {
-                    self.emit_borrowed_param_return(name, &source_param, span);
+                if let Some((source_param, tag)) = Self::lookup_dangerous_binding(name, scopes) {
+                    self.emit_borrowed_param_return(name, &source_param, &tag, span);
                 }
             }
             // Descend into block expressions: `{ r }` wraps the identifier
@@ -3023,20 +3058,58 @@ impl Checker {
         }
     }
 
-    fn emit_borrowed_param_return(&mut self, name: &str, source_param: &str, span: &Span) {
+    fn emit_borrowed_param_return(
+        &mut self,
+        name: &str,
+        source_param: &str,
+        tag: &str,
+        span: &Span,
+    ) {
+        let is_borrow = tag == "borrow";
         let (message, note, suggestion) = if name == source_param {
+            if is_borrow {
+                (
+                    format!(
+                        "returning borrow parameter `{name}` lets the reference outlive \
+                         its owner — the `&T` borrows a value owned by the caller, which \
+                         is dropped at the caller's scope exit while the returned \
+                         reference would still point at it"
+                    ),
+                    "an immutable borrow `&T` is non-owning; its owner lives in the \
+                     caller's scope and the borrow cannot escape that scope via return"
+                        .to_string(),
+                    format!(
+                        "return an owned value instead — `{name}.clone()` produces an \
+                         owned copy the caller can keep"
+                    ),
+                )
+            } else {
+                (
+                    format!(
+                        "returning Rc parameter `{name}` transfers a borrowed reference \
+                         without incrementing the refcount — this will cause a double-free \
+                         when both the caller's local and the return value are dropped"
+                    ),
+                    "function parameters are borrowed under call-boundary ownership; \
+                     the caller retains ownership and drops at scope exit"
+                        .to_string(),
+                    format!(
+                        "use `{name}.clone()` to create an owned copy with an incremented refcount"
+                    ),
+                )
+            }
+        } else if is_borrow {
             (
                 format!(
-                    "returning Rc parameter `{name}` transfers a borrowed reference \
-                     without incrementing the refcount — this will cause a double-free \
-                     when both the caller's local and the return value are dropped"
+                    "returning local `{name}` which contains borrow parameter \
+                     `{source_param}` — the `&T` reference would outlive its owner, \
+                     which the caller drops at scope exit"
                 ),
-                "function parameters are borrowed under call-boundary ownership; \
-                 the caller retains ownership and drops at scope exit"
-                    .to_string(),
                 format!(
-                    "use `{name}.clone()` to create an owned copy with an incremented refcount"
+                    "borrow parameter `{source_param}` is non-owning; storing it in \
+                     `{name}` does not extend the borrowed value's lifetime"
                 ),
+                format!("return an owned value: clone before storing — `{source_param}.clone()`"),
             )
         } else {
             (

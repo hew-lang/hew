@@ -32,6 +32,7 @@ members = [
   "std/sort",
   "std/encoding/compress",
   "std/math",
+  "std/mem",
   "std/misc/uuid",
   "std/misc/log",
   "hew-cli",

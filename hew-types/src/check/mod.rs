@@ -22,7 +22,7 @@ pub(crate) mod admissibility;
 mod calls;
 mod closure_inference;
 mod coerce;
-mod const_eval;
+pub mod const_eval;
 mod diagnostics;
 pub mod dispatch;
 pub use self::dispatch::{
@@ -115,6 +115,15 @@ pub fn builtin_function_names() -> &'static HashSet<String> {
         }
         names
     })
+}
+
+fn value_type_kind_label(kind: TypeDefKind) -> &'static str {
+    match kind {
+        TypeDefKind::Enum => "enum",
+        TypeDefKind::Record => "record",
+        TypeDefKind::Struct => "struct",
+        TypeDefKind::Actor | TypeDefKind::Machine => "type",
+    }
 }
 
 fn resolve_builtin_result_output_type_args(ok_ty: Ty, err_ty: Ty) -> Option<(Ty, Ty)> {
@@ -396,6 +405,23 @@ impl Checker {
             &mut resolved_call_type_args,
             &mut resolved_record_init_type_args,
         );
+        for cycle in crate::cycle::detect_recursive_value_type_cycles(&resolved_type_defs) {
+            let span = self
+                .type_def_spans
+                .get(&cycle.edge.from)
+                .cloned()
+                .unwrap_or(0..0);
+            let type_kind = resolved_type_defs
+                .get(&cycle.edge.from)
+                .map_or("type", |type_def| value_type_kind_label(type_def.kind));
+            self.errors.push(TypeError::recursive_value_type(
+                span,
+                type_kind,
+                &cycle.edge.from,
+                &cycle.edge.member_desc,
+                &cycle.edge.to,
+            ));
+        }
         // The layout-backed HashMap/HashSet admission finalizers below still
         // consult `self.type_defs` to prove named record hash-eligibility and
         // compute key/value ABI sizes. `resolved_type_defs` is the authoritative

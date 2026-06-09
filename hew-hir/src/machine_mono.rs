@@ -219,6 +219,11 @@ pub fn run_machine_mono_pass(
             // variant is walked below in the discovery-surface loop —
             // none contribute new origin/decl/known-type registry rows.
             HirItem::Supervisor(_) | HirItem::Impl(_) | HirItem::ExternFn(_) => {}
+            HirItem::Const(_) => {
+                // Const declarations carry only a folded integer/string value
+                // and a scalar type — no machine reach-through is possible, so
+                // no registry rows are contributed here.
+            }
         }
     }
 
@@ -476,6 +481,11 @@ pub fn run_machine_mono_pass(
                 // annotations to discover. (`states`/`events`/
                 // `transitions` carry field types of the machine's
                 // *own* type params, not foreign machine references.)
+            }
+            HirItem::Const(_) => {
+                // Const declarations carry only a folded scalar value and a
+                // concrete integer/string type; no machine reach-through is
+                // expressible, so there is nothing to discover here.
             }
         }
     }
@@ -1676,6 +1686,35 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
+        HirExprKind::Break { value, .. } => {
+            if let Some(value) = value {
+                walk_expr(
+                    value,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+        }
+        HirExprKind::Continue { .. } => {}
+        HirExprKind::Loop { body } => {
+            walk_block(
+                body,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+        }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             walk_expr(
                 receiver,
@@ -1979,7 +2018,19 @@ fn visit_ty(
                     worklist.push(c);
                 }
             }
-            ResolvedTy::Pointer { pointee, .. } => worklist.push(*pointee),
+            ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
+                worklist.push(*pointee);
+            }
+            ResolvedTy::TraitObject { traits } => {
+                for bound in traits {
+                    for a in bound.args {
+                        worklist.push(a);
+                    }
+                    for (_, t) in bound.assoc_bindings {
+                        worklist.push(t);
+                    }
+                }
+            }
             ResolvedTy::Task(inner) => worklist.push(*inner),
             _ => {}
         }
@@ -2033,8 +2084,25 @@ fn residual_param_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> O
                     .iter()
                     .find_map(|c| residual_param_in_ty(c, residual_domain))
             }),
-        ResolvedTy::Pointer { pointee, .. } => residual_param_in_ty(pointee, residual_domain),
+        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
+            residual_param_in_ty(pointee, residual_domain)
+        }
+        ResolvedTy::TraitObject { traits } => traits.iter().find_map(|bound| {
+            bound
+                .args
+                .iter()
+                .find_map(|a| residual_param_in_ty(a, residual_domain))
+                .or_else(|| {
+                    bound
+                        .assoc_bindings
+                        .iter()
+                        .find_map(|(_, t)| residual_param_in_ty(t, residual_domain))
+                })
+        }),
         ResolvedTy::Task(inner) => residual_param_in_ty(inner, residual_domain),
+        // A structural type parameter is residual when its name is still in
+        // the abstract domain (DI-019: the wildcard must not absorb it).
+        ResolvedTy::TypeParam { name } if residual_domain.contains(name) => Some(name.clone()),
         _ => None,
     }
 }

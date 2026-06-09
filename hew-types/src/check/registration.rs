@@ -112,12 +112,23 @@ pub enum LookupError {
 /// Current members:
 /// - `std.math` — the math intrinsics (`exp`/`log`/`sqrt`/…) are declared as
 ///   typed `#[intrinsic("math.*")]` stubs in `std/math/math.hew`; the catalog
-///   supplies the lowering.
-///
-/// W5.005 (F1b) will add the dedicated memory-intrinsic floor module here when
-/// it introduces `alloc`/`size_of`/typed-ptr ops; W5.004 ships the protocol +
-/// gate only, so no memory module is listed yet.
-const INTRINSIC_FLOOR_MODULES: &[&str] = &["std.math"];
+///   supplies the lowering. NOTE (W5.005): the `math.*` rows use
+///   `CompilerIntrinsic` linkage and route through builtin method-rewrites —
+///   they are NOT emitted as callable floor functions and a direct
+///   `Terminator::Call` to one is fail-closed at MIR (`NotYetImplemented`).
+///   Migrating math onto the same callable-floor mechanism as `mem.*`
+///   (synthesized bodies via `intrinsic_id`) is tracked follow-up work, not
+///   part of F1b.
+/// - `std.mem` — the memory-intrinsic floor (`mem.alloc`/`mem.realloc`/
+///   `mem.dealloc` + byte-level `mem.ptr_offset`/`mem.ptr_copy`) declared as
+///   typed `#[intrinsic("mem.*")]` stubs in `std/mem/mem.hew` (W5.005 / F1b).
+///   The pointer ops are byte-level monomorphic (A612) — no `<T>`. These are
+///   unsafe heap primitives; A605 keeps them compiler-internal-only — no user
+///   surface may reach them. Codegen synthesizes their trampoline bodies from
+///   the catalog id threaded on `RawMirFunction::intrinsic_id` (Decision 4
+///   Option A); an unrecognised id is fail-closed (D343), never a silent
+///   empty-body no-op.
+const INTRINSIC_FLOOR_MODULES: &[&str] = &["std.math", "std.mem"];
 
 /// Returns `true` iff `module` is a stdlib-floor module permitted to declare
 /// `#[intrinsic]` functions (see [`INTRINSIC_FLOOR_MODULES`]).
@@ -272,6 +283,9 @@ impl Checker {
             | Ty::Function { .. }
             | Ty::Closure { .. }
             | Ty::Pointer { .. }
+            // `&T` borrow is non-owning: a borrow never holds an owned handle
+            // (the owner is borrowed from, elsewhere). Mirrors the Pointer arm.
+            | Ty::Borrow { .. }
             | Ty::TraitObject { .. }
             | Ty::Error
             // Task<T> is compiler-internal; it does not appear in user-declared

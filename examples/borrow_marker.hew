@@ -1,0 +1,21 @@
+// Borrow-marker syntax demo (M-COW P0).
+//
+// `&T` marks a parameter as an immutable non-owning borrow — the canonical
+// annotation for read-only views passed across FFI boundaries.  In v0.5 P0
+// the marker is surface syntax only; it round-trips through the formatter
+// and is accepted in extern "C" signatures (equivalent to `*const T`).
+//
+// Transparent coercion at regular Hew call sites (passing `string` to a
+// function expecting `&string`) is follow-on work (type-checker coercion
+// rule) scheduled for the P2 milestone.
+extern "C" {
+    // Write `msg` to the log without retaining it.
+    fn hew_log_write_borrow(msg: &string);
+    // Compute length of `s` without copying.
+    fn hew_util_strlen(s: &string) -> i32;
+    // Compare two strings without taking ownership of either.
+    fn hew_util_streq(a: &string, b: &string) -> bool;
+}
+
+fn main() {
+}

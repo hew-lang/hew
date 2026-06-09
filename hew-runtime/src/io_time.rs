@@ -41,18 +41,12 @@ pub unsafe extern "C" fn hew_read_file(path: *const c_char) -> *mut c_char {
     let Ok(contents) = std::fs::read_to_string(rust_path) else {
         return std::ptr::null_mut();
     };
-    let len = contents.len();
-    // SAFETY: allocating len+1 bytes via libc::malloc is valid for any positive size.
-    let buf = unsafe { libc::malloc(len + 1) }.cast::<u8>();
+    // Header-aware (S1): the result reaches hew_string_drop / free_cstring.
+    let buf = crate::cabi::alloc_cstring_from_str(&contents); // CSTRING-ALLOC: str-open (hew_read_file — header-aware String result; reaches hew_string_drop)
     if buf.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: `buf` is freshly allocated with at least `len + 1` bytes.
-    unsafe {
-        std::ptr::copy_nonoverlapping(contents.as_ptr(), buf, len);
-        *buf.add(len) = 0; // NUL terminator
-    }
-    buf.cast::<c_char>()
+    buf
 }
 
 // ---------------------------------------------------------------------------
@@ -969,8 +963,8 @@ mod tests {
         assert!(!ptr.is_null(), "expected non-null C string pointer");
         // SAFETY: caller guarantees ptr is a valid NUL-terminated C string.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated with libc::malloc.
-        unsafe { libc::free(ptr.cast()) };
+        // SAFETY: ptr was allocated header-aware by hew_read_file.
+        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (read_and_free test helper frees hew_read_file output)
         s
     }
 
@@ -1048,8 +1042,8 @@ mod tests {
         // C string truncates at first interior NUL.
         assert_eq!(seen, "abc");
         assert_eq!(seen.len(), 3, "C string length should stop at interior NUL");
-        // SAFETY: ptr was allocated with libc::malloc.
-        unsafe { libc::free(ptr.cast()) };
+        // SAFETY: ptr was allocated header-aware by hew_read_file.
+        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test frees hew_read_file output)
 
         let _ = std::fs::remove_file(&tmp);
     }

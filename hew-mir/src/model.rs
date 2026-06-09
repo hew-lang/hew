@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use hew_hir::{BindingId, IntentKind, SiteId, ValueClass};
+use hew_hir::{BindingId, IntentKind, ItemId, SiteId, ValueClass};
 use hew_types::{NumericWidth, ResolvedTy};
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
@@ -14,6 +14,46 @@ pub use crate::runtime_symbols::UnknownRuntimeSymbol;
 pub enum BorrowKind {
     Shared,
     Mutable,
+}
+
+/// Binary alias-vs-copy discriminant carried by [`Terminator::Send`].
+///
+/// Codegen uses this in Phase P5.2 to branch between the legacy
+/// deep-copy mailbox path (`Copy`) and the refcounted alias envelope
+/// path (`Alias`). The field is populated by MIR lowering from the
+/// checker's `actor_send_aliasing` side table.
+///
+/// **Fail-closed default**: a missing or unresolved classification in
+/// the checker's side table MUST produce `Copy`. `Copy` is the safe
+/// fallback — it issues a deep-copy into the mailbox, which is always
+/// semantically correct even if sub-optimal. `Alias` is only safe when
+/// the move-checker has already invalidated the sender's binding.
+///
+/// LESSONS: `serializer-fail-closed` (P0) — every fallback / default
+/// path MUST be `Copy`. The `Default` impl below enforces this.
+///
+/// `alias-byte-copy-not-semantic-clone` / `copy ⊥ sendable` (P0):
+/// this discriminant is derived SOLELY from the checker's
+/// `actor_send_aliasing` classification, never from a `Copy`-marker
+/// or `implements_marker(Copy)` check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SendAliasMode {
+    /// Sender and receiver are isolated: the runtime deep-copies the
+    /// payload into the mailbox. Always safe; the fail-closed default.
+    Copy,
+    /// Sender transfers ownership of a refcounted envelope to the
+    /// receiver. The move-checker has already invalidated the sender's
+    /// binding so no post-send observation is possible.
+    Alias,
+}
+
+impl Default for SendAliasMode {
+    /// Fail-closed: the default mode is `Copy` so any send site that
+    /// cannot be resolved by the checker falls back to the safe
+    /// deep-copy path rather than producing an unsound alias.
+    fn default() -> Self {
+        SendAliasMode::Copy
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +139,13 @@ pub struct IrPipeline {
     /// substrate boundary; codegen does not re-read HIR. WHEN-OBSOLETE: never
     /// — the pipeline-field pattern is established for all layout descriptors.
     pub regex_literals: Vec<RegexLiteral>,
+    /// Module-level `const` descriptors collected from `HirItem::Const`.
+    ///
+    /// Each descriptor carries the HIR `ItemId`, declared type, and folded
+    /// value. Codegen emits one LLVM global per descriptor, and
+    /// `Instr::ConstGlobalLoad { item_id, .. }` resolves back through this
+    /// table by `item_id` without re-reading HIR.
+    pub user_consts: Vec<MirConst>,
     /// State-record layouts synthesised by the S3b cross-yield-liveness
     /// pass, one entry per gen-block body function in the module. Codegen
     /// (S4) consumes this to emit the tagged-union LLVM struct that backs
@@ -173,6 +220,39 @@ pub struct IrPipeline {
     /// pipeline finalization fails closed on any remaining `Pending`
     /// element layout fact.
     pub hashset_lowering_facts: Vec<hew_types::HashSetLoweringFact>,
+    /// Checker-authored alias-vs-copy decision per actor send site.
+    ///
+    /// Keyed by the source span of each actor-send argument expression
+    /// (the same `SpanKey` the checker inserts during
+    /// `enforce_actor_boundary_send`). Populated by
+    /// `lower_hir_module_with_facts` from `TypeCheckOutput::actor_send_aliasing`
+    /// so codegen (Phase P5.2) can branch on the decision without
+    /// re-examining the AST.
+    ///
+    /// This field mirrors the checker's map for codegen's future use.
+    /// MIR lowering itself reads from the map it was called with (via
+    /// `lower_hir_module_with_facts`) and stamps each
+    /// `Terminator::Send.alias_mode` at construction time.
+    ///
+    /// LESSONS: `serializer-fail-closed` (P0) — a missing entry maps
+    /// to `SendAliasMode::Copy`; `Alias` is ONLY set on explicit
+    /// `ActorSendAliasing::Alias` entries.
+    pub actor_send_aliasing: HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    /// Polymorphic (un-monomorphised) MIR for every generic origin function
+    /// in the module (W5.007a). One entry per generic `HirFn` whose body is
+    /// lowered against `ResolvedTy::TypeParam` operands instead of being
+    /// skipped — the abstract counterpart of the concrete `$$`-mangled
+    /// instances that populate `raw_mir`. Each entry pairs the abstract body
+    /// with its type-parameter binder (see [`PolymorphicMirFunction`]).
+    ///
+    /// **Not consumed by codegen.** Codegen lowers `raw_mir` /
+    /// `elaborated_mir` only; the concrete monomorphic instances remain the
+    /// sole emission source, so behaviour is unchanged. This bucket exists as
+    /// the representation substrate the W5.007b witness-lowering /
+    /// shared-generic work builds on. Any diagnostics produced while lowering
+    /// these abstract bodies are intentionally dropped here — surfacing them
+    /// would change user-visible output for programs that compile today.
+    pub polymorphic_mir: Vec<PolymorphicMirFunction>,
 }
 
 impl IrPipeline {
@@ -191,6 +271,24 @@ impl IrPipeline {
     pub fn attach_lowering_facts(&mut self, tco: &hew_types::TypeCheckOutput) {
         self.hashmap_lowering_facts = tco.hashmap_layout_facts.values().cloned().collect();
         self.hashset_lowering_facts = tco.hashset_layout_facts.values().cloned().collect();
+    }
+
+    /// Store the checker's `actor_send_aliasing` side table in the pipeline
+    /// for codegen (Phase P5.2) to consume.
+    ///
+    /// This is called by driver glue (`hew-cli`) alongside
+    /// `attach_lowering_facts`. It mirrors — for codegen's future reference —
+    /// the same map that was passed to `lower_hir_module_with_facts` so that
+    /// the decisions stamped on each `Terminator::Send.alias_mode` during
+    /// lowering are also available as a flat lookup table.
+    ///
+    /// Calling this after `lower_hir_module_with_facts` is idempotent: the
+    /// `alias_mode` values on existing terminators are already correct; this
+    /// method just makes the raw map accessible on the pipeline struct for
+    /// diagnostic / `--explain-cow` rendering.
+    pub fn attach_actor_send_aliasing(&mut self, tco: &hew_types::TypeCheckOutput) {
+        self.actor_send_aliasing
+            .clone_from(&tco.actor_send_aliasing);
     }
 }
 
@@ -410,6 +508,42 @@ pub struct RegexLiteral {
     /// The validated regex pattern string. Embedded in the module as a
     /// NUL-terminated i8 constant; passed to `hew_regex_compile` at init.
     pub pattern: String,
+}
+
+/// Constant-folded value carried by a [`MirConst`]. Mirrors
+/// `hew_hir::HirConstValue`; carried in the descriptor so codegen does not
+/// re-read HIR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MirConstValue {
+    /// Folded integer value. The declared width lives in [`MirConst::ty`];
+    /// codegen truncates/zero-extends the `i64` payload to that width.
+    Integer(i64),
+    /// Folded UTF-8 string literal value.
+    Str(String),
+}
+
+/// Module-level constant descriptor lowered from `hew_hir::HirItem::Const`.
+///
+/// Mirrors the regex-literal handle-array pattern: one entry per module-level
+/// `const`, in declaration order, with `const_id` as the 0-based index into
+/// the const-descriptor table (the codegen global-slot index). `item_id` ties
+/// the descriptor back to the `ResolvedRef::Const(item_id)` that const
+/// references carry, so the codegen global-load seam (a later slice) resolves
+/// a reference to its slot without re-reading HIR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirConst {
+    /// 0-based index into the const-descriptor table and the codegen global
+    /// slot.
+    pub const_id: u32,
+    /// Stable HIR item id of the declaration; matches
+    /// `ResolvedRef::Const(item_id)` at reference sites.
+    pub item_id: ItemId,
+    /// Source-declared const name (unique within the module).
+    pub name: String,
+    /// Declared, checker-resolved type of the const.
+    pub ty: ResolvedTy,
+    /// Constant-folded value.
+    pub value: MirConstValue,
 }
 
 /// State-record layout for one generator body function, synthesised by
@@ -835,10 +969,9 @@ pub struct MachineLayout {
 ///
 /// `variants` lists all variants in declaration order (matching the index
 /// `machine_ctor_registry` assigned as `variant_idx`). Each `MachineVariantLayout`
-/// entry carries the variant name and its payload field types; only unit variants
-/// have empty `field_tys` in the current slice. Payload-bearing variants are
-/// allowed in the layout but their construction is not yet lowered — an attempt
-/// to construct them produces `CodegenError::FailClosed`.
+/// entry carries the variant name and its payload field types; unit variants
+/// have empty `field_tys`, while payload-bearing variants are lowered through
+/// the tagged-union payload layout.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumLayout {
     /// Enum type name. Matches `ResolvedTy::Named { name, .. }` for
@@ -883,6 +1016,123 @@ pub struct RawMirFunction {
     pub locals: Vec<ResolvedTy>,
     pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
+    /// When `Some(catalog_key)`, this function is a `#[intrinsic("key")]`
+    /// memory-floor declaration (W5.005 / F1b). The lowered `blocks` are a
+    /// bodyless placeholder (the source body is `{}`) and are NOT the source
+    /// of truth — codegen's `lower_fn` discards them and synthesizes the
+    /// trampoline body from the catalog key via the central floor-intrinsic
+    /// authority. Threaded from `HirFn::intrinsic_id` by the raw-MIR producer.
+    /// Fail-closed (D343): a key codegen cannot synthesize is a hard
+    /// `CodegenError`, never a silent empty-body no-op.
+    pub intrinsic_id: Option<String>,
+}
+
+/// A generic origin function lowered against abstract `ResolvedTy::TypeParam`
+/// operands, paired with the type-parameter binder it was lowered under
+/// (W5.007a — see [`IrPipeline::polymorphic_mir`]).
+///
+/// `type_params` is the enclosing function's declared type-parameter scope, in
+/// declaration order. It is the binder for every `ResolvedTy::TypeParam` that
+/// appears inside `raw`: without it the abstract body is not self-describing
+/// (a consumer could not tell a declared parameter from a free one, nor
+/// alpha-rename, compare, or re-verify the body). The MIR witness-operand
+/// verifier consults exactly this scope to reject out-of-scope abstract
+/// operands; storing it here lets the substrate be re-verified independently
+/// of the originating `HirFn`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolymorphicMirFunction {
+    pub type_params: Vec<String>,
+    pub raw: RawMirFunction,
+}
+
+/// Classify whether the `arg_index`-th declared parameter of `callee` is an
+/// immutable borrow (`&T` → [`ResolvedTy::Borrow`]). This is the type-fact the
+/// argument-passing convention consults to decide whether a by-value heap
+/// argument must be retained at the call site: a borrow is non-owning, so the
+/// caller transfers no ownership and the retain (`VWT.copy`) is skipped.
+///
+/// The lookup is the seam W5.011-P3 consumes when it begins emitting
+/// retain-on-copy for by-value heap arguments — P3 gates that emission on
+/// `!callee_param_is_borrow(...)`. P4 lands the type fact and this primitive;
+/// no v0.5 source can yet *construct* a borrow value to pass (there is no
+/// borrow-of-local expression and no `T → &T` coercion at call sites), so the
+/// `true` arm is only reachable today from synthetic MIR. The classifier is
+/// proven directly by unit tests rather than through a (currently
+/// unconstructable) end-to-end call.
+///
+/// Fail-safe by construction (R5): an unresolved `callee` (not present in
+/// `raw_mir`) or an out-of-range `arg_index` returns `false` — the conservative
+/// answer that *keeps* the retain rather than risk dropping ownership. The
+/// classifier never indexes out of bounds and never panics.
+#[must_use]
+pub fn callee_param_is_borrow(raw_mir: &[RawMirFunction], callee: &str, arg_index: usize) -> bool {
+    raw_mir
+        .iter()
+        .find(|f| f.name == callee)
+        .and_then(|f| f.params.get(arg_index))
+        .is_some_and(|ty| matches!(ty, ResolvedTy::Borrow { .. }))
+}
+
+/// Decide whether passing a `CowValue` binding as the `arg_index`-th
+/// argument of a user-function call *escapes* the binding's heap buffer —
+/// i.e. creates an alias the callee may retain or return, so the caller can
+/// no longer prove it is the sole owner at scope exit.
+///
+/// W5-011 P3, Q313 Choice A. Until the M-COW spine emits retain-on-share at
+/// call boundaries, a non-borrow by-value heap argument is shared *without*
+/// a refcount bump: the callee receives the same `rc==1` pointer the caller
+/// holds. If the caller then dropped the binding at scope exit while the
+/// callee (or its result) still referenced it, the program would double-free
+/// or dangle. The conservative, double-free-complete answer is therefore to
+/// *exclude* such bindings from scope-exit drop (they leak; they never
+/// double-free).
+///
+/// A borrow parameter (`&T`, [`ResolvedTy::Borrow`]) is the one exception:
+/// it is non-owning by type, transfers no ownership, and cannot be retained
+/// or returned as an owning value — so the source binding keeps sole
+/// ownership and *stays* drop-eligible. No v0.5 source can construct a
+/// borrow argument yet (see [`callee_param_is_borrow`]); this branch is
+/// proven by synthetic-MIR unit tests and is the seam P4 lights up.
+///
+/// Status note: the shipped W5-011 P3 drop derivation
+/// (`derive_cow_sole_owner`, hew-mir/src/lower.rs) does NOT consult this
+/// classifier. It proves sole ownership structurally — a binding is dropped
+/// only if its backing local is never read as a source operand anywhere in
+/// the finalised instruction+terminator stream — which is strictly more
+/// conservative: a string passed to *any* parameter (borrow or by-value) is
+/// read as a call-arg source operand and excluded (it leaks, never
+/// double-frees). This primitive remains the borrow-ABI escape contract the
+/// retain-on-copy follow-up will consume once a borrow-at-call-site
+/// construction form lands and the derivation can safely keep borrow-arg
+/// sources drop-eligible.
+#[must_use]
+pub fn call_arg_source_escapes(callee_param_is_borrow: bool) -> bool {
+    !callee_param_is_borrow
+}
+
+/// Decide whether a container-ingress runtime method *copies* its incoming
+/// `CowValue` element (so the source binding keeps its own buffer and stays
+/// drop-eligible) or *moves* it (so the container now owns the buffer and
+/// the source must be excluded from scope-exit drop).
+///
+/// W5-011 P3, Delta (b). `hew_vec_push` / `hew_vec_set` deep-copy the
+/// element into vector-owned storage (`copy_string_element_in`), so the
+/// source binding is unaffected — copy-in, drop-eligible. Every other known
+/// ingress symbol (`hew_hashmap_insert_layout`, `hew_hashset_insert_layout`,
+/// …) moves the handle into the container, which then frees it via the
+/// container's own release path — move-in, must be excluded. Unknown
+/// symbols fail closed to move-in (excluded): conservative direction never
+/// double-frees.
+///
+/// Status note: as with [`call_arg_source_escapes`], the shipped P3
+/// derivation does not consult this — a string handed to a container-ingress
+/// runtime call surfaces as a `CallRuntimeAbi` source operand and is excluded
+/// unconditionally (copy-in sources leak rather than double-free). This
+/// primitive documents the per-symbol release contract the future
+/// copy-in-aware refinement will reinstate.
+#[must_use]
+pub fn container_ingress_is_copy_in(target_symbol: &str) -> bool {
+    matches!(target_symbol, "hew_vec_push" | "hew_vec_set")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1248,11 +1498,21 @@ pub enum Terminator {
     /// transitive references satisfy the `Send` constraint. Declared
     /// here so the escape check has a construction site to look for;
     /// the v0.5 integer spine never constructs it.
+    ///
+    /// `alias_mode` is the binary alias-vs-copy discriminant derived
+    /// from the checker's `actor_send_aliasing` side table. It is
+    /// populated by `lower_actor_send` at MIR construction time and
+    /// consumed by codegen (Phase P5.2) to select the send path.
+    /// **Fail-closed default is `Copy`**: a site with no checker entry
+    /// always uses the safe deep-copy path.
     Send {
         actor: Place,
         msg_type: i32,
         value: Place,
         next: u32,
+        /// Alias-vs-copy decision from the checker's side table.
+        /// Defaults to `Copy` (fail-closed); see [`SendAliasMode`].
+        alias_mode: SendAliasMode,
     },
     /// Actor ask: send `value` to `actor` on a caller-owned reply
     /// channel and resume at `next` once the reply has been received.
@@ -2041,6 +2301,53 @@ pub enum Instr {
         ty: ResolvedTy,
         drop_fn: Option<String>,
     },
+    /// Witness operation: load the runtime **size in bytes** of `ty` into
+    /// `dest` (A606). `dest` is an integer-typed local (`ResolvedTy::Usize`).
+    ///
+    /// `ty` is the witnessed type. It is either a fully-resolved concrete
+    /// type or a `ResolvedTy::TypeParam` standing for an as-yet-unsubstituted
+    /// generic parameter (A622). For a concrete type codegen folds this to a
+    /// constant; for a `TypeParam` it reads the size out of the abstract
+    /// type's value-witness table once monomorphisation has supplied one.
+    ///
+    /// Construction discipline (LESSONS P0 `boundary-fail-closed`): producers
+    /// build the operand through [`WitnessOperand::resolve`], which fails
+    /// closed on any checker-internal `Ty` (an unresolved `Ty::Var` in
+    /// particular) and admits only a resolved type or a declared type
+    /// parameter. The MIR verifier re-checks this invariant
+    /// ([`crate::dataflow`]); a `WitnessSizeOf` whose `ty` is a `TypeParam`
+    /// not declared in the enclosing function's parameter scope is rejected.
+    ///
+    /// WHEN-OBSOLETE: codegen lowering of witness ops lands in W5.007b; until
+    /// then this instruction is frontend-visible only (it is produced solely
+    /// into the gated polymorphic-MIR bucket, which never reaches codegen).
+    WitnessSizeOf { dest: Place, ty: ResolvedTy },
+    /// Witness operation: load the runtime **alignment in bytes** of `ty`
+    /// into `dest` (A606). Same operand discipline, value-witness sourcing,
+    /// and gating as [`Instr::WitnessSizeOf`]; `dest` is `ResolvedTy::Usize`.
+    WitnessAlignOf { dest: Place, ty: ResolvedTy },
+    /// Witness operation: run the **drop glue** for a value of type `ty` held
+    /// in `place` (A606). This is the abstract-type counterpart of
+    /// [`Instr::Drop`]: where `Drop` names a concrete `drop_fn` (or a trivial
+    /// no-op), `WitnessDropGlue` defers the drop strategy to `ty`'s value-
+    /// witness table, so a `ResolvedTy::TypeParam` value can be dropped
+    /// correctly before its concrete type is known.
+    ///
+    /// Same operand discipline and gating as [`Instr::WitnessSizeOf`].
+    WitnessDropGlue { place: Place, ty: ResolvedTy },
+    /// Witness operation: relocate a value of type `ty` from `src` to `dest`
+    /// using `ty`'s **move semantics** (A606). Distinct from
+    /// [`Instr::Move`], which is an unconditional load/store of a value whose
+    /// LLVM shape is already known: `WitnessMove` covers an abstract
+    /// (`ResolvedTy::TypeParam`) value whose size/move-glue is supplied by
+    /// the value-witness table at monomorphisation time.
+    ///
+    /// Same operand discipline and gating as [`Instr::WitnessSizeOf`].
+    WitnessMove {
+        dest: Place,
+        src: Place,
+        ty: ResolvedTy,
+    },
     /// `dest = <global_str_ptr>` — emit an LLVM-level global constant for
     /// `bytes` (null-terminated, internal linkage, read-only) and store the
     /// pointer into `dest`. The `dest` local's type is `ResolvedTy::String`,
@@ -2068,6 +2375,13 @@ pub enum Instr {
         bytes: Vec<u8>,
         dest: Place,
     },
+    /// Load a module-level `const` global into `dest`.
+    ///
+    /// The global descriptor is owned by [`IrPipeline::user_consts`] and keyed
+    /// by the original HIR [`ItemId`]. MIR deliberately carries only the stable
+    /// item identity here; codegen fails closed if no descriptor/global exists
+    /// for the referenced const.
+    ConstGlobalLoad { item_id: ItemId, dest: Place },
     /// Construct a record value by storing each field into a freshly
     /// allocated destination place. `fields` carries `(offset, src)`
     /// pairs in declaration order; `dest` receives the completed record.
@@ -2473,7 +2787,52 @@ pub enum Instr {
     },
 }
 
-/// 0-based declaration-order index of a field within a `record` type.
+/// Construction boundary for the type operand of a witness instruction
+/// ([`Instr::WitnessSizeOf`] and friends) — W5.007a.
+///
+/// Witness ops carry a `ResolvedTy` (a resolved concrete type, or a
+/// `ResolvedTy::TypeParam` standing for a declared abstract parameter), never
+/// a checker-internal `hew_types::Ty`. This type is the single fallible gate
+/// that producers funnel a `Ty` through to obtain that operand. It fails
+/// closed (LESSONS P0 `boundary-fail-closed`): a `Ty::Var` or any other type
+/// that does not resolve — and is not a declared type parameter — yields
+/// [`MirCheck::WitnessOperandUnresolved`] rather than a fabricated placeholder.
+#[derive(Debug)]
+pub struct WitnessOperand;
+
+impl WitnessOperand {
+    /// Resolve a frontend `Ty` into a witnessable [`ResolvedTy`] operand
+    /// against the enclosing function's declared `type_params` scope.
+    ///
+    /// * A bare, no-argument `Named` whose name is in `type_params` becomes
+    ///   `ResolvedTy::TypeParam` (the abstract operand).
+    /// * Any other type is resolved via the normal
+    ///   [`ResolvedTy::from_ty_with_type_params`] converter; an unresolved
+    ///   `Ty::Var` (or any other non-resolvable form) fails closed with
+    ///   [`MirCheck::WitnessOperandUnresolved`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MirCheck::WitnessOperandUnresolved`] when `ty` is a
+    /// checker-internal type that does not resolve to a concrete
+    /// [`ResolvedTy`] and is not a declared type parameter — an unresolved
+    /// inference variable (`Ty::Var`), an error placeholder, an
+    /// unmaterialized literal, or an unresolved associated-type projection.
+    pub fn resolve(
+        ty: &hew_types::Ty,
+        type_params: &HashSet<String>,
+    ) -> Result<ResolvedTy, MirCheck> {
+        ResolvedTy::from_ty_with_type_params(ty, type_params).map_err(|_| {
+            MirCheck::WitnessOperandUnresolved {
+                ty: format!("{ty:?}"),
+                reason: "witness operand type does not resolve to a concrete \
+                         type or a declared type parameter"
+                    .to_string(),
+            }
+        })
+    }
+}
+
 ///
 /// For named records (`record Point { x: i64, y: i64 }`) the offset of
 /// `x` is `0` and the offset of `y` is `1`, matching the order in which
@@ -2663,6 +3022,22 @@ pub enum MirCheck {
     /// A value derived from `Instr::ContextField` crossed an `ExitContext`
     /// boundary by being read or returned after the context had been exited.
     ContextBindingEscapes { place: Place, block: u32 },
+    /// A witness instruction ([`Instr::WitnessSizeOf`] and friends) carries a
+    /// type operand that is not legally witnessable (A622). Two failure
+    /// modes feed this finding:
+    ///
+    /// * **construction boundary** — a producer tried to build a witness
+    ///   operand from a checker-internal `Ty` that does not resolve to a
+    ///   concrete `ResolvedTy` (an unresolved `Ty::Var`, a free inference
+    ///   hole); [`WitnessOperand::resolve`] returns this rather than
+    ///   fabricating a placeholder type (LESSONS P0 `boundary-fail-closed`).
+    /// * **verifier** — a `ResolvedTy::TypeParam` operand reached the MIR
+    ///   verifier without being declared in the enclosing function's
+    ///   type-parameter scope, i.e. an out-of-scope abstract type.
+    ///
+    /// `reason` carries a short human-readable cause for diagnostic
+    /// anchoring; `ty` is the rejected operand rendered for display.
+    WitnessOperandUnresolved { ty: String, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2930,6 +3305,33 @@ pub enum DropKind {
     /// the MIR builder emits a `TraitObjectStorageUndetermined` diagnostic
     /// instead, so codegen never sees a malformed drop kind.
     TraitObject { storage: TraitObjectStorage },
+    /// W5.011 — function-scope drop of a single heap-owning `CowValue`
+    /// local (`string`, `Bytes`, `Vec<T>`, `HashMap<K,V>`, `HashSet<K>`).
+    /// The carried `drop_fn` is the C-ABI runtime release symbol whose
+    /// single argument is the handle pointer loaded from the binding's
+    /// alloca: `hew_string_drop`, `hew_vec_free`, `hew_hashmap_free_layout`,
+    /// `hew_hashset_free_layout`. Codegen loads the pointer, calls the
+    /// symbol, and null-stores the slot (`raii-null-after-move`).
+    ///
+    /// `ElabDrop::drop_fn` stays `None` for this kind — the symbol lives in
+    /// the variant so the runtime-vs-user `resolve_drop_fn` dispatch (which
+    /// only fires for `ElabDrop::drop_fn = Some(_)`) is not consulted and
+    /// the `CowHeap` arm is a single, self-describing release call. The symbol
+    /// is `&'static str` (a fixed runtime release-symbol literal); the
+    /// emitter declares it as `void(ptr)` via `get_or_declare_drop_helper`.
+    CowHeap { drop_fn: &'static str },
+    /// W5.011 — function-scope recursive drop of a heap-owning aggregate
+    /// `CowValue` local whose payload transitively contains heap-owning
+    /// leaves (`Tuple`, `Array`). There is no separate descriptor registry
+    /// in MIR; the structural descriptor IS the `ElabDrop::ty` the variant
+    /// travels with — codegen resolves the aggregate's field/element layout
+    /// from that `ResolvedTy` via the type-layout path (A609: sizes come
+    /// from the resolved LLVM struct/array type, never `size_of`), GEPs each
+    /// heap-owning field, and recurses. The walk carries a depth bound and
+    /// fails closed past it (cyclic-descriptor guard, `boundary-fail-closed`)
+    /// — Hew has no recursive owned value types today, so the bound is a
+    /// safety net rather than a live path.
+    AggregateRecursive,
 }
 
 /// Storage discriminator for `DropKind::TraitObject`. Distinguishes the

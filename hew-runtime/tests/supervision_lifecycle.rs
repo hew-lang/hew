@@ -106,6 +106,7 @@ unsafe extern "C-unwind" fn counting_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
     DISPATCH_SIGNAL.record_dispatch();
@@ -210,6 +211,7 @@ unsafe extern "C-unwind" fn monitor_dispatch(
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
+    _borrow_mode: i32,
 ) {
     MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
 }
@@ -220,6 +222,7 @@ unsafe extern "C-unwind" fn noop_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
 }
 
@@ -459,6 +462,7 @@ fn link_delivers_exit_on_crash() {
         msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         // SYS_MSG_EXIT = 103
         if msg_type == 103 {
@@ -551,6 +555,7 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
         msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
+        _borrow_mode: i32,
     ) {
         // SYS_MSG_EXIT = 103.
         if msg_type == 103 {

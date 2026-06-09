@@ -1,0 +1,52 @@
+//! W5-011 P3 alias-wrapper safety proof — every alias site that moves a
+//! heap-owning `string` into a *persistent slot* (tuple element, control-flow
+//! join result, call argument, variant payload) must exclude the aliased
+//! source from scope-exit drop, so the shared refcount-1 buffer is freed
+//! exactly once (or held by the live owner), never twice.
+//!
+//! The fail-closed sole-owner derivation (`derive_cow_sole_owner`,
+//! hew-mir/src/lower.rs) admits a `string` local to the function-scope drop
+//! plan ONLY when its backing MIR local is never read as a source operand
+//! anywhere in the finalized instruction+terminator stream. Each binding below
+//! is read as a source operand at its alias site, so it is excluded:
+//!
+//!   * `_t = (s, i)`        — `s` is an aggregate-construction source operand.
+//!   * `_y = if c { s3 }..` — `s3` is the source of the control-flow join Move.
+//!   * `_u = id(s4)`        — `s4` is a call-argument source operand.
+//!   * `_o = Some(s5)`      — `s5` is a variant-payload source operand.
+//!
+//! Observable contract: the program prints `done` and exits 0 with no abort.
+//! The runtime's `free_cstring` header-sentinel check aborts the process
+//! (SIGABRT) on a double-free, so a clean exit across many iterations is the
+//! behavioural proof that no aliased source is double-dropped. The structural
+//! exclusion proofs live in hew-mir/tests/elaborate.rs (the alias-site
+//! regression battery).
+
+fn id(x: string) -> string {
+    return x;
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 10000 {
+        // Tuple-element alias: `s` moved into the tuple `_t`.
+        let s = string_concat("tuple-", "elem");
+        let _t = (s, i);
+
+        // Control-flow-join alias: `s3` moved into the `if` result `_y`.
+        let s3 = string_concat("join-", "arm");
+        let _y = if i < 5000 { s3 } else { string_concat("else-", "arm") };
+
+        // Call-argument alias: `s4` moved into `id`, result aliases the buffer.
+        let s4 = string_concat("call-", "arg");
+        let _u = id(s4);
+
+        // Variant-payload alias: `s5` moved into the `Some` payload.
+        let s5 = string_concat("variant-", "payload");
+        let _o = Some(s5);
+
+        i = i + 1;
+    }
+    println("done");
+    0
+}

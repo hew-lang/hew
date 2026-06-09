@@ -117,6 +117,9 @@ impl ResolvedTy {
             } => {
                 format!("*const {}", pointee.canonical_string())
             }
+            ResolvedTy::Borrow { pointee } => {
+                format!("&{}", pointee.canonical_string())
+            }
             ResolvedTy::TraitObject { traits } => {
                 let bound_strs: Vec<String> = traits
                     .iter()
@@ -141,6 +144,11 @@ impl ResolvedTy {
             // canonical string uses the same `<task<T>>` spelling as `Display`
             // so diagnostic output is consistent.
             ResolvedTy::Task(inner) => format!("<task<{}>>", inner.canonical_string()),
+            // An abstract parameter mangles to its bare name. A `TypeParam`
+            // only appears in pre-monomorphisation (polymorphic) form; once
+            // substituted it becomes a concrete `ResolvedTy` with its own
+            // canonical string, so this never feeds a final linkable symbol.
+            ResolvedTy::TypeParam { name } => name.clone(),
         }
     }
 

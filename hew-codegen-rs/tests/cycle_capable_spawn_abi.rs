@@ -50,6 +50,7 @@ fn spawn_pipeline(
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     };
 
     let actor_layout = ActorLayout {
@@ -83,11 +84,14 @@ fn spawn_pipeline(
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 

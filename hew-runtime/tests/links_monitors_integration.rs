@@ -158,6 +158,7 @@ unsafe extern "C-unwind" fn test_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _size: usize,
+    _borrow_mode: i32,
 ) {
     // Simple test dispatch - does nothing
 }
@@ -168,6 +169,7 @@ unsafe extern "C-unwind" fn monitor_dispatch(
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
+    _borrow_mode: i32,
 ) {
     MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
 }
@@ -178,6 +180,7 @@ unsafe extern "C-unwind" fn exit_dispatch(
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
+    _borrow_mode: i32,
 ) {
     EXIT_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
 }

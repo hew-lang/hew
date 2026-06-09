@@ -177,6 +177,7 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
             }
         }
         TypeExpr::Infer => "_".to_string(),
+        TypeExpr::Borrow(inner) => format!("&{}", format_type(&inner.0)),
     }
 }
 

@@ -500,7 +500,7 @@ pub unsafe extern "C" fn hew_yaml_string_free(s: *mut c_char) {
         return;
     }
     // SAFETY: s was allocated with libc::malloc and has not been freed.
-    unsafe { libc::free(s.cast()) };
+    unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test frees str_to_malloc output)
 }
 
 // ---------------------------------------------------------------------------

@@ -44,6 +44,7 @@ fn trap_fn(kind: TrapKind) -> RawMirFunction {
             terminator: Terminator::Trap { kind },
         }],
         decisions: vec![],
+        intrinsic_id: None,
     }
 }
 

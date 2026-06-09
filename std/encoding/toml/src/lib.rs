@@ -652,8 +652,8 @@ mod tests {
         assert_eq!(result, "hew");
 
         // SAFETY: s was allocated with libc::malloc.
-        unsafe { libc::free(s.cast()) };
-        // SAFETY: field was allocated by this module.
+        unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test str_to_malloc)
+                                                    // SAFETY: field was allocated by this module.
         unsafe { hew_toml_free(field) };
         // SAFETY: root was allocated by this module.
         unsafe { hew_toml_free(root) };
@@ -808,7 +808,7 @@ mod tests {
 
         // SAFETY: s was allocated with libc::malloc; root by this module.
         unsafe {
-            libc::free(s.cast());
+            hew_cabi::cabi::free_cstring(s); // CSTRING-FREE: str-open (test str_to_malloc)
             hew_toml_free(root);
         }
     }
@@ -823,7 +823,7 @@ mod tests {
         // SAFETY: ptr is a valid NUL-terminated C string from malloc.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         // SAFETY: ptr was allocated with libc::malloc.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc)
         s
     }
 

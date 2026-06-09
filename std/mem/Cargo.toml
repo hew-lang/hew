@@ -1,0 +1,16 @@
+[package]
+name = "hew-std-mem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::mem — low-level memory primitives (compiler-internal floor)"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "stdlib"]
+categories = ["compilers"]
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[lints]
+workspace = true

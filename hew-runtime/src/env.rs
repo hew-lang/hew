@@ -618,8 +618,8 @@ mod tests {
         assert!(!ptr.is_null());
         // SAFETY: ptr is a valid NUL-terminated C string per caller.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated with libc::malloc.
-        unsafe { libc::free(ptr.cast()) }; // ALLOCATOR-PAIRING: libc
+        // SAFETY: ptr was allocated header-aware by malloc_cstring (env string).
+        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
         s
     }
 
@@ -843,7 +843,7 @@ mod tests {
                         if !ptr.is_null() {
                             // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
                             unsafe {
-                                libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
+                                crate::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
                             }
                         }
                     }
@@ -886,8 +886,8 @@ mod tests {
         } else {
             // SAFETY: orig_ptr is a valid malloc'd NUL-terminated C string.
             let s = unsafe { CStr::from_ptr(orig_ptr) }.to_owned();
-            // SAFETY: orig_ptr was allocated with libc::malloc.
-            unsafe { libc::free(orig_ptr.cast()) }; // ALLOCATOR-PAIRING: libc
+            // SAFETY: orig_ptr was allocated header-aware by malloc_cstring.
+            unsafe { crate::cabi::free_cstring(orig_ptr) }; // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
             Some(s)
         };
 
@@ -921,8 +921,8 @@ mod tests {
                     // SAFETY: no preconditions for hew_temp_dir.
                     let ptr = unsafe { hew_temp_dir() };
                     assert!(!ptr.is_null());
-                    // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
-                    unsafe { libc::free(ptr.cast()) }; // ALLOCATOR-PAIRING: libc
+                    // SAFETY: ptr was allocated header-aware by malloc_cstring.
+                    unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
                 }
             }));
         }

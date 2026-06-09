@@ -73,11 +73,14 @@ fn empty_pipeline(raw_mir: Vec<RawMirFunction>) -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -179,6 +182,7 @@ fn caller_with_dispatch(
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     }
 }
 
@@ -372,6 +376,7 @@ fn call_trait_method_fails_closed_when_receiver_not_fat_pointer() {
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     };
     let p = empty_pipeline(vec![bogus]);
     let err = try_emit(&p).expect_err("non-fat-pointer receiver must fail closed");

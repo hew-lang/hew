@@ -983,7 +983,7 @@ impl Checker {
             Ty::Array(inner, _) | Ty::Slice(inner) | Ty::Task(inner) => {
                 self.enforce_machine_bounds_recursive(inner, span);
             }
-            Ty::Pointer { pointee, .. } => {
+            Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => {
                 self.enforce_machine_bounds_recursive(pointee, span);
             }
             Ty::Function { params, ret } => {
@@ -1339,6 +1339,10 @@ impl Checker {
             } => Ty::Pointer {
                 is_mutable: *is_mutable,
                 pointee: Box::new(self.resolve_type_expr_tracking_holes(pointee, hole_vars)),
+            },
+            // `&T` immutable borrow — a first-class no-retain shared reference.
+            TypeExpr::Borrow(inner) => Ty::Borrow {
+                pointee: Box::new(self.resolve_type_expr_tracking_holes(inner, hole_vars)),
             },
             TypeExpr::TraitObject(bounds) => {
                 let traits = bounds

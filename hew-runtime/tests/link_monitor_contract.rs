@@ -151,6 +151,7 @@ unsafe extern "C-unwind" fn noop_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _size: usize,
+    _borrow_mode: i32,
 ) {
 }
 
@@ -160,6 +161,7 @@ unsafe extern "C-unwind" fn exit_capture_dispatch(
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
+    _borrow_mode: i32,
 ) {
     EXIT_SIGNAL.record(msg_type, data, data_size);
 }
@@ -170,6 +172,7 @@ unsafe extern "C-unwind" fn down_capture_dispatch(
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
+    _borrow_mode: i32,
 ) {
     DOWN_SIGNAL.record(msg_type, data, data_size);
 }

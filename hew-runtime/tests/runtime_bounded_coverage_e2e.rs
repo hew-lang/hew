@@ -123,6 +123,7 @@ unsafe extern "C-unwind" fn gated_dispatch(
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     let mut state = DISPATCH_GATE.state.lock().unwrap();
     state.started += 1;

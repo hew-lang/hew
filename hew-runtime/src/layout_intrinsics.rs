@@ -75,9 +75,8 @@ use hew_cabi::vec::HewTypeOwnershipKind;
 // FNV-1a-64 helpers
 // ---------------------------------------------------------------------------
 //
-// Distinct from `hashmap::fnv1a` (which is the legacy 32-bit C-string hash
-// kept for the bare `hew_hashmap_*` family). The descriptor ABI returns u64;
-// using FNV-1a-64 across all scalar / byte-buffer thunks keeps the kernel
+// The descriptor ABI returns u64; using FNV-1a-64 across all scalar /
+// byte-buffer thunks keeps the kernel
 // load-factor / bucket-index math uniform.
 
 const FNV_OFFSET_64: u64 = 0xcbf2_9ce4_8422_2325;

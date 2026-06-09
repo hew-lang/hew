@@ -631,6 +631,17 @@ impl TraitRegistry {
             // Pointers: NOT Send (unless explicitly marked), but Copy
             Ty::Pointer { .. } => marker == MarkerTrait::Copy,
 
+            // `&T` immutable borrow: Copy (a borrow is freely copyable) but NOT
+            // Send — a borrow must not cross an actor boundary. Kept as a
+            // distinct arm from the raw-pointer case above (not merged) so the
+            // borrow marker policy can diverge in P5's send gate without
+            // disturbing FFI-pointer semantics; today the result coincides.
+            #[allow(
+                clippy::match_same_arms,
+                reason = "borrow send-policy is a deliberate seam for P5; do not merge with the raw-pointer arm"
+            )]
+            Ty::Borrow { .. } => marker == MarkerTrait::Copy,
+
             // Function types: always Send, Sync, Clone, Copy (function pointers)
             Ty::Function { .. } => matches!(
                 marker,
@@ -834,6 +845,23 @@ mod tests {
             is_mutable: false,
         };
         assert!(!registry.is_sync(&ptr));
+    }
+
+    /// §4e: an immutable borrow `&T` is `Copy` but NOT `Send` — sending a
+    /// borrow across an actor boundary must be rejected. The rejection flows
+    /// through the dedicated `Ty::Borrow` marker arm (borrow-specific), so it
+    /// is distinguishable from the accidental `*const T` pointer rejection.
+    #[test]
+    fn test_borrow_is_copy_not_send() {
+        let registry = TraitRegistry::new();
+        let borrow = Ty::Borrow {
+            pointee: Box::new(Ty::String),
+        };
+        // Copy: a borrow is freely copyable (it is just a reference).
+        assert!(registry.implements_marker(&borrow, MarkerTrait::Copy));
+        // NOT Send: a borrow must not cross an actor boundary.
+        assert!(!registry.is_send(&borrow));
+        assert!(!registry.implements_marker(&borrow, MarkerTrait::Send));
     }
 
     #[test]

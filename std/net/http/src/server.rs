@@ -552,7 +552,7 @@ pub unsafe extern "C" fn hew_http_request_body_string(
     // SAFETY: ptr is valid for out_len bytes per hew_http_request_body's contract.
     let result = unsafe { malloc_cstring(ptr, out_len) };
     // SAFETY: ptr was allocated via libc::malloc inside hew_http_request_body.
-    unsafe { libc::free(ptr.cast()) };
+    unsafe { libc::free(ptr.cast()) }; // CSTRING-FREE: libc-bytes (frees the malloc_bytes byte buffer from hew_http_request_body; the STRING result is a separate malloc_cstring — this stays libc::free in S1)
     result
 }
 
@@ -1068,7 +1068,7 @@ mod tests {
             .expect("error should be utf-8");
         assert_eq!(err_msg, "request already responded to");
         // SAFETY: err was allocated by hew_stream_last_error (via libc::malloc).
-        unsafe { libc::free(err.cast()) };
+        unsafe { libc::free(err.cast()) }; // CSTRING-FREE: libc-bytes (hew_stream_last_error allocates via raw libc::malloc, not the header-aware str-open path — see hew-cabi::sink, paired with libc::free)
     }
 
     #[test]
@@ -1385,9 +1385,9 @@ mod tests {
                 found = true;
             }
             // SAFETY: pair.name was malloc'd by hew_http_request_headers.
-            unsafe { libc::free(pair.name.cast()) };
-            // SAFETY: pair.value was malloc'd by hew_http_request_headers.
-            unsafe { libc::free(pair.value.cast()) };
+            unsafe { hew_cabi::cabi::free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
+                                                                // SAFETY: pair.value was malloc'd by hew_http_request_headers.
+            unsafe { hew_cabi::cabi::free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
         }
         assert!(found, "X-Custom header not found in request headers");
 
@@ -1454,9 +1454,9 @@ mod tests {
                 .to_owned();
             pairs.push((name, value));
             // SAFETY: pair.name was malloc'd by hew_http_request_headers.
-            unsafe { libc::free(pair.name.cast()) };
-            // SAFETY: pair.value was malloc'd by hew_http_request_headers.
-            unsafe { libc::free(pair.value.cast()) };
+            unsafe { hew_cabi::cabi::free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
+                                                                // SAFETY: pair.value was malloc'd by hew_http_request_headers.
+            unsafe { hew_cabi::cabi::free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
         }
 
         let first_pos = pairs
@@ -1549,7 +1549,7 @@ mod tests {
         // SAFETY: ptr is a valid malloc'd C string.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         // SAFETY: ptr was allocated via libc::malloc in str_to_malloc.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (take_cstr test helper, str_to_malloc)
         s
     }
 
@@ -1632,7 +1632,7 @@ mod tests {
         let received_str = std::str::from_utf8(received).unwrap();
         assert_eq!(received_str, "{\"key\":\"value\"}");
         // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) };
+        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = hew_http_request_body malloc_bytes)
 
         let ct_name = c"Content-Type";
         // SAFETY: req and ct_name are valid.
@@ -2077,7 +2077,7 @@ mod tests {
         assert!(!body_ptr.is_null());
         assert_eq!(out_len, 0);
         // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) };
+        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
 
         let text = c"ok";
         // SAFETY: req is valid; text is a valid C string.
@@ -2170,7 +2170,7 @@ mod tests {
         let elapsed = start.elapsed();
         if !body_ptr.is_null() {
             // SAFETY: body_ptr was malloc'd.
-            unsafe { libc::free(body_ptr.cast()) };
+            unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
             let text = c"late";
             // SAFETY: req is valid; text is a valid C string.
             let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
@@ -2225,7 +2225,7 @@ mod tests {
         let body = unsafe { std::slice::from_raw_parts(body_ptr, out_len) };
         assert_eq!(body, vec![b'a'; 2048].as_slice());
         // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) };
+        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
 
         let text = c"ok";
         // SAFETY: req is valid; text is a valid C string.

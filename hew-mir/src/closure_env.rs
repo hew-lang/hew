@@ -457,11 +457,18 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             walk_expr_for_suspend(scrutinee, found);
             walk_block_for_suspend(body, found);
         }
+        HirExprKind::Loop { body } => walk_block_for_suspend(body, found),
+        HirExprKind::Break { value, .. } => {
+            if let Some(value) = value {
+                walk_expr_for_suspend(value, found);
+            }
+        }
         // --- leaves: no suspend, no children to recurse into --------
         HirExprKind::Literal(_)
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
         | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::Continue { .. }
         | HirExprKind::Unsupported(_) => {}
     }
 }

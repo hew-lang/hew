@@ -44,6 +44,7 @@ fn pipeline_const_42() -> IrPipeline {
             terminator: Terminator::Return,
         }],
         decisions: Vec::<DecisionFact>::new(),
+        intrinsic_id: None,
     };
     IrPipeline {
         thir: Vec::new(),
@@ -58,11 +59,14 @@ fn pipeline_const_42() -> IrPipeline {
         machine_layouts: Vec::new(),
         enum_layouts: Vec::new(),
         regex_literals: Vec::new(),
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -84,6 +88,7 @@ fn pipeline_unsupported_f64_return() -> IrPipeline {
             terminator: Terminator::Return,
         }],
         decisions: Vec::new(),
+        intrinsic_id: None,
     };
     IrPipeline {
         thir: Vec::new(),
@@ -98,11 +103,14 @@ fn pipeline_unsupported_f64_return() -> IrPipeline {
         machine_layouts: Vec::new(),
         enum_layouts: Vec::new(),
         regex_literals: Vec::new(),
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 

@@ -520,7 +520,9 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
         TypeExpr::Result { ok, err } => {
             type_expr_mentions_self(&ok.0) || type_expr_mentions_self(&err.0)
         }
-        TypeExpr::Option(inner) | TypeExpr::Slice(inner) => type_expr_mentions_self(&inner.0),
+        TypeExpr::Option(inner) | TypeExpr::Slice(inner) | TypeExpr::Borrow(inner) => {
+            type_expr_mentions_self(&inner.0)
+        }
         TypeExpr::Tuple(elems) => elems.iter().any(|e| type_expr_mentions_self(&e.0)),
         TypeExpr::Array { element, .. } => type_expr_mentions_self(&element.0),
         TypeExpr::Function {

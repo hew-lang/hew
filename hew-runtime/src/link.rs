@@ -427,6 +427,7 @@ mod tests {
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
+        _borrow_mode: i32,
     ) {
     }
 

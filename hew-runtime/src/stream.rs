@@ -628,8 +628,8 @@ impl StreamBacking for MapStringStream {
         // SAFETY: result_ptr is a valid null-terminated C string from the closure.
         let result_cstr = unsafe { std::ffi::CStr::from_ptr(result_ptr) };
         let bytes = result_cstr.to_bytes().to_vec();
-        // SAFETY: result_ptr was malloc'd by the closure; we own it now.
-        unsafe { libc::free(result_ptr.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
+        // SAFETY: result_ptr is the closure's header-aware Hew string; we own it.
+        unsafe { crate::cabi::free_cstring(result_ptr) }; // CSTRING-FREE: str-open (StringMapFn closure output = Hew (string)->string; header-aware in S1)
         Some(bytes)
     }
 
@@ -1101,7 +1101,7 @@ pub unsafe extern "C" fn hew_stream_next(stream: *mut HewStream) -> *mut c_void 
             // used as a C string by the generic hew_print_value string path.
             // For empty items, this yields a 1-byte buffer containing '\0'.
             // SAFETY: libc::malloc returns a valid aligned pointer or null.
-            let buf = unsafe { libc::malloc(len + 1) }; // ALLOCATOR-PAIRING: libc
+            let buf = unsafe { libc::malloc(len + 1) }; // ALLOCATOR-PAIRING: libc  // CSTRING-ALLOC: libc-bytes (hew_stream_next item buffer — opaque bytes, not a Hew String)
             if buf.is_null() {
                 return ptr::null_mut();
             }
@@ -1142,7 +1142,7 @@ pub unsafe extern "C" fn hew_stream_next_sized(
         // For empty items, allocate 1 byte so the pointer is non-null.
         let alloc_len = if len == 0 { 1 } else { len };
         // SAFETY: libc::malloc returns a valid aligned pointer or null.
-        let buf = unsafe { libc::malloc(alloc_len) }; // ALLOCATOR-PAIRING: libc
+        let buf = unsafe { libc::malloc(alloc_len) }; // ALLOCATOR-PAIRING: libc  // CSTRING-ALLOC: libc-bytes (hew_stream_next_sized item buffer)
         if buf.is_null() {
             return ptr::null_mut();
         }
@@ -1375,7 +1375,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                 let len = bytes.len();
                 // SAFETY: Bounds — malloc(len+1) returns a pointer to at
                 // least len+1 bytes or null; null is handled below.
-                let buf = unsafe { libc::malloc(len + 1) }; // ALLOCATOR-PAIRING: libc
+                let buf = unsafe { libc::malloc(len + 1) }; // ALLOCATOR-PAIRING: libc  // CSTRING-ALLOC: libc-bytes (hew_stream_poll item buffer)
                 if buf.is_null() {
                     ptr::null_mut()
                 } else {
@@ -1408,7 +1408,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                     // SAFETY: Provenance + Failure mode — item_ptr was
                     // malloc'd by libc::malloc above; null is excluded
                     // by the if-guard. Ownership transfers to free here.
-                    unsafe { libc::free(item_ptr) }; // ALLOCATOR-PAIRING: libc
+                    unsafe { libc::free(item_ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (stream item byte buffer)
                 }
             }
             ParkState::Pending => {
@@ -1442,7 +1442,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                 if !item_ptr.is_null() {
                     // SAFETY: same as Cancelled branch — malloc'd above,
                     // non-null guarded, ownership transferred to free.
-                    unsafe { libc::free(item_ptr) }; // ALLOCATOR-PAIRING: libc
+                    unsafe { libc::free(item_ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (stream item byte buffer)
                 }
             }
         }
@@ -1710,7 +1710,8 @@ pub unsafe extern "C" fn hew_stream_chunks(
 
 /// Read all remaining items from a stream and concatenate them as a C string.
 ///
-/// Returns a malloc-allocated null-terminated string. The caller must free it.
+/// Returns a header-aware null-terminated string. The caller must free it with
+/// `hew_string_drop`.
 /// Consumes the stream.
 ///
 /// # Safety
@@ -1732,8 +1733,9 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
     buffer.push(0);
 
     let len = buffer.len();
-    // SAFETY: libc::malloc returns a valid aligned pointer or null.
-    let ptr = unsafe { libc::malloc(len) }; // ALLOCATOR-PAIRING: libc
+    // Header-aware (S1): buffer already includes the trailing NUL, so request
+    // exactly `len` data bytes. Released via hew_string_drop / free_cstring.
+    let ptr = crate::cabi::alloc_cstring_data(len); // CSTRING-ALLOC: str-open (hew_stream_collect_string — header-aware String result; reaches hew_string_drop)
     if ptr.is_null() {
         return ptr::null_mut();
     }
@@ -1999,7 +2001,7 @@ pub unsafe extern "C" fn hew_stream_next_bytes(stream: *mut HewStream) -> *mut H
     // SAFETY: u8_to_hwvec allocates a new HewVec; raw slice is valid.
     let vec = unsafe { hew_cabi::vec::u8_to_hwvec(raw) };
     // SAFETY: raw_ptr was allocated by libc::malloc inside hew_stream_next_sized.
-    unsafe { libc::free(raw_ptr) }; // ALLOCATOR-PAIRING: libc
+    unsafe { libc::free(raw_ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (hew_stream_next_sized raw byte buffer)
     vec
 }
 
@@ -2089,7 +2091,7 @@ pub unsafe extern "C" fn hew_stream_try_next(stream: *mut HewStream) -> *mut c_v
             //   Aliasing: fresh allocation; no aliases yet.
             //   Bounds: requested `len + 1` bytes (item + NUL terminator).
             //   Failure mode: NULL on OOM — checked immediately below.
-            let buf = unsafe { libc::malloc(len + 1) }; // ALLOCATOR-PAIRING: libc
+            let buf = unsafe { libc::malloc(len + 1) }; // ALLOCATOR-PAIRING: libc  // CSTRING-ALLOC: libc-bytes (hew_stream_next_view item buffer)
             if buf.is_null() {
                 return ptr::null_mut();
             }
@@ -2318,7 +2320,7 @@ mod tests {
             // SAFETY: ptr is valid for `size` bytes per hew_stream_next_sized contract.
             let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), size).to_vec() };
             // SAFETY: ptr was malloc'd by hew_stream_next_sized.
-            unsafe { libc::free(ptr) }; // ALLOCATOR-PAIRING: libc
+            unsafe { libc::free(ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test stream byte buffer)
             items.push(bytes);
         }
         items
@@ -2569,7 +2571,7 @@ mod tests {
             // The buffer should be NUL-terminated for C string compatibility.
             let cstr = CStr::from_ptr(buf.cast::<c_char>());
             assert_eq!(cstr.to_bytes(), b"test");
-            libc::free(buf); // ALLOCATOR-PAIRING: libc
+            libc::free(buf); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test stream byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2582,7 +2584,7 @@ mod tests {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
             let first = hew_stream_next(stream);
             assert!(!first.is_null());
-            libc::free(first); // ALLOCATOR-PAIRING: libc
+            libc::free(first); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test stream byte buffer)
                                // Stream is now exhausted.
             let second = hew_stream_next(stream);
             assert!(second.is_null(), "should return null on EOF");
@@ -2610,7 +2612,7 @@ mod tests {
             let buf = hew_stream_next_sized(stream, &raw mut size);
             assert!(!buf.is_null());
             assert_eq!(size, 7);
-            libc::free(buf); // ALLOCATOR-PAIRING: libc
+            libc::free(buf); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test stream byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2679,7 +2681,7 @@ mod tests {
             let n = usize::try_from(ret).unwrap();
             let slice = std::slice::from_raw_parts(buf, n);
             assert_eq!(slice, b"hello");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2699,7 +2701,7 @@ mod tests {
             let n = usize::try_from(ret).unwrap();
             let slice = std::slice::from_raw_parts(buf, n);
             assert_eq!(slice, data);
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2720,7 +2722,7 @@ mod tests {
             let n = usize::try_from(ret).unwrap();
             let slice = std::slice::from_raw_parts(buf, n);
             assert_eq!(slice, b"from_null");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2740,7 +2742,7 @@ mod tests {
             assert!(!buf.is_null(), "must allocate when *buf is null");
             let slice = std::slice::from_raw_parts(buf, usize::try_from(ret).unwrap());
             assert_eq!(slice, b"safe");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2754,7 +2756,7 @@ mod tests {
             let mut cap: usize = 16;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, -1, "EOF must return -1");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2773,7 +2775,7 @@ mod tests {
             assert_eq!(cap, 4, "capacity unchanged on exact fit");
             let slice = std::slice::from_raw_parts(buf, 4);
             assert_eq!(slice, b"ABCD");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2820,7 +2822,7 @@ mod tests {
             let r3 = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(r3, -1, "EOF after all items consumed");
 
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2839,7 +2841,7 @@ mod tests {
             assert_eq!(*buf, b'X');
             let eof = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(eof, -1, "EOF after the single item");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -3354,8 +3356,8 @@ mod tests {
             assert!(!cstr_ptr.is_null());
             let result = CStr::from_ptr(cstr_ptr).to_str().unwrap();
             assert_eq!(result, "hello world");
-            libc::free(cstr_ptr.cast()); // ALLOCATOR-PAIRING: libc
-                                         // stream is consumed by collect_string; do not close.
+            crate::cabi::free_cstring(cstr_ptr); // CSTRING-FREE: str-open (test frees hew_stream_collect_string output)
+                                                 // stream is consumed by collect_string; do not close.
         }
     }
 
@@ -3375,7 +3377,7 @@ mod tests {
             assert!(!cstr_ptr.is_null());
             let result = CStr::from_ptr(cstr_ptr).to_str().unwrap();
             assert!(result.is_empty());
-            libc::free(cstr_ptr.cast()); // ALLOCATOR-PAIRING: libc
+            crate::cabi::free_cstring(cstr_ptr); // CSTRING-FREE: str-open (test frees hew_stream_collect_string output)
         }
     }
 
@@ -3476,7 +3478,7 @@ mod tests {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
             // Drain the stream.
             let buf = hew_stream_next(stream);
-            libc::free(buf); // ALLOCATOR-PAIRING: libc
+            libc::free(buf); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test stream byte buffer)
             assert_eq!(hew_stream_is_closed(stream), 1);
             hew_stream_close(stream);
         }
@@ -3726,7 +3728,7 @@ mod tests {
                 .store(first as usize, TestOrdering::Release);
             // The callback owns the buffer.
             // SAFETY: item was malloc'd by hew_stream_poll's park thread.
-            unsafe { libc::free(item) }; // ALLOCATOR-PAIRING: libc
+            unsafe { libc::free(item) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (stream poll item byte buffer)
         }
         sink.fired.fetch_add(1, TestOrdering::Release);
         // Signal the waiter — set ready under the lock, then notify.
@@ -3952,7 +3954,7 @@ mod tests {
             let next = hew_stream_next(stream_ptr);
             assert!(!next.is_null(), "stream must remain readable after cancel");
             assert_eq!(*(next as *const u8), 0xBB);
-            libc::free(next); // ALLOCATOR-PAIRING: libc
+            libc::free(next); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test stream item byte buffer)
 
             hew_stream_close(stream_ptr);
             drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc

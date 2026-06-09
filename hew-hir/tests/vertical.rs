@@ -113,9 +113,9 @@ fn call_to_unresolved_function_reports_checker_boundary() {
 fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
     // Defense-in-depth: verify_hir emits NotYetImplemented for any Unsupported
     // HIR node it finds, even when the lowerer already emitted the diagnostic.
-    // A tuple literal is a slice-2 expression; `lower_expr` produces an
-    // HirExprKind::Unsupported node for it.
-    let output = lower("fn f() { let t = (1, 2); }");
+    // An array literal is a slice-2 expression; `lower_expr` hits the `_`
+    // catch-all for `Expr::Array` and produces an HirExprKind::Unsupported node.
+    let output = lower("fn f() { let t = [1, 2]; }");
     // The lowerer already emits NotYetImplemented for the unsupported expression.
     assert!(
         output
@@ -137,7 +137,7 @@ fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
 
 #[test]
 fn verifier_diagnostic_retains_item_source_module() {
-    let mut output = lower("fn f() { let t = (1, 2); }");
+    let mut output = lower("fn f() { let t = [1, 2]; }");
     let func_id = output
         .module
         .items
@@ -156,7 +156,7 @@ fn verifier_diagnostic_retains_item_source_module() {
     let diagnostic = verify
         .iter()
         .find(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .expect("verifier should flag unsupported tuple node");
+        .expect("verifier should flag unsupported array-literal node");
     assert_eq!(diagnostic.source_module.as_deref(), Some("dep"));
 }
 
@@ -184,7 +184,8 @@ fn find_first_select(output: &hew_hir::LowerOutput) -> &hew_hir::HirSelect {
             | hew_hir::HirItem::Actor(_)
             | hew_hir::HirItem::Supervisor(_)
             | hew_hir::HirItem::Impl(_)
-            | hew_hir::HirItem::ExternFn(_) => None,
+            | hew_hir::HirItem::ExternFn(_)
+            | hew_hir::HirItem::Const(_) => None,
         })
         .expect("expected at least one function in lowered module");
     for stmt in &func.body.statements {
@@ -1239,5 +1240,116 @@ fn unlink_call_emits_not_yet_implemented_not_unresolved() {
     assert!(
         !unresolved_name,
         "unlink() must not produce UnresolvedSymbol(unlink)"
+    );
+}
+
+#[test]
+fn top_level_const_lowers_and_resolves_references() {
+    // A module-level `const` lowers to a `HirItem::Const` carrying the
+    // constant-folded value, and a reference to it resolves cleanly — no
+    // `UnresolvedSymbol`, no slice-2 `NotYetImplemented`.
+    let output = lower("const X: i64 = 42; fn main() -> i64 { return X; }");
+    assert!(
+        output.diagnostics.is_empty(),
+        "const program should lower without diagnostics, got: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "{verify:?}");
+
+    let const_item = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Const(c) => Some(c),
+            _ => None,
+        })
+        .expect("module lowers one const item");
+    assert_eq!(const_item.name, "X");
+    assert_eq!(const_item.value, hew_hir::HirConstValue::Integer(42));
+
+    let dump = dump_hir(&output.module);
+    assert!(dump.contains("const i0 X: i64 = 42"), "dump was:\n{dump}");
+}
+
+#[test]
+fn top_level_const_folds_integer_arithmetic() {
+    let output = lower("const Y: i64 = 1 + 2 * 3; fn main() -> i64 { return Y; }");
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let value = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Const(c) => Some(c.value.clone()),
+            _ => None,
+        })
+        .expect("module lowers one const item");
+    assert_eq!(value, hew_hir::HirConstValue::Integer(7));
+}
+
+#[test]
+fn top_level_const_folds_signed_negative_initializers() {
+    let output = lower(
+        "const A: i8 = -5; \
+         const B: i16 = -(1 + 2); \
+         const C: i32 = -13; \
+         const D: i64 = -42; \
+         const E: isize = -7; \
+         fn main() -> i64 { return 0; }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let values: std::collections::HashMap<_, _> = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            hew_hir::HirItem::Const(c) => Some((c.name.as_str(), c.value.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(values["A"], hew_hir::HirConstValue::Integer(-5));
+    assert_eq!(values["B"], hew_hir::HirConstValue::Integer(-3));
+    assert_eq!(values["C"], hew_hir::HirConstValue::Integer(-13));
+    assert_eq!(values["D"], hew_hir::HirConstValue::Integer(-42));
+    assert_eq!(values["E"], hew_hir::HirConstValue::Integer(-7));
+}
+
+#[test]
+fn top_level_string_const_folds_literal() {
+    let output = lower("const NAME: String = \"hew\"; fn main() -> i64 { return 0; }");
+    let value = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Const(c) => Some(c.value.clone()),
+            _ => None,
+        })
+        .expect("module lowers one const item");
+    assert_eq!(value, hew_hir::HirConstValue::String("hew".to_string()));
+}
+
+#[test]
+fn top_level_const_bitwise_initializer_fails_closed() {
+    // Bitwise/wrapping ops are deliberately rejected by the shared
+    // `const_eval` engine (NotConstant). The HIR fold must surface a
+    // fail-closed `NotYetImplemented` diagnostic rather than admitting a
+    // folded value — this locks in the scope-narrowing after consolidating
+    // onto the sanctioned evaluator (A620).
+    let output = lower("const Z: i64 = 1 & 2; fn main() -> i64 { return Z; }");
+    let is_unsupported = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::NotYetImplemented {
+            construct,
+            owning_pass,
+        } => construct.contains("unsupported const initializer") && owning_pass == "const-fold",
+        _ => false,
+    });
+    assert!(
+        is_unsupported,
+        "bitwise const initializer must emit a fail-closed NotYetImplemented, got: {:?}",
+        output.diagnostics
     );
 }

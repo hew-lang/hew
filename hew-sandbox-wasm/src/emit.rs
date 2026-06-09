@@ -500,6 +500,7 @@ impl<'a> PackageEmitter<'a> {
             | Ty::CancellationToken
             | Ty::Var(_)
             | Ty::Pointer { .. }
+            | Ty::Borrow { .. }
             | Ty::TraitObject { .. }
             | Ty::Task(_)
             | Ty::AssocType { .. }
@@ -2277,6 +2278,10 @@ fn ty_from_type_expr(ty: &hew_parser::ast::TypeExpr) -> Ty {
             pointee: Box::new(ty_from_type_expr(&pointee.0)),
         },
         hew_parser::ast::TypeExpr::TraitObject(_) | hew_parser::ast::TypeExpr::Infer => Ty::Unit,
+        // `&T` immutable borrow — first-class no-retain shared reference.
+        hew_parser::ast::TypeExpr::Borrow(inner) => Ty::Borrow {
+            pointee: Box::new(ty_from_type_expr(&inner.0)),
+        },
     }
 }
 

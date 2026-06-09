@@ -127,6 +127,7 @@ fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<H
         | Ty::Function { .. }
         | Ty::Closure { .. }
         | Ty::Pointer { .. }
+        | Ty::Borrow { .. }
         | Ty::TraitObject { .. }
         | Ty::Task(_)
         | Ty::AssocType { .. } => Some(HashEligibility::IneligibleOwned(ty.clone())),

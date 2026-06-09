@@ -51,7 +51,7 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
                 || ty_contains_unresolved_var(ret)
                 || captures.iter().any(ty_contains_unresolved_var)
         }
-        Ty::Pointer { pointee, .. } => ty_contains_unresolved_var(pointee),
+        Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => ty_contains_unresolved_var(pointee),
         Ty::TraitObject { traits } => traits
             .iter()
             .flat_map(|bound| bound.args.iter())

@@ -110,7 +110,7 @@ pub unsafe extern "C" fn hew_dns_resolve_timed(
         // push_str internally strdup's, so free the original.
         unsafe {
             hew_cabi::vec::hew_vec_push_str(vec, ip);
-            libc::free(ip.cast());
+            hew_cabi::cabi::free_cstring(ip); // CSTRING-FREE: str-open (frees str_to_malloc ip string)
         }
     }
 
@@ -179,7 +179,7 @@ mod tests {
         // SAFETY: ptr is non-null (asserted above) and points to a valid NUL-terminated C string.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         // SAFETY: ptr was allocated with libc::malloc by the FFI layer.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc)
         s
     }
 

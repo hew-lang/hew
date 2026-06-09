@@ -48,6 +48,7 @@ fn send_status_pipeline() -> IrPipeline {
                 msg_type: 1,
                 value: Place::Local(1),
                 next: 1,
+                alias_mode: hew_mir::SendAliasMode::Copy,
             },
         },
         BasicBlock {
@@ -68,6 +69,7 @@ fn send_status_pipeline() -> IrPipeline {
             locals: vec![actor_ty, ResolvedTy::Unit],
             blocks: raw_blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "send_probe".to_string(),
@@ -108,11 +110,14 @@ fn send_status_pipeline() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 

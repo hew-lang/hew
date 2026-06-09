@@ -3,8 +3,8 @@ use std::ptr;
 
 pub(crate) fn bytes_to_cstr(item: &[u8]) -> *mut c_char {
     let len = item.len();
-    // SAFETY: libc::malloc returns a valid aligned pointer or null.
-    let buf = unsafe { libc::malloc(len + 1) };
+    // Header-aware (S1): backs channel<string> recv; released via hew_string_drop / free_cstring.
+    let buf = crate::cabi::alloc_cstring_data(len + 1); // CSTRING-ALLOC: str-open (bytes_to_cstr — header-aware String backing channel<string> recv; reaches hew_string_drop)
     if buf.is_null() {
         return ptr::null_mut();
     }

@@ -4032,6 +4032,26 @@ impl<'src> Parser<'src> {
                     pointee: Box::new(pointee),
                 }
             }
+            Some(Token::Ampersand) => {
+                // `&T` — immutable non-owning borrow marker (Q320).
+                // Only `&T` is supported in v0.5; `&mut T` / `&var T` are
+                // reserved (locked out of scope by Q320) and produce a
+                // diagnostic.
+                self.advance();
+                // Reject `&mut T` and `&var T` with a helpful diagnostic.
+                if matches!(self.peek(), Some(Token::Mut | Token::Var)) {
+                    let span = self.peek_span();
+                    self.error_at(
+                        "mutable borrows (`&mut T`) are not supported in v0.5; \
+                         use `&T` for an immutable borrow"
+                            .to_string(),
+                        span,
+                    );
+                    return None;
+                }
+                let inner = self.parse_type()?;
+                TypeExpr::Borrow(Box::new(inner))
+            }
             Some(Token::Dyn) => {
                 self.advance();
                 // dyn TraitName or dyn (Trait1 + Trait2)

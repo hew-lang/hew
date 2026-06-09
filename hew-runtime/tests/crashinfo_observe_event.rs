@@ -91,6 +91,7 @@ unsafe extern "C-unwind" fn divide_by_zero_dispatch(
     msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
+    _borrow_mode: i32,
 ) {
     if msg_type == MSG_DIV_BY_ZERO {
         // Same C-ABI seam codegen emits for `Terminator::Trap { kind: DivideByZero }`.

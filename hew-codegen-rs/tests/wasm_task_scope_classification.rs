@@ -57,6 +57,7 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
             locals: vec![task_scope_ty()],
             blocks: raw_blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -89,11 +90,14 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -131,6 +135,7 @@ fn pipeline_with_task_scope_spawn_call() -> IrPipeline {
             }],
             blocks: raw_blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -163,11 +168,14 @@ fn pipeline_with_task_scope_spawn_call() -> IrPipeline {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 

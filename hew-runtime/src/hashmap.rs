@@ -1,20 +1,16 @@
 //! Hew runtime: `hashmap` module.
 //!
-//! Open-addressing hash map (`HewHashMap`) with C ABI, matching the C runtime
-//! layout exactly. Uses FNV-1a hashing and linear probing with tombstones.
+//! Layout-backed open-addressing hash map (`HewLayoutHashMap`) with C ABI.
+//! Stores opaque key/value blobs whose identity is delegated to
+//! caller-supplied hash and equality thunks; uses linear probing with
+//! tombstones.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
-// Internal `find_entry` returns isize (-1 for not-found), matching C semantics.
-// The value is always checked before use as a usize index.
-#![expect(
-    clippy::cast_sign_loss,
-    reason = "find_entry returns isize (-1 sentinel); always checked >= 0 before usize cast. hew_hashmap_len casts usize→i64 which is lossless."
-)]
 #![expect(
     clippy::cast_possible_wrap,
-    reason = "table index fits in isize on all supported platforms; usize→i64 is safe for realistic lengths"
+    reason = "hew_hashmap_len_layout casts usize→i64; workspace caps len well below i64::MAX so the cast is lossless"
 )]
 
 use core::ffi::{c_char, c_void};
@@ -28,666 +24,8 @@ const EMPTY: u8 = 0;
 const OCCUPIED: u8 = 1;
 const TOMBSTONE: u8 = 2;
 
-/// Initial table capacity (must be a power of two).
-const INIT_CAP: usize = 8;
-/// Load factor percentage threshold for resize.
+/// Load factor percentage threshold for resize (shared by the layout family).
 const LOAD_PCTG: usize = 75;
-
-/// A single hash-map entry matching the C `HewMapEntry` layout.
-#[repr(C)]
-#[derive(Debug)]
-pub struct HewMapEntry {
-    /// 0 = empty, 1 = occupied, 2 = tombstone.
-    pub state: u8,
-    /// `strdup`'d key (null when empty/tombstone).
-    pub key: *mut c_char,
-    /// Integer value.
-    pub value_i32: i32,
-    /// `strdup`'d string value (or null).
-    pub value_str: *mut c_char,
-    /// 64-bit integer value.
-    pub value_i64: i64,
-    /// Floating-point value.
-    pub value_f64: f64,
-}
-
-/// Open-addressing hash map matching the C `HewHashMap` layout.
-#[repr(C)]
-#[derive(Debug)]
-pub struct HewHashMap {
-    /// Pointer to the entries array.
-    pub entries: *mut HewMapEntry,
-    /// Number of occupied entries.
-    pub len: usize,
-    /// Total capacity (number of slots).
-    pub cap: usize,
-}
-
-// ---------------------------------------------------------------------------
-// FNV-1a hash (32-bit, matching the C implementation)
-// ---------------------------------------------------------------------------
-
-/// Compute FNV-1a 32-bit hash of a C string.
-///
-/// # Safety
-///
-/// `key` must be a valid, null-terminated C string.
-unsafe fn fnv1a(key: *const c_char) -> u32 {
-    // SAFETY: caller guarantees `key` is a valid C string.
-    unsafe {
-        let mut h: u32 = 2_166_136_261;
-        let mut p = key.cast::<u8>();
-        while *p != 0 {
-            h ^= u32::from(*p);
-            h = h.wrapping_mul(16_777_619);
-            p = p.add(1);
-        }
-        h
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/// Find the index of the entry with `key`, or -1 if not found.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-unsafe fn find_entry(m: *mut HewHashMap, key: *const c_char) -> isize {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe {
-        let map = &*m;
-        if map.cap == 0 {
-            return -1;
-        }
-        let h = fnv1a(key);
-        let mask = map.cap - 1;
-        let start = (h as usize) & mask;
-        let mut idx = start;
-        loop {
-            let entry = &*map.entries.add(idx);
-            if entry.state == EMPTY {
-                return -1;
-            }
-            if entry.state == OCCUPIED && libc::strcmp(entry.key, key) == 0 {
-                return idx as isize;
-            }
-            idx = (idx + 1) & mask;
-            if idx == start {
-                return -1;
-            }
-        }
-    }
-}
-
-/// Find the slot to update or insert for `key`, continuing past tombstones.
-///
-/// Returns a pointer to either the existing occupied entry for `key`, the first
-/// tombstone in the probe chain, or the first empty slot if no tombstone was
-/// encountered.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-unsafe fn find_insert_slot(m: *mut HewHashMap, key: *const c_char) -> *mut HewMapEntry {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe {
-        let map = &mut *m;
-        let mask = map.cap - 1;
-        let start = (fnv1a(key) as usize) & mask;
-        let mut idx = start;
-        let mut first_tombstone = ptr::null_mut::<HewMapEntry>();
-
-        loop {
-            let entry = map.entries.add(idx);
-            match (*entry).state {
-                OCCUPIED => {
-                    if libc::strcmp((*entry).key, key) == 0 {
-                        return entry;
-                    }
-                }
-                TOMBSTONE => {
-                    if first_tombstone.is_null() {
-                        first_tombstone = entry;
-                    }
-                }
-                EMPTY => {
-                    return if first_tombstone.is_null() {
-                        entry
-                    } else {
-                        first_tombstone
-                    };
-                }
-                _ => unreachable!("invalid hashmap entry state"),
-            }
-            idx = (idx + 1) & mask;
-            if idx == start {
-                return if first_tombstone.is_null() {
-                    unreachable!("hashmap insert probe found no reusable slot")
-                } else {
-                    first_tombstone
-                };
-            }
-        }
-    }
-}
-
-/// Resize the map to double its current capacity.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer with `cap > 0`.
-unsafe fn resize(m: *mut HewHashMap) {
-    // SAFETY: caller guarantees `m` is valid.
-    unsafe {
-        let map = &mut *m;
-        let old_cap = map.cap;
-        let old_entries = map.entries;
-        let Some(new_cap) = old_cap.checked_mul(2) else {
-            libc::abort();
-        };
-
-        let Some(layout_size) = new_cap.checked_mul(core::mem::size_of::<HewMapEntry>()) else {
-            libc::abort();
-        };
-        let new_entries: *mut HewMapEntry =
-            libc::calloc(new_cap, core::mem::size_of::<HewMapEntry>()).cast();
-        if new_entries.is_null() {
-            let _ = layout_size;
-            libc::abort();
-        }
-
-        map.entries = new_entries;
-        map.cap = new_cap;
-        map.len = 0;
-
-        let mask = new_cap - 1;
-        for i in 0..old_cap {
-            let old = &*old_entries.add(i);
-            if old.state == OCCUPIED {
-                let h = fnv1a(old.key);
-                let mut idx = (h as usize) & mask;
-                while (*new_entries.add(idx)).state == OCCUPIED {
-                    idx = (idx + 1) & mask;
-                }
-                let dst = &mut *new_entries.add(idx);
-                dst.state = OCCUPIED;
-                dst.key = old.key;
-                dst.value_i32 = old.value_i32;
-                dst.value_str = old.value_str;
-                dst.value_i64 = old.value_i64;
-                dst.value_f64 = old.value_f64;
-                map.len += 1;
-            }
-        }
-        libc::free(old_entries.cast()); // ALLOCATOR-PAIRING: libc
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Constructor
-// ---------------------------------------------------------------------------
-
-/// Create a new, empty `HewHashMap`.
-///
-/// # Safety
-///
-/// The returned pointer must eventually be freed with [`hew_hashmap_free_impl`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_new_impl() -> *mut HewHashMap {
-    // SAFETY: allocating with libc::malloc/calloc.
-    unsafe {
-        let m: *mut HewHashMap = libc::malloc(core::mem::size_of::<HewHashMap>()).cast(); // ALLOCATOR-PAIRING: libc
-        if m.is_null() {
-            libc::abort();
-        }
-        let entries: *mut HewMapEntry =
-            libc::calloc(INIT_CAP, core::mem::size_of::<HewMapEntry>()).cast();
-        if entries.is_null() {
-            libc::free(m.cast()); // ALLOCATOR-PAIRING: libc
-            libc::abort();
-        }
-        (*m).entries = entries;
-        (*m).len = 0;
-        (*m).cap = INIT_CAP;
-        m
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Insert
-// ---------------------------------------------------------------------------
-
-// CUTOVER-TODO(W4.001-C3-S4): The seven legacy `hew_hashmap_*_impl` /
-// `hew_hashmap_*_i64` / `hew_hashmap_*_f64` runtime exports below are no
-// longer reached from codegen — Stage C3 retired the per-V `_impl` /
-// `_<prim>` dispatch arms in `hew-types/src/check/methods.rs` and routes
-// every HashMap method call through the resolver-authority
-// `hew_hashmap_*_layout` family. The legacy symbols remain in this file
-// solely because `hew-runtime/src/hashset.rs` still calls
-// `hew_hashmap_insert_impl` / `hew_hashmap_insert_i64` directly (see
-// `hashset.rs:27, 88, 112`). Retiring them is blocked on porting the
-// HashSet runtime to the layout-descriptor path (tracked as Stage C3
-// follow-up: HashSet layout migration). Do not add new callers; do not
-// reuse the symbol names for layout-path adapters.
-
-/// Insert or update a key with both `i32` and optional string values.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-/// `val_str` may be null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_insert_impl(
-    m: *mut HewHashMap,
-    key: *const c_char,
-    val_i32: i32,
-    val_str: *const c_char,
-) {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe {
-        if (*m).len * 100 >= (*m).cap * LOAD_PCTG {
-            resize(m);
-        }
-        let entry = &mut *find_insert_slot(m, key);
-        if entry.state == OCCUPIED {
-            // Update existing entry.
-            entry.value_i32 = val_i32;
-            if !entry.value_str.is_null() {
-                libc::free(entry.value_str.cast()); // ALLOCATOR-PAIRING: libc
-            }
-            entry.value_str = if val_str.is_null() {
-                ptr::null_mut()
-            } else {
-                libc::strdup(val_str)
-            };
-            if !val_str.is_null() && entry.value_str.is_null() {
-                libc::abort();
-            }
-            return;
-        }
-        // Empty or tombstone slot — insert here.
-        entry.state = OCCUPIED;
-        entry.key = libc::strdup(key);
-        if entry.key.is_null() {
-            libc::abort();
-        }
-        entry.value_i32 = val_i32;
-        entry.value_str = if val_str.is_null() {
-            ptr::null_mut()
-        } else {
-            libc::strdup(val_str)
-        };
-        if !val_str.is_null() && entry.value_str.is_null() {
-            libc::abort();
-        }
-        entry.value_i64 = 0;
-        entry.value_f64 = 0.0;
-        (*m).len += 1;
-    }
-}
-
-/// Insert or update a key with an `i64` value.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_insert_i64(m: *mut HewHashMap, key: *const c_char, val: i64) {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe {
-        if (*m).len * 100 >= (*m).cap * LOAD_PCTG {
-            resize(m);
-        }
-        let entry = &mut *find_insert_slot(m, key);
-        if entry.state == OCCUPIED {
-            entry.value_i64 = val;
-            return;
-        }
-        entry.state = OCCUPIED;
-        entry.key = libc::strdup(key);
-        if entry.key.is_null() {
-            libc::abort();
-        }
-        entry.value_i64 = val;
-        entry.value_i32 = 0;
-        entry.value_str = ptr::null_mut();
-        entry.value_f64 = 0.0;
-        (*m).len += 1;
-    }
-}
-
-/// Insert or update a key with an `f64` value.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_insert_f64(m: *mut HewHashMap, key: *const c_char, val: f64) {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe {
-        if (*m).len * 100 >= (*m).cap * LOAD_PCTG {
-            resize(m);
-        }
-        let entry = &mut *find_insert_slot(m, key);
-        if entry.state == OCCUPIED {
-            entry.value_f64 = val;
-            return;
-        }
-        entry.state = OCCUPIED;
-        entry.key = libc::strdup(key);
-        if entry.key.is_null() {
-            libc::abort();
-        }
-        entry.value_f64 = val;
-        entry.value_i32 = 0;
-        entry.value_str = ptr::null_mut();
-        entry.value_i64 = 0;
-        (*m).len += 1;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Getters
-// ---------------------------------------------------------------------------
-
-/// Get the `i32` value for `key`. Returns 0 if the key is not found.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_get_i32(m: *mut HewHashMap, key: *const c_char) -> i32 {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe {
-        let idx = find_entry(m, key);
-        if idx < 0 {
-            return 0;
-        }
-        (*(*m).entries.add(idx as usize)).value_i32
-    }
-}
-
-/// Get the string value for `key`. Returns null if the key is not found.
-///
-/// **Note:** Returns a `strdup`'d copy. The caller must `free()` the returned string.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_get_str_impl(
-    m: *mut HewHashMap,
-    key: *const c_char,
-) -> *const c_char {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe {
-        let idx = find_entry(m, key);
-        if idx < 0 {
-            return ptr::null();
-        }
-        let raw = (*(*m).entries.add(idx as usize)).value_str;
-        if raw.is_null() {
-            ptr::null()
-        } else {
-            let result = libc::strdup(raw);
-            if result.is_null() {
-                libc::abort();
-            }
-            result
-        }
-    }
-}
-
-/// Get the `i64` value for `key`. Returns 0 if the key is not found.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_get_i64(m: *mut HewHashMap, key: *const c_char) -> i64 {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe {
-        let idx = find_entry(m, key);
-        if idx < 0 {
-            return 0;
-        }
-        (*(*m).entries.add(idx as usize)).value_i64
-    }
-}
-
-/// Get the `f64` value for `key`. Returns 0.0 if the key is not found.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_get_f64(m: *mut HewHashMap, key: *const c_char) -> f64 {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe {
-        let idx = find_entry(m, key);
-        if idx < 0 {
-            return 0.0;
-        }
-        (*(*m).entries.add(idx as usize)).value_f64
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Contains / Remove
-// ---------------------------------------------------------------------------
-
-/// Return `true` if the map contains `key`.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_contains_key(m: *mut HewHashMap, key: *const c_char) -> bool {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe { find_entry(m, key) >= 0 }
-}
-
-/// Remove `key` from the map. Returns `true` if the key was present.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_remove(m: *mut HewHashMap, key: *const c_char) -> bool {
-    // SAFETY: caller guarantees `m` and `key` are valid.
-    unsafe {
-        let idx = find_entry(m, key);
-        if idx < 0 {
-            return false;
-        }
-        let entry = &mut *(*m).entries.add(idx as usize);
-        libc::free(entry.key.cast()); // ALLOCATOR-PAIRING: libc
-        if !entry.value_str.is_null() {
-            libc::free(entry.value_str.cast()); // ALLOCATOR-PAIRING: libc
-        }
-        entry.state = TOMBSTONE;
-        entry.key = ptr::null_mut();
-        entry.value_str = ptr::null_mut();
-        (*m).len -= 1;
-        true
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Queries
-// ---------------------------------------------------------------------------
-
-/// Return the number of entries in the map.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_len(m: *mut HewHashMap) -> i64 {
-    // SAFETY: caller guarantees `m` is valid.
-    unsafe { (*m).len as i64 }
-}
-
-/// Return `true` if the map has no entries.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_is_empty(m: *mut HewHashMap) -> bool {
-    // SAFETY: caller guarantees `m` is valid.
-    unsafe { (*m).len == 0 }
-}
-
-// ---------------------------------------------------------------------------
-// Iteration / Bulk operations
-// ---------------------------------------------------------------------------
-
-/// Return a `HewVec` of all keys (as strings) in the map.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. The returned vec must be freed
-/// with [`crate::vec::hew_vec_free`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_keys(m: *const HewHashMap) -> *mut crate::vec::HewVec {
-    // SAFETY: caller guarantees `m` is valid.
-    unsafe {
-        let map = &*m;
-        let v = crate::vec::hew_vec_new_str();
-        for i in 0..map.cap {
-            let entry = &*map.entries.add(i);
-            if entry.state == OCCUPIED {
-                crate::vec::hew_vec_push_str(v, entry.key);
-            }
-        }
-        v
-    }
-}
-
-/// Return a `HewVec` of all `i32` values in the map.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. The returned vec must be freed
-/// with [`crate::vec::hew_vec_free`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_values_i32(m: *const HewHashMap) -> *mut crate::vec::HewVec {
-    // SAFETY: caller guarantees `m` is valid.
-    unsafe {
-        let map = &*m;
-        let v = crate::vec::hew_vec_new();
-        for i in 0..map.cap {
-            let entry = &*map.entries.add(i);
-            if entry.state == OCCUPIED {
-                crate::vec::hew_vec_push_i32(v, entry.value_i32);
-            }
-        }
-        v
-    }
-}
-
-/// Return a `HewVec` of all non-null string values in the map.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. The returned vec must be freed
-/// with [`crate::vec::hew_vec_free`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_values_str(m: *const HewHashMap) -> *mut crate::vec::HewVec {
-    // SAFETY: caller guarantees `m` is valid.
-    unsafe {
-        let map = &*m;
-        let v = crate::vec::hew_vec_new_str();
-        for i in 0..map.cap {
-            let entry = &*map.entries.add(i);
-            if entry.state == OCCUPIED && !entry.value_str.is_null() {
-                crate::vec::hew_vec_push_str(v, entry.value_str);
-            }
-        }
-        v
-    }
-}
-
-/// Remove all entries from the map.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_clear(m: *mut HewHashMap) {
-    // SAFETY: caller guarantees `m` is valid.
-    unsafe {
-        let map = &mut *m;
-        for i in 0..map.cap {
-            let entry = &mut *map.entries.add(i);
-            if entry.state == OCCUPIED {
-                libc::free(entry.key.cast()); // ALLOCATOR-PAIRING: libc
-                if !entry.value_str.is_null() {
-                    libc::free(entry.value_str.cast()); // ALLOCATOR-PAIRING: libc
-                }
-            }
-            entry.state = EMPTY;
-            entry.key = ptr::null_mut();
-            entry.value_str = ptr::null_mut();
-        }
-        map.len = 0;
-    }
-}
-
-/// Get the `i32` value for `key`, or `default` if not found.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_get_or_default_i32(
-    m: *const HewHashMap,
-    key: *const c_char,
-    default: i32,
-) -> i32 {
-    // SAFETY: caller guarantees `m` and `key` are valid. find_entry does not
-    // mutate the map; it only takes `*mut` for legacy reasons.
-    unsafe {
-        let idx = find_entry(m.cast_mut(), key);
-        if idx < 0 {
-            return default;
-        }
-        (*(*m).entries.add(idx as usize)).value_i32
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Free
-// ---------------------------------------------------------------------------
-
-/// Free all entries (including keys and string values) and the map struct.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer (or null). After this call, `m` is
-/// invalid.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_free_impl(m: *mut HewHashMap) {
-    // SAFETY: caller guarantees `m` was allocated with malloc (or is null).
-    unsafe {
-        cabi_guard!(m.is_null());
-        for i in 0..(*m).cap {
-            let entry = &*(*m).entries.add(i);
-            if entry.state == OCCUPIED {
-                libc::free(entry.key.cast()); // ALLOCATOR-PAIRING: libc
-                if !entry.value_str.is_null() {
-                    libc::free(entry.value_str.cast()); // ALLOCATOR-PAIRING: libc
-                }
-            }
-        }
-        libc::free((*m).entries.cast()); // ALLOCATOR-PAIRING: libc
-        libc::free(m.cast()); // ALLOCATOR-PAIRING: libc
-    }
-}
 
 // ===========================================================================
 // Layout-backed HashMap (`HewLayoutHashMap`) — C-1b (W3.003 slice C-1b)
@@ -1607,6 +945,54 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
 /// `val` may be null only when the value layout's `size` is zero (`HashSet`
 /// contract); otherwise null aborts fail-closed.
 ///
+/// # String-element ownership: MOVE on ingress (no copy-in)
+///
+/// For `String` keys/values codegen wires the String-ownership descriptors
+/// `hew_layout_key_string` / `hew_layout_val_string`
+/// (`hew-codegen-rs/src/llvm.rs`), whose `drop_fn` is the header-aware
+/// `hew_layout_string_drop` → `hew_string_drop` (refcount decrement,
+/// free-at-zero, static-literal safe). The strings codegen hands to this
+/// function are therefore **already header-aware** Hew strings — there is no
+/// `strdup` and no headerless map producer anywhere in the map runtime.
+///
+/// Consequently this function's String contract is an **ownership-transfer
+/// MOVE, not a copy-in**: the `ptr::copy_nonoverlapping` of the key/value
+/// pointer bits below relocates the sole owner into the map's slot. It is
+/// deliberately *not* a `clone` — the caller's string is consumed (its single
+/// owning reference now lives in the map), so the map does **not** retain on
+/// ingress. The matched release side is symmetric: `hew_hashmap_clone_layout`
+/// **retains** each string element (`clone_layout_string_blob` →
+/// `hew_string_clone`, refcount bump) and `hew_hashmap_free_layout` /
+/// `hew_hashmap_remove_layout` **release** via the descriptor `drop_fn`
+/// (refcount decrement, free-at-zero). That clone-retains / drop-releases
+/// symmetry is what makes the byte-copy MOVE sound rather than an unpaired
+/// aliasing copy (LESSONS `alias-byte-copy-not-semantic-clone`): there is one
+/// owner at a time, never two owners of one allocation.
+///
+/// Because ingress is MOVE, copy-in is **intentionally absent** — adding it
+/// would waste a String allocation and (until P3 drop emission lands) orphan
+/// the moved-from source, introducing a leak. A future *headerless* map
+/// producer (none exists today) would have to either copy-in at the producer
+/// or grow a dedicated map copy-in path; this is a fail-closed catalogue note,
+/// not a present gap.
+///
+/// ## Conditional key-consume asymmetry (read this for P3 consuming-call lowering)
+///
+/// Key disposition is **runtime-conditional on `existed`**, which is why the
+/// caller's K ownership cannot be resolved statically:
+/// - **Vacant insert** (`!existed`): the caller's K is **MOVED** into the slot
+///   — consumed, the map is now its sole owner.
+/// - **Overwrite** (`existed`): the stored slot K is the equality-witness and
+///   is **reused in place**; the caller's duplicate K is **NOT** consumed here
+///   — the caller retains it (its drop/recycle is hoisted to the Stage C HIR
+///   consumer / codegen materializer; see the occupied-slot branch below).
+///
+/// Since `insert` returns `!existed`, K consumption is decided at runtime; a
+/// static null-after-move on the caller's K would be **wrong on the overwrite
+/// path**. P3 must derive the consuming-call ownership model from this
+/// per-path contract, not apply a uniform null-after-move (LESSONS
+/// `raii-null-after-move` — documented here, deliberately not applied).
+///
 /// # Safety
 ///
 /// `m` must be a valid `HewLayoutHashMap`. `key` must point to a readable
@@ -1709,7 +1095,12 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
                 val_drop(dst_val.cast::<c_void>());
             }
         }
-        // Raw-copy new V over the (now-dropped) old V slot bytes.
+        // Raw-copy new V over the (now-dropped) old V slot bytes. For a
+        // `String` value this is the ownership-transfer MOVE described in the
+        // function header: the new V's sole owner relocates into the slot (no
+        // retain — the caller's V is consumed). The old V was already released
+        // by `val_drop` above, so the clone-retains / drop-releases symmetry
+        // holds and no allocation is leaked or double-freed.
         if val_size > 0 {
             // SAFETY: dst_val and val are valid blobs of `val_size` bytes (val
             // non-null was enforced by validate_op_inputs when val_size > 0).
@@ -1717,7 +1108,15 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
         }
     } else {
         // Vacant slot: raw-copy K and V bytes into slot; possession transfers
-        // to the map (plan rev6 §4 contract-table vacant-slot row).
+        // to the map (plan rev6 §4 contract-table vacant-slot row). For
+        // `String` K/V these two copies are the ownership-transfer MOVE: the
+        // caller's sole-owned, already-header-aware strings are relocated into
+        // the slots and consumed (no retain on ingress — see the function
+        // header's "MOVE on ingress" contract). The map's later
+        // `hew_hashmap_free_layout` / `hew_hashmap_remove_layout` release them
+        // through the descriptor `drop_fn`; `hew_hashmap_clone_layout` retains
+        // them. On this vacant path the caller's K is CONSUMED (contrast the
+        // overwrite path above, where the caller retains its duplicate K).
         // SAFETY: dst_key and key are valid blobs of `key_size` bytes.
         unsafe { ptr::copy_nonoverlapping(key.cast::<u8>(), dst_key, key_size) };
         if val_size > 0 {
@@ -2000,259 +1399,5 @@ pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
             m.cast::<u8>(),
             std::alloc::Layout::new::<HewLayoutHashMap>(),
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::CString;
-
-    fn colliding_keys() -> (CString, CString) {
-        for lhs in 0..64 {
-            let key_a = CString::new(format!("collision_{lhs}")).unwrap();
-            // SAFETY: key_a is a valid NUL-terminated CString.
-            let bucket_a = unsafe { fnv1a(key_a.as_ptr()) as usize & (INIT_CAP - 1) };
-            for rhs in lhs + 1..64 {
-                let key_b = CString::new(format!("collision_{rhs}")).unwrap();
-                // SAFETY: key_b is a valid NUL-terminated CString.
-                let bucket_b = unsafe { fnv1a(key_b.as_ptr()) as usize & (INIT_CAP - 1) };
-                if bucket_a == bucket_b {
-                    return (key_a, key_b);
-                }
-            }
-        }
-        panic!("expected at least one colliding key pair");
-    }
-
-    #[test]
-    fn test_hashmap_new_and_len() {
-        // SAFETY: FFI calls use valid pointers returned by hew_hashmap_new_impl.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            assert!(!m.is_null());
-            assert_eq!(hew_hashmap_len(m), 0);
-            assert!(hew_hashmap_is_empty(m));
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_insert_and_get() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let key = CString::new("hello").unwrap();
-            hew_hashmap_insert_impl(m, key.as_ptr(), 42, core::ptr::null());
-            assert_eq!(hew_hashmap_len(m), 1);
-            assert_eq!(hew_hashmap_get_i32(m, key.as_ptr()), 42);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_contains_key() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let key = CString::new("present").unwrap();
-            let missing = CString::new("missing").unwrap();
-            hew_hashmap_insert_impl(m, key.as_ptr(), 1, core::ptr::null());
-            assert!(hew_hashmap_contains_key(m, key.as_ptr()));
-            assert!(!hew_hashmap_contains_key(m, missing.as_ptr()));
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_overwrite() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let key = CString::new("key").unwrap();
-            hew_hashmap_insert_impl(m, key.as_ptr(), 10, core::ptr::null());
-            assert_eq!(hew_hashmap_get_i32(m, key.as_ptr()), 10);
-            hew_hashmap_insert_impl(m, key.as_ptr(), 20, core::ptr::null());
-            assert_eq!(hew_hashmap_get_i32(m, key.as_ptr()), 20);
-            assert_eq!(hew_hashmap_len(m), 1);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_remove() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let key = CString::new("key").unwrap();
-            hew_hashmap_insert_impl(m, key.as_ptr(), 42, core::ptr::null());
-            let removed = hew_hashmap_remove(m, key.as_ptr());
-            assert!(removed);
-            assert!(!hew_hashmap_contains_key(m, key.as_ptr()));
-            assert_eq!(hew_hashmap_len(m), 0);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_remove_missing_key() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let key = CString::new("missing").unwrap();
-            assert!(!hew_hashmap_remove(m, key.as_ptr()));
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_get_missing_returns_zero() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let key = CString::new("missing").unwrap();
-            assert_eq!(hew_hashmap_get_i32(m, key.as_ptr()), 0);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_multiple_entries() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let k1 = CString::new("a").unwrap();
-            let k2 = CString::new("b").unwrap();
-            let k3 = CString::new("c").unwrap();
-            hew_hashmap_insert_impl(m, k1.as_ptr(), 1, core::ptr::null());
-            hew_hashmap_insert_impl(m, k2.as_ptr(), 2, core::ptr::null());
-            hew_hashmap_insert_impl(m, k3.as_ptr(), 3, core::ptr::null());
-            assert_eq!(hew_hashmap_len(m), 3);
-            assert_eq!(hew_hashmap_get_i32(m, k1.as_ptr()), 1);
-            assert_eq!(hew_hashmap_get_i32(m, k2.as_ptr()), 2);
-            assert_eq!(hew_hashmap_get_i32(m, k3.as_ptr()), 3);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_clear() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let k1 = CString::new("x").unwrap();
-            let k2 = CString::new("y").unwrap();
-            hew_hashmap_insert_impl(m, k1.as_ptr(), 1, core::ptr::null());
-            hew_hashmap_insert_impl(m, k2.as_ptr(), 2, core::ptr::null());
-            hew_hashmap_clear(m);
-            assert_eq!(hew_hashmap_len(m), 0);
-            assert!(hew_hashmap_is_empty(m));
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_get_or_default() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let key = CString::new("key").unwrap();
-            let missing = CString::new("missing").unwrap();
-            hew_hashmap_insert_impl(m, key.as_ptr(), 42, core::ptr::null());
-            assert_eq!(hew_hashmap_get_or_default_i32(m, key.as_ptr(), -1), 42);
-            assert_eq!(hew_hashmap_get_or_default_i32(m, missing.as_ptr(), -1), -1);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_many_entries_triggers_resize() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            for i in 0..50 {
-                let key = CString::new(format!("key_{i}")).unwrap();
-                hew_hashmap_insert_impl(m, key.as_ptr(), i, core::ptr::null());
-            }
-            assert_eq!(hew_hashmap_len(m), 50);
-            for i in 0..50 {
-                let key = CString::new(format!("key_{i}")).unwrap();
-                assert_eq!(hew_hashmap_get_i32(m, key.as_ptr()), i);
-            }
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_insert_after_remove() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let key = CString::new("key").unwrap();
-            hew_hashmap_insert_impl(m, key.as_ptr(), 10, core::ptr::null());
-            hew_hashmap_remove(m, key.as_ptr());
-            hew_hashmap_insert_impl(m, key.as_ptr(), 20, core::ptr::null());
-            assert_eq!(hew_hashmap_get_i32(m, key.as_ptr()), 20);
-            assert_eq!(hew_hashmap_len(m), 1);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_reinsert_after_tombstone_collision_keeps_single_entry() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let (first, second) = colliding_keys();
-
-            hew_hashmap_insert_impl(m, first.as_ptr(), 10, core::ptr::null());
-            hew_hashmap_insert_impl(m, second.as_ptr(), 20, core::ptr::null());
-            assert!(hew_hashmap_remove(m, first.as_ptr()));
-
-            hew_hashmap_insert_impl(m, second.as_ptr(), 30, core::ptr::null());
-
-            assert_eq!(hew_hashmap_len(m), 1);
-            assert_eq!(hew_hashmap_get_i32(m, second.as_ptr()), 30);
-            assert!(!hew_hashmap_contains_key(m, first.as_ptr()));
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_keys() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let k1 = CString::new("alpha").unwrap();
-            let k2 = CString::new("beta").unwrap();
-            hew_hashmap_insert_impl(m, k1.as_ptr(), 1, core::ptr::null());
-            hew_hashmap_insert_impl(m, k2.as_ptr(), 2, core::ptr::null());
-            let keys = hew_hashmap_keys(m);
-            assert!(!keys.is_null());
-            assert_eq!(crate::vec::hew_vec_len(keys), 2);
-            crate::vec::hew_vec_free(keys);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_free_null() {
-        // SAFETY: Null is explicitly handled by hew_hashmap_free_impl.
-        unsafe { hew_hashmap_free_impl(core::ptr::null_mut()) };
-    }
-
-    #[test]
-    fn test_hashmap_with_string_values() {
-        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let key = CString::new("greeting").unwrap();
-            let val = CString::new("hello").unwrap();
-            hew_hashmap_insert_impl(m, key.as_ptr(), 0, val.as_ptr());
-            let result = hew_hashmap_get_str_impl(m, key.as_ptr());
-            assert!(!result.is_null());
-            assert_eq!(std::ffi::CStr::from_ptr(result).to_string_lossy(), "hello");
-            hew_hashmap_free_impl(m);
-        }
     }
 }

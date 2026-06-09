@@ -26,6 +26,7 @@ hew-std-encoding-toml = { path = "../std/encoding/toml" }
 hew-std-encoding-xml = { path = "../std/encoding/xml" }
 hew-std-encoding-yaml = { path = "../std/encoding/yaml" }
 hew-std-math = { path = "../std/math" }
+hew-std-mem = { path = "../std/mem" }
 hew-std-misc-log = { path = "../std/misc/log" }
 hew-std-misc-uuid = { path = "../std/misc/uuid" }
 hew-std-net-dns = { path = "../std/net/dns" }

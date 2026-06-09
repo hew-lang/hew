@@ -38,17 +38,18 @@ pub use monomorph::{
 };
 pub use node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
-    HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
-    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineBound,
-    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
-    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate, HirRegexLiteral,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
-    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVariant,
-    HirVariantKind, WhereOrigin,
+    HirBlock, HirCaptureKind, HirClosureCapture, HirConst, HirConstValue, HirExpr, HirExprKind,
+    HirField, HirFn, HirItem, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
+    HirMachineBound, HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition,
+    HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
+    HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
+    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirVariant, HirVariantKind, WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,
-    named_type_names, NamedTypeComponent, ResourceMarker, TypeClassTable, ValueClass,
+    named_type_names, LayoutWitness, NamedTypeComponent, ResourceMarker, TypeClassTable,
+    ValueClass, BYTES_COPY_SYMBOL, BYTES_DESTROY_SYMBOL,
 };
 pub use verify::{collect_site_spans, verify_hir, HirSiteSource};
 

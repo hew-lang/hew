@@ -664,7 +664,8 @@ impl<'a> ProfileChecker<'a> {
             }
             TypeExpr::Option(inner)
             | TypeExpr::Array { element: inner, .. }
-            | TypeExpr::Slice(inner) => self.check_type_expr(&inner.0, &inner.1),
+            | TypeExpr::Slice(inner)
+            | TypeExpr::Borrow(inner) => self.check_type_expr(&inner.0, &inner.1),
             TypeExpr::Tuple(items) => {
                 for (item, item_span) in items {
                     self.check_type_expr(item, item_span);

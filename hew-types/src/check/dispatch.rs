@@ -164,7 +164,7 @@ pub struct Bound {
 /// E's MIR/codegen pickup will consume. No production reader exists yet.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MethodTarget {
-    /// Runtime symbol name (e.g. `"hew_hashmap_insert_i64"`).
+    /// Runtime symbol name (e.g. `"hew_hashmap_insert_layout"`).
     pub symbol_name: String,
     /// Receiver-side calling convention.
     pub abi: RuntimeAbi,

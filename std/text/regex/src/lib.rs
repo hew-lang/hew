@@ -285,7 +285,7 @@ pub unsafe extern "C" fn hew_regex_free_capture(ptr: *mut c_char) {
     // SAFETY: ptr is either null (checked above) or a valid malloc-owned pointer
     // returned by hew_regex_capture (which calls str_to_malloc → CString::into_raw
     // → a malloc allocation). Freeing it here releases the allocation.
-    unsafe { libc::free(ptr.cast()) }
+    unsafe { hew_cabi::cabi::free_cstring(ptr) } // CSTRING-FREE: str-open (frees hew_regex_capture = str_to_malloc)
 }
 
 /// Clone a compiled [`HewRegex`].
@@ -361,7 +361,7 @@ mod tests {
         let matched_str = unsafe { CStr::from_ptr(matched) }.to_str().unwrap();
         assert_eq!(matched_str, "hello");
         // SAFETY: matched was allocated with libc::malloc.
-        unsafe { libc::free(matched.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(matched) }; // CSTRING-FREE: str-open (test str_to_malloc match)
 
         // Test no match
         let text_no = CString::new("123456").unwrap();
@@ -389,7 +389,7 @@ mod tests {
         let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(result_str, "aXbXcX");
         // SAFETY: result was allocated with libc::malloc.
-        unsafe { libc::free(result.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(result) }; // CSTRING-FREE: str-open (test str_to_malloc result)
 
         // SAFETY: re was returned by hew_regex_new.
         unsafe { hew_regex_free(re) };

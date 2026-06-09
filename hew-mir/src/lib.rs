@@ -14,7 +14,10 @@ pub mod model;
 pub mod runtime_symbols;
 pub mod state_clone;
 
-pub use lower::{bracket_actor_handler_blocks, lower_hir_module};
+pub use lower::{
+    bracket_actor_handler_blocks, build_const_descriptors, instr_source_places, lower_hir_module,
+    lower_hir_module_with_facts, terminator_source_places,
+};
 
 /// Test-only access to the per-Place + per-`ResolvedTy` drop-kind
 /// dispatcher. Tests pin the boundary contract that codegen consumes
@@ -38,19 +41,22 @@ pub fn drop_kind_for_test(
     lower::drop_kind_for_test_only(place, ty, dyn_storage)
 }
 pub use model::{
+    call_arg_source_escapes, callee_param_is_borrow, container_ingress_is_copy_in,
     mangle_dyn_drop_in_place_symbol, mangle_dyn_thunk_symbol, mangle_dyn_vtable_symbol,
     sanitize_for_symbol, validate_context_markers, ActorLayout, BasicBlock, BlockKind, BorrowKind,
     CaptureKind, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, CoroutineSchema,
     DecisionFact, Direction, DropKind, DropPlan, DynVtableInstance, ElabBlock, ElabDrop,
     ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth, FunctionCallConv,
     GenStateDropTable, GenStateLayout, GenStateLiveLocal, Instr, IntArithOp, IntSignedness,
-    IrPipeline, LambdaCapture, MachineLayout, MachineVariantLayout, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, RecordLayout, RegexLiteral,
-    RuntimeCall, SelectArm, SelectArmKind, Strategy, SupervisorChildLayout, SupervisorLayout,
-    Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    IrPipeline, LambdaCapture, MachineLayout, MachineVariantLayout, MirCheck, MirConst,
+    MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, PolymorphicMirFunction,
+    RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall, SelectArm, SelectArmKind,
+    SendAliasMode, Strategy, SupervisorChildLayout, SupervisorLayout, Terminator, ThirFunction,
+    TraitObjectStorage, TrapKind, WitnessOperand,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{
-    classify_actor_state_fields, classify_state_field, mangle_actor_state_clone_fn,
+    classify_actor_state_fields, classify_actor_state_fields_with_enum_layouts,
+    classify_state_field, classify_state_field_with_enum_layouts, mangle_actor_state_clone_fn,
     mangle_actor_state_drop_fn, ClassificationError, IoHandleKind, StateFieldCloneKind,
 };

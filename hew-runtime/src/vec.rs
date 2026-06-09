@@ -190,6 +190,34 @@ unsafe fn abort_layout_managed_drop_unavailable() -> ! {
     }
 }
 
+/// Fail-closed gate rejecting `String`-kind elements at the untyped generic Vec
+/// constructor.
+///
+/// The generic family (`hew_vec_new_generic` / `push_generic` / `set_generic`
+/// / `pop_generic`) moves raw `elem_size` bytes with **no copy-in on ingress
+/// and no retain on internal propagation**, yet the shared `free`/`truncate`/
+/// `clone` paths *do* release `String`-kind elements (`release_string_element`
+/// → `hew_string_drop`). That asymmetry would release owners the generic path
+/// never acquired — a refcount underflow that frees caller-owned buffers
+/// (UAF / double-free). The typed surface (`hew_vec_new_str` and its
+/// `push_str`/`set_str`/`get_str`/`pop_str` siblings) is the *only* sanctioned
+/// way to build a refcounted string Vec, and codegen emits exactly that. No
+/// caller constructs a generic `String` Vec, so we reject it at the source
+/// rather than silently storing unowned pointers (fail-closed; substrate over
+/// surface).
+///
+/// Panics fail-closed when `elem_kind == 1` (`String`). Reached through the
+/// `extern "C"` constructor the panic is a non-unwinding abort under
+/// `panic = "abort"`; tests observe it via `should_panic` at this Rust-only
+/// call site (mirroring the `ffi_boundary_layout_*` gate convention).
+pub(crate) fn assert_generic_elem_kind_supported(elem_kind: i64) {
+    assert!(
+        elem_kind != 1,
+        "Vec generic constructor does not support string elements (elem_kind=1); \
+         build refcounted string vecs with hew_vec_new_str"
+    );
+}
+
 /// Abort when a C caller omits the required layout Vec equality thunk.
 unsafe fn abort_null_eq_fn() -> ! {
     // SAFETY: writing to stderr and aborting is always safe.
@@ -470,6 +498,129 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
 }
 
 // ---------------------------------------------------------------------------
+// String-element ownership (W5.011 P2b-vec)
+// ---------------------------------------------------------------------------
+//
+// Vec string *elements* are migrated off the legacy headerless `libc::strdup`
+// onto the refcounted, header-aware `String` discipline that P2a activated.
+// Two distinct operations, deliberately kept separate:
+//
+//   * **Ingress** (`push`/`set`): the caller may hand a string of ANY
+//     provenance — a header-aware `String`, a static literal, or a plain
+//     headerless `malloc`/`strdup` buffer from an internal runtime producer
+//     (`read_dir`, DNS, `process`, `split`/`lines`). `copy_string_element_in`
+//     stores an independent **header-aware copy** (`rc == 1`). This preserves
+//     the long-standing copy-in contract (the old `strdup`) byte-for-byte —
+//     producers keep owning and freeing their own buffer — while upgrading the
+//     stored element to be header-bearing.
+//
+//   * **Internal propagation** (`clone`/`clone_managed`/`slice`/`append`/`get`):
+//     the source element is ALREADY a stored, header-aware vec element, so it
+//     is **retained** (`hew_string_clone`, a refcount bump that aliases one
+//     buffer) rather than deep-copied — the element-level copy-on-write this
+//     migration delivers.
+//
+// Dropping an element (`free`/`truncate`/`set` old/`pop` transfer) is a VWT
+// `destroy` (release: `hew_string_drop`, which decrements the header refcount
+// and frees at zero, after the static-literal skip). The legacy
+// `strdup`/`libc::free` element paths are retired — no parallel mechanism
+// (CLAUDE §6); the single source of truth is the `String` consumer/producer
+// pair in `crate::string` plus the `hew-cabi` header-aware allocator.
+//
+// Because stored elements are now header-bearing, a Vec string element is safe
+// to reach `hew_string_drop` — which is exactly why the P1.5b container-domain
+// canary's Vec danger is retired (see
+// `hew-mir/tests/cstring_container_domain_canary.rs`). HashMap/HashSet elements
+// remain headerless until `W5.011-P2b-maps`.
+
+/// Copy an incoming C string of ANY provenance into a fresh, header-aware
+/// `String` element owned solely by the vec (`rc == 1`). This is the vec's
+/// element **ingress** path for `push`/`set` (VWT `copy` from outside the
+/// container): it replaces the legacy headerless `libc::strdup` copy-in with a
+/// header-aware copy-in, so the stored element can later be shared (retain) and
+/// released (`hew_string_drop`) on the refcounted `String` discipline WITHOUT
+/// requiring the caller to hand in a header-aware buffer. A null input maps to a
+/// null element (matching the prior null-passthrough); allocation failure for a
+/// non-null input propagates as null, exactly as `strdup` did.
+///
+/// # Safety
+///
+/// `val` must be null or a valid NUL-terminated C string readable to its
+/// terminator.
+#[inline]
+unsafe fn copy_string_element_in(val: *const c_char) -> *mut c_char {
+    if val.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: `val` is a valid NUL-terminated C string per this fn's contract.
+    let len = unsafe { libc::strlen(val) };
+    // SAFETY: `val` is readable for `len` bytes; `malloc_cstring` copies them
+    // into a header-aware allocation and NUL-terminates.
+    unsafe { crate::cabi::malloc_cstring(val.cast::<u8>(), len) } // CSTRING-ALLOC: container-elem-P2b (vec string element ingress — header-aware copy-in replaces strdup)
+}
+
+/// Retain one owner of an **already-stored, header-aware** string element for
+/// internal propagation (VWT `copy`: `clone`/`slice`/`append`/`get`). Delegates
+/// to the universal `String` retain (`hew_string_clone`): a refcount bump that
+/// returns the **same** data pointer (or the unchanged pointer for a static
+/// literal). NOT used for ingress — see [`copy_string_element_in`].
+///
+/// # Safety
+///
+/// `s` must be null, a pointer into the binary's read-only data, or a live
+/// header-aware string produced by the `hew-cabi` allocator.
+#[inline]
+unsafe fn retain_string_element(s: *const c_char) -> *mut c_char {
+    // SAFETY: `s` satisfies `hew_string_clone`'s precondition per this fn's
+    // contract; it performs the static-literal skip before any header access.
+    unsafe { crate::string::hew_string_clone(s) } // CSTRING-RETAIN: container-elem-P2b (vec string element — header-aware retain replaces strdup)
+}
+
+/// Release one owner of a string element removed from or dropped with a string
+/// `HewVec` (VWT `destroy`). Delegates to the universal `String` consumer
+/// (`hew_string_drop`): decrements the header refcount and frees at zero, after
+/// the static-literal skip. Replaces the legacy headerless `libc::free`.
+///
+/// # Safety
+///
+/// `s` must be null, a pointer into the binary's read-only data, or a live
+/// header-aware string produced by the `hew-cabi` allocator (i.e. an element
+/// previously stored via [`retain_string_element`]).
+#[inline]
+unsafe fn release_string_element(s: *mut c_char) {
+    // SAFETY: `s` satisfies `hew_string_drop`'s precondition per this fn's
+    // contract; it performs the static-literal skip before any header access.
+    unsafe { crate::string::hew_string_drop(s) }; // CSTRING-FREE: container-elem-P2b (vec string element — header-aware release replaces libc::free)
+}
+
+/// Retain `count` string elements from `src` into `dst` (one VWT `copy` per
+/// element). `src`/`dst` point at the first `*mut c_char` slot of each region;
+/// the regions must not overlap. This is the single shared element-retain path
+/// for `clone`/`clone_managed`/`slice`/`append` (CLAUDE §6: one mechanism, no
+/// per-site `strdup` loops).
+///
+/// # Safety
+///
+/// `src` must be valid for `count` readable `*const c_char` slots whose values
+/// satisfy [`retain_string_element`]'s contract; `dst` must be valid for
+/// `count` writable slots and must not overlap `src`.
+#[inline]
+unsafe fn retain_string_elements_into(
+    src: *const *const c_char,
+    dst: *mut *mut c_char,
+    count: usize,
+) {
+    // SAFETY: per this fn's contract `src`/`dst` are valid for `count` slots and
+    // do not overlap; each element satisfies the retain precondition.
+    unsafe {
+        for i in 0..count {
+            let retained = retain_string_element(src.add(i).read());
+            dst.add(i).write(retained);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Push
 // ---------------------------------------------------------------------------
 
@@ -501,11 +652,17 @@ vec_push_primitive!(hew_vec_push_i32, i32);
 vec_push_primitive!(hew_vec_push_bool, bool);
 vec_push_primitive!(hew_vec_push_i64, i64);
 
-/// Push a string onto the vec. The string is duplicated with `strdup`.
+/// Push a string onto the vec. The element is **copied in** (VWT `copy` from
+/// outside the container): an independent, header-aware copy of `val` is stored
+/// (`rc == 1`), preserving the legacy `strdup` copy-in contract — the caller
+/// keeps ownership of its own buffer and must still free it. The vec releases
+/// its element on removal/drop via `hew_string_drop`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid string `HewVec` pointer. `val` must be a valid C string.
+/// `v` must be a valid string `HewVec` pointer. `val` must be null or a valid
+/// NUL-terminated C string (of any provenance — header-aware, static, or a
+/// plain headerless producer buffer).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const c_char) {
     // SAFETY: caller guarantees `v` and `val` are valid.
@@ -515,12 +672,11 @@ pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const c_char) {
             libc::abort();
         };
         ensure_cap(v, new_len);
-        let duped = libc::strdup(val);
-        if duped.is_null() {
-            libc::abort();
-        }
+        // Store an independent header-aware copy (VWT copy-in ingress).
+        // `copy_string_element_in` handles null and any input provenance.
+        let owned = copy_string_element_in(val);
         let slot = (*v).data.cast::<*mut c_char>().add(len);
-        slot.write(duped);
+        slot.write(owned);
         (*v).len = new_len;
     }
 }
@@ -559,7 +715,10 @@ vec_get_primitive!(hew_vec_get_i64, i64);
 
 /// Get a string pointer at `index`. Aborts if out of bounds.
 ///
-/// **Note:** Returns a `strdup`'d copy. The caller must `free()` the returned string.
+/// **Note:** Returns a **retained** owner (VWT `copy`): a header-aware refcount
+/// bump that aliases the stored buffer (or a static-literal passthrough), not a
+/// deep `strdup`. The caller owns one reference and must release it with
+/// `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -573,15 +732,8 @@ pub unsafe extern "C" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c
             abort_oob(index, (*v).len);
         }
         let raw = (*v).data.cast::<*const c_char>().add(index).read();
-        if raw.is_null() {
-            core::ptr::null()
-        } else {
-            let duped = libc::strdup(raw);
-            if duped.is_null() {
-                libc::abort();
-            }
-            duped
-        }
+        // Retain one owner for the caller (VWT copy); handles null/static.
+        retain_string_element(raw)
     }
 }
 
@@ -600,10 +752,10 @@ vec_get_primitive!(hew_vec_get_ptr, *mut c_void);
 // so a stray caller that forgets the front-end check still fails closed
 // rather than reading past the end.
 //
-// String element ownership: `hew_vec_slice_range_str` strdups each element
-// into the fresh vec and sets `elem_kind == String`, so the existing
-// free-on-drop path in `hew_vec_free` frees the copies. Other element
-// kinds use a single bulk byte-copy. Both shapes follow `hew_vec_clone`.
+// String element ownership: `hew_vec_slice_range_str` retains each element
+// (VWT copy) into the fresh vec and sets `elem_kind == String`, so the
+// release-on-drop path in `hew_vec_free` releases the shared refs. Other
+// element kinds use a single bulk byte-copy. Both shapes follow `hew_vec_clone`.
 // ---------------------------------------------------------------------------
 
 /// Helper: validate `start` and `end` are within `[0, len]` and `start <=
@@ -750,8 +902,8 @@ pub unsafe extern "C" fn hew_vec_slice_range_ptr(
 }
 
 /// Allocate a new `HewVec` populated from `v[start..end)` for string
-/// elements. Each element is `strdup`'d into the fresh vec; the result vec
-/// owns the duplicates and frees them via the standard
+/// elements. Each element is **retained** (VWT `copy`) into the fresh vec; the
+/// result vec owns one reference per element and releases them via the standard
 /// `elem_kind == String` path in [`hew_vec_free`].
 ///
 /// # Safety
@@ -773,19 +925,13 @@ pub unsafe extern "C" fn hew_vec_slice_range_str(
             return out;
         }
         ensure_cap(out, count);
-        for i in 0..count {
-            let src_ptr = (*v).data.cast::<*const c_char>().add(start_u + i).read();
-            let duped = if src_ptr.is_null() {
-                ptr::null_mut()
-            } else {
-                let result = libc::strdup(src_ptr);
-                if result.is_null() {
-                    libc::abort();
-                }
-                result
-            };
-            (*out).data.cast::<*mut c_char>().add(i).write(duped);
-        }
+        // Retain one owner per element into the slice (VWT copy); handles
+        // null/static. Shared element-retain path (CLAUDE §6).
+        retain_string_elements_into(
+            (*v).data.cast::<*const c_char>().add(start_u),
+            (*out).data.cast::<*mut c_char>(),
+            count,
+        );
         (*out).len = count;
         out
     }
@@ -846,12 +992,14 @@ pub unsafe extern "C" fn hew_vec_set_i64(v: *mut HewVec, index: i64, val: i64) {
     }
 }
 
-/// Set a string at `index`. Frees the old string and duplicates the new one.
+/// Set a string at `index`. Stores an independent header-aware copy of the new
+/// value (VWT `copy` ingress) and releases the old element (VWT `destroy`).
 /// Aborts if out of bounds.
 ///
 /// # Safety
 ///
-/// `v` must be a valid string `HewVec` pointer. `val` must be a valid C string.
+/// `v` must be a valid string `HewVec` pointer. `val` must be null or a valid
+/// NUL-terminated C string (of any provenance).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const c_char) {
     // SAFETY: caller guarantees `v` and `val` are valid.
@@ -862,14 +1010,12 @@ pub unsafe extern "C" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const
         }
         let slot = (*v).data.cast::<*mut c_char>().add(index);
         let old = slot.read();
-        if !old.is_null() {
-            libc::free(old.cast()); // ALLOCATOR-PAIRING: libc
-        }
-        let duped = libc::strdup(val);
-        if duped.is_null() {
-            libc::abort();
-        }
-        slot.write(duped);
+        // Copy in the new owner BEFORE releasing the old, so a `set` of an
+        // element to itself (aliased pointer) reads the old contents before any
+        // release can free them.
+        let owned = copy_string_element_in(val);
+        release_string_element(old);
+        slot.write(owned);
     }
 }
 
@@ -991,7 +1137,7 @@ pub unsafe extern "C" fn hew_vec_is_empty(v: *mut HewVec) -> bool {
     unsafe { (*v).len == 0 }
 }
 
-/// Free individual string elements in the range `[0, len)`.
+/// Release individual string elements in the range `[0, len)` (VWT `destroy`).
 ///
 /// # Safety
 ///
@@ -1002,10 +1148,8 @@ unsafe fn free_string_elements(v: *mut HewVec) {
         let vec = &*v;
         for i in 0..vec.len {
             let slot = vec.data.cast::<*mut c_char>().add(i);
-            let ptr = slot.read();
-            if !ptr.is_null() {
-                libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
-            }
+            // Release one owner (VWT destroy); handles null/static.
+            release_string_element(slot.read());
         }
     }
 }
@@ -1049,9 +1193,9 @@ pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
                 if (*v).elem_kind == ElemKind::String {
                     free_string_elements(v);
                 }
-                libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
+                libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes ((*v).data backing array)
             }
-            libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
+            libc::free(v.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: struct (HewVec struct)
         }
     }
 }
@@ -1101,9 +1245,9 @@ pub unsafe extern "C" fn hew_vec_free_managed(v: *mut HewVec) {
             if (*v).elem_kind == ElemKind::String {
                 free_string_elements(v);
             }
-            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
+            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes ((*v).data backing array)
         }
-        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
+        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: struct (HewVec struct)
     }
 }
 
@@ -1172,7 +1316,9 @@ pub unsafe extern "C" fn hew_vec_sort_f64(v: *mut HewVec) {
 // Clone
 // ---------------------------------------------------------------------------
 
-/// Deep-clone a `HewVec`. For string vecs, each element is `strdup`'d.
+/// Deep-clone a `HewVec`. For string vecs, each element is **retained** (VWT
+/// `copy`) — the cloned slot array holds an independent owner of each shared,
+/// refcounted element buffer.
 ///
 /// # Safety
 ///
@@ -1197,19 +1343,11 @@ pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
         }
         ensure_cap(new_v, src.len);
         if src.elem_kind == ElemKind::String {
-            for i in 0..src.len {
-                let src_ptr = src.data.cast::<*const c_char>().add(i).read();
-                let duped = if src_ptr.is_null() {
-                    ptr::null_mut()
-                } else {
-                    let result = libc::strdup(src_ptr);
-                    if result.is_null() {
-                        libc::abort();
-                    }
-                    result
-                };
-                (*new_v).data.cast::<*mut c_char>().add(i).write(duped);
-            }
+            retain_string_elements_into(
+                src.data.cast::<*const c_char>(),
+                (*new_v).data.cast::<*mut c_char>(),
+                src.len,
+            );
         } else {
             let byte_count = src.len * src.elem_size;
             core::ptr::copy_nonoverlapping(src.data, (*new_v).data, byte_count);
@@ -1277,10 +1415,10 @@ pub unsafe extern "C" fn hew_vec_clone_layout(
 /// W4.045 UAF guard.
 ///
 /// Ownership dispatch:
-/// - layout absent → `elem_kind`-driven clone (`String` `strdup`s each slot,
+/// - layout absent → `elem_kind`-driven clone (`String` **retains** each slot,
 ///   every other kind bulk-copies).
 /// - layout `Plain` → fresh layout-backed vec + bulk byte copy.
-/// - layout `String` → fresh layout-backed vec + per-slot `strdup`.
+/// - layout `String` → fresh layout-backed vec + per-slot **retain**.
 /// - layout `LayoutManaged` with live elements → fail closed
 ///   ([`abort_layout_managed_clone_unavailable`]).
 ///
@@ -1325,19 +1463,11 @@ pub unsafe extern "C" fn hew_vec_clone_managed(v: *const HewVec) -> *mut HewVec 
         // "no layout-aware ops" guard and abort on a layout-backed source.
         ensure_cap_raw(new_v, src.len);
         if src.elem_kind == ElemKind::String {
-            for i in 0..src.len {
-                let src_ptr = src.data.cast::<*const c_char>().add(i).read();
-                let duped = if src_ptr.is_null() {
-                    ptr::null_mut()
-                } else {
-                    let result = libc::strdup(src_ptr);
-                    if result.is_null() {
-                        libc::abort();
-                    }
-                    result
-                };
-                (*new_v).data.cast::<*mut c_char>().add(i).write(duped);
-            }
+            retain_string_elements_into(
+                src.data.cast::<*const c_char>(),
+                (*new_v).data.cast::<*mut c_char>(),
+                src.len,
+            );
         } else {
             let byte_count = src.len * src.elem_size;
             core::ptr::copy_nonoverlapping(src.data, (*new_v).data, byte_count);
@@ -1378,19 +1508,11 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
         let elem_size = (*dst).elem_size;
         let dst_ptr = (*dst).data.add((*dst).len * elem_size);
         if (*dst).elem_kind == ElemKind::String {
-            for i in 0..src_len {
-                let src_str = (*src).data.cast::<*const c_char>().add(i).read();
-                let duped = if src_str.is_null() {
-                    ptr::null_mut()
-                } else {
-                    let result = libc::strdup(src_str);
-                    if result.is_null() {
-                        libc::abort();
-                    }
-                    result
-                };
-                dst_ptr.cast::<*mut c_char>().add(i).write(duped);
-            }
+            retain_string_elements_into(
+                (*src).data.cast::<*const c_char>(),
+                dst_ptr.cast::<*mut c_char>(),
+                src_len,
+            );
         } else {
             core::ptr::copy_nonoverlapping((*src).data, dst_ptr, src_len * elem_size);
         }
@@ -1649,8 +1771,8 @@ pub unsafe extern "C" fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64) {
 // Truncate
 // ---------------------------------------------------------------------------
 
-/// Truncate the vec to `new_len`. If the vec holds string elements
-/// (`elem_size == sizeof(*const c_char)`), freed elements are `free`'d.
+/// Truncate the vec to `new_len`. If the vec holds string elements, the
+/// dropped elements are **released** (VWT `destroy`).
 ///
 /// # Safety
 ///
@@ -1671,10 +1793,8 @@ pub unsafe extern "C" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
         if vec.elem_kind == ElemKind::String {
             for i in new_len..vec.len {
                 let slot = vec.data.cast::<*mut c_char>().add(i);
-                let ptr = slot.read();
-                if !ptr.is_null() {
-                    libc::free(ptr.cast()); // ALLOCATOR-PAIRING: libc
-                }
+                // Release one owner of the dropped element (VWT destroy).
+                release_string_element(slot.read());
             }
         }
         vec.len = new_len;
@@ -1691,21 +1811,24 @@ pub unsafe extern "C" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
 
 /// Create a new `HewVec` for elements of `elem_size` bytes.
 ///
-/// `elem_kind`: 0 = plain value, 1 = string (strdup'd ownership).
+/// `elem_kind`: 0 = plain value. `elem_kind == 1` (`String`) is **rejected**:
+/// the generic byte-copy push/set/pop path performs no copy-in on ingress and
+/// no retain on propagation, so it cannot honour the refcounted `String`
+/// element discipline that the shared free/clone paths assume. Refcounted
+/// string Vecs must be built through the typed [`hew_vec_new_str`] family.
+/// Any other value is treated as `Plain`.
 ///
 /// # Safety
 ///
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_generic(elem_size: i64, elem_kind: i64) -> *mut HewVec {
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size`, then setting kind.
+    // SAFETY: reject String-kind (the generic path cannot own refcounted
+    // elements), then forward to `hew_vec_new_with_elem_size`.
     unsafe {
+        assert_generic_elem_kind_supported(elem_kind);
         let v = hew_vec_new_with_elem_size(elem_size);
-        (*v).elem_kind = if elem_kind == 1 {
-            ElemKind::String
-        } else {
-            ElemKind::Plain
-        };
+        (*v).elem_kind = ElemKind::Plain;
         v
     }
 }
@@ -2049,7 +2172,16 @@ pub(crate) unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use hew_cabi::cabi::str_to_malloc;
+
+    /// Build a header-aware `String` (the contract for a value a caller hands to
+    /// a string `HewVec`). The returned pointer is a fresh owner (`rc==1`);
+    /// `hew_vec_push_str` stores an independent header-aware copy, so the caller
+    /// must still release this buffer via [`super::release_string_element`]
+    /// (mirroring how a Hew caller drops its own `String` after pushing it).
+    fn hew_string(s: &str) -> *mut c_char {
+        str_to_malloc(s)
+    }
 
     #[test]
     fn test_vec_new_and_len() {
@@ -2158,22 +2290,27 @@ mod tests {
 
     #[test]
     fn test_vec_push_get_str() {
-        // SAFETY: FFI calls use valid vec pointer and valid C strings.
+        // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
         unsafe {
             let v = hew_vec_new_str();
-            let s1 = CString::new("hello").unwrap();
-            let s2 = CString::new("world").unwrap();
-            hew_vec_push_str(v, s1.as_ptr());
-            hew_vec_push_str(v, s2.as_ptr());
+            let s1 = hew_string("hello");
+            let s2 = hew_string("world");
+            hew_vec_push_str(v, s1);
+            hew_vec_push_str(v, s2);
+            // The vec copied in its own elements; release the caller's buffers.
+            release_string_element(s1);
+            release_string_element(s2);
             assert_eq!(hew_vec_len(v), 2);
 
             let r1 = hew_vec_get_str(v, 0);
             assert!(!r1.is_null());
             assert_eq!(std::ffi::CStr::from_ptr(r1).to_string_lossy(), "hello");
+            release_string_element(r1.cast_mut());
 
             let r2 = hew_vec_get_str(v, 1);
             assert!(!r2.is_null());
             assert_eq!(std::ffi::CStr::from_ptr(r2).to_string_lossy(), "world");
+            release_string_element(r2.cast_mut());
             hew_vec_free(v);
         }
     }
@@ -2222,18 +2359,21 @@ mod tests {
 
     #[test]
     fn test_vec_pop_str() {
-        // SAFETY: FFI calls use valid vec pointer and valid C strings.
+        // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
         unsafe {
             let v = hew_vec_new_str();
-            let s1 = CString::new("hello").unwrap();
-            let s2 = CString::new("world").unwrap();
-            hew_vec_push_str(v, s1.as_ptr());
-            hew_vec_push_str(v, s2.as_ptr());
+            let s1 = hew_string("hello");
+            let s2 = hew_string("world");
+            hew_vec_push_str(v, s1);
+            hew_vec_push_str(v, s2);
+            release_string_element(s1);
+            release_string_element(s2);
             let popped = hew_vec_pop_str(v);
             assert!(!popped.is_null());
             assert_eq!(std::ffi::CStr::from_ptr(popped).to_string_lossy(), "world");
             assert_eq!(hew_vec_len(v), 1);
-            libc::free(popped.cast_mut().cast()); // ALLOCATOR-PAIRING: libc
+            // `pop` transfers the vec's owner to the caller — release it.
+            release_string_element(popped.cast_mut());
             hew_vec_free(v);
         }
     }
@@ -2908,33 +3048,314 @@ mod tests {
     }
 
     #[test]
-    fn slice_range_str_strdups_each_element_so_drops_are_independent() {
-        // SAFETY: FFI calls use valid vec pointer and valid C strings.
+    fn slice_range_str_retains_each_element_so_drops_are_refcount_independent() {
+        // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
         unsafe {
             let v = hew_vec_new_str();
-            let s1 = CString::new("alpha").unwrap();
-            let s2 = CString::new("beta").unwrap();
-            let s3 = CString::new("gamma").unwrap();
-            hew_vec_push_str(v, s1.as_ptr());
-            hew_vec_push_str(v, s2.as_ptr());
-            hew_vec_push_str(v, s3.as_ptr());
+            let s1 = hew_string("alpha");
+            let s2 = hew_string("beta");
+            let s3 = hew_string("gamma");
+            hew_vec_push_str(v, s1);
+            hew_vec_push_str(v, s2);
+            hew_vec_push_str(v, s3);
+            release_string_element(s1);
+            release_string_element(s2);
+            release_string_element(s3);
 
             let sub = hew_vec_slice_range_str(v, 0, 2);
             assert_eq!(hew_vec_len(sub), 2);
             assert_eq!((*sub).elem_kind, ElemKind::String);
-            // Freeing the slice must NOT invalidate strings in the original
-            // vec — strdup gives each side its own copies.
+            // Freeing the slice must NOT invalidate strings in the original vec:
+            // the slice holds independent *owners* (retained refs); refcounting
+            // keeps each shared buffer alive until the original also releases it.
             hew_vec_free(sub);
 
             let r0 = hew_vec_get_str(v, 0);
             assert_eq!(std::ffi::CStr::from_ptr(r0).to_string_lossy(), "alpha");
-            libc::free(r0.cast_mut().cast()); // ALLOCATOR-PAIRING: libc
+            release_string_element(r0.cast_mut());
             hew_vec_free(v);
         }
     }
 
     // ------------------------------------------------------------------
-    // Layout-backed Vec::clone (hew_vec_clone_layout)
+    // String-element COW ownership (W5.011 P2b-vec)
+    //
+    // These exercise the migrated retain/release element discipline and assert
+    // the refcount transitions directly, so each test FAILS if `hew_string_clone`
+    // / `hew_string_drop` were inert (the pre-__PAGEZERO-fix bug, where macOS
+    // misclassified heap strings as static literals and made every retain/release
+    // a no-op). [`element_refcount`] reads the live header refcount of the
+    // element stored in a vec slot WITHOUT perturbing it, so the asserted
+    // 1→2→1→0 ladder is the actual ownership ledger, not just a liveness probe.
+    // ASan remains the second net (no UAF / no double-free / free-at-zero). The
+    // refcount *mechanism* itself is also unit-tested in `hew-cabi`
+    // (`cstring_retain_*`); here we prove the vec layer drives it correctly —
+    // retain on internal propagation, release on egress, exactly once each —
+    // without corrupting shared elements.
+    //
+    // Platform note: with the `__PAGEZERO` fix on trunk, heap strings classify
+    // NON-static on both Linux/ELF and macOS/Mach-O, so the refcounted
+    // free-at-zero path (and these rc assertions) run on both.
+    // ------------------------------------------------------------------
+
+    /// Read the element pointer stored in string-vec slot `index` WITHOUT
+    /// retaining it (a raw read of the `*const c_char` slot). Lets a test
+    /// observe an element's resting refcount without perturbing it.
+    ///
+    /// # Safety
+    /// `v` must be a valid string `HewVec` with `index < len`.
+    unsafe fn vec_str_slot(v: *const HewVec, index: usize) -> *const c_char {
+        // SAFETY: caller guarantees a valid string vec and in-bounds index;
+        // string slots hold one `*const c_char` each.
+        unsafe { *(*v).data.cast::<*const c_char>().add(index) }
+    }
+
+    /// Read the live refcount of a header-aware string element. The 16-byte
+    /// header is `[magic:u64 | rc:AtomicU32 | reserved:u32]`, so the refcount
+    /// sits at offset 8, i.e. `data - CSTRING_HEADER_SIZE + 8`.
+    ///
+    /// # Safety
+    /// `data` must be a live header-aware element produced by the `hew-cabi`
+    /// allocator (every string vec element is, post-copy-in).
+    unsafe fn element_refcount(data: *const c_char) -> u32 {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        use hew_cabi::cabi::CSTRING_HEADER_SIZE;
+        // SAFETY: header-aware element; rc lives at base+8 (base = data - 16).
+        unsafe {
+            let base = data.cast::<u8>().sub(CSTRING_HEADER_SIZE);
+            let rc = base.add(8).cast::<AtomicU32>();
+            (*rc).load(Ordering::Relaxed)
+        }
+    }
+
+    /// Push then clone: the element is copied into the vec (header-aware) and the
+    /// clone retains a second owner of that element. Freeing one vec releases one
+    /// owner; the element remains readable through the other vec. Freeing the
+    /// second vec releases the last owner. The refcount ladder (1→2→1→…→0) is
+    /// asserted directly, and `ASan` confirms exactly-once frees with no UAF.
+    #[test]
+    fn vec_string_element_survives_until_last_owner_freed() {
+        // SAFETY: FFI calls use a valid string HewVec and header-aware strings.
+        unsafe {
+            let v = hew_vec_new_str();
+            let s = hew_string("shared");
+            hew_vec_push_str(v, s); // vec stores an independent header-aware copy
+            release_string_element(s); // caller frees its own buffer
+
+            // The vec is the sole owner of its element copy: rc == 1.
+            let e = vec_str_slot(v, 0);
+            assert_eq!(element_refcount(e), 1, "vec is the only owner after push");
+
+            // Clone retains a second owner of the SAME element buffer (COW alias).
+            let cloned = hew_vec_clone(v);
+            assert_eq!(
+                vec_str_slot(cloned, 0),
+                e,
+                "clone aliases the same element buffer (COW), not a deep copy",
+            );
+            assert_eq!(
+                element_refcount(e),
+                2,
+                "clone must retain: rc 1→2 (fails if hew_string_clone were inert)",
+            );
+
+            // Freeing the first vec releases one owner; the element survives at rc 1.
+            hew_vec_free(v);
+            assert_eq!(
+                element_refcount(e),
+                1,
+                "free releases exactly one owner: rc 2→1 (fails if drop were inert)",
+            );
+
+            // get_str hands back a retained owner (rc 1→2); the value is intact.
+            let r = hew_vec_get_str(cloned, 0);
+            assert_eq!(r, e, "get_str returns the same aliased buffer");
+            assert_eq!(element_refcount(e), 2, "get_str retains: rc 1→2");
+            assert_eq!(std::ffi::CStr::from_ptr(r).to_string_lossy(), "shared");
+            release_string_element(r.cast_mut());
+            assert_eq!(
+                element_refcount(e),
+                1,
+                "releasing the get_str owner: rc 2→1"
+            );
+
+            // Freeing the clone releases the last owner (free-at-zero); ASan proves
+            // the buffer is freed exactly once here.
+            hew_vec_free(cloned);
+        }
+    }
+
+    /// Mutating one vec's element (`set_str`) must not disturb a clone that
+    /// shares the (refcounted) element buffers: `set` releases the old owner and
+    /// retains the new one, leaving the original vec's slot intact and readable.
+    /// This is the element-level copy-on-write the migration delivers.
+    #[test]
+    fn vec_set_str_is_element_cow_against_a_clone() {
+        // SAFETY: FFI calls use valid string HewVecs and header-aware strings.
+        unsafe {
+            let v = hew_vec_new_str();
+            let original = hew_string("original");
+            hew_vec_push_str(v, original);
+            release_string_element(original);
+
+            let orig_elem = vec_str_slot(v, 0);
+            assert_eq!(element_refcount(orig_elem), 1, "sole owner after push");
+
+            let cloned = hew_vec_clone(v); // v and clone share the element owner
+            assert_eq!(
+                vec_str_slot(cloned, 0),
+                orig_elem,
+                "clone shares the original element buffer",
+            );
+            assert_eq!(
+                element_refcount(orig_elem),
+                2,
+                "v and clone co-own the element: rc 1→2",
+            );
+
+            // Overwrite the clone's slot 0 — releases its shared owner of the
+            // original (rc 2→1, original NOT freed: v still owns it) and stores a
+            // freshly copied-in element.
+            let replacement = hew_string("replacement");
+            hew_vec_set_str(cloned, 0, replacement);
+            release_string_element(replacement);
+            assert_eq!(
+                element_refcount(orig_elem),
+                1,
+                "set_str releases the clone's owner of the original: rc 2→1, not freed",
+            );
+
+            // The original vec is untouched; both vecs read their own value.
+            let r = hew_vec_get_str(v, 0);
+            assert_eq!(r, orig_elem, "v still holds the original buffer");
+            assert_eq!(std::ffi::CStr::from_ptr(r).to_string_lossy(), "original");
+            release_string_element(r.cast_mut());
+            let rc = hew_vec_get_str(cloned, 0);
+            assert_eq!(
+                std::ffi::CStr::from_ptr(rc).to_string_lossy(),
+                "replacement"
+            );
+            release_string_element(rc.cast_mut());
+
+            hew_vec_free(v);
+            hew_vec_free(cloned);
+        }
+    }
+
+    /// pop transfers the vec's owner to the caller (no retain, no release at the
+    /// pop site). The caller releasing the popped owner plus `hew_vec_free`
+    /// releasing the remaining element must each free exactly once — no
+    /// double-free (`ASan`).
+    #[test]
+    fn vec_pop_str_transfers_owner_without_double_free() {
+        // SAFETY: FFI calls use a valid string HewVec and header-aware strings.
+        unsafe {
+            let v = hew_vec_new_str();
+            let a = hew_string("a");
+            let b = hew_string("b");
+            hew_vec_push_str(v, a);
+            hew_vec_push_str(v, b);
+            release_string_element(a);
+            release_string_element(b);
+
+            let elem_b = vec_str_slot(v, 1);
+            assert_eq!(element_refcount(elem_b), 1, "sole owner of 'b' before pop");
+
+            let popped = hew_vec_pop_str(v); // ownership transferred to caller
+            assert_eq!(popped, elem_b, "pop hands back the vec's buffer");
+            // Ownership *moved* — no retain, no release at the pop site: rc stays 1.
+            assert_eq!(
+                element_refcount(popped),
+                1,
+                "pop transfers the owner without a retain or release: rc stays 1",
+            );
+            assert_eq!(std::ffi::CStr::from_ptr(popped).to_string_lossy(), "b");
+            assert_eq!(hew_vec_len(v), 1);
+            // Releasing the popped owner frees it; the vec no longer references it.
+            release_string_element(popped.cast_mut());
+            // Freeing the vec releases the remaining element "a" exactly once.
+            hew_vec_free(v);
+        }
+    }
+
+    /// Truncate releases each dropped string element exactly once. A clone holds
+    /// a co-owner of every element, so the dropped elements' refcounts fall 2→1
+    /// (proving release fired without freeing a still-shared buffer); the
+    /// surviving prefix is untouched and readable. `ASan` confirms no
+    /// double-free or UAF, and free-at-zero when the clone is freed.
+    #[test]
+    fn vec_truncate_releases_dropped_string_elements() {
+        // SAFETY: FFI calls use a valid string HewVec and header-aware strings.
+        unsafe {
+            let v = hew_vec_new_str();
+            let keep = hew_string("keep");
+            let drop1 = hew_string("drop1");
+            let drop2 = hew_string("drop2");
+            hew_vec_push_str(v, keep);
+            hew_vec_push_str(v, drop1);
+            hew_vec_push_str(v, drop2);
+            release_string_element(keep);
+            release_string_element(drop1);
+            release_string_element(drop2);
+
+            let e_drop1 = vec_str_slot(v, 1);
+            let e_drop2 = vec_str_slot(v, 2);
+
+            // Clone retains a co-owner of every element so the dropped ones
+            // survive truncation and we can read their refcount afterwards.
+            let cloned = hew_vec_clone(v);
+            assert_eq!(element_refcount(e_drop1), 2, "v + clone co-own drop1");
+            assert_eq!(element_refcount(e_drop2), 2, "v + clone co-own drop2");
+
+            hew_vec_truncate(v, 1); // releases the vec's owners of drop1, drop2
+            assert_eq!(hew_vec_len(v), 1);
+            assert_eq!(
+                element_refcount(e_drop1),
+                1,
+                "truncate releases v's owner of drop1: rc 2→1 (fails if release inert)",
+            );
+            assert_eq!(
+                element_refcount(e_drop2),
+                1,
+                "truncate releases v's owner of drop2: rc 2→1 (fails if release inert)",
+            );
+
+            let r = hew_vec_get_str(v, 0);
+            assert_eq!(std::ffi::CStr::from_ptr(r).to_string_lossy(), "keep");
+            release_string_element(r.cast_mut());
+            hew_vec_free(v);
+            // The clone still owns keep, drop1, drop2; freeing it drops each to
+            // zero (ASan proves exactly-once frees, no leak of the truncated pair).
+            hew_vec_free(cloned);
+        }
+    }
+
+    /// Fail-closed gate: the untyped generic constructor rejects `String`-kind
+    /// (`elem_kind == 1`). The generic byte-copy path performs no copy-in on
+    /// ingress and no retain on propagation, but the shared free/clone paths
+    /// release `String` elements — accepting a generic string vec would release
+    /// owners that were never acquired (refcount underflow → UAF/double-free).
+    /// We observe the panic at the `pub(crate)` gate; reached through the
+    /// `extern "C"` constructor it is a non-unwinding abort under
+    /// `panic = "abort"`.
+    #[test]
+    #[should_panic(expected = "does not support string elements")]
+    fn vec_new_generic_rejects_string_elem_kind() {
+        assert_generic_elem_kind_supported(1);
+    }
+
+    /// The generic constructor still accepts `Plain` (`elem_kind == 0`) and any
+    /// non-string kind, yielding a `Plain` vec — the gate is scoped to `String`.
+    #[test]
+    fn vec_new_generic_accepts_plain_elem_kind() {
+        // SAFETY: Plain-kind generic vec; freed below.
+        unsafe {
+            let v = hew_vec_new_generic(i64::try_from(core::mem::size_of::<u64>()).unwrap(), 0);
+            assert_eq!((*v).elem_kind, ElemKind::Plain);
+            hew_vec_free(v);
+        }
+    }
+
     // ------------------------------------------------------------------
 
     #[test]
@@ -3093,13 +3514,15 @@ mod tests {
 
     #[test]
     fn vec_clone_managed_string_elements_are_independent() {
-        // SAFETY: FFI calls use a valid string HewVec and valid C strings.
+        // SAFETY: FFI calls use a valid string HewVec and header-aware C strings.
         unsafe {
             let v = hew_vec_new_str();
-            let a = CString::new("alpha").unwrap();
-            let b = CString::new("beta").unwrap();
-            hew_vec_push_str(v, a.as_ptr());
-            hew_vec_push_str(v, b.as_ptr());
+            let a = hew_string("alpha");
+            let b = hew_string("beta");
+            hew_vec_push_str(v, a);
+            hew_vec_push_str(v, b);
+            release_string_element(a);
+            release_string_element(b);
 
             let cloned = hew_vec_clone_managed(v);
             assert!(!cloned.is_null());
@@ -3108,12 +3531,14 @@ mod tests {
 
             let c0 = hew_vec_get_str(cloned, 0);
             assert_eq!(std::ffi::CStr::from_ptr(c0).to_string_lossy(), "alpha");
+            release_string_element(c0.cast_mut());
 
-            // Freeing the clone (per-slot strdup'd strings) must not invalidate
-            // the source strings.
+            // Freeing the clone (per-slot retained owners) must not invalidate
+            // the source strings — refcounting keeps each buffer alive.
             hew_vec_free_managed(cloned);
             let s0 = hew_vec_get_str(v, 0);
             assert_eq!(std::ffi::CStr::from_ptr(s0).to_string_lossy(), "alpha");
+            release_string_element(s0.cast_mut());
             hew_vec_free_managed(v);
         }
     }

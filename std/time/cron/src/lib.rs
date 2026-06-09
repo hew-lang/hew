@@ -252,7 +252,7 @@ pub unsafe extern "C" fn hew_cron_free_string(s: *mut c_char) {
         return;
     }
     // SAFETY: `s` was allocated with libc::malloc by a cron API in this module.
-    unsafe { libc::free(s.cast()) };
+    unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (frees str_to_malloc output)
 }
 
 /// Return the string representation of a cron expression.
@@ -309,7 +309,7 @@ mod tests {
             .expect("test error string should be valid UTF-8")
             .to_owned();
         // SAFETY: `s` was allocated with libc::malloc.
-        unsafe { libc::free(s.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test str_to_malloc)
         Some(text)
     }
 
@@ -448,7 +448,7 @@ mod tests {
         let result = unsafe { CStr::from_ptr(s) }.to_str().unwrap();
         assert!(!result.is_empty());
         // SAFETY: s was allocated with libc::malloc.
-        unsafe { libc::free(s.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test str_to_malloc)
 
         // SAFETY: expr was returned by hew_cron_parse.
         unsafe { hew_cron_free(expr) };

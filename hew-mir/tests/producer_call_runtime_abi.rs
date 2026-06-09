@@ -305,9 +305,6 @@ fn link_monitor_source(body: &str) -> String {
             }}
         }}
 
-        fn link(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {{}}
-        fn monitor(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {{}}
-
         fn main() -> i64 {{
             {body}
         }}
@@ -328,19 +325,40 @@ fn calls_for<'a>(raw: &'a hew_mir::RawMirFunction, symbol: &str) -> Vec<&'a hew_
 
 #[test]
 fn discarded_link_and_monitor_emit_call_runtime_abi_without_dest() {
+    // 1-arg user surface: `link(target)` / `monitor(target)`. The producer
+    // synthesizes the implicit `self` subject via `hew_actor_self()` as ABI
+    // arg0 and threads the user target as arg1.
     let source = link_monitor_source(
         r"
         let p = spawn Probe;
         let q = spawn Probe;
-        let r = spawn Probe;
-        let s = spawn Probe;
-        link(p, q);
-        monitor(r, s);
+        link(p);
+        monitor(q);
         return 0;
         ",
     );
     let pipeline = pipeline_with_tc(&source);
     let raw = main_raw(&pipeline);
+
+    // Each link/monitor must be preceded by exactly one self-handle synthesis.
+    let self_calls = calls_for(raw, "hew_actor_self");
+    assert_eq!(
+        self_calls.len(),
+        2,
+        "expected one hew_actor_self synthesis per link/monitor, got {self_calls:?}"
+    );
+    for call in &self_calls {
+        assert!(
+            call.args().is_empty(),
+            "hew_actor_self takes no args; got {:?}",
+            call.args()
+        );
+        assert!(
+            matches!(call.dest(), Some(Place::Local(_))),
+            "hew_actor_self must write its borrowed self handle into a Local; got {:?}",
+            call.dest()
+        );
+    }
 
     for symbol in ["hew_actor_link", "hew_actor_monitor"] {
         let calls = calls_for(raw, symbol);
@@ -353,16 +371,27 @@ fn discarded_link_and_monitor_emit_call_runtime_abi_without_dest() {
         assert_eq!(
             call.args().len(),
             2,
-            "{symbol} must carry two actor handles"
+            "{symbol} must carry two actor handles (synthesized self, user target)"
         );
+        // arg0: the synthesized `hew_actor_self()` result — a Local, NOT an
+        // ActorHandle place. Its source must be a preceding hew_actor_self
+        // call writing into that same Local.
+        let Place::Local(self_idx) = call.args()[0] else {
+            panic!(
+                "{symbol} arg0 must be the synthesized self Local; got {:?}",
+                call.args()[0]
+            );
+        };
         assert!(
-            matches!(call.args()[0], Place::ActorHandle(_)),
-            "{symbol} arg0 must be an ActorHandle; got {:?}",
-            call.args()[0]
+            self_calls
+                .iter()
+                .any(|c| c.dest() == Some(Place::Local(self_idx))),
+            "{symbol} arg0 Local({self_idx}) must be produced by a hew_actor_self call"
         );
+        // arg1: the user-provided target, an ActorHandle from `spawn Probe`.
         assert!(
             matches!(call.args()[1], Place::ActorHandle(_)),
-            "{symbol} arg1 must be an ActorHandle; got {:?}",
+            "{symbol} arg1 must be the user target ActorHandle; got {:?}",
             call.args()[1]
         );
         assert!(
@@ -377,8 +406,7 @@ fn value_needed_monitor_stays_fail_closed_until_monitor_ref_construction() {
     let source = link_monitor_source(
         r"
         let p = spawn Probe;
-        let q = spawn Probe;
-        let m = monitor(p, q);
+        let m = monitor(p);
         return 0;
         ",
     );
@@ -389,6 +417,10 @@ fn value_needed_monitor_stays_fail_closed_until_monitor_ref_construction() {
         calls_for(raw, "hew_actor_monitor").is_empty(),
         "value-needed monitor() must not emit CallRuntimeAbi until MonitorRef construction exists"
     );
+    // Non-vacuous: prove the fail-closed gate actually FIRES — the producer
+    // must emit a NotYetImplemented diagnostic naming the symbol, the
+    // value-result construct, and the MonitorRef return shape. Absence of
+    // CallRuntimeAbi alone would be vacuous.
     assert!(
         pipeline.diagnostics.iter().any(|d| {
             matches!(

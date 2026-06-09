@@ -87,6 +87,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
             locals: vec![],
             blocks: raw_blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "trap_probe".to_string(),
@@ -119,11 +120,14 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     };
     let tmp = std::env::temp_dir().join(format!("hew-trap-kind-{module_name}"));
     std::fs::create_dir_all(&tmp).expect("create out_dir");

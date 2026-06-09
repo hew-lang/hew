@@ -19,6 +19,7 @@ unsafe extern "C-unwind" fn record_dispatch(
     msg_type: i32,
     _data: *mut c_void,
     _size: usize,
+    _borrow_mode: i32,
 ) {
     let actor_id = if ctx.is_null() {
         0

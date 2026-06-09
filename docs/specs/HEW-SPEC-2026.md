@@ -442,7 +442,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | Type                               | `Send` if...                               |
 | ---------------------------------- | ------------------------------------------ |
 | Value types (i32, f64, bool, char) | Always `Send`                              |
-| `String`                           | Always `Send` (owned, deep-copied on send) |
+| `String`                           | Always `Send` (immutable-shareable owned type; alias-shared by refcount retain on send — not deep-copied) |
 | `LocalPid<A>`                      | Always `Send`                              |
 | `type S { f1: T1; f2: T2; ... }`   | All fields are `Send`                      |
 | `enum E { V1(T1), V2(T2), ... }`   | All variant payloads are `Send`            |
@@ -499,7 +499,7 @@ println(buf.contains(72)); // bool — linear scan
 | `.is_empty()`  | `() -> bool`       | True if len is 0                |
 | `.contains(b)` | `(i64) -> bool`    | True if the buffer contains `b` |
 
-`bytes` is an owned heap type and follows the same ownership rules as `Vec<T>` — it is automatically freed when it goes out of scope. It satisfies `Send` (deep-copied across actor boundaries).
+`bytes` is an owned heap type and follows the same ownership rules as `Vec<T>` — it is automatically freed when it goes out of scope. It satisfies `Send`. At the runtime level, owned `bytes` values are treated as **immutable-shareable**: the runtime alias-shares them by refcount retain rather than deep-copying on send. A COW write-barrier (`ensure_unique`) forks the backing buffer before any in-place mutation when the refcount is greater than one, so actor isolation is preserved even when two actors hold retained references to the same buffer.
 
 ### 3.4 Ownership and References
 
@@ -613,9 +613,13 @@ worker.send(message);        // message is MOVED via .send()
 
 > **Send semantics (language vs runtime):**
 >
-> - **Language level**: A method call or `.send()` moves the value — the sender can no longer use it
-> - **Runtime level**: The value is deep-copied into the receiver's per-actor heap
-> - This gives the safety of Rust's move semantics with the simplicity of Erlang's copy-on-send
+> - **Language level** (unchanged): A method call or `.send()` moves the value — the sender can no longer use it.
+> - **Runtime level** (gated): the send mechanism is selected based on the value's admissibility class:
+>   - **Immutable-shareable** types (`String`, `bytes`): alias-shared by **refcount retain** — the receiver gets a retained reference to the same backing buffer; no byte copy occurs; a COW write-barrier (`ensure_unique`) forks the buffer before any subsequent mutation, preserving actor isolation.
+>   - **Mutable collections** (`Vec<T>`, `HashMap<K,V>`, `HashSet<T>`): **deep-copied** into the receiver's per-actor heap.
+>   - **Consumed-linear (`iso`/Linear) values**: zero-copy **ownership move** (P6 — not yet surfaced in edition 2026).
+> - The send-admissibility gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Note: bare `copy` does **not** imply sendability — a type may derive `Copy` yet hold non-send internals (`copy ⊥ sendable`, B-INV-3). `View`/borrow (`&T`) is rejected across actor boundaries and is not `Send`.
+> - From the programmer's perspective the gated model is indistinguishable from move-then-independent-value: the receiver observes an independent value; the sender cannot use the value after send. Alias-sharing is a runtime optimization valid precisely because immutable-shareable values are never mutated in place through shared aliases.
 
 **Why move semantics?**
 
@@ -1144,28 +1148,38 @@ Hew guarantees no GC pauses. Memory reclamation is entirely deterministic:
 
 #### 3.7.2 Message Passing Semantics
 
-At the **language level**, `send()` **moves** the value — the sender loses access and cannot use it after sending (see §3.4.4). At the **runtime level**, the value is **deep-copied** into the receiver's per-actor heap, since actors may reside on different threads with separate heaps.
+At the **language level**, `send()` **moves** the value — the sender loses access and cannot use it after sending (see §3.4.4). At the **runtime level**, the send mechanism is **gated** on the value's admissibility class (D355):
 
-This hybrid gives the safety of Rust's move semantics (no use-after-send bugs) with the simplicity of Erlang's copy-on-send (no shared memory between actors).
+| Admissibility class | Runtime mechanism | Examples |
+| ------------------- | ----------------- | -------- |
+| **Immutable-shareable** (`is_immutable_shareable`) | **Alias-shared by refcount retain** — no byte copy | `String`, `bytes` |
+| **Mutable owned collections** | **Deep-copied** into the receiver's per-actor heap | `Vec<T>`, `HashMap<K,V>`, `HashSet<T>` |
+| **Consumed-linear (`iso`/Linear)** | Zero-copy **ownership move** (P6 — not surfaced in edition 2026) | — |
 
-> **Why not just "move" the bytes?** Actors have independent heaps. A pointer from one actor's heap is meaningless in another. The runtime deep-copies the value into the receiver's heap, then the sender's copy is dropped. From the programmer's perspective, this is indistinguishable from a move.
+The gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Bare `copy` does **not** imply sendability (`copy ⊥ sendable`, B-INV-3). `View`/borrow (`&T`) is rejected across actor boundaries and is not `Send`.
+
+This hybrid gives the safety of Rust's move semantics (no use-after-send bugs) with actor isolation (no shared mutable state between actors).
+
+> **Immutable-shareable alias sharing:** `String` and `bytes` are immutable-shareable owned heap types. When sent, the runtime retains a reference to the same backing buffer for the receiver rather than copying it. The sender's move and the receiver's retained alias both resolve to the same buffer with a shared refcount; the buffer is freed once the last reference drops. The backing buffer is never mutated in place through a shared alias — if a mutation targets a shared (`rc>1`) buffer, the COW write-barrier (`ensure_unique`) forks a private copy before the write, preserving actor isolation. An immutable `let`-bound sendable value is alias-shared with no barrier (never mutated in place).
+
+> **Programmer indistinguishability preserved:** From the programmer's perspective the gated model is indistinguishable from move-then-independent-value. The receiver observes an independent value; the sender cannot use the value after send. Alias-sharing is a runtime optimization valid precisely because immutable-shareable values are never mutated in place through shared aliases.
 
 **Move-on-send:**
 
-- When a message is sent to an actor (via method call or `.send()`), the value is moved at the language level — the sender can no longer use it. At runtime, the value is deep-copied into the receiver's per-actor heap.
-- The receiver owns an independent copy
-- No references cross actor boundaries
+- When a message is sent to an actor (via method call or `.send()`), the value is moved at the language level — the sender can no longer use it. At runtime, the mechanism is gated: immutable-shareable values (`String`, `bytes`) are alias-shared by retain; mutable collections are deep-copied; `iso`/Linear values are moved (P6).
+- The receiver observes an independent value (alias-sharing is an optimization invisible to program semantics)
+- No user-visible references or borrows cross actor boundaries — `&T` (borrow/`View`) is not `Send` and is rejected at the actor boundary entirely; the runtime retain optimization applies only to admissible immutable-shareable **owned** values, and the receiver always observes an independent owned value at the language level, never a borrow into the sender's heap
 
 ```hew
 receive fn forward(message: Message, target: LocalPid<Handler>) {
-    target.handle(message);  // message is MOVED — runtime deep-copies to target's heap
+    target.handle(message);  // message is MOVED — runtime uses gated send mechanism (retain/deep-copy/move)
     // message is now invalid — compile error if used
 }
 ```
 
 **The `Send` trait:**
 
-`Send` is a **marker trait** — it has no methods. A type is `Send` if it can safely cross actor boundaries. The compiler verifies `Send` bounds at compile time.
+`Send` is a **marker trait** — it has no methods. A type is `Send` if it is **send-admissible** (can safely cross actor boundaries). The compiler verifies `Send` bounds at compile time.
 
 ```hew
 trait Send {}  // Marker trait — no methods
@@ -1179,7 +1193,7 @@ trait Send {}  // Marker trait — no methods
 - The value is a `LocalPid<A>`
 - The value is a struct/enum where all fields/variants satisfy `Send`
 
-> **Implementation note:** At runtime, messages are deep-copied into the receiver's per-actor heap. This deep-copy is performed by the runtime, not by a user-visible method. The `Send` marker trait tells the compiler that a type's structure permits this deep-copy. User-defined types do NOT need to implement `Send` explicitly — the compiler derives it automatically based on field types.
+> **Implementation note:** `Send` means send-admissible; the runtime selects the send mechanism based on the value's admissibility class (immutable-shareable → alias-shared by retain; mutable collections → deep-copied; `iso`/Linear → ownership move, P6). The `Send` marker tells the compiler that a type's structure is send-admissible; it does **not** mandate a particular runtime copy strategy. User-defined types do NOT need to implement `Send` explicitly — the compiler derives it automatically based on field types.
 
 **Move semantics within actors:**
 Within a single actor, values can be moved (ownership transferred) without copying:
@@ -1294,10 +1308,12 @@ let alias = data.clone();  // refcount++, no data copy
 > only deeply-immutable (`Frozen`) data is shareable.
 
 **When to use which:**
-| Type | Cross-actor? | Refcount cost | Use case |
-|------|--------------|---------------|----------|
-| Owned `T` | Copied on send | None | Default, small data |
-| `Rc<T>` | No | Non-atomic | Shared within actor |
+| Type | Cross-actor? | Send mechanism | Use case |
+|------|--------------|----------------|----------|
+| Immutable-shareable `T` (`String`, `bytes`) | Yes | Alias-shared by refcount retain | Owned heap types with immutable backing; no byte copy on send |
+| Mutable collection `T` (`Vec`, `HashMap`, `HashSet`) | Yes | Deep-copied | Receiver gets an independent copy; sender mutation cannot corrupt receiver |
+| `iso`/Linear `T` | Yes (P6) | Zero-copy ownership move | Consumed-linear values; not yet surfaced in edition 2026 |
+| `Rc<T>` | No | N/A | Shared within actor only |
 
 #### 3.7.6 Compiler Optimizations (Implementation Details)
 

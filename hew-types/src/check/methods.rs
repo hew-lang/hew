@@ -2337,6 +2337,7 @@ impl Checker {
             | Ty::Function { .. }
             | Ty::Closure { .. }
             | Ty::Pointer { .. }
+            | Ty::Borrow { .. }
             | Ty::TraitObject { .. }
             | Ty::Task(_)
             | Ty::AssocType { .. }

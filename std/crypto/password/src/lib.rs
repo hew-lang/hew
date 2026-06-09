@@ -113,7 +113,7 @@ pub unsafe extern "C" fn hew_password_hash_custom(
 pub unsafe extern "C" fn hew_password_free(s: *mut c_char) {
     if !s.is_null() {
         // SAFETY: s was allocated by libc::malloc in str_to_malloc per caller contract.
-        unsafe { libc::free(s.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (frees str_to_malloc hash)
     }
 }
 

@@ -96,8 +96,15 @@ pub use hew_runtime::stream::HewStream;
 pub use hew_runtime::supervisor::HewSupervisor;
 
 /// `extern "C-unwind"` dispatch callback signature. Re-exported for callers.
-pub type DispatchFn =
-    unsafe extern "C-unwind" fn(*mut HewExecutionContext, *mut c_void, i32, *mut c_void, usize);
+pub type DispatchFn = unsafe extern "C-unwind" fn(
+    *mut HewExecutionContext,
+    *mut c_void,
+    i32,
+    *mut c_void,
+    usize,
+    // P5-RX sub-stage 1: borrow_mode receipt discriminant (HewDispatchFn).
+    i32,
+);
 
 /// Initialise the runtime scheduler exactly once across all tests in the
 /// process.

@@ -222,8 +222,9 @@ impl RuntimeCallingConvention {
 
             // Pointer: raw pointers route here unconditionally;
             // they are the one pointer-shaped case the context-free
-            // path can prove without a `TypeDef` lookup.
-            Ty::Pointer { .. } => Self::Pointer,
+            // path can prove without a `TypeDef` lookup. `&T` borrows
+            // are pointer-shaped at runtime and route identically.
+            Ty::Pointer { .. } | Ty::Borrow { .. } => Self::Pointer,
 
             // LayoutDescriptor: every value-shaped Ty *and* every
             // `Ty::Named` (fail-closed: callers must consult

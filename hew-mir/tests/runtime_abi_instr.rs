@@ -312,6 +312,7 @@ fn raw_mir_basic_block_round_trips_call_runtime_abi() {
             terminator: Terminator::Return,
         }],
         decisions: vec![],
+        intrinsic_id: None,
     };
 
     // The Clone + PartialEq derives let us assert the variant

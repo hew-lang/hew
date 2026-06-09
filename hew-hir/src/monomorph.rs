@@ -192,6 +192,9 @@ pub(crate) fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
                 format!("ptr_{}", mangle_resolved_ty(pointee))
             }
         }
+        ResolvedTy::Borrow { pointee } => {
+            format!("borrow_{}", mangle_resolved_ty(pointee))
+        }
         ResolvedTy::TraitObject { traits } => {
             let mut out = String::from("dyn_");
             for (i, b) in traits.iter().enumerate() {
@@ -207,6 +210,10 @@ pub(crate) fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
             out
         }
         ResolvedTy::Task(inner) => format!("task_{}", mangle_resolved_ty(inner)),
+        // A concrete monomorphisation never carries an abstract parameter in
+        // its type-arg list, so this is not reached for a real instantiation.
+        // It is mangled deterministically (and LLVM-clean) for totality.
+        ResolvedTy::TypeParam { name } => format!("typeparam_{}", name.replace("::", "_")),
     }
 }
 
@@ -463,6 +470,9 @@ pub fn substitute_type_params(
             is_mutable: *is_mutable,
             pointee: Box::new(substitute_type_params(pointee, params, args)),
         },
+        ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
+            pointee: Box::new(substitute_type_params(pointee, params, args)),
+        },
         ResolvedTy::Task(inner) => {
             ResolvedTy::Task(Box::new(substitute_type_params(inner, params, args)))
         }
@@ -644,7 +654,7 @@ pub(crate) fn contains_recursive_polymorphic_self(
                     .iter()
                     .any(|c| contains_recursive_polymorphic_self(c, origin_name, current_args))
         }
-        ResolvedTy::Pointer { pointee, .. } => {
+        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
             contains_recursive_polymorphic_self(pointee, origin_name, current_args)
         }
         ResolvedTy::Task(inner) => {

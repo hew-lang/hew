@@ -1,0 +1,31 @@
+//! W5-011 behavioural proof — function-scope drop of a heap-owning
+//! `string` local that never escapes.
+//!
+//! `make_label` allocates fresh heap strings on every call via
+//! `string_concat` and binds them to locals that are never returned,
+//! passed to a call, stored in an aggregate, or otherwise shared. Before
+//! W5-011 those locals leaked on every scope exit — a hot loop drove
+//! linear RSS growth. After W5-011 the elaborator emits a
+//! `DropKind::CowHeap` scope-exit drop (`hew_string_drop`) for each
+//! never-escaping local, so the loop runs in bounded memory.
+//!
+//! Observable contract: the helper runs many times in a hot loop, the
+//! program prints `done`, and exits 0. The structural proof that the drop
+//! is actually elaborated lives in the `nonescaping_cowvalue_string_gets_
+//! function_scope_drop` unit test (hew-mir/tests/elaborate.rs).
+
+fn make_label(n: i64) -> i64 {
+    let _label = string_concat("item-", "-tail");
+    n
+}
+
+fn main() -> i64 {
+    var acc: i64 = 0;
+    var i: i64 = 0;
+    while i < 100000 {
+        acc = acc + make_label(i);
+        i = i + 1;
+    }
+    println("done");
+    acc * 0
+}

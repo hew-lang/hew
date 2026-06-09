@@ -155,6 +155,14 @@ pub enum BuiltinTy {
     HashMapAny,
     /// Erased `HashSet<T>` receiver placeholder; see `HashMapAny`.
     HashSetAny,
+    /// Raw pointer placeholder (`*mut u8`) for the `mem.*` memory-intrinsic
+    /// floor rows (W5.005 / F1b).  These rows use `CalleeNameDispatchOnly`
+    /// linkage and are compiler-internal-only (A605); their concrete element
+    /// type is recovered at the codegen interceptor from the MIR call-site
+    /// operand types, so the catalog models the pointer monomorphically as
+    /// `*mut u8`.  Typecheck of `mem.*` calls is driven by the floor module's
+    /// surface declarations, not by these params.
+    Pointer,
 }
 
 impl BuiltinTy {
@@ -205,6 +213,10 @@ impl BuiltinTy {
                     builtin: None,
                 }],
                 builtin: Some(hew_types::BuiltinType::HashSet),
+            },
+            BuiltinTy::Pointer => ResolvedTy::Pointer {
+                is_mutable: true,
+                pointee: Box::new(ResolvedTy::U8),
             },
         }
     }
@@ -1884,6 +1896,70 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinClass::ClassB,
         &[BuiltinTy::U64, BuiltinTy::U64],
         BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // ── W5.005 (F1b): memory-intrinsic floor (`mem.*`) ────────────────────
+    //
+    // The general-purpose heap allocator + typed-pointer primitives that back
+    // the (later-wave) generic containers.  These are compiler-internal-only
+    // (A605): declarable/callable ONLY from the `std.mem` floor module (gated
+    // by `INTRINSIC_FLOOR_MODULES`), never from user surface.
+    //
+    // Linkage is `CalleeNameDispatchOnly` (NOT `CompilerIntrinsic`): the call
+    // must reach `Terminator::Call` so codegen can intercept it by callee name
+    // at the `llvm.rs` interceptor chain.  `CompilerIntrinsic` rows are excluded
+    // from MIR's `module_fn_names` (they lower through numeric method-rewrites,
+    // not direct calls) and therefore never reach `Terminator::Call` — there is
+    // no working codegen path for them.  Using `CalleeNameDispatchOnly` mirrors
+    // the `hew_remote_pid_tell` precedent above; the catalog inventory gate
+    // treats both identically (no C-ABI symbol to classify).
+    //
+    // alloc/realloc/dealloc lower to `build_call` of the hew-runtime symbols
+    // `hew_alloc`/`hew_realloc`/`hew_dealloc` (Slice 1); `ptr_offset` lowers to
+    // a byte-level LLVM in-bounds GEP and `ptr_copy` to `@llvm.memcpy`.  The
+    // pointer ops are byte-level monomorphic (A612): they model pointers as
+    // `*mut u8` and count raw bytes — the caller (a compiler-authored
+    // container) has already multiplied by the element size, so no `<T>`
+    // element scaling happens in the floor.  Typecheck is driven by the
+    // `std.mem` surface declarations.
+    direct(
+        "mem.alloc",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64, BuiltinTy::U64],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "mem.realloc",
+        BuiltinClass::ClassB,
+        &[
+            BuiltinTy::Pointer,
+            BuiltinTy::U64,
+            BuiltinTy::U64,
+            BuiltinTy::U64,
+        ],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "mem.dealloc",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer, BuiltinTy::U64, BuiltinTy::U64],
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "mem.ptr_offset",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer, BuiltinTy::U64],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "mem.ptr_copy",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer, BuiltinTy::Pointer, BuiltinTy::U64],
+        BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
 ];

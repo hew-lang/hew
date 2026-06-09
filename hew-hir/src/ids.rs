@@ -23,6 +23,10 @@ id_newtype!(ItemId, "i");
 pub enum ResolvedRef {
     Binding(BindingId),
     Item(ItemId),
+    /// Reference to a module-level `const`. The `ItemId` matches the
+    /// `HirConst::id` of the declaration; MIR/codegen resolve it back to the
+    /// folded constant descriptor.
+    Const(ItemId),
     Unresolved,
 }
 

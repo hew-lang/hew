@@ -1,0 +1,38 @@
+//! W5-011 safety proof — a `string` returned from a user function and an
+//! aliasing call result must be freed exactly once, never twice.
+//!
+//! `id` returns its argument *unretained*, so in `let _t = id(s)` the
+//! bindings `s` and `_t` alias the same refcount-1 buffer. The drop
+//! elaborator excludes the argument source `s` from scope-exit drop (it
+//! escaped into the call) and drops only the result `_t` — the shared
+//! buffer is freed once. The pre-W5-011 attempt dropped both and
+//! double-freed; this fixture is the behavioural guard against that
+//! regression.
+//!
+//! Observable contract: the program prints `done` and exits 0 with no
+//! abort. The runtime's `free_cstring` header-sentinel check would abort
+//! the process on a double-free, so a clean exit is the proof. The
+//! structural single-drop proof lives in the
+//! `call_arg_source_excluded_so_call_result_is_freed_once` unit test
+//! (hew-mir/tests/elaborate.rs).
+
+fn id(x: string) -> string {
+    return x;
+}
+
+fn build() -> string {
+    let s = string_concat("moved-", "out");
+    return s;
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 10000 {
+        let s = string_concat("alias-", "me");
+        let _t = id(s);
+        let _r = build();
+        i = i + 1;
+    }
+    println("done");
+    0
+}

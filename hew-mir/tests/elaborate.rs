@@ -10,7 +10,7 @@
 //! value class.
 
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
-use hew_mir::{lower_hir_module, BlockKind, ElaboratedMirFunction, ExitPath, IrPipeline};
+use hew_mir::{lower_hir_module, BlockKind, DropKind, ElaboratedMirFunction, ExitPath, IrPipeline};
 use hew_types::TypeCheckOutput;
 
 fn pipeline(source: &str) -> IrPipeline {
@@ -77,14 +77,14 @@ fn add42_spine_function_carries_return_exit_path() {
 }
 
 #[test]
-fn cowvalue_string_does_not_appear_in_structural_drop_plan() {
-    // Strings are CowValue, not AffineResource. The pass's structural
-    // drop_plan field carries Drop ops only for AffineResource (and
-    // declared scaffold for @resource types when the surface lands).
-    // CowValue gets its CoW share-on-modify semantics via DecisionFact
-    // strategies, not via implicit drop emission. This test enforces
-    // that the structural plan stays empty for a String binding —
-    // the legacy `statements`-field Drop entries are unrelated.
+fn nonescaping_cowvalue_string_gets_function_scope_drop() {
+    // W5-011 P3: a `string` local that never escapes (not consumed, not
+    // passed to a call, not stored in an aggregate/container, not captured)
+    // is the sole owner of its heap buffer at scope exit. The drop
+    // elaborator emits a single `DropKind::CowHeap { hew_string_drop }` for
+    // it — closing the accumulating helper-local leak the lane targets.
+    // This replaces the pre-P3 invariant that asserted CoW strings received
+    // *no* structural drop.
     let p = pipeline(r#"fn main() { let _s = "hello"; }"#);
     let func = first(&p);
     let return_plan = func
@@ -92,10 +92,57 @@ fn cowvalue_string_does_not_appear_in_structural_drop_plan() {
         .iter()
         .find(|(e, _)| matches!(e, ExitPath::Return { .. }))
         .expect("Return exit present on every function");
+    assert_eq!(
+        return_plan.1.drops.len(),
+        1,
+        "a non-escaping String local gets exactly one scope-exit drop; got {:?}",
+        return_plan.1.drops
+    );
     assert!(
-        return_plan.1.drops.is_empty(),
-        "CowValue String does not contribute to the structural drop plan; \
-         got {:?}",
+        matches!(
+            return_plan.1.drops[0].kind,
+            DropKind::CowHeap {
+                drop_fn: "hew_string_drop"
+            }
+        ),
+        "the drop must be a CowHeap release via hew_string_drop; got {:?}",
+        return_plan.1.drops[0].kind
+    );
+}
+
+#[test]
+fn call_arg_source_excluded_so_call_result_is_freed_once() {
+    // W5-011 P3, the double-free fix. `let _t = id(s)` shares `s` by value
+    // into `id`, which returns its argument *unretained* — so `s` and `_t`
+    // alias the same `rc==1` buffer. The pre-P3 (BLOCKED) attempt dropped
+    // *both* and double-freed. The conservative exclusion suppresses the
+    // argument source `s`'s drop, leaving exactly ONE `CowHeap` release (for
+    // the result `_t`) — the shared buffer is freed once, not twice.
+    let p = pipeline(
+        r#"fn id(x: string) -> string { return x; }
+           fn main() { let s = "hello"; let _t = id(s); }"#,
+    );
+    let func = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main present");
+    let return_plan = func
+        .drop_plans
+        .iter()
+        .find(|(e, _)| matches!(e, ExitPath::Return { .. }))
+        .expect("Return exit present on every function");
+    let cow_drops = return_plan
+        .1
+        .drops
+        .iter()
+        .filter(|d| matches!(d.kind, DropKind::CowHeap { .. }))
+        .count();
+    assert_eq!(
+        cow_drops, 1,
+        "exactly one CowHeap drop must survive: the argument source `s` is \
+         excluded (alias-escape), the call result `_t` is freed once — \
+         dropping both would double-free; got {:?}",
         return_plan.1.drops
     );
 }
@@ -171,5 +218,83 @@ fn if_expression_emits_one_return_exit_with_empty_plan_on_spine() {
         returns[0].1.drops.is_empty(),
         "spine has no owned locals; per-exit drop plan is empty: {:?}",
         returns[0].1.drops
+    );
+}
+
+// ---------------------------------------------------------------------------
+// W5-011 P3 alias-site regression battery.
+//
+// The fail-closed sole-owner derivation (`derive_cow_sole_owner`) admits a
+// `string` local to the function-scope drop plan ONLY when its backing MIR
+// local is never read as a source operand anywhere in the finalized
+// instruction+terminator stream AND is not a projection alias of a still-live
+// aggregate. Each test below drives a distinct alias site and asserts the
+// aliased SOURCE string contributes no extra `CowHeap` release — dropping it
+// in addition to the live owner would double-free the shared `rc==1` buffer.
+//
+// This harness lowers against `TypeCheckOutput::default()` (no checker
+// expr_types), so aggregate-literal alias sites that require checker-
+// authoritative element types — tuple/record/variant construction — are
+// exercised end-to-end through the full compiler in the runtime fixtures
+// (`hew-cli/tests/run_e2e.rs`, `tests/vertical-slice/accept/`). The cases
+// below drive the Move / call-arg / control-flow-join alias paths that the
+// minimal pipeline supports.
+// ---------------------------------------------------------------------------
+
+fn main_cow_drop_count(p: &IrPipeline) -> usize {
+    let func = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main present");
+    func.drop_plans
+        .iter()
+        .filter(|(e, _)| matches!(e, ExitPath::Return { .. }))
+        .map(|(_, plan)| {
+            plan.drops
+                .iter()
+                .filter(|d| matches!(d.kind, DropKind::CowHeap { .. }))
+                .count()
+        })
+        .sum()
+}
+
+#[test]
+fn block_tail_move_keeps_single_owner() {
+    // `s` is moved out of the inner block as its tail value into `y`. `s` and
+    // `y` alias the same buffer; only the outer live owner `y` may be dropped.
+    let p = pipeline(r#"fn main() { let _y = { let s = "deep"; s }; }"#);
+    assert_eq!(
+        main_cow_drop_count(&p),
+        1,
+        "exactly one owner (the outer binding) survives the block-tail move"
+    );
+}
+
+#[test]
+fn if_expression_result_keeps_single_owner() {
+    // Both arm values flow into the `if` result `_y`. The arms are aliases of
+    // the join slot; only `_y` is the live sole owner.
+    let p = pipeline(r#"fn main() { let c = true; let _y = if c { "a" } else { "b" }; }"#);
+    assert_eq!(
+        main_cow_drop_count(&p),
+        1,
+        "the if-result owner is freed once; arm temporaries are not double-dropped"
+    );
+}
+
+#[test]
+fn call_argument_alias_excludes_source_string() {
+    // `s` passed by value into a user fn is read as a call-arg source operand
+    // and therefore excluded; the unretained return aliases the same buffer
+    // and is the live owner.
+    let p = pipeline(
+        r#"fn id(x: string) -> string { return x; }
+           fn main() { let s = "z"; let _t = id(s); }"#,
+    );
+    assert_eq!(
+        main_cow_drop_count(&p),
+        1,
+        "call-arg source excluded; only the result owner is freed"
     );
 }

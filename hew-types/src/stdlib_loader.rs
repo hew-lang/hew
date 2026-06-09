@@ -434,6 +434,10 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
             is_mutable: *is_mutable,
             pointee: Box::new(type_expr_to_ty(&pointee.0, module_short)),
         },
+        // `&T` immutable borrow — first-class no-retain shared reference.
+        TypeExpr::Borrow(inner) => Ty::Borrow {
+            pointee: Box::new(type_expr_to_ty(&inner.0, module_short)),
+        },
         TypeExpr::TraitObject(bounds) => Ty::TraitObject {
             traits: bounds
                 .iter()

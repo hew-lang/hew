@@ -238,10 +238,10 @@ fn test_exhaustive_or_enum_match() {
         .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch));
 }
 
-/// Scalar (non-enum) types have no closed variant set; missing a catch-all
-/// should be a *warning*, not a hard error.
+/// Literal-only i64 matches have infinitely many missing values; missing a
+/// catch-all is a hard error, not a warning.
 #[test]
-fn test_scalar_missing_catchall_is_warning() {
+fn test_i64_literal_missing_catchall_is_error() {
     let output = typecheck(
         r"
         fn check(n: i64) -> i64 {
@@ -259,28 +259,25 @@ fn test_scalar_missing_catchall_is_warning() {
         output
             .warnings
             .iter()
-            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
-        "scalar missing catch-all should be a warning, got warnings: {:?}",
+            .all(|w| w.kind != TypeErrorKind::NonExhaustiveMatch),
+        "i64 literal missing catch-all must not be a warning, got warnings: {:?}",
         output.warnings
     );
     assert!(
         output
             .errors
             .iter()
-            .all(|e| e.kind != TypeErrorKind::NonExhaustiveMatch),
-        "scalar missing catch-all must not be an error, got errors: {:?}",
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "i64 literal missing catch-all should be an error, got errors: {:?}",
         output.errors
     );
-    let warning = output
-        .warnings
+    let error = output
+        .errors
         .iter()
         .find(|w| w.kind == TypeErrorKind::NonExhaustiveMatch)
-        .expect("expected NonExhaustiveMatch warning for scalar catch-all");
-    assert_eq!(warning.severity, Severity::Warning);
-    assert_eq!(
-        warning.message,
-        "non-exhaustive match: consider adding a wildcard `_` arm"
-    );
+        .expect("expected NonExhaustiveMatch error for scalar catch-all");
+    assert_eq!(error.severity, Severity::Error);
+    assert_eq!(error.message, "non-exhaustive match: missing _");
 }
 
 #[test]

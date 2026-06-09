@@ -254,6 +254,7 @@ pub mod cabi;
 pub mod hashmap;
 pub mod hashset;
 pub mod layout_intrinsics;
+pub mod mem;
 pub mod option;
 pub mod print;
 pub mod random;

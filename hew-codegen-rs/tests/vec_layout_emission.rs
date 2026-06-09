@@ -44,6 +44,7 @@ fn base_pipeline(
             locals: locals.clone(),
             blocks: blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -87,11 +88,14 @@ fn base_pipeline(
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     }
 }
 
@@ -420,6 +424,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
             locals: vec![vec_ty, point_ty(), ResolvedTy::Bool],
             blocks: blocks.clone(),
             decisions: vec![],
+            intrinsic_id: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -469,11 +474,14 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
         machine_layouts: vec![],
         enum_layouts: vec![],
         regex_literals: vec![],
+        user_consts: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
     };
     let ll = emit_ll(pipeline, "contains_thunk_dedup");
 
@@ -484,6 +492,95 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
     assert_eq!(
         definitions, 1,
         "expected exactly one __hew_eq_thunk_16_8_* definition, got {definitions}:\n{ll}"
+    );
+}
+
+#[test]
+fn vec_layout_contains_thunk_enum_tag_dispatches_not_byte_compares() {
+    // W5.006 Slice 2: a `Vec<enum>::contains` equality thunk must compare the
+    // discriminant tag first and then only the active variant's declared
+    // payload fields — never byte-compare the `{ tag, [N x i8] }` payload
+    // union (whose inactive-variant + padding bytes are indeterminate).
+    //
+    // Model a monomorphic enum `Maybe { Just(i64); Nothing }` so the eq path
+    // sees a tagged-union element: tag dispatch must appear as an LLVM
+    // `switch`, an out-of-range tag must trap fail-closed (code 208), and the
+    // body must use `icmp` (not `memcmp` / `fcmp`).
+    use hew_mir::{EnumLayout, MachineVariantLayout};
+
+    let enum_ty = ResolvedTy::Named {
+        name: "Maybe".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    let vec_ty = ResolvedTy::Named {
+        name: "Vec".to_string(),
+        args: vec![enum_ty.clone()],
+        builtin: None,
+    };
+    let block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![],
+        terminator: Terminator::Call {
+            callee: "hew_vec_contains_thunk".to_string(),
+            args: vec![Place::Local(0), Place::Local(1)],
+            dest: Some(Place::Local(2)),
+            next: 1,
+        },
+    };
+    let mut pipeline = base_pipeline(
+        block,
+        vec![vec_ty, enum_ty, ResolvedTy::Bool],
+        ResolvedTy::Unit,
+    );
+    // Register the enum's tagged-union layout so codegen resolves the element
+    // type to the named outer struct and the eq thunk recognises it as a
+    // tagged union via `machine_layouts`.
+    pipeline.record_layouts = vec![];
+    pipeline.enum_layouts = vec![EnumLayout {
+        name: "Maybe".to_string(),
+        tag_width: 1,
+        variants: vec![
+            MachineVariantLayout {
+                name: "Just".to_string(),
+                field_tys: vec![ResolvedTy::I64],
+            },
+            MachineVariantLayout {
+                name: "Nothing".to_string(),
+                field_tys: vec![],
+            },
+        ],
+    }];
+
+    let ll = emit_ll(pipeline, "contains_thunk_enum");
+
+    // An equality thunk is emitted for the enum element type.
+    assert!(
+        ll.contains("define internal i32 @__hew_eq_thunk_"),
+        "missing enum equality thunk definition in:\n{ll}"
+    );
+    // Tag dispatch lowers to an LLVM `switch` (not a flat field-by-field
+    // walk of the outer struct).
+    assert!(
+        ll.contains("switch"),
+        "enum eq thunk must tag-dispatch via switch in:\n{ll}"
+    );
+    // Out-of-range tag traps fail-closed with the exhaustiveness-fallthrough
+    // code (208) rather than comparing indeterminate payload bytes.
+    assert!(
+        ll.contains("call void @hew_trap_with_code(i32 208)"),
+        "enum eq thunk must trap (code 208) on out-of-range tag in:\n{ll}"
+    );
+    // Equality is field/tag comparison, never a whole-union byte compare or
+    // a float compare.
+    assert!(
+        !ll.contains("call i32 @memcmp"),
+        "enum eq thunk must not memcmp the payload union (indeterminate bytes):\n{ll}"
+    );
+    assert!(
+        !ll.contains("fcmp"),
+        "enum eq thunk must not emit fcmp:\n{ll}"
     );
 }
 

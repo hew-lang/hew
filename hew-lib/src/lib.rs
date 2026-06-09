@@ -20,6 +20,7 @@ extern crate hew_std_encoding_toml;
 extern crate hew_std_encoding_xml;
 extern crate hew_std_encoding_yaml;
 extern crate hew_std_math;
+extern crate hew_std_mem;
 extern crate hew_std_misc_log;
 extern crate hew_std_misc_uuid;
 extern crate hew_std_net_dns;

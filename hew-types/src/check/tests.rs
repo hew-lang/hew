@@ -1433,6 +1433,103 @@ impl MathHelper {
     );
 }
 
+// ── W5.005 (F1b): memory-intrinsic floor (`mem.*`) placement gate (A605) ───
+//
+// `std.mem` joins `std.math` on the `INTRINSIC_FLOOR_MODULES` allowlist. The
+// same A605 gate that governs math intrinsics must accept `mem.*` declarations
+// inside `std.mem` and reject them everywhere else, fail-closed.
+
+#[test]
+fn mem_intrinsic_in_floor_module_is_accepted() {
+    // All five `mem.*` floor intrinsics must register cleanly inside the
+    // canonical `std.mem` floor module (no IntrinsicOutsideFloor), and each
+    // must land in `intrinsic_declarations` keyed by its qualified name.
+    let source = r#"
+#[intrinsic("mem.alloc")] pub fn alloc(size: u64, align: u64) -> *mut u8;
+#[intrinsic("mem.realloc")] pub fn realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8;
+#[intrinsic("mem.dealloc")] pub fn dealloc(ptr: *mut u8, size: u64, align: u64);
+#[intrinsic("mem.ptr_offset")] pub fn ptr_offset(ptr: *mut u8, byte_offset: u64) -> *mut u8;
+#[intrinsic("mem.ptr_copy")] pub fn ptr_copy(dst: *mut u8, src: *mut u8, byte_count: u64);
+"#;
+    let output = check_source_in_module(source, vec!["std".to_string(), "mem".to_string()]);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::IntrinsicOutsideFloor { .. })),
+        "mem intrinsics declared in floor module `std.mem` must be accepted, got: {:?}",
+        output.errors
+    );
+    for key in [
+        "std.mem.alloc",
+        "std.mem.realloc",
+        "std.mem.dealloc",
+        "std.mem.ptr_offset",
+        "std.mem.ptr_copy",
+    ] {
+        assert!(
+            output.intrinsic_declarations.contains_key(key),
+            "intrinsic_declarations must record `{key}`; got: {:?}",
+            output.intrinsic_declarations
+        );
+    }
+}
+
+#[test]
+fn mem_intrinsic_in_user_root_module_is_rejected() {
+    // A user program declaring a `mem.*` intrinsic at the root module must be
+    // rejected: the memory floor is compiler-internal-only (A605), so no
+    // user-reachable module can wire itself to the allocator primitives. This
+    // is validation candidate 3 (the surface-immutability acceptance gate) as
+    // an executable assertion.
+    let output = check_source(
+        r#"#[intrinsic("mem.alloc")] pub fn alloc(size: u64, align: u64) -> *mut u8;"#,
+    );
+    let hit = output.errors.iter().find_map(|e| match &e.kind {
+        TypeErrorKind::IntrinsicOutsideFloor {
+            intrinsic_key,
+            module,
+        } => Some((intrinsic_key.clone(), module.clone())),
+        _ => None,
+    });
+    let (key, module) = hit.expect(
+        "root-module `#[intrinsic(\"mem.alloc\")]` declaration must be rejected outside the floor",
+    );
+    assert_eq!(key, "mem.alloc", "diagnostic must name the intrinsic key");
+    assert_eq!(
+        module, "(root)",
+        "diagnostic must label the offending module as the root/user module"
+    );
+    // Fail-closed: a rejected declaration must NOT leak into the live
+    // intrinsic dispatch table.
+    assert!(
+        output.intrinsic_declarations.is_empty(),
+        "rejected mem intrinsic must not be recorded as a dispatch target; got: {:?}",
+        output.intrinsic_declarations
+    );
+}
+
+#[test]
+fn mem_intrinsic_in_non_floor_module_is_rejected() {
+    // A non-floor `app` module is likewise rejected — the allowlist is an
+    // explicit enumeration (`std.math`, `std.mem`), not a prefix/path match.
+    // Pins the gate-regression behaviour (validation candidate 7) for `std.mem`.
+    let output = check_source_in_module(
+        r#"#[intrinsic("mem.dealloc")] pub fn dealloc(ptr: *mut u8, size: u64, align: u64);"#,
+        vec!["app".to_string()],
+    );
+    let hit = output.errors.iter().find_map(|e| match &e.kind {
+        TypeErrorKind::IntrinsicOutsideFloor { module, .. } => Some(module.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        hit.as_deref(),
+        Some("app"),
+        "non-floor module `app` must be rejected with its path in the diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
 #[test]
 fn checker_output_contract_intersects_assignment_target_side_tables() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -3090,10 +3187,10 @@ fn typecheck_guarded_wildcard_not_exhaustive() {
     assert_eq!(err.message, "non-exhaustive match: missing true, false");
 }
 
-/// Scalar types (i64, float, string, …) have no closed variant set, so a
-/// missing catch-all should remain a *warning*, not an error.
+/// Literal-only i64 matches are fail-closed: without a catch-all there are
+/// infinitely many missing values, so this is a hard non-exhaustive error.
 #[test]
-fn typecheck_scalar_missing_catchall_is_warning_not_error() {
+fn typecheck_i64_literal_missing_catchall_is_error() {
     let (errors, warnings) = parse_and_check(concat!(
         "fn main() {\n",
         "    let x: i64 = 5;\n",
@@ -3105,16 +3202,37 @@ fn typecheck_scalar_missing_catchall_is_warning_not_error() {
         "}\n",
     ));
     assert!(
-        errors
-            .iter()
-            .all(|e| !matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
-        "scalar missing catch-all must not be an error: {errors:?}"
-    );
-    assert!(
         warnings
             .iter()
-            .any(|w| matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
-        "scalar missing catch-all must be a warning: {warnings:?}"
+            .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "non-exhaustive literal i64 match must not be a warning: {warnings:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "literal i64 missing catch-all must be an error: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_float_literal_pattern_errors() {
+    let (errors, _) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    let x: f64 = -1.0;\n",
+        "    match x {\n",
+        "        -1.0 => 10,\n",
+        "        _ => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(
+        errors.iter().any(|e| {
+            matches!(e.kind, TypeErrorKind::InvalidOperation)
+                && e.message
+                    .contains("float literal patterns are not supported")
+        }),
+        "expected float literal pattern rejection, got: {errors:?}"
     );
 }
 
@@ -8108,6 +8226,139 @@ fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
         warning.span.start <= actor_decl_start && actor_name_end <= warning.span.end,
         "warning span should cover the first actor declaration, got {:?}",
         warning.span
+    );
+}
+
+#[test]
+fn recursive_value_type_self_enum_is_rejected() {
+    let output = check_source(
+        r"
+        enum Tree { Leaf; Node(i64, Tree, Tree); }
+        fn main() {}
+        ",
+    );
+
+    let error = output
+        .errors
+        .iter()
+        .find(|error| {
+            matches!(
+                &error.kind,
+                TypeErrorKind::RecursiveValueType {
+                    type_name,
+                    referenced_type,
+                } if type_name == "Tree" && referenced_type == "Tree"
+            )
+        })
+        .unwrap_or_else(|| panic!("expected recursive Tree error, got {:?}", output.errors));
+
+    assert!(error.message.contains("enum `Tree` is infinitely sized"));
+    assert!(error
+        .message
+        .contains("variant `Node` contains `Tree` by value"));
+}
+
+#[test]
+fn recursive_value_type_mutual_enums_are_rejected() {
+    let output = check_source(
+        r"
+        enum A { A1(B); }
+        enum B { B1(A); }
+        fn main() {}
+        ",
+    );
+
+    let recursive_types: HashSet<_> = output
+        .errors
+        .iter()
+        .filter_map(|error| match &error.kind {
+            TypeErrorKind::RecursiveValueType { type_name, .. } => Some(type_name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        recursive_types.contains("A") && recursive_types.contains("B"),
+        "expected A and B recursive value type errors, got {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn recursive_value_type_allows_non_recursive_nested_enum() {
+    let output = check_source(
+        r"
+        enum Inner { A; B(i64); }
+        enum Outer { D(Inner); }
+        fn main() {}
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "non-recursive nested enum should type-check, got {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn recursive_value_type_rejects_record_enum_cycle() {
+    let output = check_source(
+        r"
+        record Boxed { tree: Tree }
+        enum Tree { Leaf; Node(Boxed); }
+        fn main() {}
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::RecursiveValueType { .. })),
+        "expected record/enum recursive value type error, got {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn recursive_value_type_rejects_generic_record_wrapper_cycle() {
+    let output = check_source(
+        r"
+        record Wrapper<T> { value: T }
+        enum Tree { Leaf; Node(Wrapper<Tree>); }
+        fn main() {}
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            matches!(
+                &error.kind,
+                TypeErrorKind::RecursiveValueType {
+                    type_name,
+                    referenced_type,
+                } if type_name == "Tree" && referenced_type == "Tree"
+            )
+        }),
+        "expected generic wrapper recursive value type error, got {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn recursive_value_type_allows_pointer_self_reference() {
+    let output = check_source(
+        r"
+        record Node { next: *const Node }
+        fn main() {}
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "pointer indirection should break recursive value type cycle, got {:?}",
+        output.errors
     );
 }
 
@@ -14609,6 +14860,69 @@ actor MyActor {
              '? requires Result or Option' even when return annotation is \
              Ty::Error; got errors: {:?}",
             output.errors
+        );
+    }
+
+    #[test]
+    fn question_mark_result_check_passes_with_matching_error_type() {
+        let source = r"
+fn pass(r: Result<i64, i64>) -> Result<i64, i64> {
+    let x: i64 = r?;
+    Ok(x)
+}
+";
+        let (errors, _) = parse_and_check(source);
+        assert!(
+            errors.is_empty(),
+            "Result<T, E>? in Result<_, same E> function must check-pass; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn question_mark_option_check_passes_in_option_function() {
+        let source = r"
+fn pass(o: Option<i64>) -> Option<i64> {
+    let x: i64 = o?;
+    Some(x)
+}
+";
+        let (errors, _) = parse_and_check(source);
+        assert!(
+            errors.is_empty(),
+            "Option<T>? in Option<_> function must check-pass; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn question_mark_in_i64_returning_function_errors() {
+        let source = r"
+fn bad(r: Result<i64, i64>) -> i64 {
+    r?
+}
+";
+        let (errors, _) = parse_and_check(source);
+        assert!(
+            errors.iter().any(|e| e
+                .message
+                .contains("cannot be used in a function returning `i64`")),
+            "`?` in an i64-returning function must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn question_mark_result_error_type_mismatch_errors() {
+        let source = r"
+fn bad(r: Result<i64, string>) -> Result<i64, i64> {
+    let x: i64 = r?;
+    Ok(x)
+}
+";
+        let (errors, _) = parse_and_check(source);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("`?` error type mismatch")),
+            "Result<T, E1>? in Result<_, E2> function must reject mismatched E; got {errors:?}"
         );
     }
 

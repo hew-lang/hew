@@ -160,7 +160,8 @@ fn lower_file_to_mir(
         return Err(());
     }
 
-    let mut pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    let mut pipeline =
+        hew_mir::lower_hir_module_with_facts(&lower_output.module, &tco.actor_send_aliasing);
     // Route checker-authored layout facts onto the pipeline.
     pipeline.attach_lowering_facts(&tco);
     if !pipeline.diagnostics.is_empty() {
@@ -217,7 +218,8 @@ fn run_check_deep_gates(
         return Err(());
     }
 
-    let mut pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    let mut pipeline =
+        hew_mir::lower_hir_module_with_facts(&lower_output.module, &tco.actor_send_aliasing);
     // Clone checker-authored layout-fact lifecycle into the pipeline
     // (see the matching invocation in `check_command`).
     pipeline.attach_lowering_facts(tco);
@@ -364,7 +366,8 @@ pub(crate) fn compile_native_from_program(
         return Err(());
     }
 
-    let mut pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    let mut pipeline =
+        hew_mir::lower_hir_module_with_facts(&lower_output.module, &tco.actor_send_aliasing);
     // Route checker-authored layout facts onto the pipeline.
     pipeline.attach_lowering_facts(&tco);
     if !pipeline.diagnostics.is_empty() {

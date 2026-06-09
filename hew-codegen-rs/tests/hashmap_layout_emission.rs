@@ -68,6 +68,8 @@ fn base_pipeline(
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -502,6 +504,8 @@ fn hash_thunk_dedup_one_per_record_per_module() {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -634,6 +638,8 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -1011,6 +1017,8 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

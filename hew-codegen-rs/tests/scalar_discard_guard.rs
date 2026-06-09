@@ -63,6 +63,8 @@ fn pipeline_discard_extern(
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
     let checked = CheckedMirFunction {
         name: "probe".to_string(),

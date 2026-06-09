@@ -385,6 +385,7 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
             | Terminator::MakeGenerator { next, .. }
+            | Terminator::MakeLambdaActor { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
@@ -439,6 +440,7 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         Terminator::Call { next, .. }
         | Terminator::Yield { next, .. }
         | Terminator::MakeGenerator { next, .. }
+        | Terminator::MakeLambdaActor { next, .. }
         | Terminator::Send { next, .. }
         | Terminator::Ask { next, .. }
         | Terminator::RemoteAsk { next, .. }

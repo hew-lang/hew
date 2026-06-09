@@ -261,8 +261,21 @@ pub enum RuntimeCallFamily {
 
     // --- Lambda-actor surface (overlays Duplex<Msg, Reply>) -----------------
     LambdaActorAsk,
+    /// Body-side reply-buffer allocator: lambda-actor body fns publish
+    /// their reply payload via a Box-allocated `*mut u8` that the runtime
+    /// (`hew_reply`) copies into a libc-allocated buffer before publishing
+    /// to the waiter; the body's Box-allocated original is then freed
+    /// runtime-internally. Distinct from the waiter-side `hew_reply_payload_free`.
+    LambdaBodyAllocReplyBuf,
     LambdaActorClone,
     LambdaActorDowngrade,
+    /// Process-exit drain for detached lambda-actor dispatch threads
+    /// (`hew-runtime/src/lambda_actor.rs`). Lambda actors run on
+    /// dedicated OS threads NOT the work-stealing scheduler, so
+    /// `hew_shutdown_wait` cannot drain them; codegen emits
+    /// `hew_lambda_drain_all(0)` in main's Return epilogue so any
+    /// in-flight body work completes before process exit.
+    LambdaDrainAll,
     LambdaActorNew,
     /// Lambda-actor handle release; consumes receiver (mirrors
     /// `runtime_symbol_consumes_receiver` in `hew-types/src/builtin_names.rs`).
@@ -331,6 +344,11 @@ pub enum RuntimeCallFamily {
     ReplyChannelCancel,
     ReplyChannelFree,
     ReplyChannelNew,
+    /// Waiter-side payload free — frees the libc-allocated reply
+    /// buffer that the runtime publishes back to the ask call site.
+    /// Distinct from `LambdaBodyAllocReplyBuf` (body-side allocator)
+    /// and from `ReplyChannelFree` (handle-level cleanup).
+    ReplyPayloadFree,
     ReplyWait,
 
     // --- Result<T, E> helpers ----------------------------------------------
@@ -508,8 +526,10 @@ impl RuntimeCallFamily {
             Self::InstantNow => "hew_instant_now",
             // Lambda actor
             Self::LambdaActorAsk => "hew_lambda_actor_ask",
+            Self::LambdaBodyAllocReplyBuf => "hew_lambda_body_alloc_reply_buf",
             Self::LambdaActorClone => "hew_lambda_actor_clone",
             Self::LambdaActorDowngrade => "hew_lambda_actor_downgrade",
+            Self::LambdaDrainAll => "hew_lambda_drain_all",
             Self::LambdaActorNew => "hew_lambda_actor_new",
             Self::LambdaActorRelease => "hew_lambda_actor_release",
             Self::LambdaActorSend => "hew_lambda_actor_send",
@@ -563,6 +583,7 @@ impl RuntimeCallFamily {
             Self::ReplyChannelCancel => "hew_reply_channel_cancel",
             Self::ReplyChannelFree => "hew_reply_channel_free",
             Self::ReplyChannelNew => "hew_reply_channel_new",
+            Self::ReplyPayloadFree => "hew_reply_payload_free",
             Self::ReplyWait => "hew_reply_wait",
             // Result helpers
             Self::ResultIsErr => "hew_result_is_err",
@@ -775,8 +796,10 @@ impl RuntimeCallFamily {
             | F::InstantElapsed
             | F::InstantNow
             | F::LambdaActorAsk
+            | F::LambdaBodyAllocReplyBuf
             | F::LambdaActorClone
             | F::LambdaActorDowngrade
+            | F::LambdaDrainAll
             | F::LambdaActorNew
             | F::LambdaActorRelease
             | F::LambdaActorSend
@@ -803,6 +826,7 @@ impl RuntimeCallFamily {
             | F::ReplyChannelCancel
             | F::ReplyChannelFree
             | F::ReplyChannelNew
+            | F::ReplyPayloadFree
             | F::ReplyWait
             | F::ResultIsErr
             | F::ResultIsOk
@@ -1192,8 +1216,10 @@ fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::InstantNow,
         // Lambda actor
         F::LambdaActorAsk,
+        F::LambdaBodyAllocReplyBuf,
         F::LambdaActorClone,
         F::LambdaActorDowngrade,
+        F::LambdaDrainAll,
         F::LambdaActorNew,
         F::LambdaActorRelease,
         F::LambdaActorSend,
@@ -1249,6 +1275,7 @@ fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::ReplyChannelCancel,
         F::ReplyChannelFree,
         F::ReplyChannelNew,
+        F::ReplyPayloadFree,
         F::ReplyWait,
         // Result helpers
         F::ResultIsErr,

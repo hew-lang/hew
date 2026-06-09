@@ -95,6 +95,8 @@ fn supervisor_pipeline() -> IrPipeline {
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
 
     // `main` exits 42 — the fixture shape. Returns i64 so the produced
@@ -124,6 +126,8 @@ fn supervisor_pipeline() -> IrPipeline {
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
 
     let supervisor_layout = SupervisorLayout {
@@ -303,6 +307,8 @@ fn on_crash_pipeline() -> IrPipeline {
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
 
     let bootstrap_fn = RawMirFunction {
@@ -320,6 +326,8 @@ fn on_crash_pipeline() -> IrPipeline {
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
 
     let main_fn = RawMirFunction {
@@ -346,6 +354,8 @@ fn on_crash_pipeline() -> IrPipeline {
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
 
     let supervisor_layout = SupervisorLayout {

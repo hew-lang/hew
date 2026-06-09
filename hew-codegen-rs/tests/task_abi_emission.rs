@@ -63,6 +63,8 @@ fn pipeline_with_task_abi_call(
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -150,6 +152,8 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 decisions: vec![],
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+
+                lambda_actor_user_param_locals: Vec::new(),
             },
             RawMirFunction {
                 name: "long_op".to_string(),
@@ -161,6 +165,8 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 decisions: vec![],
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+
+                lambda_actor_user_param_locals: Vec::new(),
             },
         ],
         checked_mir: vec![
@@ -236,6 +242,8 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 decisions: vec![],
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+
+                lambda_actor_user_param_locals: Vec::new(),
             },
             RawMirFunction {
                 name: "long_op".to_string(),
@@ -247,6 +255,8 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 decisions: vec![],
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+
+                lambda_actor_user_param_locals: Vec::new(),
             },
         ],
         checked_mir: vec![
@@ -342,6 +352,8 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 decisions: vec![],
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+
+                lambda_actor_user_param_locals: Vec::new(),
             },
             RawMirFunction {
                 name: "__hew_closure_invoke_main_0".to_string(),
@@ -353,6 +365,8 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 decisions: vec![],
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+
+                lambda_actor_user_param_locals: Vec::new(),
             },
         ],
         checked_mir: vec![
@@ -545,6 +559,8 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),

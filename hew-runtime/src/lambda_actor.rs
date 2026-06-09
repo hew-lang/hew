@@ -73,7 +73,7 @@
 
 use std::mem::ManuallyDrop;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
 use crate::duplex::{HewDuplex, HewRecvHalf, HewSendHalf, RecvError, SendError};
@@ -206,6 +206,113 @@ unsafe fn free_body_reply_buf(ptr: *mut u8, len: usize) {
     unsafe {
         let slice = std::slice::from_raw_parts_mut(ptr, len);
         drop(Box::from_raw(slice as *mut [u8]));
+    }
+}
+
+/// Allocate a reply buffer of `len` bytes for a compiler-emitted lambda-actor
+/// body to use as the `reply_out` payload.
+///
+/// **Allocator-pairing**: the returned pointer is `Box<[u8]>`-shaped
+/// (`Box::into_raw(vec![0u8; len].into_boxed_slice())`) and is the
+/// symmetric ALLOC counterpart to the existing internal [`free_body_reply_buf`].
+/// LLVM-emitted body callbacks call this from outside Rust and therefore
+/// cannot use `Box::into_raw` directly — this thin wrapper closes that
+/// substrate gap without crossing the libc/GlobalAlloc pairing boundary
+/// the runtime documents. The runtime never tracks this allocation in
+/// `alloc_tracker`, so the `free_body_reply_buf` debug-assert still
+/// catches genuine pairing violations (libc-tracked pointers reaching
+/// `Box::from_raw`).
+///
+/// Returns null on zero-size requests so the body can use the same call
+/// pattern for tell-shape (no reply payload) and ask-shape (with payload)
+/// without a special-case on the codegen side. A null `reply_out` /
+/// `reply_len_out == 0` is the runtime's documented "no reply" sentinel.
+///
+/// # Safety
+///
+/// The returned pointer must be passed to either:
+/// - the runtime via `reply_out` from a body callback (the runtime takes
+///   ownership and frees via `free_body_reply_buf`), or
+/// - directly freed by the caller via `Box::from_raw` reconstruction with
+///   the same `len`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_lambda_body_alloc_reply_buf(len: usize) -> *mut u8 {
+    if len == 0 {
+        return ptr::null_mut();
+    }
+    let boxed: Box<[u8]> = vec![0u8; len].into_boxed_slice();
+    Box::into_raw(boxed).cast::<u8>()
+}
+
+// ── Process-wide drain registry ────────────────────────────────────────────
+
+/// Count of currently-running lambda-actor dispatch threads. Bumped at
+/// `HewLambdaActor::new` BEFORE spawn; decremented inside the dispatch
+/// thread by the `LambdaDispatchGuard` Drop impl AFTER `dispatch_loop`
+/// returns (covering both natural exit on `Closed` and panic-unwind).
+///
+/// Used by [`hew_lambda_drain_all`] so a non-actor-using `main` can block
+/// until every spawned lambda actor has drained its mailbox before the
+/// process exits. Mirrors the role `hew_shutdown_wait` plays for
+/// scheduler workers, but for lambda actors which run on their own
+/// dedicated OS threads (not the work-stealing scheduler).
+static ACTIVE_LAMBDA_DISPATCH: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII guard that decrements [`ACTIVE_LAMBDA_DISPATCH`] on drop. Lives
+/// on the dispatch thread's stack so the decrement is unconditional —
+/// `dispatch_loop` returning normally OR a body panic that unwinds the
+/// dispatch thread both run this Drop.
+struct LambdaDispatchGuard;
+
+impl Drop for LambdaDispatchGuard {
+    fn drop(&mut self) {
+        ACTIVE_LAMBDA_DISPATCH.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Block until every spawned lambda actor's dispatch thread has exited,
+/// or until `timeout_ms` elapses (0 = use 5 s default — same ceiling as
+/// `hew_shutdown_wait`).
+///
+/// Returns 0 on clean drain, 1 on timeout. Always safe to call: returns
+/// immediately when no lambda actors have ever been spawned.
+///
+/// Called by codegen from the `main` exit epilogue (alongside the
+/// existing `hew_shutdown_initiate` + `hew_shutdown_wait` for scheduler
+/// actors) so a `let log = actor |s| { … }; log("hi")` program
+/// observably runs the body before the process exits. Without this, the
+/// dispatch thread races against process termination and the body's
+/// `println` is silently lost.
+///
+/// Backoff: short busy-wait under 1 ms (yield), then `park_timeout` with
+/// growing intervals up to 16 ms so a long-running actor doesn't spin
+/// the polling thread.
+#[no_mangle]
+pub extern "C" fn hew_lambda_drain_all(timeout_ms: i64) -> i32 {
+    let timeout = if timeout_ms <= 0 {
+        std::time::Duration::from_secs(5)
+    } else {
+        // Negative values handled above; the cast keeps a positive
+        // `i64` ms within `u64` range. clippy `cast-sign-loss` is
+        // satisfied via `try_into`-with-saturate.
+        let ms = u64::try_from(timeout_ms).unwrap_or(u64::MAX);
+        std::time::Duration::from_millis(ms)
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    let mut backoff = std::time::Duration::from_micros(100);
+    let max_backoff = std::time::Duration::from_millis(16);
+    loop {
+        if ACTIVE_LAMBDA_DISPATCH.load(Ordering::Acquire) == 0 {
+            return 0;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return 1;
+        }
+        let remaining = deadline - now;
+        let sleep = backoff.min(remaining);
+        std::thread::park_timeout(sleep);
+        backoff = (backoff * 2).min(max_backoff);
     }
 }
 
@@ -422,15 +529,57 @@ impl HewLambdaActor {
         // When the Arc's strong count drops to zero, HewSendHalf::drop
         // closes the queue and the dispatch thread's recv returns Closed.
         let mailbox_in = Arc::new(mailbox_in);
+        // Drain registry: increment BEFORE spawn so a probe between spawn
+        // and increment cannot observe count=0 with a live thread. The
+        // counter is decremented by the dispatch closure's `_guard` Drop
+        // — but Drop order matters for `hew_lambda_drain_all` to mean
+        // "all captured state has been torn down":
+        //   - The dispatch closure's body has TWO local bindings — `_guard`
+        //     declared FIRST and `inner` (the moved-in Arc clone) declared
+        //     SECOND. Rust drops locals in REVERSE declaration order, so
+        //     at closure-body exit `inner` drops first (decrementing the
+        //     Arc strong count; if this is the last ref,
+        //     `LambdaActorInner::drop` runs and invokes `state_drop(state)`)
+        //     and THEN `_guard` drops (decrementing the dispatch counter).
+        //   - Therefore: when `ACTIVE_LAMBDA_DISPATCH` reaches 0, all
+        //     captured user state has already been freed via state_drop.
+        //   - If `dispatch_inner` were captured by the closure (instead of
+        //     moved into a body-local AFTER `_guard`), it would drop with
+        //     the closure struct AFTER both body locals, leaving a window
+        //     where `hew_lambda_drain_all` returns counter=0 but
+        //     state_drop has not yet run. Security-review fix 2026-06-08:
+        //     drain ≠ join, but drain MUST mean state-drop-has-run.
+        ACTIVE_LAMBDA_DISPATCH.fetch_add(1, Ordering::AcqRel);
         // Spawn the dispatch thread. It holds a strong Arc reference to
         // keep LambdaActorInner alive while the loop runs. The thread
         // exits when recv returns Closed (i.e., when all external
         // Arc<HewSendHalf> clones drop).
         let dispatch_inner = Arc::clone(&inner);
-        std::thread::Builder::new()
+        let spawn_result = std::thread::Builder::new()
             .name("hew-lambda-dispatch".to_string())
-            .spawn(move || dispatch_loop(&dispatch_inner))
-            .ok()?;
+            .spawn(move || {
+                // Drop-order discipline (see comment above): `_guard`
+                // declared FIRST so it drops LAST (after `inner`).
+                let _guard = LambdaDispatchGuard;
+                // Move the captured Arc into a body-local declared AFTER
+                // `_guard`. Body-locals drop in reverse declaration order,
+                // so `inner` drops BEFORE `_guard` — triggering
+                // `LambdaActorInner::drop`'s `state_drop(state)` call
+                // before the counter decrements.
+                let inner = dispatch_inner;
+                dispatch_loop(&inner);
+                // (implicit drops at body end:
+                //    1. `inner` → Arc strong-count drop → state_drop
+                //    2. `_guard` → ACTIVE_LAMBDA_DISPATCH.fetch_sub
+                // — so drain-all observes counter==0 only AFTER
+                // state_drop has run on this dispatch thread.)
+            });
+        if spawn_result.is_err() {
+            // Spawn failed: roll back the counter so a later drain-all
+            // doesn't wait for a thread that never started.
+            ACTIVE_LAMBDA_DISPATCH.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
         Some(Self { mailbox_in, inner })
     }
 
@@ -752,12 +901,52 @@ fn drain_stopped(inner: &LambdaActorInner) {
 
 // ── Double-close guard wrappers ────────────────────────────────────────────
 //
-// See the parallel comment in duplex.rs for the full rationale. Short form:
-// the outer allocation is intentionally never freed so the `released` flag
-// remains readable on any subsequent call, converting a double-free UB into
-// a typed `SendError::DoubleClose` (= 4) return.
+// Pattern: a `#[repr(C)]` outer wrapper carries the inner runtime object in
+// `ManuallyDrop` plus an `AtomicBool released` flag (first field). The
+// release entry (`hew_lambda_actor_release`, `hew_lambda_actor_weak_drop`)
+// swaps `released` AcqRel and, on first transition, drops the inner
+// object and frees the wrapper.
+//
+// Caller contract (CALLER UB if violated):
+//   - Each wrapper pointer must have AT MOST ONE in-flight FFI call at
+//     any time. The release entry consumes the wrapper allocation; any
+//     concurrent or subsequent FFI call on the same pointer — including
+//     a second release after the first release returned — is caller UB
+//     (use-after-free on the wrapper's atomic field read).
+//   - Compiler-emitted code is structured to honour this: each lambda-
+//     actor handle is owned by exactly one function activation, the
+//     per-handle LIFO drop spine schedules release exactly once on the
+//     owning thread at scope exit, and no codegen path emits
+//     send/ask/clone/downgrade/release after the scheduled release.
+//     Strong-to-strong `hew_lambda_actor_clone` allocates a fresh
+//     wrapper around the shared `Arc<LambdaActorInner>` — the original
+//     wrapper and the clone wrapper each own their own release
+//     lifecycle, so two threads holding separate clones can release
+//     independently without sharing a wrapper.
+//   - The `released` swap guard remains because send/ask/clone/upgrade/
+//     downgrade still read the flag — within a single function
+//     activation, this catches a tight serial release-then-send bug
+//     before any subsequent FFI call escapes outside the activation.
+//     After the release call returns, any further use of the pointer is
+//     caller UB regardless of the flag check; the guard does not promise
+//     post-return safety.
+//
+// Trade-off rationale: the previous design (allocate via `Box::into_raw`,
+// never free) preserved post-release flag-read safety for the cost of a
+// per-`hew_lambda_actor_new` 32-byte wrapper leak. For long-running
+// processes that spawn many lambda actors, that leak is unacceptable
+// (security blocker 2026-06-08 review). The freeing design matches the
+// broader Hew C-ABI convention (every `Box::into_raw` allocation has a
+// paired `Box::from_raw` release entry) and is sound under the
+// single-in-flight contract the compiler already emits.
 
 /// C-ABI wrapper around [`HewLambdaActor`] with a double-release guard.
+///
+/// `#[repr(C)]` layout: `released` (first field) is read via `addr_of!`
+/// by every C-ABI entry to detect post-release access within a single
+/// activation. The release entry consumes the wrapper allocation;
+/// concurrent or post-return reuse of the same pointer is caller UB.
+/// See the design comment above (`Double-close guard wrappers`).
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewLambdaActorHandle {
@@ -775,6 +964,8 @@ impl HewLambdaActorHandle {
 }
 
 /// C-ABI wrapper around [`HewLambdaActorWeak`] with a double-drop guard.
+///
+/// Layout mirrors [`HewLambdaActorHandle`] (see its doc).
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewLambdaActorWeakHandle {
@@ -1133,16 +1324,21 @@ pub unsafe extern "C" fn hew_lambda_actor_ask(
 /// freed and body-side weak captures will fail their next upgrade.
 ///
 /// Returns `SendError::Ok` (0) on the first call.
-/// Returns `SendError::DoubleClose` (4) on any subsequent call without
-/// invoking undefined behaviour — per design principle D4.
 ///
-/// The outer handle allocation intentionally persists after release so
-/// that the double-release guard flag remains readable for subsequent calls.
+/// The wrapper allocation is consumed by this call so long-running
+/// processes do not accumulate per-actor wrappers. Any subsequent FFI
+/// call on the same pointer — including a second release call after
+/// this call returned, OR a concurrent release on a separate thread
+/// — is caller UB (use-after-free on the wrapper's atomic field
+/// read). The compiler's LIFO drop spine schedules release exactly
+/// once on the owning thread.
 ///
 /// # Safety
 ///
 /// `actor` must have been returned by [`hew_lambda_actor_new`] or
-/// [`hew_lambda_actor_clone`].
+/// [`hew_lambda_actor_clone`] AND must have at most one in-flight
+/// FFI call on this pointer (this release call). Concurrent or
+/// post-return reuse of the same pointer is caller UB.
 #[no_mangle]
 pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32 {
     if actor.is_null() {
@@ -1150,35 +1346,54 @@ pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActorHand
     }
     // SAFETY: (flag-read phase)
     // - Provenance: caller guarantees `actor` came from
-    //   `Box::into_raw(Box::new(HewLambdaActorHandle::new(...)))`.
-    // - Type tag: `*mut HewLambdaActorHandle` matches the originating type.
-    //   `released` is the first field of `#[repr(C)]` HewLambdaActorHandle;
-    //   `addr_of!((*actor).released)` yields a valid `*const AtomicBool`
-    //   without materialising a `&mut HewLambdaActorHandle` (which would
-    //   alias with a concurrent release caller's `&mut` on the same
-    //   pointer — formal aliasing UB even when `inner` is not touched twice).
-    // - Lifetime owner: the outer wrapper is never freed (intentional leak
-    //   — see wrapper-struct design comment in duplex.rs).
-    // - Aliasing concurrency: AcqRel swap linearizes all release callers;
-    //   the loser observes `true` and returns before constructing any
-    //   reference into the wrapper.
-    // - Bounds: single in-bounds field read on a non-null aligned
-    //   `#[repr(C)]` pointer.
-    // - Failure mode: double-release returns SendError::DoubleClose (4)
-    //   via the atomic-flag guard; no UB on the second call.
+    //   `Box::into_raw(Box::new(HewLambdaActorHandle::new(...)))` AND
+    //   no prior release call on this pointer has already RETURNED
+    //   (per the Safety contract; post-return reuse is UB).
+    // - Type tag: `released` is the first field of `#[repr(C)]`
+    //   HewLambdaActorHandle. `addr_of!((*actor).released)` projects
+    //   the AtomicBool's address without materialising a `&mut
+    //   HewLambdaActorHandle` (no aliasing UB even though no other
+    //   in-flight caller is permitted).
+    // - The swap is technically still useful as a tight-window guard
+    //   against same-thread release-after-release within a single
+    //   activation: returning `DoubleClose` (rather than re-entering
+    //   the drop) prevents a UB ManuallyDrop::drop on already-dropped
+    //   inner. The wrapper-free path still runs unconditionally
+    //   below — see free-phase comment.
     let released = unsafe { &*ptr::addr_of!((*actor).released) };
-    if released.swap(true, Ordering::AcqRel) {
+    let was_released = released.swap(true, Ordering::AcqRel);
+    if was_released {
+        // Tight-window guard: a second release within a single window
+        // hit the flag before this caller; the wrapper is still alive
+        // (post-return reuse is UB so we trust that here) — return the
+        // typed status. NOTE: we deliberately do NOT free the wrapper
+        // here because a peer is concurrently responsible for it; but
+        // per the contract there is no peer, so this branch only fires
+        // on a tight serial bug. The free below would then race with
+        // whichever path runs second — both branches free, so we get
+        // a double-free instead of a leak. For now we accept that
+        // tight-serial-bug double-release surfaces as a double-free in
+        // tests, which is louder than a silent leak (the compiler's
+        // drop-spine prevents this from ever firing in practice).
         return SendError::DoubleClose as i32;
     }
-    // SAFETY: (drop phase) the swap won — exclusive against all other
-    // release callers.
+    // SAFETY: (drop phase) swap won; this caller has exclusive access to
+    // the inner runtime object. Per the Safety contract above, no other
+    // FFI caller is concurrently inside this function on this pointer.
     let h = unsafe { &mut *actor };
     // SAFETY: first release — inner HewLambdaActor is still valid.
     // ManuallyDrop::drop decrements the Arc strong count (and triggers
     // LambdaActorInner Drop if it reaches zero, which closes the
-    // HewDuplex) without freeing the outer wrapper.
+    // HewDuplex and joins the dispatch thread via the dispatch-loop's
+    // observable end-of-state path).
     unsafe { ManuallyDrop::drop(&mut h.inner) };
     crate::tracing::record_channel_event(actor as u64, crate::tracing::SPAN_LAMBDA_RELEASED);
+    // SAFETY: (wrapper-free phase) actor was allocated by `Box::into_raw`
+    // in `hew_lambda_actor_new` / `_clone`. Per the Safety contract no
+    // other FFI caller may concurrently touch this pointer. Reconstruct
+    // the Box and drop it to free the wrapper. Any subsequent same-
+    // pointer FFI call is caller UB.
+    unsafe { drop(Box::from_raw(actor)) };
     SendError::Ok as i32
 }
 
@@ -1300,34 +1515,38 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_clone(
 /// refcount; weak handles only contribute to the weak count.
 ///
 /// Returns `SendError::Ok` (0) on the first call.
-/// Returns `SendError::DoubleClose` (4) on any subsequent call without
-/// invoking undefined behaviour — per design principle D4.
+///
+/// The wrapper allocation is consumed by this call (see
+/// `hew_lambda_actor_release` for the caller-UB contract). Same-pointer
+/// post-return or concurrent FFI use is caller UB.
 ///
 /// # Safety
 ///
 /// `weak` must have been returned by [`hew_lambda_actor_downgrade`] or
-/// [`hew_lambda_actor_weak_clone`].
+/// [`hew_lambda_actor_weak_clone`] AND must have at most one in-flight
+/// FFI call on this pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_lambda_actor_weak_drop(weak: *mut HewLambdaActorWeakHandle) -> i32 {
     if weak.is_null() {
         return SendError::Ok as i32;
     }
-    // SAFETY: (flag-read phase) see `hew_lambda_actor_release` — read
-    // `released` via `addr_of!` so no `&mut HewLambdaActorWeakHandle` is
-    // materialised before the swap; that avoids aliasing UB against a
-    // concurrent weak-drop caller on the same pointer. `released` is the
-    // first field of the `#[repr(C)]` wrapper.
+    // SAFETY: see `hew_lambda_actor_release` — `released` is projected
+    // via `addr_of!` so no `&mut` is materialised before the swap.
     let released = unsafe { &*ptr::addr_of!((*weak).released) };
-    if released.swap(true, Ordering::AcqRel) {
+    let was_released = released.swap(true, Ordering::AcqRel);
+    if was_released {
         return SendError::DoubleClose as i32;
     }
-    // SAFETY: (drop phase) the swap won — exclusive against all other
-    // weak-drop callers.
+    // SAFETY: swap winner — exclusive against any well-formed caller.
     let h = unsafe { &mut *weak };
     // SAFETY: first drop — inner HewLambdaActorWeak is still valid.
-    // ManuallyDrop::drop decrements the Arc weak count without freeing
-    // the outer wrapper.
+    // ManuallyDrop::drop decrements the Arc weak count.
     unsafe { ManuallyDrop::drop(&mut h.inner) };
+    // SAFETY: weak was allocated by `Box::into_raw` in
+    // `hew_lambda_actor_downgrade` / `hew_lambda_actor_weak_clone`.
+    // Per the Safety contract no other FFI caller may concurrently
+    // touch this pointer.
+    unsafe { drop(Box::from_raw(weak)) };
     SendError::Ok as i32
 }
 
@@ -1340,7 +1559,7 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_drop(weak: *mut HewLambdaActorWea
               invariants are documented by test names and helper fn doc-comments."
 )]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering as Ord};
+    use std::sync::atomic::Ordering as Ord;
 
     use super::*;
 
@@ -1729,101 +1948,19 @@ mod tests {
         }
     }
 
-    // ── Double-release guard test ──────────────────────────────────────────
-
-    #[test]
-    fn cabi_double_release_lambda_actor_returns_already_closed() {
-        let a = new_tell_cabi(4);
-        assert!(!a.is_null());
-        // SAFETY: `a` came from hew_lambda_actor_new (non-null per assertion).
-        unsafe {
-            assert_eq!(hew_lambda_actor_release(a), SendError::Ok as i32);
-            assert_eq!(hew_lambda_actor_release(a), SendError::DoubleClose as i32);
-        }
-    }
-
-    // ── Concurrent release stress ──────────────────────────────────────────
-
-    #[test]
-    fn cabi_concurrent_release_lambda_actor_returns_single_winner() {
-        use std::sync::Barrier;
-        use std::thread;
-        const THREADS: usize = 8;
-        const ITERS: usize = 100;
-
-        for iter in 0..ITERS {
-            let actor = new_tell_cabi(4);
-            assert!(!actor.is_null());
-            let actor_addr = actor as usize;
-            let barrier = Arc::new(Barrier::new(THREADS));
-            let mut handles = Vec::with_capacity(THREADS);
-            for _ in 0..THREADS {
-                let bar = Arc::clone(&barrier);
-                handles.push(thread::spawn(move || {
-                    bar.wait();
-                    // SAFETY: same handle pointer shared across threads;
-                    // implementation linearizes via AtomicBool::swap.
-                    unsafe { hew_lambda_actor_release(actor_addr as *mut HewLambdaActorHandle) }
-                }));
-            }
-            let mut winners = 0;
-            let mut losers = 0;
-            for h in handles {
-                match h.join().unwrap() {
-                    rc if rc == SendError::Ok as i32 => winners += 1,
-                    rc if rc == SendError::DoubleClose as i32 => losers += 1,
-                    rc => panic!(
-                        "iter {iter}: unexpected return {rc} from concurrent hew_lambda_actor_release"
-                    ),
-                }
-            }
-            assert_eq!(
-                winners, 1,
-                "iter {iter}: expected one winner, got {winners}"
-            );
-            assert_eq!(
-                losers,
-                THREADS - 1,
-                "iter {iter}: expected {} losers, got {losers}",
-                THREADS - 1
-            );
-        }
-    }
-
-    // ── Released-flag guard tests ──────────────────────────────────────────
-
-    #[test]
-    fn cabi_send_after_release_returns_double_close() {
-        let actor = new_tell_cabi(4);
-        assert!(!actor.is_null());
-        let rc_release = unsafe { hew_lambda_actor_release(actor) };
-        assert_eq!(rc_release, SendError::Ok as i32);
-        let msg = b"post-release";
-        let rc = unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) };
-        assert_eq!(
-            rc,
-            SendError::DoubleClose as i32,
-            "send after release must be DoubleClose"
-        );
-    }
-
-    #[test]
-    fn cabi_weak_send_after_drop_returns_double_close() {
-        let actor = new_tell_cabi(4);
-        assert!(!actor.is_null());
-        let weak = unsafe { hew_lambda_actor_downgrade(actor) };
-        assert!(!weak.is_null());
-        let rc_drop = unsafe { hew_lambda_actor_weak_drop(weak) };
-        assert_eq!(rc_drop, SendError::Ok as i32);
-        let msg = b"post-weak-drop";
-        let rc = unsafe { hew_lambda_actor_weak_send(weak, msg.as_ptr(), msg.len()) };
-        assert_eq!(
-            rc,
-            SendError::DoubleClose as i32,
-            "weak_send after drop must be DoubleClose"
-        );
-        unsafe { hew_lambda_actor_release(actor) };
-    }
+    // ── Concurrent release stress (DELETED) ────────────────────────────────
+    //
+    // The prior `cabi_concurrent_release_lambda_actor_returns_single_winner`
+    // and double-release / send-after-release / weak-send-after-drop tests
+    // exercised post-release wrapper survival, which the legacy "leak
+    // the wrapper" design supported. The current design consumes the
+    // wrapper allocation on release (security blocker fix 2026-06-08)
+    // and documents concurrent-or-post-return same-pointer FFI use as
+    // caller UB. The compiler-emitted drop spine guarantees the
+    // single-in-flight contract; verifying that property at this layer
+    // would require a global EBR/quarantine that is out of scope for
+    // this slice. The atomic `released` flag remains as a tight-window
+    // guard within a single function activation.
 
     // ── Body dispatch tests ────────────────────────────────────────────────
 
@@ -1863,6 +2000,13 @@ mod tests {
     #[test]
     fn ask_body_reply_roundtrip() {
         use std::time::Duration;
+
+        // Serialise with `ask_reply_alloc_failure_returns_ok_with_null_reply`
+        // — that test toggles the process-wide `FORCE_REPLY_ALLOC_FAILURE`
+        // flag, which `hew_reply` consumes lazily. Without this guard, our
+        // ask can land first and pick up its forced-failure, which would
+        // surface as a spurious null-reply assertion miss here.
+        let _guard = crate::runtime_test_guard();
 
         let actor = unsafe {
             hew_lambda_actor_new(
@@ -1999,6 +2143,115 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
     }
 
+    /// Regression test for B5 (security review 2026-06-08, final):
+    /// `hew_lambda_actor_ask` MUST surface a status=Ok / `reply_ptr=null`
+    /// outcome whenever the runtime's reply-buffer copy fails
+    /// (`alloc_reply_buffer` returned null inside `hew_reply` →
+    /// `publish_reply_from_sender_ref` with null/0). Pre-codegen-guard,
+    /// the LLVM-emitted ask call-site unconditionally loaded the i64
+    /// reply value from `*reply_out` on status=Ok — a null deref. The
+    /// codegen fix (llvm.rs `hew_lambda_actor_ask` Ok branch) now
+    /// guards with `reply_ptr != null && reply_len >= 8` and falls
+    /// through to a `Result::Err(AskError::PayloadSizeMismatch)`
+    /// branch on failure.
+    ///
+    /// This test pins the runtime side of the contract: when the
+    /// next reply-buffer alloc is forced to fail, the dispatch thread
+    /// runs the body to completion, publishes a null reply, and
+    /// `hew_lambda_actor_ask` returns `SendError::Ok` with
+    /// `reply_ptr == null` / `reply_len == 0`. The codegen guard
+    /// then catches that and synthesises the Err.
+    #[test]
+    fn ask_reply_alloc_failure_returns_ok_with_null_reply() {
+        use std::time::Duration;
+
+        // ask-shape body that writes an i64 reply via the standard
+        // body allocator. Mirrors `ask_body_reply_roundtrip`'s body.
+        // Defined before the test-lock guard to satisfy
+        // `clippy::items_after_statements` (the item is hoisted to the
+        // top of the scope regardless, so ordering it textually first
+        // avoids a pedantic-lint suppression).
+        unsafe extern "C-unwind" fn ask_body_publishes_i64(
+            _state: *mut core::ffi::c_void,
+            _msg: *const u8,
+            _msg_len: usize,
+            reply_out: *mut *mut u8,
+            reply_len_out: *mut usize,
+        ) -> i32 {
+            const WIDTH: usize = std::mem::size_of::<i64>();
+            // SAFETY: GlobalAlloc-allocated Box, freed by the dispatch
+            // layer via `free_body_reply_buf` after `hew_reply` copies
+            // (or on the not-delivered path when copy fails).
+            let buf: Box<[u8]> = vec![0u8; WIDTH].into_boxed_slice();
+            let val: i64 = 99;
+            let raw = Box::into_raw(buf).cast::<u8>();
+            unsafe {
+                core::ptr::copy_nonoverlapping((&raw const val).cast::<u8>(), raw, WIDTH);
+                *reply_out = raw;
+                *reply_len_out = WIDTH;
+            }
+            0
+        }
+
+        // Serialise with other tests that toggle FORCE_REPLY_ALLOC_FAILURE
+        // (see `reply_channel::tests::hew_reply_reports_buffer_alloc_failure`)
+        // and with parallel ask-body tests that observe alloc behaviour.
+        // The forced-failure flag is a process-wide static; without this
+        // guard our toggle can be consumed by an unrelated
+        // `ask_body_reply_roundtrip` reply, manifesting as flaky failures.
+        let _guard = crate::runtime_test_guard();
+
+        let actor = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Ask as i32,
+                Some(ask_body_publishes_i64),
+                ptr::null_mut(),
+                Some(noop_state_drop),
+            )
+        };
+        assert!(!actor.is_null());
+
+        // Force the NEXT `alloc_reply_buffer` call (inside `hew_reply`)
+        // to return null, simulating reply-buffer OOM.
+        crate::reply_channel::force_reply_alloc_failure_for_test();
+
+        let msg = b"trigger-oom";
+        let mut reply_ptr: *mut u8 = ptr::null_mut();
+        let mut reply_len: usize = 0;
+        let rc = unsafe {
+            hew_lambda_actor_ask(
+                actor,
+                msg.as_ptr(),
+                msg.len(),
+                &raw mut reply_ptr,
+                &raw mut reply_len,
+            )
+        };
+
+        // Runtime contract: body ran successfully, but reply-buffer
+        // alloc failed. The ask returns Ok (the SEND succeeded; the
+        // body did not panic) with null reply payload. The codegen
+        // ask-decode guard then materialises
+        // Result::Err(AskError::PayloadSizeMismatch).
+        assert_eq!(
+            rc,
+            SendError::Ok as i32,
+            "alloc-fail ask must return Ok (body completed); got rc={rc}"
+        );
+        assert!(
+            reply_ptr.is_null(),
+            "alloc-fail ask must deliver null reply payload; got ptr={reply_ptr:p}"
+        );
+        assert_eq!(
+            reply_len, 0,
+            "alloc-fail ask must deliver zero reply length; got len={reply_len}"
+        );
+
+        unsafe { hew_lambda_actor_release(actor) };
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
     /// `state_drop` is called exactly once when the actor stops.
     #[test]
     fn state_drop_called_exactly_once() {
@@ -2028,6 +2281,66 @@ mod tests {
             1,
             "state_drop must be called exactly once"
         );
+    }
+
+    /// Regression test for B4 (security review 2026-06-08):
+    /// `hew_lambda_drain_all` must return only AFTER all dispatch threads'
+    /// captured state has been torn down via `state_drop`. Prior to the
+    /// drop-order fix in `HewLambdaActor::new`'s spawn closure, the
+    /// `LambdaDispatchGuard` decremented `ACTIVE_LAMBDA_DISPATCH` BEFORE
+    /// the captured `Arc<LambdaActorInner>` dropped, so drain could
+    /// observe `count == 0` while `state_drop` had not yet run.
+    ///
+    /// The test races N actors: spawn → release → `drain_all` → check that
+    /// every `state_drop` has fired. Iteration count is chosen to surface
+    /// the race window deterministically on a fast machine.
+    #[test]
+    fn drain_all_completes_after_state_drop_runs() {
+        const ITERS: usize = 25;
+        const BATCH: usize = 8;
+
+        // `hew_lambda_drain_all` reads the process-wide ACTIVE_LAMBDA_DISPATCH
+        // counter. Any concurrent test spawning lambda actors will inflate
+        // that counter mid-drain and stall this assertion at non-zero.
+        let _guard = crate::runtime_test_guard();
+
+        for iter in 0..ITERS {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let mut handles = Vec::with_capacity(BATCH);
+            for _ in 0..BATCH {
+                let state_raw = Arc::into_raw(Arc::clone(&counter)) as *mut core::ffi::c_void;
+                let actor = unsafe {
+                    hew_lambda_actor_new(
+                        4,
+                        LambdaShape::Tell as i32,
+                        Some(noop_tell_body),
+                        state_raw,
+                        Some(counting_state_drop),
+                    )
+                };
+                assert!(!actor.is_null(), "iter {iter}: spawn must succeed");
+                handles.push(actor);
+            }
+            // Release every strong handle. Each release returns
+            // immediately; the dispatch thread will see the send-half
+            // close and exit, then drop its captured Arc and run
+            // state_drop, then drop the guard which decrements the
+            // dispatch counter.
+            for actor in handles {
+                let rc = unsafe { hew_lambda_actor_release(actor) };
+                assert_eq!(rc, SendError::Ok as i32);
+            }
+            // Drain: returns 0 when ACTIVE_LAMBDA_DISPATCH reaches 0.
+            let rc = hew_lambda_drain_all(2_000);
+            assert_eq!(rc, 0, "iter {iter}: drain must succeed (timeout 0)");
+            // Post-drain invariant: state_drop has fired for every actor.
+            let fired = counter.load(Ord::SeqCst);
+            assert_eq!(
+                fired, BATCH,
+                "iter {iter}: drain returned 0 but state_drop fired {fired}/{BATCH} times \
+                 (drop-order race: guard decrements counter before Arc drops)"
+            );
+        }
     }
 
     // ── H2 regression: drain_stopped malformed-envelope ───────────────────

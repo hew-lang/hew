@@ -133,6 +133,8 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
 
     // `caller()` invokes the step stub with zeroed locals and returns.
@@ -172,6 +174,8 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
 
     IrPipeline {

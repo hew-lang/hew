@@ -52,6 +52,8 @@ fn base_pipeline(
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -601,6 +603,8 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

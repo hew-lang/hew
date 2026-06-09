@@ -1,0 +1,21 @@
+// Reject fixture: recursive lambda actor (self-reference via let-binding).
+//
+// `actor |..| { .. }` literals do not yet wire closure captures through the
+// spawn-side runtime substrate: `hew_lambda_actor_new` accepts a captured
+// environment pointer but the M2 single-vertebra lowering does not pack
+// the captured bindings or unpack them on the body side. A forward-bound
+// self-reference for recursion is a capture (`fib` is read by the body),
+// so MIR refuses with `CannotMaterializeClosureCapture` to keep us from
+// emitting a send-on-uninitialised-handle.
+//
+// This is a check-time fail-closed lock per CLAUDE.md §1. When the
+// follow-on capture-wiring slice lands, this fixture moves back to
+// `accept/` and the run.sh line becomes a `run_accept_expect_*`.
+fn main() {
+    let fib = actor |n: i64| {
+        if n > 1 {
+            fib(n - 1);
+        }
+    };
+    fib(10);
+}

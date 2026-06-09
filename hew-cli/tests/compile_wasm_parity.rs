@@ -157,7 +157,13 @@ fn wasm_unsupported_substrate_diagnostics_preserve_symbol_category() {
     );
     assert_wasm_unsupported_category(
         "tests/vertical-slice/accept/lambda_method_send.hew",
-        &["Duplex", "#1451"],
+        // Spawn-side wiring (Terminator::MakeLambdaActor → hew_lambda_actor_new)
+        // surfaces the lambda-actor substrate symbol BEFORE the Duplex send symbol
+        // because the spawn fail-closes first. Both `hew_lambda_actor_*` and the
+        // underlying `hew_duplex_*` symbols are native-only on wasm32; the test's
+        // intent is to assert the diagnostic preserves the symbol category in the
+        // first surface, and "lambda_actor" satisfies that for this fixture.
+        &["lambda_actor", "#1451"],
         &[],
     );
 }

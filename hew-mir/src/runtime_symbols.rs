@@ -220,6 +220,22 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_lambda_actor_weak_clone",
     "hew_lambda_actor_weak_drop",
     "hew_lambda_actor_weak_send",
+    // hew_lambda_body_alloc_reply_buf: ALLOC counterpart to the
+    // internal `free_body_reply_buf`; called by compiler-emitted body
+    // fns when materialising an ask-shape reply payload. Single
+    // `usize` arg → `*mut u8`. Allocator-paired with the runtime's
+    // `Box::from_raw` free; never libc-tracked (the tracker guards
+    // against accidental libc::malloc reaching `free_body_reply_buf`).
+    "hew_lambda_body_alloc_reply_buf",
+    // hew_lambda_drain_all: codegen-emitted at `main` exit so a
+    // non-actor-using program that spawned lambda actors still drains
+    // their dispatch threads before the process exits (the existing
+    // `hew_shutdown_wait` waits only for scheduler workers; lambda
+    // actors run on dedicated OS threads outside that pool). Single
+    // `i64` arg (timeout_ms, 0 = 5 s default) → `i32` (0 = clean
+    // drain, 1 = timed out). Always safe to call: returns immediately
+    // when no lambda actors have ever been spawned.
+    "hew_lambda_drain_all",
     // --- Observe read surface ------------------------------------------------
     "hew_observe_read_u64",
     "hew_observe_scrape",
@@ -303,6 +319,13 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // (`hew-runtime/src/reply_channel.rs:78`). Allocates a fresh
     // single-shot reply channel with one caller-side reference.
     "hew_reply_channel_new",
+    // hew_reply_payload_free: libc free for ask reply payloads
+    // delivered through `hew_lambda_actor_ask` / `hew_reply_wait`.
+    // Codegen calls this on the ask call-site reply_out slot after
+    // decoding the payload into the user's dest. Allocator-paired
+    // with `alloc_reply_buffer` (libc::malloc) inside the reply
+    // channel.
+    "hew_reply_payload_free",
     // `hew_reply_wait(ch) -> *mut c_void`
     // (`hew-runtime/src/reply_channel.rs:296`). Blocks until the reply
     // arrives; returns the reply pointer (caller frees with libc::free)

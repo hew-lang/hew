@@ -3050,6 +3050,7 @@ fn synthesize_machine_step_fn(
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
     };
 
     let thir = ThirFunction {
@@ -4400,6 +4401,7 @@ fn lower_function(
         // emitting the bodyless placeholder (the D343 fail-OPEN no-op).
         intrinsic_id: func.intrinsic_id.clone(),
         await_deadline_ns: builder.await_deadline_ns.clone(),
+        lambda_actor_user_param_locals: Vec::new(),
     };
     // Checked MIR's `checks` field is populated by `check_function`
     // from real dataflow over the checker-authority `MirStatement`
@@ -7145,6 +7147,43 @@ impl Builder {
                         site,
                         RuntimeCallContext::ValueNeeded,
                     );
+                }
+                // M2 lambda-actor call-syntax dispatch.
+                //
+                // A user `let log = actor |s|{..}; log("hi")` produces a
+                // binding `log` whose MIR `Place` is `LambdaActorHandle(N)`
+                // and whose HIR type is `Duplex<Msg, Reply>`. Two problems
+                // collide here without an early intercept:
+                //
+                // 1. `log` is also the name of a `stdlib_catalog` math
+                //    builtin (`f64 -> f64`). The `module_fn_names` lookup
+                //    below matches on bare name only, so without this
+                //    early guard the call would dispatch through
+                //    `lower_direct_call("log")` → wrong-typed math call →
+                //    LLVM verifier rejects (`expected f64, got ptr`).
+                //    This is a real miscompile, not just an NYI.
+                // 2. The non-collision cases (`dbl(5)`, `fib(10)`) would
+                //    fall through to the indirect-call NYI arm. They
+                //    need the same lambda-actor dispatch.
+                //
+                // The intercept is gated on the binding's MIR Place,
+                // NOT on the type alone: a `Duplex<>`-typed binding that
+                // was built from `Duplex::pair()` lives in a generic
+                // `Place::DuplexHandle`, not a `LambdaActorHandle`, and
+                // its call surface is `.send()` / `.recv()` method calls,
+                // not call-syntax. The Place-variant guard is the
+                // canonical "this is a lambda-actor handle" signal.
+                if let HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(binding_id),
+                    ..
+                } = &callee.kind
+                {
+                    if matches!(
+                        self.binding_locals.get(binding_id),
+                        Some(Place::LambdaActorHandle(_))
+                    ) {
+                        return self.lower_lambda_actor_call(callee, args, &expr.ty, expr.site);
+                    }
                 }
                 // SHIM(E2→checker): user functions are still identified by
                 // callee name membership in `module_fn_names` until HIR threads
@@ -10058,6 +10097,13 @@ impl Builder {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "exhaustive Terminator match — adding new variants \
+                  (most recently `MakeLambdaActor`) edges past the 100-line \
+                  ceiling without changing the function's structural \
+                  responsibility (single yield-block walk)"
+    )]
     fn generator_yield_block_paths_drop_safe(
         &self,
         block_id: u32,
@@ -10153,7 +10199,9 @@ impl Builder {
                         visiting,
                         memo,
                     ),
-                    Terminator::Call { next, .. } | Terminator::MakeGenerator { next, .. } => self
+                    Terminator::Call { next, .. }
+                    | Terminator::MakeGenerator { next, .. }
+                    | Terminator::MakeLambdaActor { next, .. } => self
                         .generator_yield_block_paths_drop_safe(
                             *next,
                             start_block_id,
@@ -13544,6 +13592,7 @@ impl Builder {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let builder = Builder {
             type_classes: self.type_classes.clone(),
@@ -16431,6 +16480,7 @@ impl Builder {
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
             await_deadline_ns: builder.await_deadline_ns.clone(),
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
@@ -16498,6 +16548,14 @@ impl Builder {
     /// path (`lower_call_closure`) can invoke them through the closure pair.
     /// WHEN-OBSOLETE: if the runtime gains a separate fn-pointer ABI.
     /// WHAT-REAL: a native fn-pointer type that doesn't pretend to be a closure.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "exhaustive Terminator match arm in the shim's body \
+                  (most recently the `MakeLambdaActor` arm) edges past \
+                  the 100-line ceiling without changing the shim's \
+                  single responsibility — synthesise a callable wrapper \
+                  for the named fn"
+    )]
     fn lower_named_fn_invoke_shim(
         &self,
         fn_symbol: &str,
@@ -16568,6 +16626,7 @@ impl Builder {
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
             await_deadline_ns: builder.await_deadline_ns.clone(),
+            lambda_actor_user_param_locals: Vec::new(),
         };
 
         // Synthetic HirFn for dataflow checking — no HIR params (the shim
@@ -16642,8 +16701,27 @@ impl Builder {
     /// the capture metadata. Codegen rejects `Place::LambdaActorHandle`
     /// today (fail-closed) so a runtime substrate is not required for
     /// the static checks to land.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the function carries the full spawn-side wiring — \
+                  handle alloc, capture validation, body Builder \
+                  construction, body HIR lowering, return-shape \
+                  rewriting, and `Terminator::MakeLambdaActor` emission. \
+                  Splitting it would scatter the body-fn synthesis \
+                  contract across helpers without reducing the total \
+                  surface area; the structural responsibility is one \
+                  spawn site → one MIR body → one make-lambda-actor \
+                  terminator and the function's shape mirrors that \
+                  responsibility 1:1"
+    )]
     fn lower_spawn_lambda_actor(&mut self, expr: &HirExpr) -> Place {
-        let HirExprKind::SpawnLambdaActor { captures, .. } = &expr.kind else {
+        let HirExprKind::SpawnLambdaActor {
+            params,
+            reply_ty,
+            body,
+            captures,
+        } = &expr.kind
+        else {
             unreachable!("lower_spawn_lambda_actor called on non-SpawnLambdaActor kind");
         };
         // Two paths produce the handle:
@@ -16694,7 +16772,451 @@ impl Builder {
                 capture_kind,
             });
         }
+
+        // ── Body fn synthesis (M2 spawn-side) ──
+        //
+        // Mirrors `lower_gen_block`: mint a deterministic body-fn symbol,
+        // synthesize a child `Builder` that lowers the lambda body under the
+        // runtime ABI signature, push the LoweredFunction into
+        // `self.generated_functions`, and emit `Terminator::MakeLambdaActor`
+        // so codegen calls `hew_lambda_actor_new(...)` and stores the
+        // returned handle into the enclosing function's
+        // `LambdaActorHandle` slot.
+        //
+        // MVP scope:
+        //   - No captures: if `captures` is non-empty, the body diagnostics
+        //     above already record a `CannotMaterializeClosureCapture`; we
+        //     proceed with a null-state body so the rest of the function
+        //     still produces a coherent module. The state-drop is a shared
+        //     module-local no-op symbol — see codegen's
+        //     `intern_lambda_state_drop_noop`.
+        //   - Single user param (0 or 1): the codegen prologue copies
+        //     `msg_len` bytes from `msg_ptr` into the param alloca. Multi-arg
+        //     lambdas surface an `UnsupportedNode` diagnostic.
+        //   - Tell shape (`reply_ty == Unit`): codegen returns i32 0
+        //     unconditionally.
+        //   - Ask shape: codegen serialises the body's ReturnSlot value into a
+        //     fresh reply buffer via `hew_lambda_body_alloc_reply_buf`, stores
+        //     the buf pointer + length into `*reply_out` / `*reply_len_out`,
+        //     and returns i32 0.
+        //
+        // Drop safety (CLAUDE.md §1): the handle's release is scheduled at
+        // scope exit by the enclosing function's LIFO drop plan via
+        // `place_aware_drop_fn` → `hew_lambda_actor_release`. The state-drop
+        // no-op stub is invoked exactly once by the runtime at actor
+        // shutdown, releasing nothing for the no-capture MVP.
+        if params.len() > 1 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "lambda actor with >1 parameter".to_string(),
+                    site: expr.site,
+                },
+                note: "the M2 lambda-actor lowering supports zero- or single-param \
+                       bodies only; multi-param marshalling is a follow-on slice"
+                    .to_string(),
+            });
+            return handle;
+        }
+
+        // Captures (closure-environment carried into the body) are not yet
+        // wired through to the runtime: `hew_lambda_actor_new` accepts a
+        // captured-env pointer, but the M2 single-vertebra lowering does
+        // not materialise the env struct, pass it through to the body
+        // fn, or unpack it on the body side. Letting a capturing spawn
+        // reach codegen would skip `Terminator::MakeLambdaActor` and
+        // leave the handle uninitialised — a check-OK / run-fail
+        // (sendr/ask on uninit memory, rc=1, no diagnostic). Fail closed
+        // at MIR construction instead. One diagnostic per capture so the
+        // user sees the full list of bindings that block the spawn.
+        // The closure-capture wiring lands in a follow-on slice; until
+        // then any `actor |..| { .. cap .. }` spawn rejects at `hew check`
+        // with a structured `CannotMaterializeClosureCapture` per
+        // CLAUDE.md §1 (no silent miscompile).
+        if !captures.is_empty() {
+            for capture in captures {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CannotMaterializeClosureCapture {
+                        binding: capture.binding,
+                        name: capture.name.clone(),
+                        site: expr.site,
+                    },
+                    note: format!(
+                        "lambda-actor closure capture `{}` is not yet wired through \
+                         the spawn-side runtime substrate. The body fn synthesised \
+                         by codegen has no access to captured outer bindings, so \
+                         the actor would run with an uninitialised state pointer. \
+                         A follow-on slice lands the env-pack on the spawn side \
+                         and env-unpack on the body side; until then, lambda actor \
+                         literals may not reference outer bindings (including a \
+                         forward-bound self-reference for recursion).",
+                        capture.name
+                    ),
+                });
+            }
+            return handle;
+        }
+
+        let lambda_id = self.next_closure_id;
+        self.next_closure_id = self
+            .next_closure_id
+            .checked_add(1)
+            .expect("lambda id overflow — closure id counter exhausted");
+        let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
+        let body_name = format!("__hew_lambda_body_{owner}_{lambda_id}");
+        let state_drop_name = "__hew_lambda_state_drop_noop".to_string();
+
+        let shape = if matches!(reply_ty, ResolvedTy::Unit) {
+            crate::model::LambdaActorShape::Tell
+        } else {
+            crate::model::LambdaActorShape::Ask
+        };
+        let shape_disc: i32 = match shape {
+            crate::model::LambdaActorShape::Tell => 0,
+            crate::model::LambdaActorShape::Ask => 1,
+        };
+
+        // ── Build child Builder for the body ──
+        let mut body_builder = Builder {
+            type_classes: self.type_classes.clone(),
+            record_field_orders: self.record_field_orders.clone(),
+            machine_layout_names: self.machine_layout_names.clone(),
+            module_fn_names: self.module_fn_names.clone(),
+            module_generic_fn_names: self.module_generic_fn_names.clone(),
+            subst: self.subst.clone(),
+            call_site_type_args: self.call_site_type_args.clone(),
+            supervisor_child_slots: self.supervisor_child_slots.clone(),
+            actor_send_aliasing: self.actor_send_aliasing.clone(),
+            current_function_symbol: body_name.clone(),
+            current_function_call_conv: crate::model::FunctionCallConv::LambdaActorBody(shape),
+            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            ..Builder::default()
+        };
+
+        // Locals 0..=4: the five runtime ABI parameter slots. Their types
+        // mirror `HewLambdaActorBody`'s C signature: (state ptr, msg ptr,
+        // msg_len i64, reply_out ptr-of-ptr, reply_len_out ptr-of-usize).
+        // The codegen parameter prologue stores LLVM args into these
+        // allocas in order.
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        body_builder.locals.push(ptr_ty.clone()); // Local(0): state
+        body_builder.locals.push(ptr_ty.clone()); // Local(1): msg ptr
+        body_builder.locals.push(ResolvedTy::I64); // Local(2): msg_len
+        body_builder.locals.push(ptr_ty.clone()); // Local(3): reply_out
+        body_builder.locals.push(ptr_ty.clone()); // Local(4): reply_len_out
+
+        // Allocate user-param locals AFTER the ABI slots and register them
+        // in `binding_locals` so body HIR `BindingRef`s resolve. Track the
+        // Local ids in the side-channel so codegen knows which slots need
+        // the msg-deserialise prologue fragment.
+        let mut user_param_local_ids: Vec<u32> = Vec::with_capacity(params.len());
+        for param in params {
+            let slot = body_builder.alloc_local(param.ty.clone());
+            let Place::Local(slot_id) = slot else {
+                unreachable!("alloc_local returns Place::Local");
+            };
+            body_builder.binding_locals.insert(param.id, slot);
+            user_param_local_ids.push(slot_id);
+        }
+
+        // Lower the lambda body. The body is a single HirExpr (an arrow
+        // body or block); reuse `lower_value` so all expression shapes —
+        // BlockExpr, Call, BinaryOp, etc. — go through the standard path.
+        let tail_place = body_builder.lower_value(body);
+
+        // Shape-driven return slot wiring:
+        //   - Ask: move the body's tail value into ReturnSlot so codegen's
+        //     LambdaActorBody Return epilogue can serialise it into the
+        //     reply buffer.
+        //   - Tell: discard the tail value; codegen returns i32 0
+        //     unconditionally.
+        if matches!(shape, crate::model::LambdaActorShape::Ask) {
+            if let Some(src) = tail_place {
+                body_builder.instructions.push(Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src,
+                });
+            }
+        }
+
+        let body_blocks = body_builder.finalize_blocks(Terminator::Return);
+        let body_locals = body_builder.locals.clone();
+        let body_user_return_ty = if matches!(shape, crate::model::LambdaActorShape::Ask) {
+            reply_ty.clone()
+        } else {
+            ResolvedTy::Unit
+        };
+
+        // The body's MIR `return_ty` carries the USER reply type (Ask) or
+        // `Unit` (Tell). Codegen consults this to pick the reply
+        // serialisation width; the LLVM return type is always `i32`
+        // (the status code) — see codegen's LambdaActorBody arm.
+        let raw = RawMirFunction {
+            name: body_name.clone(),
+            return_ty: body_user_return_ty.clone(),
+            call_conv: crate::model::FunctionCallConv::LambdaActorBody(shape),
+            params: vec![
+                ptr_ty.clone(),  // state
+                ptr_ty.clone(),  // msg ptr
+                ResolvedTy::I64, // msg_len
+                ptr_ty.clone(),  // reply_out
+                ptr_ty.clone(),  // reply_len_out
+            ],
+            locals: body_locals.clone(),
+            blocks: body_blocks.clone(),
+            decisions: body_builder.decisions.clone(),
+            intrinsic_id: None,
+            await_deadline_ns: body_builder.await_deadline_ns.clone(),
+            lambda_actor_user_param_locals: user_param_local_ids.clone(),
+        };
+
+        let thir_statements: Vec<MirStatement> = body_blocks
+            .iter()
+            .flat_map(|b| b.statements.iter().cloned())
+            .collect();
+        let thir = ThirFunction {
+            name: body_name.clone(),
+            return_ty: body_user_return_ty.clone(),
+            statements: thir_statements,
+        };
+
+        // Synthetic HirFn shell for `check_function` (mirrors `lower_gen_block`).
+        let synthetic_fn = HirFn {
+            id: hew_hir::ItemId(0),
+            node: hew_hir::HirNodeId(0),
+            name: body_name.clone(),
+            type_params: Vec::new(),
+            is_generator: false,
+            intrinsic_id: None,
+            // Seed the user-visible params into the synthetic HirFn so the
+            // dataflow checker treats them as Live at body entry — without
+            // this seed every `BindingRef` to a user param reads as
+            // "uninitialised before use" (the body has no `let` for the
+            // param; it arrives via the runtime ABI msg buffer). The MIR
+            // user-param locals were inserted into `binding_locals` above,
+            // so this seed lines up the HIR-binding-keyed checker with the
+            // MIR-local-keyed value sources.
+            params: params.clone(),
+            return_ty: body_user_return_ty.clone(),
+            body: hew_hir::HirBlock {
+                node: hew_hir::HirNodeId(0),
+                scope: hew_hir::ScopeId(0),
+                statements: Vec::new(),
+                tail: None,
+                ty: body_user_return_ty.clone(),
+                span: expr.span.clone(),
+            },
+            span: expr.span.clone(),
+        };
+
+        let dataflow_result = check_function(&body_builder, &raw.blocks, &synthetic_fn);
+        let mut body_diagnostics: Vec<MirDiagnostic> = dataflow_result
+            .checks
+            .iter()
+            .filter_map(check_to_diagnostic)
+            .collect();
+        body_diagnostics.append(&mut body_builder.diagnostics);
+        collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
+
+        let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+        let checked = CheckedMirFunction {
+            name: body_name.clone(),
+            return_ty: body_user_return_ty.clone(),
+            blocks: raw.blocks.clone(),
+            decisions: body_builder.decisions.clone(),
+            checks: dataflow_result.checks.clone(),
+            cooperate_sites,
+        };
+        let elaborated = elaborate(&checked, &body_builder, &thir.statements, &dataflow_result);
+
+        let body_lowered = LoweredFunction {
+            thir,
+            raw,
+            checked,
+            elaborated,
+            diagnostics: body_diagnostics,
+            generated: body_builder.generated_functions,
+            record_layouts: body_builder.closure_record_layouts,
+            gen_state_layouts: body_builder.gen_state_layouts,
+        };
+        self.generated_functions.push(body_lowered);
+
+        // Emit `Terminator::MakeLambdaActor` so codegen wires
+        // `hew_lambda_actor_new(64, shape, &body_fn, null, &state_drop_fn)`
+        // and stores the resulting `*mut HewLambdaActorHandle` into
+        // `handle`. The 64-slot default mailbox is a substrate constant
+        // (mirrors the cooperate-site default in `hew-runtime`); a future
+        // surface knob (`actor capacity 128 |..| { ... }`) can override
+        // this without touching codegen.
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::MakeLambdaActor {
+            dest: handle,
+            body_fn: body_name,
+            state_drop_fn: state_drop_name,
+            shape: shape_disc,
+            mailbox_capacity: 64,
+            next,
+        });
+        self.start_block(next);
+
         handle
+    }
+
+    /// Lower a call-syntax dispatch through a lambda-actor handle:
+    /// `let h = actor |...| { ... }; h(msg)`.
+    ///
+    /// The intercept in `HirExprKind::Call` routes here when the callee
+    /// is a `BindingRef` whose MIR Place is `Place::LambdaActorHandle(N)`.
+    /// This is the M2 substrate seam that replaces both the
+    /// `module_fn_names` collision miscompile (a user binding named `log`
+    /// shadowing the `f64 -> f64` math builtin) and the indirect-call NYI
+    /// arm (`dbl(5)`, `fib(10)`) — see the comment at the call site.
+    ///
+    /// Shape dispatch (tell vs ask) is driven by the callee's HIR type
+    /// `Duplex<Msg, Reply>`: `Reply = Unit` → tell (`hew_lambda_actor_send`),
+    /// otherwise → ask (`hew_lambda_actor_ask`). Mirrors the runtime
+    /// `LambdaShape::{Tell,Ask}` enum (`hew-runtime/src/lambda_actor.rs`).
+    ///
+    /// MVP scope: single-argument messages, 8-byte spill ABI (mirrors the
+    /// single-vertebra `hew_duplex_send` shape at `llvm.rs:16843`).
+    /// Multi-arg messages and richer marshalling are follow-on slices —
+    /// the codegen-front-validate path (`hew check`) only needs an LLVM-
+    /// valid module, which the 8-byte spill satisfies. The ask reply
+    /// slot is allocated but not read back into the `Result<R, AskError>`
+    /// dest in this MVP; `hew run` end-to-end of an ask round-trip needs
+    /// the reply-decode follow-on. LESSONS: substrate-over-surface,
+    /// boundary-fail-closed.
+    fn lower_lambda_actor_call(
+        &mut self,
+        callee: &HirExpr,
+        args: &[HirExpr],
+        expr_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let handle = self.lower_value(callee)?;
+        if !matches!(handle, Place::LambdaActorHandle(_)) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: format!(
+                        "lambda-actor call routed to non-LambdaActorHandle place {handle:?}"
+                    ),
+                },
+                note: "lower_lambda_actor_call expects the callee binding's Place to be \
+                       Place::LambdaActorHandle; the gate in HirExprKind::Call must have \
+                       drifted from the place_aware lookup"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        if args.len() != 1 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "lambda-actor call with arity != 1".to_string(),
+                    site,
+                },
+                note: "the M2 lambda-actor lowering supports single-argument tell/ask only; \
+                       multi-arg messages are a follow-on slice"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        let reply_ty = match &callee.ty {
+            ResolvedTy::Named { args: ty_args, .. } if ty_args.len() == 2 => ty_args[1].clone(),
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: format!("lambda-actor callee has non-Duplex<S,R> type `{other:?}`"),
+                    },
+                    note: "expected `Duplex<Msg, Reply>` for lambda-actor dispatch".to_string(),
+                });
+                return None;
+            }
+        };
+        let is_ask = !matches!(reply_ty, ResolvedTy::Unit);
+
+        let msg_place = self.lower_value(&args[0])?;
+
+        // 8-byte spill (single-vertebra exemplar — mirrors hew_duplex_send).
+        // Multi-byte / variable-length messages need a marshalling spine
+        // (heap-copy or hew_string_clone, then pass real bytes) — out of
+        // scope for the codegen-front-validate path.
+        let len_local = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: len_local,
+            value: 8,
+        });
+
+        // The call's HIR type is `Result<Reply, SendError>` (tell) or
+        // `Result<Reply, AskError>` (ask). Allocate the dest so let-
+        // binding consumers see a Place; the slot is left uninitialised
+        // in this MVP (the LLVM verifier accepts uninit allocas; `hew
+        // run` of a real result-bearing call needs a follow-on slice
+        // that materialises Ok(_) from the runtime i32 status).
+        let dest = self.alloc_local(expr_ty.clone());
+
+        let call = if is_ask {
+            // Out-params: reply_out is `*mut *mut u8` (pointer-sized
+            // slot), reply_len_out is `*mut usize`. We allocate a Pointer
+            // local for reply_out (alloca holds a ptr value, 8 bytes on
+            // 64-bit) and an I64 local for reply_len_out (alloca holds an
+            // i64). Codegen passes the alloca addresses as the first 5
+            // args to the runtime call. The 6th arg is codegen-only:
+            // an `AskError` local that the codegen branches into on the
+            // call's non-zero (Err) status — the AskError tag is stored
+            // here and `emit_result_err(dest, error_dest)` materialises
+            // `Result::Err(askerror)` without the unconditional null
+            // reply-pointer deref the previous codegen did. Mirrors the
+            // `SuspendingAsk` precedent at `lower.rs:15340`.
+            // After the ask completes:
+            //   - On Ok (status 0): codegen loads the reply bytes into
+            //     `dest`'s Result::Ok variant and frees the libc-
+            //     allocated reply buffer with `hew_reply_payload_free`.
+            //   - On Err (status != 0): codegen maps the SendError
+            //     discriminant to an AskError variant, stores into
+            //     `error_dest`'s MachineTag slot, and binds
+            //     `Result::Err(error_dest)` into `dest`.
+            // Marking the runtime call's `dest` as `Some(dest)` keeps
+            // the dataflow ledger consistent (the dest binding becomes
+            // Live at the call), so the LIFO drop plan releases it on
+            // scope exit if it carries owned-handle resources.
+            let reply_ptr_slot = self.alloc_local(ResolvedTy::Pointer {
+                is_mutable: true,
+                pointee: Box::new(ResolvedTy::Unit),
+            });
+            let reply_len_slot = self.alloc_local(ResolvedTy::I64);
+            let error_dest = self.alloc_local(ResolvedTy::Named {
+                name: "AskError".to_string(),
+                args: Vec::new(),
+                builtin: Some(BuiltinType::AskError),
+                is_opaque: false,
+            });
+            crate::model::RuntimeCall::new(
+                "hew_lambda_actor_ask",
+                vec![
+                    handle,
+                    msg_place,
+                    len_local,
+                    reply_ptr_slot,
+                    reply_len_slot,
+                    error_dest,
+                ],
+                Some(dest),
+            )
+        } else {
+            crate::model::RuntimeCall::new(
+                "hew_lambda_actor_send",
+                vec![handle, msg_place, len_local],
+                None,
+            )
+        }
+        .expect("hew_lambda_actor_{send,ask} are on the M2 runtime allowlist");
+
+        self.instructions.push(Instr::CallRuntimeAbi(call));
+        Some(dest)
     }
 
     /// Lower `HirExprKind::GenBlock { body, yield_ty, return_ty }` to a MIR
@@ -16901,6 +17423,7 @@ impl Builder {
             decisions: body_builder.decisions.clone(),
             intrinsic_id: None,
             await_deadline_ns: body_builder.await_deadline_ns.clone(),
+            lambda_actor_user_param_locals: Vec::new(),
         };
 
         // A synthetic HirFn shell so `check_function` has a valid fn descriptor.
@@ -18375,6 +18898,7 @@ fn validate_cross_block_split_consume(
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
             | Terminator::MakeGenerator { next, .. }
+            | Terminator::MakeLambdaActor { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
@@ -18427,6 +18951,7 @@ fn validate_cross_block_split_consume(
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
             | Terminator::MakeGenerator { next, .. }
+            | Terminator::MakeLambdaActor { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
@@ -19055,6 +19580,11 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // `dest` is the handle slot the generator is written into (a write);
         // `body_fn` is a static symbol, not a Place — no source operands.
         Terminator::MakeGenerator { .. } => Vec::new(),
+        // Lambda-actor construction: same shape as MakeGenerator — `dest`
+        // is written; `body_fn` and `state_drop_fn` are static symbols.
+        // No source operands. (Future captures will push `state`-shaped
+        // operand Places here; the MVP has no captures.)
+        Terminator::MakeLambdaActor { .. } => Vec::new(),
         // `Suspend` has no source operands: the value channel is the explicit
         // coro frame out-pointer (spike-pinned null promise), not a `Place`, so
         // the suspend point reads nothing across the block edge.
@@ -19343,7 +19873,10 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         // `Call`/`Instr::Call*`); the closure callee does not retain a fresh
         // yielded value, so this terminator never escapes `local`.
         | Terminator::SuspendingCallClosure { .. }
-        | Terminator::MakeGenerator { .. } => false,
+        | Terminator::MakeGenerator { .. }
+        // Lambda-actor construction is the same shape as MakeGenerator —
+        // body/state-drop are static symbols; no operand escape.
+        | Terminator::MakeLambdaActor { .. } => false,
         // A bare `Return` moves the function's ReturnSlot (already written by an
         // earlier `Move`, caught by the instr scan); `Return` itself carries no
         // operand. Re-yield / send / ask / select transfer the value out.
@@ -21608,6 +22141,11 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
         | Terminator::Branch { .. }
         | Terminator::Trap { .. }
         | Terminator::MakeGenerator { .. }
+        // Lambda-actor construction transfers no operand-Place: body_fn
+        // and state_drop_fn are static symbols; the `dest` handle slot is
+        // the WRITE, not a transferred source. Future captures push state
+        // operands here.
+        | Terminator::MakeLambdaActor { .. }
         | Terminator::Suspend { .. } => Vec::new(),
     }
 }
@@ -21951,6 +22489,30 @@ fn resource_drop_fn(ty: &ResolvedTy, type_classes: &hew_hir::TypeClassTable) -> 
     }
 }
 
+/// Place-aware override of the type-derived `drop_fn`.
+///
+/// `Place::LambdaActorHandle(N)` carries a `ResolvedTy::Named { name: "Duplex" }`
+/// (the surface-visible type of an `actor |..| {..}` expression), but its
+/// runtime release ritual is `hew_lambda_actor_release`, NOT `hew_duplex_close`.
+/// The type-derived `resource_drop_fn` returns `"Duplex::close"` — which would
+/// route through the wrong symbol at codegen — so override here when the Place
+/// variant says "this is a lambda-actor handle, not a plain duplex".
+///
+/// `SendHalf`/`RecvHalf` override their `drop_fn` the same way: both map to
+/// `hew_duplex_close_half` (with a direction discriminant the codegen call
+/// site materialises from the Place variant), not the type-derived
+/// `Duplex::close` / `Stream::close` / etc.
+///
+/// LESSONS: producer-bridge-before-codegen, lifecycle-symmetry.
+fn place_aware_drop_fn(place: Place, ty_derived: Option<String>) -> Option<String> {
+    match place {
+        Place::LambdaActorHandle(_) => Some("LambdaActorHandle::close".to_string()),
+        Place::SendHalf(_) => Some("SendHalf::close".to_string()),
+        Place::RecvHalf(_) => Some("RecvHalf::close".to_string()),
+        _ => ty_derived,
+    }
+}
+
 /// LIFO drop sequence for an owned-locals ledger. Only `AffineResource`
 /// contributes; `Linear` is the move-checker's responsibility (`MustConsume`),
 /// and other classes have no implicit drop.
@@ -22277,7 +22839,7 @@ fn build_lifo_drops(
                 // the pipeline upstream. The string form is preserved as a
                 // failsafe; codegen rejects `Some(_)` until runtime drop
                 // dispatch lands (`hew-codegen-rs/src/llvm.rs:471`).
-                let drop_fn = resource_drop_fn(ty, type_classes);
+                let ty_derived_drop_fn = resource_drop_fn(ty, type_classes);
                 // Resolve to the binding's real backend place. Falling
                 // back to `ReturnSlot` for an unmapped binding would
                 // drop the wrong slot — fail closed instead. The
@@ -22295,6 +22857,14 @@ fn build_lifo_drops(
                          the drop-elaboration pass observes the binding"
                     )
                 });
+                // Place-aware override of the type-derived drop_fn. A
+                // `Place::LambdaActorHandle` carries a `Named{"Duplex"}` ty
+                // (the surface type of an `actor |..|{..}` expression), but
+                // its release ritual is `hew_lambda_actor_release`, not
+                // `hew_duplex_close`. SendHalf/RecvHalf get the same
+                // treatment — direction discriminant materialised at
+                // call site from the Place variant.
+                let drop_fn = place_aware_drop_fn(place, ty_derived_drop_fn);
                 // Drop-kind classification for the M2 substrate. The
                 // pre-M2 generic `@resource` path keeps `DropKind::Resource`;
                 // M2 Duplex / lambda-actor / half-handle Places select
@@ -22622,6 +23192,27 @@ fn enumerate_exits(
                 ExitPath::Call {
                     block: block_id,
                     callee: "hew_gen_ctx_create".to_string(),
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+            // Lambda-actor construction is structurally identical to
+            // MakeGenerator: a synchronous runtime call (`hew_lambda_actor_new`)
+            // with a single `next` continuation. The constructed handle's drop
+            // (`hew_lambda_actor_release`) is scheduled at scope exit by the
+            // enclosing function's LIFO drop plan via `place_aware_drop_fn`,
+            // not here.
+            Terminator::MakeLambdaActor {
+                dest: _,
+                body_fn: _,
+                state_drop_fn: _,
+                shape: _,
+                mailbox_capacity: _,
+                next,
+            } => (
+                ExitPath::Call {
+                    block: block_id,
+                    callee: "hew_lambda_actor_new".to_string(),
                     next: *next,
                 },
                 DropPlan::default(),

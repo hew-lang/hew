@@ -98,6 +98,8 @@ fn colour_red_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
     IrPipeline {
         thir: Vec::new(),

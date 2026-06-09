@@ -849,6 +849,8 @@ codegen-stable = [
   "hew_gen_ctx_parent_cancel_token",
   "hew_get_reply_channel",
   "hew_global_timer_wheel",
+  "hew_lambda_body_alloc_reply_buf",
+  "hew_lambda_drain_all",
   "hew_listener_await_accept",
   "hew_machine_emit_push",
   "hew_read_slot_cancel",

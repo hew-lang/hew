@@ -141,7 +141,8 @@ fn terminator_reads(term: &Terminator) -> Vec<Place> {
         | Terminator::Trap { .. }
         | Terminator::Goto { .. }
         | Terminator::Suspend { .. }
-        | Terminator::MakeGenerator { .. } => Vec::new(),
+        | Terminator::MakeGenerator { .. }
+        | Terminator::MakeLambdaActor { .. } => Vec::new(),
         Terminator::Branch { cond, .. } => vec![*cond],
         Terminator::Call { args, .. } => args.clone(),
         Terminator::Yield { value, .. } => vec![*value],
@@ -776,5 +777,6 @@ fn build_drop_shim_function(shim_name: &str, state_ty: ResolvedTy) -> RawMirFunc
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
     }
 }

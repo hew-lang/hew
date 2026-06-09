@@ -632,6 +632,15 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
             if let Terminator::MakeGenerator { .. } = &block.terminator {
                 return Some("hew_gen_ctx_create".to_string());
             }
+            // Lambda-actor construction emits `hew_lambda_actor_new`. The
+            // whole `hew-runtime/src/lambda_actor.rs` module is gated
+            // `#![cfg(not(target_arch = "wasm32"))]`, so a lambda-actor
+            // construction site in a WASM build would otherwise emit a
+            // dangling reference; surface the same structured native-only
+            // diagnostic the MakeGenerator gate above produces.
+            if let Terminator::MakeLambdaActor { .. } = &block.terminator {
+                return Some("hew_lambda_actor_new".to_string());
+            }
         }
     }
     // Also scan elaborated_mir drop_plans: the real close path goes through
@@ -864,6 +873,14 @@ struct FnCtx<'a, 'ctx> {
     /// are processed before the program exits. Without it the mailbox never
     /// drains and the program produces no output.
     emit_wasm_sched_drain: bool,
+    /// Emit `hew_lambda_drain_all(0)` before the `Terminator::Return` of
+    /// `main` on the native target so spawned lambda-actor dispatch
+    /// threads finish processing their mailboxes before the process
+    /// exits. Lambda actors run on dedicated OS threads outside the
+    /// work-stealing scheduler, so `hew_shutdown_wait` does not cover
+    /// them. Always emitted on native `main` (cost is one runtime call
+    /// that returns immediately when no lambda actors were spawned).
+    emit_lambda_drain_epilogue: bool,
     /// ABI layout authority for the module target. Native textual emission
     /// carries host data; cross-target emission carries the target machine data.
     target_data: &'a TargetData,
@@ -1005,6 +1022,16 @@ struct FnCtx<'a, 'ctx> {
     /// body. `None` for every ordinary (non-suspending) function, which lowers
     /// exactly as before — non-coroutine functions pay nothing.
     coro: Option<CoroState<'ctx>>,
+    /// Lambda-actor body shape (`Tell` or `Ask`), populated ONLY for a
+    /// function whose `call_conv` is `FunctionCallConv::LambdaActorBody`.
+    /// Consulted by the `Terminator::Return` arm to select the runtime ABI
+    /// return epilogue: Tell returns `i32 0` unconditionally; Ask serialises
+    /// the body's `return_slot` value into a freshly-allocated reply buffer
+    /// via `hew_lambda_body_alloc_reply_buf`, stores `(buf, len)` into
+    /// `*reply_out` / `*reply_len_out` (the body's `Local(3)` / `Local(4)`
+    /// runtime ABI param slots), and returns `i32 0`. `None` for every
+    /// other call convention.
+    lambda_actor_shape: Option<hew_mir::LambdaActorShape>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -1686,6 +1713,78 @@ fn intern_runtime_decl<'ctx>(
         // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
         // as hew_duplex_close — one ptr arg, i32 result discarded.
         "hew_lambda_actor_release" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_lambda_actor_send(actor: *mut HewLambdaActorHandle,
+        //                       msg: *const u8, len: usize) -> i32
+        // (`hew-runtime/src/lambda_actor.rs:918`). Same ABI shape as
+        // hew_duplex_send — handle ptr, message buffer ptr, length;
+        // i32 result is SendError discriminant (discarded by codegen
+        // arm; reply/result-bridging is a follow-on slice).
+        "hew_lambda_actor_send" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false)
+        }
+        // hew_lambda_actor_ask(actor: *mut HewLambdaActorHandle,
+        //                      msg: *const u8, len: usize,
+        //                      reply_out: *mut *mut u8,
+        //                      reply_len_out: *mut usize) -> i32
+        // (`hew-runtime/src/lambda_actor.rs:1000`). 5-arg ABI; out-
+        // params are caller-provided slots that the runtime writes the
+        // reply buffer pointer/length into. i32 result is SendError
+        // discriminant (discarded).
+        "hew_lambda_actor_ask" => i32_ty.fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                i64_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
+        // hew_lambda_actor_new(mailbox_capacity: usize, shape: i32,
+        //                      body_fn: *const HewLambdaActorBody,
+        //                      state: *mut c_void,
+        //                      state_drop: *const HewLambdaActorStateDrop)
+        //   -> *mut HewLambdaActorHandle
+        // (`hew-runtime/src/lambda_actor.rs:821`). Constructed via
+        // `Terminator::MakeLambdaActor` (function-pointer args cannot
+        // be expressed as MIR `Place` values); the codegen arm for the
+        // terminator declares this signature via `intern_runtime_decl`.
+        "hew_lambda_actor_new" => ptr_ty.fn_type(
+            &[
+                i64_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
+        // hew_lambda_body_alloc_reply_buf(len: usize) -> *mut u8
+        // (`hew-runtime/src/lambda_actor.rs`). Allocates a Box-backed
+        // reply buffer of `len` bytes that the lambda body writes its
+        // reply into; the runtime pairs this with the internal
+        // `free_body_reply_buf` after `hew_reply` copies the bytes into
+        // the libc-allocated published reply. The synthesised body's
+        // Ask-return epilogue calls this once per ask to allocate the
+        // reply slot.
+        "hew_lambda_body_alloc_reply_buf" => ptr_ty.fn_type(&[i64_ty.into()], false),
+        // hew_lambda_drain_all(timeout_ms: i64) -> i32
+        // (`hew-runtime/src/lambda_actor.rs`). Codegen calls this from
+        // `main`'s exit epilogue when the module synthesises any lambda-
+        // actor body fn (i.e. emits `Terminator::MakeLambdaActor`). Blocks
+        // until every lambda-actor dispatch thread has exited or the
+        // timeout elapses (5 s default when `timeout_ms == 0`). Returns
+        // 0 on clean drain, 1 on timeout. Safe to call when no lambda
+        // actors were spawned (returns immediately).
+        "hew_lambda_drain_all" => ctx.i32_type().fn_type(&[i64_ty.into()], false),
+        // hew_reply_payload_free(ptr: *mut u8, len: usize) -> void
+        // (`hew-runtime/src/reply_channel.rs:500`). Frees the libc-
+        // allocated reply buffer the runtime wrote into the ask's
+        // `*reply_out` slot. Paired with the ask reply-decode in
+        // codegen's `hew_lambda_actor_ask` arm; null-safe per libc.
+        "hew_reply_payload_free" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
         // hew_cancel_token_release(token: *mut HewCancellationToken) -> void
         // (`hew-runtime/src/task_scope.rs:182`). Drops one owned token
         // reference. Observation paths do not call this; elaborated drop plans
@@ -4589,29 +4688,28 @@ fn place_pointer<'ctx>(
         // second alloca. The alloca's LLVM type is `ptr` (opaque) per
         // `primitive_to_llvm`'s Duplex arm. LESSONS:
         // exhaustive-traversal-and-lowering, dedup-semantic-boundary.
-        Place::DuplexHandle(id) | Place::ActorHandle(id) => {
-            fn_ctx.locals.get(&id).copied().ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "Place::DuplexHandle({id}) references local {id} which was not allocated; \
-                 the producer must allocate a ResolvedTy::Named{{name:\"Duplex\",..}} local before \
-                 re-tagging it as a DuplexHandle"
-                ))
-            })
-        }
-        // The remaining M2 substrate Place variants are declared in
-        // the model but have no construction surface in this lane.
-        // Wiring lands in follow-on slices (Duplex::recv vertebra for
-        // SendHalf/RecvHalf; lambda-actor lane for LambdaActorHandle).
-        // Fail closed here so any reach-through surfaces immediately
-        // rather than emitting a binary with a misrouted load/store.
-        // LESSONS: boundary-fail-closed, parity-or-tracked-gap.
-        Place::LambdaActorHandle(_) | Place::SendHalf(_) | Place::RecvHalf(_) => {
-            Err(CodegenError::FailClosed(
-                "M2 SendHalf / RecvHalf / LambdaActorHandle Place lowering is not yet wired; \
-                 follow-on Duplex::recv + lambda-actor lanes wire the remaining C-ABI surface"
-                    .to_string(),
+        // M2 substrate: all four pointer-shaped handle Places address the
+        // same alloca shape — a pointer-width slot holding the C-ABI
+        // handle pointer (`*mut HewDuplexHandle` / `*mut HewActor` /
+        // `*mut HewLambdaActorHandle` / `*mut c_void` for half-handles).
+        // The producer allocates the underlying local with a Named-pointer
+        // type and then re-tags the Place to disambiguate the C-ABI shape
+        // for drop dispatch (DuplexHandle → hew_duplex_close,
+        // LambdaActorHandle → hew_lambda_actor_release,
+        // SendHalf/RecvHalf → hew_duplex_close_half with a direction
+        // discriminant the call site materialises from the Place variant).
+        // The codegen seam is one identical load through the alloca.
+        // LESSONS: exhaustive-traversal-and-lowering, dedup-semantic-boundary.
+        Place::DuplexHandle(id)
+        | Place::ActorHandle(id)
+        | Place::LambdaActorHandle(id)
+        | Place::SendHalf(id)
+        | Place::RecvHalf(id) => fn_ctx.locals.get(&id).copied().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "Place {place:?} references local {id} which was not allocated; \
+                 the producer must allocate a pointer-shaped local before re-tagging it"
             ))
-        }
+        }),
         // Tagged-union sub-structure addressing. `MachineTag` GEPs to
         // outer-struct field 0 (the discriminant); `MachineVariant` GEPs
         // to outer-struct field 1 (the payload byte array), then bitcasts
@@ -16896,6 +16994,548 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
+        // ── M2 lambda-actor send/ask/release/new ──────────────────────────
+        //
+        // hew_lambda_actor_send(actor: *mut HewLambdaActorHandle,
+        //                       msg: *const u8, len: usize) -> i32
+        // (`hew-runtime/src/lambda_actor.rs:918`). Same ABI shape as
+        // hew_duplex_send: load the actor handle pointer from
+        // `Place::LambdaActorHandle(N)`'s alloca, spill the message
+        // value into a fresh i64 stack slot and pass its address,
+        // load the constant 8-byte length. Result discarded (return
+        // value is a SendError discriminant). MVP single-vertebra
+        // (8-byte spill); multi-byte/variable-length marshalling is
+        // a follow-on slice.
+        "hew_lambda_actor_send" => {
+            if args.len() != 3 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_lambda_actor_send): expected 3 args \
+                     (actor_handle, msg, len), got {}",
+                    args.len()
+                )));
+            }
+            let handle = load_duplex_handle(fn_ctx, args[0], "hew_lambda_actor_send arg0")?;
+            let msg_ptr = spill_msg_arg_as_ptr(fn_ctx, args[1], "lambda_send_msg")?;
+            let len = load_int_arg(fn_ctx, args[2], i64_ty, "lambda_send_len")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 3] =
+                [handle.into(), msg_ptr.into(), len.into()];
+            fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_lambda_actor_send_call")
+                .llvm_ctx("hew_lambda_actor_send call")?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_lambda_actor_send returns i32 (discarded — the SendError \
+                     discriminant is consumed at the runtime/result boundary by a \
+                     follow-on slice); producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_lambda_actor_ask(actor: *mut HewLambdaActorHandle,
+        //                      msg: *const u8, len: usize,
+        //                      reply_out: *mut *mut u8,
+        //                      reply_len_out: *mut usize) -> i32
+        // (`hew-runtime/src/lambda_actor.rs:1000`). args[3] / args[4]
+        // are MIR-side out-param slots (a Pointer local and an I64
+        // local respectively); pass their alloca addresses through to
+        // the runtime. Return is a SendError discriminant; discarded
+        // in this MVP (reply-decode and reply-buffer-free are a
+        // follow-on slice — `hew_reply_payload_free` must run on
+        // *reply_out when non-null).
+        "hew_lambda_actor_ask" => {
+            if args.len() != 6 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_lambda_actor_ask): expected 6 args \
+                     (actor_handle, msg, len, reply_out, reply_len_out, askerror_local), got {}",
+                    args.len()
+                )));
+            }
+            let handle = load_duplex_handle(fn_ctx, args[0], "hew_lambda_actor_ask arg0")?;
+            let msg_ptr = spill_msg_arg_as_ptr(fn_ctx, args[1], "lambda_ask_msg")?;
+            let len = load_int_arg(fn_ctx, args[2], i64_ty, "lambda_ask_len")?;
+            let (reply_out_ptr, _) = place_pointer(fn_ctx, args[3])?;
+            let (reply_len_out_ptr, _) = place_pointer(fn_ctx, args[4])?;
+            // args[5]: codegen-only `AskError` Place::Local — the Err-path
+            // materialises `Result::Err(AskError::<variant>)` through this
+            // local via `emit_result_err`. NOT passed to the runtime call.
+            let error_dest = args[5];
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 5] = [
+                handle.into(),
+                msg_ptr.into(),
+                len.into(),
+                reply_out_ptr.into(),
+                reply_len_out_ptr.into(),
+            ];
+            // Capture the call's i32 SendError status — Ok=0, anything
+            // else is a failure (Closed=1, Full=2, ActorStopped=3,
+            // DoubleClose=4, OrphanedAsk=5). Pre-fix codegen ignored
+            // this and unconditionally loaded `*reply_out` (which the
+            // runtime zeros on every failure path) → null-deref UB on
+            // stopped / orphaned / send-failed paths. Branch on the
+            // status: Ok → reply-decode; Err → materialise
+            // `Result::Err(AskError::<variant>)` without touching the
+            // null reply pointer. (Security review fix 2026-06-08.)
+            let call_site = fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_lambda_actor_ask_call")
+                .llvm_ctx("hew_lambda_actor_ask call")?;
+            if let Some(d) = dest {
+                let status_val = call_site
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_lambda_actor_ask returned void — expected i32 status".into(),
+                        )
+                    })?
+                    .into_int_value();
+                let zero_i32 = i32_ty.const_zero();
+                let is_ok = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        status_val,
+                        zero_i32,
+                        "lambda_ask_status_is_ok",
+                    )
+                    .llvm_ctx("hew_lambda_actor_ask status icmp")?;
+                let current_fn = fn_ctx
+                    .builder
+                    .get_insert_block()
+                    .ok_or_else(|| CodegenError::FailClosed("no insert block".into()))?
+                    .get_parent()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("no parent fn at lambda ask split".into())
+                    })?;
+                let ok_bb = fn_ctx.ctx.append_basic_block(current_fn, "lambda_ask_ok");
+                let payload_ok_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(current_fn, "lambda_ask_payload_ok");
+                let payload_invalid_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(current_fn, "lambda_ask_payload_invalid");
+                let err_bb = fn_ctx.ctx.append_basic_block(current_fn, "lambda_ask_err");
+                let merge_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(current_fn, "lambda_ask_merge");
+                fn_ctx
+                    .builder
+                    .build_conditional_branch(is_ok, ok_bb, err_bb)
+                    .llvm_ctx("hew_lambda_actor_ask status cond br")?;
+
+                // ── Ok branch: load reply out-params, then GUARD on
+                //              (reply_ptr != null && reply_len >= 8) before
+                //              decoding. Pre-guard, the codegen blindly
+                //              loaded an i64 from `*reply_out` whenever
+                //              status was Ok — but the runtime can return
+                //              status=Ok with reply_ptr=null on reply-buffer
+                //              allocation failure (`hew_reply` OOM path,
+                //              `reply_channel.rs:426-440`), and a future
+                //              short-reply body would over-read past the
+                //              published buffer. Branch on the validity
+                //              predicate: valid → decode; invalid →
+                //              materialise `AskError::PayloadSizeMismatch`
+                //              and bail without dereferencing reply_ptr.
+                //              (Security review fix 2026-06-08, final.) ──
+                fn_ctx.builder.position_at_end(ok_bb);
+                let reply_ptr_val = fn_ctx
+                    .builder
+                    .build_load(ptr_ty, reply_out_ptr, "lambda_ask_reply_ptr_load")
+                    .llvm_ctx("hew_lambda_actor_ask reply ptr load")?
+                    .into_pointer_value();
+                let reply_len_val = fn_ctx
+                    .builder
+                    .build_load(i64_ty, reply_len_out_ptr, "lambda_ask_reply_len_load")
+                    .llvm_ctx("hew_lambda_actor_ask reply len load")?
+                    .into_int_value();
+                // The MVP reply width is fixed at 8 bytes (i64). Broader
+                // / variable widths land alongside multi-vertebra reply
+                // support; the predicate below tightens with them.
+                const MVP_REPLY_WIDTH_BYTES: u64 = 8;
+                let null_ptr = ptr_ty.const_null();
+                let expected_len = i64_ty.const_int(MVP_REPLY_WIDTH_BYTES, false);
+                let is_ptr_nonnull = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        reply_ptr_val,
+                        null_ptr,
+                        "lambda_ask_reply_ptr_nonnull",
+                    )
+                    .llvm_ctx("hew_lambda_actor_ask reply_ptr null check")?;
+                let is_len_ok = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::UGE,
+                        reply_len_val,
+                        expected_len,
+                        "lambda_ask_reply_len_ok",
+                    )
+                    .llvm_ctx("hew_lambda_actor_ask reply_len UGE check")?;
+                let is_payload_valid = fn_ctx
+                    .builder
+                    .build_and(is_ptr_nonnull, is_len_ok, "lambda_ask_payload_valid")
+                    .llvm_ctx("hew_lambda_actor_ask payload validity AND")?;
+                fn_ctx
+                    .builder
+                    .build_conditional_branch(is_payload_valid, payload_ok_bb, payload_invalid_bb)
+                    .llvm_ctx("hew_lambda_actor_ask payload-valid cond br")?;
+
+                // ── payload_ok branch: decode the i64 reply, store
+                //              Result::Ok, free the libc-allocated reply
+                //              buffer. ──
+                fn_ctx.builder.position_at_end(payload_ok_bb);
+                // Load the i64 reply value from the body-published buffer.
+                // The MVP fixes reply width to 8 bytes (i64); broader
+                // widths land alongside multi-vertebra reply support.
+                let reply_val = fn_ctx
+                    .builder
+                    .build_load(i64_ty, reply_ptr_val, "lambda_ask_reply_value_load")
+                    .llvm_ctx("hew_lambda_actor_ask reply value load")?;
+                // Materialise the reply into the user's `Result<T, AskError>`
+                // dest via the same tagged-union helpers ordinary `Result`
+                // producers use (`emit_result_ok` / `emit_node_lookup_call`
+                // precedent): store tag=0 (Ok) into the dest's
+                // MachineTag slot, then store the loaded reply value into
+                // MachineVariant { variant_idx: 0, field_idx: 0 }. Storing
+                // the raw i64 into the outer struct's start would clobber
+                // the discriminant byte and yield a Result whose tag is
+                // the low byte of the reply value — silent miscompile.
+                let dest_local = composite_dest_local(d, "hew_lambda_actor_ask")?;
+                store_composite_tag(fn_ctx, dest_local, 0, "hew_lambda_actor_ask")?;
+                let (ok_field_ptr, _ok_field_ty) = place_pointer(
+                    fn_ctx,
+                    Place::MachineVariant {
+                        local: dest_local,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                )?;
+                fn_ctx
+                    .builder
+                    .build_store(ok_field_ptr, reply_val)
+                    .llvm_ctx("hew_lambda_actor_ask Result::Ok payload store")?;
+                // Free the libc-allocated reply buffer the runtime
+                // published (`hew_reply` copies the body's Box-allocated
+                // payload into a libc-allocated buffer before publish so
+                // the waiter — us — can free with libc::free). For
+                // zero-length replies the runtime returns a null pointer
+                // and `hew_reply_payload_free` no-ops (`libc::free(null)`).
+                let free_fn = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_reply_payload_free",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        free_fn,
+                        &[reply_ptr_val.into(), reply_len_val.into()],
+                        "hew_reply_payload_free_call",
+                    )
+                    .llvm_ctx("hew_reply_payload_free call")?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(merge_bb)
+                    .llvm_ctx("hew_lambda_actor_ask payload-ok branch to merge")?;
+
+                // ── payload_invalid branch: runtime returned status=Ok
+                //              but the reply payload is null or short.
+                //              Free the libc payload unconditionally
+                //              (no-op on null, valid for any length, so
+                //              even a short non-null buffer is reclaimed
+                //              not leaked), then materialise
+                //              `Result::Err(AskError::PayloadSizeMismatch)`.
+                //              Distinct from the Err branch below (which
+                //              handles non-Ok status); this branch handles
+                //              status=Ok / payload-malformed (today this
+                //              only fires on `hew_reply` OOM where the
+                //              copy-into-libc-buffer step failed and the
+                //              runtime fell through to publish null with
+                //              len=0 — see runtime
+                //              `reply_channel.rs:426-440`). ──
+                fn_ctx.builder.position_at_end(payload_invalid_bb);
+                fn_ctx
+                    .builder
+                    .build_call(
+                        free_fn,
+                        &[reply_ptr_val.into(), reply_len_val.into()],
+                        "hew_reply_payload_free_invalid_call",
+                    )
+                    .llvm_ctx("hew_reply_payload_free invalid-path call")?;
+                // AskError::PayloadSizeMismatch = 7 (see Err-branch
+                // discriminant catalog comment below).
+                const ASKERR_PAYLOAD_SIZE_MISMATCH: u64 = 7;
+                let askerr_payload_size_mismatch =
+                    i32_ty.const_int(ASKERR_PAYLOAD_SIZE_MISMATCH, false);
+                let error_local_invalid =
+                    composite_dest_local(error_dest, "hew_lambda_actor_ask payload-invalid")?;
+                let (error_tag_ptr_invalid, error_tag_ty_invalid) =
+                    place_pointer(fn_ctx, Place::MachineTag(error_local_invalid))?;
+                let error_tag_int_ty_invalid = match error_tag_ty_invalid {
+                    BasicTypeEnum::IntType(t) => t,
+                    other => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "hew_lambda_actor_ask AskError tag projection \
+                             (payload-invalid) must be integer, got {other:?}"
+                        )));
+                    }
+                };
+                let askerr_payload_widened = match askerr_payload_size_mismatch
+                    .get_type()
+                    .get_bit_width()
+                    .cmp(&error_tag_int_ty_invalid.get_bit_width())
+                {
+                    std::cmp::Ordering::Equal => askerr_payload_size_mismatch,
+                    std::cmp::Ordering::Less => fn_ctx
+                        .builder
+                        .build_int_z_extend(
+                            askerr_payload_size_mismatch,
+                            error_tag_int_ty_invalid,
+                            "lambda_ask_err_payload_zext",
+                        )
+                        .llvm_ctx("lambda ask err payload-invalid zext")?,
+                    std::cmp::Ordering::Greater => fn_ctx
+                        .builder
+                        .build_int_truncate(
+                            askerr_payload_size_mismatch,
+                            error_tag_int_ty_invalid,
+                            "lambda_ask_err_payload_trunc",
+                        )
+                        .llvm_ctx("lambda ask err payload-invalid trunc")?,
+                };
+                fn_ctx
+                    .builder
+                    .build_store(error_tag_ptr_invalid, askerr_payload_widened)
+                    .llvm_ctx("store hew_lambda_actor_ask AskError tag (payload-invalid)")?;
+                emit_result_err(fn_ctx, d, error_dest)?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(merge_bb)
+                    .llvm_ctx("hew_lambda_actor_ask payload-invalid branch to merge")?;
+
+                // ── Err branch: map SendError → AskError, store
+                //              Result::Err(AskError::<variant>). The
+                //              runtime guarantees `*reply_out` is null
+                //              and `*reply_len_out` is 0 on every failure
+                //              path, so we do NOT load through reply_ptr
+                //              and do NOT call `hew_reply_payload_free`
+                //              (libc::free(null) is a no-op but skipping
+                //              keeps the Err path minimal). ──
+                fn_ctx.builder.position_at_end(err_bb);
+                // Status → AskError tag mapping. The AskError enum's
+                // discriminants come from `hew-types/src/builtin_enums.rs`:
+                //   0=NoError, 1=NodeNotRunning, 2=RoutingFailed,
+                //   3=EncodeFailed, 4=SendFailed, 5=Timeout,
+                //   6=ConnectionDropped, 7=PayloadSizeMismatch,
+                //   8=WorkerAtCapacity, 9=ActorStopped, 10=MailboxFull,
+                //   11=OrphanedAsk, 12=NoRunnableWork.
+                // SendError discriminants (`hew-runtime/src/duplex.rs`):
+                //   1=Closed, 2=Full, 3=ActorStopped, 4=DoubleClose,
+                //   5=OrphanedAsk.
+                // Mapping (load-bearing; matches runtime's typed-error
+                // contract):
+                //   Closed       (1) → SendFailed (4)  — closed before send
+                //   Full         (2) → MailboxFull (10)
+                //   ActorStopped (3) → ActorStopped (9)
+                //   DoubleClose  (4) → SendFailed (4)  — handle released
+                //   OrphanedAsk  (5) → OrphanedAsk (11)
+                // Unknown statuses fall through to SendFailed (4) — a
+                // catch-all that surfaces a typed error rather than
+                // silent UB. A `switch` is the structural fit (LLVM
+                // lowers to a jump table or a sequence of icmps depending
+                // on density).
+                const ASKERR_SEND_FAILED: u64 = 4;
+                const ASKERR_ACTOR_STOPPED: u64 = 9;
+                const ASKERR_MAILBOX_FULL: u64 = 10;
+                const ASKERR_ORPHANED_ASK: u64 = 11;
+                let askerr_send_failed = i32_ty.const_int(ASKERR_SEND_FAILED, false);
+                let askerr_actor_stopped = i32_ty.const_int(ASKERR_ACTOR_STOPPED, false);
+                let askerr_mailbox_full = i32_ty.const_int(ASKERR_MAILBOX_FULL, false);
+                let askerr_orphaned_ask = i32_ty.const_int(ASKERR_ORPHANED_ASK, false);
+                // Chain of selects: start with the catch-all (SendFailed)
+                // and override for each known status. Equivalent to a
+                // switch but avoids splitting the err_bb into more blocks.
+                let one = i32_ty.const_int(1, false);
+                let two = i32_ty.const_int(2, false);
+                let three = i32_ty.const_int(3, false);
+                let five = i32_ty.const_int(5, false);
+                let is_full = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        status_val,
+                        two,
+                        "lambda_ask_is_full",
+                    )
+                    .llvm_ctx("lambda ask is-full cmp")?;
+                let is_stopped = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        status_val,
+                        three,
+                        "lambda_ask_is_stopped",
+                    )
+                    .llvm_ctx("lambda ask is-stopped cmp")?;
+                let is_orphaned = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        status_val,
+                        five,
+                        "lambda_ask_is_orphaned",
+                    )
+                    .llvm_ctx("lambda ask is-orphaned cmp")?;
+                let _ = one; // closed (1) and DoubleClose (4) both → SendFailed catch-all
+                let after_full = fn_ctx
+                    .builder
+                    .build_select(
+                        is_full,
+                        askerr_mailbox_full,
+                        askerr_send_failed,
+                        "lambda_ask_err_after_full",
+                    )
+                    .llvm_ctx("lambda ask err select full")?
+                    .into_int_value();
+                let after_stopped = fn_ctx
+                    .builder
+                    .build_select(
+                        is_stopped,
+                        askerr_actor_stopped,
+                        after_full,
+                        "lambda_ask_err_after_stopped",
+                    )
+                    .llvm_ctx("lambda ask err select stopped")?
+                    .into_int_value();
+                let askerr_tag = fn_ctx
+                    .builder
+                    .build_select(
+                        is_orphaned,
+                        askerr_orphaned_ask,
+                        after_stopped,
+                        "lambda_ask_err_askerr_tag",
+                    )
+                    .llvm_ctx("lambda ask err select orphaned")?
+                    .into_int_value();
+                // Store the AskError tag into the error_dest local's
+                // MachineTag slot, then bind Result::Err(error_dest)
+                // into the user's `dest`. The AskError type is a pure
+                // unit-variant enum so its only field is the tag — no
+                // payload copy beyond the tag store is needed.
+                let error_local = composite_dest_local(error_dest, "hew_lambda_actor_ask Err")?;
+                let (error_tag_ptr, error_tag_ty) =
+                    place_pointer(fn_ctx, Place::MachineTag(error_local))?;
+                let error_tag_int_ty = match error_tag_ty {
+                    BasicTypeEnum::IntType(t) => t,
+                    other => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "hew_lambda_actor_ask AskError tag projection must be \
+                             integer, got {other:?}"
+                        )));
+                    }
+                };
+                let askerr_tag_widened = match askerr_tag
+                    .get_type()
+                    .get_bit_width()
+                    .cmp(&error_tag_int_ty.get_bit_width())
+                {
+                    std::cmp::Ordering::Equal => askerr_tag,
+                    std::cmp::Ordering::Less => fn_ctx
+                        .builder
+                        .build_int_z_extend(askerr_tag, error_tag_int_ty, "lambda_ask_err_zext")
+                        .llvm_ctx("lambda ask err zext")?,
+                    std::cmp::Ordering::Greater => fn_ctx
+                        .builder
+                        .build_int_truncate(askerr_tag, error_tag_int_ty, "lambda_ask_err_trunc")
+                        .llvm_ctx("lambda ask err trunc")?,
+                };
+                fn_ctx
+                    .builder
+                    .build_store(error_tag_ptr, askerr_tag_widened)
+                    .llvm_ctx("store hew_lambda_actor_ask AskError tag")?;
+                emit_result_err(fn_ctx, d, error_dest)?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(merge_bb)
+                    .llvm_ctx("hew_lambda_actor_ask err branch to merge")?;
+
+                // ── Merge: subsequent instructions resume here. ──
+                fn_ctx.builder.position_at_end(merge_bb);
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32.
+        // The CallRuntimeAbi surface for this symbol mirrors the drop-
+        // dispatch path in `lower_drop_runtime` (the `Drop` instr is
+        // the canonical close site for handle ownership; CallRuntimeAbi
+        // is the producer surface for the same release call when a
+        // future slice (e.g. explicit `.release()` on a handle) wants
+        // it inline). Result discarded.
+        "hew_lambda_actor_release" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_lambda_actor_release): expected 1 arg \
+                     (actor_handle), got {}",
+                    args.len()
+                )));
+            }
+            let handle = load_duplex_handle(fn_ctx, args[0], "hew_lambda_actor_release arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[handle.into()], "hew_lambda_actor_release_call")
+                .llvm_ctx("hew_lambda_actor_release call")?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_lambda_actor_release returns i32 (discarded); \
+                     producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_lambda_actor_new(mailbox_capacity: usize, shape: i32,
+        //                      body_fn: *const HewLambdaActorBody,
+        //                      state: *mut c_void,
+        //                      state_drop: *const HewLambdaActorStateDrop)
+        //   -> *mut HewLambdaActorHandle
+        // (`hew-runtime/src/lambda_actor.rs:821`). The body_fn /
+        // state_drop pointers are function pointers and cannot be
+        // expressed as `Place` args — the spawn-site lowering uses the
+        // dedicated `Terminator::MakeLambdaActor` (mirrors
+        // `Terminator::MakeGenerator`); this CallRuntimeAbi arm is a
+        // fail-closed sentinel so the producer surface and codegen
+        // surface stay in lock-step (the M2 allowlist accepts the
+        // symbol; codegen rejects it from the wrong producer surface).
+        "hew_lambda_actor_new" => {
+            return Err(CodegenError::FailClosed(format!(
+                "Instr::CallRuntimeAbi(hew_lambda_actor_new): the lambda-actor \
+                 construction surface is `Terminator::MakeLambdaActor` (function- \
+                 pointer args cannot be expressed as MIR `Place` values); routing \
+                 `hew_lambda_actor_new` through CallRuntimeAbi is a producer-side \
+                 error. args.len()={}, dest={dest:?}",
+                args.len()
+            )));
+        }
         // ── Bytes value ABI ───────────────────────────────────────────────
         //
         // hew_bytes_push(triple: &mut BytesTriple, byte: u8) -> void.
@@ -20112,6 +20752,78 @@ fn spill_int_arg_as_ptr<'ctx>(
     fn_ctx
         .builder
         .build_store(slot, v)
+        .llvm_ctx_with(|| format!("{label} spill store"))?;
+    Ok(slot)
+}
+
+/// Spill an arbitrary scalar/handle Place into a fresh 8-byte zero-padded
+/// stack slot and return the slot address typed as `ptr`. Used by the
+/// lambda-actor send/ask runtime ABI which takes an opaque `*const u8`
+/// message buffer + a hardcoded length of 8 (single-vertebra MVP wire
+/// format; the body-side msg-deserialise prologue at the matching site
+/// in `lower_function` reads back exactly `sizeof(user_ty)` bytes).
+///
+/// CRITICAL: the slot is ALWAYS i64-sized (8 bytes) regardless of the
+/// source type's actual width — for an `i32`/`u32`/`bool`/`char`/etc.
+/// message the slot must be larger than the source so the runtime's
+/// 8-byte read does NOT over-read past the source's stack object.
+/// (Pre-fix, the slot was sized to the source type, so an `i32` source
+/// gave a 4-byte alloca and the runtime read 4 bytes of adjacent stack;
+/// `bool`/`u8` gave a 1-byte alloca and 7 bytes of adjacent stack — a
+/// real stack over-read security bug per the security review.) The
+/// alloca is zero-initialised before the typed store of the source
+/// value: an i32 typed store at the base of the i64 alloca writes the
+/// 4 low bytes and the high 4 bytes remain zero (little-endian) — so
+/// the wire is the source value followed by zero padding to 8 bytes.
+///
+/// MVP single-vertebra: source types whose ABI byte size is > 8 are
+/// fail-closed here (the 8-byte wire cannot represent them); aggregate
+/// / multi-vertebra packing is a follow-on slice.
+fn spill_msg_arg_as_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    label: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let (src_slot, src_ty) = place_pointer(fn_ctx, place)?;
+    let (src_size, _src_align) = abi_size_align(src_ty, Some(fn_ctx.target_data))?;
+    if src_size > 8 {
+        return Err(CodegenError::FailClosed(format!(
+            "{label}: source type {src_ty:?} has ABI byte size {src_size} > 8 — \
+             the lambda-actor single-vertebra wire format is 8 bytes; \
+             aggregate / multi-vertebra message packing is a follow-on slice"
+        )));
+    }
+    let loaded = fn_ctx
+        .builder
+        .build_load(src_ty, src_slot, &format!("{label}_load"))
+        .llvm_ctx_with(|| format!("{label} load"))?;
+    // Always alloca i64 (8 bytes, 8-byte aligned) so the runtime's
+    // hardcoded 8-byte read has a full 8-byte stack object to read
+    // from regardless of the source value's byte width.
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let slot = fn_ctx
+        .builder
+        .build_alloca(i64_ty, &format!("{label}_spill"))
+        .llvm_ctx_with(|| format!("{label} spill alloca"))?;
+    // Zero-init the full 8-byte slot. Required so the high bytes
+    // beyond the source value's width are deterministically zero;
+    // without this, the runtime's 8-byte read would surface the
+    // alloca's uninitialised bytes (still in-bounds, but undefined
+    // bits leaked over the channel).
+    fn_ctx
+        .builder
+        .build_store(slot, i64_ty.const_zero())
+        .llvm_ctx_with(|| format!("{label} spill zero-init"))?;
+    // Typed store of the loaded source value at the slot's base.
+    // LLVM stores `sizeof(src_ty)` bytes here; the higher bytes
+    // remain zero from the prior zero-init (little-endian: source
+    // value occupies the low bytes, zero padding occupies the high
+    // bytes — matching how the body's msg-deserialise prologue
+    // reads back exactly `sizeof(user_ty)` bytes from the slot's
+    // base).
+    fn_ctx
+        .builder
+        .build_store(slot, loaded)
         .llvm_ctx_with(|| format!("{label} spill store"))?;
     Ok(slot)
 }
@@ -25634,6 +26346,33 @@ fn lower_terminator<'ctx>(
                     .build_call(sched_run, &[], "hew_sched_run_call")
                     .llvm_ctx("hew_sched_run call")?;
             }
+            // Lambda-actor drain: each lambda actor runs on its own OS
+            // thread outside the work-stealing scheduler, so the
+            // `hew_shutdown_wait` above does not cover them. Without this
+            // drain a fire-and-forget `let log = actor |s|{...}; log("hi")`
+            // races process termination and silently drops the body's
+            // `println`. `hew_lambda_drain_all` blocks until every
+            // dispatch thread has exited (or the 5 s default timeout
+            // elapses), and is a no-op when no lambda actors were
+            // spawned — so emitting unconditionally on every native
+            // `main` is cheap.
+            if fn_ctx.emit_lambda_drain_epilogue {
+                let i64_ty = fn_ctx.ctx.i64_type();
+                let drain_all = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_lambda_drain_all",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        drain_all,
+                        &[i64_ty.const_int(0, false).into()],
+                        "hew_lambda_drain_all_call",
+                    )
+                    .llvm_ctx("hew_lambda_drain_all call")?;
+            }
             // Coroutine completion (W6.010 value routing): a suspendable handler
             // does NOT `ret` its Hew value — the ramp returns the `coro.begin`
             // handle. The body DEPOSITS its logical reply value directly onto its
@@ -25745,6 +26484,122 @@ fn lower_terminator<'ctx>(
                     "coro.final",
                 )?;
                 return Ok(());
+            }
+            if let Some(shape) = fn_ctx.lambda_actor_shape {
+                // Lambda-actor body return epilogue. The runtime ABI return
+                // is i32 (status code); the user reply value lives in
+                // `return_slot`, and for Ask shape must be serialised into
+                // a freshly-allocated reply buffer wired through the
+                // `reply_out` / `reply_len_out` slots (`Local(3)` /
+                // `Local(4)`).
+                //
+                // Tell: no reply. Return i32 0 unconditionally.
+                // Ask: allocate `reply_width` bytes via
+                //   `hew_lambda_body_alloc_reply_buf`, write the reply
+                //   value, store (buf, width) into *reply_out /
+                //   *reply_len_out, return i32 0.
+                let i32_ty = fn_ctx.ctx.i32_type();
+                let i64_ty = fn_ctx.ctx.i64_type();
+                let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+                match shape {
+                    hew_mir::LambdaActorShape::Tell => {
+                        fn_ctx
+                            .builder
+                            .build_return(Some(&i32_ty.const_zero()))
+                            .llvm_ctx("lambda_actor_body Tell ret 0")?;
+                        return Ok(());
+                    }
+                    hew_mir::LambdaActorShape::Ask => {
+                        // MVP: 8-byte i64 reply width (matches the MVP
+                        // lambda_callable_ask fixture). A future
+                        // type-driven width selection will derive this
+                        // from `fn_ctx.return_resolved_ty`.
+                        let reply_width: u64 = 8;
+                        let alloc_fn = intern_runtime_decl(
+                            fn_ctx.ctx,
+                            fn_ctx.llvm_mod,
+                            &mut fn_ctx.runtime_decls.borrow_mut(),
+                            "hew_lambda_body_alloc_reply_buf",
+                        )?;
+                        let buf_ptr = fn_ctx
+                            .builder
+                            .build_call(
+                                alloc_fn,
+                                &[i64_ty.const_int(reply_width, false).into()],
+                                "lambda_body_reply_alloc",
+                            )
+                            .llvm_ctx("hew_lambda_body_alloc_reply_buf call")?
+                            .try_as_basic_value()
+                            .basic()
+                            .ok_or_else(|| {
+                                CodegenError::FailClosed(
+                                    "hew_lambda_body_alloc_reply_buf returned void".into(),
+                                )
+                            })?
+                            .into_pointer_value();
+                        // Load the user reply value out of return_slot and
+                        // copy it into the freshly-allocated reply buffer.
+                        // The slot's type was sized to the user reply
+                        // (i64 today) by the LambdaActorBody arm of
+                        // `body_return_ty_llvm`.
+                        let reply_val = fn_ctx
+                            .builder
+                            .build_load(
+                                fn_ctx.return_ty,
+                                fn_ctx.return_slot,
+                                "lambda_body_reply_load",
+                            )
+                            .llvm_ctx("lambda body reply load")?;
+                        fn_ctx
+                            .builder
+                            .build_store(buf_ptr, reply_val)
+                            .llvm_ctx("lambda body reply store")?;
+                        // Store buf_ptr into *reply_out (Local(3)) and
+                        // width into *reply_len_out (Local(4)).
+                        let (reply_out_slot, _) = *fn_ctx.locals.get(&3u32).ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "lambda actor body Ask: missing Local(3) reply_out slot".into(),
+                            )
+                        })?;
+                        let (reply_len_out_slot, _) =
+                            *fn_ctx.locals.get(&4u32).ok_or_else(|| {
+                                CodegenError::FailClosed(
+                                    "lambda actor body Ask: missing Local(4) reply_len_out slot"
+                                        .into(),
+                                )
+                            })?;
+                        // Local(3) / Local(4) allocas hold the OUT-PARAM
+                        // pointers (`*mut *mut u8` / `*mut usize`). Load
+                        // them, then store buf_ptr / width through them.
+                        let reply_out_ptr = fn_ctx
+                            .builder
+                            .build_load(ptr_ty, reply_out_slot, "lambda_body_reply_out_ptr_load")
+                            .llvm_ctx("lambda body reply_out ptr load")?
+                            .into_pointer_value();
+                        let reply_len_out_ptr = fn_ctx
+                            .builder
+                            .build_load(
+                                ptr_ty,
+                                reply_len_out_slot,
+                                "lambda_body_reply_len_out_ptr_load",
+                            )
+                            .llvm_ctx("lambda body reply_len_out ptr load")?
+                            .into_pointer_value();
+                        fn_ctx
+                            .builder
+                            .build_store(reply_out_ptr, buf_ptr)
+                            .llvm_ctx("lambda body *reply_out = buf_ptr")?;
+                        fn_ctx
+                            .builder
+                            .build_store(reply_len_out_ptr, i64_ty.const_int(reply_width, false))
+                            .llvm_ctx("lambda body *reply_len_out = width")?;
+                        fn_ctx
+                            .builder
+                            .build_return(Some(&i32_ty.const_zero()))
+                            .llvm_ctx("lambda_actor_body Ask ret 0")?;
+                        return Ok(());
+                    }
+                }
             }
             if matches!(fn_ctx.return_resolved_ty, ResolvedTy::Unit) {
                 fn_ctx
@@ -26545,6 +27400,127 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_unconditional_branch(next_bb)
                 .llvm_ctx("MakeGenerator br next")?;
+        }
+        Terminator::MakeLambdaActor {
+            dest,
+            body_fn,
+            state_drop_fn,
+            shape,
+            mailbox_capacity,
+            next,
+        } => {
+            // Lambda-actor construction (`hew-runtime/src/lambda_actor.rs`).
+            // The MIR producer (`lower_spawn_lambda_actor`) emitted this
+            // terminator with the deterministic `__hew_lambda_body_*` body-fn
+            // name and `__hew_lambda_state_drop_*` drop-fn name; codegen
+            // resolves both functions' addresses and calls
+            // `hew_lambda_actor_new(mailbox_cap, shape, body_fn, null,
+            // state_drop_fn)`, storing the returned `*mut HewLambdaActorHandle`
+            // into `dest`. The constructed handle's drop
+            // (`hew_lambda_actor_release`) is scheduled at scope exit by the
+            // enclosing function's LIFO drop plan via `place_aware_drop_fn`.
+            //
+            // The state arg is null today: the MVP rejects closure captures
+            // (state-bearing lambdas land with the closure-capture lane).
+            // When captures arrive, this passes the address of the boxed
+            // capture environment instead, and `state_drop_fn` becomes the
+            // real env-dropper rather than the no-op stub.
+            let body_function = fn_ctx.llvm_mod.get_function(body_fn).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Terminator::MakeLambdaActor: body fn `{body_fn}` was not declared \
+                     before its construction site — `lower_spawn_lambda_actor` must \
+                     register the `__hew_lambda_body_*` function in the pipeline"
+                ))
+            })?;
+            // Resolve or synthesise the state-drop function. For the MVP
+            // (no captures), all lambda actors share a single module-local
+            // no-op stub: `extern "C-unwind" fn(*mut c_void) {}`. The
+            // runtime requires a non-null `state_drop` even when `state`
+            // is null (`hew_lambda_actor_new` validates both), so we
+            // always emit a callable address. Synthesising once at the
+            // first MakeLambdaActor site (rather than during pipeline
+            // module emission) keeps the substrate addition contained to
+            // the lambda-actor seam and avoids declaring a runtime
+            // symbol for what is structurally a codegen detail.
+            //
+            // When closure captures land, the producer will mint per-
+            // spawn drop names that release the boxed environment, and
+            // this fallback shrinks to "look up the named function only".
+            let drop_function = match fn_ctx.llvm_mod.get_function(state_drop_fn) {
+                Some(f) => f,
+                None if state_drop_fn == "__hew_lambda_state_drop_noop" => {
+                    let void_ty = fn_ctx.ctx.void_type();
+                    let ptr_arg_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+                    let fn_ty = void_ty.fn_type(&[ptr_arg_ty.into()], false);
+                    let func = fn_ctx.llvm_mod.add_function(
+                        "__hew_lambda_state_drop_noop",
+                        fn_ty,
+                        Some(inkwell::module::Linkage::Internal),
+                    );
+                    let entry_bb = fn_ctx.ctx.append_basic_block(func, "entry");
+                    let nested_builder = fn_ctx.ctx.create_builder();
+                    nested_builder.position_at_end(entry_bb);
+                    nested_builder
+                        .build_return(None)
+                        .llvm_ctx("lambda state-drop noop ret void")?;
+                    func
+                }
+                None => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Terminator::MakeLambdaActor: state-drop fn `{state_drop_fn}` was \
+                         not declared before its construction site — \
+                         `lower_spawn_lambda_actor` must register the \
+                         `__hew_lambda_state_drop_*` function in the pipeline"
+                    )));
+                }
+            };
+            let body_fn_ptr = body_function.as_global_value().as_pointer_value();
+            let drop_fn_ptr = drop_function.as_global_value().as_pointer_value();
+            let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+            let null_state = ptr_ty.const_null();
+            let i64_ty = fn_ctx.ctx.i64_type();
+            let i32_ty = fn_ctx.ctx.i32_type();
+            let mailbox_const = i64_ty.const_int(u64::from(*mailbox_capacity), false);
+            // i32 shape — sign-extended widening matches the cabi i32 ABI.
+            let shape_const =
+                i32_ty.const_int(u64::from(u32::try_from(*shape).unwrap_or(0)), false);
+            let new_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_lambda_actor_new",
+            )?;
+            let handle = fn_ctx
+                .builder
+                .build_call(
+                    new_fn,
+                    &[
+                        mailbox_const.into(),
+                        shape_const.into(),
+                        body_fn_ptr.into(),
+                        null_state.into(),
+                        drop_fn_ptr.into(),
+                    ],
+                    "hew_lambda_actor_new_call",
+                )
+                .llvm_ctx("hew_lambda_actor_new call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_lambda_actor_new returned void".into())
+                })?;
+            let (dest_slot, _dest_ty) = place_pointer(fn_ctx, *dest)?;
+            fn_ctx
+                .builder
+                .build_store(dest_slot, handle)
+                .llvm_ctx("hew_lambda_actor_new handle store")?;
+            let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
+                CodegenError::FailClosed(format!("MakeLambdaActor next bb{next} missing"))
+            })?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx("MakeLambdaActor br next")?;
         }
         Terminator::Send {
             actor,
@@ -28816,6 +29792,18 @@ fn emit_cancel_trap_or_return(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
             .llvm_ctx("coro cancel return handle")?;
         return Ok(());
     }
+    // Lambda-actor body's LLVM ABI return is `i32` (the runtime status code),
+    // independent of the USER reply type that sizes `return_slot`. A cancel
+    // exit here must `ret i32 0` regardless of `fn_ctx.return_ty` (which holds
+    // the logical user reply width). Mirrors the coroutine handling above.
+    if fn_ctx.lambda_actor_shape.is_some() {
+        let ret = fn_ctx.ctx.i32_type().const_zero();
+        fn_ctx
+            .builder
+            .build_return(Some(&ret))
+            .llvm_ctx("lambda body cancel return")?;
+        return Ok(());
+    }
     match fn_ctx.return_ty {
         BasicTypeEnum::IntType(i) => {
             let ret = i.const_zero();
@@ -29037,6 +30025,15 @@ fn declare_function<'ctx>(
     });
     let return_ty_llvm = if is_coroutine {
         ctx.ptr_type(AddressSpace::default()).into()
+    } else if matches!(func.call_conv, FunctionCallConv::LambdaActorBody(_)) {
+        // A lambda-actor body always returns the runtime ABI status `i32`
+        // (`HewLambdaActorBody`'s C signature); the user reply value is
+        // serialised through the `reply_out` / `reply_len_out` slots by
+        // the Return epilogue. The MIR `return_ty` carries the USER reply
+        // type (Unit for Tell, i64 for Ask) so the body's `ReturnSlot`
+        // alloca sizes correctly for the reply move; the LLVM ABI return
+        // is fixed to i32 here.
+        ctx.i32_type().into()
     } else {
         resolve_value_ty(&func.return_ty)?
     };
@@ -29585,6 +30582,14 @@ fn lower_function<'ctx>(
             }
             None => return_ty_llvm,
         },
+        None if matches!(func.call_conv, FunctionCallConv::LambdaActorBody(_)) => {
+            // A lambda-actor body's `return_ty` is the USER reply type
+            // (Unit for Tell, i64 for Ask). Size the body's return_slot
+            // alloca to that logical width — the LLVM ABI return is
+            // `i32` (the status code), serialised by the Return epilogue,
+            // not the contents of this slot.
+            resolve_ty(ctx, &func.return_ty, record_layouts)?
+        }
         None => return_ty_llvm,
     };
     let return_slot = builder
@@ -29786,6 +30791,93 @@ fn lower_function<'ctx>(
             .llvm_ctx_with(|| format!("param store {param_idx}"))?;
     }
 
+    // Lambda-actor body user-parameter deserialise prologue.
+    //
+    // The runtime ABI delivers user message bytes as a `*const u8` /
+    // `usize` pair (`Local(1)` = msg pointer alloca, `Local(2)` =
+    // msg_len alloca). After the standard 5-slot ABI parameter
+    // prologue (which writes the runtime arguments into Locals 0..=4),
+    // copy `msg_len` bytes from `*Local(1)` into each user-param
+    // alloca listed in `func.lambda_actor_user_param_locals`. The MVP
+    // single-vertebra wire format places the (sole) user param at
+    // byte offset 0; multi-param packing is a follow-on slice.
+    //
+    // WHY at body entry: the user-param locals are the slots HIR
+    // `BindingRef`s resolve to via `binding_locals`; they must be
+    // initialised before any body block can read them. WHY a memcpy
+    // (not a typed load + store): the wire format is opaque bytes
+    // by construction (the caller's `hew_lambda_actor_send` /
+    // `hew_lambda_actor_ask` spills the message Place into a raw
+    // byte buffer); a memcpy preserves whatever ABI representation
+    // the sender used, including the 8-byte string handle pointer.
+    if matches!(func.call_conv, FunctionCallConv::LambdaActorBody(_))
+        && !func.lambda_actor_user_param_locals.is_empty()
+    {
+        // Load the msg pointer (the runtime delivers it as the
+        // second ABI param; Local(1)'s alloca holds the ptr value).
+        let (msg_ptr_slot, _) = *locals.get(&1u32).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "lambda-actor body `{}` missing Local(1) (msg ptr) slot",
+                func.name
+            ))
+        })?;
+        let msg_ptr_val = builder
+            .build_load(
+                ctx.ptr_type(AddressSpace::default()),
+                msg_ptr_slot,
+                "lambda_body_msg_ptr_load",
+            )
+            .llvm_ctx("lambda body msg ptr load")?
+            .into_pointer_value();
+        // For each user param, copy EXACTLY `sizeof(user_ty)` bytes
+        // from the wire's 8-byte slot at offset 0 into the user param's
+        // alloca. The sender (`spill_msg_arg_as_ptr`) zero-pads the
+        // high bytes of the 8-byte slot, so the low `sizeof(user_ty)`
+        // bytes are the source value and the rest is zero padding —
+        // we read back only the meaningful prefix.
+        //
+        // CRITICAL: do NOT hardcode the copy width to 8. The user
+        // param's alloca is sized to its own ABI byte width (1 for
+        // `bool`, 4 for `i32`, 8 for `i64`/`ptr`/`f64`); a memcpy of
+        // 8 bytes into a 1-byte alloca is a stack OVER-WRITE that
+        // corrupts adjacent stack objects (the security review's HIGH
+        // finding). Bounding the copy to the user param's actual size
+        // makes both ends agree on the meaningful payload width
+        // without changing the uniform 8-byte wire format.
+        for user_local_id in &func.lambda_actor_user_param_locals {
+            let (user_slot, user_ty) = *locals.get(user_local_id).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "lambda-actor body `{}` missing user-param Local({user_local_id}) slot",
+                    func.name
+                ))
+            })?;
+            let (user_size, _user_align) = abi_size_align(user_ty, Some(target_data))?;
+            if user_size > 8 {
+                return Err(CodegenError::FailClosed(format!(
+                    "lambda-actor body `{}` user-param Local({user_local_id}) has \
+                     ABI byte size {user_size} > 8 — the single-vertebra wire \
+                     format is 8 bytes; aggregate / multi-vertebra packing is a \
+                     follow-on slice",
+                    func.name
+                )));
+            }
+            builder
+                .build_memcpy(
+                    user_slot,
+                    1,
+                    msg_ptr_val,
+                    1,
+                    ctx.i64_type().const_int(user_size, false),
+                )
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!(
+                        "lambda-actor body `{}` user-param Local({user_local_id}) memcpy failed: {e:?}",
+                        func.name
+                    ))
+                })?;
+        }
+    }
+
     let actor_state_ty = if func.call_conv == FunctionCallConv::ActorHandler {
         actor_name_from_handler_symbol(&func.name)
             .and_then(|actor_name| record_layouts.get(actor_name).copied())
@@ -29856,6 +30948,19 @@ fn lower_function<'ctx>(
         && !has_supervisors
         && !emit_wasm_entry_alias;
 
+    // Lambda-actor drain epilogue: gated on `main` (native target) and
+    // unconditional w.r.t. lambda-actor usage. Each lambda actor runs on
+    // its own dedicated OS thread outside the work-stealing scheduler, so
+    // `hew_shutdown_wait` (which drains scheduler workers) doesn't cover
+    // them — without this drain a fire-and-forget `let log = actor |s| {
+    // … }; log("hi")` races process termination and silently drops the
+    // body's `println`. `hew_lambda_drain_all` returns immediately when
+    // no lambda actors were spawned, so the unconditional gate (on every
+    // native `main`) is cheap. Wasm32 lambda-actor support is HIR-gated
+    // off — the scan in `uses_wasm_excluded_symbol` rejects modules that
+    // would emit `Terminator::MakeLambdaActor` for a wasm target.
+    let emit_lambda_drain_epilogue = func.name == "main" && !emit_wasm_entry_alias;
+
     // The wasm32 analogue: a standalone `hew run --target wasm32-wasi` actor
     // program has no scheduler driver, so `main` must drain the cooperative
     // scheduler itself via `hew_sched_run()`. Same gate as the native epilogue
@@ -29872,6 +30977,7 @@ fn lower_function<'ctx>(
         llvm_mod,
         emit_drain_epilogue,
         emit_wasm_sched_drain,
+        emit_lambda_drain_epilogue,
         target_data,
         builder,
         return_slot,
@@ -29897,6 +31003,10 @@ fn lower_function<'ctx>(
         borrow_mode,
         borrow_tainted,
         coro: coro_state,
+        lambda_actor_shape: match func.call_conv {
+            FunctionCallConv::LambdaActorBody(shape) => Some(shape),
+            _ => None,
+        },
     };
 
     // Fail-closed boundary: reject composite returns whose heap-owning payload
@@ -33861,6 +34971,8 @@ mod tests {
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -34053,6 +35165,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let main = RawMirFunction {
             name: "main".to_string(),
@@ -34090,6 +35204,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -34164,6 +35280,8 @@ mod tests {
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+
+                lambda_actor_user_param_locals: Vec::new(),
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
@@ -34280,6 +35398,8 @@ mod tests {
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -34373,6 +35493,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -34496,6 +35618,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -34571,6 +35695,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -34640,6 +35766,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -34819,6 +35947,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -35023,6 +36153,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -35722,6 +36854,8 @@ mod tests {
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
 
         let pipeline = IrPipeline {
@@ -35804,6 +36938,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -35908,6 +37044,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         // The enclosing function: allocate a Generator-typed local, construct it
         // via MakeGenerator, then return.
@@ -35938,6 +37076,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -36006,6 +37146,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -36093,6 +37235,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let layout = GenStateLayout {
             function_name: body_name.to_string(),
@@ -36556,6 +37700,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -36661,6 +37807,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -36719,6 +37867,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -36775,6 +37925,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -37117,6 +38269,7 @@ mod tests {
             // intern shutdown symbols that are absent from the minimal fixture.
             emit_drain_epilogue: false,
             emit_wasm_sched_drain: false,
+            emit_lambda_drain_epilogue: false,
             target_data: &harness.target_data,
             builder,
             return_slot,
@@ -37151,6 +38304,8 @@ mod tests {
             // Composite-helper unit tests never lower a `Terminator::Suspend`;
             // no coroutine prologue state.
             coro: None,
+            // Test harness never exercises the lambda-actor body path.
+            lambda_actor_shape: None,
         }
     }
 
@@ -38327,6 +39482,8 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: vec![],
@@ -38468,6 +39625,8 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: vec![],
@@ -38812,6 +39971,8 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let elab = ElaboratedMirFunction {
             name: "frame_owned_drop_with_drop_fn".to_string(),
@@ -39006,6 +40167,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         // Minimal stub actor: no state fields, no handlers, no clone/drop
         // symbols.  The trampoline emits a vacuous dispatch switch; the
@@ -39214,6 +40377,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -39398,6 +40563,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -39575,6 +40742,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -39681,6 +40850,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }
     }
 
@@ -39704,6 +40875,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }
     }
 
@@ -39729,6 +40902,8 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let mut raw_mir = vec![main];
         let mut handler_layouts = Vec::with_capacity(handlers.len());
@@ -40583,6 +41758,8 @@ fn main() {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         };
         let pipeline =
             pipeline_with_actor_handlers("MallocWidthActor", vec![(handler_layout, handler_fn)]);

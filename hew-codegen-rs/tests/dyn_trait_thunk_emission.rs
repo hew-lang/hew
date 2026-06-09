@@ -73,6 +73,8 @@ fn impl_method_stub(
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     }
 }
 
@@ -390,6 +392,8 @@ fn impl_method_stub_value_recv(name: &str, ret: ResolvedTy) -> RawMirFunction {
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     }
 }
 

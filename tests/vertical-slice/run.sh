@@ -605,29 +605,39 @@ if grep -q 'panicked at' "${reject_output}"; then
   exit 1
 fi
 
-# Lambda-actor and Duplex surface: the type checker accepts these surfaces, but
-# `hew check` now also runs HIR/MIR/codegen-front gates. Lambda-actor dispatch
-# remains a fail-closed native lowering gap, so the vertical slice pins the
-# explicit diagnostic instead of treating these typechecker-only fixtures as
-# end-to-end accept fixtures.
+# Lambda-actor and Duplex surface: runnable fixtures end-to-end through
+# compile + execute, with diff-pinned stdout. The pre-fix path was
+# `hew check` only — that caught front-end gaps but not the codegen
+# uninit-handle, the ask null-deref decode, the small-msg stack
+# over-read, or the run-time wrapper leak. The runnable surface now
+# pins all four of those.
 
-# Typechecker-accept: tell-shaped lambda actor call dispatch.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/accept/lambda_callable_tell.hew" \
-  "M2 SendHalf / RecvHalf / LambdaActorHandle Place lowering is not yet wired" \
-  "lambda_callable_tell"
+# Accept: tell-shaped lambda actor call dispatch — exercises spawn,
+# `hew_lambda_actor_new`, env-less body synthesis, tell-send, and the
+# wrapper-free path on release at process exit.
+run_accept_expect_stdout "lambda_callable_tell"
 
-# Typechecker-accept: ask-shaped lambda actor call dispatch.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/accept/lambda_callable_ask.hew" \
-  "MIR lowering for indirect or unresolved function call is not implemented yet" \
-  "lambda_callable_ask"
+# Accept: ask-shaped lambda actor call dispatch — exercises the reply
+# channel, the B2 status-branched reply decode (Ok path), and the reply
+# payload free. Stdout pins `Ok(10)` materialisation through the match.
+run_accept_expect_stdout "lambda_callable_ask"
 
-# Typechecker-accept: lambda actor recursive self-call via let-binding name (§5.9 ratification 2).
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/accept/lambda_self_recursion.hew" \
-  "MIR lowering for indirect or unresolved function call is not implemented yet" \
-  "lambda_self_recursion"
+# Accept: lambda-actor binding literally named `log` pins the call-syntax
+# dispatch routing — pre-fix the callee-binding check resolved `log("hi")`
+# to the math `log` floor before the lambda-actor surface was consulted,
+# misrouting the send through the f64 logarithm. The fixture exercises
+# BOTH a tell-shaped and an ask-shaped binding named `log` so codegen
+# parity (send dispatch + ask reply decode) is held by the same routing.
+run_accept_expect_stdout "lambda_log_collision"
+
+# Accept: lambda-actor message types narrower than 8 bytes (`bool`, `i32`)
+# pin the 8-byte zero-padded wire format. Pre-fix, the sender allocated
+# the spill at the source type's width (1 byte for `bool`, 4 for `i32`)
+# while the runtime copied 8 bytes from it — a stack over-read; the
+# body's msg-deserialise prologue then memcpy'd 8 bytes into the user
+# param's same-narrow alloca — a stack over-write. Uses ask-shape so
+# stdout ordering is deterministic regardless of dispatch scheduling.
+run_accept_expect_stdout "lambda_small_msg"
 
 # Reject: non-Send message type (E_DUPLEX_NON_SEND).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/duplex_non_send.hew" >"${reject_output}" 2>&1; then
@@ -667,6 +677,19 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_self_escape.hew" >
   exit 1
 fi
 grep -q 'E_LAMBDA_SELF_ESCAPE' "${reject_output}"
+
+# Reject: lambda actor body capturing an outer binding (including
+# the let-binding's own name for forward self-recursion) fails closed
+# at MIR with `CannotMaterializeClosureCapture`. Pre-fix the spawn-side
+# silently skipped the capture wiring and returned the handle anyway —
+# the actor would then run with an uninitialised state pointer (check
+# OK, run rc=1, no diagnostic). A follow-on slice will land the env-pack
+# / env-unpack substrate; until then captures must fail closed at check.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_self_recursion.hew" >"${reject_output}" 2>&1; then
+  echo "expected lambda-self-recursion fixture to fail (capture not yet wired)" >&2
+  exit 1
+fi
+grep -q 'CannotMaterializeClosureCapture' "${reject_output}"
 
 # Reject: removed spawn-lambda syntax (E_SPAWN_LAMBDA_SYNTAX_REMOVED).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/spawn_lambda_removed.hew" >"${reject_output}" 2>&1; then

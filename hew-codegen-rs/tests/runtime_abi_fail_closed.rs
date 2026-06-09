@@ -2,16 +2,18 @@
 //!
 //! E4 wires real `LLVMBuildCall` emission for `hew_duplex_pair` and
 //! `hew_duplex_send` (and the close ritual for `hew_duplex_close`
-//! via `Instr::Drop`). The happy-path coverage lives in
-//! `emit_duplex_pair.rs`. This file pins the **remaining**
+//! via `Instr::Drop`). The M2 lambda-actor lane extends that to
+//! `hew_lambda_actor_{release, send, ask}`. The happy-path coverage
+//! lives in `emit_duplex_pair.rs`. This file pins the **remaining**
 //! boundary-fail-closed contracts that must survive every revision:
 //!
 //! 1. A symbol-shape mismatch (wrong arg count for a wired symbol)
 //!    still surfaces `CodegenError::FailClosed` naming the symbol —
 //!    never a silent miscompile of a partially-typed call.
-//! 2. M2-allowlist symbols not yet wired in codegen (today:
-//!    `hew_lambda_actor_release`) remain fail-closed so the producer
-//!    surface cannot outrun the codegen surface.
+//! 2. `hew_lambda_actor_release` reaches the codegen consumer
+//!    successfully (Ok(_)) — the M2 lane landed; pre-lane this was a
+//!    fail-closed pin, post-lane it is an Ok-pin so the parity
+//!    invariant flips with the wire-up.
 //!
 //! LESSONS: boundary-fail-closed (P0 row 49), parity-or-tracked-gap.
 
@@ -62,6 +64,8 @@ fn pipeline_with_call_runtime_abi_parts(
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -162,35 +166,45 @@ fn call_runtime_abi_fails_closed_with_symbol_in_message() {
     }
 }
 
-/// `hew_lambda_actor_release` is on the M2 allowlist but has no codegen
-/// lowering arm yet (the lambda-actor lane wires it). Until then, any
-/// `Instr::CallRuntimeAbi` for this symbol must surface
-/// `CodegenError::FailClosed` — the producer surface MUST NOT outrun
-/// the codegen surface (LESSONS `parity-or-tracked-gap`).
+/// `hew_lambda_actor_release` (the M2 lambda-actor lifecycle close
+/// symbol) now has a real codegen lowering arm — the M2 lambda-actor
+/// lane wires `release` (and `send`/`ask`) as `CallRuntimeAbi`
+/// targets, joining `hew_duplex_send` on the happy-path codegen
+/// surface. This regression pins the lane's invariant:
+/// `CallRuntimeAbi("hew_lambda_actor_release", [LambdaActorHandle(0)], None)`
+/// must reach the codegen consumer successfully (`Ok(_)`). The
+/// producer/codegen parity is held by `fn_type_for_symbol` declaring
+/// the i32→ptr signature and the matching arm in `lower_call_runtime_abi`.
+///
+/// LESSONS: parity-or-tracked-gap (P0). Inverted from a fail-closed
+/// pin to an Ok-pin when the M2 lane landed.
 #[test]
-fn call_runtime_abi_fails_closed_for_lambda_actor_release() {
-    let pipeline = pipeline_with_call_runtime_abi("hew_lambda_actor_release");
-    let tmp = std::env::temp_dir().join("hew-mir-4-5c-fail-closed-lambda");
+fn call_runtime_abi_succeeds_for_lambda_actor_release() {
+    let pipeline = pipeline_with_call_runtime_abi_parts(
+        "hew_lambda_actor_release",
+        vec![Place::LambdaActorHandle(0)],
+        None,
+        vec![ResolvedTy::Named {
+            name: "Duplex".to_string(),
+            args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
+            builtin: None,
+            is_opaque: false,
+        }],
+    );
+    let tmp = std::env::temp_dir().join("hew-mir-4-5c-ok-lambda-release");
     let options = EmitOptions {
-        module_name: "fail_closed_probe_lambda",
+        module_name: "ok_probe_lambda_release",
         out_dir: &tmp,
         native: false,
         wasm: false,
         target_triple: None,
     };
     let result = emit_module(&pipeline, &options);
-    match result {
-        Err(CodegenError::FailClosed(msg)) => {
-            assert!(
-                msg.contains("hew_lambda_actor_release"),
-                "FailClosed must name the lambda-actor lifecycle symbol; got: {msg}",
-            );
-        }
-        Err(other) => {
-            panic!("expected CodegenError::FailClosed for lambda-actor symbol; got {other:?}")
-        }
-        Ok(_) => panic!("expected codegen to fail closed on lambda-actor CallRuntimeAbi"),
-    }
+    assert!(
+        result.is_ok(),
+        "hew_lambda_actor_release CallRuntimeAbi with one LambdaActorHandle arg \
+         and dest=None must reach the codegen consumer (M2 lane landed); got {result:?}"
+    );
 }
 
 #[test]

@@ -60,6 +60,8 @@ fn floor_pipeline(
             decisions: vec![],
             intrinsic_id: Some(intrinsic_id.to_string()),
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: name.to_string(),

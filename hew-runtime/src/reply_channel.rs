@@ -28,6 +28,16 @@ static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static FORCE_REPLY_ALLOC_FAILURE: AtomicBool = AtomicBool::new(false);
 
+/// Force the next `alloc_reply_buffer` call to fail (return null), simulating
+/// OOM in the reply-buffer copy path inside `hew_reply`. Exposed to other
+/// runtime modules (e.g. `lambda_actor` tests) so they can pin the
+/// status=Ok / payload=null edge case the codegen ask-payload guard catches.
+/// Auto-clears after the next call to `alloc_reply_buffer`.
+#[cfg(test)]
+pub(crate) fn force_reply_alloc_failure_for_test() {
+    FORCE_REPLY_ALLOC_FAILURE.store(true, Ordering::Release);
+}
+
 // ── Debug allocator-pairing tracker ────────────────────────────────────────
 //
 // Reply payloads allocated here via `libc::malloc` are registered in the

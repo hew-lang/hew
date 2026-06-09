@@ -102,6 +102,8 @@ fn option_some_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -190,6 +192,8 @@ fn option_string_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -311,6 +315,8 @@ fn envelope_i64_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -382,6 +388,8 @@ fn bytes_return_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -446,6 +454,8 @@ fn tuple_of_bytes_return_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -523,6 +533,8 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+
+        lambda_actor_user_param_locals: Vec::new(),
     };
     IrPipeline {
         thir: Vec::new(),

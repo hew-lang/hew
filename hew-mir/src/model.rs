@@ -1441,6 +1441,18 @@ pub struct RawMirFunction {
     /// shapes the resume edge to `Err(AskError::Timeout)` on expiry. A side-table
     /// (not a carrier field) keeps the eight `Suspending*` terminators unchanged.
     pub await_deadline_ns: std::collections::HashMap<u32, i64>,
+    /// User-visible parameter locals for a `FunctionCallConv::LambdaActorBody`
+    /// function, in declaration order. Each entry is the index of a
+    /// `Place::Local(N)` whose `locals[N]` carries the user-visible type
+    /// (e.g. `i64`, `string`). Codegen iterates this list after the standard
+    /// five-slot ABI-parameter prologue and emits a per-param deserialise
+    /// fragment that loads the value from the message payload pointer
+    /// (`Place::Local(1)`) into the user-param alloca. Empty for every other
+    /// call convention. WHY a side-channel and not extra `params`: the LLVM
+    /// signature of a lambda-actor body is fixed by the runtime ABI to the
+    /// five-slot shape; the user params live INSIDE the message payload, not
+    /// in the LLVM argument list.
+    pub lambda_actor_user_param_locals: Vec<u32>,
 }
 
 /// A generic origin function lowered against abstract `ResolvedTy::TypeParam`
@@ -1551,6 +1563,16 @@ pub fn container_ingress_is_copy_in(target_symbol: &str) -> bool {
     matches!(target_symbol, "hew_vec_push" | "hew_vec_set")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LambdaActorShape {
+    /// One-way send: lambda body returns no value; the runtime treats the
+    /// reply slot as unused.
+    Tell,
+    /// Request/reply: lambda body produces a user reply value that codegen
+    /// serialises into the runtime reply buffer.
+    Ask,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FunctionCallConv {
     #[default]
@@ -1560,6 +1582,22 @@ pub enum FunctionCallConv {
     /// Synthetic adapter that gives a default-callconv free function the
     /// execution-context-bearing task-entry ABI required by `SpawnTaskDirect`.
     TaskEntry,
+    /// Synthesised body of a lambda actor (`actor |..| { .. }`). Codegen
+    /// emits the runtime ABI signature `extern "C-unwind" fn(*mut c_void state,
+    /// *const u8 msg, usize msg_len, *mut *mut u8 reply_out, *mut usize reply_len_out)
+    /// -> i32`, materialises the user-visible parameter locals from the message
+    /// payload at body entry, and (for `Ask` shape) serialises the body's
+    /// return-slot value into a freshly-allocated reply buffer via
+    /// `hew_lambda_body_alloc_reply_buf` before returning. The shape
+    /// discriminant carries that Tell/Ask selection.
+    ///
+    /// User-visible parameter locals (those that body HIR `BindingRef`s
+    /// resolve to) are listed in `RawMirFunction.lambda_actor_user_param_locals`
+    /// in declaration order; codegen iterates that list to emit the per-param
+    /// deserialise prologue. The first five MIR locals correspond to the five
+    /// runtime ABI parameters (`state`, `msg`, `msg_len`, `reply_out`,
+    /// `reply_len_out`), bound by the standard parameter prologue.
+    LambdaActorBody(LambdaActorShape),
 }
 
 impl FunctionCallConv {
@@ -1809,6 +1847,7 @@ impl BasicBlock {
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
             | Terminator::MakeGenerator { next, .. }
+            | Terminator::MakeLambdaActor { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
@@ -1974,6 +2013,37 @@ pub enum Terminator {
     MakeGenerator {
         dest: Place,
         body_fn: String,
+        next: u32,
+    },
+    /// Lambda-actor construction at an `actor |params| { body }` spawn
+    /// site. Codegen emits `hew_lambda_actor_new(mailbox_capacity, shape,
+    /// &body_fn, null_state, &state_drop_fn)` and stores the returned
+    /// `*mut HewLambdaActorHandle` into `dest` (a `Duplex<Msg, Reply>`-
+    /// typed `Place::LambdaActorHandle(N)`), then branches to `next`.
+    ///
+    /// `body_fn` is the deterministic `__hew_lambda_body_<owner>_<id>`
+    /// name minted by `lower_spawn_lambda_actor`; codegen resolves its
+    /// address via `get_function`. `state_drop_fn` is the symmetric
+    /// `__hew_lambda_state_drop_<owner>_<id>` no-op stub (no captures
+    /// in the M2 MVP, so `state` is null and the drop fn is a no-op).
+    ///
+    /// `shape` is the `LambdaShape` discriminant from
+    /// `hew-runtime/src/lambda_actor.rs:131`: `0 = Tell` (no reply),
+    /// `1 = Ask` (reply payload required from the body).
+    ///
+    /// Carried as a dedicated terminator (not `Terminator::Call` /
+    /// `Instr::CallRuntimeAbi`) because the body/state-drop function
+    /// pointer args cannot be expressed as MIR `Place` values — same
+    /// constraint as `Terminator::MakeGenerator` and `hew_gen_ctx_create`.
+    /// The producer-side `CallRuntimeAbi("hew_lambda_actor_new")` surface
+    /// is fail-closed in codegen for the same reason; routing through
+    /// `MakeLambdaActor` is the single sanctioned construction path.
+    MakeLambdaActor {
+        dest: Place,
+        body_fn: String,
+        state_drop_fn: String,
+        shape: i32,
+        mailbox_capacity: u32,
         next: u32,
     },
     /// Actor message send. The sent value at `value` crosses the

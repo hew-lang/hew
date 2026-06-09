@@ -90,6 +90,8 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "trap_probe".to_string(),

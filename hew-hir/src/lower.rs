@@ -27,9 +27,10 @@ use crate::node::{
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
     HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
     HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding,
-    HirMatchArmPredicate, HirModule, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl, HirVariant, HirVariantKind,
+    HirMatchArmPredicate, HirModule, HirPayloadPredicate, HirRecordDecl, HirRegexLiteral,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
+    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVariant,
+    HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
@@ -46,6 +47,90 @@ pub enum TargetArch {
     /// Any other target (e.g. riscv64, powerpc64). Used for target gates
     /// that reject coroutine-dependent constructs on non-x86_64/aarch64.
     Other,
+}
+
+fn collect_match_payload_predicates(ctx: &LowerCtx, pattern: &Pattern) -> Vec<HirPayloadPredicate> {
+    match pattern {
+        Pattern::Constructor { name, patterns } => {
+            let field_tys = ctx
+                .lookup_variant_ctor(name)
+                .map(|(_, _, kind)| match kind {
+                    HirVariantKind::Tuple(field_tys) => field_tys.clone(),
+                    HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
+                })
+                .unwrap_or_default();
+            patterns
+                .iter()
+                .enumerate()
+                .filter_map(|(field_idx, (sub_pat, _))| {
+                    let Pattern::Literal(lit) = sub_pat else {
+                        return None;
+                    };
+                    let Ok(field_idx) = u32::try_from(field_idx) else {
+                        return None;
+                    };
+                    let (literal, literal_ty) = literal_to_hir(lit);
+                    let ty = field_tys
+                        .get(field_idx as usize)
+                        .cloned()
+                        .unwrap_or(literal_ty);
+                    Some(HirPayloadPredicate {
+                        field_idx,
+                        literal,
+                        ty,
+                    })
+                })
+                .collect()
+        }
+        Pattern::Struct { name, fields } => {
+            let field_decls = ctx
+                .lookup_variant_ctor(name)
+                .map(|(_, _, kind)| match kind {
+                    HirVariantKind::Struct(field_decls) => field_decls.clone(),
+                    HirVariantKind::Unit | HirVariantKind::Tuple(_) => Vec::new(),
+                })
+                .unwrap_or_default();
+            fields
+                .iter()
+                .filter_map(|field| {
+                    let (sub_pat, _) = field.pattern.as_ref()?;
+                    let Pattern::Literal(lit) = sub_pat else {
+                        return None;
+                    };
+                    let (field_idx, (_, ty)) = field_decls
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (name, _))| name == &field.name)?;
+                    let Ok(field_idx) = u32::try_from(field_idx) else {
+                        return None;
+                    };
+                    let (literal, _) = literal_to_hir(lit);
+                    Some(HirPayloadPredicate {
+                        field_idx,
+                        literal,
+                        ty: ty.clone(),
+                    })
+                })
+                .collect()
+        }
+        Pattern::Wildcard
+        | Pattern::Identifier(_)
+        | Pattern::Literal(_)
+        | Pattern::Tuple(_)
+        | Pattern::Or(_, _)
+        | Pattern::Regex { .. } => Vec::new(),
+    }
+}
+
+fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
+    match lit {
+        Literal::Integer { value, .. } => (HirLiteral::Integer(*value), ResolvedTy::I64),
+        Literal::Float(value) => (HirLiteral::Float(*value), ResolvedTy::F64),
+        Literal::String(value) => (HirLiteral::String(value.clone()), ResolvedTy::String),
+        Literal::Bool(value) => (HirLiteral::Bool(*value), ResolvedTy::Bool),
+        Literal::Char(value) => (HirLiteral::Char(*value), ResolvedTy::Char),
+        Literal::Duration(value) => (HirLiteral::Duration(*value), ResolvedTy::Duration),
+    }
 }
 
 impl TargetArch {
@@ -1924,6 +2009,24 @@ pub fn lower_program_with_mono_cap(
     // monomorphisation list. See `check_call_shape_gates` for the predicate.
     check_call_shape_gates(&items, &monomorphisations, &mut ctx.diagnostics);
 
+    // W3.033c Stage 2 (R244=B): dedicated post-function-mono machine
+    // instantiation discovery pass. MUST run AFTER
+    // `closure_under_substitution` has finished closing the function-mono
+    // registry — generic-function-mediated machine instantiations (e.g.
+    // `fn make<T>() -> Lifecycle<T>` instantiated as `make::<File>()`) are
+    // only observable once function-mono has substituted `T` into the
+    // return-type slot — and BEFORE the `HirModule` is handed to MIR for
+    // `machine_layouts` build (Stage 3, out of scope for this change).
+    //
+    // Pass-ordering invariant — see `machine_mono.rs` module docs and
+    // the `machine_mono_pass_records_*` integration tests. Any future
+    // refactor that moves this call before `closure_under_substitution`
+    // (or parallelises the two passes) silently drops generic-mediated
+    // machine instantiations.
+    let (machine_instantiations, machine_mono_diagnostics) =
+        crate::machine_mono::run_machine_mono_pass(&items, &monomorphisations, mono_cap);
+    ctx.diagnostics.extend(machine_mono_diagnostics);
+
     LowerOutput {
         module: HirModule {
             items,
@@ -1933,6 +2036,7 @@ pub fn lower_program_with_mono_cap(
             call_site_type_args,
             record_layouts,
             enum_layouts,
+            machine_instantiations,
             supervisor_child_slots,
             regex_literals: ctx.regex_literals,
         },
@@ -2417,7 +2521,8 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(receiver, out, trait_out);
             collect_call_sites_in_expr(event, out, trait_out);
         }
-        HirExprKind::MachineStateName { receiver, .. } => {
+        HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::MachineStateName { receiver, .. } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -3581,7 +3686,7 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: &HashSet<String>, out: &mut Vec<S
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
             scan_expr_for_private_refs(&body.0, pf, out);
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             scan_expr_for_private_refs(&target.0, pf, out);
             for (_, v) in args {
                 scan_expr_for_private_refs(&v.0, pf, out);
@@ -3706,6 +3811,21 @@ fn classify_unsupported_where_clause(decl: &hew_parser::ast::ImplDecl) -> Option
 impl LowerCtx {
     fn seed_stdlib_fn_registry(&mut self) {
         for (index, builtin) in stdlib_catalog::entries().iter().enumerate() {
+            // W4.001 Stage C0b: `LayoutDescriptorSymbol` rows declare
+            // `#[no_mangle] pub static` descriptors in `hew-runtime/src/
+            // layout_intrinsics.rs`, not callable functions. Skip them
+            // here so a user-written `hew_layout_key_i32()` is rejected at
+            // HIR resolution (no fn_registry entry) rather than silently
+            // resolving and disappearing at MIR (where the descriptor
+            // symbol is correctly absent from `module_fn_names`). The
+            // catalog rows themselves stay intact for ABI enumeration +
+            // `stdlib_catalog_layout_descriptor_coverage`.
+            if matches!(
+                builtin.linkage,
+                stdlib_catalog::BuiltinLinkage::LayoutDescriptorSymbol { .. }
+            ) {
+                continue;
+            }
             // Keep catalog IDs out of the source-item sequence so existing HIR
             // item IDs remain stable while builtin callees still carry Item refs.
             let index = u32::try_from(index).expect("stdlib catalog fits in u32");
@@ -7149,7 +7269,7 @@ impl LowerCtx {
             Expr::Select { arms, timeout } => {
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
-            Expr::Spawn { target, args } => self.lower_spawn(target, args, span.clone()),
+            Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
             Expr::SpawnLambdaActor {
                 params,
                 return_type,
@@ -8820,7 +8940,7 @@ impl LowerCtx {
     fn lower_type(&mut self, ty: &Spanned<TypeExpr>) -> ResolvedTy {
         match &ty.0 {
             TypeExpr::Named { name, type_args } => {
-                let args = type_args
+                let args: Vec<ResolvedTy> = type_args
                     .as_ref()
                     .map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
                     .unwrap_or_default();
@@ -8839,12 +8959,13 @@ impl LowerCtx {
                     "isize" => ResolvedTy::Isize,
                     "usize" => ResolvedTy::Usize,
                     "f32" => ResolvedTy::F32,
-                    "f64" | "float" => ResolvedTy::F64,
-                    "bool" | "Bool" => ResolvedTy::Bool,
-                    "char" | "Char" => ResolvedTy::Char,
-                    "string" | "str" => ResolvedTy::String,
+                    "f64" => ResolvedTy::F64,
+                    "bool" => ResolvedTy::Bool,
+                    "char" => ResolvedTy::Char,
+                    "string" => ResolvedTy::String,
                     "duration" => ResolvedTy::Duration,
-                    "bytes" | "Bytes" => ResolvedTy::Bytes,
+                    "bytes" => ResolvedTy::Bytes,
+                    "CancellationToken" if args.is_empty() => ResolvedTy::CancellationToken,
                     "Unit" | "()" => ResolvedTy::Unit,
                     // `Task` is a compiler-internal value class with no user-source
                     // syntax. Writing `Task<T>` in any annotation position is a
@@ -9368,6 +9489,15 @@ impl LowerCtx {
                         "unsupported rewrite variant for method `{method}`"
                     )),
                     ResolvedTy::Unit,
+                )
+            }
+            Some(MethodCallRewrite::CancellationTokenIsCancelled) => {
+                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                (
+                    HirExprKind::CancellationTokenIsCancelled {
+                        receiver: Box::new(lowered_receiver),
+                    },
+                    ResolvedTy::Bool,
                 )
             }
             Some(MethodCallRewrite::StaticTraitDispatch {
@@ -10168,6 +10298,8 @@ impl LowerCtx {
                 continue;
             }
 
+            let payload_predicates = collect_match_payload_predicates(self, &arm.pattern.0);
+
             let (bindings, body_hir) = if binding_specs.is_empty() {
                 (Vec::new(), self.lower_expr(&arm.body, IntentKind::Read))
             } else {
@@ -10194,6 +10326,7 @@ impl LowerCtx {
             hir_arms.push(HirMatchArm {
                 predicate,
                 bindings,
+                payload_predicates,
                 body: body_hir,
                 span: arm.pattern.1.start..arm.body.1.end,
             });
@@ -10821,7 +10954,8 @@ fn collect_captures_walk(
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             collect_captures_walk(event, param_ids, seen, captures, self_id);
         }
-        HirExprKind::MachineStateName { receiver, .. } => {
+        HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::MachineStateName { receiver, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -11057,7 +11191,8 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(event, outer_bindings, seen, captures);
         }
-        HirExprKind::MachineStateName { receiver, .. } => {
+        HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::MachineStateName { receiver, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -11724,7 +11859,8 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             collect_hir_emitted_events_walk(receiver, event_names, out);
             collect_hir_emitted_events_walk(event, event_names, out);
         }
-        HirExprKind::MachineStateName { receiver, .. } => {
+        HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::MachineStateName { receiver, .. } => {
             collect_hir_emitted_events_walk(receiver, event_names, out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -12245,7 +12381,7 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
             scan_expr_for_blocking_recv(&body.0, diagnostics);
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             scan_expr_for_blocking_recv(&target.0, diagnostics);
             for (_, v) in args {
                 scan_expr_for_blocking_recv(&v.0, diagnostics);
@@ -12713,7 +12849,7 @@ fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, progra
         Expr::SpawnLambdaActor { body, .. } => {
             scan_expr_for_task_gates(&body.0, &body.1, ctx, program);
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             scan_expr_for_task_gates(&target.0, &target.1, ctx, program);
             for (_, v) in args {
                 scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
@@ -13308,7 +13444,7 @@ fn scan_spanned_expr_for_actor_send(expr: &Expr, span: &Span, gate: &mut ActorSe
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
             scan_spanned_expr_for_actor_send(&body.0, &body.1, gate);
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             scan_spanned_expr_for_actor_send(&target.0, &target.1, gate);
             for (_, v) in args {
                 scan_spanned_expr_for_actor_send(&v.0, &v.1, gate);
@@ -13772,7 +13908,7 @@ fn scan_expr_for_binop_gates(
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
             scan_expr_for_binop_gates(&body.0, &body.1, false, ctx);
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             scan_expr_for_binop_gates(&target.0, &target.1, false, ctx);
             for (_, v) in args {
                 scan_expr_for_binop_gates(&v.0, &v.1, false, ctx);
@@ -14044,6 +14180,18 @@ fn build_callable_set(
 ) -> std::collections::HashSet<String> {
     let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
     for entry in stdlib_catalog::entries() {
+        // W4.001 Stage C0b: LayoutDescriptorSymbol rows declare runtime
+        // statics, not callables. Excluding them here keeps the HIR
+        // verifier's callable-set in sync with MIR's `module_fn_names`
+        // (which already skips this linkage) and with `fn_registry`
+        // (which now also skips it). A user-written call to a descriptor
+        // symbol fails closed at HIR resolution with no callable found.
+        if matches!(
+            entry.linkage,
+            stdlib_catalog::BuiltinLinkage::LayoutDescriptorSymbol { .. }
+        ) {
+            continue;
+        }
         set.insert(entry.name.to_string());
         if let Some(symbol) = entry.linkage.runtime_symbol() {
             set.insert(symbol.to_string());
@@ -14459,6 +14607,9 @@ fn scan_expr_for_call_shape(
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             scan_expr_for_call_shape(arg, callable, diagnostics);
         }
+        HirExprKind::CancellationTokenIsCancelled { receiver } => {
+            scan_expr_for_call_shape(receiver, callable, diagnostics);
+        }
         HirExprKind::MachineEmit { fields, .. } => {
             for (_, v) in fields {
                 scan_expr_for_call_shape(v, callable, diagnostics);
@@ -14640,7 +14791,7 @@ fn scan_expr_for_supervisor_spawn(
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
     match expr {
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             // Module-scoped supervisor lookup.
             //
             // Two recognised spawn-target surface forms carry different
@@ -15160,7 +15311,7 @@ fn scan_expr_for_vec_index_gate(
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
             scan_expr_for_vec_index_gate(body, expr_types, diagnostics);
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             scan_expr_for_vec_index_gate(target, expr_types, diagnostics);
             for (_, v) in args {
                 scan_expr_for_vec_index_gate(v, expr_types, diagnostics);

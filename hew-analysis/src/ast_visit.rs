@@ -738,7 +738,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_expr(&inner_body.0, &inner_body.1, body);
                 self.pop_scope();
             }
-            Expr::Spawn { target, args } => {
+            Expr::Spawn { target, args, .. } => {
                 self.walk_expr(&target.0, &target.1, body);
                 for (_, value) in args {
                     self.walk_expr(&value.0, &value.1, body);

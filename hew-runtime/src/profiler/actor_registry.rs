@@ -282,6 +282,8 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
                 "running"
             } else if state_int == HewActorState::Stopping as i32 {
                 "stopping"
+            } else if state_int == HewActorState::Crashing as i32 {
+                "crashing"
             } else if state_int == HewActorState::Crashed as i32 {
                 "crashed"
             } else if state_int == HewActorState::Stopped as i32 {
@@ -568,6 +570,7 @@ mod tests {
             (HewActorState::Runnable as i32, "runnable"),
             (HewActorState::Running as i32, "running"),
             (HewActorState::Stopping as i32, "stopping"),
+            (HewActorState::Crashing as i32, "crashing"),
             (HewActorState::Crashed as i32, "crashed"),
             (HewActorState::Stopped as i32, "stopped"),
             // Legacy Blocked discriminant — must now be "unknown".

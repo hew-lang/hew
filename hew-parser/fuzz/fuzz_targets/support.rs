@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use hew_hir::{lower_program, verify_hir, ResolutionCtx};
+use hew_hir::{lower_program_host_target, verify_hir, ResolutionCtx};
 use hew_mir::{lower_hir_module, IrPipeline};
 use hew_parser::Severity;
 use hew_types::module_registry::{build_module_search_paths, ModuleRegistry};
@@ -40,7 +40,7 @@ pub fn parse_check_lower(source: &str) -> Option<IrPipeline> {
         return None;
     }
 
-    let hir = lower_program(&parsed.program, &type_check, &ResolutionCtx);
+    let hir = lower_program_host_target(&parsed.program, &type_check, &ResolutionCtx);
     if !hir.diagnostics.is_empty() || !verify_hir(&hir.module).is_empty() {
         return None;
     }

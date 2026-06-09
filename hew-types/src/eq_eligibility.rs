@@ -56,6 +56,7 @@ fn eq_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<EqE
             Some(EqEligibility::IneligibleUnknown)
         }
         Ty::Bytes
+        | Ty::CancellationToken
         | Ty::Array(_, _)
         | Ty::Slice(_)
         | Ty::Function { .. }

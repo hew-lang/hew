@@ -37,7 +37,7 @@ fn run_multiplier(factor: i64, value: i64) {
 }
 
 // Factory helper for string-tagged number processing
-fn run_string_processor(tag: str, value: i64) {
+fn run_string_processor(tag: string, value: i64) {
     let worker = actor |x: i64| {
         println(f"[{tag}] {x}");
     };

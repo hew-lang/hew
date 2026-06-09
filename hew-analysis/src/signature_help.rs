@@ -234,6 +234,8 @@ mod tests {
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         }
     }
 
@@ -399,6 +401,8 @@ mod tests {
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -488,6 +492,8 @@ mod tests {
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());

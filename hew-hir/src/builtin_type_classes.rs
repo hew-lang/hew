@@ -108,6 +108,7 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(Vec, BuiltinTypeShape::Opaque),
     registration!(HashMap, BuiltinTypeShape::Opaque),
     registration!(HashSet, BuiltinTypeShape::Opaque),
+    registration!(CancellationToken, BuiltinTypeShape::Opaque),
     registration!(ActorRef, BuiltinTypeShape::Opaque),
     registration!(Actor, BuiltinTypeShape::Opaque),
     registration!(Pid, BuiltinTypeShape::Opaque),

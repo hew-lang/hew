@@ -21,11 +21,14 @@ pub(crate) mod admissibility;
 mod calls;
 mod closure_inference;
 mod coerce;
+mod const_eval;
 mod diagnostics;
+pub mod dispatch;
 mod expressions;
 mod generics;
 mod items;
 mod methods;
+pub use self::methods::collection_dispatch_registry_for_tests;
 mod patterns;
 mod registration;
 mod resolution;
@@ -388,6 +391,12 @@ impl Checker {
             &mut resolved_call_type_args,
             &mut resolved_record_init_type_args,
         );
+        // The layout-backed HashMap/HashSet admission finalizers below still
+        // consult `self.type_defs` to prove named record hash-eligibility and
+        // compute key/value ABI sizes. `resolved_type_defs` is the authoritative
+        // post-substitution snapshot after the checked-output boundary pass, so
+        // restore it into the checker before draining those deferred queues.
+        self.type_defs = resolved_type_defs.clone();
         let mut resolved_lowering_facts = self.finalize_lowering_facts();
         admissibility::validate_lowering_facts_output_contract(
             &mut resolved_lowering_facts,
@@ -448,6 +457,11 @@ impl Checker {
             supervisor_child_slots: std::mem::take(&mut self.supervisor_child_slots),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
+            // W4.001 Stage A: substrate-only. Field is empty in Stage A
+            // (no production populator); Stage B's resolver fills it.
+            // See `check::dispatch` module docs and
+            // `TypeCheckOutput::resolved_calls`.
+            resolved_calls: std::mem::take(&mut self.resolved_calls),
             numeric_method_lowerings: std::mem::take(&mut self.numeric_method_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
@@ -488,6 +502,20 @@ impl Checker {
             lang_items: std::mem::take(&mut self.lang_items),
             hashmap_layout_facts: std::mem::take(&mut self.hashmap_layout_facts),
             hashset_layout_facts: std::mem::take(&mut self.hashset_layout_facts),
+            actor_spawn_type_args: {
+                // Resolve any lingering inference variables in the type args
+                // before publishing to the output table.
+                std::mem::take(&mut self.actor_spawn_type_args)
+                    .into_iter()
+                    .map(|(k, (name, args))| {
+                        let resolved_args = args
+                            .into_iter()
+                            .map(|ty| self.subst.resolve(&ty).materialize_literal_defaults())
+                            .collect();
+                        (k, (name, resolved_args))
+                    })
+                    .collect()
+            },
         };
 
         // Detect actor reference cycles and emit warnings.
@@ -891,7 +919,7 @@ impl Checker {
                     self.classify_escapes_in_expr(e, s, in_fork, AnonContext::PassedToHigherOrder);
                 }
             }
-            Expr::Spawn { target, args } => {
+            Expr::Spawn { target, args, .. } => {
                 self.classify_escapes_in_expr(&target.0, &target.1, in_fork, AnonContext::Other);
                 for (_, (e, s)) in args {
                     self.classify_escapes_in_expr(e, s, in_fork, AnonContext::PassedToHigherOrder);
@@ -1050,11 +1078,14 @@ impl Checker {
         if !matches!(fact.kind, ClosureEscapeKind::Escapes) {
             return;
         }
+        // PassedToHigherOrder is intentionally excluded: inlining a let-bound
+        // closure at its call site does not relieve the escape — an anonymous
+        // closure in argument position is still classified PassedToHigherOrder
+        // (via AnonContext::PassedToHigherOrder), so the advisory would fire
+        // again.  Only rules where inlining genuinely admits Local are kept.
         let admit_local = matches!(
             fact.rule,
-            ClosureEscapeRule::PassedToHigherOrder
-                | ClosureEscapeRule::EscapesViaBlockValue
-                | ClosureEscapeRule::NoStaticBinding
+            ClosureEscapeRule::EscapesViaBlockValue | ClosureEscapeRule::NoStaticBinding
         );
         if !admit_local {
             return;
@@ -1308,7 +1339,7 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(e, s, out);
             }
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             collect_lambda_spans_in_expr(&target.0, &target.1, out);
             for (_, (e, s)) in args {
                 collect_lambda_spans_in_expr(e, s, out);

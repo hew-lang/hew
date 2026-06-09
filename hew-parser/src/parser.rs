@@ -2,15 +2,16 @@
 
 use crate::ast::{
     ActorDecl, ActorInit, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block, CallArg,
-    ChildSpec, CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl,
-    FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item,
-    LambdaParam, Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm,
-    NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program,
-    ReceiveFnDecl, RecordDecl, RecordField, RecordKind, ResourceMarker, RestartPolicy, SelectArm,
-    Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
-    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause,
-    WherePredicate, WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
+    ChildSpec, CompoundAssignOp, ConstDecl, ConstParam, ConstParamTy, ElseBlock, Expr, ExternBlock,
+    ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec,
+    IntRadix, Item, LambdaParam, Literal, MachineDecl, MachineEvent, MachineState,
+    MachineTransition, MatchArm, NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern,
+    PatternField, Program, ReceiveFnDecl, RecordDecl, RecordField, RecordKind, ResourceMarker,
+    RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
+    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
+    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
+    WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta,
+    WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
@@ -1387,19 +1388,8 @@ impl<'src> Parser<'src> {
                     }
                     (fn_start, true, true)
                 } else {
-                    let fn_start = self.peek_span().start;
-                    if self.eat(&Token::Fn) {
-                        self.error(
-                            "Hew has no `async fn` keyword — async-ness comes from `fork{}` \
-                             context. Use `fn` for regular functions or `async gen fn` for \
-                             async generators."
-                                .to_string(),
-                        );
-                        (fn_start, false, false)
-                    } else {
-                        self.error("expected 'fn' or 'gen fn' after 'async'".to_string());
-                        return None;
-                    }
+                    self.error("expected 'gen fn' after 'async'".to_string());
+                    return None;
                 }
             }
             Some(Token::Gen) => {
@@ -2521,6 +2511,13 @@ impl<'src> Parser<'src> {
     fn parse_actor_decl(&mut self, visibility: Visibility) -> Option<ActorDecl> {
         let name = self.expect_ident()?;
 
+        // Optional `<T, U: Bound>` type-parameter list immediately after the actor name.
+        let type_params = if self.eat(&Token::Less) {
+            self.parse_type_params()?
+        } else {
+            vec![]
+        };
+
         let super_traits = self.parse_optional_super_traits()?;
 
         self.expect(&Token::LeftBrace)?;
@@ -2747,6 +2744,7 @@ impl<'src> Parser<'src> {
         Some(ActorDecl {
             visibility,
             name,
+            type_params,
             super_traits,
             init,
             fields,
@@ -2842,10 +2840,10 @@ impl<'src> Parser<'src> {
         // the parser level — bound enforcement is the type-checker's job
         // (see `docs/specs/HEW-SPEC-2026.md` §3.11.8). Variance markers,
         // defaults, and machine-over-machine generics remain unsupported.
-        let type_params = if self.eat(&Token::Less) {
-            self.parse_type_params()?
+        let (type_params, const_params) = if self.eat(&Token::Less) {
+            self.parse_machine_generic_params()?
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
 
         // Optional `where T: Trait, U: Trait + Trait` clause between the
@@ -3046,6 +3044,7 @@ impl<'src> Parser<'src> {
             visibility,
             name,
             type_params,
+            const_params,
             where_clause,
             states,
             events,
@@ -3695,12 +3694,7 @@ impl<'src> Parser<'src> {
                     // Parse wire field
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
-                    let raw_ty = self.expect_ident()?;
-                    // Normalize legacy aliases to canonical lowercase type names
-                    let ty = match raw_ty.as_str() {
-                        "str" => "string".to_string(),
-                        _ => raw_ty,
-                    };
+                    let ty = self.expect_ident()?;
 
                     #[expect(
                         clippy::cast_possible_truncation,
@@ -4152,6 +4146,106 @@ impl<'src> Parser<'src> {
             return None;
         }
         Some(params)
+    }
+
+    /// Parse `<...>` after `machine Name`, admitting both type parameters
+    /// and Phase 0 const-generic parameters (`const N: usize` /
+    /// `const N: usize = 16`). The opening `<` has already been consumed.
+    ///
+    /// Source position convention: all type parameters must appear before
+    /// any const parameters in the parameter list (e.g. `<T, U, const N: usize>`).
+    /// Mixed orderings such as `<const N: usize, T>` are rejected with a
+    /// typed diagnostic to keep the Phase 0 monomorphisation key shape
+    /// (`type_args` then `const_args`) trivially derivable from source order.
+    fn parse_machine_generic_params(&mut self) -> Option<(Vec<TypeParam>, Vec<ConstParam>)> {
+        let mut type_params: Vec<TypeParam> = Vec::new();
+        let mut const_params: Vec<ConstParam> = Vec::new();
+        let mut seen_const = false;
+
+        // Reject empty `<>` immediately (mirrors `parse_type_params`).
+        if self.at_closing_angle() {
+            self.error(
+                "empty type parameter list: add at least one type or const parameter, \
+                 e.g. `<T>` or `<const N: usize>`"
+                    .to_string(),
+            );
+            self.eat_closing_angle();
+            return None;
+        }
+
+        while !self.at_end() && !self.at_closing_angle() {
+            if self.eat(&Token::Const) {
+                // Const-generic parameter: `const N: usize` or
+                // `const N: usize = 16`.
+                let name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                // R269=A: usize only in Phase 0; reject anything else
+                // by name. The element type is parsed as an identifier
+                // rather than a full `TypeExpr` so the error message
+                // can pinpoint the unsupported width.
+                let ty_name = self.expect_ident()?;
+                let ty = match ty_name.as_str() {
+                    "usize" => ConstParamTy::Usize,
+                    other => {
+                        self.error(format!(
+                            "only `usize` is supported as a const parameter type \
+                             in Phase 0; found `{other}`"
+                        ));
+                        ConstParamTy::Usize
+                    }
+                };
+                let default = if self.eat(&Token::Equal) {
+                    if let Some(Token::Integer(n_str)) = self.peek() {
+                        let value = parse_int_literal(n_str)
+                            .ok()
+                            .and_then(|(v, _)| u64::try_from(v).ok());
+                        if value.is_none() {
+                            self.error(format!(
+                                "invalid default value for const parameter `{name}`: \
+                                 must be a non-negative integer fitting in usize"
+                            ));
+                        }
+                        self.advance();
+                        value
+                    } else {
+                        self.error(format!(
+                            "expected integer literal as default value for \
+                             const parameter `{name}`"
+                        ));
+                        None
+                    }
+                } else {
+                    None
+                };
+                const_params.push(ConstParam { name, ty, default });
+                seen_const = true;
+            } else {
+                if seen_const {
+                    self.error(
+                        "type parameters must precede const parameters in \
+                         a machine generic-parameter list"
+                            .to_string(),
+                    );
+                }
+                let name = self.expect_ident()?;
+                let bounds = if self.eat(&Token::Colon) {
+                    self.parse_trait_bound_list()?
+                } else {
+                    Vec::new()
+                };
+                type_params.push(TypeParam { name, bounds });
+            }
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+
+        if !self.eat_closing_angle() {
+            self.error("expected '>'".to_string());
+            return None;
+        }
+        Some((type_params, const_params))
     }
 
     /// Parse optional `<T, U: Trait>` type parameters after a name.
@@ -5921,6 +6015,7 @@ impl<'src> Parser<'src> {
                 }
 
                 // Regular spawn: spawn ActorName(...) or spawn module.ActorName(...)
+                // or spawn ActorName<T>(...) with explicit turbofish type args.
                 let name = self.expect_ident()?;
                 let name_end = self.peek_span().start;
                 let target = if self.eat(&Token::Dot) {
@@ -5936,6 +6031,17 @@ impl<'src> Parser<'src> {
                 } else {
                     Box::new((Expr::Identifier(name), start..name_end))
                 };
+
+                // Optional turbofish type-argument list `<T, U>` before `(`.
+                // A bare `<` here is unambiguous: spawn does not admit
+                // comparison in this position (the target is a name, not an
+                // expression), so we eagerly parse the angle-bracket list.
+                let type_args = if self.eat(&Token::Less) {
+                    self.parse_type_args().unwrap_or_default()
+                } else {
+                    vec![]
+                };
+
                 let args = if self.eat(&Token::LeftParen) {
                     let mut args = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightParen) {
@@ -5953,7 +6059,11 @@ impl<'src> Parser<'src> {
                     Vec::new()
                 };
 
-                Expr::Spawn { target, args }
+                Expr::Spawn {
+                    target,
+                    type_args,
+                    args,
+                }
             }
             Token::Move => {
                 self.advance();
@@ -7680,9 +7790,10 @@ mod tests {
 
     #[test]
     fn parse_async_fn_is_rejected() {
-        // Bare `async fn` has no semantics in Hew (no Task<T> to wrap, no checker rule).
-        // Async-ness comes from fork{} context (architecture §4.1, D2 ratification).
-        // Only `async gen fn` is accepted, as it produces a real Ty::async_generator.
+        // `async fn` has no meaning in Hew — async-ness comes from fork{} context
+        // (architecture §4.1, D2 ratification). Only `async gen fn` is accepted.
+        // The parser emits a generic "expected 'gen fn' after 'async'" error and
+        // returns None, so the item is absent from the parsed program.
         let source = "async fn fetch() -> i32 { 42 }";
         let result = parse(source);
         assert!(
@@ -7692,7 +7803,7 @@ mod tests {
         assert!(
             result.errors[0]
                 .message
-                .contains("Hew has no `async fn` keyword"),
+                .contains("expected 'gen fn' after 'async'"),
             "expected rejection diagnostic, got: {:?}",
             result.errors[0].message
         );

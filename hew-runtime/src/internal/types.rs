@@ -64,6 +64,22 @@ pub enum HewActorState {
     /// early; messages queue in the mailbox and are processed when the timer
     /// fires.  Only the cooperative WASM scheduler sets/clears this state.
     Sleeping = 7,
+    /// Intermediate state during native crash recovery.  Mirrors the
+    /// `Stopping → Stopped` two-step: the worker that owns the activation
+    /// transitions `Running → Crashing` (or `Stopping → Crashing` when the
+    /// handler self-stopped before panicking — crash dominates the pending
+    /// stop) immediately after the crash signal is caught, finalises
+    /// per-activation cleanup (arena reset, msg-node free, late
+    /// crash-reply), and only then publishes the terminal `Crashed` state
+    /// via `hew_actor_trap`.
+    ///
+    /// `actor_free_state_is_quiescent` deliberately does **not** include
+    /// `Crashing`, so any thread waiting on the actor (e.g. a
+    /// `hew_actor_free` caller spinning on the actor state) blocks through
+    /// the `Crashing` window and cannot free `a.arena`/`a.mailbox` out
+    /// from under the worker.  See `LESSONS.md` rows `cleanup-all-exits`
+    /// and `raii-null-after-move`.
+    Crashing = 8,
 }
 
 /// Error codes returned by runtime functions.

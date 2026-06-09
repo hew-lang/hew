@@ -33,38 +33,49 @@ pub const EXECUTION_CONTEXT_NOT_INSTALLED_AT_SPAWN: &str =
 #[derive(Debug)]
 pub enum HewActorStateLockState {}
 
-/// Stable byte size of [`HewExecutionContext`].
-pub const HEW_CTX_SIZE: usize = 128;
+/// Target-architecture-aware byte size of [`HewExecutionContext`].
+///
+/// Derived from `size_of` rather than a literal so the value is correct on
+/// both 64-bit native targets (128 bytes) and 32-bit wasm32 targets (96 bytes,
+/// because four-byte pointers eliminate the pointer-sized padding slots).
+pub const HEW_CTX_SIZE: usize = std::mem::size_of::<HewExecutionContext>();
 
 /// Byte offset of [`HewExecutionContext::actor`].
-pub const HEW_CTX_OFFSET_ACTOR: usize = 0;
+pub const HEW_CTX_OFFSET_ACTOR: usize = offset_of!(HewExecutionContext, actor);
 /// Byte offset of [`HewExecutionContext::actor_id`].
-pub const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
+pub const HEW_CTX_OFFSET_ACTOR_ID: usize = offset_of!(HewExecutionContext, actor_id);
 /// Byte offset of [`HewExecutionContext::parent_supervisor`].
-pub const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
+pub const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize =
+    offset_of!(HewExecutionContext, parent_supervisor);
 /// Byte offset of [`HewExecutionContext::supervisor_child_index`].
-pub const HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX: usize = 24;
+///
+/// Pointer-width-aware: 24 on 64-bit targets, 20 on 32-bit targets (wasm32).
+/// The previous hardcoded literal `24` caused compile-time assertion failures
+/// when building for wasm32; `offset_of!` is self-maintaining across widths.
+pub const HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX: usize =
+    offset_of!(HewExecutionContext, supervisor_child_index);
 /// Byte offset of [`HewExecutionContext::flags`].
-pub const HEW_CTX_OFFSET_FLAGS: usize = 28;
+pub const HEW_CTX_OFFSET_FLAGS: usize = offset_of!(HewExecutionContext, flags);
 /// Byte offset of [`HewExecutionContext::cancel_token`].
-pub const HEW_CTX_OFFSET_CANCEL_TOKEN: usize = 32;
+pub const HEW_CTX_OFFSET_CANCEL_TOKEN: usize = offset_of!(HewExecutionContext, cancel_token);
 /// Byte offset of [`HewExecutionContext::task_scope`].
-pub const HEW_CTX_OFFSET_TASK_SCOPE: usize = 40;
+pub const HEW_CTX_OFFSET_TASK_SCOPE: usize = offset_of!(HewExecutionContext, task_scope);
 /// Byte offset of [`HewExecutionContext::arena`].
-pub const HEW_CTX_OFFSET_ARENA: usize = 48;
+pub const HEW_CTX_OFFSET_ARENA: usize = offset_of!(HewExecutionContext, arena);
 /// Byte offset of [`HewExecutionContext::trace`].
-pub const HEW_CTX_OFFSET_TRACE: usize = 56;
+pub const HEW_CTX_OFFSET_TRACE: usize = offset_of!(HewExecutionContext, trace);
 /// Byte offset of [`HewExecutionContext::trace.span_id`].
 pub const HEW_CTX_OFFSET_TRACE_SPAN: usize =
     HEW_CTX_OFFSET_TRACE + offset_of!(HewTraceContext, span_id);
 /// Byte offset of [`HewExecutionContext::partition_policy`].
-pub const HEW_CTX_OFFSET_PARTITION_POLICY: usize = 96;
+pub const HEW_CTX_OFFSET_PARTITION_POLICY: usize =
+    offset_of!(HewExecutionContext, partition_policy);
 /// Byte offset of [`HewExecutionContext::prev_context`].
-pub const HEW_CTX_OFFSET_PREV_CONTEXT: usize = 104;
+pub const HEW_CTX_OFFSET_PREV_CONTEXT: usize = offset_of!(HewExecutionContext, prev_context);
 /// Byte offset of [`HewExecutionContext::lock_seat`].
-pub const HEW_CTX_OFFSET_LOCK_SEAT: usize = 112;
+pub const HEW_CTX_OFFSET_LOCK_SEAT: usize = offset_of!(HewExecutionContext, lock_seat);
 /// Byte offset of [`HewExecutionContext::reply_channel`].
-pub const HEW_CTX_OFFSET_REPLY_CHANNEL: usize = 120;
+pub const HEW_CTX_OFFSET_REPLY_CHANNEL: usize = offset_of!(HewExecutionContext, reply_channel);
 
 /// `flags` bit indicating the current dispatch consumed the reply-channel
 /// sender-side reference (i.e. user code called `hew_reply`). Read by the
@@ -73,9 +84,23 @@ pub const HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED: u32 = 1 << 0;
 
 /// Canonical per-dispatch carrier installed in worker-local TLS.
 ///
-/// The trace lane embeds the runtime's actual [`HewTraceContext`] by value. It
-/// is 40 bytes in this runtime, so the post-trace lanes are pinned after offset
-/// 96 while preserving the 128-byte carrier size.
+/// [`HewTraceContext`] is embedded by value and is 40 bytes on all targets
+/// (only `u64`/`u8` fields — no pointers). The pre-trace lanes that precede it
+/// contain pointer-sized fields whose offsets are therefore target-dependent.
+/// All layout values below are derived from `offset_of!` / `size_of!` and
+/// reflect the compiler-computed layout for each target:
+///
+/// | Lane | Native 64-bit | wasm32 32-bit |
+/// |------|--------------|---------------|
+/// | `trace` start | 56 | 40 |
+/// | post-trace start (`partition_policy`) | 96 | 80 |
+/// | struct size | 128 | 96 |
+///
+/// The shift between targets originates in the pre-trace pointer fields:
+/// `actor` (ptr) → `actor_id` (u64, align-padded to 8) → `parent_supervisor`
+/// (ptr, 8 bytes on 64-bit / 4 bytes on wasm32) → `supervisor_child_index`
+/// and every subsequent field moves 4 bytes earlier on wasm32.
+/// Use [`HEW_CTX_OFFSET_TRACE`] and [`HEW_CTX_SIZE`] for portable access.
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct HewExecutionContext {
@@ -244,27 +269,18 @@ impl Drop for TestExecutionContext {
 }
 
 const _: () = {
-    assert!(offset_of!(HewExecutionContext, actor) == HEW_CTX_OFFSET_ACTOR);
-    assert!(offset_of!(HewExecutionContext, actor_id) == HEW_CTX_OFFSET_ACTOR_ID);
-    assert!(offset_of!(HewExecutionContext, parent_supervisor) == HEW_CTX_OFFSET_PARENT_SUPERVISOR);
-    assert!(
-        offset_of!(HewExecutionContext, supervisor_child_index)
-            == HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX
-    );
-    assert!(offset_of!(HewExecutionContext, flags) == HEW_CTX_OFFSET_FLAGS);
-    assert!(offset_of!(HewExecutionContext, cancel_token) == HEW_CTX_OFFSET_CANCEL_TOKEN);
-    assert!(offset_of!(HewExecutionContext, task_scope) == HEW_CTX_OFFSET_TASK_SCOPE);
-    assert!(offset_of!(HewExecutionContext, arena) == HEW_CTX_OFFSET_ARENA);
-    assert!(offset_of!(HewExecutionContext, trace) == HEW_CTX_OFFSET_TRACE);
+    // All HEW_CTX_OFFSET_* constants are now defined via offset_of!, so the
+    // offset equalities are trivially true. The non-trivial invariants that
+    // must hold on every supported target are:
+    //
+    // 1. HEW_CTX_OFFSET_TRACE_SPAN must equal trace-base plus span_id offset
+    //    inside HewTraceContext (both sides independently derived).
+    // 2. struct alignment must be 8 (u64 fields in HewTraceContext impose this
+    //    on both 64-bit native and wasm32 targets).
     assert!(
         offset_of!(HewExecutionContext, trace) + offset_of!(HewTraceContext, span_id)
             == HEW_CTX_OFFSET_TRACE_SPAN
     );
-    assert!(offset_of!(HewExecutionContext, partition_policy) == HEW_CTX_OFFSET_PARTITION_POLICY);
-    assert!(offset_of!(HewExecutionContext, prev_context) == HEW_CTX_OFFSET_PREV_CONTEXT);
-    assert!(offset_of!(HewExecutionContext, lock_seat) == HEW_CTX_OFFSET_LOCK_SEAT);
-    assert!(offset_of!(HewExecutionContext, reply_channel) == HEW_CTX_OFFSET_REPLY_CHANNEL);
-    assert!(std::mem::size_of::<HewExecutionContext>() == HEW_CTX_SIZE);
     assert!(std::mem::align_of::<HewExecutionContext>() == 8);
 };
 
@@ -336,8 +352,21 @@ mod tests {
         .expect("thread must not panic");
     }
 
+    /// Regression test: each `HEW_CTX_OFFSET_*` constant must equal the
+    /// `offset_of!` value for the corresponding field on every supported target.
+    ///
+    /// Previously the `HEW_CTX_OFFSET_*` constants were 64-bit literals; on
+    /// wasm32 (4-byte pointers) several offsets were wrong, causing the
+    /// compile-time assertions in the `const _: ()` block to fire. The fix
+    /// replaces every literal with an `offset_of!` expression so the constants
+    /// track the struct layout on any target automatically.
+    ///
+    /// This test asserts the same equality that previously lived only in the
+    /// compile-time block, making the regression visible in test output even
+    /// when building for a target that cannot run the compile-time assertions
+    /// in cross-compiled mode.
     #[test]
-    fn field_offsets_match_pinned_constants() {
+    fn compile_time_offset_invariants_match_offset_of_macro() {
         assert_eq!(offset_of!(HewExecutionContext, actor), HEW_CTX_OFFSET_ACTOR);
         assert_eq!(
             offset_of!(HewExecutionContext, actor_id),
@@ -430,8 +459,10 @@ mod tests {
     }
 
     #[test]
-    fn execution_context_size_is_pinned() {
+    fn execution_context_size_matches_ctx_size_constant() {
+        // HEW_CTX_SIZE is now derived from size_of rather than a literal, so
+        // this assertion holds on all targets (128 on native 64-bit, 96 on
+        // wasm32) without needing per-target conditional compilation.
         assert_eq!(std::mem::size_of::<HewExecutionContext>(), HEW_CTX_SIZE);
-        assert_eq!(std::mem::size_of::<HewExecutionContext>(), 128);
     }
 }

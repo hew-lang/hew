@@ -425,7 +425,8 @@ impl Verifier {
                 self.expr(receiver);
                 self.expr(event);
             }
-            HirExprKind::MachineStateName { receiver, .. } => {
+            HirExprKind::CancellationTokenIsCancelled { receiver }
+            | HirExprKind::MachineStateName { receiver, .. } => {
                 self.expr(receiver);
             }
             HirExprKind::MachineVariantCtor { payload, .. } => {

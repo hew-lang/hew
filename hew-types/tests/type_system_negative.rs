@@ -74,6 +74,7 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
         | Ty::Char
         | Ty::String
         | Ty::Bytes
+        | Ty::CancellationToken
         | Ty::Duration
         | Ty::Unit
         | Ty::Never

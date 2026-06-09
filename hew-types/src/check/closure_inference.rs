@@ -256,7 +256,7 @@ fn body_visit_expr(expr: &Expr, out: &mut LambdaBodyFacts) {
         // Inner lambdas: do NOT descend — the inner lambda owns its
         // own body scan.
         Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => {}
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             body_visit_expr(&target.0, out);
             for (_, (e, _)) in args {
                 body_visit_expr(e, out);
@@ -673,7 +673,7 @@ fn esc_visit_expr(
         // transitive-escape rule is honored at dispatcher level by
         // observing the inner closure's own classification.
         Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => {}
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             esc_visit_expr(&target.0, name, in_fork, acc, false);
             for (_, (e, _)) in args {
                 esc_visit_arg(e, name, in_fork, acc);

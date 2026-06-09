@@ -230,10 +230,8 @@ impl Checker {
         expected: &Ty,
         span: &Span,
     ) -> Option<Ty> {
-        if type_args.is_some() {
-            return None;
-        }
-
+        // Resolve the function name first so we can route turbofish for
+        // `Vec::new` before the blanket early-return for other constructors.
         let func_name = match &func.0 {
             Expr::Identifier(name) => name.clone(),
             Expr::FieldAccess { object, field } => {
@@ -245,25 +243,67 @@ impl Checker {
             _ => return None,
         };
 
+        // Non-`Vec::new` constructors with explicit type args are not handled
+        // here — fall through to the generic call resolver.
+        if type_args.is_some() && func_name != "Vec::new" {
+            return None;
+        }
+
         let resolved_expected = self.subst.resolve(expected);
 
         if func_name == "Vec::new" {
             self.check_arity(args, 0, "`Vec::new`", span);
-            let Ty::Named {
-                name,
-                args: vec_args,
-                ..
-            } = &resolved_expected
-            else {
-                return None;
+
+            // Determine element type. Turbofish (`Vec::<T>::new()` or
+            // `Vec::new::<T>()`) takes priority over the expected-type
+            // annotation path (`let v: Vec<T> = Vec::new()`).
+            let elem_ty: Ty = if let Some(targs) = type_args {
+                // Turbofish path: Vec takes exactly one type argument.
+                if targs.len() != 1 {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "`Vec` takes 1 type argument but {} {} supplied",
+                            targs.len(),
+                            if targs.len() == 1 { "was" } else { "were" }
+                        ),
+                    );
+                    self.record_type(span, &Ty::Error);
+                    return Some(Ty::Error);
+                }
+                self.resolve_type_expr(&targs[0])
+            } else {
+                // Expected-type path: infer element type from the surrounding
+                // `Vec<T>` annotation.
+                let Ty::Named {
+                    name,
+                    args: vec_args,
+                    ..
+                } = &resolved_expected
+                else {
+                    return None;
+                };
+                if name != "Vec" || vec_args.len() != 1 {
+                    return None;
+                }
+                self.subst.resolve(&vec_args[0])
             };
-            if name != "Vec" || vec_args.len() != 1 {
-                return None;
-            }
-            let elem_ty = self.subst.resolve(&vec_args[0]);
+
             if matches!(elem_ty, Ty::Var(_)) {
-                self.record_type(span, &resolved_expected);
-                return Some(resolved_expected);
+                // Element type still unresolved — return a Vec<Var> or the
+                // expected type as-is (both are valid deferred placeholders).
+                let result_ty = if type_args.is_some() {
+                    Ty::Named {
+                        builtin: Some(crate::BuiltinType::Vec),
+                        name: "Vec".to_string(),
+                        args: vec![elem_ty],
+                    }
+                } else {
+                    resolved_expected.clone()
+                };
+                self.record_type(span, &result_ty);
+                return Some(result_ty);
             }
             if matches!(elem_ty, Ty::Error) {
                 self.record_type(span, &Ty::Error);
@@ -289,8 +329,20 @@ impl Checker {
                     return Some(Ty::Error);
                 }
             }
-            self.record_type(span, &resolved_expected);
-            return Some(resolved_expected);
+            // Construct and record the result type. Turbofish builds Vec<elem_ty>
+            // directly; the expected-type path returns resolved_expected (which
+            // already has the correct Vec<T> shape).
+            let result_ty = if type_args.is_some() {
+                Ty::Named {
+                    builtin: Some(crate::BuiltinType::Vec),
+                    name: "Vec".to_string(),
+                    args: vec![self.subst.resolve(&elem_ty)],
+                }
+            } else {
+                resolved_expected.clone()
+            };
+            self.record_type(span, &result_ty);
+            return Some(result_ty);
         }
 
         if let Some((type_name, expected_params, type_params)) =
@@ -544,6 +596,57 @@ impl Checker {
 
         // Handle polymorphic constructors with fresh linked type vars
         match func_name.as_str() {
+            // Turbofish constructor `Vec::<T>::new()` or `Vec::new::<T>()`.
+            // Guard: only intercept when type_args are supplied; the no-turbofish
+            // path falls through to the `fn_sigs` lookup which returns Vec<TypeVar>
+            // and lets the call site unify the element type normally.
+            "Vec::new" if type_args.is_some() => {
+                self.check_arity(args, 0, "`Vec::new`", span);
+                let targs = type_args.expect("guarded by `is_some()` above");
+                if targs.len() != 1 {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "`Vec` takes 1 type argument but {} {} supplied",
+                            targs.len(),
+                            if targs.len() == 1 { "was" } else { "were" }
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                let elem_ty = self.resolve_type_expr(&targs[0]);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                // Inherit the layout+Copy guard from check_call_against_expected_constructor.
+                if crate::stdlib::vec_element_runtime_suffix(&resolved_elem, &self.type_defs)
+                    == Some("layout")
+                    && matches!(resolved_elem, Ty::Named { .. })
+                {
+                    let is_copy = self
+                        .registry
+                        .implements_marker(&resolved_elem, MarkerTrait::Copy);
+                    if !is_copy {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "element type `{}` is not `Copy`; layout-managed Vec construction \
+                                 requires clone/drop semantics that are not implemented \
+                                 (runtime symbol `hew_vec_new_with_layout`)",
+                                resolved_elem.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                }
+                let result_ty = Ty::Named {
+                    builtin: Some(crate::BuiltinType::Vec),
+                    name: "Vec".to_string(),
+                    args: vec![resolved_elem],
+                };
+                self.record_type(span, &result_ty);
+                return result_ty;
+            }
             "Some" => {
                 self.check_arity(args, 1, "`Some`", span);
                 let t = Ty::Var(TypeVar::fresh());

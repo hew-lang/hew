@@ -1272,6 +1272,8 @@ mod tests {
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         }
     }
 
@@ -1551,6 +1553,8 @@ mod tests {
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
         let offset = source.find("Point").unwrap();
         let result = hover(source, &pr, Some(&tc), offset);
@@ -1648,6 +1652,8 @@ mod tests {
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
         assert!(result.is_some(), "should find hover via expr_types");
@@ -1705,6 +1711,8 @@ mod tests {
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
@@ -1816,6 +1824,8 @@ mod tests {
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), use_offset).unwrap();
@@ -1977,6 +1987,8 @@ mod tests {
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset).unwrap();
         // Goes through ResolvedTy::from_ty(materialize_literal_defaults)

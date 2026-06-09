@@ -44,11 +44,11 @@ fn width_aliases_canonical_aliases_resolve_correctly() {
     assert_eq!(Ty::from_name("u64"), Some(Ty::U64));
     // `uint` is a removed alias; it must NOT resolve.
     assert_eq!(Ty::from_name("uint"), None);
-    // byte = u8
-    assert_eq!(Ty::from_name("byte"), Some(Ty::U8));
-    // float = f64
-    assert_eq!(Ty::from_name("float"), Some(Ty::F64));
-    assert_eq!(Ty::from_name("Float"), Some(Ty::F64));
+    // `byte` is a retired alias; it must NOT resolve.
+    assert_eq!(Ty::from_name("byte"), None);
+    // `float`/`Float` are retired aliases; they must NOT resolve.
+    assert_eq!(Ty::from_name("float"), None);
+    assert_eq!(Ty::from_name("Float"), None);
 }
 
 #[test]

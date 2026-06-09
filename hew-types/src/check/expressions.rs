@@ -329,7 +329,11 @@ impl Checker {
             } => self.check_struct_init(name, fields, type_args.as_deref(), base.as_deref(), span),
 
             // Spawn
-            Expr::Spawn { target, args } => {
+            Expr::Spawn {
+                target,
+                type_args,
+                args,
+            } => {
                 if self.in_pure_function {
                     self.report_error(
                         TypeErrorKind::PurityViolation,
@@ -337,7 +341,7 @@ impl Checker {
                         "cannot use `spawn` in a pure function".to_string(),
                     );
                 }
-                self.check_spawn(target, args, span)
+                self.check_spawn(target, type_args, args, span)
             }
 
             // Lambda (synthesize mode — no expected type)
@@ -4759,8 +4763,9 @@ impl Checker {
     pub(super) fn check_spawn(
         &mut self,
         target: &Spanned<Expr>,
+        type_args: &[Spanned<TypeExpr>],
         args: &[(String, Spanned<Expr>)],
-        _span: &Span,
+        span: &Span,
     ) -> Ty {
         let actor_name = match &target.0 {
             Expr::Identifier(name) => Some(name.clone()),
@@ -4787,14 +4792,101 @@ impl Checker {
                 let ty_raw = self.synthesize(arg, as_);
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
             }
+
+            // Resolve the explicit type-argument list.  When type_args is
+            // non-empty, substitute them into the PID type and enforce any
+            // declared bounds.  When empty, check whether the actor is
+            // generic (has declared type params) and emit a diagnostic if so.
+            let resolved_type_args: Vec<Ty> = type_args
+                .iter()
+                .map(|te| self.resolve_type_expr(te))
+                .collect();
+
+            // Look up the arity of the actor's declared type params (0 for
+            // non-generic actors).
+            let declared_arity = self
+                .type_defs
+                .get(&name)
+                .map_or(0, |td| td.type_params.len());
+
+            if declared_arity > 0 && resolved_type_args.is_empty() {
+                // Generic actor spawned without type arguments.
+                self.report_error(
+                    TypeErrorKind::MissingActorTypeArgs {
+                        actor_name: name.clone(),
+                        expected_arity: declared_arity,
+                    },
+                    span,
+                    format!(
+                        "actor `{name}` has {declared_arity} type parameter(s); \
+                         supply explicit type arguments: `spawn {name}<T>(...)`"
+                    ),
+                );
+                return Ty::local_pid(Ty::Error);
+            }
+
+            if declared_arity > 0
+                && !resolved_type_args.is_empty()
+                && resolved_type_args.len() != declared_arity
+            {
+                self.report_error(
+                    TypeErrorKind::ActorTypeArgArityMismatch {
+                        actor_name: name.clone(),
+                        expected: declared_arity,
+                        got: resolved_type_args.len(),
+                    },
+                    span,
+                    format!(
+                        "actor `{name}` has {declared_arity} type parameter(s) but \
+                         {} type argument(s) were supplied",
+                        resolved_type_args.len()
+                    ),
+                );
+                return Ty::local_pid(Ty::Error);
+            }
+
+            // Enforce declared bounds on the resolved type arguments.
+            if !resolved_type_args.is_empty() {
+                self.enforce_actor_instantiation_bounds(&name, &resolved_type_args, span);
+            }
+
+            // Record the actor-mono entry: (actor_name, resolved_type_args).
+            // This populates the per-spawn instantiation table consulted by
+            // the actor-mono discovery pass (blocked on MachineMonoPass infra).
+            // Today's entry is keyed by mangled name; the runtime
+            // mailbox ABI is unchanged (opaque pointer, no `hew_actor_spawn`
+            // change).
+            if !resolved_type_args.is_empty() {
+                self.record_actor_mono_entry(&name, resolved_type_args.clone(), span);
+            }
+
             Ty::local_pid(Ty::Named {
                 builtin: None,
                 name,
-                args: vec![],
+                args: resolved_type_args,
             })
         } else {
             Ty::local_pid(Ty::Error)
         }
+    }
+
+    /// Record a generic actor spawn instantiation.
+    ///
+    /// Inserts `(actor_name, type_args)` into the `actor_spawn_type_args`
+    /// table keyed by the spawn expression span. The mangled symbol is
+    /// derived at output time via
+    /// `mangle_instantiation(SymbolClass::Actor, actor_name, type_args, &[])`.
+    /// This table is consumed by the actor-mono discovery pass.
+    pub(super) fn record_actor_mono_entry(
+        &mut self,
+        actor_name: &str,
+        type_args: Vec<Ty>,
+        span: &Span,
+    ) {
+        let key = SpanKey::from(span);
+        self.actor_spawn_type_args
+            .entry(key)
+            .or_insert_with(|| (actor_name.to_string(), type_args));
     }
 
     /// Check if an expression is typically used for side effects (not for its return value).

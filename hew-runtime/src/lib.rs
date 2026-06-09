@@ -245,9 +245,15 @@ static GLOBAL: profiler::allocator::ProfilingAllocator = profiler::allocator::Pr
 
 pub mod arc;
 pub mod assert;
+pub mod auto_mutex;
+pub use auto_mutex::{
+    hew_auto_mutex_alloc, hew_auto_mutex_free, hew_auto_mutex_lock, hew_auto_mutex_unlock,
+    HewAutoMutex,
+};
 pub mod cabi;
 pub mod hashmap;
 pub mod hashset;
+pub mod layout_intrinsics;
 pub mod option;
 pub mod print;
 pub mod random;

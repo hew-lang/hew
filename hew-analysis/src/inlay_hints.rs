@@ -453,7 +453,7 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &value.0, tc, hints);
             }
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             collect_inlay_hints_from_expr(source, &target.0, tc, hints);
             for (_, value) in args {
                 collect_inlay_hints_from_expr(source, &value.0, tc, hints);
@@ -684,6 +684,8 @@ mod tests {
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         }
     }
 

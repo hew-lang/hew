@@ -24,3 +24,12 @@ regex = "1"
 
 [dev-dependencies]
 serde_json.workspace = true
+# W4.001 Stage C0b — `resolved_call_kernel_symbols` resolves Stage B
+# registry symbol names against the live runtime at *link time* (not
+# `dlsym`). Statically linking `hew-runtime` here folds its archive
+# into every test binary, so the `extern "C"` decls in that test fail
+# at link if the runtime stops exporting the canonical kernel symbols.
+# `hew-cabi` re-declares the layout descriptor `extern "C" static`s the
+# same test takes the address of.
+hew-runtime = { path = "../hew-runtime" }
+hew-cabi = { path = "../hew-cabi" }

@@ -147,11 +147,48 @@ impl<T: ActorMsg> Pid for RemotePid<T> {
 /// Produce a sequence of values one item at a time.
 ///
 /// User-defined iterators implement this trait directly; `for` loops accept
-/// values whose type implements `Iterator` and bind each yielded `Item`.
+/// values whose type implements `IntoIterator` and walk the resulting
+/// `Iterator` to bind each yielded `Item`.
+///
+/// `next` takes `self` by move and returns the (possibly mutated) iterator
+/// state by re-binding through the `Option<Self::Item>` payload. The v0.5
+/// receiver surface does not expose `&mut self`; stateful iterator wrappers
+/// hold their cursor as a field and produce a fresh `Self` on each call. The
+/// for-loop desugar holds the iterator in a `var` binding and rebinds it per
+/// iteration. v0.6+ may migrate to a `&mut self` receiver once that surface
+/// stabilises; the trait shape will be revisited then.
+///
+/// The shape `fn next(self) -> Option<Self::Item>` is also the natural target
+/// for the generator → iterator bridge: a `Generator<Y, ()>` resumes to its
+/// next yield and returns `Some(y)` until completion, then `None`. Stage 7 of
+/// the iteration-foundation lane wires that bridge.
 pub trait Iterator {
     type Item;
 
     fn next(self) -> Option<Self::Item>;
+}
+
+// ---------------------------------------------------------------------------
+// IntoIterator trait
+// ---------------------------------------------------------------------------
+/// Convert a value into an `Iterator`.
+///
+/// `for x in expr { ... }` desugars to `let mut it = expr.into_iter(); loop {
+/// match it.next() { Some(x) => ..., None => break } }` — the iterable on the
+/// right of `in` must implement `IntoIterator`, and the loop binding is typed
+/// as `<Self::IntoIter as Iterator>::Item`.
+///
+/// `IntoIter` carries the `Iterator<Item = Self::Item>` bound so that callers
+/// projecting `<T as IntoIterator>::IntoIter::Item` always agree with
+/// `<T as IntoIterator>::Item`. Concrete `IntoIterator` impls live next to
+/// each collection (`Vec`, `HashSet`, `HashMap`); this trait declaration
+/// reserves the surface only.
+pub trait IntoIterator {
+    type Item;
+
+    type IntoIter: Iterator<Item = Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter;
 }
 
 // ---------------------------------------------------------------------------

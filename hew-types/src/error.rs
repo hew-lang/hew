@@ -686,6 +686,32 @@ pub enum TypeErrorKind {
         /// The trait name that carried the unknown positional type arguments.
         trait_name: String,
     },
+    /// A generic actor was spawned without a turbofish type-argument list.
+    ///
+    /// Generic actors declare `<T>` type parameters on their declaration.
+    /// Every `spawn` call for such an actor must supply explicit type arguments
+    /// (`spawn Foo<i64>(...)`) so the type checker can substitute them into the
+    /// PID type and enforce bounds. Inference of actor type-args is not yet
+    /// supported and may be added in a follow-on improvement.
+    ///
+    /// Envelope code: `E_MISSING_ACTOR_TYPE_ARGS`.
+    MissingActorTypeArgs {
+        /// Name of the generic actor whose type arguments were omitted.
+        actor_name: String,
+        /// Number of type parameters the actor declaration declares.
+        expected_arity: usize,
+    },
+    /// A generic actor was spawned with the wrong number of type arguments.
+    ///
+    /// Envelope code: `E_ACTOR_TYPE_ARG_ARITY_MISMATCH`.
+    ActorTypeArgArityMismatch {
+        /// Name of the generic actor.
+        actor_name: String,
+        /// Number of type parameters declared on the actor.
+        expected: usize,
+        /// Number of type arguments supplied at the spawn site.
+        got: usize,
+    },
     /// A `#[extern_symbol("…")]` attribute's template payload failed the
     /// Stage-2 grammar check defined in
     /// `crate::extern_symbol::ExternSymbolTemplate::parse`.
@@ -775,6 +801,8 @@ impl TypeErrorKind {
             Self::RegexPatternNotString { .. } => "RegexPatternNotString",
             Self::UnknownTraitBoundShape { .. } => "UnknownTraitBoundShape",
             Self::InvalidExternSymbolTemplate { .. } => "InvalidExternSymbolTemplate",
+            Self::MissingActorTypeArgs { .. } => "MissingActorTypeArgs",
+            Self::ActorTypeArgArityMismatch { .. } => "ActorTypeArgArityMismatch",
         }
     }
 }

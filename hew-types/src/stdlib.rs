@@ -83,7 +83,7 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
         crate::Ty::Char | crate::Ty::I32 | crate::Ty::U32 => Some("i32"),
         crate::Ty::I64 | crate::Ty::U64 => Some("i64"),
         crate::Ty::F64 => Some("f64"),
-        crate::Ty::String => Some("str"),
+        crate::Ty::String => Some("string"),
         // Tuples lower through the layout-descriptor protocol.
         crate::Ty::Tuple(_) => Some("layout"),
         // Named element types: heap-handle nominals (`is_indirect = true`)
@@ -164,7 +164,7 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
             "i32" => Some("hew_vec_push_i32"),
             "i64" => Some("hew_vec_push_i64"),
             "f64" => Some("hew_vec_push_f64"),
-            "str" => Some("hew_vec_push_str"),
+            "string" => Some("hew_vec_push_str"),
             "ptr" => Some("hew_vec_push_ptr"),
             "layout" => Some("hew_vec_push_layout"),
             _ => None,
@@ -174,7 +174,7 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
             "i32" => Some("hew_vec_pop_i32"),
             "i64" => Some("hew_vec_pop_i64"),
             "f64" => Some("hew_vec_pop_f64"),
-            "str" => Some("hew_vec_pop_str"),
+            "string" => Some("hew_vec_pop_str"),
             "ptr" => Some("hew_vec_pop_ptr"),
             "layout" => Some("hew_vec_pop_layout"),
             _ => None,
@@ -184,7 +184,7 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
             "i32" => Some("hew_vec_get_i32"),
             "i64" => Some("hew_vec_get_i64"),
             "f64" => Some("hew_vec_get_f64"),
-            "str" => Some("hew_vec_get_str"),
+            "string" => Some("hew_vec_get_str"),
             "ptr" => Some("hew_vec_get_ptr"),
             "layout" => Some("hew_vec_get_layout"),
             _ => None,
@@ -194,7 +194,7 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
             "i32" => Some("hew_vec_set_i32"),
             "i64" => Some("hew_vec_set_i64"),
             "f64" => Some("hew_vec_set_f64"),
-            "str" => Some("hew_vec_set_str"),
+            "string" => Some("hew_vec_set_str"),
             "ptr" => Some("hew_vec_set_ptr"),
             "layout" => Some("hew_vec_set_layout"),
             _ => None,
@@ -203,7 +203,7 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
             "i32" => Some("hew_vec_contains_i32"),
             "i64" => Some("hew_vec_contains_i64"),
             "f64" => Some("hew_vec_contains_f64"),
-            "str" => Some("hew_vec_contains_str"),
+            "string" => Some("hew_vec_contains_str"),
             // W3.032 Slice 3e: layout (value-record/tuple) elements now route
             // through `hew_vec_contains_thunk`.  The checker layer
             // (`check_vec_method` `contains` arm) gates by equality

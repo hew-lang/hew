@@ -109,48 +109,29 @@ impl SymbolClass {
     }
 }
 
-/// Placeholder for a constexpr-evaluated const-argument value.
+/// Placeholder no longer — the real [`ConstValue`] now lives in
+/// [`super::machine`] and is re-exported here for back-compat with
+/// existing import sites (`use hew_hir::mono::mangle::ConstValue`).
 ///
-/// A forthcoming const-generics introduction replaces this enum with a
-/// proper constexpr-evaluated value type (likely an `enum` covering
-/// integer, float, bool, char, and aggregate literal values).
 /// `mangle_instantiation` renders each variant via
-/// [`mangle_const_value`]; downstream consumers that need to inspect
-/// the value rather than mangle it should not commit to the
-/// [`ConstValue::PendingW3039`] shape — it will not survive the
-/// const-generics introduction.
-///
-/// `MachineMonoKey` and `MonoKey<Actor>` both reference this type as
-/// their `ConstArg`; both default to an empty `const_args` vec in
-/// v0.5 baseline, so the placeholder's lack of inhabited variants does
-/// not prevent any current call site from building or mangling a key.
-//
-// Q-candidate for the future const-generics planner: the helper
-// signature in this module is parametric on `&[ConstValue]`, so
-// replacing the type with a real constexpr value enum is a contained
-// edit (this file, the `MonoKind::ConstArg` impls, and any consumer
-// that constructs a `ConstValue::PendingW3039` value — at the time
-// this file lands, no such consumer exists by construction).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ConstValue {
-    /// Single inhabited placeholder. No producer constructs this value
-    /// today; the variant exists so the type is `Sized` and can appear
-    /// in `Vec<ConstValue>` slots.
-    PendingW3039,
-}
+/// [`mangle_const_value`]; new variants added to [`ConstValue`] must
+/// extend `mangle_const_value`'s match without collision.
+pub use super::machine::ConstValue;
 
 /// Render a single [`ConstValue`] as a mangled symbol fragment.
 ///
 /// Stable across releases for variants that exist today; new variants
-/// added by the const-generics introduction must extend this match
-/// with a render that does not collide with any existing variant's
-/// output. The match is exhaustive by intent — a non-exhaustive match
-/// would silently mangle an unknown variant to a default string and
-/// risk symbol collisions across const-arg shapes.
+/// must extend this match with a render that does not collide with
+/// any existing variant's output. The match is exhaustive by intent —
+/// a non-exhaustive match would silently mangle an unknown variant to
+/// a default string and risk symbol collisions across const-arg shapes.
+///
+/// Encoding scheme:
+/// - `ConstValue::Usize(n)` → `u<n>` (e.g. `u16`, `u0`, `u65535`)
 #[must_use]
 pub fn mangle_const_value(value: &ConstValue) -> String {
     match value {
-        ConstValue::PendingW3039 => "pending".to_string(),
+        ConstValue::Usize(n) => format!("u{n}"),
     }
 }
 

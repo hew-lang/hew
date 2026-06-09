@@ -663,6 +663,7 @@ fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
     ActorDecl {
         visibility: Visibility::Pub,
         name: name.to_string(),
+        type_params: vec![],
         super_traits: None,
         init: None,
         fields: vec![],

@@ -84,6 +84,7 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
         Ty::Char => Some(("char", &[])),
         Ty::String => Some(("string", &[])),
         Ty::Bytes => Some(("bytes", &[])),
+        Ty::CancellationToken => Some(("CancellationToken", &[])),
         Ty::Duration => Some(("duration", &[])),
         // ActorRef<T>/LocalPid<T> wrap an actor type T — unwrap to dispatch methods on T.
         // RemotePid<T> is intentionally NOT unwrapped here: its methods are

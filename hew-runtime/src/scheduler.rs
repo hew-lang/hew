@@ -992,25 +992,76 @@ fn activate_actor(actor: *mut HewActor) {
                     let reply_consumed = current_reply_channel_consumed_on(crashed_ctx);
                     let crash_reply = clear_reply_channel_on(crashed_ctx);
                     restore_current_context_after_dispatch();
-                    //
-                    // SAFETY: called immediately after sigsetjmp returned
-                    // non-zero, on the same worker thread.
-                    unsafe { crate::signal::handle_crash_recovery() };
 
-                    // Reset arena — crash discards all in-flight data.
-                    if !actor_arena.is_null() {
-                        // SAFETY: Arena was created during spawn; crash discards
-                        // all in-flight data. We use the cached `actor_arena`
-                        // because `a` may be freed by a supervisor on another
-                        // worker after handle_crash_recovery sends the crash
-                        // notification.
+                    // Transition `Running → Crashing` (or `Stopping → Crashing`
+                    // — see below) BEFORE any publication step so that waiters
+                    // in `hew_actor_free` (which treats `Crashed` as quiescent
+                    // at `actor.rs::actor_free_state_is_quiescent`) cannot
+                    // observe the actor as terminal and free `a.arena` /
+                    // `a.mailbox` out from under this worker.  `Crashing` is
+                    // deliberately *not* quiescent (mirrors the existing
+                    // `Stopping → Stopped` two-step).
+                    //
+                    // The CAS accepts BOTH `Running` and `Stopping` as the
+                    // starting state.  `Stopping` arises when the handler
+                    // called `hew_actor_self_stop` (`actor.rs:3956`) before
+                    // panicking; the crash dominates the pending self-stop,
+                    // so we still need full crash bookkeeping (publish
+                    // `Crashed`, run link/monitor/supervisor notification)
+                    // rather than letting the actor finalise quietly as
+                    // `Stopped`.  Pre-fix, the legacy ordering
+                    // `handle_crash_recovery` → arena_reset → … achieved this
+                    // because `hew_actor_trap`'s own CAS loop accepts any
+                    // non-terminal current state and writes `Crashed`; the
+                    // new ordering must preserve the same dominance semantics.
+                    //
+                    // The CAS fails only if the state is already terminal
+                    // (`Crashed`/`Stopped`) or in some other state this
+                    // worker did not put it in.  In that case the actor may
+                    // already have been freed by another thread; we skip
+                    // arena_reset and the publication call to avoid racing,
+                    // but msg/reply cleanup (which we still uniquely own)
+                    // runs unconditionally.
+                    let took_crashing = loop {
+                        let cur = a.actor_state.load(Ordering::Acquire);
+                        if cur != HewActorState::Running as i32
+                            && cur != HewActorState::Stopping as i32
+                        {
+                            break false;
+                        }
+                        if a.actor_state
+                            .compare_exchange(
+                                cur,
+                                HewActorState::Crashing as i32,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            break true;
+                        }
+                    };
+
+                    // Per-activation cleanup BEFORE publishing terminal
+                    // `Crashed`.  While in `Crashing` no external thread can
+                    // observe the actor as quiescent, so `actor_arena`
+                    // remains valid for this worker.
+                    if took_crashing && !actor_arena.is_null() {
+                        // SAFETY: Arena was created during spawn; crash
+                        // discards all in-flight data.  The `Crashing`
+                        // state we just CAS'd into prevents
+                        // `hew_actor_free` from running ahead of us and
+                        // reclaiming the arena box.
                         unsafe { crate::arena::hew_arena_reset(actor_arena) };
                     }
 
                     // If dispatch has not already consumed the sender-side
                     // reply reference, send an empty reply so the waiting
                     // caller of hew_actor_ask is unblocked rather than
-                    // deadlocking.
+                    // deadlocking.  This happens BEFORE publication of
+                    // `Crashed` so the test invariant
+                    // `active_channel_count() == 0` is observable as soon
+                    // as state becomes `Crashed`.
                     if !reply_consumed && !crash_reply.is_null() {
                         // SAFETY: crash_reply is a valid HewReplyChannel pointer.
                         unsafe {
@@ -1033,6 +1084,35 @@ fn activate_actor(actor: *mut HewActor) {
                     //
                     // SAFETY: `msg` is exclusively owned by this worker.
                     unsafe { hew_msg_node_free(msg) };
+
+                    // Publish terminal `Crashed` and run supervisor / link
+                    // / monitor notifications.  `handle_crash_recovery`
+                    // invokes `hew_actor_trap` which CAS-transitions
+                    // `Crashing → Crashed` (the trap loop accepts any
+                    // non-terminal current state).  Notifications run
+                    // AFTER per-activation cleanup so that any waiter
+                    // woken by the `Crashed` write observes an arena that
+                    // has already been reset and a msg-node that has
+                    // already been freed.
+                    //
+                    // SAFETY: called immediately after sigsetjmp returned
+                    // non-zero, on the same worker thread.
+                    if took_crashing {
+                        // SAFETY: called immediately after sigsetjmp returned
+                        // non-zero, on the same worker thread; per-activation
+                        // cleanup (arena reset, msg-node free, late
+                        // crash-reply) has already run above.
+                        unsafe { crate::signal::handle_crash_recovery() };
+                    } else {
+                        // External trap already published a terminal state
+                        // during dispatch; do not call
+                        // `handle_crash_recovery` again (it would walk a
+                        // potentially-freed `state.current_actor`).  The
+                        // external trap already performed the propagation
+                        // and `clear_dispatch_recovery` invalidates the
+                        // jmp_buf.
+                        crate::signal::clear_dispatch_recovery();
+                    }
 
                     // Stop processing further messages for this actor.
                     crashed = true;

@@ -357,6 +357,42 @@ pub struct TypeCheckOutput {
     /// codegen (C-3) transitions each to `Finalized` after emitting the elem-layout
     /// global.  Absent entry for a Named-element site means the checker rejected the element.
     pub hashset_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashSetLoweringFact>,
+    /// Per-spawn-site type arguments for generic actor instantiations.
+    ///
+    /// Keyed by the `SpanKey` of the `spawn` expression. Each entry holds the
+    /// actor name and the checker-resolved type arguments supplied at that
+    /// spawn site (`spawn Foo<i64>(...)` → `("Foo", [Ty::I64])`).
+    ///
+    /// Populated by `check_spawn` when non-empty type args are resolved.
+    /// Empty for non-generic actors (no entry) or for generic actors that
+    /// triggered a `MissingActorTypeArgs` diagnostic (also no entry).
+    ///
+    /// Consumed by the actor-mono discovery pass (blocked on
+    /// `MachineMonoPass` infra) to build per-instantiation `ActorLayout`
+    /// records keyed by `mangle_instantiation(SymbolClass::Actor, …)`.
+    pub actor_spawn_type_args: HashMap<SpanKey, (String, Vec<Ty>)>,
+    /// Checker-authored unified-dispatch table keyed by method-call span.
+    ///
+    /// This is the substrate introduced by W4.001 Stage A. It will, in
+    /// subsequent stages, become the single source of truth for
+    /// "how does this method call lower" — replacing the parallel
+    /// authorities currently split across `method_call_rewrites`,
+    /// `admissibility.rs` per-K allowlists, and `methods.rs` runtime
+    /// symbol-family selection.
+    ///
+    /// **Stage A invariant (DI-003 fail-closed-by-absence):** no
+    /// production reader of this field exists yet. The map is empty for
+    /// every Hew program checked in Stage A. Stage B populates it from
+    /// the unified resolver (dual-emit alongside `method_call_rewrites`);
+    /// Stage C makes HIR lowering consult it as the dispatch authority
+    /// for HashMap/HashSet; Stage D extends to Vec/Option/Result. A
+    /// missing entry — once a Stage B/C/D consumer is wired — is a
+    /// bug-class invariant violation, never a silent "no rewrite
+    /// needed" fallthrough.
+    ///
+    /// See [`crate::check::dispatch`] module docs for the full Stage A
+    /// substrate ownership rationale and downstream consumer ordering.
+    pub resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
 }
 
 /// Capture mode selected by the checker for one closure environment field.
@@ -805,6 +841,8 @@ impl Default for TypeCheckOutput {
             lang_items: crate::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         }
     }
 }
@@ -1012,6 +1050,12 @@ pub enum MethodCallRewrite {
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
     DeferToLowering,
+    /// Checker-authoritative `CancellationToken.is_cancelled()` intrinsic.
+    ///
+    /// HIR/MIR consume this structured marker without re-checking the
+    /// receiver type; codegen lowers it to the borrowing
+    /// `hew_cancel_token_is_requested` runtime call.
+    CancellationTokenIsCancelled,
     /// Static trait dispatch: the method was resolved from the bounds on a
     /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
     /// resolves the concrete callee at monomorphization time.
@@ -1596,6 +1640,12 @@ pub struct Checker {
     /// same variable every time).
     pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-side accumulator for [`TypeCheckOutput::resolved_calls`].
+    ///
+    /// **Stage A:** never populated by production code paths. Reserved
+    /// for Stage B's unified resolver. See `dispatch.rs` module docs and
+    /// `TypeCheckOutput::resolved_calls`.
+    pub(super) resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
     pub(super) numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
@@ -1664,6 +1714,17 @@ pub struct Checker {
     /// `check_struct_init` (struct-state brace constructor path) where no
     /// `FnSig` pipeline carries the bounds.
     pub(super) machine_type_param_bounds: HashMap<String, HashMap<String, Vec<String>>>,
+    /// Const-generic parameters declared on each machine, keyed by
+    /// machine name. Populated during [`register_machine_decl`] from
+    /// `MachineDecl::const_params`. Used at instantiation sites
+    /// (Stage 3 — gated on W3.033c Stage 2) for arity matching and
+    /// to recover declaration-time default values when a call site
+    /// omits a const-arg.
+    ///
+    /// Each entry stores the parameter declarations in source-declared
+    /// order (the same order they appear in the `<...>` list, with
+    /// type params preceding const params per the parser convention).
+    pub(super) machine_const_params: HashMap<String, Vec<MachineConstParamDecl>>,
     /// Dedup set for `enforce_machine_instantiation_bounds`. Keyed by
     /// `(machine_name, resolved_type_args, span_key)`: the same
     /// annotation can be walked multiple times during checking — for
@@ -1676,6 +1737,20 @@ pub struct Checker {
     /// identical instantiations at different source positions are
     /// distinct violations and must each report once.
     pub(super) reported_machine_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
+    /// Trait bounds declared on each actor's generic type parameters, keyed by
+    /// actor name. Populated during `register_actor_decl` from
+    /// `ActorDecl.type_params`. Consulted at the use site by
+    /// `check_spawn` to enforce bounds on explicitly supplied type args.
+    ///
+    /// Mirrors `machine_type_param_bounds` — the clone-pattern is deliberate;
+    /// actors and machines share bound-enforcement semantics but are separate
+    /// declaration kinds. Do not collapse: actor and machine bound tables have
+    /// distinct lookup scopes.
+    pub(super) actor_type_param_bounds: HashMap<String, HashMap<String, Vec<String>>>,
+    /// Dedup set for `enforce_actor_instantiation_bounds`. Mirrors
+    /// `reported_machine_bound_violations` but scoped to actor spawns so
+    /// that machine and actor violations cannot accidentally suppress each other.
+    pub(super) reported_actor_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
     pub(super) current_return_type: Option<Ty>,
     pub(super) in_generator: bool,
     pub(super) loop_depth: u32,
@@ -1899,6 +1974,13 @@ pub struct Checker {
     /// WHEN OBSOLETE: if a `let rec` or fixed-point surface is ratified.
     /// REAL SOLUTION: a proper `letrec`/`fix`-point binder in the type checker.
     pub(super) pending_let_closure_name: Option<String>,
+    /// Per-spawn-site type arguments for generic actor instantiations.
+    ///
+    /// Mirrors [`TypeCheckOutput::actor_spawn_type_args`]. Populated in
+    /// `check_spawn` when explicit type args are resolved for a generic actor.
+    /// Moved into the output at `check_program` exit after `subst.resolve`
+    /// settles inference variables.
+    pub(super) actor_spawn_type_args: HashMap<SpanKey, (String, Vec<Ty>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1912,6 +1994,47 @@ pub(super) struct IntegerTypeInfo {
 pub(super) enum ConstValue {
     Integer(i64),
     Float(f64),
+}
+
+/// Resolved declaration of a machine const-generic parameter.
+///
+/// Mirrors `hew_parser::ast::ConstParam` at the checker layer so the
+/// side table (`machine_const_params` on [`Checker`]) does not pin a
+/// downstream subsystem to the parser AST shape. The default value
+/// is stored as `u64` because R269=A admits `usize` only — when
+/// additional widths are added (deferred work), this evolves into a
+/// tagged value type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineConstParamDecl {
+    pub name: String,
+    /// Resolved const-param width. Currently `usize` is the only
+    /// admitted variant; the kind is retained so widening can extend
+    /// non-breakingly.
+    pub ty: MachineConstParamTy,
+    /// Optional default value (R270=A). `None` when the parameter
+    /// has no `= value` clause at declaration.
+    pub default: Option<u64>,
+}
+
+/// Resolved const-param element type. R269=A: usize only initially.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineConstParamTy {
+    Usize,
+}
+
+/// Constexpr-evaluated machine const-argument value at an
+/// instantiation site, produced by
+/// [`Checker::validate_const_param_arg`].
+///
+/// Parallel to `hew_hir::mono::ConstValue` (defined in
+/// `hew-hir/src/mono/machine.rs`) so the checker can resolve const-
+/// args without taking a dependency on `hew-hir`. Stage 3 lowering
+/// converts this into the HIR variant when populating
+/// `MachineMonoKey::const_args`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineConstArgValue {
+    /// `usize` const-argument (R269=A).
+    Usize(u64),
 }
 
 impl Checker {
@@ -1945,6 +2068,7 @@ impl Checker {
             deferred_vec_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            resolved_calls: HashMap::new(),
             numeric_method_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
@@ -1971,7 +2095,10 @@ impl Checker {
             generic_ctx: Vec::new(),
             current_type_param_bounds: Vec::new(),
             machine_type_param_bounds: HashMap::new(),
+            machine_const_params: HashMap::new(),
             reported_machine_bound_violations: HashSet::new(),
+            actor_type_param_bounds: HashMap::new(),
+            reported_actor_bound_violations: HashSet::new(),
             current_return_type: None,
             in_generator: false,
             loop_depth: 0,
@@ -2036,6 +2163,7 @@ impl Checker {
             pending_pattern_resolutions: HashMap::new(),
             lang_items: crate::LangItemRegistry::new(),
             lang_item_spans: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
         }
     }
 

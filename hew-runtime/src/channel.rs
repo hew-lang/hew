@@ -362,6 +362,39 @@ mod tests {
         }
     }
 
+    /// Regression: `hew_channel_send`'s contract requires a NUL-terminated
+    /// C string, and its `CStr::from_ptr` will scan past any caller buffer
+    /// that omits the terminator.  This guards the in-crate test surface
+    /// against re-introducing the pattern (the previous offender lived in
+    /// `recv_int_rejects_non_i64_payloads` and was caught by `ASan` as a
+    /// global-buffer-overflow).  We round-trip a short, properly NUL-
+    /// terminated payload to keep the sanitizer lane green.
+    #[test]
+    fn send_requires_nul_terminated_payload() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created above.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            // Exactly the shape that previously triggered the overflow:
+            // a 3-byte payload — but here we include the terminator so
+            // `CStr::from_ptr` stays inside the allocation.
+            let payload = b"bad\0";
+            hew_channel_send(tx, payload.as_ptr().cast());
+
+            let result = hew_channel_recv(rx);
+            assert!(!result.is_null());
+            let received = CStr::from_ptr(result);
+            assert_eq!(received.to_bytes(), b"bad");
+            libc::free(result.cast()); // ALLOCATOR-PAIRING: libc
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
     #[test]
     fn send_recv_basic() {
         let pair = hew_channel_new(4);
@@ -650,7 +683,10 @@ mod tests {
             let rx = hew_channel_pair_receiver(pair);
             hew_channel_pair_free(pair);
 
-            let payload = b"bad";
+            // NUL-terminated so `hew_channel_send`'s `CStr::from_ptr` does
+            // not read past the global; the transmitted payload is still
+            // the 3-byte "bad", which is rejected as a non-i64 message.
+            let payload = b"bad\0";
             hew_channel_send(tx, payload.as_ptr().cast());
 
             let mut valid = -1;

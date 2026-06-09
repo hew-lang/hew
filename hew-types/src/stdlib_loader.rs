@@ -332,9 +332,9 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
     match texpr {
         TypeExpr::Named { name, type_args } => {
             // Primitive types never take type args; delegate entirely to the
-            // canonical alias table so aliases like `str`, `uint`, `float`,
-            // `Float`, `byte`, `Bool`, `Char`, `Bytes`, `Duration` are
-            // recognised instead of falling through to module-qualification.
+            // canonical primitive table so names like `string`, `bool`, `char`,
+            // `bytes`, `duration`, `isize`, `usize` are recognised instead of
+            // falling through to module-qualification.
             let has_args = type_args.as_ref().is_some_and(|a| !a.is_empty());
             if !has_args {
                 if let Some(prim) = Ty::from_name(name.as_str()) {
@@ -1141,24 +1141,16 @@ mod tests {
         );
     }
 
-    /// Directly exercises `type_expr_to_ty` for every alias that was previously
-    /// missing from the partial local table and would have been mis-qualified.
+    /// Directly exercises `type_expr_to_ty` for canonical primitive names.
+    /// Retired aliases (str, float, Float, byte, Bool, Char, Bytes) must not
+    /// resolve — see `primitive_aliases_rejected` for the negative assertions.
     #[test]
-    fn primitive_aliases_delegate_to_from_name() {
+    fn primitive_canonicals_delegate_to_from_name() {
         use hew_parser::ast::TypeExpr;
 
         let module = "test";
         let cases: &[(&str, Ty)] = &[
-            // aliases present in Ty::from_name but absent from the old local table
-            ("str", Ty::String),
-            ("usize", Ty::Usize),
-            ("float", Ty::F64),
-            ("Float", Ty::F64),
-            ("byte", Ty::U8),
-            ("Bool", Ty::Bool),
-            ("Char", Ty::Char),
-            ("Bytes", Ty::Bytes),
-            // canonical names that were already handled — must still work
+            // canonical names must still work
             ("string", Ty::String),
             ("i64", Ty::I64),
             ("isize", Ty::Isize),
@@ -1170,37 +1162,38 @@ mod tests {
             ("duration", Ty::Duration),
         ];
 
-        for (alias, expected) in cases {
+        for (name, expected) in cases {
             let texpr = TypeExpr::Named {
-                name: alias.to_string(),
+                name: name.to_string(),
                 type_args: None,
             };
             let got = type_expr_to_ty(&texpr, module);
             assert_eq!(
                 got, *expected,
-                "alias `{alias}` should resolve to {expected:?}, got {got:?}"
+                "canonical `{name}` should resolve to {expected:?}, got {got:?}"
             );
         }
     }
 
-    /// Aliases must NOT be module-qualified: `str` → `Ty::String`, not
-    /// `Ty::Named("test.str")`.
+    /// Retired aliases must NOT resolve to primitive types; they fall through
+    /// to module-qualification (i.e. produce a Named type, not a primitive).
     #[test]
-    fn primitive_aliases_are_not_module_qualified() {
+    fn primitive_aliases_rejected() {
         use hew_parser::ast::TypeExpr;
 
-        let aliases = [
-            "str", "usize", "isize", "float", "Float", "byte", "Bool", "Char", "Bytes",
-        ];
-        for alias in aliases {
+        let retired = ["str", "float", "Float", "byte", "Bool", "Char", "Bytes"];
+        for alias in retired {
             let texpr = TypeExpr::Named {
                 name: alias.to_string(),
                 type_args: None,
             };
             let got = type_expr_to_ty(&texpr, "mymod");
             assert!(
-                !matches!(got, Ty::Named { .. }),
-                "alias `{alias}` must not become a Named type (was mis-qualified before fix), got {got:?}"
+                !matches!(
+                    got,
+                    Ty::String | Ty::F64 | Ty::U8 | Ty::Bool | Ty::Char | Ty::Bytes
+                ),
+                "retired alias `{alias}` must not resolve to a primitive type, got {got:?}"
             );
         }
     }

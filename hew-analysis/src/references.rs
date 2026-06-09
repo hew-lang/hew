@@ -800,7 +800,7 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&val.0, counts);
             }
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             count_idents_in_expr(&target.0, counts);
             for (_, val) in args {
                 count_idents_in_expr(&val.0, counts);

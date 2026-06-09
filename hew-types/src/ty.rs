@@ -24,6 +24,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
         Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
         Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
+        Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
         Some(BuiltinType::LocalPid) => Some(BuiltinNamedType::LocalPid),
         Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
         Some(
@@ -61,12 +62,8 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::NarrowError
             | BuiltinType::CloseError
             | BuiltinType::Iterator
-            | BuiltinType::String
-            | BuiltinType::Map
-            | BuiltinType::Char
             | BuiltinType::Unit
             | BuiltinType::Duration
-            | BuiltinType::Float
             | BuiltinType::Trap,
         )
         | None => None,
@@ -155,6 +152,8 @@ pub enum Ty {
     String,
     /// Ref-counted byte buffer
     Bytes,
+    /// Ref-counted cancellation token handle
+    CancellationToken,
     /// Duration in nanoseconds (distinct from i64)
     Duration,
     /// Unit type (void)
@@ -355,18 +354,18 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("i16", &["i16"]),
     ("i32", &["i32"]),
     ("i64", &["i64"]),
-    ("u8", &["u8", "byte"]),
+    ("u8", &["u8"]),
     ("u16", &["u16"]),
     ("u32", &["u32"]),
     ("u64", &["u64"]),
     ("isize", &["isize"]),
     ("usize", &["usize"]),
     ("f32", &["f32"]),
-    ("f64", &["f64", "float", "Float"]),
-    ("bool", &["bool", "Bool"]),
-    ("char", &["char", "Char"]),
-    ("string", &["string", "str"]),
-    ("bytes", &["bytes", "Bytes"]),
+    ("f64", &["f64"]),
+    ("bool", &["bool"]),
+    ("char", &["char"]),
+    ("string", &["string"]),
+    ("bytes", &["bytes"]),
     ("duration", &["duration"]),
     // Unit's type-system spelling is `()`, while wirecodec also accepts `unit`.
     ("()", &["()"]),
@@ -525,6 +524,7 @@ impl Ty {
             Ty::Char => write!(f, "char"),
             Ty::String => write!(f, "string"),
             Ty::Bytes => write!(f, "bytes"),
+            Ty::CancellationToken => write!(f, "CancellationToken"),
             Ty::Duration => write!(f, "duration"),
             Ty::Unit => write!(f, "()"),
             Ty::Never => write!(f, "!"),
@@ -1120,6 +1120,9 @@ impl Ty {
             _ => name,
         };
         let builtin = lookup_builtin_type(&name);
+        if builtin == Some(BuiltinType::CancellationToken) && args.is_empty() {
+            return Ty::CancellationToken;
+        }
         Ty::Named {
             name,
             args,

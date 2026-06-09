@@ -1,0 +1,15 @@
+// W3.004 S1 turbofish type fix: `Vec::<T>::new()` with no annotation.
+//
+// Before fix, the checker hit "this function takes 0 type arguments but 1
+// were supplied" because Vec::new is registered with no declared type params
+// and the synthesis path fell through to instantiate_fn_sig_for_call.
+// The fix intercepts "Vec::new" in check_call before the fn_sigs lookup when
+// type_args are present.
+//
+// Expected exit 0.
+fn main() -> i64 {
+    let v = Vec::<i64>::new();
+    v.push(5);
+    let x = v.get(0);
+    x - 5
+}

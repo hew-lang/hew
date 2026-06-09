@@ -332,7 +332,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(v, calls);
             }
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             collect_calls_in_expr(target.as_ref(), calls);
             for (_, a) in args {
                 collect_calls_in_expr(a, calls);

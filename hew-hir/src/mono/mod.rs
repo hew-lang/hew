@@ -48,8 +48,30 @@ pub mod machine;
 pub mod mangle;
 
 pub use function::{Function, FunctionMonoKey};
-pub use machine::{Machine, MachineMonoKey};
+pub use machine::{Machine, MachineMonoEntry, MachineMonoKey};
 pub use mangle::{mangle_instantiation, ConstValue, SymbolClass};
+
+/// Type alias for the parametric actor-mono key shape.
+///
+/// Pairs an `(origin: ItemId, origin_name: String, type_args:
+/// Vec<ResolvedTy>, const_args: Vec<ConstValue>)` tuple. Two
+/// `ActorMonoKey`s with the same actor origin but different `type_args`
+/// (or, when populated, different `const_args`) are disjoint
+/// instantiations and produce distinct mangled symbols.
+///
+/// `ActorMonoKey` mangles via [`MonoKey::mangle`] (the
+/// const-arg-bearing specialisation), which routes through
+/// [`mangle_instantiation`] with [`SymbolClass::Actor`] — a class
+/// tag that guarantees no actor-mono symbol can collide with a
+/// machine-mono or function-mono symbol sharing the same origin name
+/// and type args.
+///
+/// The `origin` field is left as the sentinel [`ItemId::PLACEHOLDER`]
+/// because the checker does not yet run a full HIR resolve
+/// that assigns persistent `ItemId`s to actor declarations. The
+/// actor-mono discovery pass (blocked on `MachineMonoPass` infra)
+/// will back-fill the real `ItemId` from the lowered module.
+pub type ActorMonoKey = MonoKey<Actor>;
 
 /// Zero-sized marker for actor-spawn monomorphisation keys.
 ///

@@ -1239,14 +1239,29 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
     }
 
     if !a.arena.is_null() {
+        let arena_ptr = a.arena;
+        // Null the slot BEFORE freeing — defense-in-depth per LESSONS row
+        // `raii-null-after-move`.  Any straggler reader that holds only
+        // `actor` (not a cached copy) now fails closed at the C-ABI
+        // entry-guard null check (`hew_arena_reset` / `hew_arena_free_all`
+        // are both null-tolerant) instead of dereferencing freed memory.
+        // The cached-`actor_arena` reader in `scheduler.rs::activate_actor`
+        // is protected by the `Crashing → Crashed` two-step instead; this
+        // null-out covers other helpers that re-read `a.arena`.
+        // SAFETY: caller guarantees exclusive access to `actor` during free.
+        unsafe { (*actor).arena = std::ptr::null_mut() };
         // SAFETY: Arena was created by hew_arena_new during spawn.
-        unsafe { crate::arena::hew_arena_free_all(a.arena) };
+        unsafe { crate::arena::hew_arena_free_all(arena_ptr) };
     }
 
     unregister_actor_state_lock(actor);
 
     let mb = a.mailbox.cast::<HewMailbox>();
     if !mb.is_null() {
+        // Null the mailbox slot before freeing — same defense-in-depth
+        // discipline as the arena slot above (`raii-null-after-move`).
+        // SAFETY: caller guarantees exclusive access to `actor` during free.
+        unsafe { (*actor).mailbox = std::ptr::null_mut() };
         // SAFETY: Mailbox was allocated by hew_mailbox_new.
         unsafe { mailbox::hew_mailbox_free(mb) };
     }
@@ -1332,14 +1347,27 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     }
 
     if !a.arena.is_null() {
+        let arena_ptr = a.arena;
+        // Null the slot BEFORE freeing — parity with the native
+        // `free_actor_resources_with_options` (`raii-native-wasm-parity`
+        // + `raii-null-after-move`).  WASM is single-threaded so the
+        // arena UAF cannot fire here, but the source shape must mirror
+        // native to keep both paths reviewable as one invariant.
+        // SAFETY: caller guarantees exclusive access to `actor` during free.
+        unsafe { (*actor).arena = std::ptr::null_mut() };
         // SAFETY: Arena was created by hew_arena_new during spawn.
-        unsafe { crate::arena::hew_arena_free_all(a.arena.cast::<crate::arena::ActorArena>()) };
+        unsafe { crate::arena::hew_arena_free_all(arena_ptr.cast::<crate::arena::ActorArena>()) };
     }
 
     unregister_actor_state_lock(actor);
 
     if !a.mailbox.is_null() {
-        let mb = a.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
+        let mailbox_ptr = a.mailbox;
+        // Null before free — parity with the native path; covers any
+        // straggler reader that re-reads `a.mailbox` during teardown.
+        // SAFETY: caller guarantees exclusive access to `actor` during free.
+        unsafe { (*actor).mailbox = std::ptr::null_mut() };
+        let mb = mailbox_ptr.cast::<crate::mailbox_wasm::HewMailboxWasm>();
         // SAFETY: this helper is only used with WASM mailboxes.
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mb) };
     }
@@ -5621,6 +5649,99 @@ mod tests {
 
         // SAFETY: actor is quiescent and owned by this test.
         assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+
+        drop(runtime);
+        assert_eq!(reply_channel::active_channel_count(), 0);
+    }
+
+    unsafe extern "C-unwind" fn native_self_stop_then_trap_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        // The handler self-stops (transitions Running → Stopping) and then
+        // panics.  Crash recovery must dominate the pending self-stop:
+        // publish `Crashed` (not `Stopped`) and run the full
+        // link/monitor/supervisor notification path.  Before the Stage 1
+        // ASan-cleanup fix this path went through `handle_crash_recovery`
+        // → `hew_actor_trap`'s CAS loop, which accepts any non-terminal
+        // current state and writes `Crashed`.  The Crashing-intermediate
+        // ordering must preserve the same dominance semantics: the worker
+        // CAS-loops both `Running → Crashing` and `Stopping → Crashing` so
+        // that a self-stopped-then-crashed actor still publishes `Crashed`
+        // and notifies supervisors/links/monitors rather than stalling
+        // permanently in `Stopping`.
+        hew_actor_self_stop();
+        hew_panic();
+    }
+
+    /// Regression: self-stop followed by a panic in the same dispatch must
+    /// still publish `Crashed` (crash dominates the pending `Stopping`),
+    /// run the supervisor/link/monitor notification path, and allow
+    /// `hew_actor_free` to complete within bounded wait.  Without
+    /// `Stopping → Crashing` acceptance in the scheduler's crash branch,
+    /// the actor would be stranded in `Stopping` (non-quiescent), no
+    /// crash report would publish, and `hew_actor_free` would time out.
+    #[test]
+    fn native_self_stop_then_crash_publishes_crashed_and_notifies_supervisor() {
+        let _guard = crate::runtime_test_guard();
+        let runtime = NativeSchedulerGuard::new();
+
+        assert_eq!(reply_channel::active_channel_count(), 0);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe {
+            hew_actor_spawn(
+                std::ptr::null_mut(),
+                0,
+                Some(native_self_stop_then_trap_dispatch),
+            )
+        };
+        assert!(!actor.is_null());
+
+        // Deliver a message to trigger the dispatch (no ask — the handler
+        // self-stops then crashes; no reply is expected or possible).
+        // SAFETY: actor is valid and tracked.
+        unsafe { hew_actor_send(actor, 1, ptr::null_mut(), 0) };
+
+        // (a) State reaches `Crashed`.  Bounded by 2s — the worker runs
+        // arena_reset + msg-node free + handle_crash_recovery synchronously
+        // and the test fails fast rather than hanging.
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(2), || {
+                // SAFETY: actor remains owned by this test while we poll its state.
+                let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+                state == HewActorState::Crashed as i32
+            }),
+            "self-stop-then-crash must publish Crashed; actor must not be stranded in Stopping or Crashing",
+        );
+
+        // (b) Crash notification path executed.  `hew_actor_trap`
+        // (`actor.rs:3716`) stores `error_code` only AFTER winning its
+        // terminal-state CAS, immediately before running
+        // `propagate_exit_to_links` / `notify_monitors_on_death` /
+        // `hew_supervisor_notify_child_event` (lines :3759-:3796).  A
+        // non-zero `error_code` therefore proves the full notification
+        // path ran, not just a bare state write.
+        // SAFETY: actor is owned by this test.
+        let err = unsafe { hew_actor_get_error(actor) };
+        assert_ne!(
+            err, 0,
+            "crash notification path must run; non-zero error_code indicates hew_actor_trap reached the notification block",
+        );
+
+        // (c) `hew_actor_free` completes within its bounded wait
+        // (`actor.rs::hew_actor_free_inner` has a 2s timeout on the
+        // quiescence spin).  If `Crashing` had stalled the waiter, this
+        // would return -2 instead of 0.
+        // SAFETY: actor is quiescent and owned by this test.
+        let free_rc = unsafe { hew_actor_free(actor) };
+        assert_eq!(
+            free_rc, 0,
+            "hew_actor_free must complete bounded after Crashing → Crashed publication",
+        );
 
         drop(runtime);
         assert_eq!(reply_channel::active_channel_count(), 0);

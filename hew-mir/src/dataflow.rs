@@ -449,6 +449,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::FloatMul { dest, lhs, rhs, .. }
         | Instr::FloatDiv { dest, lhs, rhs, .. }
         | Instr::FloatRem { dest, lhs, rhs, .. } => (vec![*lhs, *rhs], vec![*dest]),
+        Instr::CancellationTokenIsCancelled { dest, token } => (vec![*token], vec![*dest]),
         Instr::BoolNot { dest, operand }
         | Instr::FloatNeg { dest, operand, .. }
         | Instr::IntBitNot { dest, operand } => (vec![*operand], vec![*dest]),
@@ -470,6 +471,12 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             let reads = call.args().to_vec();
             let writes = call.dest().into_iter().collect();
             (reads, writes)
+        }
+        Instr::AutoLockAcquire { lock } | Instr::AutoLockRelease { lock } => {
+            // The lock pointer is read (its address is passed to the
+            // runtime FFI). No place is written — the FFI mutates the
+            // pointee, which is opaque to the MIR dataflow.
+            (vec![*lock], vec![])
         }
         Instr::CallClosure {
             callee, args, dest, ..

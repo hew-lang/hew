@@ -312,7 +312,6 @@ pub fn classify_state_field(
         // --- Owned-heap primitives ------------------------------------
         ResolvedTy::String => Ok(StateFieldCloneKind::String),
         ResolvedTy::Bytes => Ok(StateFieldCloneKind::Bytes),
-
         // --- Container / handle / record arms ------------------------
         ResolvedTy::Named { name, args, .. } => classify_named(name, args, record_layouts, visited),
 
@@ -324,7 +323,8 @@ pub fn classify_state_field(
         // we fail-closed (`no-silent-no-op-stubs`) so the bug surfaces
         // as a MIR diagnostic at the actor-decl site rather than as a
         // crash in Stage 3 codegen.
-        ResolvedTy::Pointer { .. }
+        ResolvedTy::CancellationToken
+        | ResolvedTy::Pointer { .. }
         | ResolvedTy::Function { .. }
         | ResolvedTy::Closure { .. }
         | ResolvedTy::TraitObject { .. }

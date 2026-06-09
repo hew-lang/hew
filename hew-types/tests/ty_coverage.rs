@@ -241,7 +241,8 @@ fn from_name_all_aliases() {
 
     // Unsigned integers
     assert_eq!(Ty::from_name("u8"), Some(Ty::U8));
-    assert_eq!(Ty::from_name("byte"), Some(Ty::U8));
+    // `byte` is a retired alias; it must not resolve.
+    assert_eq!(Ty::from_name("byte"), None);
     assert_eq!(Ty::from_name("u16"), Some(Ty::U16));
     assert_eq!(Ty::from_name("u32"), Some(Ty::U32));
     assert_eq!(Ty::from_name("u64"), Some(Ty::U64));
@@ -253,19 +254,24 @@ fn from_name_all_aliases() {
     // Floats
     assert_eq!(Ty::from_name("f32"), Some(Ty::F32));
     assert_eq!(Ty::from_name("f64"), Some(Ty::F64));
-    assert_eq!(Ty::from_name("float"), Some(Ty::F64));
-    assert_eq!(Ty::from_name("Float"), Some(Ty::F64));
+    // `float` and `Float` are retired aliases; they must not resolve.
+    assert_eq!(Ty::from_name("float"), None);
+    assert_eq!(Ty::from_name("Float"), None);
 
     // Other primitives
     assert_eq!(Ty::from_name("bool"), Some(Ty::Bool));
-    assert_eq!(Ty::from_name("Bool"), Some(Ty::Bool));
+    // `Bool` is a retired alias; it must not resolve.
+    assert_eq!(Ty::from_name("Bool"), None);
     assert_eq!(Ty::from_name("char"), Some(Ty::Char));
-    assert_eq!(Ty::from_name("Char"), Some(Ty::Char));
+    // `Char` is a retired alias; it must not resolve.
+    assert_eq!(Ty::from_name("Char"), None);
     assert_eq!(Ty::from_name("string"), Some(Ty::String));
     assert_eq!(Ty::from_name("String"), None); // uppercase removed per Q57/R14
-    assert_eq!(Ty::from_name("str"), Some(Ty::String));
+                                               // `str` is a retired alias; it must not resolve.
+    assert_eq!(Ty::from_name("str"), None);
     assert_eq!(Ty::from_name("bytes"), Some(Ty::Bytes));
-    assert_eq!(Ty::from_name("Bytes"), Some(Ty::Bytes));
+    // `Bytes` is a retired alias; it must not resolve.
+    assert_eq!(Ty::from_name("Bytes"), None);
     assert_eq!(Ty::from_name("duration"), Some(Ty::Duration));
     assert_eq!(Ty::from_name("Duration"), None); // uppercase removed per Q57/R14
     assert_eq!(Ty::from_name("()"), Some(Ty::Unit));

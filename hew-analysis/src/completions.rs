@@ -665,7 +665,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
                 collect_locals_from_spanned_expr(value, offset, locals);
             }
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             collect_locals_from_spanned_expr(target, offset, locals);
             for (_, arg) in args {
                 collect_locals_from_spanned_expr(arg, offset, locals);

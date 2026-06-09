@@ -759,6 +759,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             dump_expr(out, receiver, indent + 4);
             dump_expr(out, arg, indent + 4);
         }
+        HirExprKind::CancellationTokenIsCancelled { receiver } => {
+            writeln!(out, "{pad}  cancellation-token-is-cancelled").expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+        }
         HirExprKind::MachineEmit { event_idx, fields } => {
             writeln!(out, "{pad}  machine-emit event_idx={event_idx}").expect("write to string");
             for (field_name, field_val) in fields {
@@ -864,6 +868,14 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     }
                 };
                 writeln!(out, "{pad}    arm {label}").expect("write to string");
+                for pred in &arm.payload_predicates {
+                    writeln!(
+                        out,
+                        "{pad}      payload[{}] == {:?}",
+                        pred.field_idx, pred.literal
+                    )
+                    .expect("write to string");
+                }
                 dump_expr(out, &arm.body, indent + 6);
             }
         }

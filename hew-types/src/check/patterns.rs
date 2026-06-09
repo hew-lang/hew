@@ -85,12 +85,13 @@ fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
 /// Classify the payload subpattern kind label for use in
 /// `UnsupportedPayloadSubpattern` diagnostics.
 ///
-/// Returns `None` when the subpattern is a supported binding or wildcard.
+/// Returns `None` when the subpattern is a supported binding, wildcard, or
+/// literal predicate.
 /// Returns `Some(label)` for unsupported forms that must be rejected.
 fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static str> {
     match pattern {
-        // Plain binding or wildcard — both are supported.
-        Pattern::Wildcard => None,
+        // Plain binding, wildcard, and literal predicates are supported.
+        Pattern::Wildcard | Pattern::Literal(_) => None,
         Pattern::Identifier(name) => {
             let is_constructor_like =
                 name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
@@ -103,7 +104,6 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
                 None
             }
         }
-        Pattern::Literal(_) => Some("literal"),
         Pattern::Constructor { .. } => Some("nested constructor"),
         Pattern::Struct { .. } => Some("struct destructure"),
         // An empty tuple `()` is the unit type — it has only one value and
@@ -639,11 +639,11 @@ impl Checker {
                 let payload_tys = self
                     .lookup_variant_types(name, scrutinee_ty, patterns.len())
                     .unwrap_or_else(|| vec![Ty::Error; patterns.len()]);
-                // Reject payload subpatterns that are not a plain binding or
-                // wildcard.  Accepting them silently produces an incorrect
-                // wildcard match (the predicate literal/nested-ctor is never
-                // compared at runtime).  Nested-predicate lowering is a future
-                // substrate lane; the compiler must fail closed here.
+                // Reject payload subpatterns that Stage 1 still cannot lower.
+                // Literal predicates are accepted and carried forward into HIR
+                // as pending payload predicates; nested constructors and
+                // aggregate destructures remain fail-closed until the later
+                // match-destructure stages wire their runtime checks.
                 for (sub_pat, sub_span) in patterns {
                     if let Some(label) = unsupported_payload_subpattern_label(sub_pat) {
                         self.report_error_with_note(
@@ -656,8 +656,9 @@ impl Checker {
                                 "payload subpattern `{label}` in `{short_name}(...)` is not yet supported"
                             ),
                             pattern_span,
-                            "v0.5 payload subpatterns must be a plain binding (`x`) or wildcard (`_`); \
-                             literal tests and nested patterns are reserved for a future substrate lane"
+                            "v0.5 payload subpatterns support plain bindings (`x`), wildcards (`_`), \
+                             and literal predicates; nested patterns are reserved for a future \
+                             match-destructure stage"
                                 .to_string(),
                         );
                         return;
@@ -781,7 +782,8 @@ impl Checker {
                                     ),
                                     pattern_span,
                                     "v0.5 payload subpatterns must be a plain binding (`x`) or wildcard (`_`); \
-                                     literal tests and nested patterns are reserved for a future substrate lane"
+                                     and literal predicates; nested patterns are reserved for a future \
+                                     match-destructure stage"
                                         .to_string(),
                                 );
                                 return;

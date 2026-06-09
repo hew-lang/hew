@@ -2,7 +2,7 @@
 
 mod support;
 
-use hew_hir::{lower_program, verify_hir, ResolutionCtx};
+use hew_hir::{lower_program_host_target, verify_hir, ResolutionCtx};
 use hew_mir::lower_hir_module;
 use libfuzzer_sys::fuzz_target;
 
@@ -23,7 +23,7 @@ fuzz_target!(|data: &[u8]| {
             return;
         }
 
-        let hir = lower_program(&parsed.program, &type_check, &ResolutionCtx);
+        let hir = lower_program_host_target(&parsed.program, &type_check, &ResolutionCtx);
         if !hir.diagnostics.is_empty() || !verify_hir(&hir.module).is_empty() {
             return;
         }

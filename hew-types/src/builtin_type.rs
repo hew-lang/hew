@@ -49,13 +49,10 @@ pub enum BuiltinType {
     NarrowError,
     CloseError,
     Iterator,
-    String,
-    Map,
-    Char,
     Unit,
     Duration,
-    Float,
     Trap,
+    CancellationToken,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,13 +164,10 @@ builtin_types! {
     NarrowError => "NarrowError",
     CloseError => "CloseError",
     Iterator => "Iterator",
-    String => "String",
-    Map => "Map",
-    Char => "Char",
     Unit => "Unit",
     Duration => "Duration",
-    Float => "Float",
     Trap => "Trap",
+    CancellationToken => "CancellationToken",
 }
 
 impl BuiltinType {
@@ -192,7 +186,8 @@ impl BuiltinType {
             | Self::BoxedActor
             | Self::SendHalf
             | Self::RecvHalf
-            | Self::LambdaActorHandle => BuiltinTypeMarker::Resource,
+            | Self::LambdaActorHandle
+            | Self::CancellationToken => BuiltinTypeMarker::Resource,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             Self::CrashInfo => BuiltinTypeMarker::BitCopy,
             _ => BuiltinTypeMarker::None,
@@ -213,6 +208,7 @@ impl BuiltinType {
             | Self::SendHalf
             | Self::RecvHalf
             | Self::LambdaActorHandle => Some("close"),
+            Self::CancellationToken => Some("release"),
             _ => None,
         }
     }
@@ -278,13 +274,10 @@ impl BuiltinType {
             | Self::NarrowError
             | Self::CloseError
             | Self::Iterator
-            | Self::String
-            | Self::Map
-            | Self::Char
             | Self::Unit
             | Self::Duration
-            | Self::Float
-            | Self::Trap => 0,
+            | Self::Trap
+            | Self::CancellationToken => 0,
         }
     }
 

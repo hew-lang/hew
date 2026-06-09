@@ -16,11 +16,11 @@
 //   - struct with all-Copy fields is itself Copy (structural)
 
 struct Point {
-    x: float,
-    y: float,
+    x: f64,
+    y: f64,
 }
 
-fn distance_sq(a: Point, b: Point) -> float {
+fn distance_sq(a: Point, b: Point) -> f64 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     dx * dx + dy * dy

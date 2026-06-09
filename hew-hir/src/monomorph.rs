@@ -135,6 +135,7 @@ pub(crate) fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::Char => "char".to_string(),
         ResolvedTy::String => "string".to_string(),
         ResolvedTy::Bytes => "bytes".to_string(),
+        ResolvedTy::CancellationToken => "CancellationToken".to_string(),
         ResolvedTy::Duration => "duration".to_string(),
         ResolvedTy::Unit => "unit".to_string(),
         ResolvedTy::Never => "never".to_string(),

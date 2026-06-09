@@ -374,6 +374,43 @@ pub enum HirDiagnosticKind {
         /// shared with the fn and record registries).
         cap: usize,
     },
+    /// The dedicated `MachineMonoPass`
+    /// ([`crate::machine_mono::run_machine_mono_pass`]) observed a
+    /// machine type whose substituted type args still carry a residual
+    /// type-parameter symbol (`ResolvedTy::Named { name, args: [] }`
+    /// where `name` is the name of a generic type-parameter declared
+    /// somewhere upstream in the program). After function-mono has
+    /// completed, every machine instantiation reachable from a
+    /// monomorphic entry point must be fully concrete — a residual
+    /// abstract symbol is a function-mono defect (the closure pass
+    /// failed to reach this site) or a checker-side authority gap
+    /// (the type wasn't recorded). Either way the machine-mono pass
+    /// fails closed rather than silently propagating an
+    /// under-instantiated layout to MIR/codegen.
+    ///
+    /// Per W3.033c Stage 2 (R244=B): this is the load-bearing
+    /// invariant that justifies the dedicated-pass design — the
+    /// observation that the pass runs after function-mono completes
+    /// is what makes residual abstract symbols an unambiguous defect.
+    UnresolvedMachineTypeParamPostMono {
+        /// Origin machine name as written in source.
+        machine: String,
+        /// Human-readable rendering of the residual abstract symbol
+        /// (e.g. `"T"`). Kept as a `String` to avoid leaking the full
+        /// `ResolvedTy` shape into the diagnostic schema; the surrounding
+        /// span pins the site for any deeper triage.
+        residual_var: String,
+    },
+    /// The dedicated `MachineMonoPass` discovered more distinct
+    /// machine instantiations than the configured monomorphisation cap
+    /// admits. Mirrors `MonomorphisationCapExceeded` for the
+    /// function-mono registry and `EnumLayoutCapExceeded` /
+    /// `RecordLayoutCapExceeded` for the layout registries.
+    MachineMonomorphisationCapExceeded {
+        /// The configured cap (shared with the function-mono and layout
+        /// registries — see [`crate::monomorph::MONOMORPHISATION_REGISTRY_CAP`]).
+        cap: usize,
+    },
     /// A function declared with `#[intrinsic("key")]` names an intrinsic
     /// key that does not appear in `stdlib_catalog`. Fail-closed: the
     /// compiler never silently drops a typed declaration — if the key is

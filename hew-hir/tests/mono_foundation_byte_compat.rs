@@ -183,17 +183,17 @@ fn const_args_segment_format() {
         SymbolClass::Machine,
         "M",
         &[ResolvedTy::I32],
-        &[ConstValue::PendingW3039],
+        &[ConstValue::Usize(16)],
     );
-    assert_eq!(one, "mc$$M$$i32$$c$pending");
+    assert_eq!(one, "mc$$M$$i32$$c$u16");
 
     let two = mangle_instantiation(
         SymbolClass::Machine,
         "M",
         &[ResolvedTy::I32],
-        &[ConstValue::PendingW3039, ConstValue::PendingW3039],
+        &[ConstValue::Usize(16), ConstValue::Usize(32)],
     );
-    assert_eq!(two, "mc$$M$$i32$$c$pending$pending");
+    assert_eq!(two, "mc$$M$$i32$$c$u16$u32");
 }
 
 /// `MonoKey<Function>` constructed via the parametric helper and then

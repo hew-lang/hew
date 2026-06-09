@@ -5,10 +5,11 @@
 
 use crate::ty::Ty;
 use crate::BuiltinType;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 /// Built-in marker traits that are automatically derived.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MarkerTrait {
     /// Can cross actor boundaries safely
     Send,
@@ -414,6 +415,17 @@ impl TraitRegistry {
                     | MarkerTrait::Debug
                     | MarkerTrait::Encode
                     | MarkerTrait::Decode
+            ),
+
+            // CancellationToken: ref-counted runtime handle. It is movable,
+            // cloneable by retain, and dropped by release-ref; it is not Copy.
+            Ty::CancellationToken => matches!(
+                marker,
+                MarkerTrait::Send
+                    | MarkerTrait::Sync
+                    | MarkerTrait::Clone
+                    | MarkerTrait::Debug
+                    | MarkerTrait::Resource
             ),
 
             // ActorRef: always Send + Sync + Frozen + Copy (identity reference)

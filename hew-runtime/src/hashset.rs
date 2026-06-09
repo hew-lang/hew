@@ -511,6 +511,8 @@ static VALUE_LAYOUT: HewMapValueLayout = HewMapValueLayout {
     size: 0,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,
+    drop_fn: None,
+    clone_fn: None,
 };
 
 /// Layout-backed hash set: thin wrapper over [`HewLayoutHashMap`] that fixes

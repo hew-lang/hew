@@ -9,6 +9,7 @@ pub mod dump;
 pub mod ids;
 pub mod intent;
 pub mod lower;
+pub mod machine_mono;
 pub mod mono;
 pub mod monomorph;
 pub mod node;
@@ -26,6 +27,11 @@ pub use lower::{
     lower_program, lower_program_host_target, lower_program_with_mono_cap, LowerOutput,
     ResolutionCtx, TargetArch,
 };
+pub use machine_mono::run_machine_mono_pass;
+pub use mono::{
+    mangle_instantiation, ActorMonoKey, ConstValue as MonoConstValue, FunctionMonoKey,
+    MachineMonoEntry, MachineMonoKey, MonoKind, SymbolClass,
+};
 pub use monomorph::{
     mangle, substitute_type_params, EnumLayout, EnumMonoKey, EnumVariantLayout, MonoKey,
     MonomorphizedFn, RecordLayout, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
@@ -35,9 +41,10 @@ pub use node::{
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
     HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineBound,
     HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
-    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirRegexLiteral, HirRestartPolicy,
-    HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVariant, HirVariantKind, WhereOrigin,
+    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate, HirRegexLiteral,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
+    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVariant,
+    HirVariantKind, WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,

@@ -83,6 +83,36 @@ pub enum BuiltinLinkage {
         register_symbol: &'static str,
         pid_accessor: &'static str,
     },
+    /// Catalog row that *declares* a `#[no_mangle] pub static` runtime symbol
+    /// (a `HewMapKeyLayout` or `HewMapValueLayout` instance) rather than a
+    /// function. Used by W4.001 Stage C0b layout-descriptor entries.
+    ///
+    /// **Not a callable**: codegen does not predeclare an LLVM function for
+    /// this linkage, and MIR `module_fn_names` does not include the symbol —
+    /// the symbol is consulted at Stage C call-site materialisation, where
+    /// codegen takes the address of the corresponding extern static through
+    /// `hew-cabi::map`.
+    ///
+    /// **Why this lives in the catalog at all (C0b boundary, plan §4):** to
+    /// give checker-visible code a single source of truth for which descriptor
+    /// symbols the runtime exports, and to drive the
+    /// `stdlib_catalog_layout_descriptor_coverage` coverage gate.
+    LayoutDescriptorSymbol {
+        symbol: &'static str,
+        role: LayoutDescriptorRole,
+    },
+}
+
+/// Which descriptor flavour a `LayoutDescriptorSymbol` row names.
+///
+/// Mirrors the two cabi structs (`HewMapKeyLayout`, `HewMapValueLayout`) so
+/// the coverage test can enumerate K-vs-V scope separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutDescriptorRole {
+    /// `HewMapKeyLayout` static (`hew_layout_key_<type>`).
+    Key,
+    /// `HewMapValueLayout` static (`hew_layout_val_<type>`).
+    Value,
 }
 
 impl BuiltinLinkage {
@@ -95,7 +125,8 @@ impl BuiltinLinkage {
             Self::PrintIntercept { .. }
             | Self::CompilerIntrinsic { .. }
             | Self::CalleeNameDispatchOnly
-            | Self::NodeRegisterByPid { .. } => None,
+            | Self::NodeRegisterByPid { .. }
+            | Self::LayoutDescriptorSymbol { .. } => None,
         }
     }
 }
@@ -113,6 +144,16 @@ pub enum BuiltinTy {
     Unit,
     Never,
     VecAny,
+    /// Erased `HashMap<K, V>` receiver placeholder used by layout-backed
+    /// catalog rows whose linkage is `CalleeNameDispatchOnly`.  These rows
+    /// exist only to register the runtime symbol name with HIR's
+    /// `fn_registry` and MIR's `module_fn_names`; their `params` are not
+    /// consulted by typecheck (checker authority drives dispatch) and the
+    /// concrete `K`/`V` substitution is recovered downstream from
+    /// `HashMapLoweringFact`.
+    HashMapAny,
+    /// Erased `HashSet<T>` receiver placeholder; see `HashMapAny`.
+    HashSetAny,
 }
 
 impl BuiltinTy {
@@ -137,6 +178,31 @@ impl BuiltinTy {
                     builtin: None,
                 }],
                 builtin: Some(hew_types::BuiltinType::Vec),
+            },
+            BuiltinTy::HashMapAny => ResolvedTy::Named {
+                name: "HashMap".to_string(),
+                args: vec![
+                    ResolvedTy::Named {
+                        name: "K".to_string(),
+                        args: vec![],
+                        builtin: None,
+                    },
+                    ResolvedTy::Named {
+                        name: "V".to_string(),
+                        args: vec![],
+                        builtin: None,
+                    },
+                ],
+                builtin: Some(hew_types::BuiltinType::HashMap),
+            },
+            BuiltinTy::HashSetAny => ResolvedTy::Named {
+                name: "HashSet".to_string(),
+                args: vec![ResolvedTy::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                    builtin: None,
+                }],
+                builtin: Some(hew_types::BuiltinType::HashSet),
             },
         }
     }
@@ -179,6 +245,8 @@ const STRING_STRING_STRING: &[BuiltinTy] =
     &[BuiltinTy::String, BuiltinTy::String, BuiltinTy::String];
 const F64_F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64, BuiltinTy::F64];
 const EMPTY: &[BuiltinTy] = &[];
+const HASHMAP_ANY: &[BuiltinTy] = &[BuiltinTy::HashMapAny];
+const HASHSET_ANY: &[BuiltinTy] = &[BuiltinTy::HashSetAny];
 
 const fn direct(
     name: &'static str,
@@ -265,6 +333,20 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinClass::ClassA,
         EMPTY,
         BuiltinTy::VecAny,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "HashMap::new",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::HashMapAny,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "HashSet::new",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::HashSetAny,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
@@ -733,6 +815,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_push_i64",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_i64",
+        },
+    ),
+    direct(
         "hew_vec_pop_bool",
         BuiltinClass::ClassA,
         VEC_ANY,
@@ -751,6 +842,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_pop_i64",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_i64",
+        },
+    ),
+    direct(
         "hew_vec_get_bool",
         BuiltinClass::ClassA,
         VEC_ANY_I64,
@@ -766,6 +866,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::I32,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_get_i32",
+        },
+    ),
+    direct(
+        "hew_vec_get_i64",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_i64",
         },
     ),
     direct(
@@ -855,6 +964,346 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::VecAny,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
+    // ── Layout-backed HashMap<K, V> entries ──────────────────────────────────
+    //
+    // W3.041 sub-lane A: 7 layout HashMap rows for Copy named-record keys with
+    // any admitted value type (scalar or layout).  All use
+    // `CalleeNameDispatchOnly` because the runtime ABI takes hidden
+    // `HewMapKeyLayout*` / `HewMapValueLayout*` operands synthesised by codegen
+    // from the checker-authoritative `HashMapLoweringFact`.  The `params` here
+    // are placeholder shape metadata only — typecheck routes through
+    // `check_hashmap_method` which performs full K/V validation; HIR/MIR/codegen
+    // consume `HashMapLoweringFact` for the real ABI.
+    //
+    // `_free_layout` is the drop-path entry: it appears in this catalog so the
+    // symbol resolves through the same path as the other six operations, even
+    // though user code never names it directly.  Drop machinery wires its
+    // selection.
+    direct(
+        "hew_hashmap_new_with_layout",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::HashMapAny,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashmap_insert_layout",
+        BuiltinClass::ClassA,
+        HASHMAP_ANY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashmap_get_layout",
+        BuiltinClass::ClassA,
+        HASHMAP_ANY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashmap_contains_key_layout",
+        BuiltinClass::ClassA,
+        HASHMAP_ANY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashmap_remove_layout",
+        BuiltinClass::ClassA,
+        HASHMAP_ANY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashmap_len_layout",
+        BuiltinClass::ClassA,
+        HASHMAP_ANY,
+        BuiltinTy::I64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashmap_free_layout",
+        BuiltinClass::ClassA,
+        HASHMAP_ANY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // ── Layout-backed HashSet<T> entries ─────────────────────────────────────
+    //
+    // 6 layout HashSet rows mirroring the HashMap shape.  HashSet<T> is
+    // layout-equivalent to HashMap<T, ()> per the runtime substrate (C-1c);
+    // the elem layout takes the same `HewMapKeyLayout*` descriptor that the
+    // HashMap key path consumes.
+    direct(
+        "hew_hashset_new_with_layout",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::HashSetAny,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashset_insert_layout",
+        BuiltinClass::ClassA,
+        HASHSET_ANY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashset_contains_layout",
+        BuiltinClass::ClassA,
+        HASHSET_ANY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashset_remove_layout",
+        BuiltinClass::ClassA,
+        HASHSET_ANY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashset_len_layout",
+        BuiltinClass::ClassA,
+        HASHSET_ANY,
+        BuiltinTy::I64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashset_free_layout",
+        BuiltinClass::ClassA,
+        HASHSET_ANY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // ── Layout descriptor symbols (W4.001 Stage C0b) ─────────────────────────
+    //
+    // `#[no_mangle] pub static` instances of `HewMapKeyLayout` /
+    // `HewMapValueLayout` exported by `hew-runtime/src/layout_intrinsics.rs`
+    // and re-declared by `hew-cabi/src/map.rs`. Catalog rows here are
+    // checker-visible declarations only — Stage C is the first production
+    // reader (plan §4 Stage C0b boundary).
+    //
+    // Non-callable: `LayoutDescriptorSymbol` linkage skips both LLVM
+    // pre-declaration and MIR `module_fn_names` insertion. The `name` slot
+    // mirrors the runtime symbol so the symbol-linkage gate
+    // (`resolved_call_kernel_symbols`) and the coverage gate
+    // (`stdlib_catalog_layout_descriptor_coverage`) can enumerate the
+    // ABI surface from one place.
+    //
+    // Named-record descriptors are *not* listed: per plan §4 Stage C0b they
+    // are materialised on demand by the existing Named-record Layout
+    // machinery (Stage C-1c), not shipped as fixed statics.
+    direct(
+        "hew_layout_key_i32",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_key_i32",
+            role: LayoutDescriptorRole::Key,
+        },
+    ),
+    direct(
+        "hew_layout_key_i64",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_key_i64",
+            role: LayoutDescriptorRole::Key,
+        },
+    ),
+    direct(
+        "hew_layout_key_u32",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_key_u32",
+            role: LayoutDescriptorRole::Key,
+        },
+    ),
+    direct(
+        "hew_layout_key_u64",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_key_u64",
+            role: LayoutDescriptorRole::Key,
+        },
+    ),
+    direct(
+        "hew_layout_key_f32",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_key_f32",
+            role: LayoutDescriptorRole::Key,
+        },
+    ),
+    direct(
+        "hew_layout_key_f64",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_key_f64",
+            role: LayoutDescriptorRole::Key,
+        },
+    ),
+    direct(
+        "hew_layout_key_bool",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_key_bool",
+            role: LayoutDescriptorRole::Key,
+        },
+    ),
+    direct(
+        "hew_layout_key_char",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_key_char",
+            role: LayoutDescriptorRole::Key,
+        },
+    ),
+    direct(
+        "hew_layout_key_string",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_key_string",
+            role: LayoutDescriptorRole::Key,
+        },
+    ),
+    direct(
+        "hew_layout_key_bytes",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_key_bytes",
+            role: LayoutDescriptorRole::Key,
+        },
+    ),
+    direct(
+        "hew_layout_val_i32",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_i32",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
+    direct(
+        "hew_layout_val_i64",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_i64",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
+    direct(
+        "hew_layout_val_u32",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_u32",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
+    direct(
+        "hew_layout_val_u64",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_u64",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
+    direct(
+        "hew_layout_val_f32",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_f32",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
+    direct(
+        "hew_layout_val_f64",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_f64",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
+    direct(
+        "hew_layout_val_bool",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_bool",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
+    direct(
+        "hew_layout_val_char",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_char",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
+    direct(
+        "hew_layout_val_string",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_string",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
+    direct(
+        "hew_layout_val_bytes",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_bytes",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
+    direct(
+        "hew_layout_val_unit",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::LayoutDescriptorSymbol {
+            symbol: "hew_layout_val_unit",
+            role: LayoutDescriptorRole::Value,
+        },
+    ),
     direct(
         "hew_vec_is_empty",
         BuiltinClass::ClassA,
@@ -880,6 +1329,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Bool,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_contains_i32",
+        },
+    ),
+    direct(
+        "hew_vec_contains_i64",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_contains_i64",
         },
     ),
     direct(
@@ -1335,7 +1793,7 @@ fn print_suffix(ty: &ResolvedTy) -> Option<&'static str> {
         ResolvedTy::U64 => Some("u64"),
         ResolvedTy::F64 => Some("f64"),
         ResolvedTy::Bool => Some("bool"),
-        ResolvedTy::String => Some("str"),
+        ResolvedTy::String => Some("string"),
         _ => None,
     }
 }
@@ -1348,7 +1806,7 @@ fn println_name_for_suffix(suffix: &str) -> Option<&'static str> {
         "u64" => Some("println_u64"),
         "f64" => Some("println_f64"),
         "bool" => Some("println_bool"),
-        "str" => Some("println_str"),
+        "string" => Some("println_str"),
         _ => None,
     }
 }
@@ -1361,7 +1819,7 @@ fn print_name_for_suffix(suffix: &str) -> Option<&'static str> {
         "u64" => Some("print_u64"),
         "f64" => Some("print_f64"),
         "bool" => Some("print_bool"),
-        "str" => Some("print_str"),
+        "string" => Some("print_str"),
         _ => None,
     }
 }

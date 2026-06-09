@@ -89,6 +89,7 @@ fn key_layout_i64() -> HewMapKeyLayout {
         ownership_kind: HewTypeOwnershipKind::Plain,
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
+        drop_fn: None,
     }
 }
 
@@ -99,6 +100,7 @@ fn key_layout_i32() -> HewMapKeyLayout {
         ownership_kind: HewTypeOwnershipKind::Plain,
         hash_fn: Some(hash_i32 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i32 as HewMapKeyEqThunk),
+        drop_fn: None,
     }
 }
 
@@ -109,6 +111,7 @@ fn key_layout_point() -> HewMapKeyLayout {
         ownership_kind: HewTypeOwnershipKind::Plain,
         hash_fn: Some(hash_point as HewMapKeyHashThunk),
         eq_fn: Some(eq_point as HewMapKeyEqThunk),
+        drop_fn: None,
     }
 }
 
@@ -117,6 +120,8 @@ fn val_layout(size: usize, align: usize) -> HewMapValueLayout {
         size,
         align,
         ownership_kind: HewTypeOwnershipKind::Plain,
+        drop_fn: None,
+        clone_fn: None,
     }
 }
 
@@ -378,6 +383,7 @@ fn layout_hashmap_null_hash_fn_aborts() {
         ownership_kind: HewTypeOwnershipKind::Plain,
         hash_fn: None,
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
+        drop_fn: None,
     };
     unsafe { validate_key_layout(&raw const kl) };
 }
@@ -391,32 +397,45 @@ fn layout_hashmap_null_eq_fn_aborts() {
         ownership_kind: HewTypeOwnershipKind::Plain,
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: None,
+        drop_fn: None,
     };
     unsafe { validate_key_layout(&raw const kl) };
 }
 
 #[test]
-#[should_panic(expected = "LayoutManaged key ownership is out of scope")]
-fn layout_hashmap_managed_key_aborts() {
+#[should_panic(expected = "key_layout ownership_kind=LayoutManaged requires drop_fn")]
+fn layout_hashmap_managed_key_without_drop_aborts() {
+    // W4.001 Stage C0a: LayoutManaged is admitted by validate_key_layout
+    // (it is a legitimate ownership kind). The new fail-closed gate fires
+    // in validate_descriptor_ownership when drop_fn is missing.
     let kl = HewMapKeyLayout {
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
+        drop_fn: None,
     };
-    unsafe { validate_key_layout(&raw const kl) };
+    let vl = val_layout(8, 8);
+    unsafe {
+        let _ = validate_and_compute_slot_layout(&raw const kl, &raw const vl);
+    }
 }
 
 #[test]
-#[should_panic(expected = "LayoutManaged value ownership is out of scope")]
-fn layout_hashmap_managed_value_aborts() {
+#[should_panic(expected = "val_layout ownership_kind=LayoutManaged requires drop_fn")]
+fn layout_hashmap_managed_value_without_drop_aborts() {
     let vl = HewMapValueLayout {
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        drop_fn: None,
+        clone_fn: None,
     };
-    unsafe { validate_val_layout(&raw const vl) };
+    let kl = key_layout_i64();
+    unsafe {
+        let _ = validate_and_compute_slot_layout(&raw const kl, &raw const vl);
+    }
 }
 
 #[test]
@@ -428,6 +447,7 @@ fn layout_hashmap_zero_size_key_aborts() {
         ownership_kind: HewTypeOwnershipKind::Plain,
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
+        drop_fn: None,
     };
     unsafe { validate_key_layout(&raw const kl) };
 }
@@ -441,6 +461,7 @@ fn layout_hashmap_invalid_align_aborts() {
         ownership_kind: HewTypeOwnershipKind::Plain,
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
+        drop_fn: None,
     };
     unsafe { validate_key_layout(&raw const kl) };
 }
@@ -452,6 +473,8 @@ fn layout_hashmap_zero_size_value_with_nonunit_align_aborts() {
         size: 0,
         align: 8, // invalid: size==0 requires align==1 (HashSet ZST contract)
         ownership_kind: HewTypeOwnershipKind::Plain,
+        drop_fn: None,
+        clone_fn: None,
     };
     unsafe { validate_val_layout(&raw const vl) };
 }
@@ -468,6 +491,7 @@ fn layout_hashmap_stride_overflow_aborts() {
         ownership_kind: HewTypeOwnershipKind::Plain,
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
+        drop_fn: None,
     };
     let vl = val_layout(8, 8);
     unsafe {

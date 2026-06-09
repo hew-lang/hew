@@ -29,8 +29,8 @@ struct User {
 }
 
 struct Point {
-    x: float,
-    y: float,
+    x: f64,
+    y: f64,
 }
 
 fn cowvalue_record_update() {

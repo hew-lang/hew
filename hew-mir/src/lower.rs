@@ -940,6 +940,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         if !matches!(
             entry.linkage,
             stdlib_catalog::BuiltinLinkage::CompilerIntrinsic { .. }
+                | stdlib_catalog::BuiltinLinkage::LayoutDescriptorSymbol { .. }
         ) {
             module_fn_names.insert(entry.name.to_string());
             if let Some(symbol) = entry.linkage.runtime_symbol() {
@@ -3230,7 +3231,8 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(event, state_fields, seen, unknown);
         }
-        HirExprKind::MachineStateName { receiver, .. } => {
+        HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::MachineStateName { receiver, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -4839,6 +4841,13 @@ impl Builder {
                         });
                     }
                 }
+                Some(dest)
+            }
+            HirExprKind::CancellationTokenIsCancelled { receiver } => {
+                let token = self.lower_value(receiver)?;
+                let dest = self.alloc_local(ResolvedTy::Bool);
+                self.instructions
+                    .push(Instr::CancellationTokenIsCancelled { dest, token });
                 Some(dest)
             }
             HirExprKind::Call { callee, args } => {
@@ -6942,6 +6951,22 @@ impl Builder {
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
+        if let Some(arm) = arms.iter().find(|arm| !arm.payload_predicates.is_empty()) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "match constructor payload literal predicates".to_string(),
+                    site: scrutinee.site,
+                },
+                note: format!(
+                    "Stage 2/3/4 of W3.005 not yet landed: MIR lowering cannot yet compare \
+                     constructor payload fields before entering the arm body ({} pending \
+                     predicate(s) on this arm)",
+                    arm.payload_predicates.len()
+                ),
+            });
+            return None;
+        }
+
         // Dispatch: regex-predicate arms require ordered predicate dispatch
         // through the runtime ABI; enum-tag arms use the fast tag-compare chain.
         // A match expression may not mix Regex and EnumVariant arms (the checker
@@ -12213,6 +12238,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntShr { dest, lhs, rhs, .. }
         | Instr::IntCmp { dest, lhs, rhs, .. }
         | Instr::IdentityCompare { dest, lhs, rhs } => vec![*dest, *lhs, *rhs],
+        Instr::CancellationTokenIsCancelled { dest, token } => vec![*dest, *token],
         Instr::IntArithChecked {
             dest,
             lhs,
@@ -12242,6 +12268,12 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
                 places.push(d);
             }
             places
+        }
+        Instr::AutoLockAcquire { lock } | Instr::AutoLockRelease { lock } => {
+            // Auto-lock bracketing surfaces the lock-handle place to
+            // the cross-block split-state seed pass so a handle that
+            // crosses a block boundary remains discoverable.
+            vec![*lock]
         }
         Instr::RecordInit { fields, dest, .. } => {
             let mut places: Vec<Place> = fields.iter().map(|(_, p)| *p).collect();
@@ -12437,6 +12469,7 @@ fn drop_kind_for(
 
 fn resource_drop_fn(ty: &ResolvedTy, type_classes: &hew_hir::TypeClassTable) -> Option<String> {
     match ty {
+        ResolvedTy::CancellationToken => Some("hew_cancel_token_release".to_string()),
         ResolvedTy::Named { name, .. } => type_classes
             .get(name)
             .and_then(|(_, close)| close.as_ref())
@@ -14585,6 +14618,7 @@ mod enum_layout_tests {
             call_site_type_args: HashMap::<SiteId, _>::default(),
             record_layouts: vec![],
             enum_layouts: vec![],
+            machine_instantiations: vec![],
             supervisor_child_slots: HashMap::<SiteId, ChildSlot>::default(),
             regex_literals: vec![],
         }

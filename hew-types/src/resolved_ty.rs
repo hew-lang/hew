@@ -66,6 +66,8 @@ pub enum ResolvedTy {
     String,
     /// Ref-counted byte buffer
     Bytes,
+    /// Ref-counted cancellation token handle.
+    CancellationToken,
     /// Duration in nanoseconds (distinct from i64)
     Duration,
     /// Unit type (void)
@@ -260,6 +262,7 @@ impl ResolvedTy {
             Ty::Char => Ok(ResolvedTy::Char),
             Ty::String => Ok(ResolvedTy::String),
             Ty::Bytes => Ok(ResolvedTy::Bytes),
+            Ty::CancellationToken => Ok(ResolvedTy::CancellationToken),
             Ty::Duration => Ok(ResolvedTy::Duration),
             Ty::Unit => Ok(ResolvedTy::Unit),
             Ty::Never => Ok(ResolvedTy::Never),
@@ -270,6 +273,13 @@ impl ResolvedTy {
             Ty::Tuple(elems) => Ok(ResolvedTy::Tuple(Self::convert_vec(elems)?)),
             Ty::Array(elem, size) => Ok(ResolvedTy::Array(Box::new(Self::from_ty(elem)?), *size)),
             Ty::Slice(elem) => Ok(ResolvedTy::Slice(Box::new(Self::from_ty(elem)?))),
+            Ty::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::CancellationToken),
+            } if args.is_empty() && name == "CancellationToken" => {
+                Ok(ResolvedTy::CancellationToken)
+            }
             Ty::Named {
                 name,
                 args,
@@ -356,6 +366,7 @@ impl ResolvedTy {
             ResolvedTy::Char => Ty::Char,
             ResolvedTy::String => Ty::String,
             ResolvedTy::Bytes => Ty::Bytes,
+            ResolvedTy::CancellationToken => Ty::CancellationToken,
             ResolvedTy::Duration => Ty::Duration,
             ResolvedTy::Unit => Ty::Unit,
             ResolvedTy::Never => Ty::Never,

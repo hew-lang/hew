@@ -178,6 +178,13 @@ pub enum Expr {
     },
     Spawn {
         target: Box<Spanned<Expr>>,
+        /// Explicit turbofish type arguments: `spawn Foo<T>(...)`.
+        ///
+        /// Empty when the user writes `spawn Foo(...)` without a type-argument
+        /// list. Generic actors require a non-empty list; the checker emits
+        /// `MissingActorTypeArgs` when a generic actor is spawned without them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        type_args: Vec<Spanned<TypeExpr>>,
         args: Vec<(String, Spanned<Expr>)>,
     },
     SpawnLambdaActor {
@@ -670,6 +677,32 @@ pub struct Param {
 pub struct TypeParam {
     pub name: String,
     pub bounds: Vec<TraitBound>,
+}
+
+/// Const-parameter element type. Phase 0 (R269=A) admits `usize` only;
+/// other widths are deferred to a follow-on widening change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConstParamTy {
+    /// `const N: usize` — the only width supported in Phase 0.
+    Usize,
+}
+
+/// Const-generic parameter on a machine declaration:
+/// `machine M<const N: usize>` or `machine M<const N: usize = 16>`.
+///
+/// Default values are evaluated by the constexpr sub-engine
+/// (`hew-types/src/check/const_eval.rs`) at parse-time and stored
+/// here as a resolved `u64`. R270=A permits defaults.
+///
+/// Const parameters live alongside `TypeParam`s on `MachineDecl`; this
+/// is purely additive — existing `type_params` consumers see no change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConstParam {
+    pub name: String,
+    pub ty: ConstParamTy,
+    /// Optional `= 16` default. `None` when the parameter has no default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1241,6 +1274,15 @@ pub struct ActorDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub name: String,
+    /// Optional generic type parameters declared as `actor Name<T, U> { ... }`
+    /// or `actor Name<T: Trait> { ... }`.
+    ///
+    /// Matches the `MachineDecl` shape; bound enforcement is handled by the
+    /// type-checker via `enforce_actor_instantiation_bounds`. Where-clause
+    /// syntax on actors is deferred (actors have no matching `where_clause`
+    /// field today); inline bounds suffice for v0.5.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_params: Vec<TypeParam>,
     pub super_traits: Option<Vec<TraitBound>>,
     pub init: Option<ActorInit>,
     pub fields: Vec<FieldDecl>,
@@ -1427,6 +1469,16 @@ pub struct MachineDecl {
     /// `docs/specs/HEW-SPEC-2026.md` §3.11.8).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_params: Vec<TypeParam>,
+    /// Const-generic parameters declared on the machine, e.g.
+    /// `machine M<const N: usize>` or `machine M<T, const N: usize = 16>`.
+    ///
+    /// Stored in a separate vector from `type_params` (purely additive —
+    /// no existing `type_params` consumer needs to change) and admits
+    /// `usize` only in Phase 0 (R269=A). Per the source-position
+    /// convention enforced by `parse_machine_generic_params`, all type
+    /// parameters appear before any const parameters in `<...>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub const_params: Vec<ConstParam>,
     /// Optional `where T: Trait, U: Trait + Trait, …` clause appearing
     /// between the `<…>` type-parameter list and the opening `{` of the
     /// machine body. Inline bounds on `type_params` and where-clause

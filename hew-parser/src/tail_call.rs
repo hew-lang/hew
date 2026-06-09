@@ -203,7 +203,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
                         || expr_contains_defer(&arm.body.0)
                 })
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             expr_contains_defer(&target.0)
                 || args.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
         }
@@ -405,7 +405,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut arm.body.0, is_tail_position);
             }
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             mark_expr(&mut target.0, false);
             for (_, expr) in args {
                 mark_expr(&mut expr.0, false);

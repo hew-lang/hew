@@ -88,7 +88,10 @@ fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<H
         // Named types: eligible iff Record kind, not indirect, and every field is
         // hash-eligible. Only `record`-keyword types (`TypeDefKind::Record`) are
         // Copy value-semantic in Hew; Struct/Enum/Actor/Machine are not layout keys.
-        Ty::Named { name, .. } => match type_defs.get(name) {
+        Ty::Named { name, .. } => match type_defs.get(name).or_else(|| {
+            name.split_once('.')
+                .and_then(|(_, local)| type_defs.get(local))
+        }) {
             Some(type_def) if type_def.is_indirect => {
                 Some(HashEligibility::IneligibleManaged(ty.clone()))
             }
@@ -118,6 +121,7 @@ fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<H
         | Ty::Isize
         | Ty::Usize
         | Ty::Bytes
+        | Ty::CancellationToken
         | Ty::Array(_, _)
         | Ty::Slice(_)
         | Ty::Function { .. }

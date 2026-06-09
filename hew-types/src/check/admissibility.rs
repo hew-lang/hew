@@ -847,8 +847,8 @@ impl Checker {
                 .entry(SpanKey::from(span))
                 .or_insert_with(|| DeferredHashMapAdmission {
                     span: span.clone(),
-                    key_ty: key_ty.clone(),
-                    val_ty: val_ty.clone(),
+                    key_ty: resolved_key.clone(),
+                    val_ty: resolved_val.clone(),
                     source_module: self.current_module.clone(),
                 });
             return true;
@@ -2549,6 +2549,38 @@ mod tests {
             fact.key_align,
             Some(4),
             "key_align must be Some(4) for two-i32 record"
+        );
+    }
+
+    #[test]
+    fn hashmap_source_record_key_i64_fields_is_hash_eligible() {
+        let source = r"
+            record Point { x: i64, y: i64 }
+            fn main() {
+                let m: HashMap<Point, i64> = HashMap::new();
+                m.insert(Point { x: 1, y: 2 }, 10);
+            }
+        ";
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        let point_def = checker.type_defs.get("Point").cloned();
+        assert!(
+            matches!(
+                point_def.as_ref().and_then(|td| td.fields.get("x")),
+                Some(Ty::I64)
+            ),
+            "Point.x should register as i64; got: {point_def:?}"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "HashMap<Point, i64> with i64 record fields must be admitted; got: {:?}",
+            output.errors
         );
     }
 

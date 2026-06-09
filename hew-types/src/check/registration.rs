@@ -234,6 +234,7 @@ impl Checker {
             | Ty::Char
             | Ty::String
             | Ty::Bytes
+            | Ty::CancellationToken
             | Ty::Duration
             | Ty::Unit
             | Ty::Never
@@ -1957,6 +1958,58 @@ impl Checker {
             self.machine_type_param_bounds
                 .insert(md.name.clone(), type_param_bounds.clone());
         }
+        // W3.039 Stage 2: register const-generic parameter declarations
+        // into the side table so instantiation-site validation
+        // (Stage 3 — gated on W3.033c) can recover arity, types, and
+        // defaults without re-walking the parser AST. We also enforce
+        // here that const-param names do not shadow type-param names.
+        if !md.const_params.is_empty() {
+            let type_param_names: std::collections::HashSet<&str> =
+                md.type_params.iter().map(|p| p.name.as_str()).collect();
+            let mut const_param_decls: Vec<super::types::MachineConstParamDecl> =
+                Vec::with_capacity(md.const_params.len());
+            let mut seen_const_names: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            for cp in &md.const_params {
+                if type_param_names.contains(cp.name.as_str()) {
+                    self.errors.push(crate::error::TypeError::new(
+                        crate::error::TypeErrorKind::DuplicateDefinition,
+                        span.clone(),
+                        format!(
+                            "const parameter `{}` on machine `{}` shadows a type parameter \
+                             of the same name",
+                            cp.name, md.name
+                        ),
+                    ));
+                    continue;
+                }
+                if !seen_const_names.insert(cp.name.as_str()) {
+                    self.errors.push(crate::error::TypeError::new(
+                        crate::error::TypeErrorKind::DuplicateDefinition,
+                        span.clone(),
+                        format!(
+                            "duplicate const parameter `{}` on machine `{}`",
+                            cp.name, md.name
+                        ),
+                    ));
+                    continue;
+                }
+                let ty = match cp.ty {
+                    hew_parser::ast::ConstParamTy::Usize => {
+                        super::types::MachineConstParamTy::Usize
+                    }
+                };
+                const_param_decls.push(super::types::MachineConstParamDecl {
+                    name: cp.name.clone(),
+                    ty,
+                    default: cp.default,
+                });
+            }
+            if !const_param_decls.is_empty() {
+                self.machine_const_params
+                    .insert(md.name.clone(), const_param_decls);
+            }
+        }
         let machine_generic_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
@@ -2351,7 +2404,7 @@ impl Checker {
             Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
                 Self::collect_machine_transition_forbidden_exprs(&body.0, &body.1, hits);
             }
-            Expr::Spawn { target, args } => {
+            Expr::Spawn { target, args, .. } => {
                 Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
                 for (_, (arg, arg_span)) in args {
                     Self::collect_machine_transition_forbidden_exprs(arg, arg_span, hits);
@@ -2941,10 +2994,17 @@ impl Checker {
             fields.insert(field.name.clone(), field_ty);
         }
 
+        // Extract type-param names from the declaration so the TypeDef's
+        // positional `type_params` vector is populated for bound lookups in
+        // `enforce_actor_instantiation_bounds`. This mirrors the machine
+        // registration path; actors without type params get an empty vec.
+        let type_param_names: Vec<String> =
+            ad.type_params.iter().map(|tp| tp.name.clone()).collect();
+
         let type_def = TypeDef {
             kind: TypeDefKind::Actor,
             name: ad.name.clone(),
-            type_params: vec![],
+            type_params: type_param_names,
             fields,
             field_order,
             variants: HashMap::new(),
@@ -2952,6 +3012,16 @@ impl Checker {
             doc_comment: ad.doc_comment.clone(),
             is_indirect: false,
         };
+
+        // Record trait bounds for generic type parameters (e.g. `<T: Send>`).
+        // The bounds table is keyed by actor name and consulted at spawn sites
+        // by `enforce_actor_instantiation_bounds`. Non-generic actors produce
+        // an empty map; the helper short-circuits on empty `type_args` anyway.
+        let type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
+        if !type_param_bounds.is_empty() {
+            self.actor_type_param_bounds
+                .insert(ad.name.clone(), type_param_bounds);
+        }
 
         // Actors are always Send
         self.registry.register_actor(ad.name.clone());

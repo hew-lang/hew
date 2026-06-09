@@ -1870,6 +1870,12 @@ pub enum Instr {
     /// The identity allowance set is the checker's sole responsibility; MIR
     /// and codegen never re-check which types are allowed.
     IdentityCompare { dest: Place, lhs: Place, rhs: Place },
+    /// `dest = token.is_cancelled()`.
+    ///
+    /// Stage 4a carries the token value through MIR without lowering it to the
+    /// `hew_cancel_token_is_requested` runtime call. Stage 5a owns the codegen
+    /// emission site; until then this instruction is frontend-visible only.
+    CancellationTokenIsCancelled { dest: Place, token: Place },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
     /// Call into a `hew_*` runtime-ABI entry by name. The carried
@@ -1916,6 +1922,34 @@ pub enum Instr {
     /// impossible because `RuntimeCall`'s fields are private
     /// (LESSONS P0 `boundary-fail-closed`).
     CallRuntimeAbi(RuntimeCall),
+    /// Acquire an auto-injected mutex around a cross-suspend mutable
+    /// shared-capture access. The `lock` operand is a local that holds
+    /// the `*mut HewAutoMutex` handle (sourced from the closure-env or
+    /// generator-state lock-slot tail; see
+    /// `hew-mir::closure_env::ClosureEnvLayout::lock_slot_for`).
+    ///
+    /// Codegen lowers this to `call hew_auto_mutex_lock(lock)`. The
+    /// producer MUST emit this immediately BEFORE the cross-suspend
+    /// access and pair it with a single `AutoLockRelease` immediately
+    /// AFTER the access — the suspend itself sits OUTSIDE the bracket
+    /// so async tasks never park on a held lock.
+    ///
+    /// Fail-closed: a producer that emits `AutoLockAcquire` without a
+    /// matched `AutoLockRelease` on every continuation path violates
+    /// the substrate contract — the runtime guard slot is single-shot
+    /// and a missing release surfaces as a debug-assert at the next
+    /// `_free` (LESSONS P0 `boundary-fail-closed`).
+    AutoLockAcquire {
+        /// Local holding the `*mut HewAutoMutex` handle.
+        lock: Place,
+    },
+    /// Release an auto-injected mutex. Pairs with a prior
+    /// `AutoLockAcquire` on the same `lock` operand. Codegen lowers
+    /// to `call hew_auto_mutex_unlock(lock)`.
+    AutoLockRelease {
+        /// Local holding the `*mut HewAutoMutex` handle.
+        lock: Place,
+    },
     /// Construct a first-class callable value from a closure invoke shim and
     /// the environment record materialised at the literal site.
     MakeClosure {

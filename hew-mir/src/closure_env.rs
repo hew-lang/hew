@@ -391,6 +391,9 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             walk_expr_for_suspend(receiver, found);
             walk_expr_for_suspend(arg, found);
         }
+        HirExprKind::CancellationTokenIsCancelled { receiver } => {
+            walk_expr_for_suspend(receiver, found);
+        }
         HirExprKind::MachineEmit { fields, .. } => {
             for (_, e) in fields {
                 walk_expr_for_suspend(e, found);
@@ -701,6 +704,32 @@ mod tests {
         );
         let layout = ClosureEnvLayout::build(vec![], &body, ClosureEscapeKind::Local, false);
         assert!(layout.has_suspend_in_body());
+    }
+
+    // PIN TEST — Locked surface for W3.037/W3.038 parallel fan-out.
+    // See plans/v05-coherence-sequencing-plan.md §Locked ClosureEnvLayout API.
+    // Changes here must coordinate with downstream lanes.
+    //
+    // Each `let _: fn(...) = ClosureEnvLayout::method;` is a compile-time
+    // coercion to a specific function-pointer type.  If the method is
+    // renamed, gains/loses a parameter, or changes a return type the
+    // coercion fails and the build breaks with a clear type-mismatch error —
+    // surface rather than link-time, and earlier than any snapshot test.
+    /// SC-5 / `wire-contract-test-presence` — Cluster B contract freeze
+    /// (`closure_env.rs:27-29`). If any of these `fn` coercions stop
+    /// compiling, a downstream consumer's expected API has shifted and
+    /// the change must be co-ordinated with W3.036 / W3.037 / W3.038
+    /// per `.tmp/orchestration/plans/v05-coherence-sequencing-plan.md`.
+    #[test]
+    fn closure_env_layout_api_frozen() {
+        let _: fn(Vec<CaptureField>, &HirExpr, ClosureEscapeKind, bool) -> ClosureEnvLayout =
+            ClosureEnvLayout::build;
+        let _: fn(&ClosureEnvLayout, CaptureId) -> Option<LockSlotIdx> =
+            ClosureEnvLayout::lock_slot_for;
+        let _: fn(&ClosureEnvLayout) -> bool = ClosureEnvLayout::has_suspend_in_body;
+        let _: fn(&ClosureEnvLayout) -> AllocationStrategy = ClosureEnvLayout::allocation_strategy;
+        let _: fn(&ClosureEnvLayout) -> &[CaptureField] = ClosureEnvLayout::captures;
+        let _: fn(&ClosureEnvLayout) -> u32 = ClosureEnvLayout::lock_slot_count;
     }
 
     /// A nested block-scoped suspend must propagate up.

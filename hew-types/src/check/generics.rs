@@ -308,6 +308,54 @@ impl Checker {
         self.enforce_named_type_param_bounds(&type_params, &bounds, type_args, span);
     }
 
+    /// Actor-spawn-site bound enforcement.
+    ///
+    /// Called from `check_spawn` when explicit type args are supplied for a
+    /// generic actor. Clones the pattern of `enforce_machine_instantiation_bounds`
+    /// verbatim — actors and machines share the same bound-enforcement semantics
+    /// but are stored in separate tables so the two categories cannot suppress
+    /// each other's violations via the shared dedup set.
+    ///
+    /// The dedup key includes the actor name, resolved type args, and span.
+    /// Identical `(actor, args, span)` triples across repeated checker passes
+    /// emit exactly one diagnostic.
+    pub(super) fn enforce_actor_instantiation_bounds(
+        &mut self,
+        actor_name: &str,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
+        if type_args.is_empty() {
+            return;
+        }
+        let Some(bounds) = self.actor_type_param_bounds.get(actor_name).cloned() else {
+            return;
+        };
+        let dedup_key = (
+            actor_name.to_string(),
+            type_args.to_vec(),
+            SpanKey::from(span),
+        );
+        if !self.reported_actor_bound_violations.insert(dedup_key) {
+            return;
+        }
+        // Recover positional type-param names from the registered TypeDef so
+        // that `enforce_named_type_param_bounds` can look up bounds by name.
+        // Falls back to placeholder names for positions without a TypeDef entry
+        // (defensive; should not occur for a registered actor).
+        let mut type_params: Vec<String> = Vec::with_capacity(type_args.len());
+        for (idx, _) in type_args.iter().enumerate() {
+            if let Some(td) = self.type_defs.get(actor_name) {
+                if let Some(name) = td.type_params.get(idx) {
+                    type_params.push(name.clone());
+                    continue;
+                }
+            }
+            type_params.push(format!("__unbounded_{idx}"));
+        }
+        self.enforce_named_type_param_bounds(&type_params, &bounds, type_args, span);
+    }
+
     /// Generic bound-enforcement entry point parameterised by type-param names
     /// and a bounds map.  Used by `enforce_type_param_bounds` (`FnSig` calls)
     /// and by use-site enforcement for machine generic constructors that do
@@ -1162,5 +1210,76 @@ fn substitute_trait_object_assoc_bindings(
         _ => ty.map_children_pub(&|child| {
             substitute_trait_object_assoc_bindings(child, trait_name, bound)
         }),
+    }
+}
+
+// ── W3.039 Stage 2/2.5: machine const-generic arg validation ────────────
+
+impl Checker {
+    /// Validate a single const-generic argument at a machine
+    /// instantiation site.
+    ///
+    /// Routes the argument expression through the constexpr sub-engine
+    /// (`super::const_eval::eval_const_expr`, R268=B). On success
+    /// returns `Some(MachineConstArgValue::Usize(n))`; on failure emits
+    /// a typed diagnostic against `self.errors` and returns `None`.
+    ///
+    /// The `decl_param` argument carries the declaration-side parameter
+    /// shape so the function can reject width mismatches (R269=A: only
+    /// `usize` is supported in Phase 0; the parameter is retained so
+    /// widening can extend without re-threading callers).
+    ///
+    /// Stage 3 (W3.039) wires this into the machine instantiation
+    /// resolution path; until then the function is callable from tests
+    /// and from any future call site without further plumbing.
+    #[allow(
+        dead_code,
+        reason = "wired by Stage 3 of W3.039; exposed now so the sub-engine surface and side-table contract are testable"
+    )]
+    pub(super) fn validate_const_param_arg(
+        &mut self,
+        arg: &Spanned<Expr>,
+        decl_param: &super::types::MachineConstParamDecl,
+        env: &super::const_eval::ConstEnv,
+    ) -> Option<super::types::MachineConstArgValue> {
+        match decl_param.ty {
+            super::types::MachineConstParamTy::Usize => {}
+        }
+        match super::const_eval::eval_const_expr(arg, env) {
+            Ok(value) => Some(super::types::MachineConstArgValue::Usize(value)),
+            Err(super::const_eval::ConstEvalError::Overflow) => {
+                self.errors.push(crate::error::TypeError::new(
+                    crate::error::TypeErrorKind::InvalidOperation,
+                    arg.1.clone(),
+                    format!(
+                        "const argument for `{}` overflows usize or uses a negative value",
+                        decl_param.name
+                    ),
+                ));
+                None
+            }
+            Err(super::const_eval::ConstEvalError::UnknownConst(name)) => {
+                self.errors.push(crate::error::TypeError::new(
+                    crate::error::TypeErrorKind::UndefinedVariable,
+                    arg.1.clone(),
+                    format!(
+                        "const argument for `{}` references unknown const `{}`",
+                        decl_param.name, name
+                    ),
+                ));
+                None
+            }
+            Err(super::const_eval::ConstEvalError::NotConstant) => {
+                self.errors.push(crate::error::TypeError::new(
+                    crate::error::TypeErrorKind::InvalidOperation,
+                    arg.1.clone(),
+                    format!(
+                        "const argument for `{}` must be a compile-time integer expression",
+                        decl_param.name
+                    ),
+                ));
+                None
+            }
+        }
     }
 }

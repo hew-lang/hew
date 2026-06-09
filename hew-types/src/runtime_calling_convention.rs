@@ -231,6 +231,7 @@ impl RuntimeCallingConvention {
             // `Pointer`).
             Ty::Named { .. }
             | Ty::Bytes
+            | Ty::CancellationToken
             | Ty::Duration
             | Ty::Unit
             | Ty::Never

@@ -1,0 +1,13 @@
+// W3.004 S0 verify: ascription form `let v: Vec<i64> = Vec::new()`.
+//
+// The checker's `check_call_against_expected_constructor` path handles this:
+// the expected type Vec<i64> flows inward and satisfies the fresh TypeVar
+// registered for `Vec::new` in `registration.rs:462`.
+//
+// Exit 0 confirms the form is accepted and produces a valid empty Vec.
+// (Vec<i64> itself is valid; push/get are tested in scope-widening W3.004 S1
+// once the stdlib_catalog gains hew_vec_push_i64.)
+fn main() -> i64 {
+    let _v: Vec<i64> = Vec::new();
+    0
+}

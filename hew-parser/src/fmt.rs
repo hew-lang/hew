@@ -909,6 +909,22 @@ impl<'a> Formatter<'a> {
         self.write_visibility(decl.visibility);
         self.write("actor ");
         self.write(&decl.name);
+        if !decl.type_params.is_empty() {
+            self.write("<");
+            let mut first = true;
+            for param in &decl.type_params {
+                if !first {
+                    self.write(", ");
+                }
+                first = false;
+                self.write(&param.name);
+                if !param.bounds.is_empty() {
+                    self.write(": ");
+                    self.format_trait_bound_list(&param.bounds);
+                }
+            }
+            self.write(">");
+        }
         if let Some(supers) = &decl.super_traits {
             self.write(": ");
             self.format_trait_bound_list(supers);
@@ -1016,16 +1032,34 @@ impl<'a> Formatter<'a> {
         self.write_visibility(decl.visibility);
         self.write("machine ");
         self.write(&decl.name);
-        if !decl.type_params.is_empty() {
+        if !decl.type_params.is_empty() || !decl.const_params.is_empty() {
             self.write("<");
-            for (i, param) in decl.type_params.iter().enumerate() {
-                if i > 0 {
+            let mut first = true;
+            for param in &decl.type_params {
+                if !first {
                     self.write(", ");
                 }
+                first = false;
                 self.write(&param.name);
                 if !param.bounds.is_empty() {
                     self.write(": ");
                     self.format_trait_bound_list(&param.bounds);
+                }
+            }
+            for param in &decl.const_params {
+                if !first {
+                    self.write(", ");
+                }
+                first = false;
+                self.write("const ");
+                self.write(&param.name);
+                self.write(": ");
+                match param.ty {
+                    crate::ast::ConstParamTy::Usize => self.write("usize"),
+                }
+                if let Some(default) = param.default {
+                    self.write(" = ");
+                    self.write(&default.to_string());
                 }
             }
             self.write(">");
@@ -2377,9 +2411,20 @@ impl<'a> Formatter<'a> {
                     }
                 }
             }
-            Expr::Spawn { target, args } => {
+            Expr::Spawn {
+                target,
+                type_args,
+                args,
+            } => {
                 self.write("spawn ");
                 self.format_expr(&target.0);
+                if !type_args.is_empty() {
+                    self.write("<");
+                    self.comma_sep(type_args, |f, (te, _)| {
+                        f.format_type_expr(te);
+                    });
+                    self.write(">");
+                }
                 if !args.is_empty() {
                     self.write("(");
                     self.comma_sep(args, |f, (name, value)| {

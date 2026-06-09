@@ -68,6 +68,7 @@ impl ResolvedTy {
             ResolvedTy::Char => "char".into(),
             ResolvedTy::String => "string".into(),
             ResolvedTy::Bytes => "bytes".into(),
+            ResolvedTy::CancellationToken => "CancellationToken".into(),
             ResolvedTy::Duration => "duration".into(),
             ResolvedTy::Unit => "unit".into(),
             ResolvedTy::Never => "never".into(),

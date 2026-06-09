@@ -29,6 +29,7 @@ fn make_machine(
         visibility: Visibility::Pub,
         name: name.to_string(),
         type_params: vec![],
+        const_params: vec![],
         where_clause: None,
         has_default: false,
         states,
@@ -608,6 +609,7 @@ fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
                 bounds: vec![],
             })
             .collect(),
+        const_params: vec![],
         where_clause: None,
         has_default: false,
         states: vec![unit_state("Idle"), unit_state("Active")],
@@ -1209,6 +1211,7 @@ fn imported_generic_machine_type_params_survive_registration() {
             name: "T".to_string(),
             bounds: vec![],
         }],
+        const_params: vec![],
         where_clause: None,
         has_default: false,
         states: vec![unit_state("Idle"), unit_state("Active")],
@@ -2440,5 +2443,67 @@ fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 { 0 }
         1,
         "two occurrences of `Holder<Plain>` within one annotation must dedup to exactly 1 BoundsNotSatisfied, got: {:?}",
         output.errors
+    );
+}
+
+// ── W3.039 Stage 2: const-generic machine registration ──────────────────
+
+#[test]
+fn machine_const_param_decl_passes_typecheck() {
+    let src = r"machine FixedBuffer<const N: usize = 16> {
+    state Empty;
+    state Full;
+    event Write;
+    event Drain;
+    on Write: Empty -> Full { Full }
+    on Drain: Full -> Empty { Empty }
+    default { self }
+}
+";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let out = check_items(parsed.program.items);
+    let errs: Vec<_> = out
+        .errors
+        .iter()
+        .filter(|e| e.severity == hew_types::error::Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "expected no type errors on a const-param machine; got: {errs:?}"
+    );
+}
+
+#[test]
+fn machine_mixed_type_and_const_params_pass_typecheck() {
+    let src = r"machine M<T, const N: usize> {
+    state Empty;
+    state Full { val: T; }
+    event Put { payload: T; }
+    event Take;
+    on Put: Empty -> Full { Full { val: event.payload } }
+    on Take: Full -> Empty { Empty }
+    default { self }
+}
+";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let out = check_items(parsed.program.items);
+    let errs: Vec<_> = out
+        .errors
+        .iter()
+        .filter(|e| e.severity == hew_types::error::Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "expected no type errors on a mixed-param machine; got: {errs:?}"
     );
 }

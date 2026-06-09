@@ -32,7 +32,7 @@ use std::ptr;
 
 use hew_cabi::map::{HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout};
 use hew_cabi::vec::HewTypeOwnershipKind;
-use hew_runtime::hashmap::validate_key_layout;
+use hew_runtime::hashmap::{validate_descriptor_ownership, validate_key_layout};
 use hew_runtime::hashset::{
     hew_hashset_contains_layout, hew_hashset_free_layout, hew_hashset_insert_layout,
     hew_hashset_len_layout, hew_hashset_new_with_layout, hew_hashset_remove_layout,
@@ -72,6 +72,7 @@ fn elem_layout_point() -> HewMapKeyLayout {
         ownership_kind: HewTypeOwnershipKind::Plain,
         hash_fn: Some(hash_point as HewMapKeyHashThunk),
         eq_fn: Some(eq_point as HewMapKeyEqThunk),
+        drop_fn: None,
     }
 }
 
@@ -205,20 +206,39 @@ fn layout_hashset_null_elem_layout_aborts() {
     }
 }
 
-/// A `LayoutManaged` element ownership kind panics fail-closed.
+/// A `LayoutManaged` element ownership kind without a `drop_fn` panics
+/// fail-closed at the constructor (W4.001 Stage C0a; the old
+/// `"LayoutManaged out of scope"` panic was relaxed and replaced by the
+/// more precise descriptor-consistency gate).
+///
+/// We drive `validate_descriptor_ownership` directly rather than
+/// `hew_hashset_new_with_layout`: the latter is `extern "C"` and panics
+/// across it are non-unwinding aborts under `panic = "abort"`, so a
+/// `should_panic` test cannot observe them.
 #[test]
-#[should_panic(expected = "LayoutManaged key ownership is out of scope")]
-fn layout_hashset_managed_elem_aborts() {
+#[should_panic(expected = "key_layout ownership_kind=LayoutManaged requires drop_fn")]
+fn layout_hashset_managed_elem_without_drop_aborts() {
     let kl = HewMapKeyLayout {
         size: 16,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
         hash_fn: Some(hash_point as HewMapKeyHashThunk),
         eq_fn: Some(eq_point as HewMapKeyEqThunk),
+        drop_fn: None,
     };
-    // SAFETY: intentionally invalid ownership kind — tests the fail-closed gate.
+    // The hashset's ZST value layout is internal to hew_hashset_new_with_layout;
+    // for this gate-level test we synthesize an equivalent value descriptor.
+    let vl = hew_cabi::map::HewMapValueLayout {
+        size: 0,
+        align: 1,
+        ownership_kind: HewTypeOwnershipKind::Plain,
+        drop_fn: None,
+        clone_fn: None,
+    };
+    // SAFETY: both descriptors are well-formed addresses; the gate is what
+    // we want to observe.
     unsafe {
-        validate_key_layout(&raw const kl);
+        validate_descriptor_ownership(&raw const kl, &raw const vl);
     }
 }
 

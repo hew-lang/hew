@@ -755,6 +755,23 @@ pub unsafe extern "C" fn hew_hashmap_free_impl(m: *mut HewHashMap) {
 /// Initial capacity for a layout-backed map (must be a power of two).
 const LAYOUT_INIT_CAP: usize = 16;
 
+/// Test-only linker anchor (W4.001 Stage C0b).
+///
+/// Returns the layout-init capacity as a `u64`. The body is trivial; the
+/// real purpose is to give external dev-dependency users (e.g.
+/// `hew-types/tests/resolved_call_kernel_symbols`) a safe Rust function
+/// to reference so the linker pulls `hew_runtime`'s archive into the
+/// test binary — which folds in the `#[no_mangle]` layout descriptor
+/// statics that the test then resolves via `dlsym`.
+///
+/// `#[inline(never)]` prevents constant-fold-through-LTO from elision.
+#[inline(never)]
+#[doc(hidden)]
+#[must_use]
+pub fn layout_init_capacity_for_link_anchor() -> u64 {
+    LAYOUT_INIT_CAP as u64
+}
+
 /// Layout-backed open-addressing hash map with variable-stride slots.
 ///
 /// The struct shape is fixed by the C ABI; field order and types are part of
@@ -786,10 +803,15 @@ pub struct HewLayoutHashMap {
     pub val_offset: usize,
     /// Total slot size in bytes (already padded to `max(key_align, val_align)`).
     pub stride: usize,
-    /// Caller-owned key descriptor; must outlive the map.
-    pub key_layout: *const HewMapKeyLayout,
-    /// Caller-owned value descriptor; must outlive the map.
-    pub val_layout: *const HewMapValueLayout,
+    /// Key descriptor — **owned by-value snapshot** taken at constructor entry
+    /// (W4.001 Stage C0a; plan rev6 §4 Blocker B2). Snapshotting decouples the
+    /// map's hash/eq/drop discipline from any post-construction mutation the
+    /// caller may make to their original descriptor: the constructor's
+    /// fail-closed consistency check is therefore a lifetime invariant for the
+    /// map, not just a one-shot at-entry check.
+    pub key_layout: HewMapKeyLayout,
+    /// Value descriptor — owned by-value snapshot (same rationale).
+    pub val_layout: HewMapValueLayout,
 }
 
 /// Round `offset` up to the next multiple of `align`. `align` must be a
@@ -907,7 +929,12 @@ unsafe fn slot_val(entries: *mut u8, idx: usize, stride: usize, val_offset: usiz
 /// # Panics
 ///
 /// Panics if `key_layout` is null, `hash_fn`/`eq_fn` are `None`, `size == 0`,
-/// `align` is not a power of two, or `ownership_kind` is `LayoutManaged`.
+/// or `align` is not a power of two.
+///
+/// **W4.001 Stage C0a:** `LayoutManaged` ownership is no longer rejected
+/// here. The new descriptor-consistency check in `new_layout` rejects
+/// `String`/`LayoutManaged` ownership combined with `drop_fn == None`
+/// instead — fail-closed but more precise.
 ///
 /// # Safety
 ///
@@ -935,10 +962,9 @@ pub unsafe fn validate_key_layout(key_layout: *const HewMapKeyLayout) {
         crate::set_last_error("HewLayoutHashMap: key_layout.align is not a power of two");
         panic!("HewLayoutHashMap: key_layout.align is not a power of two");
     }
-    if matches!(kl.ownership_kind, HewTypeOwnershipKind::LayoutManaged) {
-        crate::set_last_error("HewLayoutHashMap: LayoutManaged key ownership is out of scope");
-        panic!("HewLayoutHashMap: LayoutManaged key ownership is out of scope");
-    }
+    // C0a: LayoutManaged / String ownership are admitted; their drop_fn
+    // requirement is enforced by validate_descriptor_ownership (called from
+    // the constructor).
 }
 
 /// Validate a `HewMapValueLayout` at constructor time.
@@ -947,8 +973,11 @@ pub unsafe fn validate_key_layout(key_layout: *const HewMapKeyLayout) {
 ///
 /// # Panics
 ///
-/// Panics if `val_layout` is null, `align` is not a power of two, a zero-size
-/// value layout has `align != 1`, or `ownership_kind` is `LayoutManaged`.
+/// Panics if `val_layout` is null, `align` is not a power of two, or a
+/// zero-size value layout has `align != 1`.
+///
+/// **W4.001 Stage C0a:** `LayoutManaged` ownership is no longer rejected
+/// here; see [`validate_key_layout`].
 ///
 /// # Safety
 ///
@@ -970,9 +999,79 @@ pub unsafe fn validate_val_layout(val_layout: *const HewMapValueLayout) {
         );
         panic!("HewLayoutHashMap: zero-size value layout must have align == 1");
     }
-    if matches!(vl.ownership_kind, HewTypeOwnershipKind::LayoutManaged) {
-        crate::set_last_error("HewLayoutHashMap: LayoutManaged value ownership is out of scope");
-        panic!("HewLayoutHashMap: LayoutManaged value ownership is out of scope");
+    // C0a: see validate_key_layout for the LayoutManaged-relaxation rationale.
+}
+
+/// Fail-closed descriptor-consistency check (W4.001 Stage C0a; plan rev6
+/// §4 "Fail-closed descriptor consistency check"; CLAUDE.md §2).
+///
+/// Rejects descriptors that declare owned-ownership semantics without a
+/// matching drop thunk. The four enumerated rejection cases are asserted
+/// by `hashmap_layout_descriptor_rejection.rs`.
+///
+/// Allowed: `Plain` ownership with `drop_fn = Some(_)` (no-op cleanup
+/// is harmless; the relaxed-direction does not violate fail-closed
+/// because extra cleanup is safe and missing cleanup is the leak hazard).
+///
+/// # Panics
+///
+/// Panics with message
+/// `"HewLayoutHashMap: {key_layout|val_layout} ownership_kind={String|LayoutManaged} requires drop_fn"`
+/// on any of the four rejection cases.
+///
+/// # Safety
+///
+/// Both pointers must be non-null and point to valid descriptors (call
+/// `validate_key_layout` / `validate_val_layout` first).
+pub unsafe fn validate_descriptor_ownership(
+    key_layout: *const HewMapKeyLayout,
+    val_layout: *const HewMapValueLayout,
+) {
+    // SAFETY: caller-guaranteed non-null + valid.
+    let kl = unsafe { &*key_layout };
+    // SAFETY: same.
+    let vl = unsafe { &*val_layout };
+    match kl.ownership_kind {
+        HewTypeOwnershipKind::Plain => {}
+        HewTypeOwnershipKind::String => {
+            if kl.drop_fn.is_none() {
+                crate::set_last_error(
+                    "HewLayoutHashMap: key_layout ownership_kind=String requires drop_fn",
+                );
+                panic!("HewLayoutHashMap: key_layout ownership_kind=String requires drop_fn");
+            }
+        }
+        HewTypeOwnershipKind::LayoutManaged => {
+            if kl.drop_fn.is_none() {
+                crate::set_last_error(
+                    "HewLayoutHashMap: key_layout ownership_kind=LayoutManaged requires drop_fn",
+                );
+                panic!(
+                    "HewLayoutHashMap: key_layout ownership_kind=LayoutManaged requires drop_fn"
+                );
+            }
+        }
+    }
+    match vl.ownership_kind {
+        HewTypeOwnershipKind::Plain => {}
+        HewTypeOwnershipKind::String => {
+            if vl.drop_fn.is_none() {
+                crate::set_last_error(
+                    "HewLayoutHashMap: val_layout ownership_kind=String requires drop_fn",
+                );
+                panic!("HewLayoutHashMap: val_layout ownership_kind=String requires drop_fn");
+            }
+        }
+        HewTypeOwnershipKind::LayoutManaged => {
+            if vl.drop_fn.is_none() {
+                crate::set_last_error(
+                    "HewLayoutHashMap: val_layout ownership_kind=LayoutManaged requires drop_fn",
+                );
+                panic!(
+                    "HewLayoutHashMap: val_layout ownership_kind=LayoutManaged requires drop_fn"
+                );
+            }
+        }
     }
 }
 
@@ -998,6 +1097,9 @@ pub unsafe fn validate_and_compute_slot_layout(
     unsafe { validate_key_layout(key_layout) };
     // SAFETY: same.
     unsafe { validate_val_layout(val_layout) };
+    // SAFETY: both pointers validated non-null above; ownership check is
+    // the W4.001 Stage C0a fail-closed descriptor-consistency gate.
+    unsafe { validate_descriptor_ownership(key_layout, val_layout) };
     // SAFETY: validated non-null above.
     let kl = unsafe { &*key_layout };
     // SAFETY: validated non-null above.
@@ -1046,9 +1148,10 @@ pub unsafe fn validate_op_inputs(
         panic!("HewLayoutHashMap op: key is null");
     }
     if let Some(v) = val {
-        // SAFETY: m non-null per check above; val_layout pointer stable per
-        // the HewLayoutHashMap ownership contract.
-        let val_size = unsafe { (*(*m).val_layout).size };
+        // SAFETY: m non-null per check above; val_layout is now an owned
+        // by-value field on the map (W4.001 Stage C0a snapshot), no
+        // pointer chase required.
+        let val_size = unsafe { (*m).val_layout.size };
         if val_size > 0 && v.is_null() {
             crate::set_last_error("HewLayoutHashMap op: val is null but value size > 0");
             panic!("HewLayoutHashMap op: val is null but value size > 0");
@@ -1169,14 +1272,17 @@ unsafe fn layout_resize(m: *mut HewLayoutHashMap) {
     // SAFETY: caller guarantees `m` is a valid, fully-initialised pointer; the
     // raw field projections below read plain scalar / raw-pointer fields and
     // do not borrow `*m`.
-    let (old_entries, old_cap, stride, key_offset, val_offset, key_layout_ptr, val_layout_ptr): (
+    //
+    // W4.001 Stage C0a: `key_layout` / `val_layout` are now owned by-value
+    // snapshots on the map (not raw pointers). We read their *fields* as
+    // scalar locals here — never borrowing the descriptor itself across the
+    // allocator — preserving the council Rev 1 §7 discipline.
+    let (old_entries, old_cap, stride, key_offset, val_offset): (
         *mut u8,
         usize,
         usize,
         usize,
         usize,
-        *const HewMapKeyLayout,
-        *const HewMapValueLayout,
     ) = unsafe {
         (
             (*m).entries,
@@ -1184,24 +1290,19 @@ unsafe fn layout_resize(m: *mut HewLayoutHashMap) {
             (*m).stride,
             (*m).key_offset,
             (*m).val_offset,
-            (*m).key_layout,
-            (*m).val_layout,
         )
     };
 
     // -- Step 2: copy needed layout descriptor fields as scalars ---------------
-    // The layout descriptors are caller-stable per the ownership contract;
-    // reading their fields here and storing scalars in locals decouples the
-    // rebuild loop from any &-borrow of the descriptors across the allocator.
-    // SAFETY: key_layout_ptr / val_layout_ptr are non-null per constructor gate
-    // and remain valid for the lifetime of the map.
+    // SAFETY: `m` valid; reads of the by-value descriptor's scalar fields are
+    // plain scalar loads and do not borrow `*m`.
     let (key_size, key_align, val_size, val_align, hash_fn_opt) = unsafe {
         (
-            (*key_layout_ptr).size,
-            (*key_layout_ptr).align,
-            (*val_layout_ptr).size,
-            (*val_layout_ptr).align,
-            (*key_layout_ptr).hash_fn,
+            (*m).key_layout.size,
+            (*m).key_layout.align,
+            (*m).val_layout.size,
+            (*m).val_layout.align,
+            (*m).key_layout.hash_fn,
         )
     };
     let entries_align = core::cmp::max(key_align, val_align);
@@ -1281,16 +1382,25 @@ unsafe fn layout_resize(m: *mut HewLayoutHashMap) {
 
 /// Create a new layout-backed `HewLayoutHashMap`.
 ///
-/// Fail-closed gates (council Rev 2/3): aborts on null layout pointers, missing
-/// hash/eq thunks, zero-size key, non-power-of-two alignment, malformed ZST
-/// value layout, `LayoutManaged` ownership, or stride overflow.
+/// Fail-closed gates (council Rev 2/3 + W4.001 Stage C0a): aborts on null
+/// layout pointers, missing hash/eq thunks, zero-size key, non-power-of-two
+/// alignment, malformed ZST value layout, owned ownership without matching
+/// `drop_fn` (`String`/`LayoutManaged` require `Some(_)`), or stride overflow.
+///
+/// **W4.001 Stage C0a — descriptor snapshot by value.** Caller-provided
+/// descriptors are copied into the map at constructor entry (after all
+/// fail-closed validation). Subsequent caller mutation of the original
+/// descriptor bytes is harmless — the map honours its snapshot for the
+/// remainder of its lifetime (plan rev6 §4 Blocker B2).
 ///
 /// # Safety
 ///
-/// `key_layout` and `val_layout` must point to valid descriptors that outlive
-/// the returned map. The returned pointer must be freed with
+/// `key_layout` and `val_layout` must point to valid descriptors **at
+/// constructor entry**. After this call returns, the caller may free or
+/// mutate the descriptor bytes; the map no longer reads through the
+/// original pointers. The returned pointer must be freed with
 /// [`hew_hashmap_free_layout`].
-// WASM-TODO: hew_hashmap_new_with_layout not yet ported to wasm32
+// WASM-TODO(#1451): hew_hashmap_new_with_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_new_with_layout(
     key_layout: *const HewMapKeyLayout,
@@ -1308,10 +1418,20 @@ pub unsafe extern "C" fn hew_hashmap_new_with_layout(
         std::process::abort();
     }
     // SAFETY: non-null checked above; validator panics fail-closed on any
-    // gate violation. Under `panic = "abort"` the panic aborts the process
-    // before unwinding crosses this frame, preserving the C ABI contract.
+    // gate violation (including the C0a ownership/drop-fn consistency check).
+    // Under `panic = "abort"` the panic aborts the process before unwinding
+    // crosses this frame, preserving the C ABI contract.
     let (key_offset, val_offset, stride, entries_align) =
         unsafe { validate_and_compute_slot_layout(key_layout, val_layout) };
+
+    // W4.001 Stage C0a: snapshot descriptors by value *after* validation.
+    // SAFETY: validated non-null + valid by the call above; descriptors are
+    // `#[repr(C)] Copy` PODs, so `read` is a fixed-size memcpy with no drop
+    // glue. After this point the map no longer reads through the caller's
+    // pointer.
+    let key_layout_snapshot = unsafe { ptr::read(key_layout) };
+    // SAFETY: same — see comment above.
+    let val_layout_snapshot = unsafe { ptr::read(val_layout) };
 
     let cap = LAYOUT_INIT_CAP;
     // SAFETY: cap > 0, stride > 0, entries_align is power of two.
@@ -1339,8 +1459,8 @@ pub unsafe extern "C" fn hew_hashmap_new_with_layout(
                 key_offset,
                 val_offset,
                 stride,
-                key_layout,
-                val_layout,
+                key_layout: key_layout_snapshot,
+                val_layout: val_layout_snapshot,
             },
         );
     }
@@ -1362,7 +1482,7 @@ pub unsafe extern "C" fn hew_hashmap_new_with_layout(
 /// `m` must be a valid `HewLayoutHashMap`. `key` must point to a readable
 /// blob of the registered key layout. `val` likewise for the value layout
 /// (when size > 0).
-// WASM-TODO: hew_hashmap_insert_layout not yet ported to wasm32
+// WASM-TODO(#1451): hew_hashmap_insert_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_insert_layout(
     m: *mut HewLayoutHashMap,
@@ -1378,14 +1498,18 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
     // pointer via raw projection BEFORE the resize decision. Re-read fields
     // that resize may mutate (`entries`, `cap`) AFTER resize completes.
 
-    // Snapshot layout descriptor fields we need (the descriptors themselves are
-    // caller-stable; we only need their scalar fields and the thunk pointers).
-    // SAFETY: m non-null per validate_op_inputs above; raw field projections
-    // read plain scalar / raw-pointer fields without borrowing `*m`.
-    let (key_size, val_size, hash_fn_opt, eq_fn_opt) = unsafe {
-        let klp = (*m).key_layout;
-        let vlp = (*m).val_layout;
-        ((*klp).size, (*vlp).size, (*klp).hash_fn, (*klp).eq_fn)
+    // Snapshot layout descriptor fields we need (descriptors are now owned
+    // by-value snapshots on the map; W4.001 Stage C0a).
+    // SAFETY: m non-null per validate_op_inputs above; reads of the by-value
+    // descriptor fields are plain scalar loads.
+    let (key_size, val_size, hash_fn_opt, eq_fn_opt, val_drop_fn_opt) = unsafe {
+        (
+            (*m).key_layout.size,
+            (*m).val_layout.size,
+            (*m).key_layout.hash_fn,
+            (*m).key_layout.eq_fn,
+            (*m).val_layout.drop_fn,
+        )
     };
     let (Some(hash_fn), Some(eq_fn)) = (hash_fn_opt, eq_fn_opt) else {
         crate::set_last_error(
@@ -1429,14 +1553,47 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
 
     // SAFETY: state byte in-bounds.
     unsafe { *state_ptr = OCCUPIED };
-    // SAFETY: dst_key and key are valid blobs of `key_size` bytes.
-    unsafe { ptr::copy_nonoverlapping(key.cast::<u8>(), dst_key, key_size) };
-    if val_size > 0 {
-        // SAFETY: dst_val and val are valid blobs of `val_size` bytes (val
-        // non-null was enforced by validate_op_inputs when val_size > 0).
-        unsafe { ptr::copy_nonoverlapping(val.cast::<u8>(), dst_val, val_size) };
-    }
-    if !existed {
+
+    if existed {
+        // W4.001 Stage C0a contract (plan rev6 §4 "Acquisition / ownership
+        // contract", occupied-slot row + invariant 5: "Overwrite never
+        // drops K, always drops old V").
+        //
+        // 1. The stored slot K stays in place — it is the equality-witness
+        //    that the probe found, and re-copying caller-K bytes would leak
+        //    the stored K's owned allocation when K is `String` /
+        //    `LayoutManaged`. The duplicate K_in the caller passed is the
+        //    caller's responsibility to drop or recycle (hoisted to the
+        //    Stage C HIR consumer / codegen materializer).
+        // 2. The old V is dropped via `val_layout.drop_fn` before the new V
+        //    overwrites it. `drop_fn = None` (Plain ownership) is the
+        //    no-op fast path.
+        // 3. The stored K's `drop_fn` is NEVER invoked here — the slot K is
+        //    reused, not freed.
+        if val_size > 0 {
+            if let Some(val_drop) = val_drop_fn_opt {
+                // SAFETY: dst_val points to the old V blob owned by the map;
+                // `drop_fn` is the descriptor-registered owned-V drop thunk and
+                // runs the type's drop plan in place (it must not deallocate
+                // the slot bytes themselves — the kernel owns slot storage).
+                val_drop(dst_val.cast::<c_void>());
+            }
+        }
+        // Raw-copy new V over the (now-dropped) old V slot bytes.
+        if val_size > 0 {
+            // SAFETY: dst_val and val are valid blobs of `val_size` bytes (val
+            // non-null was enforced by validate_op_inputs when val_size > 0).
+            unsafe { ptr::copy_nonoverlapping(val.cast::<u8>(), dst_val, val_size) };
+        }
+    } else {
+        // Vacant slot: raw-copy K and V bytes into slot; possession transfers
+        // to the map (plan rev6 §4 contract-table vacant-slot row).
+        // SAFETY: dst_key and key are valid blobs of `key_size` bytes.
+        unsafe { ptr::copy_nonoverlapping(key.cast::<u8>(), dst_key, key_size) };
+        if val_size > 0 {
+            // SAFETY: dst_val and val are valid blobs of `val_size` bytes.
+            unsafe { ptr::copy_nonoverlapping(val.cast::<u8>(), dst_val, val_size) };
+        }
         // SAFETY: m valid; raw scalar increment.
         unsafe { (*m).len += 1 };
     }
@@ -1465,7 +1622,7 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
 /// # Safety
 ///
 /// `m` must be a valid `HewLayoutHashMap`. `key` must point to a valid key blob.
-// WASM-TODO: hew_hashmap_get_layout not yet ported to wasm32
+// WASM-TODO(#1451): hew_hashmap_get_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_get_layout(
     m: *const HewLayoutHashMap,
@@ -1478,8 +1635,8 @@ pub unsafe extern "C" fn hew_hashmap_get_layout(
     if map.cap == 0 || map.len == 0 {
         return ptr::null();
     }
-    // SAFETY: layout pointers stable.
-    let kl = unsafe { &*map.key_layout };
+    // W4.001 Stage C0a: descriptors are owned by-value snapshots.
+    let kl = &map.key_layout;
     let (Some(hash_fn), Some(eq_fn)) = (kl.hash_fn, kl.eq_fn) else {
         crate::set_last_error(
             "hew_hashmap_get_layout: hash_fn/eq_fn None (constructor guard violated)",
@@ -1511,7 +1668,7 @@ pub unsafe extern "C" fn hew_hashmap_get_layout(
 /// # Safety
 ///
 /// Same as [`hew_hashmap_get_layout`].
-// WASM-TODO: hew_hashmap_contains_key_layout not yet ported to wasm32
+// WASM-TODO(#1451): hew_hashmap_contains_key_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_contains_key_layout(
     m: *const HewLayoutHashMap,
@@ -1527,7 +1684,7 @@ pub unsafe extern "C" fn hew_hashmap_contains_key_layout(
 /// # Safety
 ///
 /// Same as [`hew_hashmap_get_layout`].
-// WASM-TODO: hew_hashmap_remove_layout not yet ported to wasm32
+// WASM-TODO(#1451): hew_hashmap_remove_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_remove_layout(
     m: *mut HewLayoutHashMap,
@@ -1540,9 +1697,18 @@ pub unsafe extern "C" fn hew_hashmap_remove_layout(
     if map.cap == 0 || map.len == 0 {
         return false;
     }
-    // SAFETY: layout pointers stable.
-    let kl = unsafe { &*map.key_layout };
-    let (Some(hash_fn), Some(eq_fn)) = (kl.hash_fn, kl.eq_fn) else {
+    // W4.001 Stage C0a: descriptors are owned by-value snapshots.
+    // Snapshot the drop thunks + scalar layout fields BEFORE taking the
+    // mutable handle to the entries (avoids any aliasing between the
+    // descriptor read and the slot pointer arithmetic below).
+    let (hash_fn_opt, eq_fn_opt, key_drop_fn_opt, val_drop_fn_opt, val_size) = (
+        map.key_layout.hash_fn,
+        map.key_layout.eq_fn,
+        map.key_layout.drop_fn,
+        map.val_layout.drop_fn,
+        map.val_layout.size,
+    );
+    let (Some(hash_fn), Some(eq_fn)) = (hash_fn_opt, eq_fn_opt) else {
         crate::set_last_error(
             "hew_hashmap_remove_layout: hash_fn/eq_fn None (constructor guard violated)",
         );
@@ -1563,6 +1729,27 @@ pub unsafe extern "C" fn hew_hashmap_remove_layout(
     if !found {
         return false;
     }
+    // W4.001 Stage C0a (plan rev6 §4 contract-table remove row + invariant
+    // 3): drop the stored K + V via the descriptor thunks BEFORE tombstoning.
+    // The caller's borrowed lookup K is untouched (kernel never sees it
+    // again after `eq_fn` returned true). The drop+tombstone sequence is
+    // sync C with no `.await` between (CLAUDE.md §1 — kernel invariant
+    // documented in plan §4).
+    //
+    // SAFETY: idx < cap; offsets in-bounds; slot is OCCUPIED.
+    let slot_key_ptr = unsafe { slot_key(map.entries, idx, map.stride, map.key_offset) };
+    if let Some(key_drop) = key_drop_fn_opt {
+        // SAFETY: slot K is an owned blob registered to the K drop thunk.
+        key_drop(slot_key_ptr.cast::<c_void>());
+    }
+    if val_size > 0 {
+        if let Some(val_drop) = val_drop_fn_opt {
+            // SAFETY: slot V is an owned blob registered to the V drop thunk;
+            // val_size > 0 guarantees there is an actual blob to drop.
+            let slot_val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
+            val_drop(slot_val_ptr.cast::<c_void>());
+        }
+    }
     // SAFETY: idx < cap.
     let state_ptr = unsafe { slot_state(map.entries, idx, map.stride) };
     // SAFETY: state byte in-bounds.
@@ -1576,7 +1763,7 @@ pub unsafe extern "C" fn hew_hashmap_remove_layout(
 /// # Safety
 ///
 /// `m` must be a valid `HewLayoutHashMap`.
-// WASM-TODO: hew_hashmap_len_layout not yet ported to wasm32
+// WASM-TODO(#1451): hew_hashmap_len_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_len_layout(m: *const HewLayoutHashMap) -> i64 {
     // SAFETY: shared fail-closed gate (map-only variant).
@@ -1616,7 +1803,7 @@ pub unsafe extern "C" fn hew_hashmap_len_layout(m: *const HewLayoutHashMap) -> i
 ///
 /// `m` must have been returned by [`hew_hashmap_new_with_layout`] (or be null).
 /// After this call, `m` is invalid.
-// WASM-TODO: hew_hashmap_free_layout not yet ported to wasm32
+// WASM-TODO(#1451): hew_hashmap_free_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
     if m.is_null() {
@@ -1627,16 +1814,51 @@ pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
     let entries = map_ref.entries;
     let cap = map_ref.cap;
     let stride = map_ref.stride;
-    // SAFETY: layout pointer stable per ownership contract.
-    let kl = unsafe { &*map_ref.key_layout };
-    // SAFETY: same.
-    let vl = unsafe { &*map_ref.val_layout };
+    let key_offset = map_ref.key_offset;
+    let val_offset = map_ref.val_offset;
+    // W4.001 Stage C0a: descriptors are owned by-value snapshots.
+    let kl = &map_ref.key_layout;
+    let vl = &map_ref.val_layout;
     let entries_align = core::cmp::max(kl.align, vl.align);
+    let key_drop_fn_opt = kl.drop_fn;
+    let val_drop_fn_opt = vl.drop_fn;
+    let val_size = vl.size;
 
-    // Plain ownership: blobs are byte-copy safe, no per-slot drop. LayoutManaged
-    // was rejected at constructor time.
-    debug_assert!(matches!(kl.ownership_kind, HewTypeOwnershipKind::Plain));
-    debug_assert!(matches!(vl.ownership_kind, HewTypeOwnershipKind::Plain));
+    // W4.001 Stage C0a (plan rev6 §4 contract-table free row + invariant 4):
+    // iterate occupied slots, drop K + V on each via the descriptor thunks
+    // before deallocating the entries buffer. Tombstoned slots already had
+    // their blobs dropped at remove-time and must not be re-dropped.
+    //
+    // `Plain` ownership descriptors carry `drop_fn = None`; the per-slot loop
+    // skips the call and the overall cost collapses to a single pass over
+    // the state bytes (≈ one branch-not-taken per slot) plus the eventual
+    // dealloc. The constructor's fail-closed check guarantees that owned
+    // ownership kinds (`String`/`LayoutManaged`) always have a `drop_fn`,
+    // so this loop cannot leak on those paths.
+    if entries.is_null() || cap == 0 {
+        // Defensive: nothing to iterate. Fall through to dealloc which is
+        // itself a no-op on null entries (`dealloc_layout_entries`).
+    } else if key_drop_fn_opt.is_some() || (val_size > 0 && val_drop_fn_opt.is_some()) {
+        for idx in 0..cap {
+            // SAFETY: idx < cap; stride matches allocation.
+            let state = unsafe { *slot_state(entries, idx, stride) };
+            if state != OCCUPIED {
+                continue;
+            }
+            if let Some(key_drop) = key_drop_fn_opt {
+                // SAFETY: occupied slot has a valid K blob at key_offset.
+                let slot_key_ptr = unsafe { slot_key(entries, idx, stride, key_offset) };
+                key_drop(slot_key_ptr.cast::<c_void>());
+            }
+            if val_size > 0 {
+                if let Some(val_drop) = val_drop_fn_opt {
+                    // SAFETY: occupied slot has a valid V blob at val_offset.
+                    let slot_val_ptr = unsafe { slot_val(entries, idx, stride, val_offset) };
+                    val_drop(slot_val_ptr.cast::<c_void>());
+                }
+            }
+        }
+    }
 
     // SAFETY: entries allocated by alloc_layout_entries with these exact params.
     unsafe { dealloc_layout_entries(entries, cap, stride, entries_align) };

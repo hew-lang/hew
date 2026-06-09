@@ -89,6 +89,53 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
 }
 
 #[test]
+fn cancellation_token_local_and_is_cancelled_typecheck() {
+    let output = check_source(
+        r"
+        fn observe(token: CancellationToken) -> bool {
+            let t: CancellationToken = token;
+            return t.is_cancelled();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "CancellationToken local and is_cancelled() should type-check: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| { matches!(rewrite, MethodCallRewrite::CancellationTokenIsCancelled) }),
+        "is_cancelled() must record the checker-owned cancellation-token intrinsic"
+    );
+}
+
+#[test]
+fn cancellation_token_has_no_cancel_method() {
+    let output = check_source(
+        r"
+        fn observe(token: CancellationToken) {
+            token.cancel();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|err| {
+            matches!(err.kind, TypeErrorKind::UndefinedMethod)
+                && err
+                    .message
+                    .contains("no method `cancel` on `CancellationToken`")
+        }),
+        "CancellationToken.cancel() must remain out of scope: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_copy_record_layout_methods_record_runtime_rewrites() {
     let output = check_source(
         r"
@@ -1569,6 +1616,7 @@ fn test_receive_gen_fn_returns_stream() {
     let actor = ActorDecl {
         visibility: Visibility::Pub,
         name: "NumberStream".to_string(),
+        type_params: vec![],
         super_traits: None,
         init: None,
         fields: vec![],
@@ -2478,6 +2526,7 @@ fn typecheck_actor_receive_fn_registered() {
     let actor = ActorDecl {
         visibility: Visibility::Pub,
         name: "Greeter".to_string(),
+        type_params: vec![],
         super_traits: None,
         init: None,
         fields: vec![],
@@ -16878,6 +16927,71 @@ mod for_loop_iterable_fail_closed {
         );
     }
 
+    // ── ClosureEscapeAdvisory narrowing: PassedToHigherOrder ─────────────
+    //
+    // Inlining a let-bound closure passed to a higher-order function does not
+    // relieve the escape — an anonymous closure in argument position still
+    // hits AnonContext::PassedToHigherOrder, so the advisory would fire again.
+    // The admit_local rule set therefore excludes PassedToHigherOrder.
+
+    #[test]
+    fn escape_advisory_not_emitted_for_let_bound_closure_passed_to_higher_order() {
+        // `let f = |x: i64| x * 2; apply(f, 5)` — the closure escapes via
+        // PassedToHigherOrder but NO advisory should fire because inlining
+        // the closure at the call site provides no relief.
+        let output = check_source(
+            r"
+            fn apply(f: fn(i64) -> i64, x: i64) -> i64 { f(x) }
+            fn main() {
+                let double = |x: i64| x * 2;
+                let _ = apply(double, 5);
+            }
+            ",
+        );
+        let advisory_for_higher_order = output.warnings.iter().any(|w| {
+            matches!(
+                &w.kind,
+                TypeErrorKind::ClosureEscapeAdvisory { rule }
+                    if rule.contains("PassedToHigherOrder")
+            )
+        });
+        assert!(
+            !advisory_for_higher_order,
+            "no ClosureEscapeAdvisory should fire for a let-bound closure passed to a \
+             higher-order function; got warnings: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn escape_advisory_still_emitted_for_let_bound_closure_escaped_as_block_tail() {
+        // Precision check: narrowing PassedToHigherOrder must not disable the
+        // advisory for other genuinely-advisable rules.  A let-bound closure
+        // returned as a block tail value (EscapesViaBlockValue) still produces
+        // an advisory because making it anonymous at the return site would
+        // resolve to AnonContext::Returned → Escapes::Returned, not Local.
+        // The suggestion ("inline at call site") IS actionable in some
+        // refactors even for EscapesViaBlockValue, so that rule stays.
+        let output = check_source(
+            r"
+            fn make() -> fn() -> i32 {
+                let f = || 1;
+                f
+            }
+            ",
+        );
+        let has_advisory = output
+            .warnings
+            .iter()
+            .any(|w| matches!(&w.kind, TypeErrorKind::ClosureEscapeAdvisory { .. }));
+        assert!(
+            has_advisory,
+            "ClosureEscapeAdvisory must still fire for a let-bound closure returned as a \
+             block-tail value; got warnings: {:?}",
+            output.warnings
+        );
+    }
+
     // ── Fail-closed defenses for missing facts ───────────────────────────
     //
     // These tests drive `emit_unresolved_closure_diagnostics` directly
@@ -19813,12 +19927,11 @@ fn foo(t: Tri) -> i64 {
 // These tests verify that the checker emits `UnsupportedPayloadSubpattern`
 // rather than silently lowering unsupported payload subpatterns as wildcards.
 
-/// Literal in tuple-variant payload position must emit
-/// `UnsupportedPayloadSubpattern` rather than silently matching as wildcard.
-/// This covers the reviewer's exact probe: `Shape::Line(1)` must not match
-/// `Shape::Line(2)` via wildcard fallthrough.
+/// Literal in tuple-variant payload position is accepted by the checker and
+/// carried forward for HIR/MIR predicate handling rather than being rejected at
+/// the parser/checker boundary.
 #[test]
-fn constructor_payload_literal_emits_unsupported_diagnostic() {
+fn constructor_payload_literal_is_accepted() {
     let output = check_source(
         r"
 enum Shape { Line(i64); Square(i64) }
@@ -19832,14 +19945,14 @@ fn main() -> i64 {
 }",
     );
     assert!(
-        output.errors.iter().any(|e| matches!(
+        !output.errors.iter().any(|e| matches!(
             &e.kind,
             crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
                 kind_label,
                 ..
             } if kind_label == "literal"
         )),
-        "expected UnsupportedPayloadSubpattern(literal) error; got errors: {:#?}",
+        "literal payload subpatterns must not emit UnsupportedPayloadSubpattern; got errors: {:#?}",
         output.errors
     );
 }

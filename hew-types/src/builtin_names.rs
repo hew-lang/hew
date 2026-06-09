@@ -16,6 +16,7 @@ pub enum BuiltinMethodSigTemplate {
     ReturnOptionT,
     ReturnString,
     ReturnUnit,
+    ReturnBool,
     ReturnContainerOfString,
     CountToSelf,
     MapperToSelf,
@@ -141,6 +142,7 @@ const fn builtin_named_type_index(kind: BuiltinNamedType) -> usize {
         BuiltinNamedType::Duplex => 4,
         BuiltinNamedType::LocalPid => 5,
         BuiltinNamedType::RemotePid => 6,
+        BuiltinNamedType::CancellationToken => 7,
     }
 }
 
@@ -316,6 +318,18 @@ builtin_named_types! {
         qualified: "RemotePid",
         methods: []
     },
+    CancellationToken {
+        consts: (CANCELLATION_TOKEN, QUALIFIED_CANCELLATION_TOKEN),
+        methods_const: CANCELLATION_TOKEN_METHODS,
+        canonical: "CancellationToken",
+        qualified: "CancellationToken",
+        methods: [
+            "is_cancelled" => {
+                signature: ReturnBool,
+                runtime: BuiltinMethodRuntime::None
+            },
+        ]
+    },
 }
 
 #[must_use]
@@ -333,6 +347,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
         Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
         Some(BuiltinType::LocalPid) => Some(BuiltinNamedType::LocalPid),
         Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
+        Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
         Some(
             BuiltinType::Option
             | BuiltinType::Result
@@ -368,12 +383,8 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::NarrowError
             | BuiltinType::CloseError
             | BuiltinType::Iterator
-            | BuiltinType::String
-            | BuiltinType::Map
-            | BuiltinType::Char
             | BuiltinType::Unit
             | BuiltinType::Duration
-            | BuiltinType::Float
             | BuiltinType::Trap,
         )
         | None => None,
@@ -432,6 +443,10 @@ impl BuiltinMethodSigTemplate {
             },
             Self::ReturnUnit => FnSig {
                 return_type: Ty::Unit,
+                ..FnSig::default()
+            },
+            Self::ReturnBool => FnSig {
+                return_type: Ty::Bool,
                 ..FnSig::default()
             },
             Self::ReturnContainerOfString => FnSig {
@@ -534,7 +549,11 @@ pub fn builtin_type_def(kind: BuiltinNamedType) -> &'static TypeDef {
                     TypeDef {
                         kind: TypeDefKind::Struct,
                         name: info.canonical_name.to_string(),
-                        type_params: vec!["T".to_string()],
+                        type_params: if info.kind == BuiltinNamedType::CancellationToken {
+                            Vec::new()
+                        } else {
+                            vec!["T".to_string()]
+                        },
                         fields: HashMap::new(),
                         variants: HashMap::new(),
                         methods: builtin_method_sigs(info.kind).clone(),

@@ -757,3 +757,135 @@ machine Combined<T: Resource> where T: Display {
         "AST structural inequality after round-trip\n--- formatted ---\n{formatted}"
     );
 }
+
+// ── W3.039 Stage 1: const-generic machine parameters ───────────────────
+
+fn first_machine_named<'a>(
+    program: &'a hew_parser::ast::Program,
+    name: &str,
+) -> &'a hew_parser::ast::MachineDecl {
+    program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            hew_parser::ast::Item::Machine(m) if m.name == name => Some(m),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("machine `{name}` should parse"))
+}
+
+#[test]
+fn machine_const_param_minimal_parses() {
+    let src = r"machine M<const N: usize> {
+    state S;
+    event E;
+    on E: S -> S { S }
+}
+";
+    let r = hew_parser::parse(src);
+    assert!(r.errors.is_empty(), "parse errors: {:?}", r.errors);
+    let m = first_machine_named(&r.program, "M");
+    assert!(m.type_params.is_empty(), "expected no type params");
+    assert_eq!(m.const_params.len(), 1);
+    assert_eq!(m.const_params[0].name, "N");
+    assert!(matches!(
+        m.const_params[0].ty,
+        hew_parser::ast::ConstParamTy::Usize
+    ));
+    assert_eq!(m.const_params[0].default, None);
+}
+
+#[test]
+fn machine_const_param_with_default_parses() {
+    let src = r"machine M<const N: usize = 16> {
+    state S;
+    event E;
+    on E: S -> S { S }
+}
+";
+    let r = hew_parser::parse(src);
+    assert!(r.errors.is_empty(), "parse errors: {:?}", r.errors);
+    let m = first_machine_named(&r.program, "M");
+    assert_eq!(m.const_params.len(), 1);
+    assert_eq!(m.const_params[0].default, Some(16));
+}
+
+#[test]
+fn machine_mixed_type_and_const_params_parses() {
+    let src = r"machine M<T, const N: usize> {
+    state S { val: T; }
+    event E;
+    on E: S -> S { S { val: event.val } }
+}
+";
+    let r = hew_parser::parse(src);
+    assert!(r.errors.is_empty(), "parse errors: {:?}", r.errors);
+    let m = first_machine_named(&r.program, "M");
+    assert_eq!(m.type_params.len(), 1);
+    assert_eq!(m.type_params[0].name, "T");
+    assert_eq!(m.const_params.len(), 1);
+    assert_eq!(m.const_params[0].name, "N");
+}
+
+#[test]
+fn machine_const_param_rejects_non_usize_width() {
+    let src = r"machine M<const N: i32> {
+    state S;
+    event E;
+    on E: S -> S { S }
+}
+";
+    let r = hew_parser::parse(src);
+    assert!(
+        !r.errors.is_empty(),
+        "expected diagnostic for non-usize const-param width"
+    );
+    let msg = format!("{:?}", r.errors);
+    assert!(
+        msg.contains("only `usize` is supported"),
+        "expected usize-only diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn machine_const_param_rejects_const_before_type_param() {
+    let src = r"machine M<const N: usize, T> {
+    state S;
+    event E;
+    on E: S -> S { S }
+}
+";
+    let r = hew_parser::parse(src);
+    assert!(
+        !r.errors.is_empty(),
+        "expected diagnostic for type-param after const-param"
+    );
+}
+
+#[test]
+fn machine_const_param_round_trips_through_formatter() {
+    let src = r"machine M<T, const N: usize = 16> {
+    state S { val: T; }
+    event E;
+    on E: S -> S { S { val: event.val } }
+}
+";
+    let r = hew_parser::parse(src);
+    assert!(r.errors.is_empty(), "parse errors: {:?}", r.errors);
+    let formatted = hew_parser::fmt::format_program(&r.program);
+    assert!(
+        formatted.contains("const N: usize = 16"),
+        "formatter must emit const param: {formatted}"
+    );
+    let r2 = hew_parser::parse(&formatted);
+    assert!(
+        r2.errors.is_empty(),
+        "reparse errors: {:?}\n---\n{}",
+        r2.errors,
+        formatted
+    );
+    assert!(
+        hew_parser::ast_eq::program_eq_ignoring_spans(&r.program, &r2.program),
+        "round-trip AST mismatch:\n{formatted}"
+    );
+}

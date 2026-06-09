@@ -140,6 +140,7 @@ impl ValueClass {
             | ResolvedTy::Bytes
             | ResolvedTy::Array(_, _)
             | ResolvedTy::Tuple(_) => Self::CowValue,
+            ResolvedTy::CancellationToken => Self::AffineResource,
             ResolvedTy::Slice(_) | ResolvedTy::Pointer { .. } => Self::View,
             ResolvedTy::Function { .. }
             | ResolvedTy::Closure { .. }
@@ -276,6 +277,7 @@ fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedType
         | ResolvedTy::Char
         | ResolvedTy::String
         | ResolvedTy::Bytes
+        | ResolvedTy::CancellationToken
         | ResolvedTy::Duration
         | ResolvedTy::Unit
         | ResolvedTy::Never => {}

@@ -1,0 +1,15 @@
+// W3.013 S0 verify: full range-slice `xs[..]` on Vec<i32>.
+//
+// Both endpoints open: MIR emits ConstI64(0) for start and hew_vec_len(vec)
+// for end. Produces an independent copy of the entire vector.
+//
+// xs = [10, 20, 30]
+// xs[..] = [10, 20, 30]  →  len = 3  →  exit 3
+fn main() -> i64 {
+    let xs: Vec<i32> = Vec::new();
+    xs.push(10);
+    xs.push(20);
+    xs.push(30);
+    let s: Vec<i32> = xs[..];
+    s.len()
+}

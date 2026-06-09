@@ -83,7 +83,15 @@ fn catalog_runtime_symbols_are_classified() {
             // MLIR/LLVM backend ops. CalleeNameDispatchOnly entries are
             // intercepted in codegen by callee name and never declare an LLVM
             // extern of their own. Always considered classified.
-            BuiltinLinkage::CompilerIntrinsic { .. } | BuiltinLinkage::CalleeNameDispatchOnly => {
+            // CompilerIntrinsic / CalleeNameDispatchOnly entries do not name a
+            // C-ABI symbol exposed at the JIT host boundary; LayoutDescriptorSymbol
+            // entries name `#[no_mangle] pub static` descriptors in
+            // `hew-runtime/src/layout_intrinsics.rs`, not extern "C" fns, and the
+            // JIT-symbol-classification gate only enumerates fn exports (see
+            // `scripts/verify-ffi-symbols.py:4`). All three are out of scope here.
+            BuiltinLinkage::CompilerIntrinsic { .. }
+            | BuiltinLinkage::CalleeNameDispatchOnly
+            | BuiltinLinkage::LayoutDescriptorSymbol { .. } => {
                 continue;
             }
             // NodeRegisterByPid declares two C-ABI symbols; check both.

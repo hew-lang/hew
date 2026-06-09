@@ -87,7 +87,12 @@ NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES)
 # Sanitizer targets for the Rust runtime. The dedicated codegen sanitizer
 # lane was retired together with the C++/MLIR subtree; the runtime ASan
 # and TSan lanes here remain as local entry points for nightly coverage.
-SANITIZER_RUST_TARGET ?= x86_64-unknown-linux-gnu
+#
+# Default to the host triple so `make asan` works on any sanitizer-capable
+# host (darwin-arm64, linux-x86_64, ...).  Nightly CI invokes `cargo +nightly
+# test --target x86_64-unknown-linux-gnu` directly rather than via `make
+# asan`, so changing this default does not affect the CI lane.
+SANITIZER_RUST_TARGET ?= $(HOST_TRIPLE)
 RUNTIME_ASAN_TARGET_DIR := target/sanitizer-runtime-asan
 RUNTIME_TSAN_TARGET_DIR := target/sanitizer-runtime-tsan
 FUZZ_TARGETS := fuzz_parse fuzz_lex fuzz_structured fuzz_machine fuzz_check fuzz_mir
@@ -477,10 +482,19 @@ asan:
 	CARGO_TARGET_DIR=$(RUNTIME_ASAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes" \
 	ASAN_OPTIONS="detect_leaks=1" \
+	LSAN_OPTIONS="suppressions=$(CURDIR)/hew-runtime/lsan.supp" \
 	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib
 
 # Nightly rust-runtime TSan command (Linux/nightly toolchain required).
+#
+# TSan is not currently supported on darwin-arm64 by the upstream Rust
+# nightly toolchain (build-std + TSan link failures, mirrored by the
+# nightly-sanitizers.yml advisory lane).  Skip with a clear message so
+# the make target is a usable signal rather than a confusing failure.
 tsan:
+ifeq ($(shell uname -sm),Darwin arm64)
+	@echo "tsan: skipped on darwin-arm64 (upstream Rust nightly TSan not supported on this target — see nightly-sanitizers.yml rust-runtime-tsan advisory lane)"
+else
 	CARGO_TARGET_DIR=$(RUNTIME_TSAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=thread -Cforce-frame-pointers=yes" \
 	TSAN_OPTIONS="halt_on_error=1" \
@@ -490,6 +504,7 @@ tsan:
 		--no-default-features \
 		--lib \
 		-- --test-threads=1
+endif
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 

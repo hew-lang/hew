@@ -5,6 +5,7 @@ use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy, VariantMatch};
 use hew_types::{NumericMethodFamily, NumericMethodOp, NumericSignedness, NumericWidth};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
+use crate::mono::MachineMonoEntry;
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
 use crate::value_class::{ResourceMarker, TypeClassTable};
 use crate::{IntentKind, ValueClass};
@@ -95,6 +96,31 @@ pub struct HirModule {
     /// LESSONS: `producer-bridge-before-codegen` (P1),
     /// `checker-authority` (P0).
     pub enum_layouts: Vec<EnumLayout>,
+    /// Distinct machine-type instantiations discovered by the dedicated
+    /// post-function-mono pass
+    /// ([`crate::machine_mono::run_machine_mono_pass`]). Populated after
+    /// `monomorphisations` is closed under substitution, before MIR
+    /// layout build.
+    ///
+    /// Per the R246 uniform-path ratification: every machine
+    /// declaration produces at least one entry — monomorphic machines
+    /// (no type params) get a single entry with empty `type_args`,
+    /// generic machines get one entry per concrete `(type_args,
+    /// const_args)` reach-through observed in the substituted-body
+    /// walk (annotations, struct-state inits, ctor forms,
+    /// spawn-target machines).
+    ///
+    /// Insertion-ordered for deterministic codegen. Downstream MIR
+    /// (W3.033c Stage 3) and codegen (Stage 4) iterate this list to
+    /// emit one `MachineLayout` per entry under the mangled name.
+    ///
+    /// Empty when the program contains no machine declarations.
+    /// `const_args` is empty on every entry until W3.039 Stage 3
+    /// populates the slot with constexpr-evaluated values.
+    ///
+    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// `checker-authority` (P0).
+    pub machine_instantiations: Vec<MachineMonoEntry>,
     /// Per-field-access `SiteId` → `ChildSlot` for supervisor child accessor
     /// expressions. Populated during HIR lowering from the checker's
     /// `supervisor_child_slots` side-table (keyed by span) by translating each
@@ -1157,6 +1183,14 @@ pub enum HirExprKind {
         signedness: NumericSignedness,
         width: NumericWidth,
     },
+    /// `CancellationToken.is_cancelled() -> bool`.
+    ///
+    /// The checker records this as a structured intrinsic so frontend lowering
+    /// carries the token value; codegen consumes the variant directly and emits
+    /// the borrowing `hew_cancel_token_is_requested` runtime call.
+    CancellationTokenIsCancelled {
+        receiver: Box<HirExpr>,
+    },
     /// `emit EventName { field: value, ... }` inside a machine transition body,
     /// entry block, or exit block.
     ///
@@ -1435,6 +1469,23 @@ pub enum HirMatchArmPredicate {
     },
 }
 
+/// Literal predicate applied to a constructor payload slot after the outer
+/// enum tag matches.
+///
+/// Stage 1 records these predicates in HIR so the parser/checker/HIR boundary
+/// no longer rejects `Some(0)` or `Pair(x, 42)`. MIR lowering remains
+/// fail-closed until the follow-on match-destructure stages wire the actual
+/// payload comparisons.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirPayloadPredicate {
+    /// 0-based payload slot within the matched variant.
+    pub field_idx: u32,
+    /// Literal value that the payload slot must equal.
+    pub literal: HirLiteral,
+    /// Checker-resolved payload type for diagnostics and future MIR lowering.
+    pub ty: ResolvedTy,
+}
+
 /// One arm of an `HirExprKind::Match` expression.
 ///
 /// `predicate` encodes the arm's matching condition as an explicit enum,
@@ -1444,8 +1495,10 @@ pub enum HirMatchArmPredicate {
 /// arms use `HirMatchArmPredicate::Regex`.
 ///
 /// Payload-bearing constructor patterns carry their per-field bindings in
-/// `bindings`; guards still never produce a `HirMatchArm` and are rejected at
-/// HIR lowering with a structured diagnostic.
+/// `bindings`. Literal payload subpatterns carry their per-field checks in
+/// `payload_predicates`; this vector is empty for older constructor shapes.
+/// Guards still never produce a `HirMatchArm` and are rejected at HIR lowering
+/// with a structured diagnostic.
 ///
 /// `body` is the arm's right-hand-side expression. The arm's source span
 /// is preserved for diagnostics.
@@ -1455,6 +1508,9 @@ pub struct HirMatchArm {
     pub predicate: HirMatchArmPredicate,
     /// Payload bindings introduced by this arm's constructor pattern.
     pub bindings: Vec<HirMatchArmBinding>,
+    /// Literal checks for constructor payload fields, evaluated after the
+    /// outer tag check and before the arm body.
+    pub payload_predicates: Vec<HirPayloadPredicate>,
     /// Arm body expression. Evaluates only when this arm's predicate wins.
     pub body: HirExpr,
     /// Source span of the arm (pattern through body).

@@ -112,6 +112,13 @@ tracing-subscriber.workspace = true
 ureq = { version = "3", default-features = false }
 # For profiler server JSON-escape unit tests
 serde_json.workspace = true
+# Microbenchmarks for the HashMap layout-kernel (Stage C0a baseline + regression
+# signal for Stage C/D). Harness is disabled per bench; see benches/.
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "hashmap_layout_kernel"
+harness = false
 
 # Property-based testing for the deterministic SimTransport (HEW-DIST-SPEC §14
 # invariants). Dev-only — never linked into release runtime builds. Scoped to

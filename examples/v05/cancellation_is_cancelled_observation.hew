@@ -1,0 +1,38 @@
+extern "rt" {
+    fn hew_task_scope_new() -> *mut i64;
+    fn hew_task_scope_cancel_token(scope_handle: *mut i64) -> *mut i64;
+    fn hew_cancel_token_new_child(parent: *mut i64) -> CancellationToken;
+    fn hew_cancel_token_cancel(token_handle: *mut i64, reason: i32);
+    fn hew_task_scope_destroy(scope_handle: *mut i64);
+}
+
+fn main() -> i64 {
+    let scope_handle: *mut i64 = unsafe {
+        hew_task_scope_new()
+    };
+    let parent_token: *mut i64 = unsafe {
+        hew_task_scope_cancel_token(scope_handle)
+    };
+    let token: CancellationToken = unsafe {
+        hew_cancel_token_new_child(parent_token)
+    };
+
+    let initially_cancelled: bool = token.is_cancelled();
+    unsafe {
+        hew_cancel_token_cancel(parent_token, 7);
+    }
+    let cancelled_after_signal: bool = token.is_cancelled();
+
+    let exit_code: i64 = if initially_cancelled {
+        99
+    } else if cancelled_after_signal {
+        17
+    } else {
+        42
+    };
+
+    unsafe {
+        hew_task_scope_destroy(scope_handle);
+    }
+    return exit_code;
+}

@@ -1038,6 +1038,7 @@ impl Checker {
             | Ty::Char
             | Ty::String
             | Ty::Bytes
+            | Ty::CancellationToken
             | Ty::Duration
             | Ty::Unit
             | Ty::Never

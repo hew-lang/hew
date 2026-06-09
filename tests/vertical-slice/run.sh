@@ -684,6 +684,53 @@ run_accept_expect_status "generic_user_record_bitcopy" 42
 # equality kernel reports the correct membership.
 run_accept_expect_status "vec_aggregate_contains" 0
 
+# ---------------------------------------------------------------------------
+# W3.004 — Vec::new turbofish + W3.013 — Vec range-slice sugar
+# ---------------------------------------------------------------------------
+
+# Accept (S0): Vec<i32> with type ascription (no turbofish) — confirms range-slice
+# infrastructure baseline.  Exit 0 = empty vec created, no panic.
+run_accept_expect_status "vec_new_ascription" 0
+
+# Accept (S0): closed range slice `v[1..3]` returns a new Vec<i32> of length 2.
+# Exit 2 = pop from the slice result.
+run_accept_expect_status "vec_range_slice_closed" 2
+
+# Accept (S0): open-left range slice `v[..2]` — first two elements.
+# Exit 3 = first element of the slice result.
+run_accept_expect_status "vec_range_slice_open_left" 3
+
+# Accept (S0): open-right range slice `v[1..]` — all but first element.
+# Exit 4 = first element of the slice result.
+run_accept_expect_status "vec_range_slice_open_right" 4
+
+# Accept (S0): full-range slice `v[..]` — clone of the whole vec.
+# Exit 3 = length of the clone.
+run_accept_expect_status "vec_range_slice_full" 3
+
+# Accept (S0): inclusive range slice `v[0..=2]` — three elements.
+# Exit 3 = length of the result.
+run_accept_expect_status "vec_range_slice_inclusive" 3
+
+# Accept (S1): Vec::<i64>::new() turbofish syntax with type annotation. Exit 0.
+run_accept_expect_status "vec_new_turbofish_type" 0
+
+# Accept (S1): Vec::<i64>::new() turbofish with push/pop chain. Exit 7.
+run_accept_expect_status "vec_new_turbofish_method" 7
+
+# Accept (S1): Vec<i64> push/pop/get/contains via catalog entries. Exit 10.
+run_accept_expect_status "vec_i64_basic" 10
+
+# Reject (S1): Vec::<i64, i32>::new() turbofish arity mismatch — Vec takes exactly
+# 1 type argument; supplying 2 must produce a clear diagnostic.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/vec_new_turbofish_arity_mismatch.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "W3.004: expected vec_new_turbofish_arity_mismatch to fail" >&2
+  exit 1
+fi
+grep -q 'takes 1 type argument but 2 were supplied' "${reject_output}"
+
 # Reject: concrete generic user aggregate with a heap-owning string field.
 if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/user_record_non_bitcopy.hew" \
@@ -876,3 +923,11 @@ if [[ "${run_status}" -ne 7 ]]; then
   echo "W3.025: hew run multi-file: expected exit 7, got ${run_status}" >&2
   exit 1
 fi
+
+# W3.041b: native-only layout-keyed HashMap/HashSet run-pass. WASM is
+# deliberately covered by the codegen fail-closed substrate gate for
+# hew_hashmap_*_layout / hew_hashset_*_layout.
+(
+  ulimit -v 524288
+  timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashmap_run_pass.hew"
+)

@@ -6,10 +6,14 @@ use super::*;
 use crate::builtin_names::BuiltinNamedType;
 use crate::check::admissibility::compute_copy_record_layout;
 use crate::check::calls::SignatureArgApplication;
+use crate::check::dispatch::{
+    resolve_method_call, Bound, CallAbiHint, ImplDef, ImplRegistry, LookupError, MethodTarget,
+    RuntimeAbi, TyPattern,
+};
 use crate::hash_eligibility::{ty_is_hash_eligible, HashEligibility};
 use crate::lowering_facts::{
     hashmap_layout_key_fact, hashmap_layout_key_layout_value_fact, hashset_layout_fact,
-    HashMapValueType,
+    HashMapKeyType, HashMapValueType,
 };
 use crate::method_resolution::{
     collect_method_sigs_for_receiver, lookup_builtin_method_sig,
@@ -2109,6 +2113,241 @@ impl Checker {
         self.errors.len() == err_before
     }
 
+    fn dispatch_primitive_pattern_name(ty: &Ty) -> Option<&'static str> {
+        Some(match ty {
+            Ty::I8 => "i8",
+            Ty::I16 => "i16",
+            Ty::I32 | Ty::IntLiteral => "i32",
+            Ty::I64 => "i64",
+            Ty::U8 => "u8",
+            Ty::U16 => "u16",
+            Ty::U32 => "u32",
+            Ty::U64 => "u64",
+            Ty::Isize => "isize",
+            Ty::Usize => "usize",
+            Ty::F32 => "f32",
+            Ty::F64 | Ty::FloatLiteral => "f64",
+            Ty::Bool => "bool",
+            Ty::Char => "char",
+            Ty::String => "String",
+            Ty::Bytes => "bytes",
+            Ty::Duration => "duration",
+            Ty::Unit => "()",
+            Ty::Never => "!",
+            Ty::CancellationToken => "CancellationToken",
+            Ty::Var(_)
+            | Ty::Tuple(_)
+            | Ty::Array(_, _)
+            | Ty::Slice(_)
+            | Ty::Named { .. }
+            | Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::Pointer { .. }
+            | Ty::TraitObject { .. }
+            | Ty::Task(_)
+            | Ty::AssocType { .. }
+            | Ty::Error => return None,
+        })
+    }
+
+    fn ty_to_dispatch_pattern(&self, ty: &Ty) -> TyPattern {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if let Some(name) = Self::dispatch_primitive_pattern_name(&resolved) {
+            return TyPattern::Primitive(name.to_string());
+        }
+        match resolved {
+            Ty::Tuple(items) => TyPattern::Tuple(
+                items
+                    .iter()
+                    .map(|item| self.ty_to_dispatch_pattern(item))
+                    .collect(),
+            ),
+            Ty::Named { name, args, .. } => {
+                if args.is_empty() {
+                    TyPattern::Primitive(name)
+                } else {
+                    TyPattern::App {
+                        ctor: name,
+                        args: args
+                            .iter()
+                            .map(|arg| self.ty_to_dispatch_pattern(arg))
+                            .collect(),
+                    }
+                }
+            }
+            other => TyPattern::Primitive(other.user_facing().to_string()),
+        }
+    }
+
+    fn dispatch_pattern_to_ty(pattern: &TyPattern) -> Ty {
+        match pattern {
+            TyPattern::Primitive(name) => match name.as_str() {
+                "i8" => Ty::I8,
+                "i16" => Ty::I16,
+                "i32" => Ty::I32,
+                "i64" => Ty::I64,
+                "u8" => Ty::U8,
+                "u16" => Ty::U16,
+                "u32" => Ty::U32,
+                "u64" => Ty::U64,
+                "isize" => Ty::Isize,
+                "usize" => Ty::Usize,
+                "f32" => Ty::F32,
+                "f64" => Ty::F64,
+                "bool" => Ty::Bool,
+                "char" => Ty::Char,
+                "String" => Ty::String,
+                "bytes" => Ty::Bytes,
+                "duration" => Ty::Duration,
+                "()" => Ty::Unit,
+                "!" => Ty::Never,
+                other => Ty::Named {
+                    builtin: None,
+                    name: other.to_string(),
+                    args: vec![],
+                },
+            },
+            TyPattern::App { ctor, args } => Ty::Named {
+                builtin: match ctor.as_str() {
+                    "HashMap" => Some(BuiltinType::HashMap),
+                    "HashSet" => Some(BuiltinType::HashSet),
+                    _ => None,
+                },
+                name: ctor.clone(),
+                args: args.iter().map(Self::dispatch_pattern_to_ty).collect(),
+            },
+            TyPattern::Tuple(items) => {
+                Ty::Tuple(items.iter().map(Self::dispatch_pattern_to_ty).collect())
+            }
+            TyPattern::Var(name) => Ty::Named {
+                builtin: None,
+                name: name.clone(),
+                args: vec![],
+            },
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Stage-B transitional registry spells out every HashMap/HashSet method target"
+    )]
+    fn collection_dispatch_registry() -> ImplRegistry {
+        collection_dispatch_registry_impl()
+    }
+
+    fn record_resolved_collection_call(
+        &mut self,
+        trait_name: &str,
+        method: &str,
+        receiver: &TyPattern,
+        span: &Span,
+    ) {
+        let registry = Self::collection_dispatch_registry();
+        let resolved =
+            resolve_method_call(&registry, trait_name, method, receiver, &|marker, ty| {
+                let ty = Self::dispatch_pattern_to_ty(ty);
+                self.registry.implements_marker(&ty, marker)
+            });
+        match resolved {
+            Ok(call) => {
+                // Transitional dual-emit: legacy admission still owns user-visible diagnostics;
+                // remove once a production reader of resolved_calls lands.
+                self.resolved_calls.insert(SpanKey::from(span), call);
+            }
+            Err(LookupError::BoundsNotSatisfied { .. }) => {
+                // Deferred Named-record admissibility may still reject after
+                // full hash-eligibility runs. Do not publish a ResolvedCall
+                // before that legacy allowlist has finally accepted the site.
+            }
+            Err(err) => {
+                panic!(
+                    "collection resolver disagreed with legacy allowlist for `{trait_name}::{method}` on `{receiver:?}`: {err}"
+                );
+            }
+        }
+    }
+
+    fn record_resolved_hashmap_call(
+        &mut self,
+        method: &str,
+        key_ty: &Ty,
+        val_ty: &Ty,
+        span: &Span,
+    ) {
+        let receiver = TyPattern::App {
+            ctor: "HashMap".to_string(),
+            args: vec![
+                self.ty_to_dispatch_pattern(key_ty),
+                self.ty_to_dispatch_pattern(val_ty),
+            ],
+        };
+        self.record_resolved_collection_call("Map", method, &receiver, span);
+    }
+
+    fn record_resolved_hashset_call(&mut self, method: &str, elem_ty: &Ty, span: &Span) {
+        let receiver = TyPattern::App {
+            ctor: "HashSet".to_string(),
+            args: vec![self.ty_to_dispatch_pattern(elem_ty)],
+        };
+        self.record_resolved_collection_call("Set", method, &receiver, span);
+    }
+
+    /// Resolve the runtime C-ABI symbol for a `HashMap` method whose key type
+    /// has been admitted as a `Named` record (the layout-key ABI path).
+    ///
+    /// Returns the matching `hew_hashmap_<method>_layout` symbol when the
+    /// resolved key type is `HashMapKeyType::Layout`.  Scalar `i64`/`u64` keys
+    /// route through a different (currently unwired) scalar ABI and return
+    /// `None` here — those callers fall through with no rewrite recorded.
+    ///
+    /// This helper does **not** consult the value type: the layout-keyed
+    /// runtime entry points accept any admitted value type via the same
+    /// pointer-of-blob calling convention.  Value-type admissibility is
+    /// enforced separately by `validate_hashmap_owned_element_types`.
+    fn resolve_hashmap_runtime_symbol(
+        &mut self,
+        method: &str,
+        key_ty: &Ty,
+    ) -> Option<&'static str> {
+        let resolved_key = self.subst.resolve(key_ty);
+        if !matches!(
+            HashMapKeyType::from_ty(&resolved_key),
+            Ok(HashMapKeyType::Layout)
+        ) {
+            return None;
+        }
+        Some(match method {
+            "insert" => "hew_hashmap_insert_layout",
+            "get" => "hew_hashmap_get_layout",
+            "contains_key" => "hew_hashmap_contains_key_layout",
+            "remove" => "hew_hashmap_remove_layout",
+            "len" => "hew_hashmap_len_layout",
+            _ => return None,
+        })
+    }
+
+    /// Resolve the runtime C-ABI symbol for a `HashSet` method whose element
+    /// type has been admitted as a `Named` record (the layout element ABI
+    /// path).  Returns `None` for non-`Named` elements (string/scalar paths
+    /// route through a different, currently unwired, ABI).
+    fn resolve_hashset_runtime_symbol(
+        &mut self,
+        method: &str,
+        elem_ty: &Ty,
+    ) -> Option<&'static str> {
+        let resolved = self.subst.resolve(elem_ty);
+        if !matches!(resolved, Ty::Named { .. }) {
+            return None;
+        }
+        Some(match method {
+            "insert" => "hew_hashset_insert_layout",
+            "contains" => "hew_hashset_contains_layout",
+            "remove" => "hew_hashset_remove_layout",
+            "len" => "hew_hashset_len_layout",
+            _ => return None,
+        })
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "HashMap has multiple methods plus ABI-boundary validation"
@@ -2142,6 +2381,10 @@ impl Checker {
                 if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
                 }
+                self.record_resolved_hashmap_call("insert", &key_ty, &val_ty, span);
+                if let Some(c_symbol) = self.resolve_hashmap_runtime_symbol("insert", &key_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Unit
             }
             "get" => {
@@ -2152,6 +2395,10 @@ impl Checker {
                 }
                 if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
+                }
+                self.record_resolved_hashmap_call("get", &key_ty, &val_ty, span);
+                if let Some(c_symbol) = self.resolve_hashmap_runtime_symbol("get", &key_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 Ty::option(val_ty)
             }
@@ -2164,6 +2411,10 @@ impl Checker {
                 if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
                 }
+                self.record_resolved_hashmap_call("remove", &key_ty, &val_ty, span);
+                if let Some(c_symbol) = self.resolve_hashmap_runtime_symbol("remove", &key_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Bool
             }
             "contains_key" => {
@@ -2174,6 +2425,11 @@ impl Checker {
                 }
                 if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
+                }
+                self.record_resolved_hashmap_call("contains_key", &key_ty, &val_ty, span);
+                if let Some(c_symbol) = self.resolve_hashmap_runtime_symbol("contains_key", &key_ty)
+                {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 Ty::Bool
             }
@@ -2205,6 +2461,10 @@ impl Checker {
             "len" => {
                 if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
+                }
+                self.record_resolved_hashmap_call("len", &key_ty, &val_ty, span);
+                if let Some(c_symbol) = self.resolve_hashmap_runtime_symbol("len", &key_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 Ty::I64
             }
@@ -2264,6 +2524,10 @@ impl Checker {
                     return Ty::Error;
                 }
                 self.record_hashset_lowering_fact(span, &elem_ty);
+                self.record_resolved_hashset_call("insert", &elem_ty, span);
+                if let Some(c_symbol) = self.resolve_hashset_runtime_symbol("insert", &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Bool
             }
             "contains" | "remove" => {
@@ -2277,6 +2541,10 @@ impl Checker {
                     return Ty::Error;
                 }
                 self.record_hashset_lowering_fact(span, &elem_ty);
+                self.record_resolved_hashset_call(method, &elem_ty, span);
+                if let Some(c_symbol) = self.resolve_hashset_runtime_symbol(method, &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::Bool
             }
             "clone" => {
@@ -2296,6 +2564,10 @@ impl Checker {
                     return Ty::Error;
                 }
                 self.record_hashset_lowering_fact(span, &elem_ty);
+                self.record_resolved_hashset_call("len", &elem_ty, span);
+                if let Some(c_symbol) = self.resolve_hashset_runtime_symbol("len", &elem_ty) {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
                 Ty::I64
             }
             "is_empty" => {
@@ -3128,6 +3400,27 @@ impl Checker {
         }
 
         match (&resolved, method) {
+            (Ty::CancellationToken, "is_cancelled") => {
+                self.check_arity(args, 0, "`CancellationToken.is_cancelled`", span);
+                self.record_method_call_rewrite(
+                    span,
+                    MethodCallRewrite::CancellationTokenIsCancelled,
+                );
+                Ty::Bool
+            }
+            (Ty::CancellationToken, _) => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on `CancellationToken`"),
+                    self.similar_methods(&resolved, method),
+                );
+                Ty::Error
+            }
             // Vec methods
             (
                 Ty::Named {
@@ -4603,6 +4896,153 @@ impl Checker {
     }
 }
 
+/// Test/inspection accessor for the Stage B `HashMap` / `HashSet` dispatch
+/// registry seed (W4.001 Stage B). Returns the same `ImplRegistry` the
+/// checker consumes internally; exposed so the
+/// `resolved_call_kernel_symbols` and `resolved_call_hashmap_scalar_k_unit`
+/// gates can enumerate `MethodTarget.symbol_name` strings without
+/// constructing a full typecheck pipeline.
+///
+/// **Stable across C0b only.** This accessor exists for the duration of
+/// the Stage B transitional registry; it dies with that registry at
+/// Stage C (DI-017 combined-commit).
+#[must_use]
+#[doc(hidden)]
+pub fn collection_dispatch_registry_for_tests() -> ImplRegistry {
+    collection_dispatch_registry_impl()
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "Stage-B transitional registry spells out every HashMap/HashSet method target"
+)]
+fn collection_dispatch_registry_impl() -> ImplRegistry {
+    let mut registry = ImplRegistry::new();
+    let hashmap_pattern = TyPattern::App {
+        ctor: "HashMap".to_string(),
+        args: vec![
+            TyPattern::Var("K".to_string()),
+            TyPattern::Var("V".to_string()),
+        ],
+    };
+    registry.register(ImplDef {
+        trait_name: "Map".to_string(),
+        self_pattern: hashmap_pattern,
+        where_bounds: vec![
+            Bound {
+                trait_name: MarkerTrait::Hash,
+                var: "K".to_string(),
+            },
+            Bound {
+                trait_name: MarkerTrait::Eq,
+                var: "K".to_string(),
+            },
+        ],
+        methods: vec![
+            (
+                "insert".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_insert_layout".to_string(),
+                    abi: RuntimeAbi::ByRefMut,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "get".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_get_layout".to_string(),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "contains_key".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_contains_key_layout".to_string(),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "remove".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_remove_layout".to_string(),
+                    abi: RuntimeAbi::ByRefMut,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "len".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_len_layout".to_string(),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+        ],
+    });
+    registry.register(ImplDef {
+        trait_name: "Set".to_string(),
+        self_pattern: TyPattern::App {
+            ctor: "HashSet".to_string(),
+            args: vec![TyPattern::Var("T".to_string())],
+        },
+        where_bounds: vec![
+            Bound {
+                trait_name: MarkerTrait::Hash,
+                var: "T".to_string(),
+            },
+            Bound {
+                trait_name: MarkerTrait::Eq,
+                var: "T".to_string(),
+            },
+        ],
+        methods: vec![
+            (
+                "insert".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashset_insert_layout".to_string(),
+                    abi: RuntimeAbi::ByRefMut,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "contains".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashset_contains_layout".to_string(),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "remove".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashset_remove_layout".to_string(),
+                    abi: RuntimeAbi::ByRefMut,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "len".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashset_len_layout".to_string(),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+        ],
+    });
+    registry
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4928,6 +5368,99 @@ mod tests {
             "finalize_vec_admission must emit InferenceFailed for an unresolved \
              Ty::Var element; got: {:?}",
             checker.errors
+        );
+    }
+
+    // ── HashMap/HashSet layout-symbol rewrite recording ──────────────────────
+
+    /// `resolve_hashmap_runtime_symbol("insert", Named)` must return
+    /// `Some("hew_hashmap_insert_layout")` and recording that rewrite must
+    /// populate `method_call_rewrites` with the matching
+    /// `MethodCallRewrite::RewriteToFunction`.
+    ///
+    /// This pins the checker-side of the rewrite pipeline for layout-keyed
+    /// `HashMap` operations introduced in this slice.
+    #[test]
+    fn check_hashmap_method_records_insert_rewrite_for_layout_key() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 200..210;
+
+        // A Named type → HashMapKeyType::Layout → symbol = "hew_hashmap_insert_layout"
+        let key_ty = Ty::Named {
+            builtin: None,
+            name: "Point".to_string(),
+            args: vec![],
+        };
+
+        let symbol = checker.resolve_hashmap_runtime_symbol("insert", &key_ty);
+        assert_eq!(
+            symbol,
+            Some("hew_hashmap_insert_layout"),
+            "resolve_hashmap_runtime_symbol(\"insert\", Named) must return \
+             Some(\"hew_hashmap_insert_layout\")"
+        );
+
+        // Simulate what check_hashmap_method calls at the insert site.
+        if let Some(c_symbol) = symbol {
+            checker.record_runtime_method_call_rewrite(&span, c_symbol);
+        }
+
+        let key = SpanKey::from(&span);
+        assert!(
+            matches!(
+                checker.method_call_rewrites.get(&key),
+                Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
+                    if c_symbol == "hew_hashmap_insert_layout"
+            ),
+            "method_call_rewrites must contain \
+             RewriteToFunction {{ c_symbol: \"hew_hashmap_insert_layout\" }} \
+             after resolve + record; got: {:?}",
+            checker.method_call_rewrites.get(&key)
+        );
+    }
+
+    /// `resolve_hashset_runtime_symbol("insert", Named)` must return
+    /// `Some("hew_hashset_insert_layout")` and recording that rewrite must
+    /// populate `method_call_rewrites` with the matching
+    /// `MethodCallRewrite::RewriteToFunction`.
+    ///
+    /// This pins the checker-side of the rewrite pipeline for layout-backed
+    /// `HashSet` operations introduced in this slice.
+    #[test]
+    fn check_hashset_method_records_insert_rewrite_for_layout_elem() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 220..230;
+
+        // A Named type → matches!(resolved, Ty::Named { .. }) → symbol = "hew_hashset_insert_layout"
+        let elem_ty = Ty::Named {
+            builtin: None,
+            name: "Point".to_string(),
+            args: vec![],
+        };
+
+        let symbol = checker.resolve_hashset_runtime_symbol("insert", &elem_ty);
+        assert_eq!(
+            symbol,
+            Some("hew_hashset_insert_layout"),
+            "resolve_hashset_runtime_symbol(\"insert\", Named) must return \
+             Some(\"hew_hashset_insert_layout\")"
+        );
+
+        if let Some(c_symbol) = symbol {
+            checker.record_runtime_method_call_rewrite(&span, c_symbol);
+        }
+
+        let key = SpanKey::from(&span);
+        assert!(
+            matches!(
+                checker.method_call_rewrites.get(&key),
+                Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
+                    if c_symbol == "hew_hashset_insert_layout"
+            ),
+            "method_call_rewrites must contain \
+             RewriteToFunction {{ c_symbol: \"hew_hashset_insert_layout\" }} \
+             after resolve + record; got: {:?}",
+            checker.method_call_rewrites.get(&key)
         );
     }
 }

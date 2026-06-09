@@ -497,6 +497,7 @@ impl<'a> PackageEmitter<'a> {
                 )
             }
             Ty::Bytes
+            | Ty::CancellationToken
             | Ty::Var(_)
             | Ty::Pointer { .. }
             | Ty::TraitObject { .. }

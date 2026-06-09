@@ -80,7 +80,35 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_actor_monitor",
     "hew_actor_send_by_id",
     "hew_actor_spawn",
+    // --- Auto-injected mutex substrate  -----------------
+    // `hew_auto_mutex_alloc() -> *mut HewAutoMutex`
+    // (`hew-runtime/src/auto_mutex.rs`). Allocates one opaque mutex
+    // handle; the compiler emits one call per populated
+    // `ClosureEnvLayout::lock_slot_for` slot at closure-env /
+    // generator-state materialisation. Compiler-only emission per
+    // Per substrate decision ( no user-visible `Mutex<T>`).
+    "hew_auto_mutex_alloc",
+    // `hew_auto_mutex_free(mtx: *mut HewAutoMutex)` — frees one
+    // handle. Idempotent on null. The compiler emits this once per
+    // `_alloc` at env destructor time; the LIFO drop stream guarantees
+    // every `unlock` precedes the matching `free` for the same handle
+    // (release-before-free invariant).
+    "hew_auto_mutex_free",
+    // `hew_auto_mutex_lock(mtx: *mut HewAutoMutex)` — acquire. The
+    // compiler emits this immediately BEFORE each cross-suspend access
+    // of the shared capture; suspend points themselves sit OUTSIDE
+    // the bracket (avoids classic async-mutex deadlock).
+    "hew_auto_mutex_lock",
+    // `hew_auto_mutex_unlock(mtx: *mut HewAutoMutex)` — release. The
+    // compiler emits this immediately AFTER the access completes.
+    "hew_auto_mutex_unlock",
     // --- Cancellation-token retain/release (ABI pin) -------------
+    // `hew_cancel_token_is_requested(token: *mut HewCancellationToken) -> bool`
+    // (`hew-runtime/src/task_scope.rs:272`). Non-blocking poll: returns
+    // true if the token's cancel flag has been set. Generator cancel-poll
+    // and `CancellationToken.is_cancelled()` observation both emit this
+    // symbol; the observation call borrows the token and does not release it.
+    "hew_cancel_token_is_requested",
     // `hew_cancel_token_release(token: *mut HewCancellationToken) -> void`
     // (`hew-runtime/src/task_scope.rs`). Decrements the token's refcount;
     // frees when it reaches zero, releasing the parent reference recursively.

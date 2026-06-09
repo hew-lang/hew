@@ -1,0 +1,430 @@
+//! Async HTTP/1.1 client codec — idiomatic Hew over a suspending `net.Connection`.
+//!
+//! This is the `await`-suspended sibling of `std::net::http::http_client`
+//! (which uses a blocking native engine and cannot suspend an actor). The codec
+//! here is pure Hew: an actor handler (or any execution-context caller) connects
+//! with `net.connect`, writes an HTTP/1.1 request built by [`build_request`],
+//! then drives an **`await conn.read()` loop** that suspends the worker until the
+//! server replies — exactly the NEW-1 escapee shape. The accumulated bytes are
+//! parsed by [`parse_response`] into an [`AsyncResponse`] exposing the same
+//! `status()` / `body()` / `header()` / `content_type()` accessor surface as the
+//! blocking client's `Response`.
+//!
+//! Scope (v0.5.0): HTTP/1.1 only, fully-buffered bodies, one connection per
+//! request (`Connection: close`, read-to-close framing). Chunked transfer +
+//! streaming bodies are NEW-7; HTTPS is BUG-NET-3; connection pooling is v0.5.1.
+//!
+//! # Example (the await-suspended round trip, inline in a handler)
+//!
+//! ```
+//! import std::net;
+//! import std::net::http::http_async_client;
+//! import std::string;
+//!
+//! actor Fetcher {
+//!     let addr: string;   // "127.0.0.1:8080"
+//!     let path: string;   // "/hello"
+//!     let host: string;   // "127.0.0.1"
+//!     receive fn go(unused: i64) {
+//!         let conn = net.connect(addr);
+//!         conn.write_string(http_async_client.build_get(host, path));
+//!         var raw = "";
+//!         var reads = 0;
+//!         var done = false;
+//!         while !done {
+//!             let chunk = await conn.read_string();   // suspends the worker
+//!             reads = reads + 1;
+//!             if string.is_empty(chunk) {
+//!                 done = true;
+//!             } else {
+//!                 raw = raw + chunk;
+//!                 if http_async_client.response_over_limit(raw) {   // F2: fail closed
+//!                     done = true;
+//!                 }
+//!             }
+//!             if reads > http_async_client.MAX_READS {              // F2: read ceiling
+//!                 done = true;
+//!             }
+//!         }
+//!         let _ = conn.close();
+//!         let resp = http_async_client.parse_response(raw);
+//!         println(resp.body());
+//!     }
+//! }
+//! ```
+
+import std::string;
+
+// ── Hardening limits (fail-closed DoS bounds) ─────────────────────────
+/// Maximum bytes accepted in the response head (status line + headers). A head
+/// larger than this fails closed (`status == -1`) rather than buffering unbounded.
+pub const MAX_HEADER_BYTES: i64 = 65536;
+
+/// Maximum bytes accepted in the response body — also the `Content-Length`
+/// ceiling. A declared or buffered body larger than this fails closed.
+pub const MAX_BODY_BYTES: i64 = 16777216;
+
+/// Maximum total response bytes buffered before the read loop fails closed
+/// (`MAX_HEADER_BYTES + MAX_BODY_BYTES`). Bounds the accumulator regardless of
+/// framing so a malicious server cannot OOM the client.
+pub const MAX_RESPONSE_BYTES: i64 = 16842752;
+
+/// Maximum number of read iterations a response loop will accept before failing
+/// closed. Bounds an endless-trickle server that never closes the connection.
+pub const MAX_READS: i64 = 8192;
+
+/// A fully-buffered HTTP/1.1 response parsed from the raw bytes read off a
+/// suspending connection. Exposes the same accessor surface as the blocking
+/// client's `Response` so downstream code is agnostic to which path produced it.
+///
+/// `code` is the parsed status code (`-1` on a malformed/empty response — the
+/// transport-failure convention the blocking client also uses). `body_text` is
+/// the response body. `header_section` is the raw header block (the lines
+/// between the status line and the blank line, CRLF-separated), parsed on demand
+/// by [`AsyncResponse::header`].
+pub type AsyncResponse {
+    code: i64;
+    body_text: string;
+    header_section: string;
+}
+
+/// Methods on [`AsyncResponse`] — byte-identical surface to the blocking
+/// `Response` (`status` / `body` / `header` / `content_type`).
+trait AsyncResponseMethods {
+    /// The HTTP status code (e.g. 200, 404), or `-1` on a transport/parse error.
+    fn status(self) -> i64;
+
+    /// The response body as a string.
+    fn body(self) -> string;
+
+    /// Look up a response header by name (case-insensitive). Returns an empty
+    /// string if the header is not present.
+    fn header(self, name: string) -> string;
+
+    /// The `Content-Type` response header (empty string if absent).
+    fn content_type(self) -> string;
+}
+
+impl AsyncResponseMethods for AsyncResponse {
+    fn status(resp: AsyncResponse) -> i64 {
+        resp.code
+    }
+    fn body(resp: AsyncResponse) -> string {
+        resp.body_text
+    }
+    fn header(resp: AsyncResponse, name: string) -> string {
+        find_response_header(resp.header_section, name)
+    }
+    fn content_type(resp: AsyncResponse) -> string {
+        find_response_header(resp.header_section, "Content-Type")
+    }
+}
+
+// ── Request building ──────────────────────────────────────────────────
+/// Build a `GET` request line + headers for `path` on `host`, with the
+/// `Connection: close` framing this buffered codec relies on (read-to-close).
+pub fn build_get(host: string, path: string) -> string {
+    build_request("GET", host, path, "", "")
+}
+
+/// Build an HTTP/1.1 request: the request line, `Host`, `Connection: close`,
+/// and — for a non-empty body — `Content-Type` + `Content-Length`, then the
+/// body. `path` is normalised to `/` when empty.
+///
+/// FAILS CLOSED on header smuggling (F4): a `method`, `host`, `path`, or
+/// `content_type` carrying a `\r`/`\n` or other control character would inject
+/// extra headers (or split the request line), so any such value is rejected and
+/// an empty string is returned — the caller writes nothing and the request is
+/// never sent with an attacker-controlled header.
+pub fn build_request(method: string, host: string, path: string, body: string, content_type: string) -> string {
+    let req_path = if string.is_empty(path) {
+        "/"
+    } else {
+        path
+    };
+    if contains_control_char(method) {
+        return "";
+    }
+    if contains_control_char(host) {
+        return "";
+    }
+    if contains_control_char(req_path) {
+        return "";
+    }
+    if contains_control_char(content_type) {
+        return "";
+    }
+    let nl = "\r\n";
+    var req = f"{method} {req_path} HTTP/1.1" + nl;
+    req = req + f"Host: {host}" + nl;
+    req = req + "Connection: close" + nl;
+    if !string.is_empty(body) {
+        let ct = if string.is_empty(content_type) {
+            "application/octet-stream"
+        } else {
+            content_type
+        };
+        req = req + f"Content-Type: {ct}" + nl;
+        req = req + f"Content-Length: {body.len()}" + nl;
+    }
+    req = req + nl;
+    req = req + body;
+    req
+}
+
+// ── URL splitting (host:port + path) ──────────────────────────────────
+/// Parse `url_str` into a `(host:port, path)` pair ready for `net.connect` and
+/// [`build_request`]. Plaintext HTTP/1.1 only (HTTPS is BUG-NET-3): a `scheme`
+/// prefix (`http://`) is stripped, the authority is split into host + optional
+/// port (defaulting to 80, or 443 for an `https` scheme so a caller can detect
+/// it), and the path defaults to `/`. Parsed with string ops — no dependency on
+/// the opaque `url` engine.
+pub fn split_address(url_str: string) -> (string, string) {
+    let scheme = scheme_of(url_str);
+    let after_scheme = strip_scheme(url_str);
+    // The authority runs up to the first '/' (the path), '?' (query), or end.
+    let slash = after_scheme.find("/");
+    let authority = if slash < 0 {
+        after_scheme
+    } else {
+        after_scheme.slice(0, slash)
+    };
+    let path = if slash < 0 {
+        "/"
+    } else {
+        after_scheme.slice(slash, after_scheme.len())
+    };
+    let addr = authority_with_port(authority, scheme);
+    (addr, path)
+}
+
+/// Return the host component of `url_str` for the `Host:` header (no port).
+pub fn host_of(url_str: string) -> string {
+    let after_scheme = strip_scheme(url_str);
+    let slash = after_scheme.find("/");
+    let authority = if slash < 0 {
+        after_scheme
+    } else {
+        after_scheme.slice(0, slash)
+    };
+    let colon = authority.find(":");
+    if colon < 0 {
+        authority
+    } else {
+        authority.slice(0, colon)
+    }
+}
+
+/// Default TCP port for a URL scheme (`https` → 443, everything else → 80).
+pub fn default_port(scheme: string) -> i64 {
+    if scheme == "https" {
+        443
+    } else {
+        80
+    }
+}
+
+/// The scheme of a URL (`http` / `https`), or `"http"` when none is present.
+fn scheme_of(url_str: string) -> string {
+    let mark = url_str.find("://");
+    if mark < 0 {
+        "http"
+    } else {
+        string.to_lower(url_str.slice(0, mark))
+    }
+}
+
+/// Strip a `scheme://` prefix, leaving `authority[/path]`.
+fn strip_scheme(url_str: string) -> string {
+    let mark = url_str.find("://");
+    if mark < 0 {
+        url_str
+    } else {
+        url_str.slice(mark + 3, url_str.len())
+    }
+}
+
+/// Ensure an authority carries an explicit port, appending the scheme default
+/// when absent (so `net.connect` always receives `host:port`).
+fn authority_with_port(authority: string, scheme: string) -> string {
+    let colon = authority.find(":");
+    if colon < 0 {
+        f"{authority}:{default_port(scheme)}"
+    } else {
+        authority
+    }
+}
+
+// ── Response parsing ──────────────────────────────────────────────────
+/// Whether `raw` has exceeded a size bound and the read loop must STOP and fail
+/// closed (F2). True when the buffered bytes exceed the total ceiling, the head
+/// exceeds the header ceiling (even before a terminator is seen), or the declared
+/// `Content-Length` exceeds the body ceiling. The response read loop checks this
+/// each iteration so a malicious server cannot OOM the client with an unbounded
+/// head/body or an enormous `Content-Length`.
+pub fn response_over_limit(raw: string) -> bool {
+    if raw.len() > MAX_RESPONSE_BYTES {
+        return true;
+    }
+    let sep = raw.find("\r\n\r\n");
+    if sep < 0 {
+        return raw.len() > MAX_HEADER_BYTES;
+    }
+    let head = raw.slice(0, sep);
+    if head.len() > MAX_HEADER_BYTES {
+        return true;
+    }
+    let declared = declared_content_length(header_section_of(head));
+    return declared > MAX_BODY_BYTES;
+}
+
+/// Parse the raw bytes read off a connection into an [`AsyncResponse`]. The
+/// header/body boundary is the first CRLF-CRLF; the status code is parsed and
+/// VALIDATED from the status line. A response is rejected with `code == -1` (the
+/// transport-failure convention) when it is empty, exceeds a size bound (F2/SF1),
+/// is missing the CRLF-CRLF header terminator (SF2), or has a status line that is
+/// not a valid `HTTP/1.x` version + 3-digit `100`-`599` status (SF2).
+pub fn parse_response(raw: string) -> AsyncResponse {
+    if string.is_empty(raw) {
+        return AsyncResponse { code: -1, body_text: "", header_section: "" };
+    }
+    if response_over_limit(raw) {
+        return AsyncResponse { code: -1, body_text: "", header_section: "" };
+    }
+    let sep = raw.find("\r\n\r\n");
+    if sep < 0 {
+        // SF2 — no header terminator: the response is not fully framed.
+        return AsyncResponse { code: -1, body_text: "", header_section: "" };
+    }
+    let head = raw.slice(0, sep);
+    let body = raw.slice(sep + 4, raw.len());
+    let head_lines = string.split(head, "\r\n");
+    let status_line = if head_lines.len() > 0 {
+        head_lines.get(0)
+    } else {
+        ""
+    };
+    let code = parse_status_code(status_line);
+    // The header section is the head with the status line removed (the lines
+    // after the first CRLF), re-joined for on-demand `header()` lookups.
+    let header_section = header_section_of(head);
+    AsyncResponse { code: code, body_text: body, header_section: header_section }
+}
+
+/// Parse + validate the status code from an HTTP status line
+/// (`HTTP/1.1 200 OK` → `200`). Fails closed with `-1` (SF2) unless the line is
+/// a valid `HTTP/1.x` version token followed by a 3-digit numeric status in the
+/// `100`-`599` range — so `BOGUS 200`, `HTTP/9 200`, a 2- or 4-digit code, or an
+/// out-of-range status is NOT accepted as a success response.
+fn parse_status_code(status_line: string) -> i64 {
+    if string.is_empty(status_line) {
+        return -1;
+    }
+    let parts = string.split(status_line, " ");
+    if parts.len() < 2 {
+        return -1;
+    }
+    if !is_http_version(parts.get(0)) {
+        return -1;
+    }
+    let code_str = parts.get(1);
+    if !string.is_numeric(code_str) {
+        return -1;
+    }
+    if code_str.len() != 3 {
+        return -1;
+    }
+    let code = string.to_int(code_str);
+    if code < 100 || code > 599 {
+        return -1;
+    }
+    code
+}
+
+/// Whether `version` is a well-formed `HTTP/1.x` token (the 8-char `HTTP/1.`
+/// prefix followed by a single ASCII digit minor version). The fail-closed
+/// version gate for SF2.
+fn is_http_version(version: string) -> bool {
+    if version.len() != 8 {
+        return false;
+    }
+    if !string.starts_with(version, "HTTP/1.") {
+        return false;
+    }
+    let minor = version.char_at(7);
+    minor >= 48 && minor <= 57
+}
+
+/// The header lines of an HTTP head block (everything after the status line),
+/// re-joined with CRLF for [`find_response_header`].
+fn header_section_of(head: string) -> string {
+    let first = head.find("\r\n");
+    if first < 0 {
+        ""
+    } else {
+        head.slice(first + 2, head.len())
+    }
+}
+
+/// Case-insensitive header lookup over a CRLF-separated header section.
+fn find_response_header(header_section: string, name: string) -> string {
+    if string.is_empty(header_section) {
+        return "";
+    }
+    let target = string.to_lower(name);
+    let lines = string.split(header_section, "\r\n");
+    let n = lines.len();
+    var i: i64 = 0;
+    var found = "";
+    while i < n {
+        let line = lines.get(i);
+        let colon = line.find(":");
+        if colon > 0 {
+            let key = string.to_lower(string.trim(line.slice(0, colon)));
+            if key == target {
+                found = string.trim(line.slice(colon + 1, line.len()));
+            }
+        }
+        i = i + 1;
+    }
+    found
+}
+
+/// The declared `Content-Length` of a header section, or `0` when absent/invalid.
+/// Used to bound the read loop (see [`response_over_limit`]).
+///
+/// The value is parsed into a BOUNDED integer (SF1): an all-digit value that
+/// OVERFLOWS i64 saturates to `MAX_BODY_BYTES + 1` — guaranteed to exceed the
+/// body ceiling — so an overflowing `Content-Length` fails closed (the response
+/// is rejected with `status == -1`) rather than `string.to_int` returning `0`
+/// and the oversized body bypassing the cap. A non-numeric value reads to close.
+fn declared_content_length(header_section: string) -> i64 {
+    let value = find_response_header(header_section, "Content-Length");
+    if string.is_empty(value) {
+        return 0;
+    }
+    if !string.is_numeric(value) {
+        return 0;
+    }
+    match string.try_to_int(value) {
+        Ok(n) => n,
+        Err(_) => MAX_BODY_BYTES + 1,
+    }
+}
+
+/// Whether `s` contains an ASCII control character (`< 0x20` or `0x7F`),
+/// including CR/LF. The fail-closed gate for F4 request smuggling: caller-provided
+/// request-line/header values carrying such bytes are rejected so they cannot
+/// inject extra CRLF-delimited headers or split the request line.
+fn contains_control_char(s: string) -> bool {
+    let n = s.len();
+    var i: i64 = 0;
+    while i < n {
+        let b = s.char_at(i);
+        if b < 32 || b == 127 {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}

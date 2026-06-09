@@ -2143,6 +2143,58 @@ fn suspending_stream_recv_send_flip_in_execution_context() {
     );
 }
 
+/// NEW-2 oracle: `await listener.accept()` in an actor handler (an
+/// execution-context caller) flips to the `SuspendingAccept` terminator; a
+/// context-free caller (`main`, free fn) keeps the blocking `hew_tcp_accept`
+/// call. The listener-readiness sibling of the conn-read flip.
+#[test]
+fn suspending_listener_accept_flip_in_execution_context() {
+    let dump = mir_checked_dump(
+        "import std::net;\n\
+         actor Acceptor {\n\
+         \x20   let addr: string;\n\
+         \x20   receive fn go(unused: i64) {\n\
+         \x20       let listener = net.listen(addr);\n\
+         \x20       let conn = await listener.accept();\n\
+         \x20       let _ = conn.close();\n\
+         \x20       let _ = listener.close();\n\
+         \x20   }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let a = spawn Acceptor(addr: \"127.0.0.1:0\");\n\
+         \x20   a.go(0);\n\
+         }\n",
+    );
+    assert!(
+        dump.contains("SuspendingAccept"),
+        "actor `await listener.accept()` must flip to SuspendingAccept:\n{dump}"
+    );
+}
+
+/// NEW-2 negative: a context-free caller (`fn main`) keeps the BLOCKING accept
+/// (`hew_tcp_accept`); the caller-conv flip must NOT emit `SuspendingAccept`
+/// where there is no parkable continuation (mirrors the conn-read negative).
+#[test]
+fn blocking_listener_accept_in_main_keeps_blocking_call() {
+    let dump = mir_checked_dump(
+        "import std::net;\n\
+         fn main() {\n\
+         \x20   let listener = net.listen(\"127.0.0.1:0\");\n\
+         \x20   let conn = await listener.accept();\n\
+         \x20   let _ = conn.close();\n\
+         \x20   let _ = listener.close();\n\
+         }\n",
+    );
+    assert!(
+        !dump.contains("SuspendingAccept"),
+        "`await listener.accept()` from main must NOT flip to SuspendingAccept:\n{dump}"
+    );
+    assert!(
+        dump.contains("hew_tcp_accept"),
+        "`await listener.accept()` from main must keep the blocking hew_tcp_accept:\n{dump}"
+    );
+}
+
 /// Oracle: a NESTED owned aggregate `((Sink,), Stream)` returned by name. The
 /// value-flow decomposition must recurse through the inner `TupleConstruct`.
 #[test]

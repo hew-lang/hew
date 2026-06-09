@@ -3923,6 +3923,9 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_unknown_self_fields_in_expr(conn, state_fields, seen, unknown);
         }
+        HirExprKind::ListenerAwaitAccept { listener } => {
+            collect_unknown_self_fields_in_expr(listener, state_fields, seen, unknown);
+        }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
         }
@@ -7454,6 +7457,9 @@ impl Builder {
             HirExprKind::ConnAwaitRead { conn, to_string } => {
                 self.lower_conn_await_read(conn, *to_string, expr)
             }
+            HirExprKind::ListenerAwaitAccept { listener } => {
+                self.lower_listener_await_accept(listener, expr)
+            }
             HirExprKind::RemoteActorAsk {
                 receiver,
                 msg,
@@ -9873,6 +9879,7 @@ impl Builder {
                     | Terminator::SuspendingCallClosure { .. }
                     | Terminator::SuspendingStreamNext { .. }
                     | Terminator::SuspendingStreamSend { .. }
+                    | Terminator::SuspendingAccept { .. }
                     | Terminator::Select { .. } => false,
                 }
             }
@@ -15101,6 +15108,51 @@ impl Builder {
         Some(string_dest)
     }
 
+    /// Lower `await listener.accept()` (NEW-2). The listener-readiness sibling of
+    /// [`Self::lower_conn_await_read`]:
+    ///
+    /// - A caller that carries the execution context (actor handler / closure /
+    ///   task entry) lowers to `Terminator::SuspendingAccept`: the accept
+    ///   suspends (freeing the worker) and resumes when the reactor reports the
+    ///   listener ready, binding the accepted `Connection` on the resume edge.
+    /// - A `FunctionCallConv::Default` caller (`main`, free fn) runs on a
+    ///   foreign/main thread with no parkable continuation, so it keeps the
+    ///   blocking `hew_tcp_accept` FFI call (the caller-conv flip mirrors
+    ///   `lower_conn_await_read`).
+    fn lower_listener_await_accept(&mut self, listener: &HirExpr, expr: &HirExpr) -> Option<Place> {
+        let listener_place = self.lower_value(listener)?;
+        // The `Connection` slot the accept binds (the SuspendingAccept
+        // `result_dest` / the blocking `hew_tcp_accept` return).
+        let conn_dest = self.alloc_local(self.subst_ty(&expr.ty));
+
+        if self.current_function_call_conv.carries_execution_context() {
+            let next = self.alloc_block();
+            // `SuspendingAccept` carries no separate MIR cleanup block — it rides
+            // the multi-suspend epilogue, so `cleanup` reuses `next` (exactly as
+            // `SuspendingRead` does).
+            self.finish_current_block(Terminator::SuspendingAccept {
+                listener: listener_place,
+                result_dest: conn_dest,
+                resume: next,
+                cleanup: next,
+            });
+            self.start_block(next);
+        } else {
+            // Default callers use the blocking accept FFI: they run on a
+            // foreign/main thread with no parkable continuation.
+            let next = self.alloc_block();
+            self.finish_current_block(Terminator::Call {
+                callee: "hew_tcp_accept".to_string(),
+                args: vec![listener_place],
+                dest: Some(conn_dest),
+                next,
+            });
+            self.start_block(next);
+        }
+
+        Some(conn_dest)
+    }
+
     fn remote_actor_method_info(
         &mut self,
         receiver_ty: &ResolvedTy,
@@ -17552,6 +17604,9 @@ fn validate_cross_block_split_consume(
             }
             | Terminator::SuspendingStreamSend {
                 resume, cleanup, ..
+            }
+            | Terminator::SuspendingAccept {
+                resume, cleanup, ..
             } => {
                 emit(*resume);
                 emit(*cleanup);
@@ -17593,6 +17648,9 @@ fn validate_cross_block_split_consume(
                 resume, cleanup, ..
             }
             | Terminator::SuspendingStreamSend {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingAccept {
                 resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
@@ -18165,6 +18223,7 @@ pub fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
             | Terminator::SuspendingCallClosure { .. }
             | Terminator::SuspendingStreamNext { .. }
             | Terminator::SuspendingStreamSend { .. }
+            | Terminator::SuspendingAccept { .. }
     )
 }
 
@@ -18202,6 +18261,9 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // `SuspendingRead` reads `conn` (the read source); `result_dest` is a
         // write slot bound on the resume edge, not a source.
         Terminator::SuspendingRead { conn, .. } => vec![*conn],
+        // `SuspendingAccept` reads `listener` (the accept source); `result_dest`
+        // is a write slot bound on the resume edge, not a source.
+        Terminator::SuspendingAccept { listener, .. } => vec![*listener],
         // `SuspendingStreamNext` reads `stream` (the recv source); `result_dest`
         // is a write slot bound on the resume edge, not a source.
         Terminator::SuspendingStreamNext { stream, .. } => vec![*stream],
@@ -18434,6 +18496,9 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         // `SuspendingRead` carries only `conn` (a connection handle read), never
         // a generator-yielded `local`, so it never escapes one.
         | Terminator::SuspendingRead { .. }
+        // `SuspendingAccept` carries only `listener` (a listener handle read),
+        // never a generator-yielded `local`, so it never escapes one.
+        | Terminator::SuspendingAccept { .. }
         // `SuspendingStreamNext` carries only `stream` (a stream handle read),
         // never a generator-yielded `local`, so it never escapes one.
         | Terminator::SuspendingStreamNext { .. }
@@ -21688,6 +21753,14 @@ fn enumerate_exits(
             // detaches the channel-await registration, dropping the pending
             // item, + cancels/frees the slot), never at the suspend site.
             | Terminator::SuspendingStreamSend {
+                resume, cleanup, ..
+            }
+            // `SuspendingAccept` has the identical drop posture: the read slot +
+            // the live-across-suspend listener handle ride the coro frame, dropped
+            // exactly once by the `cleanup` outline on `coro.destroy` (the abandon
+            // edge additionally cancels + frees the read slot), never at the
+            // suspend site.
+            | Terminator::SuspendingAccept {
                 resume, cleanup, ..
             } => (
                 ExitPath::Suspend {

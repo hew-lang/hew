@@ -61,7 +61,8 @@ use crate::io_time::{
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::transport::{
     actor_ref_local_ptr, hew_actor_ref_is_alive, tcp_conn_raw_fd, tcp_conn_read_available,
-    tcp_conn_set_nonblocking, ActiveReadOutcome, HewActorRef,
+    tcp_conn_set_nonblocking, tcp_listener_accept_nonblocking, tcp_listener_raw_fd,
+    tcp_listener_set_nonblocking, AcceptOutcome, ActiveReadOutcome, HewActorRef,
 };
 
 /// How long each readiness wait blocks before the reactor wakes to drain the
@@ -123,6 +124,18 @@ enum RegMode {
         /// validity, not a borrow.
         read_slot: *mut crate::read_slot::HewReadSlot,
     },
+    /// Accept-suspension (NEW-2 `await listener.accept()`): the listener-readiness
+    /// sibling of [`RegMode::Resume`]. On readiness the reactor `accept()`s a new
+    /// connection, deposits its i64 handle into the read slot, and
+    /// `enqueue_resume`s the parked continuation. One-shot, identical slot
+    /// refcount discipline (`reactor_await_accept` takes the reactor ref, `Drop
+    /// for Registration` releases it). The registration's `conn` field carries
+    /// the LISTENER handle the fd belongs to.
+    Accept {
+        /// The suspending handler's read slot — held across the suspend; carries
+        /// the deposited i64 `Connection` handle rather than bytes.
+        read_slot: *mut crate::read_slot::HewReadSlot,
+    },
 }
 
 /// Per-connection registration. The `actor_ref` is a by-value [`HewActorRef`]
@@ -171,7 +184,7 @@ impl Drop for Registration {
     /// drop the registration and let this impl release the ref. Active-mode
     /// (`AutoSend`) registrations carry no slot, so the drop is a no-op for them.
     fn drop(&mut self) {
-        if let RegMode::Resume { read_slot } = self.mode {
+        if let RegMode::Resume { read_slot } | RegMode::Accept { read_slot } = self.mode {
             // SAFETY: the registration held one live ref on `read_slot`; this
             // releases it. The slot box is freed when its last ref drops.
             unsafe { crate::read_slot::hew_read_slot_free(read_slot) };
@@ -447,6 +460,11 @@ enum ReadyMode {
     Resume {
         read_slot: *mut crate::read_slot::HewReadSlot,
     },
+    /// Accept-readiness (NEW-2): `accept()` a new connection and deposit its i64
+    /// handle into the slot. The accept-path sibling of [`ReadyMode::Resume`].
+    Accept {
+        read_slot: *mut crate::read_slot::HewReadSlot,
+    },
 }
 
 /// A snapshot of the fields `handle_ready_fd` needs, taken under the registry
@@ -569,6 +587,17 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
                         read_slot: *read_slot,
                     }
                 }
+                // NEW-2 accept-readiness: same in-flight-ref discipline as
+                // `Resume` (the slot crosses the lock by raw pointer; the retain
+                // keeps it live for the lock-free accept+deposit below).
+                RegMode::Accept { read_slot } => {
+                    // SAFETY: the lock is held and the registration holds a ref,
+                    // so `*read_slot` is a live slot.
+                    unsafe { crate::read_slot::read_slot_retain(*read_slot) };
+                    ReadyMode::Accept {
+                        read_slot: *read_slot,
+                    }
+                }
             },
             already_closed: reg.closed,
         })
@@ -584,7 +613,9 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     // exit from here on (the retain was taken under the lock in the snapshot
     // closure above). Active-mode snapshots carry no slot, so no guard is bound.
     let _inflight_slot = match &snap.mode {
-        ReadyMode::Resume { read_slot } => Some(InflightSlotRef(*read_slot)),
+        ReadyMode::Resume { read_slot } | ReadyMode::Accept { read_slot } => {
+            Some(InflightSlotRef(*read_slot))
+        }
         ReadyMode::AutoSend { .. } => None,
     };
 
@@ -626,6 +657,16 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
 
     let hard_close = events & (HEW_IO_HUP | HEW_IO_ERROR) != 0;
 
+    // NEW-2 accept-readiness: the registered fd is a LISTENER, not a connected
+    // stream, so it must NOT be read with `tcp_conn_read_available`. `accept()`
+    // a connection and deposit its handle; the listener stays usable for the next
+    // `await accept()` (re-registered by the handler).
+    if let ReadyMode::Accept { read_slot } = &snap.mode {
+        handle_ready_accept(poller, fd, &snap, hard_close, *read_slot);
+        DELIVERING_ACTOR.store(0, Ordering::SeqCst);
+        return;
+    }
+
     // Read whatever is available (drains the kernel buffer). Even on a HUP/ERR
     // event there may be buffered bytes to deliver before the close.
     let outcome = if events & HEW_IO_READ != 0 || hard_close {
@@ -650,6 +691,9 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
         ReadyMode::Resume { read_slot } => {
             handle_ready_resume(poller, fd, &snap, outcome, hard_close, *read_slot);
         }
+        // Handled above (before the connected-stream read) — the listener fd is
+        // never read as a stream.
+        ReadyMode::Accept { .. } => unreachable!("accept readiness dispatched above"),
     }
 
     // Delivery (if any) is complete; release the in-flight guard so a waiting
@@ -829,7 +873,77 @@ fn handle_ready_resume(
     unregister_fd(poller, fd);
 }
 
-/// Result of a resume-mode deposit attempt.
+/// Accept-suspension readiness handling (NEW-2 `await listener.accept()`): the
+/// listener-readiness sibling of [`handle_ready_resume`]. `accept()` one
+/// connection, deposit its i64 handle into the slot, `enqueue_resume` the parked
+/// continuation, then remove the (one-shot) registration. An `await
+/// listener.accept()` accepts once; the handler re-registers for the next accept
+/// on its next `await`.
+///
+/// - `Accepted(handle)` → deposit the connection handle + wake.
+/// - `Closed` / `hard_close` → deposit the invalid sentinel (`-1`) + wake so the
+///   handler resumes with an invalid `Connection` (`hew_connection_is_valid`
+///   rejects it) rather than hanging; never a panic (DI-014).
+/// - `WouldBlock` with no hard close → a spurious wake; leave the registration
+///   in place and wait for the next readiness (no deposit, no wake).
+///
+/// `read_slot` validity for the lock-free deposit is upheld by the IN-FLIGHT ref
+/// `handle_ready_fd` took under the registry lock (P1-A), exactly as in
+/// [`handle_ready_resume`].
+fn handle_ready_accept(
+    poller: *mut HewIoPoller,
+    fd: c_int,
+    snap: &ReadySnapshot,
+    hard_close: bool,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) {
+    use crate::read_slot::INVALID_CONNECTION_HANDLE;
+    let (deposit_handle, slot_done) = match tcp_listener_accept_nonblocking(snap.conn) {
+        AcceptOutcome::Accepted(handle) => (i64::from(handle), true),
+        AcceptOutcome::Closed => (INVALID_CONNECTION_HANDLE, true),
+        AcceptOutcome::WouldBlock => {
+            if hard_close {
+                (INVALID_CONNECTION_HANDLE, true)
+            } else {
+                // Spurious readiness: leave the registration live for the next
+                // accept readiness (no deposit, no wake).
+                return;
+            }
+        }
+    };
+    let _ = slot_done;
+
+    // SAFETY: the reactor holds an in-flight ref to `read_slot`; the deposit
+    // checks the cancelled flag before publishing + waking.
+    let wake = unsafe { crate::read_slot::read_slot_deposit_handle(read_slot, deposit_handle) };
+    if wake {
+        // SAFETY: `enqueue_resume` re-confirms liveness under the registry lock
+        // and only flips state + enqueues; a freed actor drops the wake.
+        unsafe { crate::scheduler::enqueue_resume(snap.actor_local, std::ptr::null_mut()) };
+    } else if deposit_handle != INVALID_CONNECTION_HANDLE {
+        // Deposit FAILED on a real accepted connection: the suspended handler was
+        // abandoned/cancelled (cancelled flag set, or a cancellation/deadline won
+        // the status CAS), so the resume edge binds an INVALID `Connection` — not
+        // this handle — and no Hew-side owner will ever close the socket we just
+        // accepted. Close it here so the accepted handle is freed EXACTLY ONCE.
+        //
+        // Exactly-once argument: `read_slot_deposit_handle` returns `true` on
+        // exactly the one path where a resume edge takes ownership (and closes
+        // via `hew_tcp_close`), and `false` on exactly the paths where no resume
+        // owner exists. The two are mutually exclusive, so closing here precisely
+        // when it returned `false` (and we accepted a real conn) closes the handle
+        // once and only once — no double-close on the happy path, no leak on the
+        // abandon race. Mirrors the NEW-7 close-sink / abandon discipline.
+        if let Ok(handle) = c_int::try_from(deposit_handle) {
+            crate::transport::tcp_close_orphan_conn(handle);
+        }
+    }
+    // One-shot: remove the registration. `Drop for Registration` releases the
+    // REGISTRATION-OWNED slot ref; the IN-FLIGHT ref is released by the
+    // `InflightSlotRef` guard when `handle_ready_fd` returns.
+    let _ = read_slot;
+    unregister_fd(poller, fd);
+}
 struct DepositOutcome {
     /// Whether the parked continuation should be woken (`enqueue_resume`).
     wake: bool,
@@ -930,6 +1044,24 @@ fn deliver_orphan_close(reg: &Registration) {
         }
         RegMode::Resume { read_slot } => {
             resume_with_status(actor_local, read_slot, crate::read_slot::ReadStatus::Error);
+        }
+        RegMode::Accept { read_slot } => {
+            // NEW-2: the accept registration never made it into the poller; wake
+            // the parked handler with an invalid `Connection` (fail-closed) so it
+            // resumes rather than hanging.
+            // SAFETY: the reactor holds a ref (taken in `reactor_await_accept`);
+            // the deposit checks the cancelled flag before publishing.
+            let should_wake = unsafe {
+                crate::read_slot::read_slot_deposit_handle(
+                    read_slot,
+                    crate::read_slot::INVALID_CONNECTION_HANDLE,
+                )
+            };
+            if should_wake && !actor_local.is_null() {
+                // SAFETY: `enqueue_resume` re-confirms liveness; a freed actor
+                // drops the wake.
+                unsafe { crate::scheduler::enqueue_resume(actor_local, std::ptr::null_mut()) };
+            }
         }
     }
 }
@@ -1123,6 +1255,83 @@ pub(crate) unsafe fn reactor_await_read(
     0
 }
 
+/// Register a TCP listener for a SUSPENDING `await listener.accept()` (NEW-2,
+/// the listener-readiness sibling of [`reactor_await_read`]).
+///
+/// The suspending handler has created a [`crate::read_slot::HewReadSlot`] (held
+/// across its suspend in the coro frame) and registered its parked continuation
+/// on the actor. This sets the listener non-blocking, snapshots the actor-ref,
+/// takes a REACTOR ref on the slot, and queues the listener fd for the reactor to
+/// add to its poller as a [`RegMode::Accept`] registration. When the reactor
+/// reports the listener readable it `accept()`s one connection, deposits its i64
+/// handle into the slot, and `enqueue_resume`s the parked continuation.
+///
+/// One-shot: an `await listener.accept()` accepts once; the handler re-registers
+/// on its next `await`.
+///
+/// Returns 0 on success, -1 on failure (reactor could not start, unknown listener
+/// handle, or non-blocking set failed). On failure the caller's slot ref is
+/// untouched (the abandon/err edge frees it); no reactor ref was taken.
+///
+/// # Safety
+///
+/// `actor_ref` must point to a valid [`HewActorRef`] for the duration of this
+/// call (a by-value snapshot is taken). `listener` must be a valid TCP listener
+/// handle. `read_slot` must be a valid live `HewReadSlot` the caller holds a ref
+/// to (a reactor ref is taken on success).
+pub(crate) unsafe fn reactor_await_accept(
+    listener: c_int,
+    actor_ref: *const HewActorRef,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) -> c_int {
+    if actor_ref.is_null() {
+        crate::set_last_error("hew_listener_await_accept: null actor reference");
+        return -1;
+    }
+    if read_slot.is_null() {
+        crate::set_last_error("hew_listener_await_accept: null read slot");
+        return -1;
+    }
+    let Some(fd) = tcp_listener_raw_fd(listener) else {
+        crate::set_last_error("hew_listener_await_accept: unknown TCP listener handle");
+        return -1;
+    };
+    if !tcp_listener_set_nonblocking(listener, true) {
+        crate::set_last_error("hew_listener_await_accept: failed to set listener non-blocking");
+        return -1;
+    }
+    if !ensure_reactor_started() {
+        let _ = tcp_listener_set_nonblocking(listener, false);
+        return -1;
+    }
+
+    // SAFETY: caller guarantees actor_ref is valid for this call; we copy it.
+    let snapshot = unsafe { std::ptr::read(actor_ref) };
+    let actor_local = actor_ref_local_ptr(&snapshot).cast::<HewActor>();
+    let actor_key = actor_local as usize;
+
+    // Take the REACTOR ref on the slot BEFORE queueing the registration (the same
+    // single-authority discipline as `reactor_await_read`); the `Registration`'s
+    // `Drop` releases it on removal.
+    // SAFETY: caller holds a ref, so the slot is live for this retain.
+    unsafe { crate::read_slot::read_slot_retain(read_slot) };
+
+    let reg = Registration {
+        // The accept registration's `conn` field carries the LISTENER handle the
+        // fd belongs to (the reactor `accept()`s on it; it is not read as a
+        // stream).
+        conn: listener,
+        actor_ref: snapshot,
+        actor_key,
+        mode: RegMode::Accept { read_slot },
+        closed: false,
+    };
+    REACTOR_STATE.access(|state| {
+        state.pending.push(Pending::Add { fd, reg });
+    });
+    0
+}
+
 /// Detach a connection handle from the reactor (queue an unregister).
 pub(crate) fn reactor_detach_conn(conn: c_int) {
     REACTOR_STATE.access(|state| state.pending.push(Pending::Remove { conn }));
@@ -1261,7 +1470,11 @@ pub(crate) fn reactor_detach_read_slot(read_slot: *mut crate::read_slot::HewRead
             .registry
             .iter()
             .filter_map(|(fd, reg)| match reg.mode {
-                RegMode::Resume { read_slot: slot } if slot == read_slot => Some(*fd),
+                RegMode::Resume { read_slot: slot } | RegMode::Accept { read_slot: slot }
+                    if slot == read_slot =>
+                {
+                    Some(*fd)
+                }
                 _ => None,
             })
             .collect();
@@ -1272,7 +1485,9 @@ pub(crate) fn reactor_detach_read_slot(read_slot: *mut crate::read_slot::HewRead
         let before_pending = state.pending.len();
         state.pending.retain(|req| match req {
             Pending::Add { reg, .. } => match reg.mode {
-                RegMode::Resume { read_slot: slot } => slot != read_slot,
+                RegMode::Resume { read_slot: slot } | RegMode::Accept { read_slot: slot } => {
+                    slot != read_slot
+                }
                 RegMode::AutoSend { .. } => true,
             },
             _ => true,
@@ -1427,6 +1642,31 @@ pub(crate) fn inject_resume_registration_for_test(
 #[cfg(test)]
 pub(crate) fn handle_ready_fd_for_test(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     handle_ready_fd(poller, fd, events);
+}
+
+/// Drive `handle_ready_accept` directly (test-only) against a registered LISTENER
+/// fd, bypassing the `handle_ready_fd` snapshot + liveness gate. Lets the NEW-2
+/// accept/abandon-race close discipline be exercised deterministically: the
+/// reactor accepts a real connection, then the cancelled-slot deposit fails and
+/// the just-accepted handle must be closed (not leaked). The deposit-fail path
+/// never touches `actor_local`, so a dead actor-ref is sufficient.
+#[cfg(test)]
+pub(crate) fn handle_ready_accept_for_test(
+    poller: *mut HewIoPoller,
+    fd: c_int,
+    listener_conn: c_int,
+    actor_ref: HewActorRef,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+    hard_close: bool,
+) {
+    let snap = ReadySnapshot {
+        conn: listener_conn,
+        actor_local: actor_ref_local_ptr(&actor_ref).cast::<HewActor>(),
+        actor_ref,
+        mode: ReadyMode::Accept { read_slot },
+        already_closed: false,
+    };
+    handle_ready_accept(poller, fd, &snap, hard_close, read_slot);
 }
 
 /// Drive `deliver_close_once` against a given poller/fd/actor (test-only) so the
@@ -1981,6 +2221,87 @@ mod tests {
         // SAFETY: cleanup.
         unsafe {
             crate::transport::tcp_close_raw_for_test(conn);
+            hew_io_poller_stop(poller);
+        }
+        reset_reactor();
+    }
+
+    /// F1 (NEW-2 accept/abandon race): the reactor accepts a connection but the
+    /// suspended handler was abandoned/cancelled before the deposit lands. The
+    /// just-accepted `Connection` handle has no resume owner, so
+    /// `handle_ready_accept` MUST close it — the `TCP_API_STATE.streams` table
+    /// must NOT grow (the pre-fix bug leaked the socket here, a path to fd
+    /// exhaustion under a peer connecting to a stopped/cancelled acceptor).
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test-only FFI: every pointer is a fresh local slot/poller/listener the \
+                  test body sets up and tears down; the lifecycle is described inline"
+    )]
+    fn accept_deposit_failure_closes_handle_no_stream_leak() {
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: no preconditions.
+        let poller = unsafe { hew_io_poller_new() };
+        assert!(!poller.is_null());
+
+        // A listener with exactly one connection queued (the client stays alive).
+        let (listener, client) = crate::transport::tcp_listener_with_pending_conn_for_test();
+        let fd = crate::transport::tcp_listener_raw_fd(listener).expect("listener fd");
+        // Register the listener fd so the terminal `unregister_fd` is a clean no-op.
+        // SAFETY: poller valid; fd live.
+        assert_eq!(
+            unsafe { hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, HEW_IO_READ) },
+            0
+        );
+
+        let streams_before = crate::transport::tcp_streams_len_for_test();
+        let accepts_before = crate::transport::tcp_counters_snapshot().accept_count;
+
+        let slot = crate::read_slot::hew_read_slot_new();
+        // SAFETY: creator ref held.
+        unsafe { crate::read_slot::read_slot_retain(slot) }; // reactor ref
+                                                             // Abandon edge fired first: the slot is cancelled before the deposit.
+                                                             // SAFETY: creator + reactor refs held.
+        unsafe { crate::read_slot::hew_read_slot_cancel(slot) };
+
+        // Drive the accept-readiness handler directly. It accepts a real
+        // connection, then the cancelled-slot deposit returns `false`.
+        handle_ready_accept_for_test(poller, fd, listener, dead_actor_ref(), slot, false);
+
+        // The accept actually happened (a real socket was produced)…
+        let accepts_after = crate::transport::tcp_counters_snapshot().accept_count;
+        assert_eq!(
+            accepts_after,
+            accepts_before + 1,
+            "the regression requires a real accept to have occurred (not WouldBlock)"
+        );
+        // …but the accepted handle was CLOSED on the deposit-failure path, so the
+        // streams table did not grow — no fd/handle leak.
+        let streams_after = crate::transport::tcp_streams_len_for_test();
+        assert_eq!(
+            streams_after, streams_before,
+            "an accepted handle with no resume owner must be closed, not leaked"
+        );
+
+        // The cancelled slot took no deposit and fired no wake.
+        assert_eq!(
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            crate::read_slot::ReadStatus::Cancelled as i32,
+            "a cancelled accept slot must not receive a handle deposit"
+        );
+
+        // Creator ref free reclaims the slot (no leak).
+        // SAFETY: creator ref held.
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
+
+        drop(client);
+        // SAFETY: cleanup; the listener handle is released from TCP_API_STATE.
+        unsafe {
+            crate::transport::hew_tcp_close(listener);
             hew_io_poller_stop(poller);
         }
         reset_reactor();

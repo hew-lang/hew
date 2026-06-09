@@ -455,6 +455,9 @@ fn walk_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             walk_expr(conn, subst, residual_domain, disc);
         }
+        HirExprKind::ListenerAwaitAccept { listener } => {
+            walk_expr(listener, subst, residual_domain, disc);
+        }
         HirExprKind::RemoteActorAsk {
             receiver,
             msg,

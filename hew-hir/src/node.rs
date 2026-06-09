@@ -1139,6 +1139,17 @@ pub enum HirExprKind {
         /// to a string after the suspending read); `false` for raw `read()`.
         to_string: bool,
     },
+    /// `await listener.accept()` — a non-blocking suspending listener accept
+    /// (NEW-2). Produced by HIR lowering when an `await` wraps a
+    /// `net.Listener::accept` method call. A suspendable caller (actor handler /
+    /// closure / task entry) lowers this to `Terminator::SuspendingAccept`
+    /// (suspend, free the worker, resume with the accepted `Connection`); a
+    /// `Default` caller keeps the blocking `hew_tcp_accept` call. The
+    /// listener-readiness sibling of [`HirExprKind::ConnAwaitRead`].
+    ListenerAwaitAccept {
+        /// The listener receiver expression (`listener`).
+        listener: Box<HirExpr>,
+    },
     /// Sealed `select{}` expression.
     ///
     /// The HIR shape carries the per-arm sealed-form discriminator and

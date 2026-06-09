@@ -876,6 +876,25 @@ pub(crate) fn tcp_release_conn(handle: c_int) {
     });
 }
 
+/// Close a freshly-accepted connection handle that has no Hew-side owner
+/// (NEW-2 accept/abandon race). When `handle_ready_accept` accepts a connection
+/// but the suspended handler was abandoned/cancelled before the deposit lands,
+/// no resume edge will ever bind — and thus own and close — the accepted handle.
+/// This removes it from `TCP_API_STATE.streams` and `shutdown(Both)`s the socket
+/// so the fd is released exactly once.
+///
+/// Unlike [`tcp_release_conn`] (which keeps the socket alive for clones) this
+/// fully releases the connection, mirroring `hew_tcp_close`'s stream branch. The
+/// accepted fd was never registered with the reactor (the reactor polls the
+/// listener, not this new conn), so no detach is required.
+pub(crate) fn tcp_close_orphan_conn(handle: c_int) {
+    TCP_API_STATE.access(|state| {
+        if let Some(stream) = state.streams.remove(&handle) {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    });
+}
+
 /// Test-only: create a connected loopback TCP socketpair, register the server
 /// end as a conn handle, and return `(conn_handle, client_stream)`. Lets the
 /// reactor's resume-mode read branch be driven against a REAL readable socket
@@ -903,6 +922,39 @@ pub(crate) fn tcp_close_raw_for_test(handle: c_int) {
     tcp_release_conn(handle);
 }
 
+/// Test-only: bind a loopback listener, register it as a listener handle, set it
+/// non-blocking, and connect a client so exactly one connection is pending in the
+/// kernel accept queue. Returns `(listener_handle, client_stream)`; keeping the
+/// client alive holds the pending connection so a subsequent
+/// [`tcp_listener_accept_nonblocking`] yields `Accepted`. Backs the NEW-2
+/// accept/abandon-race regression (the reactor accepts a real connection, then
+/// the deposit fails on a cancelled slot). The caller closes the listener with
+/// [`tcp_close_raw_for_test`] and drops `client_stream`.
+#[cfg(all(test, unix))]
+pub(crate) fn tcp_listener_with_pending_conn_for_test() -> (c_int, TcpStream) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let handle = TCP_API_STATE.access(|state| {
+        let handle = state.alloc_handle();
+        state.listeners.insert(handle, listener);
+        handle
+    });
+    assert!(tcp_listener_set_nonblocking(handle, true));
+    let client = TcpStream::connect(addr).expect("connect loopback client");
+    // Give the loopback handshake a moment so the connection is queued and a
+    // subsequent non-blocking accept yields `Accepted` deterministically.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    (handle, client)
+}
+
+/// Test-only: number of live connection handles in `TCP_API_STATE.streams`.
+/// Lets the accept/abandon-race regression assert the accepted handle was closed
+/// (the table does not grow) rather than leaked.
+#[cfg(test)]
+pub(crate) fn tcp_streams_len_for_test() -> usize {
+    TCP_API_STATE.access(|state| state.streams.len())
+}
+
 // ---- Active-mode reactor support -------------------------------------------
 //
 // These helpers back the non-blocking "I/O completion as a mailbox message"
@@ -921,6 +973,78 @@ pub(crate) fn tcp_close_raw_for_test(handle: c_int) {
 pub(crate) fn tcp_conn_raw_fd(handle: c_int) -> Option<c_int> {
     use std::os::fd::AsRawFd;
     TCP_API_STATE.access(|state| state.streams.get(&handle).map(AsRawFd::as_raw_fd))
+}
+
+/// Return the raw OS file descriptor for a TCP *listener* handle, or `None` if
+/// the handle is unknown (NEW-2 `await listener.accept()`). The fd-readiness
+/// sibling of [`tcp_conn_raw_fd`]: the reactor registers the listener fd for
+/// readability and `accept()`s when it fires. The fd remains owned by the
+/// `TcpListener` in `TCP_API_STATE`; the reactor must NOT close it directly.
+#[cfg(unix)]
+pub(crate) fn tcp_listener_raw_fd(handle: c_int) -> Option<c_int> {
+    use std::os::fd::AsRawFd;
+    TCP_API_STATE.access(|state| state.listeners.get(&handle).map(AsRawFd::as_raw_fd))
+}
+
+/// Put a TCP *listener* handle's socket into non-blocking mode (the reactor
+/// thread must never park in `accept()`). Returns `true` on success. The
+/// readiness-suspension sibling of [`tcp_conn_set_nonblocking`].
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "only consumed by the Unix active-mode reactor; the reactor is stubbed out (fail-closed) on non-Unix targets"
+    )
+)]
+pub(crate) fn tcp_listener_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
+    TCP_API_STATE.access(|state| {
+        state
+            .listeners
+            .get(&handle)
+            .is_some_and(|listener| listener.set_nonblocking(nonblocking).is_ok())
+    })
+}
+
+/// Outcome of a single non-blocking `accept()` on a registered listener handle
+/// (NEW-2 reactor accept-readiness). The accept-path analogue of
+/// [`ActiveReadOutcome`].
+#[cfg(unix)]
+pub(crate) enum AcceptOutcome {
+    /// A connection was accepted and registered as a new conn handle.
+    Accepted(c_int),
+    /// The listener was spuriously reported readable; nothing to accept yet.
+    WouldBlock,
+    /// The handle is unknown or a hard accept error occurred.
+    Closed,
+}
+
+/// Non-blocking `accept()` on a registered listener handle (NEW-2 reactor
+/// accept-readiness). Drains exactly ONE pending connection (an `await
+/// listener.accept()` accepts once; the handler re-registers on its next
+/// `await`), registers it as a fresh conn handle with `set_nodelay`, and returns
+/// the handle. The accept-path sibling of [`tcp_conn_read_available`].
+#[cfg(unix)]
+pub(crate) fn tcp_listener_accept_nonblocking(listener: c_int) -> AcceptOutcome {
+    let Some(listener) = tcp_clone_listener(listener) else {
+        return AcceptOutcome::Closed;
+    };
+    match listener.accept() {
+        Ok((stream, _)) => {
+            let _ = stream.set_nodelay(true);
+            tcp_counters().accept_count.fetch_add(1, Ordering::Relaxed);
+            let handle = TCP_API_STATE.access(|state| {
+                let handle = state.alloc_handle();
+                state.streams.insert(handle, stream);
+                handle
+            });
+            AcceptOutcome::Accepted(handle)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => AcceptOutcome::WouldBlock,
+        Err(e) => {
+            record_tcp_error_kind(e.kind());
+            AcceptOutcome::Closed
+        }
+    }
 }
 
 /// Put a TCP connection handle's socket into non-blocking mode (active mode
@@ -2243,6 +2367,44 @@ pub unsafe extern "C" fn hew_conn_await_read(
     // a by-value snapshot before returning. `read_slot` validity is the caller's
     // contract (the reactor takes its own ref on success).
     unsafe { crate::reactor::reactor_await_read(conn, &raw const actor_ref, read_slot) }
+}
+
+/// Register a TCP listener for a SUSPENDING `await listener.accept()` (NEW-2,
+/// the listener-readiness sibling of [`hew_conn_await_read`]).
+///
+/// The codegen ramp for `Terminator::SuspendingAccept` calls this from a
+/// suspendable handler: it has created a `HewReadSlot` (held across the suspend
+/// in the coro frame) and parked its continuation on `actor`. This forwards to
+/// the reactor's accept-mode registration: when the listener fd becomes readable
+/// the reactor `accept()`s a new connection, deposits its i64 handle into
+/// `read_slot`, and `enqueue_resume`s the parked continuation.
+///
+/// Returns 0 on success, -1 on failure (null args, unknown listener handle,
+/// reactor unavailable). On failure the caller's slot ref is untouched and the
+/// codegen ramp binds an invalid `Connection` on the resume edge.
+///
+/// # Safety
+///
+/// - `listener` must be a valid TCP listener handle from the stdlib `net` API.
+/// - `actor` must be a valid pointer to a live [`HewActor`] that owns the parked
+///   continuation registered for this accept.
+/// - `read_slot` must be a valid live `HewReadSlot` the caller holds a ref to.
+#[no_mangle]
+pub unsafe extern "C" fn hew_listener_await_accept(
+    listener: c_int,
+    actor: *mut HewActor,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) -> c_int {
+    if actor.is_null() {
+        set_last_error("hew_listener_await_accept: null actor pointer");
+        return -1;
+    }
+    // SAFETY: `actor` is non-null and the caller guarantees it is live.
+    let actor_ref = unsafe { hew_actor_ref_local(actor) };
+    // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; the reactor takes
+    // a by-value snapshot before returning. `read_slot` validity is the caller's
+    // contract (the reactor takes its own ref on success).
+    unsafe { crate::reactor::reactor_await_accept(listener, &raw const actor_ref, read_slot) }
 }
 
 /// Detach a TCP connection from the active-mode reactor without closing it.

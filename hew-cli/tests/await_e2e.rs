@@ -242,3 +242,36 @@ fn outer_handler_crash_during_child_suspend_routes_reply_to_outer_under_both_poo
         "reader-crash-fallback\nmain-done\n",
     );
 }
+
+#[test]
+fn async_http_roundtrip_serves_and_fetches_under_both_pools() {
+    // NEW-2 end-to-end oracle: a `Server` actor `await`s `listener.accept()`
+    // (the new SuspendingAccept carrier) then `await`s the request bytes, and a
+    // `Client` actor `await`s the response. The single-worker run is the
+    // worker-freeing proof: one worker serves AND fetches only because every
+    // `await` (accept + both read loops) suspends its handler — a blocking
+    // accept or read would strand the lone worker and hang the bounded runner.
+    run_net_example_both_pools(
+        "await_http_roundtrip",
+        "client-received: hi from hew\nmain-done\n",
+    );
+}
+
+#[test]
+fn async_http_codec_hardening_fails_closed() {
+    // NEW-2 security revision regression: the async HTTP/1.1 codecs must fail
+    // closed against DoS + smuggling inputs (no sockets — pure codec drive).
+    // F2: oversized/over-declared requests/responses are rejected (413 / -1).
+    // F3: malformed framing (bad request line / version / target, duplicate or
+    // non-numeric Content-Length, Transfer-Encoding) is rejected with 400.
+    // F4: CRLF/control chars in caller-provided builder fields are rejected so no
+    // header is injected.
+    // SF1: an overflowing numeric Content-Length fails closed (413 server / -1
+    // client) instead of saturating to 0 and bypassing the body cap.
+    // SF2: a malformed response status line (bad HTTP version, non-3-digit or
+    // out-of-range status, missing CRLF-CRLF terminator) yields client status -1.
+    // SF3: a request header line lacking a ':' separator is rejected with 400.
+    // Any unrejected input panics an assertion mid-run, so a clean
+    // `codec-hardening-ok` is the proof every bound held.
+    run_net_example_both_pools("await_http_codec_hardening", "codec-hardening-ok\n");
+}

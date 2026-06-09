@@ -616,6 +616,7 @@ impl Checker {
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             conn_await_reads: std::mem::take(&mut self.conn_await_reads),
+            listener_await_accepts: std::mem::take(&mut self.listener_await_accepts),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
             errors: std::mem::take(&mut self.errors),

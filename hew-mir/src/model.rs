@@ -1836,6 +1836,12 @@ impl BasicBlock {
             // a full ring; resume + cleanup are the in-CFG successors.
             | Terminator::SuspendingStreamSend {
                 resume, cleanup, ..
+            }
+            // The suspending listener-accept ramp parks the acceptor continuation
+            // on listener readiness exactly like the read ramp: the default edge
+            // exits to the executor; resume + cleanup are the in-CFG successors.
+            | Terminator::SuspendingAccept {
+                resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
     }
@@ -2095,7 +2101,48 @@ pub enum Terminator {
         /// the read slot is cancelled + freed there.
         cleanup: u32,
     },
-    /// Suspendable closure call (the suspendable-callee driver). Calling a
+    /// Non-blocking `await listener.accept()` from a SUSPENDABLE caller (NEW-2).
+    /// The listener-readiness analogue of [`Terminator::SuspendingRead`]: instead
+    /// of blocking an OS worker in `hew_tcp_accept`, codegen lowers this as a
+    /// `coro.suspend` source — it creates a read slot, registers the parked
+    /// continuation + the slot with the reactor (`hew_listener_await_accept`),
+    /// suspends (freeing the worker), and on the resume edge takes the now-ready
+    /// accepted connection handle from the slot
+    /// (`hew_read_slot_take_handle`) and binds it as a `Connection` into
+    /// `result_dest`. The handle travels through the read slot held across the
+    /// suspend (a frame-spilled codegen local), NOT a terminator operand —
+    /// exactly as `SuspendingRead`'s bytes travel through their read slot, which
+    /// is why the resume binding lives ON the terminator.
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` / `is_coroutine`: any function whose CFG contains this
+    /// terminator is lowered as a `presplitcoroutine`. Emitted ONLY when the
+    /// lowering function carries the execution context
+    /// (`FunctionCallConv::carries_execution_context` — actor handler / closure /
+    /// task entry); a `FunctionCallConv::Default` caller (`main`, free fns) runs
+    /// on a foreign thread with no parkable continuation and keeps the blocking
+    /// `hew_tcp_accept` FFI call. Accept failure deposits an invalid handle so the
+    /// resume edge binds an invalid `Connection` (`hew_connection_is_valid`),
+    /// never a panic (DI-014).
+    SuspendingAccept {
+        /// The TCP listener handle the accept is registered against (the receiver
+        /// of `listener.accept()`). Read by codegen to register the listener fd
+        /// with the reactor.
+        listener: Place,
+        /// The `Connection` slot bound on the resume edge after the reactor
+        /// deposits the accepted connection handle. Identical role to
+        /// [`Terminator::SuspendingRead::result_dest`].
+        result_dest: Place,
+        /// Block reached on the coro switch resume edge (case 0) — the body
+        /// continues here after `enqueue_resume` woke the parked continuation and
+        /// the connection is bound. This is the `next` block of the original
+        /// accept.
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the frame's
+        /// teardown when the parked continuation is abandoned (`coro.destroy`);
+        /// the read slot is cancelled + freed there.
+        cleanup: u32,
+    },
     /// closure whose body itself `await`s across the coroutine boundary — the
     /// closure-invoke ramp is a `presplitcoroutine` returning a `coro.begin`
     /// handle, not a plain value. This terminator drives that callee coroutine

@@ -24,13 +24,19 @@
     reason = "FFI entry-point module; SAFETY documented at each fn signature."
 )]
 
-use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 
 use crate::await_cancel::{
     hew_await_cancel_complete, hew_await_cancel_free, hew_await_cancel_retain,
 };
 use crate::await_cancel::{AwaitCancelStatus, HewAwaitCancel};
 use crate::bytes::BytesTriple;
+
+/// The sentinel an accept slot carries until a handle is deposited, and the
+/// value a failed accept deposits so the resume edge binds an invalid
+/// `Connection` (`hew_connection_is_valid` rejects it) rather than panicking.
+/// Mirrors the blocking `hew_tcp_accept` error return (`-1`).
+pub(crate) const INVALID_CONNECTION_HANDLE: i64 = -1;
 
 /// The deposit status the reactor records into a read slot before waking the
 /// parked continuation. The resume edge reads it to decide whether to bind the
@@ -109,6 +115,16 @@ pub struct HewReadSlot {
     /// takes ownership; the abandon edge drops the buffer if a deposit landed
     /// before cancellation.
     value: BytesTriple,
+    /// The deposited i64 handle (NEW-2 `await listener.accept()`): the accepted
+    /// `Connection` handle when `status == Data` on the accept path. The
+    /// fd-readiness analogue of `value` for a carrier that deposits a handle
+    /// rather than bytes — the accept ramp reads it with
+    /// [`hew_read_slot_take_handle`] on the resume edge. `-1` (invalid
+    /// connection) until a deposit lands; an accept error deposits `-1` so the
+    /// resume edge binds an invalid `Connection` (fail-closed, never a panic).
+    /// Carries no owned allocation, so it needs no abandon-edge cleanup (unlike
+    /// `value`).
+    handle: AtomicI64,
     /// Optional common cancellation/deadline record attached to this wait.
     await_cancel: AtomicPtr<HewAwaitCancel>,
 }
@@ -137,6 +153,7 @@ pub extern "C" fn hew_read_slot_new() -> *mut HewReadSlot {
             offset: 0,
             len: 0,
         },
+        handle: AtomicI64::new(INVALID_CONNECTION_HANDLE),
         await_cancel: AtomicPtr::new(std::ptr::null_mut()),
     }))
 }
@@ -351,7 +368,37 @@ pub unsafe extern "C" fn hew_read_slot_take(slot: *mut HewReadSlot) -> BytesTrip
     triple
 }
 
-/// Deposit a successful read result into the slot and report whether the waker
+/// Take the deposited i64 handle out of the slot (NEW-2 `await
+/// listener.accept()`). Returns the accepted `Connection` handle when the
+/// status is `Data`, or [`INVALID_CONNECTION_HANDLE`] (`-1`) otherwise (no
+/// deposit, EOF/error, or cancellation). The accept ramp reinterprets the
+/// returned value as the pointer-shaped `Connection` on the spine (codegen
+/// declares the return as `ptr`; the low bits are the `c_int` handle, exactly as
+/// the blocking `hew_tcp_accept` return is reinterpreted).
+///
+/// The slot's handle deposit carries no owned allocation (unlike the bytes
+/// `value`), so unlike [`hew_read_slot_take`] there is nothing to null out for
+/// the final free — the read is a plain load.
+///
+/// # Safety
+///
+/// `slot` must be a valid `HewReadSlot` the caller holds a ref to; called on the
+/// resume edge after `enqueue_resume`, so the reactor's `Release` deposit
+/// happens-before this `Acquire` read.
+#[no_mangle]
+pub unsafe extern "C" fn hew_read_slot_take_handle(slot: *mut HewReadSlot) -> i64 {
+    if slot.is_null() {
+        return INVALID_CONNECTION_HANDLE;
+    }
+    // SAFETY: caller holds a ref; the reactor's Release deposit on `status`
+    // happens-before this Acquire load, so `handle` is fully published.
+    let s = unsafe { &*slot };
+    if s.status.load(Ordering::Acquire) != ReadStatus::Data as i32 {
+        return INVALID_CONNECTION_HANDLE;
+    }
+    s.handle.load(Ordering::Acquire)
+}
+
 /// should fire. Called on the REACTOR thread.
 ///
 /// Returns `true` if the caller should wake the parked continuation
@@ -459,6 +506,55 @@ pub(crate) unsafe fn read_slot_deposit_status(slot: *mut HewReadSlot, status: Re
     }
 }
 
+/// Deposit a successful accept result (an i64 `Connection` handle) into the slot
+/// and report whether the waker should fire (NEW-2 `await listener.accept()`).
+/// Called on the REACTOR thread. Same cancellation contract as
+/// [`read_slot_deposit_data`]; carries a handle instead of a buffer, so there is
+/// nothing to drop on the abandon-race.
+///
+/// `handle` is the accepted connection handle, or [`INVALID_CONNECTION_HANDLE`]
+/// when the accept itself failed (the resume edge then binds an invalid
+/// `Connection`, fail-closed per DI-014).
+///
+/// # Safety
+///
+/// `slot` must be a valid `HewReadSlot` the reactor holds a ref to.
+pub(crate) unsafe fn read_slot_deposit_handle(slot: *mut HewReadSlot, handle: i64) -> bool {
+    if slot.is_null() {
+        return false;
+    }
+    // SAFETY: reactor holds a ref.
+    let s = unsafe { &*slot };
+    if s.cancelled.load(Ordering::Acquire) != 0 {
+        // Abandon edge already cancelled: drop the handle (the accepted fd is
+        // closed by the caller's invalid-conn handling), do not wake.
+        return false;
+    }
+    // Publish the handle BEFORE the Data status (Release) so the resume edge's
+    // Acquire load of `status` observes a fully-written `handle`.
+    s.handle.store(handle, Ordering::Release);
+    if s.status
+        .compare_exchange(
+            ReadStatus::Pending as i32,
+            ReadStatus::Data as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        let await_cancel = s.await_cancel.load(Ordering::Acquire);
+        if !await_cancel.is_null() {
+            // SAFETY: slot holds a retained registration reference.
+            unsafe { hew_await_cancel_complete(await_cancel) };
+        }
+        true
+    } else {
+        // Cancellation/deadline won the CAS race; leave the terminal status
+        // intact so the resume edge sees Cancelled/TimedOut and binds invalid.
+        false
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::undocumented_unsafe_blocks,
@@ -554,6 +650,40 @@ mod tests {
         );
         let taken = unsafe { hew_read_slot_take(slot) };
         assert!(taken.ptr.is_null(), "non-Data take returns empty");
+        unsafe { hew_read_slot_free(slot) };
+    }
+
+    #[test]
+    fn deposit_handle_then_take_returns_connection() {
+        // NEW-2 accept-slot path: the reactor deposits an i64 Connection handle;
+        // the resume edge takes it. A fresh slot reports the invalid sentinel.
+        let slot = hew_read_slot_new();
+        assert_eq!(
+            unsafe { hew_read_slot_take_handle(slot) },
+            INVALID_CONNECTION_HANDLE,
+            "no deposit yet → invalid connection"
+        );
+        let wake = unsafe { read_slot_deposit_handle(slot, 42) };
+        assert!(wake, "non-cancelled handle deposit must signal a wake");
+        assert_eq!(
+            unsafe { hew_read_slot_status(slot) },
+            ReadStatus::Data as i32
+        );
+        assert_eq!(unsafe { hew_read_slot_take_handle(slot) }, 42);
+        unsafe { hew_read_slot_free(slot) };
+    }
+
+    #[test]
+    fn cancelled_handle_deposit_suppresses_wake_and_binds_invalid() {
+        let slot = hew_read_slot_new();
+        unsafe { hew_read_slot_cancel(slot) };
+        let wake = unsafe { read_slot_deposit_handle(slot, 7) };
+        assert!(!wake, "cancelled accept slot must not wake");
+        // The resume edge (were it to run) binds an invalid Connection.
+        assert_eq!(
+            unsafe { hew_read_slot_take_handle(slot) },
+            INVALID_CONNECTION_HANDLE
+        );
         unsafe { hew_read_slot_free(slot) };
     }
 

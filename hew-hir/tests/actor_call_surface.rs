@@ -60,6 +60,9 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         HirExprKind::ConnAwaitRead { conn, .. } => {
             visit_expr(conn, out);
         }
+        HirExprKind::ListenerAwaitAccept { listener } => {
+            visit_expr(listener, out);
+        }
         HirExprKind::RemoteActorAsk {
             receiver,
             msg,

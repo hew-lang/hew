@@ -682,6 +682,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),

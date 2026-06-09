@@ -1288,6 +1288,24 @@ fn intern_runtime_decl<'ctx>(
         // (`hew-runtime/src/read_slot.rs`). Releases one ref; frees the slot when
         // the last ref drops (and releases a still-present Data buffer).
         "hew_read_slot_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // ── NEW-2 suspending listener accept (non-blocking `await accept()`) ──
+        // hew_listener_await_accept(listener: c_int, actor: *mut HewActor,
+        //                           slot: *mut HewReadSlot) -> c_int
+        // (`hew-runtime/src/transport.rs`). Registers the parked continuation +
+        // the slot with the reactor's accept-mode. `listener` is pointer-shaped
+        // on the spine (Listener is `#[opaque]` → bare ptr, like every TCP ABI);
+        // the runtime reads it back as `c_int`. Returns 0 on success, -1 on
+        // failure (the ramp binds the invalid-connection register-error edge).
+        "hew_listener_await_accept" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
+        }
+        // hew_read_slot_take_handle(slot: *mut HewReadSlot) -> i64
+        // (`hew-runtime/src/read_slot.rs`). Takes the deposited i64 `Connection`
+        // handle out of the slot, or the invalid sentinel (`-1`) if no Data
+        // deposit. Declared returning `ptr` so the accept ramp reinterprets the
+        // 64-bit return (in rax) as the pointer-shaped `Connection` on the spine,
+        // exactly as the blocking `hew_tcp_accept` return is reinterpreted.
+        "hew_read_slot_take_handle" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         // ── NEW-7 suspending typed-stream consumer ───────────────────────────
         // hew_stream_await_next(stream: *mut HewStream, actor: *mut HewActor,
         //                       slot: *mut HewReadSlot) -> i32
@@ -20787,6 +20805,15 @@ struct SuspendingReadEmit {
     cleanup: u32,
 }
 
+/// Carrier for [`emit_suspending_accept_terminator`] — the suspending
+/// `await listener.accept()` ramp (`Terminator::SuspendingAccept`).
+struct SuspendingAcceptEmit {
+    listener: Place,
+    result_dest: Place,
+    resume: u32,
+    cleanup: u32,
+}
+
 /// Carrier for [`emit_suspending_stream_next_terminator`] — the suspending
 /// `await stream.recv()` ramp (`Terminator::SuspendingStreamNext`).
 struct SuspendingStreamNextEmit {
@@ -21092,6 +21119,273 @@ fn emit_suspending_read_terminator<'ctx>(
         .builder
         .build_unconditional_branch(resume_bb)
         .llvm_ctx("suspending read ok br")?;
+
+    Ok(())
+}
+
+/// Emit the caller-side non-blocking `await listener.accept()` (NEW-2
+/// `Terminator::SuspendingAccept`). The listener-readiness analogue of
+/// [`emit_suspending_read_terminator`].
+///
+/// Shape (the suspendable accept ramp):
+/// ```text
+///   self      = hew_actor_self()                 ; the parked-continuation actor
+///   listener  = <load listener handle>           ; pointer-shaped (opaque)
+///   slot      = hew_read_slot_new()
+///   rc        = hew_listener_await_accept(listener, self, slot)
+///   br (rc != 0) -> register_err, do_suspend
+/// register_err:                                  ; registration failed, no accept
+///   hew_read_slot_cancel(slot); hew_read_slot_free(slot)
+///   result_dest = inttoptr(-1)                   ; invalid Connection convention
+///   br resume_bb
+/// do_suspend:                                    ; coro.suspend (non-final)
+///   switch coro.suspend [default -> return handle, 0 -> accept_bind, 1 -> cleanup]
+/// abandon_cleanup:                               ; parked cont destroyed
+///   hew_read_slot_cancel(slot); hew_read_slot_free(slot); br shared cleanup
+/// accept_bind:                                   ; the reactor resumed us
+///   conn = hew_read_slot_take_handle(slot)       ; the accepted handle (as ptr)
+///   store conn -> result_dest
+///   hew_read_slot_free(slot)                     ; release the creator ref
+///   br resume_bb
+/// ```
+/// The accepted connection handle travels through `slot` (a frame-spilled local)
+/// across the suspend; on resume `hew_read_slot_take_handle` returns it on the
+/// fast path (the reactor deposited it before `enqueue_resume` woke us). Slot ref
+/// counting is identical to the read ramp: `new` (+1 creator); the await register
+/// takes its own reactor ref on success; the single `hew_read_slot_free` on each
+/// terminal edge releases the creator ref.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the full caller-side accept ramp — registration + suspend + the \
+              resume-edge connection binding — is kept in one place so the \
+              suspend point and the value routing it depends on are read together"
+)]
+fn emit_suspending_accept_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingAcceptEmit,
+) -> CodegenResult<()> {
+    // The coro prologue must be present (lower_function detects the
+    // SuspendingAccept carrier via `has_suspend`). Fail closed otherwise.
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Terminator::SuspendingAccept reached codegen but the function carries no \
+             coro prologue state — lower_function must detect the suspend carrier \
+             (has_suspend) and emit the prologue before the body"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingAccept resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingAccept cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+
+    // self = the current actor — the parked-continuation waiter the reactor wake
+    // re-enqueues. From `hew_actor_self()` (the live thread-local context), the
+    // same single-authority accessor the SuspendingRead/Ask ramps use.
+    let actor_self_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let self_actor = fn_ctx
+        .builder
+        .build_call(actor_self_fn, &[], "suspending_accept_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+    let listener_ptr = load_duplex_handle(fn_ctx, term.listener, "suspending_accept listener")?;
+
+    let slot_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_new",
+    )?;
+    let slot = fn_ctx
+        .builder
+        .build_call(slot_new, &[], "suspending_accept_slot")
+        .llvm_ctx("hew_read_slot_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
+        .into_pointer_value();
+
+    let await_accept = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_listener_await_accept",
+    )?;
+    let rc = fn_ctx
+        .builder
+        .build_call(
+            await_accept,
+            &[listener_ptr.into(), self_actor.into(), slot.into()],
+            "suspending_accept_register",
+        )
+        .llvm_ctx("hew_listener_await_accept call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_listener_await_accept returned void".into()))?
+        .into_int_value();
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending accept block has no parent function".into())
+        })?;
+    let register_err_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_accept_register_err");
+    let do_suspend_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_accept_suspend");
+    let register_ok = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            rc,
+            rc.get_type().const_zero(),
+            "suspending_accept_register_ok",
+        )
+        .llvm_ctx("suspending accept register-ok compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(register_ok, do_suspend_bb, register_err_bb)
+        .llvm_ctx("suspending accept register branch")?;
+
+    let slot_cancel = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_cancel",
+    )?;
+    let slot_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_free",
+    )?;
+
+    // ── register_err: the registration failed; no accept will ever arrive.
+    // Cancel + free the slot and bind an INVALID `Connection` without suspending
+    // (no worker to free — we never parked). The invalid handle (`-1`
+    // reinterpreted as a pointer) is rejected by `hew_connection_is_valid`. ─────
+    fn_ctx.builder.position_at_end(register_err_bb);
+    fn_ctx
+        .builder
+        .build_call(slot_cancel, &[slot.into()], "suspending_accept_err_cancel")
+        .llvm_ctx("hew_read_slot_cancel (register err) call")?;
+    fn_ctx
+        .builder
+        .build_call(slot_free, &[slot.into()], "suspending_accept_err_free")
+        .llvm_ctx("hew_read_slot_free (register err) call")?;
+    store_invalid_connection(fn_ctx, term.result_dest)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(resume_bb)
+        .llvm_ctx("suspending accept register-err br")?;
+
+    // ── do_suspend: park the continuation (non-final suspend). ─────────────────
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    let accept_bind_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_accept_bind");
+    // Abandon-cleanup edge: when a parked SuspendingAccept continuation is
+    // DESTROYED without resuming, `coro.suspend`'s case-1 edge runs. Route it to
+    // an accept-specific block that CANCELS + FREES the creator ref before
+    // joining the shared cleanup (identical discipline to the read ramp).
+    let abandon_cleanup_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_accept_abandon_cleanup");
+    let cc = crate::coro::CoroContext {
+        ctx: fn_ctx.ctx,
+        llvm_mod: fn_ctx.llvm_mod,
+        builder: &fn_ctx.builder,
+        function: parent,
+        handle: coro.handle,
+        id_token: coro.id_token,
+    };
+    cc.emit_suspend(
+        accept_bind_bb,
+        abandon_cleanup_bb,
+        coro.suspend_return_block,
+        false,
+        "suspending_accept",
+    )?;
+
+    // ── abandon_cleanup: cancel + free the read slot, then join the shared coro
+    // cleanup (frame-free + coro.end). ─────────────────────────────────────────
+    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
+    fn_ctx
+        .builder
+        .build_call(
+            slot_cancel,
+            &[slot.into()],
+            "suspending_accept_abandon_cancel",
+        )
+        .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_call(slot_free, &[slot.into()], "suspending_accept_abandon_free")
+        .llvm_ctx("hew_read_slot_free (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(coro.cleanup_block)
+        .llvm_ctx("suspending accept abandon -> shared cleanup br")?;
+
+    // ── accept_bind: the reactor resumed us (enqueue_resume). The accepted
+    // connection handle is already deposited in `slot`; `hew_read_slot_take_handle`
+    // returns it (as the pointer-shaped `Connection`) on the fast path. Store it
+    // into `result_dest`, release the creator ref, and branch to the MIR resume
+    // block. ───────────────────────────────────────────────────────────────────
+    fn_ctx.builder.position_at_end(accept_bind_bb);
+    let slot_take_handle = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_take_handle",
+    )?;
+    let conn = fn_ctx
+        .builder
+        .build_call(slot_take_handle, &[slot.into()], "suspending_accept_take")
+        .llvm_ctx("hew_read_slot_take_handle call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_read_slot_take_handle returned void".into())
+        })?;
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, term.result_dest)?;
+    if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingAccept result_dest must be a pointer-shaped Connection slot, got {dest_ty:?}"
+        )));
+    }
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, conn)
+        .llvm_ctx("suspending accept connection store")?;
+    fn_ctx
+        .builder
+        .build_call(slot_free, &[slot.into()], "suspending_accept_ok_free")
+        .llvm_ctx("hew_read_slot_free (ok) call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(resume_bb)
+        .llvm_ctx("suspending accept ok br")?;
 
     Ok(())
 }
@@ -21595,6 +21889,30 @@ fn store_empty_bytes<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, dest: Place) -> CodegenResu
         .builder
         .build_store(dest_ptr, struct_ty.const_zero())
         .llvm_ctx("store empty bytes")?;
+    Ok(())
+}
+
+/// Store an INVALID `Connection` (NEW-2) into a pointer-shaped opaque-handle
+/// slot: the integer `-1` reinterpreted as a pointer, mirroring the blocking
+/// `hew_tcp_accept` error return. The accept register-error edge binds this so
+/// the resumed handler sees an invalid connection (`hew_connection_is_valid`
+/// rejects it) rather than a deposited handle — fail-closed, never a panic.
+fn store_invalid_connection<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, dest: Place) -> CodegenResult<()> {
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    let BasicTypeEnum::PointerType(ptr_ty) = dest_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "store_invalid_connection: dest must be a pointer-shaped Connection slot, got {dest_ty:?}"
+        )));
+    };
+    let invalid = fn_ctx.ctx.i64_type().const_all_ones();
+    let invalid_ptr = fn_ctx
+        .builder
+        .build_int_to_ptr(invalid, ptr_ty, "invalid_connection")
+        .llvm_ctx("store invalid connection inttoptr")?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, invalid_ptr)
+        .llvm_ctx("store invalid connection")?;
     Ok(())
 }
 
@@ -24611,6 +24929,20 @@ fn lower_terminator<'ctx>(
                 cleanup: *cleanup,
             },
         )?,
+        Terminator::SuspendingAccept {
+            listener,
+            result_dest,
+            resume,
+            cleanup,
+        } => emit_suspending_accept_terminator(
+            fn_ctx,
+            SuspendingAcceptEmit {
+                listener: *listener,
+                result_dest: *result_dest,
+                resume: *resume,
+                cleanup: *cleanup,
+            },
+        )?,
         Terminator::SuspendingCallClosure {
             callee,
             args,
@@ -26167,6 +26499,7 @@ fn declare_function<'ctx>(
                 | Terminator::SuspendingCallClosure { .. }
                 | Terminator::SuspendingStreamNext { .. }
                 | Terminator::SuspendingStreamSend { .. }
+                | Terminator::SuspendingAccept { .. }
         )
     });
     let return_ty_llvm = if is_coroutine {
@@ -26601,6 +26934,7 @@ fn lower_function<'ctx>(
                 | Terminator::SuspendingCallClosure { .. }
                 | Terminator::SuspendingStreamNext { .. }
                 | Terminator::SuspendingStreamSend { .. }
+                | Terminator::SuspendingAccept { .. }
         )
     });
 
@@ -28070,6 +28404,7 @@ fn build_module_for_target<'ctx>(
                                     | Terminator::SuspendingCallClosure { .. }
                                     | Terminator::SuspendingStreamNext { .. }
                                     | Terminator::SuspendingStreamSend { .. }
+                                    | Terminator::SuspendingAccept { .. }
                             )
                         })
                     })

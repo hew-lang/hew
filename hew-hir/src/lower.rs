@@ -3169,6 +3169,9 @@ fn collect_call_sites_in_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_call_sites_in_expr(conn, out, trait_out);
         }
+        HirExprKind::ListenerAwaitAccept { listener } => {
+            collect_call_sites_in_expr(listener, out, trait_out);
+        }
         HirExprKind::RemoteActorAsk {
             receiver,
             msg,
@@ -3610,6 +3613,10 @@ struct LowerCtx {
     /// method-call span (NEW-1). `true` = `read_string` (string-wrapped), `false`
     /// = raw `read`. HIR's `Expr::Await` arm consumes this to emit `ConnAwaitRead`.
     conn_await_reads: HashMap<SpanKey, bool>,
+    /// Checker-owned `await listener.accept()` suspending-accept sites keyed by
+    /// the inner method-call span (NEW-2). HIR's `Expr::Await` arm consumes this
+    /// to emit `ListenerAwaitAccept` — the sibling of `conn_await_reads`.
+    listener_await_accepts: std::collections::HashSet<SpanKey>,
     /// Checker-owned method-call receiver classifications. Used only to fail
     /// closed when the checker classified a receiver as actor-dispatchable but
     /// omitted the corresponding `actor_method_dispatch` discriminator.
@@ -4015,6 +4022,7 @@ impl LowerCtx {
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
             machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
             conn_await_reads: tc_output.conn_await_reads.clone(),
+            listener_await_accepts: tc_output.listener_await_accepts.clone(),
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -5710,6 +5718,9 @@ impl LowerCtx {
             }
             | HirExprKind::ConnAwaitRead { conn: object, .. } => {
                 self.wrap_var_self_explicit_expr_returns(object, receiver, abi_return_ty);
+            }
+            HirExprKind::ListenerAwaitAccept { listener } => {
+                self.wrap_var_self_explicit_expr_returns(listener, receiver, abi_return_ty);
             }
             HirExprKind::Index { container, index } => {
                 self.wrap_var_self_explicit_expr_returns(container, receiver, abi_return_ty);
@@ -8286,6 +8297,7 @@ impl LowerCtx {
                                 self.actor_method_dispatch.get(&inner_key),
                                 Some(ActorMethodKind::Ask(_, _))
                             ) || self.conn_await_reads.contains_key(&inner_key)
+                                || self.listener_await_accepts.contains(&inner_key)
                                 || self.is_stream_recv_await(&inner_key)
                         }
                         _ => false,
@@ -9856,6 +9868,43 @@ impl LowerCtx {
                             kind: HirExprKind::ConnAwaitRead {
                                 conn: Box::new(conn),
                                 to_string,
+                            },
+                            span: span.clone(),
+                        };
+                    }
+                }
+                // NEW-2: `await listener.accept()` — the checker recorded the
+                // inner method-call span as a suspending accept. Lower to
+                // `ListenerAwaitAccept` (MIR emits `SuspendingAccept` for a
+                // suspendable caller, else the blocking accept). The value type is
+                // the accept's return type (`Connection`), captured from the
+                // checker's resolved type table (falling back to the qualified
+                // opaque name, which the codegen handle map recognises).
+                if self
+                    .listener_await_accepts
+                    .contains(&SpanKey::from(&inner.1))
+                {
+                    if let Expr::MethodCall { receiver, .. } = &inner.0 {
+                        let listener = self.lower_expr(receiver, IntentKind::Read);
+                        let result_ty = self
+                            .resolved_expr_types
+                            .get(&SpanKey::from(&inner.1))
+                            .cloned()
+                            .unwrap_or(ResolvedTy::Named {
+                                name: "net.Connection".to_string(),
+                                args: vec![],
+                                builtin: None,
+                                is_opaque: true,
+                            });
+                        let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site: self.ids.site(),
+                            value_class,
+                            ty: result_ty,
+                            intent,
+                            kind: HirExprKind::ListenerAwaitAccept {
+                                listener: Box::new(listener),
                             },
                             span: span.clone(),
                         };
@@ -16258,6 +16307,9 @@ fn collect_captures_walk(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_captures_walk(conn, param_ids, seen, captures, self_id);
         }
+        HirExprKind::ListenerAwaitAccept { listener } => {
+            collect_captures_walk(listener, param_ids, seen, captures, self_id);
+        }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
@@ -16531,6 +16583,9 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_general_closure_captures_walk(conn, outer_bindings, seen, captures);
+        }
+        HirExprKind::ListenerAwaitAccept { listener } => {
+            collect_general_closure_captures_walk(listener, outer_bindings, seen, captures);
         }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
@@ -17199,6 +17254,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_hir_emitted_events_walk(conn, event_names, out);
+        }
+        HirExprKind::ListenerAwaitAccept { listener } => {
+            collect_hir_emitted_events_walk(listener, event_names, out);
         }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_hir_emitted_events_walk(value, event_names, out);
@@ -20117,6 +20175,9 @@ fn scan_expr_for_call_shape(
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
             scan_expr_for_call_shape(conn, callable, diagnostics);
+        }
+        HirExprKind::ListenerAwaitAccept { listener } => {
+            scan_expr_for_call_shape(listener, callable, diagnostics);
         }
         HirExprKind::NumericCast { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);

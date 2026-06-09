@@ -604,6 +604,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  conn-await-read to_string={to_string}").expect("write to string");
             dump_expr(out, conn, indent + 2);
         }
+        HirExprKind::ListenerAwaitAccept { listener } => {
+            writeln!(out, "{pad}  listener-await-accept").expect("write to string");
+            dump_expr(out, listener, indent + 2);
+        }
         HirExprKind::Select(select) => {
             writeln!(out, "{pad}  select arms={}", select.arms.len()).expect("write to string");
             for arm in &select.arms {

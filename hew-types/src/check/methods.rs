@@ -4130,10 +4130,23 @@ impl Checker {
                 self.conn_await_reads
                     .insert(SpanKey::from(span), method == "read_string");
             } else {
-                // The blocking-call warning is correct for a bare (non-awaited)
-                // `conn.read()`; suppress it when the read is the non-blocking
-                // suspending form (it no longer strands a worker).
-                self.warn_if_blocking_handle_method(name, method, span);
+                // NEW-2: `await listener.accept()` is the non-blocking suspending
+                // accept (the listener-readiness sibling of `await conn.read()`).
+                // Record the inner method-call span so HIR lowering emits
+                // `ListenerAwaitAccept` instead of the blocking `hew_tcp_accept`.
+                // Recognised ONLY directly under an `await`; a bare
+                // `listener.accept()` stays the blocking FFI call.
+                let is_listener_await_accept = self.inside_await_expr
+                    && (name == "Listener" || name == "net.Listener")
+                    && method == "accept";
+                if is_listener_await_accept {
+                    self.listener_await_accepts.insert(SpanKey::from(span));
+                } else {
+                    // The blocking-call warning is correct for a bare (non-awaited)
+                    // `conn.read()`; suppress it when the read is the non-blocking
+                    // suspending form (it no longer strands a worker).
+                    self.warn_if_blocking_handle_method(name, method, span);
+                }
             }
         }
 

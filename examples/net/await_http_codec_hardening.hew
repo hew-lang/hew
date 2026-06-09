@@ -1,0 +1,184 @@
+//! Status: runnable (NEW-2 async HTTP/1.1 codec hardening regressions)
+//! Description: Drives the async HTTP/1.1 codec fail-closed bounds directly (no
+//! sockets) — F2 size caps, F3 malformed-framing rejection, F4 CRLF smuggling.
+//!
+//! Each section fails the program (panicking assertion) if a malicious input is
+//! NOT rejected, so this is the executable regression for the security revision:
+//! oversized/over-declared requests fail closed (413 / -1), malformed framing
+//! fails closed (400), and CRLF in caller-provided builder fields is rejected
+//! (no injected header). A clean run prints `codec-hardening-ok`.
+
+import std::net::http::http_async_server;
+
+import std::net::http::http_async_client;
+
+import std::string;
+
+import std::testing;
+
+// ── F2: size caps fail closed (413 server / -1 client) ────────────────
+fn check_f2_size_caps() {
+    let nl = "\r\n";
+    // An enormous declared Content-Length is rejected with 413 (a peer can no
+    // longer force the server to wait for / buffer a giant body).
+    let over_declared = f"POST / HTTP/1.1{nl}Content-Length: 99999999{nl}{nl}";
+    testing.assert_true(http_async_server.over_limit(over_declared));
+    let req_over = http_async_server.parse_request(over_declared);
+    testing.assert_eq(req_over.reject_status(), 413);
+
+    // An unbounded head with no terminator is rejected once it crosses the
+    // header ceiling (no unbounded buffering of a header flood).
+    let huge_head = f"GET / HTTP/1.1{nl}X: " + string.repeat("a", 70000);
+    testing.assert_true(http_async_server.over_limit(huge_head));
+    let req_head = http_async_server.parse_request(huge_head);
+    testing.assert_eq(req_head.reject_status(), 413);
+
+    // The client side fails closed identically on an oversized response head.
+    let huge_resp = f"HTTP/1.1 200 OK{nl}X: " + string.repeat("b", 70000);
+    testing.assert_true(http_async_client.response_over_limit(huge_resp));
+    let resp = http_async_client.parse_response(huge_resp);
+    testing.assert_eq(resp.status(), -1);
+}
+
+// ── F3: malformed framing fails closed with 400 ───────────────────────
+fn check_f3_framing() {
+    let nl = "\r\n";
+    // A well-formed request passes (reject_status 0).
+    let ok = f"GET /hello HTTP/1.1{nl}Host: h{nl}{nl}";
+    testing.assert_eq(http_async_server.parse_request(ok).reject_status(), 0);
+
+    // Request line with the wrong token count → 400.
+    let two_token = f"GET /only{nl}{nl}";
+    testing.assert_eq(http_async_server.parse_request(two_token).reject_status(), 400);
+
+    // Unsupported HTTP version → 400.
+    let bad_ver = f"GET / HTTP/1.0{nl}{nl}";
+    testing.assert_eq(http_async_server.parse_request(bad_ver).reject_status(), 400);
+
+    // Non-origin target → 400.
+    let bad_target = f"GET haxor HTTP/1.1{nl}{nl}";
+    testing.assert_eq(http_async_server.parse_request(bad_target).reject_status(), 400);
+
+    // Transfer-Encoding is unsupported in this buffered codec → 400.
+    let te = f"POST / HTTP/1.1{nl}Transfer-Encoding: chunked{nl}{nl}";
+    testing.assert_eq(http_async_server.parse_request(te).reject_status(), 400);
+
+    // Duplicate / conflicting Content-Length → 400 (request smuggling vector).
+    let dup_cl = f"POST / HTTP/1.1{nl}Content-Length: 4{nl}Content-Length: 5{nl}{nl}body";
+    testing.assert_eq(http_async_server.parse_request(dup_cl).reject_status(), 400);
+
+    // Non-numeric Content-Length → 400 (was silently treated as 0 before).
+    let bad_cl = f"POST / HTTP/1.1{nl}Content-Length: abc{nl}{nl}";
+    testing.assert_eq(http_async_server.parse_request(bad_cl).reject_status(), 400);
+}
+
+// ── F4: CRLF in caller-provided builder fields is rejected ─────────────
+fn check_f4_crlf() {
+    // A path carrying an embedded CRLF would inject a header / split the request
+    // line — the client builder rejects it (empty string, request never sent).
+    let injected_path = http_async_client.build_request("GET", "h", "/x\r\nEvil: 1", "", "");
+    testing.assert_true(string.is_empty(injected_path));
+    testing.assert_false(string.contains(injected_path, "Evil"));
+
+    // A host carrying an embedded CRLF is likewise rejected.
+    let injected_host = http_async_client.build_request("GET", "h\r\nEvil: 1", "/x", "", "");
+    testing.assert_true(string.is_empty(injected_host));
+
+    // A method carrying a control character is rejected.
+    let injected_method = http_async_client.build_request("GE\nT", "h", "/x", "", "");
+    testing.assert_true(string.is_empty(injected_method));
+
+    // A bare-LF in a content type is rejected.
+    let injected_ct = http_async_client.build_request("POST", "h", "/x", "data", "text/plain\nEvil: 1");
+    testing.assert_true(string.is_empty(injected_ct));
+
+    // A clean request still builds and carries no injected header.
+    let clean = http_async_client.build_get("h", "/x");
+    testing.assert_false(string.is_empty(clean));
+    testing.assert_true(string.contains(clean, "GET /x HTTP/1.1"));
+
+    // The server response builder rejects a CRLF-bearing content type.
+    let injected_resp = http_async_server.build_response(200, "text/plain\r\nEvil: 1", "ok");
+    testing.assert_true(string.is_empty(injected_resp));
+    testing.assert_false(string.contains(injected_resp, "Evil"));
+
+    // A clean response still builds.
+    let clean_resp = http_async_server.response_text(200, "ok");
+    testing.assert_false(string.is_empty(clean_resp));
+}
+
+// ── SF1: overflowing numeric Content-Length fails closed (not bypass) ──
+fn check_sf1_content_length_overflow() {
+    let nl = "\r\n";
+    // A numeric Content-Length that OVERFLOWS i64 must not saturate to 0 and
+    // bypass the body cap — it fails closed with 413 on the server.
+    let overflow_cl = f"POST / HTTP/1.1{nl}Content-Length: 99999999999999999999999999{nl}{nl}";
+    testing.assert_true(http_async_server.over_limit(overflow_cl));
+    let req_overflow = http_async_server.parse_request(overflow_cl);
+    testing.assert_eq(req_overflow.reject_status(), 413);
+
+    // An oversized-but-non-overflowing Content-Length above the ceiling is also
+    // rejected (8 MiB + 1).
+    let oversized_cl = f"POST / HTTP/1.1{nl}Content-Length: 8388609{nl}{nl}";
+    testing.assert_eq(http_async_server.parse_request(oversized_cl).reject_status(), 413);
+
+    // The client side fails closed identically on an overflowing declared
+    // response Content-Length (status -1, not fail-open).
+    let overflow_resp = f"HTTP/1.1 200 OK{nl}Content-Length: 99999999999999999999999999{nl}{nl}x";
+    testing.assert_true(http_async_client.response_over_limit(overflow_resp));
+    testing.assert_eq(http_async_client.parse_response(overflow_resp).status(), -1);
+}
+
+// ── SF2: malformed response status lines fail closed (-1) ─────────────
+fn check_sf2_status_line() {
+    let nl = "\r\n";
+    // A non-HTTP version token with a numeric 2nd field is NOT a 200.
+    let bogus = f"BOGUS 200{nl}{nl}";
+    testing.assert_eq(http_async_client.parse_response(bogus).status(), -1);
+
+    // An unrecognised HTTP version is rejected.
+    let bad_ver = f"HTTP/9 200{nl}{nl}";
+    testing.assert_eq(http_async_client.parse_response(bad_ver).status(), -1);
+
+    // A response missing the CRLF-CRLF terminator is not fully framed → -1.
+    let no_term = f"HTTP/1.1 200 OK{nl}Content-Length: 0{nl}";
+    testing.assert_eq(http_async_client.parse_response(no_term).status(), -1);
+
+    // A non-3-digit and an out-of-range status are rejected.
+    let two_digit = f"HTTP/1.1 20 OK{nl}{nl}";
+    testing.assert_eq(http_async_client.parse_response(two_digit).status(), -1);
+    let out_of_range = f"HTTP/1.1 700 Nope{nl}{nl}";
+    testing.assert_eq(http_async_client.parse_response(out_of_range).status(), -1);
+
+    // A well-formed status line (incl. HTTP/1.0) still parses to its code.
+    let ok11 = f"HTTP/1.1 200 OK{nl}{nl}body";
+    testing.assert_eq(http_async_client.parse_response(ok11).status(), 200);
+    let ok10 = f"HTTP/1.0 404 Not Found{nl}{nl}";
+    testing.assert_eq(http_async_client.parse_response(ok10).status(), 404);
+}
+
+// ── SF3: request header line without a colon fails closed (400) ───────
+fn check_sf3_colonless_header() {
+    let nl = "\r\n";
+    // A header line with no ':' name/value separator is malformed → 400.
+    let bad_header = f"GET / HTTP/1.1{nl}BadHeader{nl}{nl}";
+    testing.assert_eq(http_async_server.parse_request(bad_header).reject_status(), 400);
+
+    // A header line with an empty name (leading ':') is likewise rejected.
+    let empty_name = f"GET / HTTP/1.1{nl}: value{nl}{nl}";
+    testing.assert_eq(http_async_server.parse_request(empty_name).reject_status(), 400);
+
+    // Well-formed headers still pass.
+    let ok = f"GET / HTTP/1.1{nl}Host: h{nl}X-Trace: 1{nl}{nl}";
+    testing.assert_eq(http_async_server.parse_request(ok).reject_status(), 0);
+}
+
+fn main() {
+    check_f2_size_caps();
+    check_f3_framing();
+    check_f4_crlf();
+    check_sf1_content_length_overflow();
+    check_sf2_status_line();
+    check_sf3_colonless_header();
+    println("codec-hardening-ok");
+}

@@ -168,6 +168,13 @@ pub struct TypeCheckOutput {
     /// read) instead of the blocking method call. The `bool` is `true` for
     /// `read_string` (bytes-to-string wrap), `false` for raw `read`.
     pub conn_await_reads: HashMap<SpanKey, bool>,
+    /// Checker-resolved `await listener.accept()` sites, keyed by the inner
+    /// method-call span (NEW-2). Populated when an `await` wraps a
+    /// `net.Listener::accept` call. HIR lowering consumes this to emit
+    /// `HirExprKind::ListenerAwaitAccept` (the non-blocking suspending accept)
+    /// instead of the blocking method call — the listener-readiness sibling of
+    /// [`TypeCheckOutput::conn_await_reads`].
+    pub listener_await_accepts: HashSet<SpanKey>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
@@ -887,6 +894,7 @@ impl Default for TypeCheckOutput {
             actor_method_dispatch: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
+            listener_await_accepts: HashSet::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
@@ -1823,6 +1831,9 @@ pub struct Checker {
     /// `await conn.read()` suspending-read sites. Mirrors
     /// [`TypeCheckOutput::conn_await_reads`].
     pub(super) conn_await_reads: HashMap<SpanKey, bool>,
+    /// `await listener.accept()` suspending-accept sites. Mirrors
+    /// [`TypeCheckOutput::listener_await_accepts`].
+    pub(super) listener_await_accepts: HashSet<SpanKey>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     /// Diagnostic-only stack-allocation hints accumulated by `classify_stack_hints`.
@@ -2275,6 +2286,7 @@ impl Checker {
             actor_method_dispatch: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
+            listener_await_accepts: HashSet::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             stack_hints: Vec::new(),

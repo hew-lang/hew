@@ -1,0 +1,89 @@
+// examples/distributed/kv_server.hew — KV-store server node
+//
+// Hosts a KeyValue actor and exposes it via the Node registry over TCP.
+// A client connects and exercises put/get round-trips.
+//
+// Run:
+//   hew run examples/distributed/kv_server.hew
+//
+// Then in another terminal:
+//   hew run examples/distributed/kv_client.hew
+//
+// Or via the harness:
+//   .tmp/run-node-e2e.sh
+
+import std::os;
+
+// `record` is Serializable (required for RemotePid messaging).
+record KvPut {
+    key: string,
+    val: string,
+}
+
+enum KvReq {
+    Put(KvPut);
+    GetKey(string);
+}
+
+enum KvResp {
+    Ack;
+    Value(string);
+}
+
+actor KeyValue {
+    let store: HashMap<string, string>;
+
+    receive fn handle(req: KvReq) -> KvResp {
+        match req {
+            KvReq::Put(kv) => {
+                store.insert(kv.key, kv.val);
+                KvResp::Ack
+            },
+            KvReq::GetKey(k) => {
+                match store.get(k) {
+                    Some(v) => KvResp::Value(v),
+                    None => KvResp::Value(""),
+                }
+            },
+        }
+    }
+
+    receive fn count() -> i64 {
+        store.len()
+    }
+}
+
+impl ActorMsg for KeyValue {
+    type Msg = KvReq;
+    type Reply = KvResp;
+}
+
+fn main() {
+    var port: string = "9100";
+    if os.args_count() > 1 {
+        port = os.args(1);
+    }
+    let addr = f"0.0.0.0:{port}";
+    println(f"[kv-server] starting on {addr}");
+    Node::set_transport("tcp");
+    Node::start(addr);
+    println("[kv-server] node started");
+
+    let s: HashMap<string, string> = HashMap::new();
+    let kv = spawn KeyValue(store: s);
+    Node::register("kv", kv);
+    println("[kv-server] 'kv' actor registered; waiting for client...");
+
+    // Wait for client to connect and run assertions.
+    // Client sleeps 500ms before connecting, 1000ms for gossip, then exercises the actor.
+    sleep_ms(10000);
+
+    let n = await kv.count();
+    match n {
+        Ok(cnt) => println(f"[kv-server] entries stored: {cnt}"),
+        Err(_) => println("[kv-server] count ask failed"),
+    }
+
+    Node::shutdown();
+    println("[kv-server] shutdown complete");
+}

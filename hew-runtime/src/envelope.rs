@@ -562,15 +562,12 @@ pub fn encode_control_frame(frame: &ControlFrame) -> Result<Vec<u8>, EncodeError
 ///
 /// # Errors
 ///
-/// Returns [`EncodeError::InvalidMsgType`] when `msg_type` is outside the
-/// runtime dispatch range and [`EncodeError::Cbor`] when ciborium fails to
-/// serialise the frame.
+/// Returns [`EncodeError::Cbor`] when ciborium fails to serialise the frame.
 pub fn encode_envelope_frame(frame: &EnvelopeFrame) -> Result<Vec<u8>, EncodeError> {
-    if !(0..=65_535).contains(&frame.msg_type) {
-        return Err(EncodeError::InvalidMsgType {
-            msg_type: frame.msg_type,
-        });
-    }
+    // msg_type is the full i32 range — the Hew codegen uses hashed i32 discriminants
+    // that may be negative. The CBOR Integer type covers this range on both encode and
+    // decode sides. The original 0..=65535 guard was narrower than the field type and
+    // blocked cross-node sends from compiled Hew programs.
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(frame, &mut bytes)?;
     Ok(bytes)

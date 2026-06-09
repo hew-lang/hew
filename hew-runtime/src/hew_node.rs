@@ -2010,8 +2010,60 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
 // interface for the compiler-generated code. Each corresponds to a
 // `Node::*` builtin in the Hew language.
 
-/// Counter for auto-assigning node IDs.
-static NODE_ID_COUNTER: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(1);
+/// Per-process offset for auto-assigning node IDs within the same process.
+///
+/// When a process calls `Node::start` more than once, each call gets a
+/// distinct offset added to the process base.
+static NODE_ID_COUNTER: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// Per-process base node ID, initialised once from the OS process ID.
+///
+/// # Shim note
+///
+/// WHY: The original counter started every process at 1, so every OS process
+/// produced `node_id` == 1, causing `hew_pid_is_local` to misclassify remote
+/// actors as local and bypass TCP routing. Seeding from the OS PID makes
+/// distinct processes get distinct node IDs for the v0.5 two-process case.
+///
+/// WHEN obsolete: when a proper collision-free node-ID assignment scheme is
+/// implemented — either a coordinator-assigned ID exchanged during the
+/// connection handshake, or a wider (> u16) node-ID space. The birthday
+/// bound on u16 is ~180 processes for a 50 % collision probability.
+///
+/// WHAT the real solution looks like: the connecting node sends no ID; the
+/// accepting node assigns a unique u32/u64 scope ID during the handshake,
+/// which both sides then embed in all PIDs for that session.
+static PROCESS_NODE_BASE: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+/// Derive a non-zero u16 node-ID base from the OS process ID.
+///
+/// Uses a FNV-1a–style fold to spread the PID bits across the full u16
+/// range, then forces non-zero (0 is reserved for "local/standalone" in
+/// the PID encoding).
+fn process_node_id_base() -> u16 {
+    *PROCESS_NODE_BASE.get_or_init(|| {
+        let pid = std::process::id(); // u32 OS PID
+                                      // FNV-1a 32-bit fold into 16 bits.
+        let h = (2_166_136_261u32)
+            .wrapping_mul(16_777_619)
+            .wrapping_add(pid)
+            .wrapping_mul(16_777_619)
+            .wrapping_add(pid >> 8)
+            .wrapping_mul(16_777_619)
+            .wrapping_add(pid >> 16);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "XOR of two u16-range halves of a u32 always fits in u16"
+        )]
+        let folded = ((h >> 16) ^ (h & 0xFFFF)) as u16;
+        // Ensure non-zero (0 is "local" in the PID encoding).
+        if folded == 0 {
+            1
+        } else {
+            folded
+        }
+    })
+}
 
 /// `Node::start(addr)` — Create and start a node, binding to `addr`.
 ///
@@ -2024,7 +2076,10 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         set_last_error("Node::start: address is null");
         return -1;
     }
-    let node_id = NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    // Each call within the same process adds a small offset to the process
+    // base so multiple Node::start calls don't collide with each other.
+    let offset = NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let node_id = process_node_id_base().wrapping_add(offset);
     // SAFETY: addr was null-checked above and is a valid C string.
     let node = unsafe { hew_node_new(node_id, addr) };
     if node.is_null() {

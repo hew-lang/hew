@@ -8,12 +8,11 @@ use hew_runtime::cluster::{GOSSIP_REGISTRY_ADD, GOSSIP_REGISTRY_REMOVE};
 use hew_runtime::envelope::{
     decode_control_frame, decode_envelope_frame, decode_registry_gossip_payload,
     decode_swim_payload, decode_wire_frame, encode_control_frame, encode_envelope_frame,
-    encode_registry_gossip_payload, encode_swim_payload, ControlFrame, DecodeError, EncodeError,
-    EnvelopeFrame, RegistryGossipPayload, RegistryGossipPayloadError, SwimControlPayload,
-    SwimGossipEntry, SwimPayloadError, WireFrame, CTRL_REGISTRY_GOSSIP, FRAME_TYPE_CONTROL,
-    FRAME_TYPE_ENVELOPE, MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES,
-    MAX_SWIM_GOSSIP_ENTRIES, MAX_SWIM_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD,
-    REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
+    encode_registry_gossip_payload, encode_swim_payload, ControlFrame, DecodeError, EnvelopeFrame,
+    RegistryGossipPayload, RegistryGossipPayloadError, SwimControlPayload, SwimGossipEntry,
+    SwimPayloadError, WireFrame, CTRL_REGISTRY_GOSSIP, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE,
+    MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES, MAX_SWIM_GOSSIP_ENTRIES,
+    MAX_SWIM_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
 
 fn to_cbor<T: serde::Serialize>(value: &T) -> Vec<u8> {
@@ -514,25 +513,23 @@ fn public_encoder_preserves_integer_width_boundaries_and_msg_type_gate() {
         assert_eq!(from_cbor::<ControlFrame>(&to_cbor(&control)), control);
     }
 
-    for msg_type in [0, 1, 65_535] {
+    // The encoder accepts the full i32 range — Hew codegen uses hashed i32
+    // discriminants that may be negative. CBOR Integer covers this range on
+    // both the encode and decode paths.
+    for msg_type in [0, 1, 65_535, -1, i32::MIN, i32::MAX, 65_536] {
         let frame = EnvelopeFrame {
             msg_type,
             ..minimal_envelope()
         };
-        assert!(encode_envelope_frame(&frame).is_ok());
-    }
-
-    for msg_type in [-1, i32::MIN, i32::MAX, 65_536] {
-        let frame = EnvelopeFrame {
-            msg_type,
-            ..minimal_envelope()
-        };
+        let encoded = encode_envelope_frame(&frame);
         assert!(
-            matches!(
-                encode_envelope_frame(&frame),
-                Err(EncodeError::InvalidMsgType { msg_type: found }) if found == msg_type
-            ),
-            "msg_type {msg_type} must be rejected by the public encoder"
+            encoded.is_ok(),
+            "msg_type {msg_type} must be accepted by the public encoder"
+        );
+        assert_eq!(
+            decode_envelope_frame(&encoded.unwrap()).unwrap().msg_type,
+            msg_type,
+            "msg_type {msg_type} must round-trip through encode/decode"
         );
     }
 }

@@ -2174,11 +2174,17 @@ mod tests {
             waiter_events.pop_blocking()
         });
 
-        for _ in 0..1_000 {
-            if started.load(Ordering::Acquire) {
-                break;
-            }
-            thread::yield_now();
+        // Wait for the waiter thread to start. A bounded `yield_now` spin is too
+        // short on Windows, where thread-spawn latency can exceed the spin budget
+        // (the main thread finishes spinning before the new thread runs at all).
+        // Poll with a sleep up to a generous deadline instead.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !started.load(Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "waiter thread did not start"
+            );
+            thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(
             started.load(Ordering::Acquire),

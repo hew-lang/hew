@@ -22,7 +22,12 @@ hew-parser = { path = "../hew-parser" }
 # (.claude/worktrees/c1-backend-probe @ e6c83faa) established this version
 # empirically against Homebrew llvm@22, and the release/tooling surface keeps
 # LLVM 22 as the shared major across the codebase.
-inkwell = { version = "0.9", features = ["llvm22-1"] }
+inkwell = { version = "0.9", default-features = false, features = [
+  "llvm22-1",
+  "target-x86",
+  "target-aarch64",
+  "target-webassembly",
+] }
 
 [dev-dependencies]
 hew-testutil = { path = "../hew-testutil" }

@@ -1041,7 +1041,12 @@ pub use platform::HewIoPoller;
 // (`crate::reactor`) can drive the poller directly without an FFI round-trip.
 // These are `#[no_mangle] extern "C"` for the codegen/runtime boundary; the
 // re-export only adds a Rust path, it does not change the ABI.
-#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+//
+// Re-exported unconditionally: both the real Unix poller (epoll/kqueue) and the
+// fail-closed stub module (Windows and other unsupported targets) define all
+// five entry points, so consumers can name `crate::io_time::hew_io_poller_*`
+// on every non-wasm target. (Gating this to Unix previously left the symbols
+// unreachable on Windows even though the stub `platform` module defines them.)
 pub use platform::{
     hew_io_poller_new, hew_io_poller_poll_ready, hew_io_poller_register, hew_io_poller_stop,
     hew_io_poller_unregister,

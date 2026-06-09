@@ -6,6 +6,11 @@
 //! them to the actor's `on_data` handler — no blocking read on a scheduler
 //! worker. This is the substrate beneath the active-mode echo/web/redis
 //! servers; it must RUN, not merely type-check.
+//!
+//! Gated to Unix: the active-mode reactor uses epoll/kqueue over raw socket
+//! fds and is fail-closed (stubbed) on non-Unix targets, where `hew_tcp_attach`
+//! intentionally returns an error. Windows active-mode I/O is a punch-list item.
+#![cfg(unix)]
 #![expect(
     clippy::undocumented_unsafe_blocks,
     reason = "FFI e2e test asserts raw ABI behaviour directly"

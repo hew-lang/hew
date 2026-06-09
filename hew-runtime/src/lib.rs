@@ -537,9 +537,15 @@ pub mod pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod process;
 /// Active-mode network I/O reactor ("I/O completion as a mailbox message").
-/// Native-only: uses epoll/kqueue + an OS thread. WASM fails closed via the
-/// type checker's `WasmUnsupportedFeature::TcpNetworking` gate.
-#[cfg(not(target_arch = "wasm32"))]
+/// Unix-only: uses epoll/kqueue + an OS thread over raw socket fds. WASM fails
+/// closed via the type checker's `WasmUnsupportedFeature::TcpNetworking` gate.
+/// Windows (and any other non-Unix native target) gets a fail-closed stub
+/// (`reactor_stub.rs`) that keeps the cross-module entry points but reports
+/// active mode as unavailable until a real IOCP/readiness backend exists.
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+pub mod reactor;
+#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[path = "reactor_stub.rs"]
 pub mod reactor;
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]

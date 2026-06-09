@@ -4,7 +4,10 @@
 //! the runtime's own connect/accept path, call `hew_tcp_stream_from_conn`,
 //! and verify the resulting stream and sink behave correctly.
 
-#![cfg(not(target_arch = "wasm32"))]
+// Uses Unix raw-fd socket options (SO_LINGER via setsockopt on a RawFd) to
+// force an RST; there is no portable Windows equivalent here, so this oracle is
+// Unix-only. Windows TCP bridge coverage is tracked in the readiness punch-list.
+#![cfg(unix)]
 
 use std::ffi::CString;
 use std::io::Write;

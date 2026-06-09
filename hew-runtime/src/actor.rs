@@ -2676,6 +2676,13 @@ pub unsafe extern "C" fn hew_actor_try_send(
 ///
 /// Same requirements as [`hew_actor_try_send`].
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "only consumed by the Unix active-mode reactor; the reactor is stubbed out (fail-closed) on non-Unix targets"
+    )
+)]
 pub(crate) unsafe fn hew_actor_send_guaranteed(
     actor: *mut HewActor,
     msg_type: i32,
@@ -5841,6 +5848,7 @@ mod tests {
     /// under a sanitizer). Verified: reverting the producer-side re-check makes
     /// this test fail at the `rc == -2` assertion with the observed `rc == 0`.
     #[test]
+    #[cfg(unix)]
     fn free_refuses_actor_woken_by_reactor_during_detach() {
         let _guard = crate::runtime_test_guard();
         // Worker-less scheduler: sched_enqueue works, nothing drains the queue.

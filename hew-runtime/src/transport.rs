@@ -318,6 +318,13 @@ pub unsafe extern "C" fn hew_actor_ref_is_alive(ref_ptr: *const HewActorRef) -> 
 /// actor reference, or null for a REMOTE reference. Used by the active-mode
 /// reactor, which only supports local actors (mirrors the websocket attach
 /// reader's `actor_ref_local_actor`).
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "only consumed by the Unix active-mode reactor; the reactor is stubbed out (fail-closed) on non-Unix targets"
+    )
+)]
 pub(crate) fn actor_ref_local_ptr(actor_ref: &HewActorRef) -> *mut c_void {
     if actor_ref.kind != ACTOR_REF_LOCAL {
         return std::ptr::null_mut();
@@ -913,6 +920,13 @@ pub(crate) fn tcp_conn_raw_fd(handle: c_int) -> Option<c_int> {
 
 /// Put a TCP connection handle's socket into non-blocking mode (active mode
 /// reads must never park the reactor thread). Returns `true` on success.
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "only consumed by the Unix active-mode reactor; the reactor is stubbed out (fail-closed) on non-Unix targets"
+    )
+)]
 pub(crate) fn tcp_conn_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
     TCP_API_STATE.access(|state| {
         state

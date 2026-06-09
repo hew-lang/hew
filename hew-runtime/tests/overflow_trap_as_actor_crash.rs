@@ -311,7 +311,14 @@ fn overflow_trap_surfaces_as_actor_crash_not_process_abort() {
         //   - aarch64 macOS:          brk #1    → SIGILL = 4
         //   - aarch64 Linux:          brk #1    → SIGTRAP = 5
         let sigill: i32 = libc::SIGILL;
+        // The MSVC CRT does not define SIGTRAP; the runtime uses the canonical
+        // POSIX number (5) as a raw signal id and Windows never delivers it for
+        // a trap (EXCEPTION_ILLEGAL_INSTRUCTION maps to SIGILL=4). Use the
+        // numeric value directly off-Unix so the assertion stays portable.
+        #[cfg(unix)]
         let sigtrap: i32 = libc::SIGTRAP;
+        #[cfg(not(unix))]
+        let sigtrap: i32 = 5;
         assert!(
             crash_signal == sigill || crash_signal == sigtrap,
             "overflow trap must deliver SIGILL ({sigill}) or SIGTRAP ({sigtrap}), \

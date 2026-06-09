@@ -190,7 +190,26 @@ unsafe fn clone_result_string(ptr: *const c_char, context: &str) -> *mut c_char 
 // C ABI exports
 // ---------------------------------------------------------------------------
 
-/// Run a command via the system shell (`sh -c "cmd"`) and wait for completion.
+/// Build a [`Command`] that runs `cmd_str` through the platform's system shell:
+/// `sh -c "cmd"` on Unix, `cmd /C "cmd"` on Windows. Centralised so the
+/// shell-based run/spawn entry points stay portable.
+fn shell_command(cmd_str: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("cmd");
+        command.arg("/C").arg(cmd_str);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(cmd_str);
+        command
+    }
+}
+
+/// Run a command via the system shell (`sh -c "cmd"` on Unix, `cmd /C "cmd"` on
+/// Windows) and wait for completion.
 ///
 /// Returns a heap-allocated [`HewProcessResult`], or null on error.
 /// The caller must free the result with [`hew_process_result_free`].
@@ -204,8 +223,7 @@ pub unsafe extern "C" fn hew_process_run(cmd: *const c_char) -> *mut HewProcessR
     let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_run") }) else {
         return std::ptr::null_mut();
     };
-    let mut command = Command::new("sh");
-    command.arg("-c").arg(cmd_str);
+    let mut command = shell_command(cmd_str);
     command_output_to_result(&mut command, "hew_process_run", cmd_str)
 }
 
@@ -291,7 +309,8 @@ pub unsafe extern "C" fn hew_process_run_argv(
     command_output_to_result(&mut command, "hew_process_run_argv", cmd_str)
 }
 
-/// Spawn a command via the system shell (`sh -c "cmd"`) without waiting.
+/// Spawn a command via the system shell (`sh -c "cmd"` on Unix, `cmd /C "cmd"`
+/// on Windows) without waiting.
 ///
 /// Returns a heap-allocated [`HewProcess`] handle, or null on error.
 /// The caller must free the handle with [`hew_process_free`].
@@ -305,7 +324,7 @@ pub unsafe extern "C" fn hew_process_spawn(cmd: *const c_char) -> *mut HewProces
     let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_spawn") }) else {
         return std::ptr::null_mut();
     };
-    match Command::new("sh").arg("-c").arg(cmd_str).spawn() {
+    match shell_command(cmd_str).spawn() {
         Ok(child) => {
             crate::hew_clear_error();
             Box::into_raw(Box::new(HewProcess {
@@ -548,6 +567,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_args_echo() {
         let cmd = CString::new("echo").unwrap();
         let first_arg = CString::new("hello").unwrap();
@@ -569,6 +589,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_argv_preserves_spaced_and_empty_arguments() {
         let cmd = CString::new("printf").unwrap();
         let fmt = CString::new("<%s>|<%s>|<%s>").unwrap();
@@ -667,6 +688,11 @@ mod tests {
 
     #[test]
     fn spawn_and_kill() {
+        // A long-running command via the system shell: `sleep` on Unix has no
+        // Windows builtin, so use `ping` as a portable ~minute-long sleep there.
+        #[cfg(windows)]
+        let cmd = CString::new("ping -n 61 127.0.0.1 >NUL").unwrap();
+        #[cfg(not(windows))]
         let cmd = CString::new("sleep 60").unwrap();
         // SAFETY: cmd is a valid NUL-terminated C string.
         let proc = unsafe { hew_process_spawn(cmd.as_ptr()) };

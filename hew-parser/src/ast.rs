@@ -680,6 +680,14 @@ pub enum Visibility {
 
 impl Visibility {
     /// Returns `true` when the item has any public visibility (`pub`, `pub(package)`, or `pub(super)`).
+    ///
+    /// **v0.5 note:** `pub(package)` and `pub(super)` are parsed but treated as
+    /// fully public — they resolve to the same visibility as bare `pub` at this
+    /// call site and everywhere the compiler inspects item visibility.  Stricter
+    /// enforcement of the restricted forms is forward-compatible: code that
+    /// compiles today will keep compiling when the restriction is applied, because
+    /// callers that are already within the allowed scope won't be affected.
+    /// Planned for v0.6.
     #[must_use]
     pub fn is_pub(self) -> bool {
         self != Self::Private
@@ -711,6 +719,22 @@ pub struct FnDecl {
     /// Byte span from the `fn` keyword through the byte after the closing `}`.
     #[serde(default)]
     pub fn_span: Span,
+    /// Intrinsic key from `#[intrinsic("name")]`, if present.
+    ///
+    /// When `Some`, this function is a compiler-intrinsic declaration: the body
+    /// is a stub (empty block or semicolon) and the named intrinsic key is the
+    /// dispatch authority used by HIR/MIR/codegen. The checker validates the key
+    /// against the known intrinsic catalog at registration time.
+    ///
+    /// WHY: the catalog previously conjured `CompilerIntrinsic` entries with no
+    /// Hew-side declaration. This field enables typed declarations that the checker
+    /// can validate, making the intrinsic surface opt-in and fail-closed.
+    /// WHEN-OBSOLETE: when all catalog `CompilerIntrinsic` rows have been migrated
+    /// to `#[intrinsic]` declarations (slices 4–7).
+    /// WHAT: add `#[intrinsic("key")]` declarations to stdlib `.hew` files and
+    /// remove the corresponding catalog rows in the migration slices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intrinsic: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

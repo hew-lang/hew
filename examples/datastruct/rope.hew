@@ -1,5 +1,5 @@
 // Simplified Rope - binary tree of integer sequences
-// Nodes stored in Vec<int>, each node = 5 fields:
+// Nodes stored in Vec<i64>, each node = 5 fields:
 //   [left_idx, right_idx, weight, data_start, data_len]
 // left_idx/right_idx: index of child node (0-based, -1 = no child)
 // weight: total length of left subtree (for indexing)
@@ -7,32 +7,32 @@
 // Internal nodes have data_len = 0
 
 // Node field offsets
-fn node_left(nodes: Vec<int>, node: int) -> int {
+fn node_left(nodes: Vec<i64>, node: i64) -> i64 {
     nodes.get(node * 5)
 }
 
-fn node_right(nodes: Vec<int>, node: int) -> int {
+fn node_right(nodes: Vec<i64>, node: i64) -> i64 {
     nodes.get(node * 5 + 1)
 }
 
-fn node_weight(nodes: Vec<int>, node: int) -> int {
+fn node_weight(nodes: Vec<i64>, node: i64) -> i64 {
     nodes.get(node * 5 + 2)
 }
 
-fn node_data_start(nodes: Vec<int>, node: int) -> int {
+fn node_data_start(nodes: Vec<i64>, node: i64) -> i64 {
     nodes.get(node * 5 + 3)
 }
 
-fn node_data_len(nodes: Vec<int>, node: int) -> int {
+fn node_data_len(nodes: Vec<i64>, node: i64) -> i64 {
     nodes.get(node * 5 + 4)
 }
 
-fn is_leaf(nodes: Vec<int>, node: int) -> bool {
+fn is_leaf(nodes: Vec<i64>, node: i64) -> bool {
     node_data_len(nodes, node) > 0
 }
 
 // Add a new node, return its index
-fn add_node(nodes: Vec<int>, left: int, right: int, weight: int, dstart: int, dlen: int) -> int {
+fn add_node(nodes: Vec<i64>, left: i64, right: i64, weight: i64, dstart: i64, dlen: i64) -> i64 {
     let idx = nodes.len() / 5;
     nodes.push(left);
     nodes.push(right);
@@ -43,18 +43,18 @@ fn add_node(nodes: Vec<int>, left: int, right: int, weight: int, dstart: int, dl
 }
 
 // Create a leaf node from data[start..start+len]
-fn make_leaf(nodes: Vec<int>, start: int, len: int) -> int {
+fn make_leaf(nodes: Vec<i64>, start: i64, len: i64) -> i64 {
     add_node(nodes, 0 - 1, 0 - 1, len, start, len)
 }
 
 // Concat two rope subtrees: create internal node
-fn rope_concat(nodes: Vec<int>, left: int, right: int) -> int {
+fn rope_concat(nodes: Vec<i64>, left: i64, right: i64) -> i64 {
     let left_total = rope_length(nodes, left);
     add_node(nodes, left, right, left_total, 0, 0)
 }
 
 // Total length of rope subtree
-fn rope_length(nodes: Vec<int>, node: int) -> int {
+fn rope_length(nodes: Vec<i64>, node: i64) -> i64 {
     if node < 0 {
         return 0;
     }
@@ -67,7 +67,7 @@ fn rope_length(nodes: Vec<int>, node: int) -> int {
 }
 
 // Index into rope: get the i-th element
-fn rope_index(nodes: Vec<int>, data: Vec<int>, node: int, idx: int) -> int {
+fn rope_index(nodes: Vec<i64>, data: Vec<i64>, node: i64, idx: i64) -> i64 {
     if is_leaf(nodes, node) {
         let start = node_data_start(nodes, node);
         data.get(start + idx)
@@ -84,7 +84,7 @@ fn rope_index(nodes: Vec<int>, data: Vec<int>, node: int, idx: int) -> int {
 }
 
 // Collect all elements in order into a result Vec
-fn rope_collect(nodes: Vec<int>, data: Vec<int>, node: int, result: Vec<int>) -> int {
+fn rope_collect(nodes: Vec<i64>, data: Vec<i64>, node: i64, result: Vec<i64>) -> i64 {
     if node < 0 {
         return 0;
     }
@@ -107,7 +107,7 @@ fn main() {
     var passed = 0;
     var failed = 0;
     // Data array: [10, 20, 30, 40, 50, 60, 70, 80]
-    let data: Vec<int> = Vec::new();
+    let data: Vec<i64> = Vec::new();
     data.push(10);
     data.push(20);
     data.push(30);
@@ -116,7 +116,7 @@ fn main() {
     data.push(60);
     data.push(70);
     data.push(80);
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     // Create leaves: [10,20,30] and [40,50] and [60,70,80]
     let leaf1 = make_leaf(nodes, 0, 3); // data[0..3] = [10,20,30]
     let leaf2 = make_leaf(nodes, 3, 2); // data[3..5] = [40,50]
@@ -217,7 +217,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: Collect all elements in order
-    let collected: Vec<int> = Vec::new();
+    let collected: Vec<i64> = Vec::new();
     rope_collect(nodes, data, abc, collected);
     var col_ok = 1;
     if collected.len() != 8 {
@@ -239,8 +239,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 8: Build rope with different tree shape (right-heavy)
-    let nodes2: Vec<int> = Vec::new();
-    let data2: Vec<int> = Vec::new();
+    let nodes2: Vec<i64> = Vec::new();
+    let data2: Vec<i64> = Vec::new();
     data2.push(1);
     data2.push(2);
     data2.push(3);
@@ -277,8 +277,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 9: Single element rope
-    let nodes3: Vec<int> = Vec::new();
-    let data3: Vec<int> = Vec::new();
+    let nodes3: Vec<i64> = Vec::new();
+    let data3: Vec<i64> = Vec::new();
     data3.push(99);
     let single = make_leaf(nodes3, 0, 1);
     if rope_length(nodes3, single) == 1 {
@@ -294,8 +294,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 10: Concat single elements
-    let nodes4: Vec<int> = Vec::new();
-    let data4: Vec<int> = Vec::new();
+    let nodes4: Vec<i64> = Vec::new();
+    let data4: Vec<i64> = Vec::new();
     data4.push(100);
     data4.push(200);
     data4.push(300);

@@ -61,7 +61,7 @@ fn net_result_from_status(status: i32) -> Result<(), fs.IoError> { // INTERNAL-A
         let _ = unsafe {
             hew_stream_last_error()
         };
-        Err(fs.io_error_from_errno(errno as int))
+        Err(fs.io_error_from_errno(errno as i64))
     } else {
         Ok(())
     }
@@ -133,12 +133,12 @@ trait ConnectionMethods {
     /// Set the read timeout in milliseconds.
     ///
     /// Pass a negative value to clear the timeout.
-    fn set_read_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError>;
+    fn set_read_timeout(conn: Connection, ms: i64) -> Result<(), fs.IoError>;
 
     /// Set the write timeout in milliseconds.
     ///
     /// Pass a negative value to clear the timeout.
-    fn set_write_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError>;
+    fn set_write_timeout(conn: Connection, ms: i64) -> Result<(), fs.IoError>;
 }
 
 impl ConnectionMethods for Connection {
@@ -177,13 +177,13 @@ impl ConnectionMethods for Connection {
         };
     }
     /// Set the read timeout in milliseconds.
-    fn set_read_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError> {
+    fn set_read_timeout(conn: Connection, ms: i64) -> Result<(), fs.IoError> {
         net_result_from_status(unsafe {
             hew_tcp_set_read_timeout(conn, ms as i32)
         })
     }
     /// Set the write timeout in milliseconds.
-    fn set_write_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError> {
+    fn set_write_timeout(conn: Connection, ms: i64) -> Result<(), fs.IoError> {
         net_result_from_status(unsafe {
             hew_tcp_set_write_timeout(conn, ms as i32)
         })
@@ -229,7 +229,7 @@ pub fn try_listen(addr: string) -> Result<Listener, fs.IoError> {
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(fs.io_error_from_errno(errno as int))
+            Err(fs.io_error_from_errno(errno as i64))
         }
     }
 }
@@ -272,7 +272,7 @@ pub fn try_connect(addr: string) -> Result<Connection, fs.IoError> {
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(fs.io_error_from_errno(errno as int))
+            Err(fs.io_error_from_errno(errno as i64))
         }
     }
 }
@@ -280,10 +280,10 @@ pub fn try_connect(addr: string) -> Result<Connection, fs.IoError> {
 /// Connect to a TCP server with a timeout.
 ///
 /// `timeout_sec` and `timeout_usec` specify the deadline.
-pub fn connect_timeout(addr: string, timeout_sec: int, timeout_usec: int) -> Connection {
+pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Connection {
     let colon = addr.find(":");
     var host = addr;
-    var port: int = 0;
+    var port: i64 = 0;
     if colon >= 0 {
         if colon == 0 {
             host = "127.0.0.1";
@@ -292,8 +292,8 @@ pub fn connect_timeout(addr: string, timeout_sec: int, timeout_usec: int) -> Con
         }
         port = string.to_int(addr.slice(colon + 1, addr.len()));
     }
-    let millis_per_second: int = 1000;
-    let micros_per_millisecond: int = 1000;
+    let millis_per_second: i64 = 1000;
+    let micros_per_millisecond: i64 = 1000;
     let timeout_ms = timeout_sec * millis_per_second + timeout_usec / micros_per_millisecond;
     unsafe {
         hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32)
@@ -303,7 +303,7 @@ pub fn connect_timeout(addr: string, timeout_sec: int, timeout_usec: int) -> Con
 /// Broadcast a message to all connections except the sender.
 ///
 /// Used in chat-server patterns to fan out messages.
-pub fn broadcast_except(sender: Connection, message: bytes) -> int {
+pub fn broadcast_except(sender: Connection, message: bytes) -> i64 {
     unsafe {
         hew_tcp_broadcast_except(sender, message)
     }
@@ -312,7 +312,7 @@ pub fn broadcast_except(sender: Connection, message: bytes) -> int {
 /// Broadcast a message to all connections except the sender.
 ///
 /// Used in chat-server patterns to fan out messages.
-pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<int, fs.IoError> {
+pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<i64, fs.IoError> {
     let n: i32 = unsafe {
         hew_tcp_broadcast_except(sender, message)
     };
@@ -323,9 +323,9 @@ pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<int, f
         unsafe {
             let _ = hew_stream_last_error();
         };
-        Err(fs.io_error_from_errno(errno as int))
+        Err(fs.io_error_from_errno(errno as i64))
     } else {
-        Ok(n as int)
+        Ok(n as i64)
     }
 }
 

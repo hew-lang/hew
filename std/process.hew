@@ -44,7 +44,7 @@ type Child {
 
 /// Captured output from a completed command.
 pub type CommandOutput {
-    exit_code: int;
+    exit_code: i64;
     stdout: string;
     stderr: string;
 }
@@ -60,25 +60,25 @@ trait ChildMethods {
     /// Block until the child process exits and return its exit code.
     ///
     /// Returns 0 for success, non-zero for failure.
-    fn wait(child: Child) -> int;
+    fn wait(child: Child) -> i64;
 
     /// Terminate the child process.
     ///
     /// Returns 0 on success, non-zero on error.
-    fn kill(child: Child) -> int;
+    fn kill(child: Child) -> i64;
 }
 
 impl ChildMethods for Child {
     /// Block until the child process exits and return its exit code.
-    fn wait(child: Child) -> int {
+    fn wait(child: Child) -> i64 {
         unsafe {
-            hew_process_wait(child) as int
+            hew_process_wait(child) as i64
         }
     }
     /// Terminate the child process.
-    fn kill(child: Child) -> int {
+    fn kill(child: Child) -> i64 {
         unsafe {
-            hew_process_kill(child) as int
+            hew_process_kill(child) as i64
         }
     }
 }
@@ -129,7 +129,7 @@ fn last_process_error(default_message: string) -> ProcessError {
 
 fn take_command_output(result: ProcessResultHandle) -> CommandOutput {
     unsafe {
-        let output = CommandOutput { exit_code: hew_process_result_exit_code(result) as int, stdout: hew_process_result_stdout(result), stderr: hew_process_result_stderr(result) };
+        let output = CommandOutput { exit_code: hew_process_result_exit_code(result) as i64, stdout: hew_process_result_stdout(result), stderr: hew_process_result_stderr(result) };
         hew_process_result_free(result);
         output
     }
@@ -211,7 +211,7 @@ pub fn run_argv(command: string, args: Vec<string>) -> CommandOutput {
 /// This packed-string surface cannot represent empty arguments, quoted
 /// segments, or arguments containing spaces. Prefer
 /// `try_run_argv(command, Vec<string>)`.
-pub fn try_run_args(command: string, args: string, arg_count: int) -> Result<CommandOutput, ProcessError> {
+pub fn try_run_args(command: string, args: string, arg_count: i64) -> Result<CommandOutput, ProcessError> {
     if arg_count < 0 {
         return Err(ProcessError::InvalidArguments(f"process.try_run_args: arg_count must be non-negative ({legacy_packed_args_note()})"));
     }
@@ -225,7 +225,7 @@ pub fn try_run_args(command: string, args: string, arg_count: int) -> Result<Com
 /// Legacy compatibility wrapper for `run_args(command, args, arg_count)`.
 ///
 /// Prefer `run_argv(command, Vec<string>)` for safe argument passing.
-pub fn run_args(command: string, args: string, arg_count: int) -> string {
+pub fn run_args(command: string, args: string, arg_count: i64) -> string {
     match try_run_args(command, args, arg_count) {
         Ok(output) => output.stdout,
         Err(err) => {

@@ -118,7 +118,7 @@ fn default_mul_emits_smul_with_overflow_intrinsic() {
 // `IntArithChecked` discriminator is selected. End-to-end codegen
 // emission for those widths is blocked on a pre-existing, unrelated
 // gap: integer literals lower to `ResolvedTy::I64` at HIR time, and
-// codegen's `Move` arm rejects mismatched LLVM int widths when the
+// codegen's `Move` arm rejects mismatched LLVM i64 widths when the
 // `let a: i32 = 1` move tries to store the i64 literal into the i32
 // slot. That limitation belongs to the literal-coercion seam (see
 // `primitive_to_llvm` / `Move` in `hew-codegen-rs::llvm`) and will be

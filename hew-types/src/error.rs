@@ -494,6 +494,41 @@ pub enum TypeErrorKind {
         /// Associated type name that failed to project.
         assoc_name: String,
     },
+    /// Two `receive fn`s in the same actor hash to the same `msg_id`.
+    ///
+    /// Emitted by [`crate::actor_protocol::ActorProtocolDescriptor::from_handlers`]
+    /// when the default `SipHash-1-3` → low-32-bits derivation produces the
+    /// same `msg_id` for two distinct fully-qualified handler names. The
+    /// checker refuses to publish a descriptor for the offending actor,
+    /// MIR/codegen never see a collided protocol, and the user is told to
+    /// rename one of the handlers. `#[msg_id(N)]` pinning is mentioned in
+    /// the hint but is not yet parseable surface — the later Q87 slice
+    /// introduces the attribute.
+    ActorProtocolCollision {
+        /// Actor whose protocol could not be published.
+        actor_name: String,
+        /// One of the colliding handler names.
+        handler_a: String,
+        /// The other colliding handler name.
+        handler_b: String,
+        /// The 32-bit `msg_id` both handlers hashed to.
+        msg_id: u32,
+    },
+    /// An `extern "rt"` function declaration names a symbol that is not in
+    /// the `stable` section of `scripts/jit-symbol-classification.toml`.
+    ///
+    /// `extern "rt"` is the user-facing surface for JIT-runtime functions that
+    /// the Hew compiler validates at check time. Only symbols in the `stable`
+    /// classification are legal `extern "rt"` targets; `internal` symbols are
+    /// scheduler/lifecycle-only and must not be named in user code.
+    ///
+    /// Envelope code: `E_EXTERN_RT_SYMBOL_UNCLASSIFIED`.
+    ExternRtSymbolUnclassified {
+        /// The symbol name from the `extern "rt"` declaration.
+        symbol_name: String,
+        /// Actionable hint for the user.
+        hint: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -547,6 +582,8 @@ impl TypeErrorKind {
             Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",
             Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
+            Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
+            Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
         }
     }
 }
@@ -664,14 +701,14 @@ mod tests {
     }
 
     #[test]
-    fn test_mismatch_display_uses_int_alias() {
+    fn test_mismatch_display_uses_explicit_width() {
         let err = TypeError::mismatch(0..10, &Ty::I64, &Ty::option(Ty::I64));
-        assert_eq!(err.to_string(), "expected `int`, found `Option<int>`");
+        assert_eq!(err.to_string(), "expected `i64`, found `Option<i64>`");
         assert_eq!(
             err.kind,
             TypeErrorKind::Mismatch {
-                expected: "int".to_string(),
-                actual: "Option<int>".to_string(),
+                expected: "i64".to_string(),
+                actual: "Option<i64>".to_string(),
             }
         );
     }
@@ -880,11 +917,11 @@ mod tests {
     }
 
     #[test]
-    fn test_return_type_mismatch_display_uses_int_alias() {
+    fn test_return_type_mismatch_display_uses_explicit_width() {
         let err = TypeError::return_type_mismatch(0..10, &Ty::I64, &Ty::option(Ty::I64));
         assert_eq!(
             err.to_string(),
-            "return type mismatch: expected `int`, found `Option<int>`"
+            "return type mismatch: expected `i64`, found `Option<i64>`"
         );
     }
 

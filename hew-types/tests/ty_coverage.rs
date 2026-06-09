@@ -230,8 +230,9 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("i16"), Some(Ty::I16));
     assert_eq!(Ty::from_name("i32"), Some(Ty::I32));
     assert_eq!(Ty::from_name("i64"), Some(Ty::I64));
-    assert_eq!(Ty::from_name("int"), Some(Ty::I64));
-    assert_eq!(Ty::from_name("Int"), Some(Ty::I64));
+    // `int`/`Int` are removed aliases; they must not resolve.
+    assert_eq!(Ty::from_name("int"), None);
+    assert_eq!(Ty::from_name("Int"), None);
     // isize is now a distinct platform-sized type (not an alias for i64)
     assert_eq!(Ty::from_name("isize"), Some(Ty::Isize));
 
@@ -241,7 +242,8 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("u16"), Some(Ty::U16));
     assert_eq!(Ty::from_name("u32"), Some(Ty::U32));
     assert_eq!(Ty::from_name("u64"), Some(Ty::U64));
-    assert_eq!(Ty::from_name("uint"), Some(Ty::U64));
+    // `uint` is a removed alias; it must not resolve.
+    assert_eq!(Ty::from_name("uint"), None);
     // usize is now a distinct platform-sized type (not an alias for u64)
     assert_eq!(Ty::from_name("usize"), Some(Ty::Usize));
 

@@ -7,74 +7,74 @@ use common::typecheck;
 // Accept fixtures
 // ---------------------------------------------------------------------------
 
-/// `duplex_pair<int, int>(16)` resolves to `(Duplex<int, int>, Duplex<int, int>)` and the
+/// `duplex_pair<i64, i64>(16)` resolves to `(Duplex<i64, i64>, Duplex<i64, i64>)` and the
 /// tuple destructure binds both variables without errors.
 #[test]
 fn duplex_pair_symmetric_resolves() {
     let source = r"
         fn main() {
-            let (a, b) = duplex_pair<int, int>(16);
+            let (a, b) = duplex_pair<i64, i64>(16);
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "duplex_pair<int, int>(16) should typecheck; got: {:#?}",
+        "duplex_pair<i64, i64>(16) should typecheck; got: {:#?}",
         output.errors
     );
 }
 
-/// Use asymmetric type args to verify cross-wiring: `a: Duplex<int, bool>`,
-/// `b: Duplex<bool, int>`. A bug that returns `(Duplex<S,R>, Duplex<S,R>)`
-/// instead of `(Duplex<S,R>, Duplex<R,S>)` would give `b: Duplex<int, bool>`
+/// Use asymmetric type args to verify cross-wiring: `a: Duplex<i64, bool>`,
+/// `b: Duplex<bool, i64>`. A bug that returns `(Duplex<S,R>, Duplex<S,R>)`
+/// instead of `(Duplex<S,R>, Duplex<R,S>)` would give `b: Duplex<i64, bool>`
 /// and fail the annotation on b below.
 #[test]
 fn duplex_pair_asymmetric_cross_wired() {
     let source = r"
         fn main() {
-            let (a, b) = duplex_pair<int, bool>(8);
-            let _: Duplex<int, bool> = a;
-            let _: Duplex<bool, int> = b;
+            let (a, b) = duplex_pair<i64, bool>(8);
+            let _: Duplex<i64, bool> = a;
+            let _: Duplex<bool, i64> = b;
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "duplex_pair cross-wiring should give (Duplex<int,bool>, Duplex<bool,int>); got: {:#?}",
+        "duplex_pair cross-wiring should give (Duplex<i64,bool>, Duplex<bool,i64>); got: {:#?}",
         output.errors
     );
 }
 
-/// `duplex<int, int>(16)` returns a detached `Duplex<int, int>`.
+/// `duplex<i64, i64>(16)` returns a detached `Duplex<i64, i64>`.
 #[test]
 fn duplex_detached_resolves() {
     let source = r"
         fn main() {
-            let d: Duplex<int, int> = duplex<int, int>(16);
+            let d: Duplex<i64, i64> = duplex<i64, i64>(16);
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "duplex<int, int>(16) should typecheck; got: {:#?}",
+        "duplex<i64, i64>(16) should typecheck; got: {:#?}",
         output.errors
     );
 }
 
-/// `channel<int>(16)` returns `(Sink<int>, Stream<int>)`.
+/// `channel<i64>(16)` returns `(Sink<i64>, Stream<i64>)`.
 #[test]
 fn channel_resolves_to_sink_stream_pair() {
     let source = r"
         fn main() {
-            let (sink, stream) = channel<int>(16);
-            let _: Sink<int> = sink;
-            let _: Stream<int> = stream;
+            let (sink, stream) = channel<i64>(16);
+            let _: Sink<i64> = sink;
+            let _: Stream<i64> = stream;
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "channel<int>(16) should give (Sink<int>, Stream<int>); got: {:#?}",
+        "channel<i64>(16) should give (Sink<i64>, Stream<i64>); got: {:#?}",
         output.errors
     );
 }
@@ -83,7 +83,7 @@ fn channel_resolves_to_sink_stream_pair() {
 // Reject fixtures
 // ---------------------------------------------------------------------------
 
-/// `duplex_pair<Rc<int>, int>(16)` — `Rc<T>` is not Send; must fail with
+/// `duplex_pair<Rc<i64>, i64>(16)` — `Rc<T>` is not Send; must fail with
 /// `BoundsNotSatisfied` for the `S` type parameter.
 ///
 /// The error kind is `BoundsNotSatisfied` (from `enforce_type_param_bounds`),
@@ -92,7 +92,7 @@ fn channel_resolves_to_sink_stream_pair() {
 fn duplex_pair_non_send_s_rejected() {
     let source = r"
         fn main() {
-            let (a, b) = duplex_pair<Rc<int>, int>(16);
+            let (a, b) = duplex_pair<Rc<i64>, i64>(16);
         }
     ";
     let output = typecheck(source);
@@ -102,17 +102,17 @@ fn duplex_pair_non_send_s_rejected() {
         .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
     assert!(
         has_bounds_err,
-        "duplex_pair<Rc<int>, int> should fail with BoundsNotSatisfied; got: {:#?}",
+        "duplex_pair<Rc<i64>, i64> should fail with BoundsNotSatisfied; got: {:#?}",
         output.errors
     );
 }
 
-/// `duplex_pair<int, Rc<int>>(16)` — `Rc<T>` is not Send on the `R` side.
+/// `duplex_pair<i64, Rc<i64>>(16)` — `Rc<T>` is not Send on the `R` side.
 #[test]
 fn duplex_pair_non_send_r_rejected() {
     let source = r"
         fn main() {
-            let (a, b) = duplex_pair<int, Rc<int>>(16);
+            let (a, b) = duplex_pair<i64, Rc<i64>>(16);
         }
     ";
     let output = typecheck(source);
@@ -122,17 +122,17 @@ fn duplex_pair_non_send_r_rejected() {
         .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
     assert!(
         has_bounds_err,
-        "duplex_pair<int, Rc<int>> should fail with BoundsNotSatisfied; got: {:#?}",
+        "duplex_pair<i64, Rc<i64>> should fail with BoundsNotSatisfied; got: {:#?}",
         output.errors
     );
 }
 
-/// `channel<Rc<int>>(16)` — `Rc<T>` is not Send; must fail.
+/// `channel<Rc<i64>>(16)` — `Rc<T>` is not Send; must fail.
 #[test]
 fn channel_non_send_rejected() {
     let source = r"
         fn main() {
-            let (s, r) = channel<Rc<int>>(16);
+            let (s, r) = channel<Rc<i64>>(16);
         }
     ";
     let output = typecheck(source);
@@ -142,18 +142,18 @@ fn channel_non_send_rejected() {
         .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
     assert!(
         has_bounds_err,
-        "channel<Rc<int>> should fail with BoundsNotSatisfied; got: {:#?}",
+        "channel<Rc<i64>> should fail with BoundsNotSatisfied; got: {:#?}",
         output.errors
     );
 }
 
-/// `duplex<Rc<int>, int>(16)` — Send constraint must apply to the standalone
+/// `duplex<Rc<i64>, i64>(16)` — Send constraint must apply to the standalone
 /// constructor on the S side, matching `duplex_pair`.
 #[test]
 fn duplex_non_send_s_rejected() {
     let source = r"
         fn main() {
-            let d: Duplex<Rc<int>, int> = duplex<Rc<int>, int>(16);
+            let d: Duplex<Rc<i64>, i64> = duplex<Rc<i64>, i64>(16);
         }
     ";
     let output = typecheck(source);
@@ -163,17 +163,17 @@ fn duplex_non_send_s_rejected() {
         .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
     assert!(
         has_bounds_err,
-        "duplex<Rc<int>, int> should fail with BoundsNotSatisfied; got: {:#?}",
+        "duplex<Rc<i64>, i64> should fail with BoundsNotSatisfied; got: {:#?}",
         output.errors
     );
 }
 
-/// `duplex<int, Rc<int>>(16)` — Send constraint on the R side.
+/// `duplex<i64, Rc<i64>>(16)` — Send constraint on the R side.
 #[test]
 fn duplex_non_send_r_rejected() {
     let source = r"
         fn main() {
-            let d: Duplex<int, Rc<int>> = duplex<int, Rc<int>>(16);
+            let d: Duplex<i64, Rc<i64>> = duplex<i64, Rc<i64>>(16);
         }
     ";
     let output = typecheck(source);
@@ -183,7 +183,7 @@ fn duplex_non_send_r_rejected() {
         .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
     assert!(
         has_bounds_err,
-        "duplex<int, Rc<int>> should fail with BoundsNotSatisfied; got: {:#?}",
+        "duplex<i64, Rc<i64>> should fail with BoundsNotSatisfied; got: {:#?}",
         output.errors
     );
 }

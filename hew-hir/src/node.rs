@@ -140,6 +140,17 @@ pub struct HirActorDecl {
     /// the checker's `cycle_capable_actors` side-table. Codegen consumes
     /// this to select a refcount-cycle-breaking strategy at spawn sites.
     pub cycle_capable: bool,
+    /// Checker-derived protocol descriptor: the stable name → `msg_id`
+    /// mapping for every `receive fn` plus signature/symbol metadata.
+    ///
+    /// Lifted from `TypeCheckOutput.actor_protocol_descriptors` during HIR
+    /// lowering. `None` means the descriptor was absent — either the actor
+    /// declared no receive handlers (vacuous case), or the checker rejected
+    /// the actor with an `ActorProtocolCollision` diagnostic. MIR consumers
+    /// must treat a `None` on an actor with non-empty `receive_handlers`
+    /// as fail-closed; the produced `msg_id` is no longer derivable from
+    /// source order.
+    pub protocol_descriptor: Option<hew_types::ActorProtocolDescriptor>,
     pub span: Span,
 }
 

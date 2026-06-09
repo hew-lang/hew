@@ -1,4 +1,4 @@
-fn two_sum(arr: Vec<int>, target: int) -> int {
+fn two_sum(arr: Vec<i64>, target: i64) -> i64 {
     let n = arr.len();
     for i in 0 .. n {
         var j = i + 1;
@@ -12,10 +12,10 @@ fn two_sum(arr: Vec<int>, target: int) -> int {
     return 0 - 1;
 }
 
-const ITERS: int = 10000;
+const ITERS: i64 = 10000;
 
 fn main() {
-    let arr: Vec<int> = Vec::new();
+    let arr: Vec<i64> = Vec::new();
     for k in 0 .. 1000 {
         arr.push(k);
     }

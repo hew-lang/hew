@@ -2,9 +2,9 @@
 //! Description: Actor Live Demo example.
 
 actor Counter {
-    let count: int;
+    let count: i64;
 
-    receive fn increment(amount: int) -> int {
+    receive fn increment(amount: i64) -> i64 {
         count = count + amount;
         println("  [actor] count is now:");
         println(count);

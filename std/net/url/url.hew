@@ -37,7 +37,7 @@ trait UrlMethods {
     fn host(u: Url) -> string;
 
     /// Return the explicit port number, if specified.
-    fn port(u: Url) -> Option<int>;
+    fn port(u: Url) -> Option<i64>;
 
     /// Return the path component.
     fn path(u: Url) -> string;
@@ -72,14 +72,14 @@ impl UrlMethods for Url {
         }
     }
     /// Return the explicit port number, if specified.
-    fn port(u: Url) -> Option<int> {
+    fn port(u: Url) -> Option<i64> {
         let port: i32 = unsafe {
             hew_url_port(u)
         };
         if port < 0 {
             None
         } else {
-            Some(port as int)
+            Some(port as i64)
         }
     }
     /// Return the path component.

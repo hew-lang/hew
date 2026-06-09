@@ -22,10 +22,10 @@ fn simple_function_lowers_with_stable_sites() {
     assert!(verify.is_empty(), "{verify:?}");
 
     let dump = dump_hir(&output.module);
-    assert!(dump.contains("fn i0 main -> int"));
-    assert!(dump.contains("let b0 x: int"));
+    assert!(dump.contains("fn i0 main -> i64"));
+    assert!(dump.contains("let b0 x: i64"));
     assert!(dump.contains("expr h"));
-    assert!(dump.contains("Read BitCopy: int"));
+    assert!(dump.contains("Read BitCopy: i64"));
 }
 
 #[test]
@@ -352,7 +352,7 @@ fn select_non_empty_does_not_trigger_no_arms() {
 
 #[test]
 fn select_arm_body_type_mismatch_rejected() {
-    // First arm body is `1` (int); second arm body is `true` (bool).
+    // First arm body is `1` (i64); second arm body is `true` (bool).
     let output = lower(
         "fn main() { \
              let r = select { \
@@ -476,7 +476,7 @@ fn task_handle_ti1_statement_call_inside_fork_becomes_spawned_call() {
     );
     // The spawned call's type is Task<i64> — dump shows the user_facing form.
     assert!(
-        dump.contains("<task<int>>"),
+        dump.contains("<task<i64>>"),
         "spawned-call should have Task<i64> type in dump: {dump}"
     );
 }
@@ -501,9 +501,9 @@ fn task_handle_ti2_named_fork_child_binds_task_type() {
     );
 
     let dump = dump_hir(&output.module);
-    // The binding `t` should appear with Task<int> type.
+    // The binding `t` should appear with Task<i64> type.
     assert!(
-        dump.contains("let") && dump.contains("t:") && dump.contains("<task<int>>"),
+        dump.contains("let") && dump.contains("t:") && dump.contains("<task<i64>>"),
         "named fork binding should have Task<i64> type: {dump}"
     );
 }
@@ -646,9 +646,9 @@ fn scope_deadline_derives_cancellation_token() {
 /// the name "Task"). This test exercises the type-annotation wall.
 #[test]
 fn task_handle_ti5_task_annotation_in_let_rejects_task_not_nameable() {
-    // The parser accepts `let t: Task<int> = 0;` as a named type annotation;
+    // The parser accepts `let t: Task<i64> = 0;` as a named type annotation;
     // HIR lowering must reject it with TaskNotNameable.
-    let output = lower("fn f() { let t: Task<int> = 0; }");
+    let output = lower("fn f() { let t: Task<i64> = 0; }");
     assert!(
         output
             .diagnostics
@@ -845,6 +845,7 @@ fn program_with_select(select_expr: Expr) -> Program {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
     Program {
         items: vec![(Item::Function(main_fn), 0..0)],
@@ -1161,5 +1162,100 @@ fn make() {
         hew_hir::HirCaptureKind::Weak,
         "typed actor-let recursive self-reference must classify as Weak; \
          captures = {captures:?}",
+    );
+}
+
+// ── link / monitor / unlink rejection ──────────────────────────────────────
+//
+// These builtins have runtime substrate (`hew_actor_link`, `hew_actor_monitor`)
+// and codegen arms, but the MIR producer cannot be wired until the Cluster 2
+// composite-return spine lands (Result<(),LinkError> and MonitorRef).
+// Until then, every call must emit CutoverUnsupported with slice_target
+// "Cluster-2" — never UnresolvedSymbol (which looks like a user typo).
+
+#[test]
+fn link_call_emits_cutover_not_unresolved() {
+    // `link(x)` in a syntactically valid actor context.
+    // The checker is not run here (TypeCheckOutput::default()); HIR lowering
+    // must fire the intercept independently of type-check state.
+    let output = lower(
+        "actor Probe { receive fn crash() { exit(1) } }
+         fn main() { let p = spawn Probe; link(p); }",
+    );
+    let cutover = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::CutoverUnsupported {
+            construct,
+            slice_target,
+        } => construct.contains("link") && slice_target == "Cluster-2",
+        _ => false,
+    });
+    assert!(
+        cutover,
+        "link() call must emit CutoverUnsupported(Cluster-2), got: {:?}",
+        output.diagnostics
+    );
+    // Must NOT produce a bare UnresolvedSymbol that looks like a user typo.
+    let unresolved_name = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(&d.kind, HirDiagnosticKind::UnresolvedSymbol { name } if name == "link"));
+    assert!(
+        !unresolved_name,
+        "link() must not produce UnresolvedSymbol(link); \
+         CutoverUnsupported is the expected diagnostic"
+    );
+}
+
+#[test]
+fn monitor_call_emits_cutover_not_unresolved() {
+    let output = lower(
+        "actor Target { receive fn ping() {} }
+         fn main() { let t = spawn Target; monitor(t); }",
+    );
+    let cutover = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::CutoverUnsupported {
+            construct,
+            slice_target,
+        } => construct.contains("monitor") && slice_target == "Cluster-2",
+        _ => false,
+    });
+    assert!(
+        cutover,
+        "monitor() call must emit CutoverUnsupported(Cluster-2), got: {:?}",
+        output.diagnostics
+    );
+    let unresolved_name = output.diagnostics.iter().any(
+        |d| matches!(&d.kind, HirDiagnosticKind::UnresolvedSymbol { name } if name == "monitor"),
+    );
+    assert!(
+        !unresolved_name,
+        "monitor() must not produce UnresolvedSymbol(monitor)"
+    );
+}
+
+#[test]
+fn unlink_call_emits_cutover_not_unresolved() {
+    let output = lower(
+        "actor Probe { receive fn crash() { exit(1) } }
+         fn main() { let p = spawn Probe; unlink(p); }",
+    );
+    let cutover = output.diagnostics.iter().any(|d| match &d.kind {
+        HirDiagnosticKind::CutoverUnsupported {
+            construct,
+            slice_target,
+        } => construct.contains("unlink") && slice_target == "Cluster-2",
+        _ => false,
+    });
+    assert!(
+        cutover,
+        "unlink() call must emit CutoverUnsupported(Cluster-2), got: {:?}",
+        output.diagnostics
+    );
+    let unresolved_name = output.diagnostics.iter().any(
+        |d| matches!(&d.kind, HirDiagnosticKind::UnresolvedSymbol { name } if name == "unlink"),
+    );
+    assert!(
+        !unresolved_name,
+        "unlink() must not produce UnresolvedSymbol(unlink)"
     );
 }

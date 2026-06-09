@@ -36,7 +36,7 @@ fn probe_trait_method_inside_generic_free_fn_rewrite() {
             item.describe()
         }
 
-        fn main() -> int {
+        fn main() -> i64 {
             let s: string = describe(Label { text: "hello" });
             0
         }

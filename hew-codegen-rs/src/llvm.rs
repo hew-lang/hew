@@ -59,11 +59,12 @@ use std::path::Path;
 use std::process::Command;
 
 use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, PrintKind};
+use hew_hir::{HirRestartPolicy, HirSupervisorStrategy};
 use hew_mir::{
     validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
     CooperateSite, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, Place, RawMirFunction,
-    RecordLayout, Terminator, TrapKind,
+    RecordLayout, SupervisorChildLayout, SupervisorLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -650,6 +651,26 @@ fn intern_runtime_decl<'ctx>(
         // runtime-internal signal — MIR producers discard it (dest: None).
         "hew_scope_spawn" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         "hew_rc_new" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_new(strategy: c_int, max_restarts: c_int, window_secs: c_int)
+        //                    -> *mut HewSupervisor
+        // (`hew-runtime/src/supervisor.rs:1608`). Box-allocates an empty
+        // supervisor. Codegen calls this from the synthesised bootstrap body.
+        "hew_supervisor_new" => {
+            ptr_ty.fn_type(&[i32_ty.into(), i32_ty.into(), i32_ty.into()], false)
+        }
+        // hew_supervisor_add_child_spec(sup: *mut HewSupervisor,
+        //                               spec: *const HewChildSpec) -> c_int
+        // (`hew-runtime/src/supervisor.rs:1655`). Registers one child spec on
+        // the supervisor; the runtime deep-copies `name` and `init_state` so
+        // the stack-allocated literal is safe to discard after the call.
+        // Returns 0 on success or -1 on null/OOM; the bootstrap currently
+        // discards the result — restart/diagnostic wiring lands in a follow-on.
+        "hew_supervisor_add_child_spec" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_start(sup: *mut HewSupervisor) -> c_int
+        // (`hew-runtime/src/supervisor.rs:1726`). Marks the supervisor running
+        // and spawns its self-actor. Returns 0 on success. The bootstrap
+        // traps on non-zero (fail-closed) before returning the supervisor ptr.
+        "hew_supervisor_start" => i32_ty.fn_type(&[ptr_ty.into()], false),
         // hew_task_new() -> *mut HewTask
         // (`hew-runtime/src/task_scope.rs:214`). Box-allocates a HewTask
         // in the Ready state. Producer calls this to obtain a task handle
@@ -1353,6 +1374,347 @@ fn emit_spawn_actor(
     Ok(())
 }
 
+/// Map a `HirSupervisorStrategy` to the runtime `STRATEGY_*` integer.
+///
+/// Mirrors the `pub const STRATEGY_*` constants at
+/// `hew-runtime/src/supervisor.rs:315-324`. The values are part of the ABI:
+/// changing them requires a coordinated runtime + codegen edit.
+fn supervisor_strategy_to_int(strategy: HirSupervisorStrategy) -> i32 {
+    match strategy {
+        HirSupervisorStrategy::OneForOne => 0,
+        HirSupervisorStrategy::OneForAll => 1,
+        HirSupervisorStrategy::RestForOne => 2,
+        HirSupervisorStrategy::SimpleOneForOne => 3,
+    }
+}
+
+/// Map a `HirRestartPolicy` to the runtime `RESTART_*` integer.
+///
+/// Mirrors the `pub const RESTART_*` constants at
+/// `hew-runtime/src/supervisor.rs:329-331`.
+fn restart_policy_to_int(policy: HirRestartPolicy) -> i32 {
+    match policy {
+        HirRestartPolicy::Permanent => 0,
+        HirRestartPolicy::Transient => 1,
+        HirRestartPolicy::Temporary => 2,
+    }
+}
+
+/// Build the LLVM struct type for `HewChildSpec`.
+///
+/// The struct mirrors the `#[repr(C)]` Rust layout at
+/// `hew-runtime/src/supervisor.rs:409-422` exactly. Field order MUST match;
+/// drift here is wrong-code at the FFI boundary.
+///
+/// Field map (Rust → LLVM):
+/// - `name: *const c_char`                  → `ptr`
+/// - `init_state: *mut c_void`              → `ptr`
+/// - `init_state_size: usize`               → `i64`  (64-bit spine only)
+/// - `dispatch: Option<HewDispatchFn>`      → `ptr`  (opaque-pointer mode)
+/// - `restart_policy: c_int`                → `i32`
+/// - `mailbox_capacity: c_int`              → `i32`
+/// - `overflow: c_int`                      → `i32`
+/// - `arena_cap_bytes: usize`               → `i64`
+///
+/// The three consecutive `i32` fields followed by `i64` produce 4 bytes of
+/// natural padding before `arena_cap_bytes` under `#[repr(C)]`; LLVM's
+/// default (non-packed) struct alignment generates the same padding.
+fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    ctx.struct_type(
+        &[
+            ptr_ty.into(), // name
+            ptr_ty.into(), // init_state
+            i64_ty.into(), // init_state_size
+            ptr_ty.into(), // dispatch
+            i32_ty.into(), // restart_policy
+            i32_ty.into(), // mailbox_capacity
+            i32_ty.into(), // overflow
+            i64_ty.into(), // arena_cap_bytes (alignment introduces 4B pad after `overflow`)
+            ptr_ty.into(), // on_crash fn-pointer: null when child's actor has no #[on(crash)]; otherwise pointer to `{actor_name}__on_crash`
+        ],
+        false,
+    )
+}
+
+/// Emit the body of a supervisor bootstrap function.
+///
+/// The bootstrap symbol is declared by `declare_function` like any other
+/// `FunctionCallConv::ActorHandler` function (one leading
+/// `*mut HewExecutionContext` param the body ignores). This helper substitutes
+/// the MIR-side synthesised body wholesale with the canonical
+/// `hew_supervisor_*` call sequence:
+///
+/// 1. `%sup = call hew_supervisor_new(strategy, max_restarts, window_secs)`
+/// 2. for each child: alloca `HewChildSpec`, populate fields, call
+///    `hew_supervisor_add_child_spec(%sup, &spec)`
+/// 3. `%rc = call hew_supervisor_start(%sup)`; trap on non-zero (fail-closed)
+/// 4. `ret %sup`
+///
+/// Fail-closed posture:
+/// - Missing per-child dispatch trampoline → `FailClosed` (must be emitted by
+///   `emit_actor_dispatch_trampoline` ahead of this helper).
+/// - Non-integer `window` literal → `FailClosed`. The fixture uses
+///   `window: 60`; the `"60s"` form is deferred to a follow-on slice.
+/// - `hew_supervisor_start` non-zero return → `llvm.trap; unreachable`. The
+///   supervisor surface is one of Hew's fail-closed boundaries (LESSONS
+///   boundary-fail-closed); a start that the runtime rejected is wrong-code
+///   territory, not a recoverable error.
+fn emit_supervisor_bootstrap_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    layout: &SupervisorLayout,
+    fn_symbols: &FnSymbolMap<'ctx>,
+) -> CodegenResult<()> {
+    let symbol = *fn_symbols.get(&layout.bootstrap_symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "supervisor `{}` bootstrap symbol `{}` was not declared before body emission",
+            layout.name, layout.bootstrap_symbol
+        ))
+    })?;
+    let (llvm_fn, return_ty_llvm, _returns_unit) =
+        symbol.real(&layout.bootstrap_symbol, "emit_supervisor_bootstrap_body")?;
+    if !matches!(return_ty_llvm, BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "supervisor `{}` bootstrap return type must be a pointer (LocalPid<Sup>); got {return_ty_llvm:?}",
+            layout.name
+        )));
+    }
+
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(llvm_fn, "entry");
+    builder.position_at_end(entry_bb);
+
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    // ── Strategy / max_restarts / window literals ───────────────────────
+    //
+    // `None` falls back to `0`; the runtime treats `0` for max_restarts as
+    // "no automatic restarts" and `0` for window_secs as "policy clamps to a
+    // safe minimum". The fixture sets explicit values so the runtime path
+    // exercises real numbers.
+    let strategy_int = layout.strategy.map(supervisor_strategy_to_int).unwrap_or(0);
+    let max_restarts_int: i32 = layout
+        .max_restarts
+        .and_then(|n| i32::try_from(n).ok())
+        .unwrap_or(0);
+    // Window parsing: this slice accepts only an integer-seconds literal
+    // (e.g. `window: 60`). The `"60s"` duration-literal form is deferred per
+    // plan §S-D.3 "Out of scope". If a non-integer string reaches this point
+    // codegen fails closed — silently coercing to 0 would hide a parser/MIR
+    // drift bug.
+    let window_secs_int: i32 = match layout.window.as_deref() {
+        None => 0,
+        Some(s) => s.trim().parse::<i32>().map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "supervisor `{}` window literal `{s:?}` is not an integer-seconds value; \
+                 the `\"60s\"` duration form is deferred to a follow-on slice",
+                layout.name
+            ))
+        })?,
+    };
+
+    let mut runtime_decls = RuntimeDeclMap::new();
+
+    // ── %sup = call hew_supervisor_new(strategy, max_restarts, window_secs)
+    let sup_new = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_supervisor_new")?;
+    let sup = builder
+        .build_call(
+            sup_new,
+            &[
+                i32_ty.const_int(strategy_int as u64, true).into(),
+                i32_ty.const_int(max_restarts_int as u64, true).into(),
+                i32_ty.const_int(window_secs_int as u64, true).into(),
+            ],
+            "hew_supervisor_new_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_new call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_supervisor_new returned void".into()))?
+        .into_pointer_value();
+
+    // ── For each child: alloca HewChildSpec, populate, register ─────────
+    let child_spec_ty = hew_child_spec_struct_type(ctx);
+    let add_child_spec = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_add_child_spec",
+    )?;
+    for (idx, child) in layout.children.iter().enumerate() {
+        emit_supervisor_child_spec_and_register(
+            ctx,
+            llvm_mod,
+            &builder,
+            &child_spec_ty,
+            sup,
+            add_child_spec,
+            idx,
+            child,
+            &layout.name,
+        )?;
+    }
+
+    // ── %rc = call hew_supervisor_start(%sup); trap on non-zero ─────────
+    let sup_start = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_supervisor_start")?;
+    let rc = builder
+        .build_call(sup_start, &[sup.into()], "hew_supervisor_start_call")
+        .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_start call: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_supervisor_start returned void".into()))?
+        .into_int_value();
+    let zero = i32_ty.const_zero();
+    let is_ok = builder
+        .build_int_compare(IntPredicate::EQ, rc, zero, "sup_start_ok")
+        .map_err(|e| CodegenError::Llvm(format!("sup start cmp: {e:?}")))?;
+    let ok_bb = ctx.append_basic_block(llvm_fn, "sup_start_ok");
+    let trap_bb = ctx.append_basic_block(llvm_fn, "sup_start_trap");
+    builder
+        .build_conditional_branch(is_ok, ok_bb, trap_bb)
+        .map_err(|e| CodegenError::Llvm(format!("sup start cond br: {e:?}")))?;
+    builder.position_at_end(trap_bb);
+    // llvm.trap; unreachable — fail-closed on supervisor start failure.
+    let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
+        CodegenError::FailClosed("llvm.trap intrinsic not available in this LLVM build".into())
+    })?;
+    let trap_fn = trap_intrinsic
+        .get_declaration(llvm_mod, &[])
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration missing".into()))?;
+    builder
+        .build_call(trap_fn, &[], "sup_start_trap_call")
+        .map_err(|e| CodegenError::Llvm(format!("sup start trap call: {e:?}")))?;
+    builder
+        .build_unreachable()
+        .map_err(|e| CodegenError::Llvm(format!("sup start unreachable: {e:?}")))?;
+
+    // ── ret sup ─────────────────────────────────────────────────────────
+    builder.position_at_end(ok_bb);
+    let _ = ptr_ty;
+    let _ = i64_ty;
+    builder
+        .build_return(Some(&sup))
+        .map_err(|e| CodegenError::Llvm(format!("sup bootstrap ret: {e:?}")))?;
+    Ok(())
+}
+
+/// Emit one `HewChildSpec` literal + `hew_supervisor_add_child_spec` call.
+///
+/// Per-field semantics:
+/// - `name` — global C-string `@.str.child.<sup>.<idx>` set to `child.name`
+///   (the slot name, not the actor type; matches the surface name visible
+///   to user-level `sup.<name>` access).
+/// - `init_state` / `init_state_size` — `null` / `0`. The fixture has no
+///   per-child init args; richer init lowering is deferred.
+/// - `dispatch` — pointer to `__hew_actor_dispatch_<actor_name>`, declared
+///   by `emit_actor_dispatch_trampoline` in `build_module` ahead of this
+///   helper. Fail-closed if missing.
+/// - `restart_policy` — child's policy via `restart_policy_to_int`; `None`
+///   defaults to `RESTART_PERMANENT` (`0`) to match runtime defaults.
+/// - `mailbox_capacity` / `overflow` / `arena_cap_bytes` — `0` for all,
+///   which the runtime maps to its bounded defaults. Richer per-child
+///   overrides are deferred.
+#[allow(clippy::too_many_arguments)]
+fn emit_supervisor_child_spec_and_register<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    child_spec_ty: &StructType<'ctx>,
+    sup: PointerValue<'ctx>,
+    add_child_spec: FunctionValue<'ctx>,
+    idx: usize,
+    child: &SupervisorChildLayout,
+    sup_name: &str,
+) -> CodegenResult<()> {
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    let dispatch_name = format!("__hew_actor_dispatch_{}", child.actor_name);
+    let dispatch_fn = llvm_mod.get_function(&dispatch_name).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "supervisor `{sup_name}` child `{}` requires dispatch trampoline `{dispatch_name}`",
+            child.name
+        ))
+    })?;
+
+    // Resolve on_crash fn-pointer: Some(symbol) → pointer to the declared
+    // function; None → null. The on_crash function is produced by MIR
+    // lowering (as `{actor_name}__on_crash`) and declared by `declare_function`
+    // over `raw_mir` before `emit_supervisor_bootstrap_body` runs, so
+    // `get_function` must find it if the symbol is populated.
+    //
+    // Fail-closed: a missing symbol means Slice 2 didn't produce the
+    // function body, which is wrong-code territory — diagnose clearly rather
+    // than silently falling back to null.
+    let on_crash_ptr: BasicValueEnum<'ctx> = match &child.on_crash_symbol {
+        Some(symbol) => {
+            let on_crash_fn = llvm_mod.get_function(symbol).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "supervisor `{sup_name}` child `{}` has on_crash_symbol `{symbol}` \
+                     but no function with that name was declared in the module; \
+                     the MIR lowering pass must emit the on_crash function before codegen",
+                    child.name
+                ))
+            })?;
+            on_crash_fn.as_global_value().as_pointer_value().into()
+        }
+        None => ptr_ty.const_null().into(),
+    };
+
+    // Per-child stack alloca for the spec struct.
+    let spec_slot = builder
+        .build_alloca(*child_spec_ty, &format!("child_spec_{idx}"))
+        .map_err(|e| CodegenError::Llvm(format!("child spec alloca: {e:?}")))?;
+
+    // name → @.str.child.<sup>.<idx>
+    let name_global = builder
+        .build_global_string_ptr(&child.name, &format!("str_child_name_{sup_name}_{idx}"))
+        .map_err(|e| CodegenError::Llvm(format!("child name global: {e:?}")))?;
+    let name_ptr = name_global.as_pointer_value();
+
+    let restart_int = child.restart_policy.map(restart_policy_to_int).unwrap_or(0);
+
+    let field_values: [(u32, BasicValueEnum<'ctx>); 9] = [
+        (0, name_ptr.into()),
+        (1, ptr_ty.const_null().into()),
+        (2, i64_ty.const_zero().into()),
+        (3, dispatch_fn.as_global_value().as_pointer_value().into()),
+        (4, i32_ty.const_int(restart_int as u64, true).into()),
+        (5, i32_ty.const_zero().into()),
+        (6, i32_ty.const_zero().into()),
+        (7, i64_ty.const_zero().into()),
+        (8, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
+    ];
+    for (field_idx, value) in field_values {
+        let gep = builder
+            .build_struct_gep(
+                *child_spec_ty,
+                spec_slot,
+                field_idx,
+                &format!("child_spec_{idx}_f{field_idx}"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("child spec gep: {e:?}")))?;
+        builder
+            .build_store(gep, value)
+            .map_err(|e| CodegenError::Llvm(format!("child spec store: {e:?}")))?;
+    }
+
+    builder
+        .build_call(
+            add_child_spec,
+            &[sup.into(), spec_slot.into()],
+            &format!("hew_supervisor_add_child_spec_call_{idx}"),
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_add_child_spec call: {e:?}")))?;
+    Ok(())
+}
+
 fn emit_actor_spawn_lifecycle<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     actor_name: &str,
@@ -1787,14 +2149,14 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(i) => i,
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
-                        "ConstI64 dest is not an int: dest_ty={dest_ty:?}"
+                        "ConstI64 dest is not an i64: dest_ty={dest_ty:?}"
                     )))
                 }
             };
             // `value` is i64 in MIR. Truncate/extend at the LLVM level to
             // whatever the dest local actually is — Cluster 1's lowering
-            // currently always sizes locals to the front-half's int type
-            // (`i64` for `int`), so this is a no-op for the spine.
+            // currently always sizes locals to the front-half's i64 type
+            // (`i64` for `i64`), so this is a no-op for the spine.
             #[allow(clippy::cast_sign_loss)]
             let v = int_ty.const_int(*value as u64, true);
             fn_ctx
@@ -1810,11 +2172,11 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let lhs_int = match lhs_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntAdd lhs is not an int".into())),
+                _ => return Err(CodegenError::FailClosed("IntAdd lhs is not an i64".into())),
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "Int arithmetic operands and dest must share the same int type".into(),
+                    "Int arithmetic operands and dest must share the same i64 type".into(),
                 ));
             }
             let lhs_v = fn_ctx
@@ -1831,9 +2193,9 @@ fn lower_instruction(
                 Instr::IntAdd { .. } => fn_ctx.builder.build_int_add(lhs_v, rhs_v, "arith_add"),
                 Instr::IntSub { .. } => fn_ctx.builder.build_int_sub(lhs_v, rhs_v, "arith_sub"),
                 Instr::IntMul { .. } => fn_ctx.builder.build_int_mul(lhs_v, rhs_v, "arith_mul"),
-                _ => unreachable!("matched on three int-arith variants above"),
+                _ => unreachable!("matched on three i64-arith variants above"),
             }
-            .map_err(|e| CodegenError::Llvm(format!("int arith: {e:?}")))?;
+            .map_err(|e| CodegenError::Llvm(format!("i64 arith: {e:?}")))?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result)
@@ -1862,13 +2224,13 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
                     return Err(CodegenError::FailClosed(
-                        "IntDiv/IntRem lhs is not an int".into(),
+                        "IntDiv/IntRem lhs is not an i64".into(),
                     ))
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntDiv/IntRem operands and dest must share the same int type".into(),
+                    "IntDiv/IntRem operands and dest must share the same i64 type".into(),
                 ));
             }
             let lhs_v = fn_ctx
@@ -1911,11 +2273,11 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let lhs_int = match lhs_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntShl lhs is not an int".into())),
+                _ => return Err(CodegenError::FailClosed("IntShl lhs is not an i64".into())),
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntShl operands and dest must share the same int type".into(),
+                    "IntShl operands and dest must share the same i64 type".into(),
                 ));
             }
             let lhs_v = fn_ctx
@@ -1948,11 +2310,11 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let lhs_int = match lhs_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntShr lhs is not an int".into())),
+                _ => return Err(CodegenError::FailClosed("IntShr lhs is not an i64".into())),
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntShr operands and dest must share the same int type".into(),
+                    "IntShr operands and dest must share the same i64 type".into(),
                 ));
             }
             let lhs_v = fn_ctx
@@ -1982,7 +2344,7 @@ fn lower_instruction(
                 .map_err(|e| CodegenError::Llvm(format!("shr store: {e:?}")))?;
         }
         // Bitwise &, |, ^. Well-defined for all integer widths/signednesses;
-        // no traps, no overflow checks. Operands and dest share the same int
+        // no traps, no overflow checks. Operands and dest share the same i64
         // type (enforced upstream by the checker).
         Instr::IntBitAnd { dest, lhs, rhs }
         | Instr::IntBitOr { dest, lhs, rhs }
@@ -1994,13 +2356,13 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
                     return Err(CodegenError::FailClosed(
-                        "IntBitwise lhs is not an int".into(),
+                        "IntBitwise lhs is not an i64".into(),
                     ))
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntBitwise operands and dest must share the same int type".into(),
+                    "IntBitwise operands and dest must share the same i64 type".into(),
                 ));
             }
             let lhs_v = fn_ctx
@@ -2054,27 +2416,27 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
                     return Err(CodegenError::FailClosed(
-                        "IntArithChecked lhs is not an int".into(),
+                        "IntArithChecked lhs is not an i64".into(),
                     ))
                 }
             };
             if rhs_ty != lhs_ty || dest_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntArithChecked operands and dest must share the same int type".into(),
+                    "IntArithChecked operands and dest must share the same i64 type".into(),
                 ));
             }
             let flag_int = match flag_ty {
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
                     return Err(CodegenError::FailClosed(
-                        "IntArithChecked overflow_flag is not an int".into(),
+                        "IntArithChecked overflow_flag is not an i64".into(),
                     ))
                 }
             };
             // Choose the intrinsic family by op + signedness. Six
             // intrinsics total — three ops × two signednesses. The
             // overload is per integer width, so `get_declaration`
-            // receives the operand int type.
+            // receives the operand i64 type.
             let intrinsic_name = match (op, signed) {
                 (IntArithOp::Add, IntSignedness::Signed) => "llvm.sadd.with.overflow",
                 (IntArithOp::Add, IntSignedness::Unsigned) => "llvm.uadd.with.overflow",
@@ -2152,7 +2514,7 @@ fn lower_instruction(
             lhs,
             rhs,
         } => {
-            // Load both operands at their declared int type, compare with
+            // Load both operands at their declared i64 type, compare with
             // the predicate, zero-extend the i1 result to the dest's
             // stored width. The dest's type is whatever HIR resolved for
             // the comparison expression (today `ResolvedTy::Bool` -> i8
@@ -2163,16 +2525,16 @@ fn lower_instruction(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let lhs_int = match lhs_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntCmp lhs is not an int".into())),
+                _ => return Err(CodegenError::FailClosed("IntCmp lhs is not an i64".into())),
             };
             if rhs_ty != lhs_ty {
                 return Err(CodegenError::FailClosed(
-                    "IntCmp operands must share the same int type".into(),
+                    "IntCmp operands must share the same i64 type".into(),
                 ));
             }
             let dest_int = match dest_ty {
                 BasicTypeEnum::IntType(t) => t,
-                _ => return Err(CodegenError::FailClosed("IntCmp dest is not an int".into())),
+                _ => return Err(CodegenError::FailClosed("IntCmp dest is not an i64".into())),
             };
             let lhs_v = fn_ctx
                 .builder
@@ -2232,7 +2594,7 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
                     return Err(CodegenError::FailClosed(
-                        "IdentityCompare dest is not an int".into(),
+                        "IdentityCompare dest is not an i64".into(),
                     ))
                 }
             };
@@ -2533,7 +2895,7 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(i) => i,
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
-                        "CharLit dest is not an int: dest_ty={dest_ty:?}"
+                        "CharLit dest is not an i64: dest_ty={dest_ty:?}"
                     )))
                 }
             };
@@ -2554,7 +2916,7 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(i) => i,
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
-                        "UnitLit dest is not an int (expected i8 stand-in): dest_ty={dest_ty:?}"
+                        "UnitLit dest is not an i64 (expected i8 stand-in): dest_ty={dest_ty:?}"
                     )))
                 }
             };
@@ -2573,7 +2935,7 @@ fn lower_instruction(
                 BasicTypeEnum::IntType(i) => i,
                 _ => {
                     return Err(CodegenError::FailClosed(format!(
-                        "DurationLit dest is not an int: dest_ty={dest_ty:?}"
+                        "DurationLit dest is not an i64: dest_ty={dest_ty:?}"
                     )))
                 }
             };
@@ -3433,7 +3795,7 @@ fn lower_call_runtime_abi(
         // Actor link/monitor builtins.
         //
         // SHIM(B3→Cluster2): `link()` returns `Result<(), LinkError>` and
-        // `monitor()` returns `MonitorRef { ref_id: int }`. Both require
+        // `monitor()` returns `MonitorRef { ref_id: i64 }`. Both require
         // composite-type construction (enum variant / struct literal) in the
         // LLVM IR, which the Cluster 1 spine does not yet support.
         //
@@ -3511,7 +3873,7 @@ fn lower_call_runtime_abi(
                 .builder
                 .build_call(fv, &llvm_args, "hew_actor_monitor_call")
                 .map_err(|e| CodegenError::Llvm(format!("hew_actor_monitor call: {e:?}")))?;
-            // SHIM(B3→Cluster2): `monitor()` returns MonitorRef { ref_id: int }.
+            // SHIM(B3→Cluster2): `monitor()` returns MonitorRef { ref_id: i64 }.
             // Struct-literal construction requires the Cluster 2 spine.
             // Producers must not wire a dest until that lands.
             if let Some(d) = dest {
@@ -4183,7 +4545,7 @@ fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<
 }
 
 /// Load an integer-typed `Place` and return its value coerced to the
-/// requested `expected` int type. Today every M2 substrate integer arg
+/// requested `expected` i64 type. Today every M2 substrate integer arg
 /// is i64 at the C-ABI; this helper rejects type mismatches loudly.
 fn load_int_arg<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
@@ -4196,7 +4558,7 @@ fn load_int_arg<'ctx>(
         BasicTypeEnum::IntType(i) => i,
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "{label}: Place {place:?} resolves to non-int type {other:?}; \
+                "{label}: Place {place:?} resolves to non-i64 type {other:?}; \
                  expected i64-shaped runtime ABI arg"
             )));
         }
@@ -6290,7 +6652,27 @@ fn build_module<'ctx>(
             emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
         }
     }
+    // Supervisor bootstraps replace the MIR-side synthesised body wholesale
+    // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
+    // `start` call sequence (S-D.3). The set of bootstrap symbols is
+    // collected so the body-lowering loop below skips them — the MIR-side
+    // body exists only to carry the declaration signature.
+    let supervisor_bootstrap_symbols: std::collections::HashSet<String> = pipeline
+        .supervisor_layouts
+        .iter()
+        .map(|s| s.bootstrap_symbol.clone())
+        .collect();
+    for sup in &pipeline.supervisor_layouts {
+        emit_supervisor_bootstrap_body(ctx, &llvm_mod, sup, &fn_symbols)?;
+    }
     for func in &pipeline.raw_mir {
+        if supervisor_bootstrap_symbols.contains(&func.name) {
+            // Body already emitted by `emit_supervisor_bootstrap_body`. Skip
+            // the normal MIR lowering — the MIR-side synthesised body is a
+            // stub kept only to carry the bootstrap function's signature
+            // through `declare_function`.
+            continue;
+        }
         // Match by name: elaborated_mir is parallel to raw_mir when the
         // full pipeline runs. Hand-built test pipelines may leave
         // elaborated_mir empty; `find` returns `None` in that case and
@@ -6430,6 +6812,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         }
     }
 
@@ -6472,6 +6855,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -6532,6 +6916,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -6586,6 +6971,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m =
@@ -6625,6 +7011,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let err =
@@ -6680,6 +7067,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         }
     }
 
@@ -6809,6 +7197,7 @@ mod tests {
             diagnostics: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
         }
     }
 

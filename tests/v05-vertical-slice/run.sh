@@ -83,6 +83,14 @@ run_accept_expect_status "exit_42" 42
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
 
+# Q87 slice 1 regression: same actor body as `actor_counter`, but the two
+# `receive fn`s appear in reversed source order. Pre-Q87 the source-order
+# `.enumerate()` msg_id derivation would have re-numbered the protocol and
+# (in a multi-actor / multi-version setting) flipped the wire ABI. After
+# slice 1 msg_ids are derived from the fully-qualified handler name, so this
+# fixture must still exit 42.
+run_accept_expect_status "actor_counter_reorder" 42
+
 # Actor body with init + on(start): initial=9, boot increments to 10, increment(32) = 42.
 # The exit code being 42 (not 41) proves on(start) fired before the first message.
 run_accept_expect_status "actor_counter_init" 42
@@ -99,6 +107,16 @@ run_accept_expect_status "actor_on_stop" 42
 # value is returned and the loser channel is cancelled without leaking.
 run_accept_expect_status "actor_ask_race" 42
 
+# Supervisor bootstrap: spawn AppSupervisor → hew_supervisor_new + add_child_spec + start;
+# main returns 42 after bootstrap completes successfully.
+run_accept_expect_status "supervisor_basic" 42
+
+# on(crash) handler attachment: Crasher actor declares #[on(crash)]; codegen emits
+# a non-null on_crash fn-pointer in HewChildSpec; supervisor boots and main returns 42.
+# The crash path is not triggered at runtime — handler-fire observability is covered
+# by hew-runtime/tests/on_crash_invocation.rs.
+run_accept_expect_status "on_crash_basic" 42
+
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"
@@ -106,11 +124,13 @@ run_accept_expect_stdout "print_f64"
 run_accept_expect_status "panic" 101
 grep -q 'panic fixture' "${stderr_output}"
 
+run_accept_expect_status "directory_module_call" 7
+
 if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved symbol fixture to fail" >&2
   exit 1
 fi
-grep -q 'UndefinedVariable' "${reject_output}"
+grep -q 'undefined variable' "${reject_output}"
 
 if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
   echo "expected use-after-consume fixture to fail" >&2
@@ -207,3 +227,18 @@ if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/spawn_lambda_legacy.h
   exit 1
 fi
 grep -q 'E_LEGACY_SPAWN_LAMBDA_SYNTAX' "${reject_output}"
+
+# Reject: link/monitor/unlink pending Cluster 2 composite-return spine.
+# Runtime symbols (hew_actor_link, hew_actor_monitor) and codegen arms exist,
+# but Result<(),LinkError> / MonitorRef construction requires Cluster 2.
+# The diagnostic must be CutoverUnsupported with slice_target "Cluster-2",
+# NOT UnresolvedSymbol (which would look like a user typo).
+if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/link_monitor_pending_cluster2.hew" >"${reject_output}" 2>&1; then
+  echo "expected link/monitor fixture to fail" >&2
+  exit 1
+fi
+grep -q 'CutoverUnsupported' "${reject_output}"
+grep -q 'Cluster-2' "${reject_output}"
+# The verifier emits a secondary UnresolvedSymbol for the unresolved callee
+# (consistent with all unresolved-builtin-callee paths); the primary and
+# informative diagnostic is CutoverUnsupported — verified above.

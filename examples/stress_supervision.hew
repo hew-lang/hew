@@ -4,8 +4,8 @@
 // stress_supervision.hew - Test supervisor tree creation and actor management
 // Creates a supervisor with workers and verifies the tree starts correctly.
 actor Worker {
-    let id: int;
-    receive fn work(x: int) {
+    let id: i64;
+    receive fn work(x: i64) {
         println(f"Worker {id} processing {x}");
     }
 }

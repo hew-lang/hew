@@ -53,20 +53,20 @@ fn main_raw(p: &IrPipeline) -> &hew_mir::RawMirFunction {
 // duplex_pair lowering — CallRuntimeAbi structural shape
 // ---------------------------------------------------------------------------
 
-/// `let (a, b) = duplex_pair<int, int>(16);` must produce exactly one
+/// `let (a, b) = duplex_pair<i64, i64>(16);` must produce exactly one
 /// `Instr::CallRuntimeAbi { symbol: "hew_duplex_pair", .. }` in the
 /// instruction stream with four args: `cap`, `r_cap` (same `Place` in the
 /// one-arg form), `dh0`, `dh1`.
 ///
-/// The one-arg E1 form (capacity: int) duplicates the single capacity
+/// The one-arg E1 form (capacity: i64) duplicates the single capacity
 /// local for both `s_cap` and `r_cap` slots, so `args[0] == args[1]`.
 /// When E1 expands to a two-arg form, this equality assertion is the
 /// pivot to update.
 #[test]
 fn duplex_pair_emits_call_runtime_abi_with_four_args() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";
@@ -160,14 +160,14 @@ fn duplex_pair_emits_call_runtime_abi_with_four_args() {
 /// that `lower_duplex_pair` correctly allocates `Duplex`-typed locals even
 /// though the drop elaboration gap exists.  When HIR threads `expr_types`
 /// from `TypeCheckOutput` (the post-E2 bridge work), the `binding.ty` for
-/// `a` and `b` will become `Duplex<int, int>`, `ValueClass::of_ty` will
+/// `a` and `b` will become `Duplex<i64, i64>`, `ValueClass::of_ty` will
 /// return `AffineResource`, and the `owned_locals.push` will fire — at
 /// that point this test should be extended to also assert the drop plan.
 #[test]
 fn duplex_pair_locals_carry_duplex_type_at_handle_indices() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";
@@ -220,8 +220,8 @@ fn duplex_pair_locals_carry_duplex_type_at_handle_indices() {
 #[test]
 fn duplex_pair_no_move_of_duplex_handle() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";
@@ -261,8 +261,8 @@ fn duplex_pair_no_move_of_duplex_handle() {
 #[test]
 fn duplex_pair_symbol_is_on_allowlist_no_unsupported_diagnostic() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";

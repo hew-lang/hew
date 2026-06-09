@@ -16,16 +16,16 @@
 // Service actor — responds to health checks. Can be made unhealthy.
 actor Service {
     let name: string;
-    let healthy: int; // 1 = healthy, 0 = unhealthy
-    let requests: int;
-    receive fn health_check() -> int {
+    let healthy: i64; // 1 = healthy, 0 = unhealthy
+    let requests: i64;
+    receive fn health_check() -> i64 {
         if healthy == 0 {
             panic("service unhealthy");
         }
         requests = requests + 1;
         1
     }
-    receive fn handle(id: int) -> int {
+    receive fn handle(id: i64) -> i64 {
         requests = requests + 1;
         println(f"  [{name}] handled request {id} (total: {requests})");
         requests
@@ -40,8 +40,8 @@ actor Service {
 actor HealthMonitor {
     let svc_names: Vec<string>;
     let svc_refs: Vec<ActorRef<Service>>;
-    let svc_status: Vec<int>; // 1=healthy, 0=unhealthy per service
-    let check_count: int;
+    let svc_status: Vec<i64>; // 1=healthy, 0=unhealthy per service
+    let check_count: i64;
     receive fn register(name: string, svc: ActorRef<Service>) {
         svc_names.push(name);
         svc_refs.push(svc);
@@ -73,7 +73,7 @@ actor HealthMonitor {
     }
 
     // Report aggregate health.
-    receive fn report() -> int {
+    receive fn report() -> i64 {
         var healthy_count = 0;
         let total = svc_names.len();
         for i in 0 .. total {
@@ -102,7 +102,7 @@ fn main() {
     // Create monitor
     let empty_names: Vec<string> = Vec::new();
     let empty_refs: Vec<ActorRef<Service>> = Vec::new();
-    let empty_status: Vec<int> = Vec::new();
+    let empty_status: Vec<i64> = Vec::new();
     let monitor = spawn HealthMonitor(svc_names: empty_names, svc_refs: empty_refs, svc_status: empty_status, check_count: 0);
     // Register services
     monitor.register("auth", auth);

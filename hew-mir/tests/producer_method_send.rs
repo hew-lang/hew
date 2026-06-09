@@ -4,7 +4,7 @@
 //!   `ConstI64 { dest: len, value: 8 }` followed by
 //!   `CallRuntimeAbi { symbol: "hew_duplex_send", args: [recv, msg, len], dest: None }`.
 //!
-//! These tests exercise the full pipeline: `duplex_pair<int,int>(16)` binds
+//! These tests exercise the full pipeline: `duplex_pair<i64,i64>(16)` binds
 //! two `DuplexHandle` locals, and `a.send(msg)` produces the correct
 //! `CallRuntimeAbi` instruction sequence.  Handle-typed bindings must never
 //! appear as `Move` sources — the `stmt()` handler stores them directly into
@@ -82,8 +82,8 @@ fn all_drops(p: &IrPipeline, fn_name: &str) -> Vec<hew_mir::ElabDrop> {
 #[test]
 fn duplex_pair_plus_send_no_move_of_duplex_handle() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             a.send(42);
             return 0;
         }
@@ -117,8 +117,8 @@ fn duplex_pair_plus_send_no_move_of_duplex_handle() {
 #[test]
 fn one_send_emits_call_runtime_abi_with_three_args() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             a.send(42);
             return 0;
         }
@@ -171,8 +171,8 @@ fn one_send_emits_call_runtime_abi_with_three_args() {
 #[test]
 fn two_sends_emit_two_call_runtime_abi_instructions() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             a.send(42);
             a.send(43);
             return 0;
@@ -207,8 +207,8 @@ fn two_sends_emit_two_call_runtime_abi_instructions() {
 #[test]
 fn two_sends_do_not_move_duplex_handle_full_pipeline() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             a.send(42);
             a.send(43);
             return 0;
@@ -236,8 +236,8 @@ fn two_sends_do_not_move_duplex_handle_full_pipeline() {
 #[test]
 fn sender_handle_remains_in_drop_plan_after_two_sends() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             a.send(42);
             a.send(43);
             return 0;
@@ -261,8 +261,8 @@ fn sender_handle_remains_in_drop_plan_after_two_sends() {
 #[test]
 fn two_sends_on_different_handles_use_distinct_receiver_places() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             a.send(1);
             b.send(2);
             return 0;

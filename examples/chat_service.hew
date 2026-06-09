@@ -25,7 +25,7 @@ actor ChatRoom {
     receive fn exit_room(username: string) {
         println(f"[room] {username} left");
     }
-    receive fn history() -> int {
+    receive fn history() -> i64 {
         let total = messages.len();
         println(f"[room] {total} messages total");
         var i = 0;

@@ -1,6 +1,6 @@
 // Benchmark: Linear Search
 // Searches sequentially through the array from start to end.
-fn linear_search(v: Vec<int>, target: int) -> int {
+fn linear_search(v: Vec<i64>, target: i64) -> i64 {
     for i in 0 .. v.len() {
         if v.get(i) == target {
             return i;
@@ -9,10 +9,10 @@ fn linear_search(v: Vec<int>, target: int) -> int {
     return 0 - 1;
 }
 
-const ITERS: int = 100000;
+const ITERS: i64 = 100000;
 
 fn main() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     for i in 0 .. 10000 {
         v.push(i);
     }

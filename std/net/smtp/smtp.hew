@@ -34,13 +34,13 @@ type Conn {
 /// Methods available on an SMTP `Conn`.
 trait ConnMethods {
     /// Send a plain-text email. Return 0 on success.
-    fn send(conn: Conn, from: string, to: string, subject: string, body: string) -> int;
+    fn send(conn: Conn, from: string, to: string, subject: string, body: string) -> i64;
 
     /// Send a plain-text email.
     fn try_send(conn: Conn, from: string, to: string, subject: string, body: string) -> Result<(), string>;
 
     /// Send an HTML email. Return 0 on success.
-    fn send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> int;
+    fn send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> i64;
 
     /// Send an HTML email.
     fn try_send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> Result<(), string>;
@@ -51,10 +51,10 @@ trait ConnMethods {
 
 impl ConnMethods for Conn {
     /// Send a plain-text email. Return 0 on success.
-    fn send(conn: Conn, from: string, to: string, subject: string, body: string) -> int {
+    fn send(conn: Conn, from: string, to: string, subject: string, body: string) -> i64 {
         unsafe {
             hew_smtp_send(conn, from, to, subject, body)
-        } as int // INTERNAL-ABI: FFI returns i32
+        } as i64 // INTERNAL-ABI: FFI returns i32
     }
     /// Send a plain-text email.
     fn try_send(conn: Conn, from: string, to: string, subject: string, body: string) -> Result<(), string> {
@@ -68,10 +68,10 @@ impl ConnMethods for Conn {
         }
     }
     /// Send an HTML email. Return 0 on success.
-    fn send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> int {
+    fn send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> i64 {
         unsafe {
             hew_smtp_send_html(conn, from, to, subject, html)
-        } as int // INTERNAL-ABI: FFI returns i32
+        } as i64 // INTERNAL-ABI: FFI returns i32
     }
     /// Send an HTML email.
     fn try_send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> Result<(), string> {
@@ -100,7 +100,7 @@ impl ConnMethods for Conn {
 /// ```
 /// let conn = smtp.connect("smtp.example.com", 587, "user", "pass");
 /// ```
-pub fn connect(host: string, port: int, username: string, password: string) -> Conn {
+pub fn connect(host: string, port: i64, username: string, password: string) -> Conn {
     unsafe {
         hew_smtp_connect(host, port as i32, username, password)
     }
@@ -113,7 +113,7 @@ pub fn connect(host: string, port: int, username: string, password: string) -> C
 /// ```
 /// let conn = smtp.connect_tls("smtp.example.com", 465, "user", "pass");
 /// ```
-pub fn connect_tls(host: string, port: int, username: string, password: string) -> Conn {
+pub fn connect_tls(host: string, port: i64, username: string, password: string) -> Conn {
     unsafe {
         hew_smtp_connect_tls(host, port as i32, username, password)
     }
@@ -124,15 +124,15 @@ pub fn connect_tls(host: string, port: int, username: string, password: string) 
 ///
 /// Use `connect_tls(...)` + `Conn.send(...)` when you need implicit TLS or want
 /// to reuse a connection for multiple messages.
-pub fn send(host: string, port: int, username: string, password: string, from: string, to: string, subject: string, body: string) -> int {
+pub fn send(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, body: string) -> i64 {
     unsafe {
         hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body)
-    } as int // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
+    } as i64 // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one plain-text
 /// email, and close the connection.
-pub fn try_send(host: string, port: int, username: string, password: string, from: string, to: string, subject: string, body: string) -> Result<(), string> {
+pub fn try_send(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, body: string) -> Result<(), string> {
     let n: i32 = unsafe {
         hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body)
     };
@@ -148,15 +148,15 @@ pub fn try_send(host: string, port: int, username: string, password: string, fro
 ///
 /// Use `connect_tls(...)` + `Conn.send_html(...)` when you need implicit TLS or
 /// want to reuse a connection for multiple messages.
-pub fn send_html(host: string, port: int, username: string, password: string, from: string, to: string, subject: string, html: string) -> int {
+pub fn send_html(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, html: string) -> i64 {
     unsafe {
         hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html)
-    } as int // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
+    } as i64 // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one HTML email,
 /// and close the connection.
-pub fn try_send_html(host: string, port: int, username: string, password: string, from: string, to: string, subject: string, html: string) -> Result<(), string> {
+pub fn try_send_html(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, html: string) -> Result<(), string> {
     let n: i32 = unsafe {
         hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html)
     };

@@ -1,10 +1,10 @@
 // Simple counter actor
 actor Counter {
-    let count: int;
-    receive fn increment(n: int) {
+    let count: i64;
+    receive fn increment(n: i64) {
         count = count + n;
     }
-    receive fn get_count() -> int {
+    receive fn get_count() -> i64 {
         count
     }
 }

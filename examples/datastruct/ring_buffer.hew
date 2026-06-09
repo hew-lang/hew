@@ -1,8 +1,8 @@
 // Ring Buffer with fixed capacity
-// Layout: Vec<int> = [capacity, head, tail, count, data...]
+// Layout: Vec<i64> = [capacity, head, tail, count, data...]
 // head = read position, tail = write position
-fn rb_create(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn rb_create(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     v.push(capacity); // index 0: capacity
     v.push(0); // index 1: head (read pos)
     v.push(0); // index 2: tail (write pos)
@@ -13,27 +13,27 @@ fn rb_create(capacity: int) -> Vec<int> {
     v
 }
 
-fn rb_capacity(rb: Vec<int>) -> int {
+fn rb_capacity(rb: Vec<i64>) -> i64 {
     rb.get(0)
 }
 
-fn rb_count(rb: Vec<int>) -> int {
+fn rb_count(rb: Vec<i64>) -> i64 {
     rb.get(3)
 }
 
-fn rb_is_empty(rb: Vec<int>) -> bool {
+fn rb_is_empty(rb: Vec<i64>) -> bool {
     rb.get(3) == 0
 }
 
-fn rb_is_full(rb: Vec<int>) -> bool {
+fn rb_is_full(rb: Vec<i64>) -> bool {
     rb.get(3) == rb.get(0)
 }
 
-fn rb_available(rb: Vec<int>) -> int {
+fn rb_available(rb: Vec<i64>) -> i64 {
     rb.get(0) - rb.get(3)
 }
 
-fn rb_write(rb: Vec<int>, val: int) -> bool {
+fn rb_write(rb: Vec<i64>, val: i64) -> bool {
     let cap = rb.get(0);
     let count = rb.get(3);
     if count == cap {
@@ -47,7 +47,7 @@ fn rb_write(rb: Vec<int>, val: int) -> bool {
     true
 }
 
-fn rb_read(rb: Vec<int>) -> int {
+fn rb_read(rb: Vec<i64>) -> i64 {
     let count = rb.get(3);
     if count == 0 {
         return 0 - 1;

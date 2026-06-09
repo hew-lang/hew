@@ -11,7 +11,7 @@
 //
 // Note: character-by-character scanning uses `text.slice(i, i+1)` rather
 // than `text.chars()` because `.chars()` is not yet supported by codegen.
-pub fn word_count(text: string) -> int {
+pub fn word_count(text: string) -> i64 {
     if text.len() == 0 {
         return 0;
     }

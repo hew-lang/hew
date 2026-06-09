@@ -8,9 +8,9 @@ type IntSink {
 }
 
 impl Sink for IntSink {
-    type Item = Vec<int>;
+    type Item = Vec<i64>;
 
-    fn push(sink: IntSink, item: Vec<int>) -> i32 {
+    fn push(sink: IntSink, item: Vec<i64>) -> i32 {
         0
     }
 }

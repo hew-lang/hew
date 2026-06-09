@@ -35,7 +35,7 @@ fn generic_lambda_multi_instantiation_int_and_string() {
     let source = r#"
         fn main() {
             let id = <T>(x: T) -> T => x;
-            let a: int = id(42);
+            let a: i64 = id(42);
             let b: string = id("hello");
         }
     "#;
@@ -68,7 +68,7 @@ fn generic_lambda_multi_instantiation_three_calls() {
     let source = r#"
         fn main() {
             let id = <T>(x: T) -> T => x;
-            let a: int = id(42);
+            let a: i64 = id(42);
             let b: bool = id(true);
             let c: string = id("hello");
         }
@@ -105,7 +105,7 @@ fn generic_lambda_multi_instantiation_var_bound_int_and_string() {
     let source = r#"
         fn main() {
             var id = <T>(x: T) -> T => x;
-            let a: int = id(42);
+            let a: i64 = id(42);
             let b: string = id("hello");
         }
     "#;
@@ -137,9 +137,9 @@ fn generic_lambda_multi_instantiation_var_bound_int_and_string() {
 fn generic_lambda_multi_instantiation_with_captures() {
     let source = r"
         fn main() {
-            let offset: int = 10;
+            let offset: i64 = 10;
             let flag: bool = false;
-            let attach = <T>(x: T) -> (T, int, bool) => (x, offset, flag);
+            let attach = <T>(x: T) -> (T, i64, bool) => (x, offset, flag);
             let a = attach(42);
             let b = attach(true);
         }
@@ -172,7 +172,7 @@ fn generic_lambda_multi_instantiation_explicit_types() {
     let source = r#"
         fn main() {
             let id = <T>(x: T) -> T => x;
-            let a: int = id<int>(42);
+            let a: i64 = id<i64>(42);
             let b: string = id<string>("hello");
         }
     "#;
@@ -191,7 +191,7 @@ fn generic_lambda_multi_instantiation_two_params_per_call() {
     let source = r#"
         fn main() {
             let pick = <A, B>(a: A, b: B) -> A => a;
-            let first: int = pick(42, true);
+            let first: i64 = pick(42, true);
             let second: string = pick("hello", 7);
         }
     "#;

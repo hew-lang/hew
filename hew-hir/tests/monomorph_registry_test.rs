@@ -63,8 +63,8 @@ fn generic_fn_called_at_two_types_produces_two_entries() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(42);
+        fn main() -> i64 {
+            let a: i64 = id(42);
             let b: string = id("hello");
             return 0;
         }
@@ -119,9 +119,9 @@ fn generic_fn_called_twice_at_same_type_dedupes() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(42);
-            let b: int = id(7);
+        fn main() -> i64 {
+            let a: i64 = id(42);
+            let b: i64 = id(7);
             return 0;
         }
     ";
@@ -165,8 +165,8 @@ fn generic_self_recursion_produces_one_entry_per_outer_t() {
             id(x)
         }
 
-        fn main() -> int {
-            let a: int = id(42);
+        fn main() -> i64 {
+            let a: i64 = id(42);
             return 0;
         }
     ";
@@ -215,8 +215,8 @@ fn monomorphisation_cap_exceeded_emits_fail_closed_diagnostic() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(42);
+        fn main() -> i64 {
+            let a: i64 = id(42);
             let b: string = id("hi");
             let c: bool = id(true);
             return 0;
@@ -263,12 +263,12 @@ fn monomorphisation_cap_exceeded_emits_fail_closed_diagnostic() {
 #[test]
 fn non_generic_callee_does_not_appear_in_registry() {
     let source = r"
-        pub fn add(x: int, y: int) -> int {
+        pub fn add(x: i64, y: i64) -> i64 {
             x + y
         }
 
-        fn main() -> int {
-            let a: int = add(1, 2);
+        fn main() -> i64 {
+            let a: i64 = add(1, 2);
             return 0;
         }
     ";
@@ -292,7 +292,7 @@ fn non_generic_callee_does_not_appear_in_registry() {
 #[test]
 fn fully_monomorphic_program_has_empty_registry() {
     let source = r"
-        fn main() -> int {
+        fn main() -> i64 {
             return 0;
         }
     ";
@@ -314,8 +314,8 @@ fn lower_program_uses_default_cap_and_records_entries() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(42);
+        fn main() -> i64 {
+            let a: i64 = id(42);
             let b: string = id("hello");
             return 0;
         }

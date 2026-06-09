@@ -159,7 +159,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
             name: "count".to_string(),
             ty: (
                 TypeExpr::Named {
-                    name: "int".to_string(),
+                    name: "i64".to_string(),
                     type_args: None,
                 },
                 0..0,
@@ -308,8 +308,8 @@ fn centralized_hashset_admissibility_rejects_module_qualified_named_rc_payload()
 fn free_call_len_on_hashset_records_lowering_fact() {
     let parsed = hew_parser::parse(
         r"
-        fn main() -> int {
-            let s: HashSet<int> = HashSet::new();
+        fn main() -> i64 {
+            let s: HashSet<i64> = HashSet::new();
             len(s)
         }
         ",
@@ -402,7 +402,7 @@ fn non_root_private_type_rcfree_is_registered_during_body_checking() {
     let parsed = hew_parser::parse(
         r"
         type Holder {
-            value: Rc<int>
+            value: Rc<i64>
         }
 
         fn helper() {
@@ -452,7 +452,7 @@ fn actor_decl_registers_rcfree_members_for_collection_checks() {
     let parsed = hew_parser::parse(
         r"
         actor Worker {
-            let value: Rc<int>;
+            let value: Rc<i64>;
             receive fn ping() {}
         }
 
@@ -859,6 +859,7 @@ fn test_yield_outside_generator() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
     let program = Program {
         module_graph: None,
@@ -885,7 +886,7 @@ fn test_receive_gen_fn_returns_stream() {
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "int".to_string(),
+                name: "i64".to_string(),
                 type_args: None,
             },
             0..0,
@@ -948,7 +949,7 @@ fn typecheck_generic_call_with_explicit_type_args() {
     let source = concat!(
         "fn identity<T>(x: T) -> T { x }\n",
         "fn main() {\n",
-        "    let a = identity<int>(42);\n",
+        "    let a = identity<i64>(42);\n",
         "    let b = identity<string>(\"hello\");\n",
         "    println(a);\n",
         "    println(b);\n",
@@ -1002,7 +1003,7 @@ fn typecheck_generic_call_with_inferred_type_args() {
             .call_type_args
             .values()
             .any(|args| args == &vec![Ty::I64]),
-        "expected inferred int literal type args to materialize at output boundary, got {:?}",
+        "expected inferred i64 literal type args to materialize at output boundary, got {:?}",
         output.call_type_args
     );
 }
@@ -1010,7 +1011,7 @@ fn typecheck_generic_call_with_inferred_type_args() {
 #[test]
 fn typecheck_generator_yield_uses_element_type() {
     let source = concat!(
-        "gen fn count_up() -> int {\n",
+        "gen fn count_up() -> i64 {\n",
         "    yield 1;\n",
         "    yield 2;\n",
         "}\n"
@@ -1033,7 +1034,7 @@ fn typecheck_generator_yield_uses_element_type() {
 #[test]
 fn typecheck_async_generator_yield_uses_element_type() {
     let source = concat!(
-        "async gen fn count_up() -> int {\n",
+        "async gen fn count_up() -> i64 {\n",
         "    yield 1;\n",
         "    yield 2;\n",
         "}\n"
@@ -1055,7 +1056,7 @@ fn typecheck_async_generator_yield_uses_element_type() {
 
 #[test]
 fn typecheck_generator_yield_mismatch_reports_element_type() {
-    let source = "gen fn bad() -> int { yield \"oops\"; }";
+    let source = "gen fn bad() -> i64 { yield \"oops\"; }";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),
@@ -1069,7 +1070,7 @@ fn typecheck_generator_yield_mismatch_reports_element_type() {
             matches!(
                 &e.kind,
                 TypeErrorKind::Mismatch { expected, actual }
-                if expected == "int" && actual == "string"
+                if expected == "i64" && actual == "string"
             )
         }),
         "expected element-type mismatch, got: {:?}",
@@ -1120,6 +1121,7 @@ fn test_stream_annotation_resolves_to_stream_type() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = Program {
@@ -1172,6 +1174,7 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = Program {
@@ -1233,6 +1236,7 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = Program {
@@ -1257,7 +1261,7 @@ fn test_qualified_builtin_type_names_canonicalize_in_signatures() {
         "import std::stream;\n",
         "import std::channel::channel;\n",
         "\n",
-        "fn stream_id(s: stream.Stream<int>) -> stream.Stream<int> { s }\n",
+        "fn stream_id(s: stream.Stream<i64>) -> stream.Stream<i64> { s }\n",
         "fn close_sender(tx: channel.Sender) {\n",
         "    tx.close();\n",
         "}\n",
@@ -1350,6 +1354,50 @@ fn typecheck_error_undefined_var() {
     assert!(
         !output.errors.is_empty(),
         "expected type error for undefined variable"
+    );
+}
+
+#[test]
+fn removed_alias_int_emits_suggestion_for_i64_or_isize() {
+    let result = hew_parser::parse("fn main() { let x: int = 5; }");
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::UndefinedType && e.message.contains("int"))
+        .expect("expected UndefinedType error for removed alias `int`");
+    assert!(
+        err.message.contains("i64") || err.message.contains("isize"),
+        "diagnostic should suggest i64 or isize; got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn removed_alias_uint_emits_suggestion_for_u64_or_usize() {
+    let result = hew_parser::parse("fn main() { let x: uint = 5; }");
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::UndefinedType && e.message.contains("uint"))
+        .expect("expected UndefinedType error for removed alias `uint`");
+    assert!(
+        err.message.contains("u64") || err.message.contains("usize"),
+        "diagnostic should suggest u64 or usize; got: {}",
+        err.message
     );
 }
 
@@ -1598,7 +1646,7 @@ fn typecheck_let_with_explicit_type() {
 
 #[test]
 fn typecheck_let_type_annotation_mismatch() {
-    let source = "fn main() { let x: int = \"hello\"; }";
+    let source = "fn main() { let x: i64 = \"hello\"; }";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),
@@ -1609,13 +1657,12 @@ fn typecheck_let_type_annotation_mismatch() {
     let output = checker.check_program(&result.program);
     assert!(
         !output.errors.is_empty(),
-        "expected type error for string assigned to int variable"
+        "expected type error for string assigned to i64 variable"
     );
-    assert!(output.errors.iter().any(|e| {
-        e.message.contains("expected `int`")
-            && e.message.contains("found `string`")
-            && !e.message.contains("i64")
-    }));
+    assert!(output
+        .errors
+        .iter()
+        .any(|e| { e.message.contains("expected `i64`") && e.message.contains("found `string`") }));
 }
 
 #[test]
@@ -1935,10 +1982,10 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     let source = concat!(
         "import ecosystem::db::sqlite;\n",
         "enum Result {\n",
-        "    Ok(int);\n",
-        "    Err(int)\n",
+        "    Ok(i64);\n",
+        "    Err(i64)\n",
         "}\n",
-        "fn unwrap_or(r: Result, fallback: int) -> int {\n",
+        "fn unwrap_or(r: Result, fallback: i64) -> i64 {\n",
         "    match r {\n",
         "        Ok(v) => v,\n",
         "        Err(_) => fallback,\n",
@@ -2040,13 +2087,13 @@ fn typecheck_guarded_wildcard_not_exhaustive() {
     assert_eq!(err.message, "non-exhaustive match: missing true, false");
 }
 
-/// Scalar types (int, float, string, …) have no closed variant set, so a
+/// Scalar types (i64, float, string, …) have no closed variant set, so a
 /// missing catch-all should remain a *warning*, not an error.
 #[test]
 fn typecheck_scalar_missing_catchall_is_warning_not_error() {
     let (errors, warnings) = parse_and_check(concat!(
         "fn main() {\n",
-        "    let x: int = 5;\n",
+        "    let x: i64 = 5;\n",
         "    match x {\n",
         "        1 => 10,\n",
         "        2 => 20,\n",
@@ -2071,7 +2118,7 @@ fn typecheck_scalar_missing_catchall_is_warning_not_error() {
 #[test]
 fn typecheck_struct_pattern_unknown_field_errors() {
     let (errors, _) = parse_and_check(concat!(
-        "type Point { x: int, y: int }\n",
+        "type Point { x: i64, y: i64 }\n",
         "fn main() {\n",
         "    let p = Point { x: 1, y: 2 };\n",
         "    match p {\n",
@@ -2138,7 +2185,7 @@ fn typecheck_or_pattern_asymmetric_bindings_error() {
 #[test]
 fn typecheck_or_pattern_symmetric_bindings_ok() {
     let (errors, warnings) = parse_and_check(concat!(
-        "fn main() -> int {\n",
+        "fn main() -> i64 {\n",
         "    let value = (1, 2);\n",
         "    match value {\n",
         "        (x, _) | (_, x) => x,\n",
@@ -2153,7 +2200,7 @@ fn typecheck_or_pattern_symmetric_bindings_ok() {
 #[test]
 fn typecheck_or_pattern_incompatible_binding_types_error() {
     let (errors, _) = parse_and_check(concat!(
-        "fn unwrap(result: Result<int, string>) -> int {\n",
+        "fn unwrap(result: Result<i64, string>) -> i64 {\n",
         "    match result {\n",
         "        Ok(x) | Err(x) => x,\n",
         "    }\n",
@@ -2166,7 +2213,7 @@ fn typecheck_or_pattern_incompatible_binding_types_error() {
     assert!(
         err.notes
             .iter()
-            .any(|(_, note)| note.contains("left branch binds `x` as `int`")),
+            .any(|(_, note)| note.contains("left branch binds `x` as `i64`")),
         "expected left-branch type note, got: {err:?}"
     );
     assert!(
@@ -2206,7 +2253,7 @@ fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
 #[test]
 fn typecheck_error_scrutinee_struct_pattern_no_undefined_variable_cascade() {
     let (errors, _) = parse_and_check(concat!(
-        "type Point { x: int, y: int }\n",
+        "type Point { x: i64, y: i64 }\n",
         "fn main() {\n",
         "    let _value = match missing {\n",
         "        Point { x, y } => x + y,\n",
@@ -2226,7 +2273,7 @@ fn typecheck_error_scrutinee_struct_pattern_no_undefined_variable_cascade() {
 #[test]
 fn typecheck_error_scrutinee_struct_variant_pattern_no_cascade() {
     let (errors, _) = parse_and_check(concat!(
-        "enum Shape { Move { x: int } }\n",
+        "enum Shape { Move { x: i64 } }\n",
         "fn main() {\n",
         "    let _value = match missing {\n",
         "        Shape::Move { x } => x,\n",
@@ -2246,7 +2293,7 @@ fn typecheck_error_scrutinee_struct_variant_pattern_no_cascade() {
 #[test]
 fn typecheck_error_scrutinee_struct_pattern_with_subpattern_no_cascade() {
     let (errors, _) = parse_and_check(concat!(
-        "type Point { x: int }\n",
+        "type Point { x: i64 }\n",
         "fn main() {\n",
         "    let _value = match missing {\n",
         "        Point { x: inner_x } => inner_x,\n",
@@ -2299,7 +2346,7 @@ fn typecheck_bool_scrutinee_constructor_pattern_errors() {
 #[test]
 fn typecheck_int_scrutinee_struct_pattern_errors_without_binding_cascade() {
     let (errors, _) = parse_and_check(concat!(
-        "type Point { x: int }\n",
+        "type Point { x: i64 }\n",
         "fn main() {\n",
         "    let _ = match 42 {\n",
         "        Point { x } => {\n",
@@ -2318,14 +2365,14 @@ fn typecheck_int_scrutinee_struct_pattern_errors_without_binding_cascade() {
         errors.iter().any(|e| matches!(
             &e.kind,
             TypeErrorKind::Mismatch { expected, actual }
-                if expected == "int" && actual == "Point"
+                if expected == "i64" && actual == "Point"
         )),
-        "expected struct-pattern mismatch on int scrutinee, got: {errors:?}"
+        "expected struct-pattern mismatch on i64 scrutinee, got: {errors:?}"
     );
     assert!(
         errors.iter().any(|e| e
             .message
-            .contains("struct pattern `Point` cannot match non-struct type `int`")),
+            .contains("struct pattern `Point` cannot match non-struct type `i64`")),
         "expected fail-closed struct-pattern diagnostic, got: {errors:?}"
     );
     assert!(
@@ -2411,7 +2458,7 @@ fn typecheck_error_scrutinee_skips_exhaustiveness_follow_on() {
 fn typecheck_generic_enum_constructor_infers_type_args() {
     let (errors, _) = parse_and_check(concat!(
         "enum Option<T> { Some(T); None; }\n",
-        "fn take_int(x: Option<int>) -> Option<int> { x }\n",
+        "fn take_int(x: Option<i64>) -> Option<i64> { x }\n",
         "fn take_string(x: Option<string>) -> Option<string> { x }\n",
         "fn main() { take_int(Some(42)); take_string(Some(\"hello\")); }\n",
     ));
@@ -2422,7 +2469,7 @@ fn typecheck_generic_enum_constructor_infers_type_args() {
 fn generic_enum_constructor_expected_context_coerces_payload_literal() {
     let source = concat!(
         "enum Option<T> { Some(T); None; }\n",
-        "fn take_int(x: Option<int>) -> Option<int> { x }\n",
+        "fn take_int(x: Option<i64>) -> Option<i64> { x }\n",
         "fn main() { take_int(Some(42)); }\n",
     );
     let result = hew_parser::parse(source);
@@ -2469,13 +2516,13 @@ fn generic_enum_constructor_expected_context_coerces_payload_literal() {
     assert_eq!(
         output.expr_types.get(&SpanKey::from(literal_span)),
         Some(&Ty::I64),
-        "constructor payload literal should coerce to `int`: {:?}",
+        "constructor payload literal should coerce to `i64`: {:?}",
         output.expr_types
     );
     assert_eq!(
         output.expr_types.get(&SpanKey::from(inner_call_span)),
         Some(&Ty::option(Ty::I64)),
-        "constructor call should resolve to `Option<int>`: {:?}",
+        "constructor call should resolve to `Option<i64>`: {:?}",
         output.expr_types
     );
 }
@@ -2483,7 +2530,7 @@ fn generic_enum_constructor_expected_context_coerces_payload_literal() {
 #[test]
 fn builtin_result_constructors_materialize_output_types_without_call_type_args() {
     let source = concat!(
-        "fn main() -> int {\n",
+        "fn main() -> i64 {\n",
         "    Ok(7);\n",
         "    Err(9);\n",
         "    0\n",
@@ -2550,8 +2597,8 @@ fn builtin_result_constructors_materialize_output_types_without_call_type_args()
 #[test]
 fn result_constructors_accept_unit_payloads() {
     let source = concat!(
-        "fn ok_unit() -> Result<(), int> { Ok(()) }\n",
-        "fn err_unit() -> Result<int, ()> { Err(()) }\n",
+        "fn ok_unit() -> Result<(), i64> { Ok(()) }\n",
+        "fn err_unit() -> Result<i64, ()> { Err(()) }\n",
     );
     let result = hew_parser::parse(source);
     assert!(
@@ -2592,7 +2639,7 @@ fn err_unit_match_pattern_accepted() {
     // `Err(())` as a match arm pattern against `Result<T, ()>` must not error.
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",
-        "    let r: Result<int, ()> = Err(());\n",
+        "    let r: Result<i64, ()> = Err(());\n",
         "    let _ = match r {\n",
         "        Ok(n) => n,\n",
         "        Err(()) => 0,\n",
@@ -2624,11 +2671,11 @@ fn unit_match_pattern_accepted_on_unit_scrutinee() {
 
 #[test]
 fn ok_unit_pattern_rejected_against_non_unit_ok_payload() {
-    // `Ok(())` against `Result<int, E>` must still be an error — the payload
-    // type is `int`, not unit, so the empty-tuple pattern is a mismatch.
+    // `Ok(())` against `Result<i64, E>` must still be an error — the payload
+    // type is `i64`, not unit, so the empty-tuple pattern is a mismatch.
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",
-        "    let r: Result<int, string> = Ok(1);\n",
+        "    let r: Result<i64, string> = Ok(1);\n",
         "    let _ = match r {\n",
         "        Ok(()) => 0,\n",
         "        Err(_) => 1,\n",
@@ -2637,14 +2684,14 @@ fn ok_unit_pattern_rejected_against_non_unit_ok_payload() {
     ));
     assert!(
         !errors.is_empty(),
-        "Ok(()) against Result<int, E> must produce a type error"
+        "Ok(()) against Result<i64, E> must produce a type error"
     );
 }
 
 #[test]
 fn builtin_result_constructor_composite_output_type_fallbacks_materialize() {
     let source = concat!(
-        "fn main() -> int {\n",
+        "fn main() -> i64 {\n",
         "    Ok(Some(7));\n",
         "    Err(Some(9));\n",
         "    0\n",
@@ -2830,19 +2877,19 @@ fn parse_and_check_with_stdlib(source: &str) -> (Vec<TypeError>, Vec<TypeError>)
 fn scope_error_type_constructs_and_field_accesses() {
     let source = concat!(
         "import std::concurrency;\n",
-        "fn read_primary(err: concurrency.ScopeError<int>) -> int {\n",
-        "    let primary: int = err.primary;\n",
+        "fn read_primary(err: concurrency.ScopeError<i64>) -> i64 {\n",
+        "    let primary: i64 = err.primary;\n",
         "    primary\n",
         "}\n",
-        "fn read_others(err: concurrency.ScopeError<int>) -> Vec<int> {\n",
-        "    let others: Vec<int> = err.also_failed;\n",
+        "fn read_others(err: concurrency.ScopeError<i64>) -> Vec<i64> {\n",
+        "    let others: Vec<i64> = err.also_failed;\n",
         "    others\n",
         "}\n",
-        "fn read_cancelled(err: concurrency.ScopeError<int>) -> int {\n",
-        "    let cancelled: int = err.cancelled_count;\n",
+        "fn read_cancelled(err: concurrency.ScopeError<i64>) -> i64 {\n",
+        "    let cancelled: i64 = err.cancelled_count;\n",
         "    cancelled\n",
         "}\n",
-        "fn pass_through(err: concurrency.ScopeError<int>) -> concurrency.ScopeError<int> {\n",
+        "fn pass_through(err: concurrency.ScopeError<i64>) -> concurrency.ScopeError<i64> {\n",
         "    err\n",
         "}\n",
         "fn main() {\n",
@@ -2897,7 +2944,7 @@ fn print_and_println_reject_struct_without_display_impl() {
     let (errors, warnings) = parse_and_check_with_stdlib(
         r"
         type Hidden {
-            value: int;
+            value: i64;
         }
 
         fn main() {
@@ -2927,7 +2974,7 @@ fn display_impl_satisfies_bounded_magic_builtins() {
     let (errors, warnings) = parse_and_check_with_stdlib(
         r#"
         type Widget {
-            value: int;
+            value: i64;
         }
 
         impl Display for Widget {
@@ -2989,8 +3036,8 @@ fn deferred_bound_check_drains_after_defaulting() {
         checker.errors
     );
     assert!(
-        bounds_errors[0].message.contains("MyTrait") && bounds_errors[0].message.contains("int"),
-        "expected deferred diagnostic to mention MyTrait and int: {:?}",
+        bounds_errors[0].message.contains("MyTrait") && bounds_errors[0].message.contains("i64"),
+        "expected deferred diagnostic to mention MyTrait and i64: {:?}",
         bounds_errors[0]
     );
 }
@@ -3117,7 +3164,7 @@ fn no_warn_var_actually_mutated() {
 
 #[test]
 fn mutable_param_can_be_reassigned() {
-    let (errors, warnings) = parse_and_check("fn bump(var x: int) -> int { x = x + 1; x }");
+    let (errors, warnings) = parse_and_check("fn bump(var x: i64) -> i64 { x = x + 1; x }");
     assert!(errors.is_empty(), "errors: {errors:?}");
     assert!(
         !warnings
@@ -3129,7 +3176,7 @@ fn mutable_param_can_be_reassigned() {
 
 #[test]
 fn immutable_param_cannot_be_reassigned() {
-    let (errors, warnings) = parse_and_check("fn bump(x: int) -> int { x = x + 1; x }");
+    let (errors, warnings) = parse_and_check("fn bump(x: i64) -> i64 { x = x + 1; x }");
     assert!(
         errors.iter().any(|e| e
             .message
@@ -3147,7 +3194,7 @@ fn immutable_param_cannot_be_reassigned() {
 #[test]
 fn immutable_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: int; }\n",
+        "type Point { x: i64; }\n",
         "fn main() { let p = Point { x: 1 }; p.x = 2; }\n",
     ));
     assert!(
@@ -3167,7 +3214,7 @@ fn immutable_field_assignment_root_is_rejected() {
 #[test]
 fn immutable_param_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: int; }\n",
+        "type Point { x: i64; }\n",
         "fn bump(p: Point) { p.x = 2; }\n",
     ));
     assert!(
@@ -3187,7 +3234,7 @@ fn immutable_param_field_assignment_root_is_rejected() {
 #[test]
 fn immutable_compound_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: int; }\n",
+        "type Point { x: i64; }\n",
         "fn main() { let p = Point { x: 1 }; p.x += 2; }\n",
     ));
     assert!(
@@ -3207,7 +3254,7 @@ fn immutable_compound_field_assignment_root_is_rejected() {
 #[test]
 fn mutable_field_assignment_root_counts_as_mutation() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: int; }\n",
+        "type Point { x: i64; }\n",
         "fn main() { var p = Point { x: 1 }; p.x = 2; println(p.x); }\n",
     ));
     assert!(errors.is_empty(), "errors: {errors:?}");
@@ -3222,7 +3269,7 @@ fn mutable_field_assignment_root_counts_as_mutation() {
 #[test]
 fn mutable_param_field_assignment_root_counts_as_mutation() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: int; }\n",
+        "type Point { x: i64; }\n",
         "fn bump(var p: Point) { p.x = 2; println(p.x); }\n",
     ));
     assert!(errors.is_empty(), "errors: {errors:?}");
@@ -3253,7 +3300,7 @@ fn immutable_index_assignment_root_is_rejected() {
 
 #[test]
 fn immutable_param_index_assignment_root_is_rejected() {
-    let (errors, warnings) = parse_and_check("fn bump(xs: Vec<int>) { xs[0] = 2; }\n");
+    let (errors, warnings) = parse_and_check("fn bump(xs: Vec<i64>) { xs[0] = 2; }\n");
     assert!(
         errors.iter().any(|e| e
             .message
@@ -3284,7 +3331,7 @@ fn mutable_index_assignment_root_counts_as_mutation() {
 #[test]
 fn mutable_param_index_assignment_root_counts_as_mutation() {
     let (errors, warnings) =
-        parse_and_check("fn bump(var xs: Vec<int>) { xs[0] = 2; println(xs[0]); }\n");
+        parse_and_check("fn bump(var xs: Vec<i64>) { xs[0] = 2; println(xs[0]); }\n");
     assert!(errors.is_empty(), "errors: {errors:?}");
     assert!(
         !warnings
@@ -3498,7 +3545,7 @@ fn suggest_similar_field() {
 fn suggest_similar_method() {
     let (errors, _) = parse_and_check(concat!(
         "type Counter {}\n",
-        "impl Counter { fn length(c: Counter) -> int { 0 } }\n",
+        "impl Counter { fn length(c: Counter) -> i64 { 0 } }\n",
         "fn main() { let c = Counter {}; c.lenght(); }\n",
     ));
     let err = errors
@@ -3516,7 +3563,7 @@ fn suggest_similar_method() {
 fn no_suggest_method_when_too_different() {
     let (errors, _) = parse_and_check(concat!(
         "type Counter {}\n",
-        "impl Counter { fn length(c: Counter) -> int { 0 } }\n",
+        "impl Counter { fn length(c: Counter) -> i64 { 0 } }\n",
         "fn main() { let c = Counter {}; c.zzzzz(); }\n",
     ));
     let err = errors
@@ -3783,8 +3830,8 @@ fn test_actor_field_shadowing_is_error() {
     // unambiguous names.
     let source = r"
         actor Counter {
-            var count: int = 0;
-            receive fn update(count: int) {
+            var count: i64 = 0;
+            receive fn update(count: i64) {
                 println(count);
             }
         }
@@ -3803,8 +3850,8 @@ fn test_actor_fn_method_field_shadowing_is_error() {
     // Shadowing an actor field via an fn helper method is also a hard error.
     let source = r"
         actor Counter {
-            var count: int = 0;
-            fn helper(count: int) -> int { count }
+            var count: i64 = 0;
+            fn helper(count: i64) -> i64 { count }
         }
     ";
     let (errors, _warnings) = parse_and_check(source);
@@ -4049,9 +4096,9 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
 
 #[test]
 fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
-    // Stage A1: `impl Display for int` registers under the canonical `i64`
+    // Stage A1: `impl Display for i64` registers under the canonical `i64`
     // key (the lowering name for `Ty::I64`) so receiver-keyed dispatch can
-    // find it later.  The literal AST string `int` must round-trip through
+    // find it later.  The literal AST string `i64` must round-trip through
     // `Ty::from_name` → `canonical_lowering_name` to agree with the
     // dispatch site, which only ever sees a resolved `Ty`.
     let source = r#"
@@ -4059,8 +4106,8 @@ fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
             fn fmt(val: Self) -> string;
         }
 
-        impl Display for int {
-            fn fmt(n: int) -> string {
+        impl Display for i64 {
+            fn fmt(n: i64) -> string {
                 ""
             }
         }
@@ -4081,7 +4128,7 @@ fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
         .expect("primitive trait impl table should have entry for (i64, Display)");
     let fmt_sig = methods
         .get("fmt")
-        .expect("fmt method should be recorded for impl Display for int");
+        .expect("fmt method should be recorded for impl Display for i64");
     assert!(
         fmt_sig.params.is_empty(),
         "receiver should be filtered: {:?}",
@@ -4135,7 +4182,7 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
         }
 
         pub type MyType {
-            value: int;
+            value: i64;
         }
 
         impl Display for MyType {
@@ -4223,11 +4270,11 @@ fn primitive_impl_dispatch_resolves_int_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
             pub trait Display { fn fmt(val: Self) -> string; }
-            impl Display for int {
-                fn fmt(n: int) -> string { "" }
+            impl Display for i64 {
+                fn fmt(n: i64) -> string { "" }
             }
             fn main() {
-                let x: int = 42;
+                let x: i64 = 42;
                 let _ = x.fmt();
             }
         "#,
@@ -4345,7 +4392,7 @@ fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
     // to `Ty::I64`, not be hijacked into the user trait's `fmt` method.
     //
     // Uses `i32.to_i64()` (infallible widening) rather than the previously
-    // tested `int.to_i32()` (i64→i32 narrowing), which now requires
+    // tested `i64.to_i32()` (i64→i32 narrowing), which now requires
     // `.try_to_i32()` under the B-1c strict-width rules.
     let source = r#"
         pub trait Display { fn fmt(val: Self) -> string; }
@@ -4382,11 +4429,11 @@ fn primitive_impl_dispatch_resolves_ufcs_form_for_int_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
             pub trait Display { fn fmt(val: Self) -> string; }
-            impl Display for int {
-                fn fmt(n: int) -> string { "" }
+            impl Display for i64 {
+                fn fmt(n: i64) -> string { "" }
             }
             fn main() {
-                let x: int = 42;
+                let x: i64 = 42;
                 let _ = Display::fmt(x);
             }
         "#,
@@ -4404,11 +4451,11 @@ fn primitive_impl_dispatch_resolves_ufcs_form_with_extra_args() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
             pub trait Show { fn show(val: Self, suffix: string) -> string; }
-            impl Show for int {
-                fn show(n: int, suffix: string) -> string { suffix }
+            impl Show for i64 {
+                fn show(n: i64, suffix: string) -> string { suffix }
             }
             fn main() {
-                let x: int = 42;
+                let x: i64 = 42;
                 let _: string = Show::show(x, "!");
             }
         "#,
@@ -4428,7 +4475,7 @@ fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
     let source = r#"
         pub trait Display { fn fmt(val: Self) -> string; }
         pub type Foo {
-            value: int;
+            value: i64;
         }
         impl Display for Foo {
             fn fmt(f: Foo) -> string { "" }
@@ -4500,7 +4547,7 @@ fn ufcs_on_pub_type_receiver_does_not_record_primitive_trait_impl_metadata() {
     // entirely by the receiver-form dispatch path.
     let source = r#"
         pub trait UserDisplay { fn show(val: Self) -> string; }
-        pub type Widget { value: int; }
+        pub type Widget { value: i64; }
         impl UserDisplay for Widget {
             fn show(w: Widget) -> string { "" }
         }
@@ -4550,11 +4597,11 @@ fn ufcs_over_applied_call_emits_exactly_one_arity_diagnostic() {
     // inner one, matching the receiver-form path's behaviour.
     let source = r#"
         pub trait Display { fn fmt(val: Self) -> string; }
-        impl Display for int {
-            fn fmt(n: int) -> string { "" }
+        impl Display for i64 {
+            fn fmt(n: i64) -> string { "" }
         }
         fn main() {
-            let x: int = 42;
+            let x: i64 = 42;
             let _ = Display::fmt(x, "extra");
         }
     "#;
@@ -4587,11 +4634,11 @@ fn primitive_impl_dispatch_unknown_method_still_emits_error() {
     // helper returns None so the existing reporter runs.
     let source = r#"
         pub trait Display { fn fmt(val: Self) -> string; }
-        impl Display for int {
-            fn fmt(n: int) -> string { "" }
+        impl Display for i64 {
+            fn fmt(n: i64) -> string { "" }
         }
         fn main() {
-            let x: int = 42;
+            let x: i64 = 42;
             let _ = x.no_such_method();
         }
     "#;
@@ -4621,14 +4668,14 @@ fn primitive_impl_dispatch_unknown_method_still_emits_error() {
 fn primitive_trait_dispatch_int_literal_receiver() {
     // #1668 reproducer: an `IntLiteral` receiver (no enclosing typed binding)
     // must default to `i64` before the side-table lookup so `(42).fmt()`
-    // resolves the same way `let x: int = 42; x.fmt()` does.  Pre-fix this
-    // emitted `no method `fmt` on int` because
+    // resolves the same way `let x: i64 = 42; x.fmt()` does.  Pre-fix this
+    // emitted `no method `fmt` on i64` because
     // `canonical_primitive_or_builtin_key` short-circuited on the literal.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
             pub trait Display { fn fmt(val: Self) -> string; }
-            impl Display for int {
-                fn fmt(n: int) -> string { "" }
+            impl Display for i64 {
+                fn fmt(n: i64) -> string { "" }
             }
             fn main() {
                 let _ = (42).fmt();
@@ -4641,7 +4688,7 @@ fn primitive_trait_dispatch_int_literal_receiver() {
 
 #[test]
 fn primitive_trait_dispatch_float_literal_receiver() {
-    // Mirror of the int-literal case for `FloatLiteral`.  Defaulting must
+    // Mirror of the i64-literal case for `FloatLiteral`.  Defaulting must
     // collapse the literal to `f64` (via `materialize_literal_defaults`)
     // before canonical-key lookup.
     assert_primitive_trait_dispatch_records_metadata(
@@ -4668,8 +4715,8 @@ fn primitive_trait_dispatch_ufcs_int_literal() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
             pub trait Display { fn fmt(val: Self) -> string; }
-            impl Display for int {
-                fn fmt(n: int) -> string { "" }
+            impl Display for i64 {
+                fn fmt(n: i64) -> string { "" }
             }
             fn main() {
                 let _ = Display::fmt(42);
@@ -4737,7 +4784,7 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
     // redeclares Display with a *different* method name, the builtins
     // `fmt` lookup must NOT silently satisfy a call to that user method
     // name on a primitive receiver — it should still diagnose "no method
-    // on int".  This guards the registration ordering risk called out in
+    // on i64".  This guards the registration ordering risk called out in
     // the lane plan: builtins.hew impls land in the side table only; they
     // do not pollute `trait_defs` or hijack user names.
     let source = r"
@@ -4780,7 +4827,7 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
 fn primitive_trait_dispatch_negative_non_display_method_still_diagnoses() {
     // Negative sentinel: a method name that no Display impl provides on
     // a primitive receiver must continue to emit the existing
-    // `no method `<name>` on int` diagnostic.  Defaulting the literal must
+    // `no method `<name>` on i64` diagnostic.  Defaulting the literal must
     // not silently swallow the not-found path.
     let source = r"
         fn main() {
@@ -5063,6 +5110,7 @@ fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>) -> FnDecl 
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     }
 }
 
@@ -5092,6 +5140,7 @@ fn make_priv_fn(name: &str) -> FnDecl {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     }
 }
 
@@ -6140,6 +6189,7 @@ fn test_file_import_private_items_not_visible() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     });
 
     let private_const = Item::Const(ConstDecl {
@@ -6147,7 +6197,7 @@ fn test_file_import_private_items_not_visible() {
         name: "PRIVATE_CONST".to_string(),
         ty: (
             TypeExpr::Named {
-                name: "Int".to_string(),
+                name: "i64".to_string(),
                 type_args: None,
             },
             0..0,
@@ -6230,9 +6280,9 @@ fn check_generic_lambda() {
             // We need to make sure generic instantiation works.
             // Currently, `check_lambda` creates fresh type variables for T.
             // So id has type ?0 -> ?0.
-            // When passed to apply(id, 5), T inferred as int.
-            // apply expects fn(int) -> int.
-            // id matches fn(?0) -> ?0 where ?0=int.
+            // When passed to apply(id, 5), T inferred as i64.
+            // apply expects fn(i64) -> i64.
+            // id matches fn(?0) -> ?0 where ?0=i64.
             let res = apply(id, 5);
         }
     ";
@@ -6265,7 +6315,7 @@ fn check_generic_lambda() {
 fn generic_lambda_slice1_type_inference() {
     let source = r"
         fn main() {
-            let v: int = 30;
+            let v: i64 = 30;
             let r = <T>(a: T, b: T) -> T => a;
             let q = r(v, v);
         }
@@ -6286,18 +6336,18 @@ fn generic_lambda_slice1_type_inference() {
         output.errors
     );
 
-    // The call r(v, v) must have produced a call_type_args entry (T→int).
+    // The call r(v, v) must have produced a call_type_args entry (T→i64).
     assert!(
         !output.call_type_args.is_empty(),
         "call_type_args should contain the inferred type for r(v,v)"
     );
-    // The single entry should map to [int / i64].
+    // The single entry should map to [i64 / i64].
     let type_args: Vec<_> = output.call_type_args.values().collect();
     assert_eq!(type_args.len(), 1);
     assert_eq!(
         type_args[0],
         &vec![crate::ty::Ty::I64],
-        "T should be inferred as int (i64)"
+        "T should be inferred as i64 (i64)"
     );
 }
 
@@ -6308,7 +6358,7 @@ fn generic_lambda_slice1_two_type_params() {
         "fn main() {\n",
         r#"    let combine = <A, B>(a: A, b: B) -> A => a;"#,
         "\n",
-        r#"    let x: int = 1;"#,
+        r#"    let x: i64 = 1;"#,
         "\n",
         r#"    let y: string = "hello";"#,
         "\n",
@@ -6346,7 +6396,7 @@ fn generic_lambda_slice1_two_type_params() {
 fn contextual_lambda_binding_records_lambda_expr_type() {
     let source = concat!(
         "fn main() {\n",
-        "    let f: fn(int) -> int = (x) => x + 1;\n",
+        "    let f: fn(i64) -> i64 = (x) => x + 1;\n",
         "    let y = f(5);\n",
         "}\n",
     );
@@ -6396,7 +6446,7 @@ fn contextual_lambda_binding_records_lambda_expr_type() {
 #[test]
 fn method_level_type_params_freshen_per_named_method_call() {
     let source = r"
-        type Holder { value: int }
+        type Holder { value: i64 }
 
         impl Holder {
             fn pick<T>(h: Holder, value: T) -> T {
@@ -6435,7 +6485,7 @@ fn method_level_type_params_freshen_per_named_method_call() {
             .call_type_args
             .values()
             .any(|args| args == &vec![crate::ty::Ty::I64]),
-        "expected one call to infer T=int, got {:?}",
+        "expected one call to infer T=i64, got {:?}",
         output.call_type_args
     );
     assert!(
@@ -6459,8 +6509,8 @@ fn generic_impl_method_level_type_params_freshen_per_call() {
             }
         }
 
-        fn double(x: int) -> int { x * 2 }
-        fn is_even(x: int) -> bool { x % 2 == 0 }
+        fn double(x: i64) -> i64 { x * 2 }
+        fn is_even(x: i64) -> bool { x % 2 == 0 }
 
         fn main() {
             let b = Box { value: 42 };
@@ -6493,7 +6543,7 @@ fn generic_impl_method_level_type_params_freshen_per_call() {
             .call_type_args
             .values()
             .any(|args| args == &vec![crate::ty::Ty::I64]),
-        "expected one call to infer U=int, got {:?}",
+        "expected one call to infer U=i64, got {:?}",
         output.call_type_args
     );
     assert!(
@@ -6547,19 +6597,19 @@ fn generic_impl_method_underconstrained_type_param_reports_inference_failed() {
 fn trait_method_type_params_freshen_per_call_on_bounded_type_param() {
     let source = r"
         trait Transform {
-            fn apply<U>(item: Self, f: fn(int) -> U) -> U;
+            fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
         }
 
-        type Holder { value: int }
+        type Holder { value: i64 }
 
         impl Transform for Holder {
-            fn apply<U>(item: Holder, f: fn(int) -> U) -> U {
+            fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
                 f(item.value)
             }
         }
 
-        fn double(x: int) -> int { x * 2 }
-        fn is_odd(x: int) -> bool { x % 2 != 0 }
+        fn double(x: i64) -> i64 { x * 2 }
+        fn is_odd(x: i64) -> bool { x % 2 != 0 }
 
         fn run<T: Transform>(item: T) {
             let doubled = item.apply(double);
@@ -6591,7 +6641,7 @@ fn trait_method_type_params_freshen_per_call_on_bounded_type_param() {
             .call_type_args
             .values()
             .any(|args| args == &vec![crate::ty::Ty::I64]),
-        "expected one trait-bound call to infer U=int, got {:?}",
+        "expected one trait-bound call to infer U=i64, got {:?}",
         output.call_type_args
     );
     assert!(
@@ -6608,19 +6658,19 @@ fn trait_method_type_params_freshen_per_call_on_bounded_type_param() {
 fn trait_method_type_params_do_not_unify_across_calls() {
     let source = r"
         trait Transform {
-            fn apply<U>(item: Self, f: fn(int) -> U) -> U;
+            fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
         }
 
-        type Holder { value: int }
+        type Holder { value: i64 }
 
         impl Transform for Holder {
-            fn apply<U>(item: Holder, f: fn(int) -> U) -> U {
+            fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
                 f(item.value)
             }
         }
 
-        fn double(x: int) -> int { x * 2 }
-        fn is_odd(x: int) -> bool { x % 2 != 0 }
+        fn double(x: i64) -> i64 { x * 2 }
+        fn is_odd(x: i64) -> bool { x % 2 != 0 }
 
         fn run<T: Transform>(item: T) {
             let doubled = item.apply(double);
@@ -6765,18 +6815,18 @@ fn test_trait_object_type_args_substitution() {
         }
 
         type Counter {
-            count: int;
+            count: i64;
         }
 
-        impl MyIter<int> for Counter {
-            fn next(c: Counter) -> Option<int> {
+        impl MyIter<i64> for Counter {
+            fn next(c: Counter) -> Option<i64> {
                 Some(42)
             }
         }
 
-        fn test_iterator() -> int {
-            let iter: dyn MyIter<int> = Counter { count: 5 };
-            let result = iter.next(); // Should be Option<int>, not Option<T>
+        fn test_iterator() -> i64 {
+            let iter: dyn MyIter<i64> = Counter { count: 5 };
+            let result = iter.next(); // Should be Option<i64>, not Option<T>
             match result {
                 Some(x) => x,
                 None => 0
@@ -6815,17 +6865,17 @@ fn test_trait_object_type_args_substitution() {
 fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
     let source = r#"
         trait Transform {
-            fn apply<U>(item: Self, f: fn(int) -> U) -> U;
+            fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
         }
 
         trait Label {
             fn tag<V>(item: Self, prefix: V) -> string;
         }
 
-        type Holder { value: int }
+        type Holder { value: i64 }
 
         impl Transform for Holder {
-            fn apply<U>(item: Holder, f: fn(int) -> U) -> U {
+            fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
                 f(item.value)
             }
         }
@@ -6836,7 +6886,7 @@ fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
             }
         }
 
-        fn is_odd(x: int) -> bool { x % 2 != 0 }
+        fn is_odd(x: i64) -> bool { x % 2 != 0 }
 
         fn run<T: Transform + Label>(item: T) {
             let odd = item.apply(is_odd);
@@ -6862,7 +6912,7 @@ fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
         "type check errors: {:?}",
         output.errors
     );
-    // Exact count: 3 compound-bound generic method calls (apply<U=bool>, tag<V=int>,
+    // Exact count: 3 compound-bound generic method calls (apply<U=bool>, tag<V=i64>,
     // tag<V=string>) + 3 println builtins now registered with Display bounds.  Each
     // call site produces one entry keyed by span, so the total is deterministic.
     assert_eq!(
@@ -6884,7 +6934,7 @@ fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
             .call_type_args
             .values()
             .any(|args| args == &vec![crate::ty::Ty::I64]),
-        "expected one Label call to infer V=int, got {:?}",
+        "expected one Label call to infer V=i64, got {:?}",
         output.call_type_args
     );
     assert!(
@@ -6896,7 +6946,7 @@ fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
         output.call_type_args
     );
     // Per-value count proof: pin exactly how many entries carry each type.
-    // apply<U=bool> + println<T=bool> = 2; tag<V=int> only = 1;
+    // apply<U=bool> + println<T=bool> = 2; tag<V=i64> only = 1;
     // tag<V=string> + println<T=string> × 2 = 3.
     let bool_count = output
         .call_type_args
@@ -6915,7 +6965,7 @@ fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
         .count();
     assert_eq!(
         int_count, 1,
-        "tag<V=int>: expected exactly 1 [int] entry, got {:?}",
+        "tag<V=i64>: expected exactly 1 [i64] entry, got {:?}",
         output.call_type_args
     );
     let string_count = output
@@ -7874,7 +7924,7 @@ fn const_default_width_registers_in_const_values() {
         name: "N".to_string(),
         ty: (
             TypeExpr::Named {
-                name: "int".to_string(),
+                name: "i64".to_string(),
                 type_args: None,
             },
             0..0,
@@ -8255,11 +8305,11 @@ fn struct_init_explicit_type_arg_seeds_substitution() {
 
 #[test]
 fn struct_init_explicit_type_arg_wrong_field_type_errors() {
-    // `Wrapper<int> { value: "hello" }` — explicit arg is int, field is string: error.
+    // `Wrapper<i64> { value: "hello" }` — explicit arg is i64, field is string: error.
     let source = r#"
         type Wrapper<T> { value: T }
         fn main() {
-            let w = Wrapper<int> { value: "hello" };
+            let w = Wrapper<i64> { value: "hello" };
         }
     "#;
     let parse_result = hew_parser::parse(source);
@@ -8278,7 +8328,7 @@ fn struct_init_explicit_type_arg_wrong_field_type_errors() {
 
 #[test]
 fn struct_init_explicit_type_arg_arity_mismatch_errors() {
-    // `Wrapper<int, string>` on a one-param struct should report arity mismatch.
+    // `Wrapper<i64, string>` on a one-param struct should report arity mismatch.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     register_generic_wrapper(&mut checker);
 
@@ -8286,7 +8336,7 @@ fn struct_init_explicit_type_arg_arity_mismatch_errors() {
     let type_args = Some(vec![
         (
             TypeExpr::Named {
-                name: "int".to_string(),
+                name: "i64".to_string(),
                 type_args: None,
             },
             0..3_usize,
@@ -8346,13 +8396,13 @@ fn main() { let w = Wrapper<string> { value: "hello" }; }"#;
 
 #[test]
 fn struct_init_explicit_type_arg_conflicts_with_binding_type_errors() {
-    // `let w: Wrapper<int> = Wrapper<string> { value: 1 };`
-    // The explicit `string` annotation conflicts with the expected `int`.
+    // `let w: Wrapper<i64> = Wrapper<string> { value: 1 };`
+    // The explicit `string` annotation conflicts with the expected `i64`.
     // The checker must reject this rather than silently ignoring it.
     let source = r"
         type Wrapper<T> { value: T }
         fn main() {
-            let w: Wrapper<int> = Wrapper<string> { value: 1 };
+            let w: Wrapper<i64> = Wrapper<string> { value: 1 };
         }
     ";
     let parse_result = hew_parser::parse(source);
@@ -8414,7 +8464,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
     // Explicit type args on an enum variant struct form in check_against path.
     let type_args = Some(vec![(
         TypeExpr::Named {
-            name: "int".to_string(),
+            name: "i64".to_string(),
             type_args: None,
         },
         0..3_usize,
@@ -8438,9 +8488,9 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
 
 #[test]
 fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
-    // `Keeper::Holding<int> { value: 42 }` in the synthesize path — the explicit
-    // `int` annotation should pre-seed the type_arg_map so the synthesised type
-    // is `Keeper<int>`, not `Keeper<i64>` or an unconstrained type var.
+    // `Keeper::Holding<i64> { value: 42 }` in the synthesize path — the explicit
+    // `i64` annotation should pre-seed the type_arg_map so the synthesised type
+    // is `Keeper<i64>`, not `Keeper<i64>` or an unconstrained type var.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     // Register `Keeper<T>` enum with struct variant `Holding { value: T }`
     let mut variant_fields_map = HashMap::new();
@@ -8471,7 +8521,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
     let span = 0..30_usize;
     let type_args = Some(vec![(
         TypeExpr::Named {
-            name: "int".to_string(),
+            name: "i64".to_string(),
             type_args: None,
         },
         0..3_usize,
@@ -8488,7 +8538,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
         "enum variant explicit type arg should synthesize without errors: {:?}",
         checker.errors
     );
-    // The synthesised type should be Keeper<int> (IntLiteral coerces to int / i64)
+    // The synthesised type should be Keeper<i64> (IntLiteral coerces to i64 / i64)
     assert!(
         matches!(result, Ty::Named { ref name, .. } if name == "Keeper"),
         "synthesised type should be Keeper<…>, got: {result}"
@@ -8581,7 +8631,7 @@ fn record_init_type_args_two_params() {
 
 #[test]
 fn record_init_type_args_generic_in_generic_user_user() {
-    // Generic-in-generic with two user records: `Box<Inner<int>>` from
+    // Generic-in-generic with two user records: `Box<Inner<i64>>` from
     // nested struct-init literals.  The checker emits one entry per
     // initialiser site, each with its own concrete type-args:
     //   - inner `Inner { x: 1 }`  → `[i64]`
@@ -8630,7 +8680,7 @@ fn record_init_type_args_monomorphic_record_emits_no_entry() {
 fn record_init_type_args_field_access_returns_substituted_type() {
     // Verifies that the *field-access* substitution path (already implemented
     // in `check_field_access` lines 3139-3146) and the side-table emission
-    // agree: `b.value` on `b: Box<int>` returns `i64`, and the init site
+    // agree: `b.value` on `b: Box<i64>` returns `i64`, and the init site
     // records `[i64]`.
     let source = r"
         type Box<T> { value: T }
@@ -8676,15 +8726,15 @@ fn record_init_type_args_two_distinct_instantiations() {
 #[test]
 fn record_init_type_args_enum_struct_variant_fully_bound() {
     // Generic enum struct-variant init with an annotation that binds every
-    // type parameter: `let x: Either<int, string> = Either::Left { value: 1 }`.
-    // The record_init_type_args entry resolves both T=int and E=string.
+    // type parameter: `let x: Either<i64, string> = Either::Left { value: 1 }`.
+    // The record_init_type_args entry resolves both T=i64 and E=string.
     let source = r"
         enum Either<T, E> {
             Left { value: T };
             Right { err: E };
         }
         fn main() {
-            let _x: Either<int, string> = Either::Left { value: 1 };
+            let _x: Either<i64, string> = Either::Left { value: 1 };
         }
     ";
     let tco = check_source(source);
@@ -8772,7 +8822,7 @@ fn record_init_type_args_trait_rewrite_substitution_probe() {
         impl<T: Display> Wrapper<T> {
             fn show(w: Wrapper<T>) -> string { to_string(w.value) }
         }
-        fn main() -> int {
+        fn main() -> i64 {
             let w = Wrapper { value: 42 };
             let _s = w.show();
             0
@@ -9034,7 +9084,7 @@ fn error_return_type_does_not_suppress_match_arm_diagnostics() {
     // fn foo() -> UnknownType { match true { true => "hello", false => 42 } }
     // UnknownType resolves to Ty::Error. Without the Ty::Error guard in
     // check_match_expr, the error type pre-seeds all arms via check_against,
-    // silently accepting the string/int mismatch between arms.
+    // silently accepting the string/i64 mismatch between arms.
     let source = r#"fn foo() -> UnknownType { match true { true => "hello", false => 42 } }"#;
     let result = hew_parser::parse(source);
     assert!(
@@ -9045,7 +9095,7 @@ fn error_return_type_does_not_suppress_match_arm_diagnostics() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     // We expect at least two errors: one for UnknownType and one for the
-    // arm type mismatch (string vs int). Before the fix only the
+    // arm type mismatch (string vs i64). Before the fix only the
     // UnknownType error appeared.
     let arm_mismatch = output.errors.iter().any(|e| {
         let msg = format!("{e:?}");
@@ -9359,16 +9409,16 @@ fn structural_e2_single_method_match_satisfies_bound() {
     // (no explicit `impl Trait for Type`) must satisfy the bound structurally.
     let source = r"
         trait Area {
-            fn area(val: Self) -> int;
+            fn area(val: Self) -> i64;
         }
 
         type Square {}
 
         impl Square {
-            fn area(s: Square) -> int { 1 }
+            fn area(s: Square) -> i64 { 1 }
         }
 
-        fn measure<T: Area>(s: T) -> int {
+        fn measure<T: Area>(s: T) -> i64 {
             s.area()
         }
 
@@ -9403,14 +9453,14 @@ fn structural_e2_multi_method_trait_all_present_satisfies_bound() {
     let source = r#"
         trait Named {
             fn label(val: Self) -> string;
-            fn code(val: Self) -> int;
+            fn code(val: Self) -> i64;
         }
 
         type Widget {}
 
         impl Widget {
             fn label(w: Widget) -> string { "w" }
-            fn code(w: Widget) -> int { 0 }
+            fn code(w: Widget) -> i64 { 0 }
         }
 
         fn print_label<T: Named>(t: T) -> string {
@@ -9448,16 +9498,16 @@ fn structural_e2_method_with_non_self_param_satisfies_bound() {
     // must have the same arity and parameter type.
     let source = r"
         trait Scalable {
-            fn scale(val: Self, factor: int) -> int;
+            fn scale(val: Self, factor: i64) -> i64;
         }
 
         type Brick {}
 
         impl Brick {
-            fn scale(b: Brick, factor: int) -> int { factor }
+            fn scale(b: Brick, factor: i64) -> i64 { factor }
         }
 
-        fn resize<T: Scalable>(t: T) -> int {
+        fn resize<T: Scalable>(t: T) -> i64 {
             t.scale(2)
         }
 
@@ -9492,16 +9542,16 @@ fn structural_e2_nominal_impl_still_preferred_over_structural() {
     // break the nominal path.
     let source = r"
         trait Area {
-            fn area(val: Self) -> int;
+            fn area(val: Self) -> i64;
         }
 
         type Circle {}
 
         impl Area for Circle {
-            fn area(c: Circle) -> int { 3 }
+            fn area(c: Circle) -> i64 { 3 }
         }
 
-        fn measure<T: Area>(s: T) -> int {
+        fn measure<T: Area>(s: T) -> i64 {
             s.area()
         }
 
@@ -9536,7 +9586,7 @@ fn structural_e2_wrong_return_type_does_not_satisfy_bound() {
     // the bound must not be satisfied.
     let source = r#"
         trait Area {
-            fn area(val: Self) -> int;
+            fn area(val: Self) -> i64;
         }
 
         type Triangle {}
@@ -9545,7 +9595,7 @@ fn structural_e2_wrong_return_type_does_not_satisfy_bound() {
             fn area(t: Triangle) -> string { "big" }
         }
 
-        fn measure<T: Area>(s: T) -> int {
+        fn measure<T: Area>(s: T) -> i64 {
             s.area()
         }
 
@@ -9579,16 +9629,16 @@ fn structural_e2_wrong_arity_does_not_satisfy_bound() {
     // the arity mismatch must cause the bound to fail.
     let source = r"
         trait Ping {
-            fn ping(val: Self) -> int;
+            fn ping(val: Self) -> i64;
         }
 
         type Server {}
 
         impl Server {
-            fn ping(s: Server, timeout: int) -> int { 1 }
+            fn ping(s: Server, timeout: i64) -> i64 { 1 }
         }
 
-        fn use_ping<T: Ping>(t: T) -> int {
+        fn use_ping<T: Ping>(t: T) -> i64 {
             t.ping()
         }
 
@@ -9622,7 +9672,7 @@ fn structural_e2_missing_one_of_two_methods_does_not_satisfy_bound() {
     let source = r#"
         trait Named {
             fn label(val: Self) -> string;
-            fn code(val: Self) -> int;
+            fn code(val: Self) -> i64;
         }
 
         type Partial {}
@@ -9719,12 +9769,12 @@ fn bound_diagnostic_missing_method_hint() {
     // A type that has no method at all should produce a hint naming the missing method.
     let source = r"
         trait Ping {
-            fn ping(val: Self) -> int;
+            fn ping(val: Self) -> i64;
         }
 
         type Widget {}
 
-        fn use_ping<T: Ping>(t: T) -> int { 0 }
+        fn use_ping<T: Ping>(t: T) -> i64 { 0 }
 
         fn main() {
             let w = Widget {};
@@ -9762,16 +9812,16 @@ fn bound_diagnostic_arity_mismatch_hint() {
     // should produce a hint mentioning the arity mismatch.
     let source = r"
         trait Measure {
-            fn measure(val: Self) -> int;
+            fn measure(val: Self) -> i64;
         }
 
         type Ruler {}
 
         impl Ruler {
-            fn measure(r: Ruler, scale: int) -> int { scale }
+            fn measure(r: Ruler, scale: i64) -> i64 { scale }
         }
 
-        fn use_measure<T: Measure>(t: T) -> int { 0 }
+        fn use_measure<T: Measure>(t: T) -> i64 { 0 }
 
         fn main() {
             let r = Ruler {};
@@ -9813,7 +9863,7 @@ fn bound_diagnostic_return_type_mismatch_hint() {
         type Tag {}
 
         impl Tag {
-            fn label(t: Tag) -> int { 0 }
+            fn label(t: Tag) -> i64 { 0 }
         }
 
         fn use_label<T: Label>(t: T) -> string { "" }
@@ -9853,12 +9903,12 @@ fn bound_diagnostic_e1_associated_type_requires_explicit_impl_hint() {
     let source = r"
         trait Container {
             type Item;
-            fn get(val: Self) -> int;
+            fn get(val: Self) -> i64;
         }
 
         type Box {}
 
-        fn use_container<T: Container>(t: T) -> int { 0 }
+        fn use_container<T: Container>(t: T) -> i64 { 0 }
 
         fn main() {
             let b = Box {};
@@ -10134,9 +10184,9 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
 
 #[test]
 fn hashmap_bracket_index_is_a_compile_error() {
-    // m[k] on HashMap<string, int> must be a compile error since the
+    // m[k] on HashMap<string, i64> must be a compile error since the
     // named-type .get() fallback is removed. The explicit m.get(k) is the
-    // correct form (returns Option<int>).
+    // correct form (returns Option<i64>).
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
     // Register HashMap with a string-keyed .get() method (as the stdlib defines it).
@@ -10182,7 +10232,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
     assert_eq!(ty, Ty::Error, "m[k] on HashMap must produce Ty::Error");
     assert!(
         !checker.errors.is_empty(),
-        "m[k] on HashMap<string, int> must produce a diagnostic"
+        "m[k] on HashMap<string, i64> must produce a diagnostic"
     );
     let msg = &checker.errors[0].message;
     assert!(
@@ -10301,7 +10351,7 @@ fn generic_named_method_calls_record_method_type_args() {
             }
         }
 
-        fn to_len(value: string) -> int {
+        fn to_len(value: string) -> i64 {
             value.len()
         }
 
@@ -10999,6 +11049,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
         Module {
             id: mod_id.clone(),
@@ -11138,6 +11189,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let root_id = ModuleId::root();
@@ -11192,6 +11244,7 @@ mod non_root_module_inference_scope {
                 doc_comment: None,
                 decl_span: 0..0,
                 fn_span: 0..0,
+                intrinsic: None,
             };
             (Item::Function(fd), span_start..span_start + 30)
         };
@@ -11275,6 +11328,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let non_root = Module {
@@ -11341,6 +11395,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let non_root = Module {
@@ -11634,11 +11689,11 @@ mod non_root_module_inference_scope {
     fn trait_default_method_with_concrete_receiver_keeps_implicit_impl_arity() {
         let source = r"
             type Greeter {
-                id: int;
+                id: i64;
             }
 
             trait Answerer {
-                fn answer(g: Greeter) -> int {
+                fn answer(g: Greeter) -> i64 {
                     42
                 }
             }
@@ -11696,7 +11751,7 @@ mod non_root_module_inference_scope {
 
     #[test]
     fn inferred_binding_does_not_duplicate_cast_hole_error() {
-        let source = "fn main(x: int) { let y = x as _; }";
+        let source = "fn main(x: i64) { let y = x as _; }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -11797,6 +11852,7 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let non_root = Module {
@@ -11897,6 +11953,7 @@ fn module_graph_body_type_error_is_reported() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(bad_fn), 0..10)]);
@@ -11911,10 +11968,10 @@ fn module_graph_body_type_error_is_reported() {
         output.errors.iter().any(|e| matches!(
             &e.kind,
             TypeErrorKind::Mismatch { expected, actual }
-                if (expected.contains("i64") || expected.contains("int"))
+                if expected.contains("i64")
                     && actual.contains("bool")
         )),
-        "expected a Mismatch(i64/int, bool) error; got: {:?}",
+        "expected a Mismatch(i64/i64, bool) error; got: {:?}",
         output.errors
     );
 }
@@ -11945,6 +12002,7 @@ fn module_graph_body_infer_return_resolves_without_error() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(inferred_fn), 0..10)]);
@@ -12006,6 +12064,7 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(ok_fn), 0..30)]);
@@ -12144,6 +12203,7 @@ fn module_graph_body_private_local_type_is_available() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let program = make_program_with_module_graph(vec![
@@ -12193,6 +12253,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let ok_fn = FnDecl {
@@ -12221,6 +12282,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let helper_string = FnDecl {
@@ -12244,6 +12306,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
 
     let root_id = ModuleId::root();
@@ -12355,6 +12418,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
     let extern_string = ExternBlock {
         abi: "C".to_string(),
@@ -12482,6 +12546,7 @@ mod module_body_diagnostic_envelope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
         (Item::Function(fn_decl), 0..20)
     }
@@ -12540,6 +12605,7 @@ mod module_body_diagnostic_envelope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
         let program = Program {
             module_graph: None,
@@ -12593,6 +12659,7 @@ mod module_body_diagnostic_envelope {
                 doc_comment: None,
                 decl_span: 0..0,
                 fn_span: 0..0,
+                intrinsic: None,
             };
             (Item::Function(fd), 0..20)
         };
@@ -12705,6 +12772,7 @@ mod module_body_diagnostic_envelope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let program =
@@ -12761,6 +12829,7 @@ mod module_body_diagnostic_envelope {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         let program =
@@ -12906,6 +12975,7 @@ mod warning_source_attribution {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         }
     }
 
@@ -12932,6 +13002,7 @@ mod warning_source_attribution {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
         let root_id = ModuleId::root();
         let module_id = ModuleId::new(vec![module_name.to_string()]);
@@ -13290,6 +13361,7 @@ mod warning_source_attribution {
             doc_comment: None,
             decl_span: 0..0,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         // caller() body: `fakemod.helper()` expressed as a MethodCall statement.
@@ -13322,6 +13394,7 @@ mod warning_source_attribution {
             doc_comment: None,
             decl_span: 150..200,
             fn_span: 0..0,
+            intrinsic: None,
         };
 
         // Import of fakemod in mod_a must carry resolved_items that include
@@ -14597,7 +14670,7 @@ mod wasm_rejects {
             fn main() {
                 let worker = spawn Worker;
                 let _ok: MonitorRef = monitor(worker);
-                let x: int = monitor(worker);
+                let x: i64 = monitor(worker);
                 println(x);
             }
         "
@@ -14630,7 +14703,7 @@ mod wasm_rejects {
                     await task;
                 }
             }
-            fn compute() -> int { 42 }
+            fn compute() -> i64 { 42 }
         "
     }
 
@@ -14730,7 +14803,7 @@ mod wasm_rejects {
                 .errors
                 .iter()
                 .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
-            "monitor() should no longer typecheck as int; got errors: {:?}",
+            "monitor() should no longer typecheck as i64; got errors: {:?}",
             output.errors
         );
     }
@@ -14803,8 +14876,8 @@ mod wasm_rejects {
         let output = check_wasm(
             r"
             actor Responder {
-                let value: int;
-                receive fn get() -> int {
+                let value: i64;
+                receive fn get() -> i64 {
                     value
                 }
             }
@@ -14844,8 +14917,8 @@ mod wasm_rejects {
         let output = check_wasm(
             r"
             actor Responder {
-                let value: int;
-                receive fn get() -> int {
+                let value: i64;
+                receive fn get() -> i64 {
                     value
                 }
             }
@@ -15260,7 +15333,7 @@ mod iflet_whilelet_pattern_contract {
 
     #[test]
     fn iflet_stmt_literal_pattern_is_rejected() {
-        let errors = check_iflet_whilelet(r"fn foo(x: int) { if let 1 = x { 0 } }");
+        let errors = check_iflet_whilelet(r"fn foo(x: i64) { if let 1 = x { 0 } }");
         assert!(
             errors.iter().any(|e| e.kind == TypeErrorKind::InvalidOperation
                 && e.message.contains("literal")),
@@ -15271,7 +15344,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn iflet_stmt_struct_pattern_is_accepted() {
         let errors = check_iflet_whilelet(
-            r"type Point { x: int; y: int; } fn foo(p: Point) { if let Point { x, y } = p { x + y } }",
+            r"type Point { x: i64; y: i64; } fn foo(p: Point) { if let Point { x, y } = p { x + y } }",
         );
         assert!(
             !errors
@@ -15283,7 +15356,7 @@ mod iflet_whilelet_pattern_contract {
 
     #[test]
     fn iflet_stmt_tuple_pattern_is_accepted() {
-        let errors = check_iflet_whilelet(r"fn foo(x: (int, int)) { if let (a, b) = x { a + b } }");
+        let errors = check_iflet_whilelet(r"fn foo(x: (i64, i64)) { if let (a, b) = x { a + b } }");
         assert!(
             !errors
                 .iter()
@@ -15306,7 +15379,7 @@ mod iflet_whilelet_pattern_contract {
 
     #[test]
     fn iflet_stmt_wildcard_pattern_is_accepted() {
-        let errors = check_iflet_whilelet(r"fn foo(x: int) { if let _ = x { 0 } }");
+        let errors = check_iflet_whilelet(r"fn foo(x: i64) { if let _ = x { 0 } }");
         assert!(
             !errors
                 .iter()
@@ -15317,7 +15390,7 @@ mod iflet_whilelet_pattern_contract {
 
     #[test]
     fn iflet_stmt_identifier_pattern_is_accepted() {
-        let errors = check_iflet_whilelet(r"fn foo(x: int) { if let y = x { 0 } }");
+        let errors = check_iflet_whilelet(r"fn foo(x: i64) { if let y = x { 0 } }");
         assert!(
             !errors
                 .iter()
@@ -15328,7 +15401,7 @@ mod iflet_whilelet_pattern_contract {
 
     #[test]
     fn whilelet_stmt_literal_pattern_is_rejected() {
-        let errors = check_iflet_whilelet(r"fn foo(x: int) { while let 1 = x { break; } }");
+        let errors = check_iflet_whilelet(r"fn foo(x: i64) { while let 1 = x { break; } }");
         assert!(
             errors.iter().any(|e| e.kind == TypeErrorKind::InvalidOperation
                 && e.message.contains("literal")),
@@ -15339,7 +15412,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn whilelet_stmt_struct_pattern_is_accepted() {
         let errors = check_iflet_whilelet(
-            r"enum Msg { Data { value: int }; Done; } fn foo(x: Msg) { while let Data { value } = x { break; } }",
+            r"enum Msg { Data { value: i64 }; Done; } fn foo(x: Msg) { while let Data { value } = x { break; } }",
         );
         assert!(
             !errors
@@ -15352,7 +15425,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn whilelet_stmt_tuple_pattern_is_accepted() {
         let errors =
-            check_iflet_whilelet(r"fn foo(x: (int, int)) { while let (a, b) = x { break; } }");
+            check_iflet_whilelet(r"fn foo(x: (i64, i64)) { while let (a, b) = x { break; } }");
         assert!(
             !errors
                 .iter()
@@ -15376,7 +15449,7 @@ mod iflet_whilelet_pattern_contract {
 
     #[test]
     fn whilelet_stmt_wildcard_pattern_is_accepted() {
-        let errors = check_iflet_whilelet(r"fn foo(x: int) { while let _ = x { break; } }");
+        let errors = check_iflet_whilelet(r"fn foo(x: i64) { while let _ = x { break; } }");
         assert!(
             !errors
                 .iter()
@@ -15387,7 +15460,7 @@ mod iflet_whilelet_pattern_contract {
 
     #[test]
     fn whilelet_stmt_identifier_pattern_is_accepted() {
-        let errors = check_iflet_whilelet(r"fn foo(x: int) { while let y = x { break; } }");
+        let errors = check_iflet_whilelet(r"fn foo(x: i64) { while let y = x { break; } }");
         assert!(
             !errors
                 .iter()
@@ -15399,7 +15472,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn whilelet_stmt_labeled_break_is_accepted() {
         let errors =
-            check_iflet_whilelet(r"fn foo(x: int) { @scan: while let y = x { break @scan; } }");
+            check_iflet_whilelet(r"fn foo(x: i64) { @scan: while let y = x { break @scan; } }");
         assert!(
             !errors
                 .iter()
@@ -15411,7 +15484,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn whilelet_stmt_labeled_continue_is_accepted() {
         let errors =
-            check_iflet_whilelet(r"fn foo(x: int) { @scan: while let y = x { continue @scan; } }");
+            check_iflet_whilelet(r"fn foo(x: i64) { @scan: while let y = x { continue @scan; } }");
         assert!(
             !errors
                 .iter()
@@ -15423,7 +15496,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn nested_loop_can_target_outer_whilelet_label() {
         let errors = check_iflet_whilelet(
-            r"fn foo(x: int) { @scan: while let y = x { loop { break @scan; } } }",
+            r"fn foo(x: i64) { @scan: while let y = x { loop { break @scan; } } }",
         );
         assert!(
             !errors
@@ -15435,7 +15508,7 @@ mod iflet_whilelet_pattern_contract {
 
     #[test]
     fn whilelet_stmt_unknown_label_still_errors() {
-        let errors = check_iflet_whilelet(r"fn foo(x: int) { while let y = x { break @scan; } }");
+        let errors = check_iflet_whilelet(r"fn foo(x: i64) { while let y = x { break @scan; } }");
         assert!(
             errors
                 .iter()
@@ -15946,7 +16019,7 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
                     name: "value".to_string(),
                     ty: (
                         hew_parser::ast::TypeExpr::Named {
-                            name: "int".to_string(),
+                            name: "i64".to_string(),
                             type_args: None,
                         },
                         0..0,
@@ -16005,7 +16078,7 @@ fn handle_bearing_registration_scales_linearly_not_quadratically() {
                     name: "x".to_string(),
                     ty: (
                         hew_parser::ast::TypeExpr::Named {
-                            name: "int".to_string(),
+                            name: "i64".to_string(),
                             type_args: None,
                         },
                         0..0,
@@ -16064,7 +16137,7 @@ mod task_type_surface_rules {
         let output = check_source(
             r"
             fn main() {
-                let _t: Task<int> = 0;
+                let _t: Task<i64> = 0;
             }
             ",
         );
@@ -16073,7 +16146,7 @@ mod task_type_surface_rules {
                 .errors
                 .iter()
                 .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
-            "Task<int> in let annotation must emit TaskNotNameable; got: {:#?}",
+            "Task<i64> in let annotation must emit TaskNotNameable; got: {:#?}",
             output.errors
         );
     }
@@ -16082,8 +16155,8 @@ mod task_type_surface_rules {
     fn task_in_fn_param_annotation_is_rejected() {
         let output = check_source(
             r"
-            fn foo(t: Task<int>) -> int { 0 }
-            fn main() -> int { 0 }
+            fn foo(t: Task<i64>) -> i64 { 0 }
+            fn main() -> i64 { 0 }
             ",
         );
         assert!(
@@ -16091,7 +16164,7 @@ mod task_type_surface_rules {
                 .errors
                 .iter()
                 .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
-            "Task<int> in fn param must emit TaskNotNameable; got: {:#?}",
+            "Task<i64> in fn param must emit TaskNotNameable; got: {:#?}",
             output.errors
         );
     }
@@ -16100,8 +16173,8 @@ mod task_type_surface_rules {
     fn task_in_return_type_annotation_is_rejected() {
         let output = check_source(
             r"
-            fn foo() -> Task<int> { 0 }
-            fn main() -> int { 0 }
+            fn foo() -> Task<i64> { 0 }
+            fn main() -> i64 { 0 }
             ",
         );
         assert!(
@@ -16109,7 +16182,7 @@ mod task_type_surface_rules {
                 .errors
                 .iter()
                 .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
-            "Task<int> as return type must emit TaskNotNameable; got: {:#?}",
+            "Task<i64> as return type must emit TaskNotNameable; got: {:#?}",
             output.errors
         );
     }
@@ -16124,7 +16197,7 @@ mod task_type_surface_rules {
         // without emitting TaskNotNameable.
         let output = check_source(
             r"
-            fn compute() -> int { 42 }
+            fn compute() -> i64 { 42 }
             fn main() {
                 scope {
                     fork task = compute();
@@ -16160,8 +16233,8 @@ mod task_type_surface_rules {
         // the `in_unsafe` flag is `true` during the block body.
         let output = check_source(
             r#"
-            extern "C" { fn raw_op() -> int; }
-            fn caller() -> int {
+            extern "C" { fn raw_op() -> i64; }
+            fn caller() -> i64 {
                 unsafe { raw_op() }
             }
             "#,
@@ -16183,8 +16256,8 @@ mod task_type_surface_rules {
         // the `in_unsafe` flag is `false` in the surrounding function body.
         let output = check_source(
             r#"
-            extern "C" { fn raw_op() -> int; }
-            fn caller() -> int {
+            extern "C" { fn raw_op() -> i64; }
+            fn caller() -> i64 {
                 raw_op()
             }
             "#,
@@ -16204,8 +16277,8 @@ mod task_type_surface_rules {
         // must still produce an error.
         let output = check_source(
             r#"
-            extern "C" { fn raw_op() -> int; }
-            fn caller() -> int {
+            extern "C" { fn raw_op() -> i64; }
+            fn caller() -> i64 {
                 unsafe { raw_op() };
                 raw_op()
             }
@@ -16233,7 +16306,7 @@ mod record_admission {
         // must produce no errors.
         let output = check_source(
             r"
-            record Point { x: int, y: int }
+            record Point { x: i64, y: i64 }
             fn main() {
                 let p = Point { x: 1, y: 2 };
             }
@@ -16251,7 +16324,7 @@ mod record_admission {
         // Omitting a required field must produce a missing-field error.
         let output = check_source(
             r"
-            record Point { x: int, y: int }
+            record Point { x: i64, y: i64 }
             fn main() {
                 let p = Point { x: 1 };
             }
@@ -16274,7 +16347,7 @@ mod record_admission {
         // undefined-field error.
         let output = check_source(
             r"
-            record Point { x: int, y: int }
+            record Point { x: i64, y: i64 }
             fn main() {
                 let p = Point { x: 1, y: 2, z: 3 };
             }
@@ -16297,7 +16370,7 @@ mod record_admission {
         // error.
         let output = check_source(
             r#"
-            record Point { x: int, y: int }
+            record Point { x: i64, y: i64 }
             fn main() {
                 let p = Point { x: "hello", y: 2 };
             }
@@ -16321,10 +16394,10 @@ mod record_admission {
         // produce no errors.
         let output = check_source(
             r"
-            record Point { x: int, y: int }
+            record Point { x: i64, y: i64 }
             fn main() {
                 let p = Point { x: 10, y: 20 };
-                let n: int = p.x;
+                let n: i64 = p.x;
             }
             ",
         );
@@ -16340,7 +16413,7 @@ mod record_admission {
         // Assigning to a record field must be rejected unconditionally (A-D3).
         let output = check_source(
             r"
-            record Point { x: int, y: int }
+            record Point { x: i64, y: i64 }
             fn main() {
                 var p: Point = Point { x: 1, y: 2 };
                 p.x = 5;
@@ -16364,7 +16437,7 @@ mod record_admission {
         // declared record type without errors.
         let output = check_source(
             r"
-            record UserId(int);
+            record UserId(i64);
             fn make() -> UserId {
                 UserId(42)
             }
@@ -16384,8 +16457,8 @@ mod record_admission {
         // error for the synthesised field name `"0"`.
         let output = check_source(
             r"
-            record UserId(int);
-            fn get_inner(id: UserId) -> int {
+            record UserId(i64);
+            fn get_inner(id: UserId) -> i64 {
                 id.0
             }
             ",
@@ -16412,7 +16485,7 @@ mod record {
             // because `base` fills the missing `y` field.
             let output = check_source(
                 r"
-                record Point { x: int, y: int }
+                record Point { x: i64, y: i64 }
                 fn f(base: Point) -> Point {
                     Point { x: 5, ..base }
                 }
@@ -16430,7 +16503,7 @@ mod record {
             // All fields listed explicitly plus base — still valid (explicit overrides).
             let output = check_source(
                 r"
-                record Point { x: int, y: int }
+                record Point { x: i64, y: i64 }
                 fn f(base: Point) -> Point {
                     Point { x: 1, y: 2, ..base }
                 }
@@ -16448,7 +16521,7 @@ mod record {
             // `Point { ..base }` — base fills all fields.
             let output = check_source(
                 r"
-                record Point { x: int, y: int }
+                record Point { x: i64, y: i64 }
                 fn f(base: Point) -> Point {
                     Point { ..base }
                 }
@@ -16466,8 +16539,8 @@ mod record {
             // `Point { x: 5, ..other }` where `other` is a different type — must error.
             let output = check_source(
                 r"
-                record Point { x: int, y: int }
-                record Color { r: int, g: int, b: int }
+                record Point { x: i64, y: i64 }
+                record Color { r: i64, g: i64, b: i64 }
                 fn f(other: Color) -> Point {
                     Point { x: 5, ..other }
                 }
@@ -16489,7 +16562,7 @@ mod record {
             // No functional update — missing field still an error.
             let output = check_source(
                 r"
-                record Point { x: int, y: int }
+                record Point { x: i64, y: i64 }
                 fn f() -> Point {
                     Point { x: 1 }
                 }
@@ -16511,9 +16584,9 @@ mod record {
             // Explicit field type mismatch must still be caught even when base is present.
             let output = check_source(
                 r#"
-                record Point { x: int, y: int }
+                record Point { x: i64, y: i64 }
                 fn f(base: Point) -> Point {
-                    Point { x: "not-an-int", ..base }
+                    Point { x: "not-an-i64", ..base }
                 }
                 "#,
             );
@@ -16530,8 +16603,8 @@ mod record {
             // different type — the check_against path must also validate the base.
             let output = check_source(
                 r"
-                record Point { x: int, y: int }
-                record Color { r: int, g: int, b: int }
+                record Point { x: i64, y: i64 }
+                record Color { r: i64, g: i64, b: i64 }
                 fn f(other: Color) {
                     let p: Point = Point { x: 5, ..other };
                 }
@@ -16971,7 +17044,7 @@ mod assoc_types_slice1 {
             type Box {}
 
             impl Container for Box {
-                fn first(val: Box) -> int { 0 }
+                fn first(val: Box) -> i64 { 0 }
             }
             ",
         );
@@ -16990,8 +17063,8 @@ mod assoc_types_slice1 {
         // Regression: the existing `Self::Bar` prefix-match path
         // (resolution.rs ~line 613) survives the TraitInfo schema change.
         // The method's declared return type is `Self::Item`; the impl
-        // binds `type Item = int`. Checker must accept the impl's `next`
-        // returning `Option<int>` against `Option<Self::Item>`.
+        // binds `type Item = i64`. Checker must accept the impl's `next`
+        // returning `Option<i64>` against `Option<Self::Item>`.
         let output = check_source(
             r"
             trait Iterator {
@@ -17000,12 +17073,12 @@ mod assoc_types_slice1 {
             }
 
             type Counter {
-                value: int;
+                value: i64;
             }
 
             impl Iterator for Counter {
-                type Item = int;
-                fn next(c: Counter) -> Option<int> { Some(c.value) }
+                type Item = i64;
+                fn next(c: Counter) -> Option<i64> { Some(c.value) }
             }
             ",
         );
@@ -17055,8 +17128,8 @@ mod assoc_types_slice1 {
             type Widget {}
 
             impl Show for Widget {
-                type Out = Task<int>;
-                fn show(val: Widget) -> int { 0 }
+                type Out = Task<i64>;
+                fn show(val: Widget) -> i64 { 0 }
             }
             ",
         );
@@ -17066,7 +17139,7 @@ mod assoc_types_slice1 {
             .collect();
         assert!(
             bound_errors.is_empty(),
-            "Ty::Error RHS (from `Task<int>` not being nameable) must suppress the \
+            "Ty::Error RHS (from `Task<i64>` not being nameable) must suppress the \
              bound-check cascade; got bound errors: {bound_errors:?}; all errors: {errors:?}"
         );
         // Sanity: the primary error from the bad RHS must still fire.
@@ -17246,27 +17319,27 @@ mod assoc_types_slice2 {
             }
 
             type Counter {
-                value: int;
+                value: i64;
             }
 
             impl Iterator for Counter {
-                type Item = int;
-                fn next(c: Counter) -> Option<int> { Some(c.value) }
+                type Item = i64;
+                fn next(c: Counter) -> Option<i64> { Some(c.value) }
             }
 
             fn make<I: Iterator>(it: I) -> Option<I::Item> {
                 it.next()
             }
 
-            fn caller() -> Option<int> {
+            fn caller() -> Option<i64> {
                 make(Counter { value: 1 })
             }
             ",
         );
-        // No type-mismatch error: caller's `Option<int>` annotation must
+        // No type-mismatch error: caller's `Option<i64>` annotation must
         // unify with `make`'s monomorphised return `Option<I::Item>` →
-        // `Option<int>` once `I = Counter` collapses via the impl's
-        // `type Item = int` binding.
+        // `Option<i64>` once `I = Counter` collapses via the impl's
+        // `type Item = i64` binding.
         let mismatches: Vec<_> = output
             .errors
             .iter()
@@ -17274,7 +17347,7 @@ mod assoc_types_slice2 {
             .collect();
         assert!(
             mismatches.is_empty(),
-            "expected `make(counter)` to monomorphise to `Option<int>`; got mismatches: {mismatches:?}; all errors: {:?}",
+            "expected `make(counter)` to monomorphise to `Option<i64>`; got mismatches: {mismatches:?}; all errors: {:?}",
             output.errors
         );
     }
@@ -17323,15 +17396,15 @@ mod assoc_types_slice2 {
             type Counter {}
 
             impl Iterator for Counter {
-                type Item = int;
-                fn next(c: Counter) -> Option<int> { None }
+                type Item = i64;
+                fn next(c: Counter) -> Option<i64> { None }
             }
 
             fn collect<I: Iterator>(it: I) -> Vec<I::Item> {
                 Vec::new()
             }
 
-            fn caller() -> Vec<int> {
+            fn caller() -> Vec<i64> {
                 collect(Counter {})
             }
             ",
@@ -17343,7 +17416,7 @@ mod assoc_types_slice2 {
             .collect();
         assert!(
             mismatches.is_empty(),
-            "expected `Vec<I::Item>` to monomorphise to `Vec<int>`; got mismatches: {mismatches:?}; all errors: {:?}",
+            "expected `Vec<I::Item>` to monomorphise to `Vec<i64>`; got mismatches: {mismatches:?}; all errors: {:?}",
             output.errors
         );
     }
@@ -17374,6 +17447,128 @@ mod assoc_types_slice2 {
                     && e.message.contains("Iterator")),
             "expected unknown-assoc diagnostic citing Other and Iterator; got: {:?}",
             output.errors
+        );
+    }
+
+    // ── extern "rt" validation ─────────────────────────────────────────────────
+    //
+    // `extern "rt"` declares JIT-visible runtime functions. Every symbol must
+    // appear in the `stable` section of scripts/jit-symbol-classification.toml.
+    // Unclassified symbols produce `ExternRtSymbolUnclassified`; classified
+    // symbols are accepted. `extern "C"` is unchanged by this validation.
+
+    fn make_extern_rt_block(symbols: &[&str]) -> Item {
+        Item::ExternBlock(ExternBlock {
+            abi: "rt".to_string(),
+            functions: symbols
+                .iter()
+                .map(|name| ExternFnDecl {
+                    name: name.to_string(),
+                    params: vec![],
+                    return_type: None,
+                    is_variadic: false,
+                    span: 0..name.len(),
+                })
+                .collect(),
+        })
+    }
+
+    /// A classified `extern "rt"` symbol must not produce an error.
+    #[test]
+    fn extern_rt_classified_symbol_accepted() {
+        // hew_sleep_ms is in the stable list.
+        let extern_item = make_extern_rt_block(&["hew_sleep_ms"]);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..30)],
+            module_doc: None,
+            module_graph: None,
+        });
+        let rt_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. }))
+            .collect();
+        assert!(
+            rt_errors.is_empty(),
+            "classified symbol hew_sleep_ms must not produce ExternRtSymbolUnclassified; \
+             got: {rt_errors:?}"
+        );
+    }
+
+    /// An unclassified `extern "rt"` symbol must produce `ExternRtSymbolUnclassified`.
+    #[test]
+    fn extern_rt_unclassified_symbol_rejected() {
+        let extern_item = make_extern_rt_block(&["fake_unclassified_symbol"]);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..40)],
+            module_doc: None,
+            module_graph: None,
+        });
+        assert!(
+            output.errors.iter().any(|e| matches!(&e.kind,
+                TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                if symbol_name == "fake_unclassified_symbol"
+            )),
+            "unclassified symbol must produce ExternRtSymbolUnclassified; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `extern "C"` blocks with any symbol name must NOT be validated against
+    /// the stable list — that is raw user FFI surface.
+    #[test]
+    fn extern_c_bypasses_rt_validation() {
+        let extern_item = Item::ExternBlock(ExternBlock {
+            abi: "C".to_string(),
+            functions: vec![ExternFnDecl {
+                name: "totally_made_up_ffi_symbol".to_string(),
+                params: vec![],
+                return_type: None,
+                is_variadic: false,
+                span: 0..0,
+            }],
+        });
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..50)],
+            module_doc: None,
+            module_graph: None,
+        });
+        let rt_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. }))
+            .collect();
+        assert!(
+            rt_errors.is_empty(),
+            "extern \"C\" must not trigger ExternRtSymbolUnclassified; got: {rt_errors:?}"
+        );
+    }
+
+    /// The hint in the diagnostic must direct the user to add the symbol to
+    /// the classification toml.
+    #[test]
+    fn extern_rt_unclassified_hint_mentions_toml() {
+        let extern_item = make_extern_rt_block(&["my_custom_symbol"]);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..30)],
+            module_doc: None,
+            module_graph: None,
+        });
+        let err = output
+            .errors
+            .iter()
+            .find(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. }))
+            .expect("expected ExternRtSymbolUnclassified error");
+        assert!(
+            err.suggestions
+                .iter()
+                .any(|s| s.contains("jit-symbol-classification.toml")),
+            "suggestion must mention jit-symbol-classification.toml; got: {:?}",
+            err.suggestions
         );
     }
 }

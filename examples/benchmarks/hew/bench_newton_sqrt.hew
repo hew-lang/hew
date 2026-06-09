@@ -1,4 +1,4 @@
-fn newton_sqrt(n: int) -> int {
+fn newton_sqrt(n: i64) -> i64 {
     if n == 0 {
         return 0;
     }
@@ -11,7 +11,7 @@ fn newton_sqrt(n: int) -> int {
     x
 }
 
-const ITERS: int = 5000000;
+const ITERS: i64 = 5000000;
 
 fn main() {
     var sum = 0;

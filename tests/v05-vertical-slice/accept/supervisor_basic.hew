@@ -1,0 +1,28 @@
+// Minimal supervisor end-to-end fixture for S-D substrate.
+//
+// Exercises codegen's bootstrap rewrite + runtime supervisor wiring:
+//   - `spawn AppSupervisor` routes through the synthesized bootstrap fn
+//   - the bootstrap calls `hew_supervisor_new`, registers children via
+//     `hew_supervisor_add_child_spec`, then `hew_supervisor_start`
+//   - control returns to `main`, which exits 42
+//
+// Out-of-scope (deferred): child handle field access (`app.w1`), crash
+// + restart-policy assertion, window-as-string parsing, `on(crash)` hooks.
+actor Worker {
+    receive fn ping(_n: i64) {
+        _n;
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child w1: Worker;
+}
+
+fn main() -> i64 {
+    spawn AppSupervisor;
+    42
+}

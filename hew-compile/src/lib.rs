@@ -1054,7 +1054,37 @@ fn build_module_graph_with_diagnostics(
         return Err(FrontendFailure::message_only(cycle_err.to_string()));
     }
 
+    // Reject programs where two different module imports share the same short
+    // name (the last path segment).  HIR keys all cross-module fn registrations
+    // by `module_short.fn_name`; two modules with the same short name would
+    // silently collide in the fn-registry.  Fail closed here so HIR never sees
+    // the ambiguity.  The richer "did you mean foo::util or bar::util?"
+    // suggestion is deferred to a v0.6 diagnostic-quality lane.
+    if let Err(msg) = check_duplicate_short_module_names(&graph) {
+        return Err(FrontendFailure::message_only(msg));
+    }
+
     Ok(graph)
+}
+
+fn check_duplicate_short_module_names(
+    graph: &hew_parser::module::ModuleGraph,
+) -> Result<(), String> {
+    let mut seen: HashMap<&str, &hew_parser::module::ModuleId> = HashMap::new();
+    for mod_id in &graph.topo_order {
+        if *mod_id == graph.root {
+            continue;
+        }
+        let short = mod_id.path.last().map_or("", String::as_str);
+        if let Some(existing) = seen.insert(short, mod_id) {
+            return Err(format!(
+                "Error: two imported modules share the short name `{short}`: \
+                 `{existing}` and `{mod_id}`. \
+                 Rename one of the imports or use file-path import syntax."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Resolve imports and build a module graph rooted at `source_file`.
@@ -1151,6 +1181,22 @@ fn flatten_import_items(program: &mut Program) -> Vec<(hew_parser::ast::Span, Op
     let mut imported_item_sources = Vec::new();
     for (item, _) in &mut program.items {
         if let Item::Import(decl) = item {
+            // Module-path imports (`import greeting;`) are NOT flattened here.
+            // Their pub fn bodies are lowered directly from `program.module_graph`
+            // by HIR under the qualified mangled symbol (e.g. `greeting$hello`).
+            // Flattening them would produce double-registration: once as bare
+            // `hello` (from the flattened item) and once as `greeting$hello`
+            // (from the HIR module-graph walk) — the HIR would then emit two
+            // `HirFn` items for the same body, and `module_fn_names` in MIR
+            // would contain both, causing a duplicate symbol in codegen.
+            //
+            // File-path imports (`import "util.hew";`) continue to be flattened
+            // because they produce anonymous, unqualified items with no
+            // `module_graph` entry to walk.
+            if !decl.path.is_empty() && decl.file_path.is_none() {
+                // Module-path import: leave resolved_items untouched; HIR owns it.
+                continue;
+            }
             if let Some(resolved) = decl.resolved_items.take() {
                 let mut item_source_paths =
                     std::mem::take(&mut decl.resolved_item_source_paths).into_iter();
@@ -1261,14 +1307,14 @@ fn resolve_file_imports_internal(
                     let entry_file =
                         format!("{}.hew", decl.path.last().expect("path is non-empty"));
                     let versioned_rel = module_dir.join(version).join(entry_file);
-                    candidates.push(cwd.join(".adze/packages").join(&versioned_rel));
+                    candidates.push(ctx.project_dir.join(".adze/packages").join(&versioned_rel));
                     if let Some(pkg) = ctx.extra_pkg_path {
                         candidates.push(pkg.join(&versioned_rel));
                     }
                 }
 
-                candidates.push(cwd.join(".adze/packages").join(&rel_path));
-                candidates.push(cwd.join(".adze/packages").join(&dir_path));
+                candidates.push(ctx.project_dir.join(".adze/packages").join(&rel_path));
+                candidates.push(ctx.project_dir.join(".adze/packages").join(&dir_path));
 
                 if let Some(pkg) = ctx.extra_pkg_path {
                     candidates.push(pkg.join(&dir_path));
@@ -1530,22 +1576,45 @@ fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) -> Resu
 
 /// Intermediate state produced by the shared file-frontend driver after
 /// loading, parsing, import resolution, and type-checking have all succeeded.
-/// Consumed by either `check_file` (phase stop here) or `compile_file`
-/// (continues into enrichment and codegen-metadata assembly).
-struct FileFrontendState {
-    program: Program,
-    diagnostics: Vec<FrontendDiagnostic>,
-    typecheck_result: TypeCheckResult,
-    source: String,
+///
+/// Current consumers:
+/// - [`check_file`] — stops here; does not continue into enrichment.
+/// - [`compile_file`] — continues into enrichment and codegen-metadata assembly.
+/// - `lower_file_to_mir` (slice 2, v0.5 compile path) — will route through
+///   [`run_file_frontend_to_typecheck`] instead of duplicating the frontend.
+///
+/// **Do not construct a divergent wrapper.** If you need to call the frontend
+/// with different options, extend [`FrontendOptions`] and route through
+/// [`run_file_frontend_to_typecheck`]. A parallel frontend driver that
+/// duplicates load → parse → import-resolution → type-check is always wrong.
+#[allow(
+    missing_debug_implementations,
+    reason = "transient pipeline value; Debug not required by any current consumer"
+)]
+pub struct FileFrontendState {
+    pub program: Program,
+    pub diagnostics: Vec<FrontendDiagnostic>,
+    pub typecheck_result: TypeCheckResult,
+    pub source: String,
 }
 
 /// Shared frontend driver for on-disk source files.
 ///
 /// Runs load → parse → import-resolution → type-check and returns the
-/// intermediate [`FileFrontendState`].  Both `check_file` and `compile_file`
-/// call this helper; `check_file` stops here while `compile_file` continues
-/// into enrichment and codegen-metadata assembly via `finish_compile`.
-fn run_file_frontend_to_typecheck(
+/// intermediate [`FileFrontendState`]. Current consumers are [`check_file`]
+/// (stops here) and [`compile_file`] (continues into enrichment and
+/// codegen-metadata assembly via `finish_compile`).
+///
+/// **Do not construct a divergent wrapper.** If you need to call the frontend
+/// with different options, extend [`FrontendOptions`] and route through here.
+/// A parallel driver that duplicates load → parse → import-resolution →
+/// type-check is always wrong.
+///
+/// # Errors
+///
+/// Returns [`FrontendFailure`] when project loading, parsing, import
+/// resolution, or type-checking fails.
+pub fn run_file_frontend_to_typecheck(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
@@ -2350,6 +2419,8 @@ mod tests {
             dyn_trait_coercions: std::collections::HashMap::new(),
             dyn_trait_method_calls: std::collections::HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            actor_protocol_descriptors: std::collections::HashMap::new(),
+            intrinsic_declarations: std::collections::HashMap::new(),
         };
 
         let err = enrich_program_ast(

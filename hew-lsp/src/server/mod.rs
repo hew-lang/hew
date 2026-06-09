@@ -2702,7 +2702,7 @@ machine Traffic {
 
     #[test]
     fn signature_help_for_builtin_method_call() {
-        let source = "fn send_one(tx: Sender<int>) { tx.send(1); }";
+        let source = "fn send_one(tx: Sender<i64>) { tx.send(1); }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -2724,7 +2724,7 @@ machine Traffic {
             "expected signature help inside builtin method call"
         );
         let sh = result.unwrap();
-        assert_eq!(sh.signatures[0].label, "fn send(value: int)");
+        assert_eq!(sh.signatures[0].label, "fn send(value: i64)");
     }
 
     // ── Non-empty helper test ───────────────────────────────────────

@@ -2,7 +2,7 @@
 //!
 //! A direct call to a user-defined function in the same module must produce
 //! an LLVM `call` instruction with the callee's decorated symbol name. For
-//! `fn add(a: int, b: int) -> int { a + b }` called as `add(2, 3)`, the
+//! `fn add(a: i64, b: i64) -> i64 { a + b }` called as `add(2, 3)`, the
 //! emitted IR must contain `call i64 @add(i64 2, i64 3)`.
 //!
 //! LESSONS applied:
@@ -53,7 +53,7 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
-/// `fn add(a: int, b: int) -> int { a + b }` called as `add(2, 3)` from
+/// `fn add(a: i64, b: i64) -> i64 { a + b }` called as `add(2, 3)` from
 /// `main` must produce LLVM IR containing `call i64 @add(i64 2, i64 3)`.
 ///
 /// This verifies that:
@@ -63,10 +63,10 @@ fn emit_ll(source: &str, module_name: &str) -> String {
 #[test]
 fn call_i64_user_fn_emits_call_instruction() {
     let src = r#"
-        fn add(a: int, b: int) -> int {
+        fn add(a: i64, b: i64) -> i64 {
             a + b
         }
-        fn main() -> int {
+        fn main() -> i64 {
             add(2, 3)
         }
     "#;
@@ -94,10 +94,10 @@ fn call_i64_user_fn_emits_call_instruction() {
 #[test]
 fn callee_define_has_i64_params() {
     let src = r#"
-        fn add(a: int, b: int) -> int {
+        fn add(a: i64, b: i64) -> i64 {
             a + b
         }
-        fn main() -> int {
+        fn main() -> i64 {
             add(2, 3)
         }
     "#;

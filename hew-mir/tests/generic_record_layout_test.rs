@@ -11,7 +11,7 @@
 //! `hew-hir/tests/type_mono_registry_test.rs` (G-2.c). They additionally
 //! close the `args: Vec::new()` HIR-side limitation noted by G-2.c's
 //! reviewer: `Box { value: xs }` returned from a fn declared as
-//! `-> Box<Vec<int>>` round-trips through HIR/MIR without producing a
+//! `-> Box<Vec<i64>>` round-trips through HIR/MIR without producing a
 //! `ReturnTypeMismatch` diagnostic.
 
 use hew_hir::{lower_program, mangle, ResolutionCtx};
@@ -100,7 +100,7 @@ fn struct_init_carries_concrete_type_args_and_emits_mangled_layout() {
     );
 }
 
-/// `let b: Box<int> = Box { value: 42 }; let x = b.value;` round-trips
+/// `let b: Box<i64> = Box { value: 42 }; let x = b.value;` round-trips
 /// through HIR/MIR: the field access uses the same mangled key as the
 /// struct-init, so `RecordFieldLoad` finds the offset and produces no
 /// `CutoverUnsupported` diagnostic.
@@ -109,7 +109,7 @@ fn field_access_through_generic_record_round_trips() {
     let (pl, hir_diags) = pipeline_with_tc(
         "pub type Box<T> { value: T }
          fn main() -> i64 {
-             let b: Box<int> = Box { value: 42 };
+             let b: Box<i64> = Box { value: 42 };
              let x = b.value;
              x
          }",
@@ -156,7 +156,7 @@ fn field_access_through_generic_record_round_trips() {
     );
 }
 
-/// `fn wrap(xs: Vec<int>) -> Box<Vec<int>> { Box { value: xs } }` —
+/// `fn wrap(xs: Vec<i64>) -> Box<Vec<i64>> { Box { value: xs } }` —
 /// the explicit limitation flagged by G-2.c's reviewer at HIR
 /// `lower.rs:~1953` (`args: Vec::new()` causing `ReturnTypeMismatch`).
 /// With G-2.d's fix, the HIR-recorded `expr.ty` on the tail
@@ -166,7 +166,7 @@ fn field_access_through_generic_record_round_trips() {
 fn generic_record_returned_from_fn_does_not_mismatch() {
     let (pl, hir_diags) = pipeline_with_tc(
         "pub type Box<T> { value: T }
-         fn wrap(xs: Vec<int>) -> Box<Vec<int>> {
+         fn wrap(xs: Vec<i64>) -> Box<Vec<i64>> {
              Box { value: xs }
          }",
     );
@@ -175,7 +175,7 @@ fn generic_record_returned_from_fn_does_not_mismatch() {
         "unexpected HIR diagnostics (ReturnTypeMismatch regression?): {hir_diags:#?}"
     );
 
-    // The RecordInit ty in `wrap`'s MIR is the concrete Box<Vec<int>>.
+    // The RecordInit ty in `wrap`'s MIR is the concrete Box<Vec<i64>>.
     let tys = record_init_tys(&pl, "wrap");
     assert_eq!(tys.len(), 1);
     match &tys[0] {
@@ -196,8 +196,8 @@ fn generic_record_returned_from_fn_does_not_mismatch() {
         other => panic!("expected Named Box, got {other:?}"),
     }
 
-    // And the MIR carries one mangled layout for the Box<Vec<int>>
-    // instantiation. (`Vec<int>` itself stays builtin-injected, so it
+    // And the MIR carries one mangled layout for the Box<Vec<i64>>
+    // instantiation. (`Vec<i64>` itself stays builtin-injected, so it
     // does not produce an entry.)
     let expected = mangle(
         "Box",

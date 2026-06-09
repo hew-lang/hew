@@ -144,6 +144,55 @@ pub(crate) fn require_current_context() -> *mut HewExecutionContext {
     ctx
 }
 
+// ── Reply-channel readers (ctx-backed, target-neutral) ─────────────────
+//
+// R17 sole-authority: the reply channel for the currently-dispatched message
+// lives on `HewExecutionContext::reply_channel`, and the "consumed" bit lives
+// in `HewExecutionContext::flags` under `HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED`.
+// Nested dispatch (worker A asks worker B mid-select on native; nested
+// ask/await on WASM) restores the outer arm's reply channel via the
+// `prev_context` chain — no thread-local backing store survives on either
+// target.
+
+/// Get the reply channel for the currently-dispatched message.
+///
+/// Returns null if no reply channel is set (fire-and-forget send) or if no
+/// execution context is installed; the latter records a fail-closed
+/// diagnostic via [`require_current_context`]. Called from codegen-emitted
+/// dispatch functions on both native and WASM targets.
+#[no_mangle]
+pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
+    let ctx = require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: scheduler-installed contexts remain valid for the lifetime of
+    // the dispatch; `require_current_context` returned non-null.
+    unsafe { (*ctx).reply_channel }
+}
+
+/// Mark the current dispatch's reply channel as consumed if it matches `ch`.
+///
+/// An inner-ctx dispatch consuming its own channel cannot flip the outer
+/// ctx's consumed bit because we only flip the bit on the currently-installed
+/// ctx and only when the channels match.
+pub(crate) fn mark_current_reply_channel_consumed(ch: *mut c_void) {
+    if ch.is_null() {
+        return;
+    }
+    let ctx = current_context();
+    if ctx.is_null() {
+        return;
+    }
+    // SAFETY: scheduler-installed contexts remain valid for the lifetime of
+    // the dispatch; the current-context pointer is non-null per the guard.
+    unsafe {
+        if (*ctx).reply_channel == ch {
+            (*ctx).flags |= HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
+        }
+    }
+}
+
 /// Return the current execution context pointer for use in codegen-emitted
 /// terminate trampolines. Called from `__terminate_<Actor>` C-ABI functions
 /// that bridge from the runtime's `fn(*mut c_void)` terminate-fn ABI to the

@@ -1,6 +1,6 @@
 // Cuckoo Hashing with 2 hash functions and 2 tables
 // Insert displaces existing elements on collision
-fn hash1(key: int, capacity: int) -> int {
+fn hash1(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
         h + capacity
@@ -9,7 +9,7 @@ fn hash1(key: int, capacity: int) -> int {
     }
 }
 
-fn hash2(key: int, capacity: int) -> int {
+fn hash2(key: i64, capacity: i64) -> i64 {
     // Use capacity-1 as modulus to avoid systematic collisions
     let m = capacity - 1;
     let h = (key * 11 + 7) % m;
@@ -20,8 +20,8 @@ fn hash2(key: int, capacity: int) -> int {
     }
 }
 
-fn make_table(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_table(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -29,7 +29,7 @@ fn make_table(capacity: int) -> Vec<int> {
     v
 }
 
-fn cuckoo_insert(t1: Vec<int>, t2: Vec<int>, key: int) -> bool {
+fn cuckoo_insert(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
     let capacity = t1.len();
     let EMPTY = 0 - 1;
     let max_loops = capacity * 2;
@@ -67,7 +67,7 @@ fn cuckoo_insert(t1: Vec<int>, t2: Vec<int>, key: int) -> bool {
     false
 }
 
-fn cuckoo_lookup(t1: Vec<int>, t2: Vec<int>, key: int) -> bool {
+fn cuckoo_lookup(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
     let capacity = t1.len();
     let idx1 = hash1(key, capacity);
     if t1.get(idx1) == key {
@@ -80,7 +80,7 @@ fn cuckoo_lookup(t1: Vec<int>, t2: Vec<int>, key: int) -> bool {
     false
 }
 
-fn cuckoo_remove(t1: Vec<int>, t2: Vec<int>, key: int) -> bool {
+fn cuckoo_remove(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
     let capacity = t1.len();
     let EMPTY = 0 - 1;
     let idx1 = hash1(key, capacity);
@@ -96,7 +96,7 @@ fn cuckoo_remove(t1: Vec<int>, t2: Vec<int>, key: int) -> bool {
     false
 }
 
-fn cuckoo_size(t1: Vec<int>, t2: Vec<int>) -> int {
+fn cuckoo_size(t1: Vec<i64>, t2: Vec<i64>) -> i64 {
     let capacity = t1.len();
     let EMPTY = 0 - 1;
     var count = 0;

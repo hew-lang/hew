@@ -362,10 +362,13 @@ fn get_current_arena() -> *mut ActorArena {
 /// `libc::malloc` directly.
 ///
 /// When an arena with a non-zero cap is active and this allocation would
-/// exceed that cap, returns null. On WASM the null propagates to the caller;
-/// the `catch_unwind` path handles any subsequent trap (WASM longjmp is
-/// absent; HeapExceeded-tagged crash handling is deferred to a follow-on
-/// lane extending the WASM actor panic path).
+/// exceed that cap, stamps `HEW_TRAP_HEAP_EXCEEDED` (code 200) onto the
+/// currently-dispatching actor's `error_code` and panics. The WASM scheduler's
+/// `catch_unwind` boundary at the activation frame catches the panic,
+/// observes the non-zero `error_code`, and transitions the actor to
+/// `Crashed` — mirroring the native longjmp/supervisor seam so that
+/// `ExitReason::from_error_code` surfaces `HeapExceeded` identically on
+/// both targets.
 ///
 /// # Safety
 ///
@@ -387,19 +390,51 @@ pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
             .alloc(size, std::mem::align_of::<*mut c_void>())
             .cast::<c_void>();
 
-        // On non-WASM targets, cap exhaustion triggers a HeapExceeded crash
-        // via the longjmp seam so the supervisor sees a named exit reason.
-        // On WASM the null propagates to the caller (no longjmp available).
+        // Cap exhaustion: surface a named crash so the supervisor sees the
+        // canonical HeapExceeded reason instead of either a silent null
+        // (which would let dispatch keep running with a dangling pointer)
+        // or a generic abort.
+        //
+        // - Native: longjmp seam unwinds to the sigsetjmp frame in the
+        //   scheduler without returning here.
+        // - WASM: longjmp is unavailable; instead, stamp the trap code on
+        //   the current actor and panic. The WASM activation's
+        //   catch_unwind boundary observes the non-zero error_code and
+        //   transitions the actor to Crashed.
         #[cfg(not(target_arch = "wasm32"))]
         if ptr.is_null() && arena.cap > 0 {
             // SAFETY: must be called from an actor dispatch context on a
-            // worker thread. The longjmp unwinds to the sigsetjmp frame in
-            // the scheduler without returning here.
+            // worker thread.
             unsafe {
                 crate::signal::try_direct_longjmp_with_code(
-                    crate::supervisor::HEW_TRAP_HEAP_EXCEEDED,
+                    crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
                 );
             }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        if ptr.is_null() && arena.cap > 0 {
+            // SAFETY: WASM activate_actor_wasm installs the canonical ctx
+            // before dispatch; `current_context()->actor` is the actor that
+            // requested this allocation. Stamping the error_code before the
+            // panic lets the catch_unwind boundary observe a typed crash
+            // rather than a generic "actor dispatch panicked" diagnostic.
+            unsafe {
+                let ctx = crate::execution_context::current_context();
+                if !ctx.is_null() {
+                    let actor = (*ctx).actor;
+                    if !actor.is_null() {
+                        (*actor).error_code.store(
+                            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+                            std::sync::atomic::Ordering::Release,
+                        );
+                    }
+                }
+            }
+            // Fail-closed: do NOT return null here on WASM. Returning null
+            // would let dispatch continue and dereference it. Panic so the
+            // activation frame's catch_unwind sees the crash.
+            panic!("hew_arena: cap exceeded (HEW_TRAP_HEAP_EXCEEDED)");
         }
 
         ptr

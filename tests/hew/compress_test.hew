@@ -4,7 +4,7 @@ import std::encoding::compress;
 import std::testing;
 
 // WASM-TODO(#1451): Add wasm coverage once std::encoding::compress is verified on wasm32-wasip1.
-const DEFAULT_DECOMPRESS_LIMIT: int = 64 * 1024 * 1024;
+const DEFAULT_DECOMPRESS_LIMIT: i64 = 64 * 1024 * 1024;
 
 fn assert_bytes_eq(actual: bytes, expected: bytes) {
     testing.assert_eq(actual.len(), expected.len());

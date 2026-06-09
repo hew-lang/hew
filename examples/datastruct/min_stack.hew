@@ -1,6 +1,6 @@
 // Min Stack - Stack that tracks minimum in O(1)
 // Uses two Vecs: main stack and min-tracking stack
-fn run_test(name: string, passed: int) -> int {
+fn run_test(name: string, passed: i64) -> i64 {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {
@@ -12,8 +12,8 @@ fn run_test(name: string, passed: int) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-    let data: Vec<int> = Vec::new();
-    let mins: Vec<int> = Vec::new();
+    let data: Vec<i64> = Vec::new();
+    let mins: Vec<i64> = Vec::new();
     // Helper: push onto min stack
     // Push val, and push min(val, current_min) onto mins
 
@@ -114,10 +114,10 @@ fn main() {
     // Test 8: many elements min tracking
     total = total + 1;
     // Reset
-    let data2: Vec<int> = Vec::new();
-    let mins2: Vec<int> = Vec::new();
+    let data2: Vec<i64> = Vec::new();
+    let mins2: Vec<i64> = Vec::new();
     // Push values: 50, 40, 60, 30, 70, 20, 80, 10
-    let vals: Vec<int> = Vec::new();
+    let vals: Vec<i64> = Vec::new();
     vals.push(50);
     vals.push(40);
     vals.push(60);

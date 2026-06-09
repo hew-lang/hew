@@ -1,12 +1,12 @@
 //! @name Async/Await
 //! @description Async functions with await
 
-fn compute(n: int) -> int {
+fn compute(n: i64) -> i64 {
     let result = fib(n);
     result
 }
 
-fn fib(n: int) -> int {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {

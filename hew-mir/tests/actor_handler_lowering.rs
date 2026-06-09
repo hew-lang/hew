@@ -6,7 +6,7 @@ use hew_hir::{
     HirModule, HirStmt, HirStmtKind, IntentKind, ResolvedRef, ScopeId, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Terminator};
-use hew_types::ResolvedTy;
+use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, ResolvedTy};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
@@ -117,6 +117,28 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
     let init_return = return_none_stmt(ids);
     let init_body = block(ids, vec![init_return], None, ResolvedTy::Unit);
     let init_param = binding(ids, "initial", ResolvedTy::I64);
+    // Q87 slice 1: synthesise a descriptor from the receive-handler list so
+    // MIR's `msg_type` derivation succeeds with the default hash contract
+    // instead of falling back to the sentinel. Tests in this file do not
+    // assert on `msg_type` values, but a hand-built actor with multiple
+    // handlers must not all collide on `i32::MAX`.
+    let protocol_descriptor = if receive_handlers.is_empty() {
+        None
+    } else {
+        let specs: Vec<ActorHandlerSpec> = receive_handlers
+            .iter()
+            .map(|h| ActorHandlerSpec {
+                name: h.name.clone(),
+                param_tys: h.params.iter().map(|p| p.ty.clone()).collect(),
+                return_ty: h.return_ty.clone(),
+                symbol: format!("{name}__{}", h.name),
+            })
+            .collect();
+        Some(
+            ActorProtocolDescriptor::from_handlers(name.to_string(), &specs)
+                .expect("test-built actor handler names must not collide"),
+        )
+    };
     HirActorDecl {
         id: ids.item(),
         node: ids.node(),
@@ -138,6 +160,7 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
         mailbox_capacity: None,
         overflow_policy: None,
         cycle_capable: false,
+        protocol_descriptor,
         span: 0..0,
     }
 }
@@ -289,19 +312,29 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
         .find(|func| func.name == "Counter__on_start")
         .expect("start hook MIR");
     assert_eq!(start.call_conv, FunctionCallConv::ActorHandler);
-    // on(crash) and on(upgrade) remain fail-closed until their runtime wiring lands.
-    for diagnostic_name in ["OnCrashNotYetWired", "OnUpgradeNotYetWired"] {
-        assert!(
-            pipeline.diagnostics.iter().any(|diag| {
-                matches!(
-                    &diag.kind,
-                    MirDiagnosticKind::UnsupportedNode { reason } if reason.contains(diagnostic_name)
-                )
-            }),
-            "{diagnostic_name} must still be fail-closed"
-        );
-    }
-    // on(stop) is now wired — no fail-closed diagnostic for it.
+    // on(crash) is now wired — it must lower to a MIR function.
+    assert_eq!(
+        pipeline.actor_layouts[0].on_crash_symbol.as_deref(),
+        Some("Counter__on_crash"),
+        "on(crash) hook must surface on_crash_symbol in ActorLayout"
+    );
+    let crash_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__on_crash")
+        .expect("on(crash) hook must produce a MIR function");
+    assert_eq!(crash_fn.call_conv, FunctionCallConv::ActorHandler);
+    // on(upgrade) remains fail-closed — no MIR function, a diagnostic.
+    assert!(
+        pipeline.diagnostics.iter().any(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::UnsupportedNode { reason } if reason.contains("OnUpgradeNotYetWired")
+            )
+        }),
+        "OnUpgradeNotYetWired must still be fail-closed"
+    );
+    // on(stop) is wired — no fail-closed diagnostic for it.
     assert!(
         !pipeline.diagnostics.iter().any(|diag| {
             matches!(
@@ -310,6 +343,16 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
             )
         }),
         "on(stop) must not emit a fail-closed diagnostic after wiring"
+    );
+    // on(crash) is wired — no fail-closed diagnostic for it.
+    assert!(
+        !pipeline.diagnostics.iter().any(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::UnsupportedNode { reason } if reason.contains("OnCrashNotYetWired")
+            )
+        }),
+        "on(crash) must not emit a fail-closed diagnostic after wiring"
     );
 }
 
@@ -430,4 +473,44 @@ fn actor_handler_symbol_collision_emits_typed_diagnostic_and_skips_handler() {
                 if symbol == "Counter__recv__ping"
         )
     }));
+}
+
+#[test]
+fn actor_lifecycle_crash_lowers_to_actor_handler_function() {
+    let mut ids = IdGen::default();
+    let crash_return = return_none_stmt(&mut ids);
+    let actor = {
+        let mut actor = actor(&mut ids, "Worker", vec![]);
+        actor.lifecycle_hooks = vec![HirLifecycleHook {
+            kind: HirLifecycleHookKind::Crash,
+            name: "handle_crash".to_string(),
+            params: vec![],
+            return_ty: ResolvedTy::Unit,
+            body: block(&mut ids, vec![crash_return], None, ResolvedTy::Unit),
+            span: 0..0,
+        }];
+        actor
+    };
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
+
+    // on_crash_symbol populated in the actor layout.
+    assert_eq!(
+        pipeline.actor_layouts[0].on_crash_symbol.as_deref(),
+        Some("Worker__on_crash"),
+        "on(crash) hook must surface as on_crash_symbol in ActorLayout"
+    );
+    // MIR function emitted with ActorHandler calling convention.
+    let crash_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Worker__on_crash")
+        .expect("on(crash) hook must produce a MIR function");
+    assert_eq!(crash_fn.call_conv, FunctionCallConv::ActorHandler);
+    // No fail-closed diagnostic emitted.
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "on(crash) lowering must not emit diagnostics; got: {:?}",
+        pipeline.diagnostics
+    );
 }

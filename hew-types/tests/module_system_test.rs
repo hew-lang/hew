@@ -48,6 +48,7 @@ fn make_pub_fn(name: &str) -> FnDecl {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     }
 }
 
@@ -441,6 +442,7 @@ fn test_private_items_not_visible() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
     let public_fn = make_pub_fn("public_fn");
 

@@ -14,7 +14,7 @@
 //!     println(option.is_some_int(x));        // true
 //!     println(option.unwrap_or_int(x, 0));   // 42
 //!
-//!     let y: Option<int> = None;
+//!     let y: Option<i64> = None;
 //!     println(option.is_none_int(y));         // true
 //!     println(option.unwrap_or_int(y, -1));   // -1
 //! }
@@ -22,7 +22,7 @@
 
 // ── Predicates ──────────────────────────────────────────────────────
 /// Returns `true` if the option contains a value.
-pub fn is_some_int(opt: Option<int>) -> bool {
+pub fn is_some_int(opt: Option<i64>) -> bool {
     match opt {
         Some(_) => true,
         None => false,
@@ -30,7 +30,7 @@ pub fn is_some_int(opt: Option<int>) -> bool {
 }
 
 /// Returns `true` if the option is `None`.
-pub fn is_none_int(opt: Option<int>) -> bool {
+pub fn is_none_int(opt: Option<i64>) -> bool {
     match opt {
         Some(_) => false,
         None => true,
@@ -38,8 +38,8 @@ pub fn is_none_int(opt: Option<int>) -> bool {
 }
 
 // ── Unwrap ──────────────────────────────────────────────────────────
-/// Unwrap the `int` value.  Panics if the option is `None`.
-pub fn unwrap_int(opt: Option<int>) -> int {
+/// Unwrap the `i64` value.  Panics if the option is `None`.
+pub fn unwrap_int(opt: Option<i64>) -> i64 {
     match opt {
         Some(v) => v,
         None => {
@@ -49,8 +49,8 @@ pub fn unwrap_int(opt: Option<int>) -> int {
     }
 }
 
-/// Unwrap the `int` value, or return `fallback` if `None`.
-pub fn unwrap_or_int(opt: Option<int>, fallback: int) -> int {
+/// Unwrap the `i64` value, or return `fallback` if `None`.
+pub fn unwrap_or_int(opt: Option<i64>, fallback: i64) -> i64 {
     match opt {
         Some(v) => v,
         None => fallback,
@@ -58,8 +58,8 @@ pub fn unwrap_or_int(opt: Option<int>, fallback: int) -> int {
 }
 
 // ── Map ─────────────────────────────────────────────────────────────
-/// Apply `f` to the contained `int` value, or return `None` if empty.
-pub fn map_int(opt: Option<int>, f: fn(int) -> int) -> Option<int> {
+/// Apply `f` to the contained `i64` value, or return `None` if empty.
+pub fn map_int(opt: Option<i64>, f: fn(i64) -> i64) -> Option<i64> {
     match opt {
         Some(v) => Some(f(v)),
         None => None,
@@ -68,7 +68,7 @@ pub fn map_int(opt: Option<int>, f: fn(int) -> int) -> Option<int> {
 
 // ── Contains ────────────────────────────────────────────────────────
 /// Returns `true` if the option contains `needle`.
-pub fn contains_int(opt: Option<int>, needle: int) -> bool {
+pub fn contains_int(opt: Option<i64>, needle: i64) -> bool {
     match opt {
         Some(v) => v == needle,
         None => false,

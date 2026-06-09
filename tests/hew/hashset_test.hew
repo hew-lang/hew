@@ -7,7 +7,7 @@
 import std::collections::hashset;
 import std::testing;
 
-// ── int operations ────────────────────────────────────────────────────
+// ── i64 operations ────────────────────────────────────────────────────
 
 #[test]
 fn test_insert_int_returns_true_for_new_values() {

@@ -808,7 +808,7 @@ mod tests {
         let result = unify(&mut subst, &task, &Ty::I64);
         assert!(
             result.is_err(),
-            "Task<int> must not unify with int; got {result:?}"
+            "Task<i64> must not unify with i64; got {result:?}"
         );
     }
 

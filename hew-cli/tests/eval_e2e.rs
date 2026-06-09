@@ -542,7 +542,7 @@ fn eval_inline_statement_type_errors_render_user_input() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(stderr.contains("<eval>:1:"), "stderr: {stderr}");
     assert!(
-        stderr.contains("type mismatch: expected `int`, found `String`"),
+        stderr.contains("type mismatch: expected `i64`, found `String`"),
         "stderr: {stderr}"
     );
     assert!(
@@ -569,7 +569,7 @@ fn eval_inline_expression_type_errors_render_user_input() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(stderr.contains("<eval>:1:"), "stderr: {stderr}");
     assert!(
-        stderr.contains("cannot apply `+` to `int` and `String`"),
+        stderr.contains("cannot apply `+` to `i64` and `String`"),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("1 | 1 + \"x\""), "stderr: {stderr}");
@@ -595,7 +595,7 @@ fn eval_repl_statement_type_errors_render_user_input() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(stderr.contains("<repl>:1:"), "stderr: {stderr}");
     assert!(
-        stderr.contains("type mismatch: expected `int`, found `String`"),
+        stderr.contains("type mismatch: expected `i64`, found `String`"),
         "stderr: {stderr}"
     );
     assert!(
@@ -622,7 +622,7 @@ fn eval_repl_expression_type_errors_render_user_input() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(stderr.contains("<repl>:1:"), "stderr: {stderr}");
     assert!(
-        stderr.contains("cannot apply `+` to `int` and `String`"),
+        stderr.contains("cannot apply `+` to `i64` and `String`"),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("1 | 1 + \"x\""), "stderr: {stderr}");
@@ -642,7 +642,7 @@ fn eval_stdin_statement_type_errors_render_user_input() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(stderr.contains("<stdin>:1:"), "stderr: {stderr}");
     assert!(
-        stderr.contains("type mismatch: expected `int`, found `String`"),
+        stderr.contains("type mismatch: expected `i64`, found `String`"),
         "stderr: {stderr}"
     );
     assert!(
@@ -665,7 +665,7 @@ fn eval_stdin_expression_type_errors_render_user_input() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(stderr.contains("<stdin>:1:"), "stderr: {stderr}");
     assert!(
-        stderr.contains("cannot apply `+` to `int` and `String`"),
+        stderr.contains("cannot apply `+` to `i64` and `String`"),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("1 | 1 + \"x\""), "stderr: {stderr}");
@@ -957,7 +957,7 @@ fn eval_file_type_errors_render_cli_diagnostics() {
     let header = format!("{}:2:", path.display());
     assert!(stderr.contains(&header), "stderr: {stderr}");
     assert!(
-        stderr.contains("type mismatch: expected `int`, found `String`"),
+        stderr.contains("type mismatch: expected `i64`, found `String`"),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("2 |     \"oops\""), "stderr: {stderr}");

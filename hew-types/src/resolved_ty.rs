@@ -391,11 +391,11 @@ impl ResolvedTy {
         }
     }
 
-    /// User-facing display wrapper that preserves Hew numeric spellings
-    /// (`int`/`float` aliases) identically to
-    /// [`Ty::user_facing`]. Rendering a `ResolvedTy` never exposes the
-    /// unrepresentable states (they don't exist), so callers can consume
-    /// this output directly without post-filtering.
+    /// User-facing display wrapper that mirrors [`Ty::user_facing`]: numeric
+    /// types render with their explicit-width spellings (`i64`, `f64`, etc.).
+    /// Rendering a `ResolvedTy` never exposes the unrepresentable states
+    /// (they don't exist), so callers can consume this output directly without
+    /// post-filtering.
     #[must_use]
     pub fn user_facing(&self) -> UserFacingResolvedTy<'_> {
         UserFacingResolvedTy(self)

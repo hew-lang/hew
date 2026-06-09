@@ -27,7 +27,7 @@ actor Processor {
 
 @resource
 struct FileHandle {
-    fd: int,
+    fd: i64,
 }
 
 fn main() {

@@ -110,7 +110,7 @@ fn machine_diagram_missing_file_exits_non_zero() {
 fn machine_diagram_no_machines_exits_non_zero() {
     let dir = support::tempdir();
     let input = dir.path().join("no_machine.hew");
-    std::fs::write(&input, "fn main() -> int {\n    0\n}\n").unwrap();
+    std::fs::write(&input, "fn main() -> i64 {\n    0\n}\n").unwrap();
 
     let output = Command::new(hew_binary())
         .arg("machine")

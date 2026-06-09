@@ -79,10 +79,10 @@ pub enum Ty {
     /// 64-bit unsigned integer
     U64,
     /// Platform-sized signed integer: 32-bit on WASM32, 64-bit on native.
-    /// Distinct from `i64` / `int` (which are always fixed 64-bit).
+    /// Distinct from `i64` (which is always fixed 64-bit).
     Isize,
     /// Platform-sized unsigned integer: 32-bit on WASM32, 64-bit on native.
-    /// Distinct from `u64` / `uint` (which are always fixed 64-bit).
+    /// Distinct from `u64` (which is always fixed 64-bit).
     Usize,
     /// 32-bit floating point
     F32,
@@ -292,11 +292,11 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("i8", &["i8"]),
     ("i16", &["i16"]),
     ("i32", &["i32"]),
-    ("i64", &["i64", "int", "Int"]),
+    ("i64", &["i64"]),
     ("u8", &["u8", "byte"]),
     ("u16", &["u16"]),
     ("u32", &["u32"]),
-    ("u64", &["u64", "uint"]),
+    ("u64", &["u64"]),
     ("isize", &["isize"]),
     ("usize", &["usize"]),
     ("f32", &["f32"]),
@@ -1543,8 +1543,7 @@ impl fmt::Display for Ty {
 
 impl fmt::Display for UserFacingTy<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let materialized = self.0.materialize_literal_defaults();
-        materialized.fmt_with_numeric_names(f, "int", "float")
+        self.0.materialize_literal_defaults().fmt(f)
     }
 }
 
@@ -1664,15 +1663,15 @@ mod tests {
     }
 
     #[test]
-    fn test_user_facing_display_preserves_numeric_aliases() {
-        assert_eq!(Ty::I64.user_facing().to_string(), "int");
-        assert_eq!(Ty::F64.user_facing().to_string(), "float");
+    fn test_user_facing_display_uses_explicit_widths() {
+        assert_eq!(Ty::I64.user_facing().to_string(), "i64");
+        assert_eq!(Ty::F64.user_facing().to_string(), "f64");
     }
 
     #[test]
     fn test_user_facing_display_materializes_literal_kinds() {
-        assert_eq!(Ty::IntLiteral.user_facing().to_string(), "int");
-        assert_eq!(Ty::FloatLiteral.user_facing().to_string(), "float");
+        assert_eq!(Ty::IntLiteral.user_facing().to_string(), "i64");
+        assert_eq!(Ty::FloatLiteral.user_facing().to_string(), "f64");
     }
 
     #[test]
@@ -1702,7 +1701,7 @@ mod tests {
 
         assert_eq!(
             ty.user_facing().to_string(),
-            "fn(Vec<int>, (bool, int)) -> Result<int, HashMap<string, int>>"
+            "fn(Vec<i64>, (bool, i64)) -> Result<i64, HashMap<string, i64>>"
         );
         assert_eq!(
             ty.to_string(),

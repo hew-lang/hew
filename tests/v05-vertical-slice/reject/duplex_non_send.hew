@@ -3,9 +3,9 @@
 // Actor calls cross an actor boundary; all values crossing must be Send.
 // Expected: type error containing "E_DUPLEX_NON_SEND"
 fn main() {
-    // Rc<int> is not Send — using it as a parameter type on a lambda actor
+    // Rc<i64> is not Send — using it as a parameter type on a lambda actor
     // is rejected at actor-definition time.
-    let _worker = actor |msg: Rc<int>| {
+    let _worker = actor |msg: Rc<i64>| {
         println(msg.strong_count());
     };
 }

@@ -222,6 +222,7 @@ fn overflow_trap_surfaces_as_actor_crash_not_process_abort() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            on_crash: None,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -360,6 +361,7 @@ fn fault_inject_crash_still_works_after_sigtrap_registration() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             arena_cap_bytes: 0,
+            on_crash: None,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),

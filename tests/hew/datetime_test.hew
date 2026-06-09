@@ -3,7 +3,7 @@
 import std::testing;
 import std::time::datetime;
 
-fn assert_parse_ok(actual: Result<int, string>) -> int {
+fn assert_parse_ok(actual: Result<i64, string>) -> i64 {
     match actual {
         Ok(value) => value,
         Err(message) => {

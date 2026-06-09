@@ -21,7 +21,7 @@ pub enum LinkError {
 
 /// A handle to an active monitor registration.
 pub type MonitorRef {
-    ref_id: int;
+    ref_id: i64;
 }
 
 impl Closable for MonitorRef {
@@ -47,5 +47,5 @@ impl Drop for MonitorRef {
 }
 
 extern "C" {
-    fn hew_actor_demonitor(ref_id: int);
+    fn hew_actor_demonitor(ref_id: i64);
 }

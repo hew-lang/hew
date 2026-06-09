@@ -1,25 +1,25 @@
 // Test 12: if let and while let
 // Testing pattern matching in conditionals and loops
 fn main() {
-    let first: Option<int> = Some(42);
+    let first: Option<i64> = Some(42);
     if let Some(value) = first {
         println(value);
     } else {
         println(0);
     }
-    let missing: Option<int> = None;
+    let missing: Option<i64> = None;
     if let Some(value) = missing {
         println(value);
     } else {
         println("no value");
     }
-    var current: Option<int> = Some(3);
+    var current: Option<i64> = Some(3);
     while let Some(value) = current {
         println(value);
         if value > 0 {
             current = Some(value - 1);
         } else {
-            let finished: Option<int> = None;
+            let finished: Option<i64> = None;
             current = finished;
         }
     }

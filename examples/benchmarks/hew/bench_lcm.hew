@@ -1,4 +1,4 @@
-fn gcd(a: int, b: int) -> int {
+fn gcd(a: i64, b: i64) -> i64 {
     var x = a;
     var y = b;
     while y != 0 {
@@ -9,11 +9,11 @@ fn gcd(a: int, b: int) -> int {
     x
 }
 
-fn lcm(a: int, b: int) -> int {
+fn lcm(a: i64, b: i64) -> i64 {
     a / gcd(a, b) * b
 }
 
-const ITERS: int = 5000000;
+const ITERS: i64 = 5000000;
 
 fn main() {
     var sum = 0;

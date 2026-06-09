@@ -13,7 +13,7 @@
 //
 // The fix is to restructure: either consume the resource at the send site
 // (use consume(f) or ensure f is last-used there), or pass a read-only
-// view to the actor (if the actor only needs to read an int, extract the
+// view to the actor (if the actor only needs to read an i64, extract the
 // field before sending — which is Copy and can be shared freely).
 //
 // Value-model rules exercised:
@@ -22,7 +22,7 @@
 
 @resource
 struct FileHandle {
-    fd: int,
+    fd: i64,
 }
 
 actor Reader {

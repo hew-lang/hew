@@ -2184,7 +2184,7 @@ fn enrich_expr_with_diagnostics_inner(
             }
 
             // Fill in inferred type arguments for generic calls that omit
-            // explicit type annotations (e.g. `identity(42)` → `identity<int>(42)`).
+            // explicit type annotations (e.g. `identity(42)` → `identity<i64>(42)`).
             hydrate_inferred_call_type_args(expr, tco, diagnostics);
         }
         Expr::Lambda { params, body, .. } => {
@@ -2693,6 +2693,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -3167,6 +3168,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -3241,6 +3243,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -3309,6 +3312,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -3371,6 +3375,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -3457,6 +3462,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -3530,6 +3536,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -3588,6 +3595,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -3644,6 +3652,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -3708,6 +3717,7 @@ mod tests {
                         doc_comment: None,
                         decl_span: 0..0,
                         fn_span: 0..0,
+                        intrinsic: None,
                     })],
                     doc_comment: None,
                     wire: None,
@@ -3930,6 +3940,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -4423,7 +4434,7 @@ mod tests {
     fn test_enrich_lambda_params_from_contextual_function_type() {
         let source = concat!(
             "fn main() {\n",
-            "    let f: fn(int) -> int = (x) => x + 1;\n",
+            "    let f: fn(i64) -> i64 = (x) => x + 1;\n",
             "    let y = f(5);\n",
             "}\n",
         );
@@ -5449,6 +5460,7 @@ mod tests {
                 doc_comment: None,
                 decl_span: 0..0,
                 fn_span: 0..0,
+                intrinsic: None,
             }),
             0..0,
         )
@@ -6737,6 +6749,7 @@ mod tests {
                         doc_comment: None,
                         decl_span: 0..0,
                         fn_span: 0..0,
+                        intrinsic: None,
                     }],
                 }),
                 0..0,
@@ -6759,7 +6772,7 @@ mod tests {
                     name: "C".into(),
                     ty: (
                         TypeExpr::Named {
-                            name: "int".into(),
+                            name: "i64".into(),
                             type_args: None,
                         },
                         0..0,
@@ -6844,6 +6857,7 @@ mod tests {
                         doc_comment: None,
                         decl_span: 0..0,
                         fn_span: 0..0,
+                        intrinsic: None,
                     })],
                     doc_comment: None,
                     wire: None,
@@ -6942,6 +6956,7 @@ mod tests {
                         doc_comment: None,
                         decl_span: 0..0,
                         fn_span: 0..0,
+                        intrinsic: None,
                     }],
                     mailbox_capacity: None,
                     overflow_policy: None,
@@ -7002,6 +7017,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -7150,6 +7166,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],
@@ -7398,6 +7415,7 @@ mod tests {
                     doc_comment: None,
                     decl_span: 0..0,
                     fn_span: 0..0,
+                    intrinsic: None,
                 }),
                 0..0,
             )],

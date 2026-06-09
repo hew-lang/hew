@@ -1,4 +1,4 @@
-fn build_dag(adj_nodes: Vec<int>, adj_offsets: Vec<int>, in_degree: Vec<int>, n: int) -> int {
+fn build_dag(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, in_degree: Vec<i64>, n: i64) -> i64 {
     var i = 0;
     while i <= n {
         adj_offsets.push(0);
@@ -43,9 +43,9 @@ fn build_dag(adj_nodes: Vec<int>, adj_offsets: Vec<int>, in_degree: Vec<int>, n:
     return 0;
 }
 
-fn topological_sort(adj_nodes: Vec<int>, adj_offsets: Vec<int>, in_deg_orig: Vec<int>, n: int) -> int {
-    let in_deg: Vec<int> = Vec::new();
-    let queue: Vec<int> = Vec::new();
+fn topological_sort(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, in_deg_orig: Vec<i64>, n: i64) -> i64 {
+    let in_deg: Vec<i64> = Vec::new();
+    let queue: Vec<i64> = Vec::new();
     var i = 0;
     while i < n {
         in_deg.push(in_deg_orig.get(i));
@@ -79,13 +79,13 @@ fn topological_sort(adj_nodes: Vec<int>, adj_offsets: Vec<int>, in_deg_orig: Vec
     return count * 1000 + order_sum % 1000;
 }
 
-const ITERS: int = 100000;
+const ITERS: i64 = 100000;
 
 fn main() {
     let n = 50;
-    let adj_nodes: Vec<int> = Vec::new();
-    let adj_offsets: Vec<int> = Vec::new();
-    let in_degree: Vec<int> = Vec::new();
+    let adj_nodes: Vec<i64> = Vec::new();
+    let adj_offsets: Vec<i64> = Vec::new();
+    let in_degree: Vec<i64> = Vec::new();
     let _ = build_dag(adj_nodes, adj_offsets, in_degree, n);
     var checksum = 0;
     for i in 0 .. ITERS {

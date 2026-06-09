@@ -35,8 +35,8 @@ fn two_instantiations_produce_two_specialised_mir_functions() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(42);
+        fn main() -> i64 {
+            let a: i64 = id(42);
             let b: string = id("hello");
             return 0;
         }
@@ -82,8 +82,8 @@ fn callsite_rewrites_to_mangled_call_terminator() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(42);
+        fn main() -> i64 {
+            let a: i64 = id(42);
             let b: string = id("hi");
             return 0;
         }
@@ -124,8 +124,8 @@ fn inner_generic_call_dispatches_to_substituted_mangled_symbol() {
             id(y)
         }
 
-        fn main() -> int {
-            let a: int = outer(42);
+        fn main() -> i64 {
+            let a: i64 = outer(42);
             0
         }
     ";
@@ -168,8 +168,8 @@ fn monomorphised_function_signature_uses_substituted_types() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(42);
+        fn main() -> i64 {
+            let a: i64 = id(42);
             let b: string = id("hi");
             return 0;
         }
@@ -203,9 +203,9 @@ fn same_type_dedupes_to_one_mir_function() {
             x
         }
 
-        fn main() -> int {
-            let a: int = id(1);
-            let b: int = id(2);
+        fn main() -> i64 {
+            let a: i64 = id(1);
+            let b: i64 = id(2);
             return 0;
         }
     ";

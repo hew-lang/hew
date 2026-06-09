@@ -53,7 +53,7 @@ type Message {
 /// Methods available on a WebSocket `Conn`.
 trait ConnMethods {
     /// Send a text message over the connection. Return 0 on success.
-    fn send_text(conn: Conn, msg: string) -> int;
+    fn send_text(conn: Conn, msg: string) -> i64;
 
     /// Send a text message over the connection.
     fn try_send_text(conn: Conn, msg: string) -> Result<(), fs.IoError>;
@@ -67,7 +67,7 @@ trait ConnMethods {
     /// Returns `Err(IoError::TimedOut(0))` on deadline expiry. On other
     /// failures returns `Err(IoError::Other(0))` (WebSocket errors carry
     /// no OS errno channel).
-    fn recv_timeout(conn: Conn, deadline_ms: int) -> Result<Message, fs.IoError>;
+    fn recv_timeout(conn: Conn, deadline_ms: i64) -> Result<Message, fs.IoError>;
 
     /// Close the WebSocket connection.
     fn close(conn: Conn);
@@ -81,17 +81,17 @@ trait ConnMethods {
     /// `handler` is the actor that will receive on_message and on_close.
     /// `on_message_type` is the msg_type index for the on_message receive fn.
     /// `on_close_type` is the msg_type index for the on_close receive fn.
-    fn attach(conn: Conn, handler: ActorRef, on_message_type: int, on_close_type: int);
+    fn attach(conn: Conn, handler: ActorRef, on_message_type: i64, on_close_type: i64);
 }
 
 impl ConnMethods for Conn {
-    fn send_text(conn: Conn, msg: string) -> int {
+    fn send_text(conn: Conn, msg: string) -> i64 {
         unsafe {
             hew_ws_send_text(conn, msg)
         }
     }
     fn try_send_text(conn: Conn, msg: string) -> Result<(), fs.IoError> {
-        let n: int = unsafe {
+        let n: i64 = unsafe {
             hew_ws_send_text(conn, msg)
         };
         if n < 0 {
@@ -105,7 +105,7 @@ impl ConnMethods for Conn {
             hew_ws_recv(conn)
         }
     }
-    fn recv_timeout(conn: Conn, deadline_ms: int) -> Result<Message, fs.IoError> {
+    fn recv_timeout(conn: Conn, deadline_ms: i64) -> Result<Message, fs.IoError> {
         let msg: Message = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI
             hew_ws_recv_timeout(conn, deadline_ms as i32)
         };
@@ -128,7 +128,7 @@ impl ConnMethods for Conn {
             hew_ws_close(conn)
         };
     }
-    fn attach(conn: Conn, handler: ActorRef, on_message_type: int, on_close_type: int) {
+    fn attach(conn: Conn, handler: ActorRef, on_message_type: i64, on_close_type: i64) {
         unsafe {
             hew_ws_attach(conn, handler, on_message_type as i32, on_close_type as i32)
         }; // INTERNAL-ABI: C ABI takes i32 type indices
@@ -181,7 +181,7 @@ trait ServerMethods {
     fn accept(server: Server) -> Conn;
 
     /// Get the port the server is listening on.
-    fn port(server: Server) -> int;
+    fn port(server: Server) -> i64;
 
     /// Close the server and stop listening.
     fn close(server: Server);
@@ -193,9 +193,9 @@ impl ServerMethods for Server {
             hew_ws_server_accept(server)
         }
     }
-    fn port(server: Server) -> int {
+    fn port(server: Server) -> i64 {
         unsafe {
-            hew_ws_server_port(server) as int
+            hew_ws_server_port(server) as i64
         }
     }
     fn close(server: Server) {

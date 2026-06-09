@@ -6,7 +6,7 @@
 // This file is kept here so the run.sh block that references it can detect the
 // behaviour change: `hew check` now PASSES this file (exit 0) instead of failing.
 fn main() {
-    let printer = actor |x: int| {
+    let printer = actor |x: i64| {
         println(x);
     };
     printer.send(42);

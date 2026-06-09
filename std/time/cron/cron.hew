@@ -63,13 +63,13 @@ fn cron_error_from_result(result: CronNextResult) -> CronError {
 /// Methods available on a parsed `Expr`.
 trait ExprMethods {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn next(expr: Expr, after_epoch_secs: int) -> int;
+    fn next(expr: Expr, after_epoch_secs: i64) -> i64;
 
     /// Compute the next firing time (epoch seconds) after the given timestamp.
     ///
     /// Returns `Err(CronError)` when the schedule has no future match or the
     /// native ABI rejects the input.
-    fn try_next(expr: Expr, after_epoch_secs: int) -> Result<int, CronError>;
+    fn try_next(expr: Expr, after_epoch_secs: i64) -> Result<i64, CronError>;
 
     /// Return the cron expression as a string.
     fn to_string(expr: Expr) -> string;
@@ -80,7 +80,7 @@ trait ExprMethods {
 
 impl ExprMethods for Expr {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn next(expr: Expr, after_epoch_secs: int) -> int {
+    fn next(expr: Expr, after_epoch_secs: i64) -> i64 {
         match try_next(expr, after_epoch_secs) {
             Ok(epoch_secs) => epoch_secs,
             Err(err) => {
@@ -90,12 +90,12 @@ impl ExprMethods for Expr {
         }
     }
     /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn try_next(expr: Expr, after_epoch_secs: int) -> Result<int, CronError> {
+    fn try_next(expr: Expr, after_epoch_secs: i64) -> Result<i64, CronError> {
         let result = unsafe {
             hew_cron_next_hew(expr, after_epoch_secs as i64)
         };
         if result.status == 0 {
-            Ok(result.timestamp as int)
+            Ok(result.timestamp as i64)
         } else {
             Err(cron_error_from_result(result))
         }

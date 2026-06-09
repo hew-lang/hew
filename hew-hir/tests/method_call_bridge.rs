@@ -23,15 +23,15 @@ fn typecheck_and_lower(source: &str) -> (hew_hir::LowerOutput, TypeCheckOutput) 
     (lower_output, tc_output)
 }
 
-/// `a.send(42)` on a `Duplex<int, int>` binding is rewritten to
+/// `a.send(42)` on a `Duplex<i64, i64>` binding is rewritten to
 /// `HirExprKind::Call` with callee `hew_duplex_send` and the receiver
 /// prepended as the first argument.  No diagnostics are emitted and the
 /// HIR verifier passes.
 #[test]
 fn method_call_with_rewrite_produces_hir_call() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             a.send(42);
             return 0;
         }
@@ -103,8 +103,8 @@ fn method_call_with_rewrite_produces_hir_call() {
 #[test]
 fn method_call_without_rewrite_fails_closed() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             a.send(42);
             return 0;
         }

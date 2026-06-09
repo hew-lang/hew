@@ -3,7 +3,7 @@
 // then/Goto + else/Goto + join/Return). Each arm Move's its tail
 // value into the result local; the join block's value Place is
 // the result local. `1 == 1` is true, so the binary returns 7.
-fn main() -> int {
+fn main() -> i64 {
     let r = if 1 == 1 {
         7
     } else {

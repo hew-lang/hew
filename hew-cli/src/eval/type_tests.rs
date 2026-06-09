@@ -6,5 +6,5 @@ fn eval_type_command_preserves_numeric_int_identity() {
     let result = session.eval(":type 42");
 
     assert!(!result.had_errors, "errors: {:?}", result.errors);
-    assert_eq!(result.output, "int\n");
+    assert_eq!(result.output, "i64\n");
 }

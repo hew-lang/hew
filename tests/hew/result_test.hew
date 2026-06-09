@@ -7,14 +7,14 @@ import std::testing;
 
 #[test]
 fn test_is_ok_int() {
-    let x: Result<int, int> = Ok(42);
+    let x: Result<i64, i64> = Ok(42);
     testing.assert_true(result.is_ok_int(x));
     testing.assert_false(result.is_err_int(x));
 }
 
 #[test]
 fn test_is_err_int() {
-    let x: Result<int, int> = Err(1);
+    let x: Result<i64, i64> = Err(1);
     testing.assert_true(result.is_err_int(x));
     testing.assert_false(result.is_ok_int(x));
 }
@@ -23,39 +23,39 @@ fn test_is_err_int() {
 
 #[test]
 fn test_unwrap_int_ok() {
-    let x: Result<int, int> = Ok(42);
+    let x: Result<i64, i64> = Ok(42);
     testing.assert_eq(result.unwrap_int(x), 42);
 }
 
 #[test]
 #[should_panic]
 fn test_unwrap_int_err_panics() {
-    let x: Result<int, int> = Err(1);
+    let x: Result<i64, i64> = Err(1);
     result.unwrap_int(x);
 }
 
 #[test]
 fn test_unwrap_err_int() {
-    let x: Result<int, int> = Err(99);
+    let x: Result<i64, i64> = Err(99);
     testing.assert_eq(result.unwrap_err_int(x), 99);
 }
 
 #[test]
 #[should_panic]
 fn test_unwrap_err_int_ok_panics() {
-    let x: Result<int, int> = Ok(42);
+    let x: Result<i64, i64> = Ok(42);
     result.unwrap_err_int(x);
 }
 
 #[test]
 fn test_unwrap_or_int_ok() {
-    let x: Result<int, int> = Ok(42);
+    let x: Result<i64, i64> = Ok(42);
     testing.assert_eq(result.unwrap_or_int(x, 0), 42);
 }
 
 #[test]
 fn test_unwrap_or_int_err() {
-    let x: Result<int, int> = Err(1);
+    let x: Result<i64, i64> = Err(1);
     testing.assert_eq(result.unwrap_or_int(x, -1), -1);
 }
 
@@ -63,19 +63,19 @@ fn test_unwrap_or_int_err() {
 
 #[test]
 fn test_contains_int_match() {
-    let x: Result<int, int> = Ok(42);
+    let x: Result<i64, i64> = Ok(42);
     testing.assert_true(result.contains_int(x, 42));
 }
 
 #[test]
 fn test_contains_int_no_match() {
-    let x: Result<int, int> = Ok(42);
+    let x: Result<i64, i64> = Ok(42);
     testing.assert_false(result.contains_int(x, 99));
 }
 
 #[test]
 fn test_contains_int_err() {
-    let x: Result<int, int> = Err(1);
+    let x: Result<i64, i64> = Err(1);
     testing.assert_false(result.contains_int(x, 42));
 }
 

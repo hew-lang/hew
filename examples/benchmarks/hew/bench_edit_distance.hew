@@ -1,7 +1,7 @@
-fn edit_distance(a: Vec<int>, b: Vec<int>, m: int, n: int) -> int {
+fn edit_distance(a: Vec<i64>, b: Vec<i64>, m: i64, n: i64) -> i64 {
     let cols = n + 1;
     let total = (m + 1) * cols;
-    let dp: Vec<int> = Vec::new();
+    let dp: Vec<i64> = Vec::new();
     for idx in 0 .. total {
         dp.push(0);
     }
@@ -33,13 +33,13 @@ fn edit_distance(a: Vec<int>, b: Vec<int>, m: int, n: int) -> int {
     return dp.get(m * cols + n);
 }
 
-const ITERS: int = 50000;
+const ITERS: i64 = 50000;
 
 fn main() {
     let m = 50;
     let n = 50;
-    let a: Vec<int> = Vec::new();
-    let b: Vec<int> = Vec::new();
+    let a: Vec<i64> = Vec::new();
+    let b: Vec<i64> = Vec::new();
     for k in 0 .. m {
         a.push(k % 11);
     }

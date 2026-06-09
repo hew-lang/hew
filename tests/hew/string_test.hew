@@ -10,7 +10,7 @@ fn assert_string_vec_eq(actual: Vec<string>, expected: Vec<string>) {
     }
 }
 
-fn assert_int_result_eq(actual: Result<int, string>, expected: int) {
+fn assert_int_result_eq(actual: Result<i64, string>, expected: i64) {
     match actual {
         Ok(value) => testing.assert_eq(value, expected),
         Err(message) => {
@@ -20,7 +20,7 @@ fn assert_int_result_eq(actual: Result<int, string>, expected: int) {
     }
 }
 
-fn assert_int_result_string_eq(actual: Result<int, string>, expected: string) {
+fn assert_int_result_string_eq(actual: Result<i64, string>, expected: string) {
     match actual {
         Ok(value) => testing.assert_eq_str(string.from_int(value), expected),
         Err(message) => {
@@ -30,7 +30,7 @@ fn assert_int_result_string_eq(actual: Result<int, string>, expected: string) {
     }
 }
 
-fn assert_int_result_err(actual: Result<int, string>, expected: string) {
+fn assert_int_result_err(actual: Result<i64, string>, expected: string) {
     match actual {
         Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");

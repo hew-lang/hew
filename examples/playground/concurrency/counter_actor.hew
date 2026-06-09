@@ -2,9 +2,9 @@
 //! @description A simple actor that counts messages
 
 actor Counter {
-    let count: int;
+    let count: i64;
 
-    receive fn increment(n: int) -> int {
+    receive fn increment(n: i64) -> i64 {
         count = count + n;
         print("Count is now: ");
         println(count);

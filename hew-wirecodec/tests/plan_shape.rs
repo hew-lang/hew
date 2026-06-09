@@ -28,7 +28,7 @@ fn point_decl() -> WireDecl {
         visibility: Visibility::Pub,
         kind: WireDeclKind::Struct,
         name: "Point".into(),
-        fields: vec![field("x", "int", 1), field("y", "int", 2)],
+        fields: vec![field("x", "i64", 1), field("y", "i64", 2)],
         variants: vec![],
         json_case: None,
         yaml_case: None,

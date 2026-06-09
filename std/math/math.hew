@@ -35,7 +35,7 @@ pub fn e() -> f64 {
 
 // ── Integer operations ────────────────────────────────────────────────
 /// Return the absolute value of an integer.
-pub fn abs(x: int) -> int {
+pub fn abs(x: i64) -> i64 {
     if x < 0 {
         -x
     } else {
@@ -44,7 +44,7 @@ pub fn abs(x: int) -> int {
 }
 
 /// Return the smaller of two integers.
-pub fn min(a: int, b: int) -> int {
+pub fn min(a: i64, b: i64) -> i64 {
     if a < b {
         a
     } else {
@@ -53,7 +53,7 @@ pub fn min(a: int, b: int) -> int {
 }
 
 /// Return the larger of two integers.
-pub fn max(a: int, b: int) -> int {
+pub fn max(a: i64, b: i64) -> i64 {
     if a > b {
         a
     } else {
@@ -62,7 +62,7 @@ pub fn max(a: int, b: int) -> int {
 }
 
 /// Clamp `x` to the range [`lo`, `hi`].
-pub fn clamp(x: int, lo: int, hi: int) -> int {
+pub fn clamp(x: i64, lo: i64, hi: i64) -> i64 {
     if x < lo {
         return lo;
     }
@@ -73,7 +73,7 @@ pub fn clamp(x: int, lo: int, hi: int) -> int {
 }
 
 /// Return the sign of an integer: -1, 0, or 1.
-pub fn sign(x: int) -> int {
+pub fn sign(x: i64) -> i64 {
     if x < 0 {
         return -1;
     }
@@ -124,11 +124,17 @@ pub fn clamp_f(x: f64, lo: f64, hi: f64) -> f64 {
     x
 }
 
+// WHY: `#[intrinsic("math.sqrt")]` is the typed-declaration substrate introduced
+// in the stdlib-refactor early-substrate lane. The attribute names the catalog key
+// so HIR can skip body lowering and route to the existing CompilerIntrinsic entry.
+// WHEN OBSOLETE: once the mass-migration slices (4-7) land and the catalog entry is
+// removed, this comment becomes the authoritative declaration and the WHY/WHEN block
+// can be dropped in favour of a plain doc-comment.
+// WHAT: slices 4-7 remove the parallel catalog entry and make this declaration the
+// sole source of truth; codegen emits the MLIR math-dialect op by intrinsic key.
 /// Return the square root of a float.
-pub fn sqrt(x: f64) -> f64 {
-    // Codegen maps to mlir::math::SqrtOp
-    0.0
-}
+#[intrinsic("math.sqrt")]
+pub fn sqrt(x: f64) -> f64 {}
 
 /// Raise `base` to the power `exp`.
 pub fn pow(base: f64, exp: f64) -> f64 {

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::actor::{self, HewActor, HewActorOpts};
-use crate::internal::types::{HewActorState, HewDispatchFn, HewOverflowPolicy};
+use crate::internal::types::{HewActorState, HewDispatchFn, HewOnCrashFn, HewOverflowPolicy};
 use crate::io_time::hew_now_ms;
 use crate::mailbox;
 use crate::pool::{HewActorPool, PoolStrategy};
@@ -309,123 +309,39 @@ unsafe impl Send for InternalPoolSpec {}
 const SUP_INITIAL_CAPACITY: usize = 16;
 const MAX_RESTARTS_TRACK: usize = 32;
 
-/// Restart strategies.
-const STRATEGY_ONE_FOR_ONE: c_int = 0;
-const STRATEGY_ONE_FOR_ALL: c_int = 1;
-const STRATEGY_REST_FOR_ONE: c_int = 2;
+/// Restart strategies. `pub` so codegen names them by symbol when emitting
+/// the `hew_supervisor_new(strategy, ...)` call from a supervisor bootstrap
+/// function — single source of truth across runtime + codegen.
+pub const STRATEGY_ONE_FOR_ONE: c_int = 0;
+pub const STRATEGY_ONE_FOR_ALL: c_int = 1;
+pub const STRATEGY_REST_FOR_ONE: c_int = 2;
+/// `simple_one_for_one` (pool dynamics). Reserved in the strategy ABI so
+/// every variant is explicit on the runtime side; the codegen surface that
+/// emits this constant — and the per-pool runtime semantics — lands in S-E.
+/// Today the match arm in `restart_with_budget_and_strategy` accepts the
+/// variant as a documented no-op (pool restart is driven by the per-pool
+/// machinery on `HewSupervisor.pool_*`, not by this child-restart helper).
+pub const STRATEGY_SIMPLE_ONE_FOR_ONE: c_int = 3;
 
-/// Restart policies.
-const RESTART_PERMANENT: c_int = 0;
-const RESTART_TRANSIENT: c_int = 1;
-const RESTART_TEMPORARY: c_int = 2;
+/// Restart policies. `pub` for the same reason as the strategy constants:
+/// codegen names them when emitting `HewChildSpec.restart_policy` from a
+/// supervisor bootstrap.
+pub const RESTART_PERMANENT: c_int = 0;
+pub const RESTART_TRANSIENT: c_int = 1;
+pub const RESTART_TEMPORARY: c_int = 2;
 
 // ── Exit reasons ─────────────────────────────────────────────────────────
 //
-// Trap error codes used by `hew_actor_trap` to distinguish named exit kinds
-// from raw OS signal numbers. OS signal numbers are < 32 on all supported
-// platforms. Hew-specific codes start at 200 to leave room for POSIX signals
-// and any future OS-specific ranges.
-
-/// Error code stored in `actor.error_code` when an actor's arena cap is
-/// exhausted. Produced by `hew_arena_malloc` routing through the longjmp
-/// crash seam when `cap > 0` and an allocation would exceed it.
-///
-/// Distinct from any POSIX signal number (which are < 32 on all supported
-/// platforms). Code 200 is reserved for this purpose and must not be reused
-/// for any other exit kind.
-pub const HEW_TRAP_HEAP_EXCEEDED: i32 = 200;
-
-/// Error code recorded when a MIR `Terminator::Trap { kind: IntegerOverflow }`
-/// fires inside an actor dispatch. Routed through the longjmp crash seam by
-/// `hew_trap_with_code` so the supervisor can distinguish overflow from a
-/// raw SIGILL (the LLVM `llvm.trap` fallback on non-actor contexts).
-pub const HEW_TRAP_INTEGER_OVERFLOW: i32 = 201;
-
-/// Error code recorded for `Terminator::Trap { kind: DivideByZero }`.
-pub const HEW_TRAP_DIVIDE_BY_ZERO: i32 = 202;
-
-/// Error code recorded for `Terminator::Trap { kind: SignedMinDivNegOne }`
-/// — signed integer division of the minimum value by `-1`, whose mathematical
-/// result is not representable in the operand width.
-pub const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: i32 = 203;
-
-/// Error code recorded for `Terminator::Trap { kind: ShiftOutOfRange }`.
-pub const HEW_TRAP_SHIFT_OUT_OF_RANGE: i32 = 204;
-
-/// Error code recorded for `Terminator::Trap { kind: IndexOutOfBounds }`.
-pub const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = 205;
-
-/// Error code recorded when codegen checks the i32 return value of
-/// `hew_actor_send_by_id` and finds it nonzero — the recipient was gone, the
-/// queue was full, or the actor ID routed to a remote partition that rejected
-/// the message. Codegen routes through `hew_trap_with_code(206)` before
-/// `llvm.trap` so the supervisor can distinguish this case from a raw signal.
-pub const HEW_TRAP_ACTOR_SEND_FAILED: i32 = 206;
-
-/// Named exit reason for a crashed actor.
-///
-/// Interprets the i32 `error_code` stored on a `HewActor` after a crash.
-/// The supervisor sees a raw `HewActorState::Crashed`; callers can call
-/// `ExitReason::from_error_code(hew_actor_get_error(actor))` to get a named
-/// reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExitReason {
-    /// Actor's per-dispatch arena cap was exceeded (error code 200).
-    ///
-    /// The arena returned null from `hew_arena_malloc` because allocating the
-    /// requested bytes would push `used` above `cap`. The actor crashed via
-    /// the normal longjmp/supervisor seam with this code stored as its
-    /// `error_code`, so teardown (timers, links, monitors, arena) runs as
-    /// for any other crash (`cleanup-all-exits` LESSON).
-    HeapExceeded,
-    /// Actor crashed because a `Terminator::Trap { kind: IntegerOverflow }`
-    /// fired during dispatch (error code 201). The MIR producer attaches
-    /// this kind to `+`, `-`, `*` overflow on the default (non-wrapping)
-    /// operators; codegen routes through `hew_trap_with_code(201)` before
-    /// emitting `llvm.trap` as the non-actor fallback.
-    IntegerOverflow,
-    /// Actor crashed on `/` or `%` with a zero divisor (error code 202).
-    DivideByZero,
-    /// Actor crashed on signed `i{N}::MIN / -1` (error code 203), whose
-    /// mathematical result overflows the operand width.
-    SignedMinDivNegOne,
-    /// Actor crashed on `<<` or `>>` with a shift count outside `[0, width)`
-    /// (error code 204).
-    ShiftOutOfRange,
-    /// Actor crashed on an out-of-bounds index into a `Vec<T>` or array
-    /// (error code 205).
-    IndexOutOfBounds,
-    /// Actor crashed because `hew_actor_send_by_id` returned a nonzero status
-    /// (error code 206). The recipient was gone, the mailbox was full, or the
-    /// remote partition rejected the message. Codegen's fail-closed path
-    /// triggers `hew_trap_with_code(206)` rather than silently proceeding.
-    ActorSendFailed,
-    /// Actor crashed with a hardware signal (SIGSEGV, SIGBUS, SIGFPE, SIGILL)
-    /// or via `hew_panic()` / `hew_panic_msg()`. The raw signal number is
-    /// preserved.
-    Signal(i32),
-    /// Actor stopped normally (`error_code` == 0).
-    Normal,
-}
-
-impl ExitReason {
-    /// Convert a raw `error_code` from `hew_actor_get_error` into a named
-    /// `ExitReason`.
-    #[must_use]
-    pub fn from_error_code(code: i32) -> Self {
-        match code {
-            0 => ExitReason::Normal,
-            HEW_TRAP_HEAP_EXCEEDED => ExitReason::HeapExceeded,
-            HEW_TRAP_INTEGER_OVERFLOW => ExitReason::IntegerOverflow,
-            HEW_TRAP_DIVIDE_BY_ZERO => ExitReason::DivideByZero,
-            HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE => ExitReason::SignedMinDivNegOne,
-            HEW_TRAP_SHIFT_OUT_OF_RANGE => ExitReason::ShiftOutOfRange,
-            HEW_TRAP_INDEX_OUT_OF_BOUNDS => ExitReason::IndexOutOfBounds,
-            HEW_TRAP_ACTOR_SEND_FAILED => ExitReason::ActorSendFailed,
-            sig => ExitReason::Signal(sig),
-        }
-    }
-}
+// Trap error codes and the typed `ExitReason` live in
+// [`crate::internal::types`] because both native and WASM arena/dispatch
+// paths must stamp the canonical code on an actor crash, and the supervisor
+// module is `cfg(not(target_arch = "wasm32"))`. They are re-exported here so
+// existing `crate::supervisor::*` call sites keep resolving.
+pub use crate::internal::types::{
+    ExitReason, HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_HEAP_EXCEEDED,
+    HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE,
+    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+};
 
 /// C-ABI trap entry-point invoked by codegen-emitted IR before the
 /// `llvm.trap` terminator on a `Terminator::Trap { kind }` block.
@@ -503,15 +419,30 @@ pub struct HewChildSpec {
     /// re-applies this cap to every restarted child so `#[max_heap(N)]`
     /// actors retain their cap across crashes.
     pub arena_cap_bytes: usize,
+    /// Optional crash handler invoked before the restart policy is applied.
+    /// Called with the execution context, trap-kind code, and actor state
+    /// pointer when the child exits with `HewActorState::Crashed`.
+    /// `None` / null means no handler. Not read by the runtime in this change;
+    /// the invocation path is added in a follow-on change.
+    pub on_crash: Option<HewOnCrashFn>,
 }
 
 /// Child lifecycle event (sent as system message payload).
+///
+/// `crash_code` carries the trap-kind integer (`HEW_TRAP_*` constants, 201–205,
+/// or other actor-defined error codes) captured from the child actor's
+/// `error_code` slot at the moment of the trap. It is meaningful only when
+/// `exit_state == HewActorState::Crashed`; for normal stops it is `0`.
+/// Routing this through the event payload lets the supervisor record the real
+/// trap code in crash-stats and forward it to a registered `on_crash` handler
+/// instead of falling back to the historical SIGSEGV placeholder (`11`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct ChildEvent {
     child_index: c_int,
     child_id: u64,
     exit_state: c_int,
+    crash_code: c_int,
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +577,10 @@ struct InternalChildSpec {
     /// applied by every restart path so restarted actors keep the cap
     /// originally set by `#[max_heap(N)]`.
     arena_cap_bytes: usize,
+    /// Crash handler copied from `HewChildSpec::on_crash`. Invoked from
+    /// `apply_restart` before the restart policy is consulted when the child
+    /// exits with `HewActorState::Crashed`. `None` means no handler.
+    on_crash: Option<HewOnCrashFn>,
     /// Codegen-emitted drop callback for owned state fields (e.g. `Vec`, `String`).
     /// Registered via [`hew_supervisor_set_child_state_drop`] after the child spec
     /// is added. Every restart path calls this on the newly spawned actor so that
@@ -685,6 +620,7 @@ impl Default for InternalChildSpec {
             next_restart_time_ns: 0,
             circuit_breaker: CircuitBreakerState::default(),
             arena_cap_bytes: 0,
+            on_crash: None,
             state_drop_fn: None,
         }
     }
@@ -787,6 +723,10 @@ fn escalate_to_parent(sup: &HewSupervisor) {
         child_index: -1,
         child_id: sup.index_in_parent as u64,
         exit_state: HewActorState::Crashed as c_int,
+        // Child-supervisor escalation: no single trap code applies to the
+        // subtree-restart-budget exhaustion that triggered this escalation.
+        // Use the honest unknown value rather than fabricating a signal number.
+        crash_code: 0,
     };
     // SAFETY: parent.self_actor is valid.
     unsafe {
@@ -1431,7 +1371,23 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
                 unsafe { restart_child_from_spec(sup, i) };
             }
         }
-        _ => {}
+        STRATEGY_SIMPLE_ONE_FOR_ONE => {
+            // Pool dynamics — pool children restart via the per-pool path on
+            // `HewSupervisor.pool_*`, not via this child-restart helper. The
+            // codegen-side bootstrap that emits this strategy + the per-pool
+            // restart machinery land together in S-E. Keeping the arm
+            // explicit (not a wildcard) so `exhaustive-coverage` holds.
+        }
+        unknown => {
+            // Fail-closed: any non-listed strategy is a codegen/runtime ABI
+            // drift. Pre-S-D this fell through a `_ => {}` wildcard, which
+            // silently dropped restart requests for unrecognized strategies.
+            unreachable!(
+                "hew_supervisor: unknown restart strategy {unknown}; \
+                 valid: ONE_FOR_ONE=0, ONE_FOR_ALL=1, REST_FOR_ONE=2, \
+                 SIMPLE_ONE_FOR_ONE=3"
+            );
+        }
     }
 
     notify_restart(sup);
@@ -1483,13 +1439,86 @@ unsafe fn restart_child_supervisor_with_budget(sup: &mut HewSupervisor, failed_i
 /// # Safety
 ///
 /// `sup` must be valid.
-unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state: c_int) {
+unsafe fn apply_restart(
+    sup: &mut HewSupervisor,
+    failed_index: usize,
+    exit_state: c_int,
+    crash_code: c_int,
+    ctx: *mut crate::execution_context::HewExecutionContext,
+) {
     let spec = &mut sup.child_specs[failed_index];
 
-    // Record crash if it was a crash (not a normal stop)
+    // Record crash if it was a crash (not a normal stop). `crash_code` is the
+    // real trap-kind integer (`HEW_TRAP_*`, 201–205) captured from the child
+    // actor's `error_code` slot at the moment of the trap; if no specific code
+    // is available it is `0` (unknown). Historically this site passed the
+    // literal `11` (a SIGSEGV stand-in) which made crash-stats lie about why
+    // the actor died — we plumb the real value through now.
     if exit_state == HewActorState::Crashed as c_int {
-        circuit_breaker_record_crash(spec, 11); // Default to SIGSEGV if signal not available
-                                                // Apply exponential backoff delay after crash (only for subsequent crashes)
+        circuit_breaker_record_crash(spec, crash_code);
+
+        // ── on(crash) handler invocation ─────────────────────────────────
+        //
+        // If the user declared `#[on(crash)]` on the child actor, codegen
+        // populated `spec.on_crash` (S1 ABI slot + S2 MIR symbol + S3
+        // codegen pointer); fire the handler now, BEFORE the restart-policy
+        // gate. The handler runs in the supervisor's own actor-dispatch
+        // context (`ctx`), which is the same context the surrounding
+        // `supervisor_dispatch` is executing under. The crashed child's
+        // actor was already torn down by `take_child_slot` in
+        // `supervisor_dispatch`, so there is no risk of re-entering the
+        // crashed dispatch.
+        //
+        // Arguments:
+        //   - `ctx`: supervisor's execution context, threaded down from
+        //     `supervisor_dispatch`. Re-using the supervisor ctx
+        //     preserves task-scope cancellation propagation; do not
+        //     synthesise a fresh ctx (cf. `f4df6354`).
+        //   - `crash_code`: the trap-kind integer captured above. Cast to
+        //     `c_int` for the C ABI; the handler receives a single i32
+        //     register matching the MIR lowering of `PanicInfo { code: i64 }`
+        //     (`hew-types/src/check/items.rs:887-906`).
+        //   - `spec.init_state`: pointer to the *new* (template) seed state
+        //     the next-restarted actor will be cloned from. The crashed
+        //     actor's last-seen state is gone with the actor. Handler-side
+        //     mutations to this pointer therefore persist across EVERY
+        //     subsequent restart of this child slot, not just the next
+        //     one. v0.6 may revisit ("last-seen-state" semantics, fresh
+        //     template clone per crash) once the design is ratified.
+        //
+        // Fail-closed mechanism:
+        //   - The handler ABI is `extern "C"` (non-unwinding). If the
+        //     handler itself traps via `hew_trap_with_code`, the longjmp
+        //     unwinds into the SUPERVISOR's recovery frame (we are inside
+        //     the supervisor's dispatch), which surfaces as a supervisor-
+        //     level crash that the parent restart-budget escalates per
+        //     `restart_within_window`. We deliberately do NOT wrap this
+        //     call in `std::panic::catch_unwind` — there is nothing to
+        //     catch across a non-unwinding ABI, and silently swallowing
+        //     would violate the `boundary-fail-closed` invariant.
+        //
+        // `CrashAction` return is IGNORED in v0.5:
+        //   `std/failure.hew` declares `on(crash)` returning a
+        //   `CrashAction` variant (Restart/Kill/Escalate) but the v0.5
+        //   supervisor honours only the per-child `restart_policy` enum
+        //   set at spec-registration time. The hook is side-effects-only
+        //   ("log + react") for v0.5; the return-shape consult is deferred
+        //   to v0.6 (JOURNEY.md Q46/A23, `std/failure.hew:34-38`). The
+        //   handler's signature here is `unsafe extern "C" fn(*mut ctx,
+        //   c_int, *mut c_void)` returning unit — the variant byte the
+        //   user `return`s simply does not reach the runtime.
+        if let Some(handler) = spec.on_crash {
+            // Capture state pointer before relinquishing the borrow.
+            let state_ptr = spec.init_state;
+            // SAFETY: `handler` is a codegen-emitted `extern "C" fn` with
+            // the `HewOnCrashFn` signature; `ctx` is the live supervisor
+            // execution context for the in-flight dispatch; `state_ptr`
+            // is the template state the supervisor owns for this child
+            // slot (allocated in `hew_supervisor_add_child_spec`).
+            unsafe { handler(ctx, crash_code, state_ptr) };
+        }
+
+        // Apply exponential backoff delay after crash (only for subsequent crashes)
         if spec.restart_delay_ms > 0 {
             apply_restart_backoff(spec);
         }
@@ -1578,7 +1607,7 @@ unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state
 
 /// Supervisor dispatch function (handles system messages).
 unsafe extern "C-unwind" fn supervisor_dispatch(
-    _ctx: *mut crate::execution_context::HewExecutionContext,
+    ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -1626,8 +1655,11 @@ unsafe extern "C-unwind" fn supervisor_dispatch(
                 unsafe { actor::hew_actor_free(child) };
             }
 
-            // SAFETY: sup is valid.
-            unsafe { apply_restart(sup, idx, event.exit_state) };
+            // SAFETY: sup is valid; ctx is the supervisor's own dispatch
+            // context, threaded through so a registered on_crash handler
+            // receives the supervisor's ctx (preserves task-scope
+            // cancellation propagation per f4df6354).
+            unsafe { apply_restart(sup, idx, event.exit_state, event.crash_code, ctx) };
         }
         SYS_MSG_SUPERVISOR_STOP => {
             sup.cancelled.store(true, Ordering::Release);
@@ -1773,6 +1805,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
         arena_cap_bytes: sp.arena_cap_bytes,
+        on_crash: sp.on_crash,
         // Registered by hew_supervisor_set_child_state_drop after this call.
         state_drop_fn: None,
     });
@@ -1848,6 +1881,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
     child_index: c_int,
     child_id: u64,
     exit_state: c_int,
+    crash_code: c_int,
 ) {
     cabi_guard!(sup.is_null());
     // SAFETY: caller guarantees sup is valid.
@@ -1860,6 +1894,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
         child_index,
         child_id,
         exit_state,
+        crash_code,
     };
 
     let msg_type = if exit_state == HewActorState::Crashed as c_int {
@@ -2013,6 +2048,7 @@ mod tests {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
                 arena_cap_bytes: 0,
+                on_crash: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -2502,11 +2538,15 @@ pub unsafe extern "C" fn hew_supervisor_handle_crash(
     }
 
     let exit_state = child_ref.actor_state.load(Ordering::Acquire);
+    // Read the child's recorded trap code (set by `hew_actor_trap` before the
+    // state transition). `0` for non-crash exits or when no specific code was
+    // recorded — we propagate the honest unknown rather than fabricating.
+    let crash_code = child_ref.error_code.load(Ordering::Acquire);
 
     // Notify the supervisor actor via the event system.
     // SAFETY: sup is valid and child_id / exit_state are read from valid memory.
     unsafe {
-        hew_supervisor_notify_child_event(sup, idx, child_ref.id, exit_state);
+        hew_supervisor_notify_child_event(sup, idx, child_ref.id, exit_state, crash_code);
     }
 }
 
@@ -3056,6 +3096,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
         arena_cap_bytes: sp.arena_cap_bytes,
+        on_crash: sp.on_crash,
         // Registered by the caller via hew_supervisor_set_child_state_drop
         // immediately after this call returns. See the function doc comment
         // for the race-window analysis and calling contract.

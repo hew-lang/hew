@@ -10,14 +10,14 @@
 //! (b) The same `T` observed twice produces one entry — dedup.
 //! (c) Two-param record at `(i64, string)` and `(i64, bool)` produces
 //!     two entries with distinct mangled names.
-//! (d) Generic-in-generic `Box<Vec<int>>` produces ONE entry (the
-//!     `Box<Vec<int>>` layout) — Vec stays builtin-injected.
+//! (d) Generic-in-generic `Box<Vec<i64>>` produces ONE entry (the
+//!     `Box<Vec<i64>>` layout) — Vec stays builtin-injected.
 //! (e) Recursive polymorphic instantiation
-//!     (`pub type Node<T> { value: T; next: Box<Node<int>> }`)
+//!     (`pub type Node<T> { value: T; next: Box<Node<i64>> }`)
 //!     fires `RecursiveGenericTypeUnsupported` and produces no entry.
 //!
 //! Additionally:
-//! - Field-type substitution: `Box<int>`'s layout has `(value, int)`,
+//! - Field-type substitution: `Box<i64>`'s layout has `(value, i64)`,
 //!   not `(value, T)`.
 //! - Mangling: shared with the fn-monomorphisation scheme
 //!   (`mangle(origin_name, type_args)`); `Box$$i64`, `Pair$$i64$string`.
@@ -72,7 +72,7 @@ fn generic_record_at_two_types_produces_two_entries() {
         pub type Box<T> { value: T }
 
         fn main() {
-            let a: Box<int> = Box { value: 42 };
+            let a: Box<i64> = Box { value: 42 };
             let b: Box<string> = Box { value: "hi" };
         }
     "#;
@@ -110,7 +110,7 @@ fn generic_record_at_two_types_produces_two_entries() {
     );
     assert!(layouts.iter().all(|l| l.key.origin_name == "Box"));
 
-    // Field-type substitution: the layout for `Box<int>` has
+    // Field-type substitution: the layout for `Box<i64>` has
     // `(value, i64)`, not `(value, T)`.
     let i64_layout = layouts
         .iter()
@@ -138,8 +138,8 @@ fn generic_record_at_same_type_dedupes() {
         pub type Box<T> { value: T }
 
         fn main() {
-            let a: Box<int> = Box { value: 1 };
-            let b: Box<int> = Box { value: 2 };
+            let a: Box<i64> = Box { value: 1 };
+            let b: Box<i64> = Box { value: 2 };
         }
     ";
 
@@ -172,8 +172,8 @@ fn two_param_record_at_two_arg_sets_produces_two_entries() {
         pub type Pair<A, B> { first: A; second: B }
 
         fn main() {
-            let p: Pair<int, string> = Pair { first: 1, second: "s" };
-            let q: Pair<int, bool> = Pair { first: 2, second: true };
+            let p: Pair<i64, string> = Pair { first: 1, second: "s" };
+            let q: Pair<i64, bool> = Pair { first: 2, second: true };
         }
     "#;
 
@@ -226,7 +226,7 @@ fn two_param_record_at_two_arg_sets_produces_two_entries() {
     );
 }
 
-/// (d) Plan test D: generic-in-generic `Box<Vec<int>>` produces ONE
+/// (d) Plan test D: generic-in-generic `Box<Vec<i64>>` produces ONE
 /// record-layout entry — for `Box` only. Builtin `Vec<T>` remains
 /// compiler-injected (no record-layout entry) for v0.5 per the G-2
 /// plan's out-of-scope note.
@@ -235,15 +235,15 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
     // Vec is a builtin; constructing one uses a literal/init form
     // distinct from struct-init. The key invariant under test is
     // that `record_layouts` contains exactly one entry whose origin
-    // is `Box` with `type_args = [Vec<int>]`, and no entry for `Vec`
+    // is `Box` with `type_args = [Vec<i64>]`, and no entry for `Vec`
     // itself. To dodge the stdlib-symbol question we accept a
-    // `Vec<int>` as a function parameter and feed it into the
+    // `Vec<i64>` as a function parameter and feed it into the
     // `Box` literal — this exercises the same struct-init lowering
     // path without needing a Vec constructor in scope.
     let source = r"
         pub type Box<T> { value: T }
 
-        fn wrap(xs: Vec<int>) -> Box<Vec<int>> {
+        fn wrap(xs: Vec<i64>) -> Box<Vec<i64>> {
             return Box { value: xs };
         }
 
@@ -275,12 +275,12 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
     assert_eq!(
         layouts.len(),
         1,
-        "Box<Vec<int>> must produce one entry (for Box only — Vec stays \
+        "Box<Vec<i64>> must produce one entry (for Box only — Vec stays \
          builtin-injected per the G-2 plan); got {layouts:#?}"
     );
     assert_eq!(layouts[0].key.origin_name, "Box");
 
-    // The single arg is `Vec<int>` — the layout retains the nested
+    // The single arg is `Vec<i64>` — the layout retains the nested
     // generic shape verbatim.
     let expected_arg = ResolvedTy::Named {
         name: "Vec".into(),
@@ -288,8 +288,8 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
     };
     assert_eq!(layouts[0].key.type_args, vec![expected_arg.clone()]);
 
-    // The substituted field shape is `(value, Vec<int>)` — T was
-    // replaced by `Vec<int>`.
+    // The substituted field shape is `(value, Vec<i64>)` — T was
+    // replaced by `Vec<i64>`.
     assert_eq!(layouts[0].fields, vec![("value".to_string(), expected_arg)]);
 
     // Mangling round-trips the nested arg: `Box$$Vec_i64`.
@@ -297,15 +297,15 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
 }
 
 /// (e) Plan test E: recursive polymorphic instantiation
-/// (`pub type Node<T> { ... next: Box<Node<int>> }`) fires the
+/// (`pub type Node<T> { ... next: Box<Node<i64>> }`) fires the
 /// `RecursiveGenericTypeUnsupported` diagnostic and produces no
-/// `Node` entry (the `Box<Node<int>>` field would force unbounded
+/// `Node` entry (the `Box<Node<i64>>` field would force unbounded
 /// layout expansion).
 #[test]
 fn recursive_polymorphic_self_emits_diagnostic_and_skips_entry() {
     // Construct a Node<string> — the recursive cycle is detected at
     // substitution time when the `next` field substitutes to
-    // `Box<Node<int>>`, which names `Node` with arg `int` while the
+    // `Box<Node<i64>>`, which names `Node` with arg `i64` while the
     // current Node instantiation has arg `string`.
     //
     // Note: this fixture is purely structural for the diagnostic
@@ -313,7 +313,7 @@ fn recursive_polymorphic_self_emits_diagnostic_and_skips_entry() {
     // Box being usable. We accept checker errors here and assert on
     // the HIR diagnostic shape.
     let source = r#"
-        pub type Node<T> { value: T; next: Box<Node<int>> }
+        pub type Node<T> { value: T; next: Box<Node<i64>> }
 
         fn main() {
             let n: Node<string> = Node { value: "hi", next: hole };
@@ -366,7 +366,7 @@ fn recursive_polymorphic_self_emits_diagnostic_and_skips_entry() {
 #[test]
 fn monomorphic_record_does_not_appear_in_registry() {
     let source = r"
-        pub type Point { x: int; y: int }
+        pub type Point { x: i64; y: i64 }
 
         fn main() {
             let p: Point = Point { x: 1, y: 2 };
@@ -398,7 +398,7 @@ fn record_layout_cap_exceeded_emits_fail_closed_diagnostic() {
         pub type Box<T> { value: T }
 
         fn main() {
-            let a: Box<int> = Box { value: 1 };
+            let a: Box<i64> = Box { value: 1 };
             let b: Box<string> = Box { value: "x" };
             let c: Box<bool> = Box { value: true };
         }
@@ -450,7 +450,7 @@ fn record_layout_cap_exceeded_emits_fail_closed_diagnostic() {
 #[test]
 fn fully_monomorphic_program_has_empty_record_layouts() {
     let source = r"
-        fn main() -> int {
+        fn main() -> i64 {
             return 0;
         }
     ";

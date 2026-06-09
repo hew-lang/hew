@@ -18,7 +18,7 @@
 // ── Equality ──────────────────────────────────────────────────────────
 /// Assert that two integers are equal.  Panics with a message showing
 /// the expected and actual values when they differ.
-pub fn assert_eq(actual: int, expected: int) {
+pub fn assert_eq(actual: i64, expected: i64) {
     if actual != expected {
         panic(f"assertion failed: expected {expected}, got {actual}");
     }
@@ -34,7 +34,7 @@ pub fn assert_eq_str(actual: string, expected: string) {
 
 // ── Inequality ────────────────────────────────────────────────────────
 /// Assert that two integers are not equal.  Panics when `a == b`.
-pub fn assert_ne(a: int, b: int) {
+pub fn assert_ne(a: i64, b: i64) {
     if a == b {
         panic(f"assertion failed: expected {a} != {b}, but they are equal");
     }
@@ -57,14 +57,14 @@ pub fn assert_false(condition: bool) {
 
 // ── Ordering ──────────────────────────────────────────────────────────
 /// Assert that `a` is strictly greater than `b`.
-pub fn assert_gt(a: int, b: int) {
+pub fn assert_gt(a: i64, b: i64) {
     if a <= b {
         panic(f"assertion failed: expected {a} > {b}");
     }
 }
 
 /// Assert that `a` is strictly less than `b`.
-pub fn assert_lt(a: int, b: int) {
+pub fn assert_lt(a: i64, b: i64) {
     if a >= b {
         panic(f"assertion failed: expected {a} < {b}");
     }

@@ -1151,7 +1151,6 @@ mod tests {
         let cases: &[(&str, Ty)] = &[
             // aliases present in Ty::from_name but absent from the old local table
             ("str", Ty::String),
-            ("uint", Ty::U64),
             ("usize", Ty::Usize),
             ("float", Ty::F64),
             ("Float", Ty::F64),
@@ -1162,8 +1161,6 @@ mod tests {
             // canonical names that were already handled — must still work
             ("string", Ty::String),
             ("i64", Ty::I64),
-            ("int", Ty::I64),
-            ("Int", Ty::I64),
             ("isize", Ty::Isize),
             ("u64", Ty::U64),
             ("f64", Ty::F64),
@@ -1193,7 +1190,7 @@ mod tests {
         use hew_parser::ast::TypeExpr;
 
         let aliases = [
-            "str", "uint", "usize", "isize", "float", "Float", "byte", "Bool", "Char", "Bytes",
+            "str", "usize", "isize", "float", "Float", "byte", "Bool", "Char", "Bytes",
         ];
         for alias in aliases {
             let texpr = TypeExpr::Named {

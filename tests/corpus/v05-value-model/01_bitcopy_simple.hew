@@ -26,7 +26,7 @@ fn distance_sq(a: Point, b: Point) -> float {
     dx * dx + dy * dy
 }
 
-fn main() -> int {
+fn main() -> i64 {
     let origin = Point { x: 0.0, y: 0.0 };
     let target = Point { x: 3.0, y: 4.0 };
     let d = distance_sq(origin, target);

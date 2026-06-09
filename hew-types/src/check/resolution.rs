@@ -1018,6 +1018,32 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
+                // Removed aliases: suggest the replacement before the
+                // general unknown-type path swallows the name.
+                match name.as_str() {
+                    "int" | "Int" => {
+                        self.report_error(
+                            TypeErrorKind::UndefinedType,
+                            &te.1,
+                            format!(
+                                "unknown type `{name}`; use `i64` for fixed 64-bit integers \
+                                 or `isize` for pointer-sized integers"
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    "uint" => {
+                        self.report_error(
+                            TypeErrorKind::UndefinedType,
+                            &te.1,
+                            "unknown type `uint`; use `u64` for fixed 64-bit unsigned integers \
+                             or `usize` for pointer-sized unsigned integers"
+                                .to_string(),
+                        );
+                        return Ty::Error;
+                    }
+                    _ => {}
+                }
                 // Check for primitive types first
                 if let Some(prim) = Ty::from_name(name) {
                     return prim;

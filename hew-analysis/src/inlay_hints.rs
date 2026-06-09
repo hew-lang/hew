@@ -658,6 +658,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),
@@ -670,6 +671,7 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
         }
     }
 
@@ -707,7 +709,7 @@ mod tests {
     #[test]
     fn multi_arg_function_call_gets_parameter_hints() {
         let source = r"
-fn add(left: int, right: int) -> int { left + right }
+fn add(left: i64, right: i64) -> i64 { left + right }
 fn main() {
     add(1, 2);
 }
@@ -722,12 +724,12 @@ fn main() {
     #[test]
     fn method_call_gets_parameter_hints_without_receiver_name() {
         let source = r"
-type Point { x: int, y: int }
+type Point { x: i64, y: i64 }
 trait PointMethods {
-    fn shift(pt: Point, dx: int, dy: int) -> Point;
+    fn shift(pt: Point, dx: i64, dy: i64) -> Point;
 }
 impl PointMethods for Point {
-    fn shift(pt: Point, dx: int, dy: int) -> Point {
+    fn shift(pt: Point, dx: i64, dy: i64) -> Point {
         Point { x: pt.x + dx, y: pt.y + dy }
     }
 }
@@ -746,7 +748,7 @@ fn main() {
     #[test]
     fn parameter_hints_skip_single_arg_calls_and_same_name_arguments() {
         let source = r#"
-fn label(name: String, age: int) {}
+fn label(name: String, age: i64) {}
 fn echo(value: String) {}
 fn main() {
     let name = "Ada";
@@ -764,7 +766,7 @@ fn main() {
     #[test]
     fn parameter_hints_do_not_skip_prefix_matches() {
         let source = r#"
-fn limit(max: int, key: String) {}
+fn limit(max: i64, key: String) {}
 fn main() {
     let maximum_count = 10;
     let key_path = "/tmp";
@@ -833,7 +835,7 @@ fn main() {
                 let hints = build_inlay_hints(source, &pr, &tc);
                 let type_hints = binding_type_hint_labels(&hints);
                 assert!(!type_hints.is_empty(), "var binding should get a type hint");
-                assert_eq!(type_hints[0], ": int");
+                assert_eq!(type_hints[0], ": i64");
             } else {
                 panic!("expected var statement with value");
             }
@@ -979,7 +981,7 @@ fn main() {
 
     #[test]
     fn function_without_return_annotation_gets_return_hint() {
-        let source = "fn answer() { 42 }\nfn main() -> int { answer(); 0 }";
+        let source = "fn answer() { 42 }\nfn main() -> i64 { answer(); 0 }";
         let pr = parse(source);
         let tc = type_check(&pr);
         let answer_fn = match &pr.program.items[0].0 {
@@ -1003,13 +1005,13 @@ fn main() {
     #[test]
     fn impl_method_without_return_annotation_gets_return_hint() {
         let source = r"
-type Counter { value: int }
+type Counter { value: i64 }
 
 impl Counter {
     fn doubled(counter: Counter) { counter.value * 2 }
 }
 
-fn main() -> int { 0 }
+fn main() -> i64 { 0 }
 ";
         let pr = parse(source);
         let tc = type_check(&pr);
@@ -1036,7 +1038,7 @@ fn main() -> int { 0 }
 
     #[test]
     fn explicit_named_return_type_does_not_get_hint() {
-        let source = "fn answer() -> int { 42 }";
+        let source = "fn answer() -> i64 { 42 }";
         let pr = parse(source);
         let tc = type_check(&pr);
         let hints = build_inlay_hints(source, &pr, &tc);

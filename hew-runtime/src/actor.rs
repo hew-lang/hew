@@ -3472,6 +3472,7 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
                 supervisor_child_index,
                 actor_id,
                 terminal,
+                error_code,
             );
         }
     }

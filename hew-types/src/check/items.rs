@@ -362,6 +362,13 @@ impl Checker {
     /// but `FnDecl::name` is bare (e.g. `close`). Using the qualified name prevents
     /// collisions with builtins or inlined functions from other modules.
     pub(super) fn check_function_as(&mut self, fd: &FnDecl, fn_name: &str) {
+        // Functions marked `#[intrinsic("key")]` are typed declaration stubs
+        // whose bodies are empty placeholders; the real semantics live in the
+        // catalog. Skip body type-checking entirely — the signature was already
+        // registered by `register_fn_sig_with_name`.
+        if fd.intrinsic.is_some() {
+            return;
+        }
         let prev_function = self.current_function.take();
         self.current_function = Some(fn_name.to_string());
         let prev_in_pure = self.in_pure_function;
@@ -521,6 +528,7 @@ impl Checker {
                         doc_comment: None,
                         decl_span: 0..0,
                         fn_span: 0..0,
+                        intrinsic: None,
                     };
                     let qualified = format!("{}::{}", td.name, method.name);
                     self.check_function_as(&fn_decl, &qualified);

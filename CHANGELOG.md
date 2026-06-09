@@ -4,6 +4,10 @@
 
 ### Removed
 
+- **BREAKING: `int`/`uint` type aliases removed.** Use explicit-width types
+  instead: `i64`/`u64` for fixed 64-bit integers, `isize`/`usize` for
+  pointer-sized integers. The compiler emits a diagnostic with the correct
+  suggestion when these removed names appear in type annotations.
 - **Legacy CLI compile surface removed.** `hew compile` is now the single
   v0.5 IR-ladder compile entry point; the old `hew build` command, dormant
   run/build bodies, and the legacy `compile::compile()` entry point are gone.

@@ -15,7 +15,7 @@
 //   - Crashed workers restart automatically — no recovery code needed
 //
 // This is the "scatter/gather" pattern that every backend service uses.
-fn fib(n: int) -> int {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -24,9 +24,9 @@ fn fib(n: int) -> int {
 }
 
 actor Worker {
-    let id: int;
-    let jobs_done: int;
-    receive fn compute(n: int) -> int {
+    let id: i64;
+    let jobs_done: i64;
+    receive fn compute(n: i64) -> i64 {
         jobs_done = jobs_done + 1;
         let result = fib(n);
         println(f"  [worker {id}] fib({n}) = {result}  (job #{jobs_done})");

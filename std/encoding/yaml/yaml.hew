@@ -46,12 +46,12 @@ trait ValueMethods: CanonicalValueMethods {
     /// Serialize the value back to a YAML string.
     fn stringify(val: Value) -> string;
 
-    /// Return the type tag (0=null, 1=bool, 2=int, 3=float, 4=string, 5=sequence, 6=mapping).
+    /// Return the type tag (0=null, 1=bool, 2=i64, 3=float, 4=string, 5=sequence, 6=mapping).
     fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the boolean value (0 or 1).
     fn get_bool(val: Value) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
     /// Extract the integer value.
-    fn get_int(val: Value) -> int;
+    fn get_int(val: Value) -> i64;
 
     /// Extract the floating-point value.
     fn get_float(val: Value) -> f64;
@@ -63,10 +63,10 @@ trait ValueMethods: CanonicalValueMethods {
     fn get_field(val: Value, key: string) -> Value;
 
     /// Return the number of elements in a YAML sequence.
-    fn array_len(val: Value) -> int;
+    fn array_len(val: Value) -> i64;
 
     /// Return the element at the given index in a YAML sequence.
-    fn array_get(val: Value, index: int) -> Value;
+    fn array_get(val: Value, index: i64) -> Value;
 
     /// Release the value resources.
     fn free(val: Value);
@@ -76,7 +76,7 @@ trait ValueMethods: CanonicalValueMethods {
     fn with_string(obj: Value, key: string, val: string) -> Value;
 
     /// Set an integer field. Returns the mapping for chaining.
-    fn with_int(obj: Value, key: string, val: int) -> Value;
+    fn with_int(obj: Value, key: string, val: i64) -> Value;
 
     /// Set a float field. Returns the mapping for chaining.
     fn with_float(obj: Value, key: string, val: f64) -> Value;
@@ -94,7 +94,7 @@ trait ValueMethods: CanonicalValueMethods {
     fn push(arr: Value, child: Value) -> Value;
 
     /// Push an integer onto a sequence. Returns the sequence.
-    fn push_int(arr: Value, val: int) -> Value;
+    fn push_int(arr: Value, val: i64) -> Value;
 
     /// Push a string onto a sequence. Returns the sequence.
     fn push_string(arr: Value, val: string) -> Value;
@@ -125,7 +125,7 @@ impl CanonicalValueMethods for Value {
             hew_yaml_get_bool(val)
         }
     }
-    fn get_int(val: Value) -> int {
+    fn get_int(val: Value) -> i64 {
         unsafe {
             hew_yaml_get_int(val)
         }
@@ -145,12 +145,12 @@ impl CanonicalValueMethods for Value {
             hew_yaml_get_field(val, key)
         }
     }
-    fn array_len(val: Value) -> int {
+    fn array_len(val: Value) -> i64 {
         unsafe {
             hew_yaml_array_len(val)
         }
     }
-    fn array_get(val: Value, index: int) -> Value {
+    fn array_get(val: Value, index: i64) -> Value {
         unsafe {
             hew_yaml_array_get(val, index as i32)
         }
@@ -166,7 +166,7 @@ impl CanonicalValueMethods for Value {
         };
         obj
     }
-    fn with_int(obj: Value, key: string, val: int) -> Value {
+    fn with_int(obj: Value, key: string, val: i64) -> Value {
         unsafe {
             hew_yaml_object_set_int(obj, key, val as i64)
         };
@@ -196,7 +196,7 @@ impl CanonicalValueMethods for Value {
         };
         arr
     }
-    fn push_int(arr: Value, val: int) -> Value {
+    fn push_int(arr: Value, val: i64) -> Value {
         unsafe {
             hew_yaml_array_push_int(arr, val as i64)
         };
@@ -283,7 +283,7 @@ pub fn array() -> Value {
 }
 
 /// Create a YAML Value from an integer.
-pub fn from_int(val: int) -> Value {
+pub fn from_int(val: i64) -> Value {
     unsafe {
         hew_yaml_from_int(val as i64)
     }

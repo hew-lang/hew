@@ -37,7 +37,7 @@ fn test_integers() -> i32 {
 
 fn test_float() -> i32 {
     let y: f64 = 3.14;
-    // f64 is supported but println truncates to int
+    // f64 is supported but println truncates to i64
     // Just verify it compiles and doesn't crash
     println("PASS: f64 compiles");
     1

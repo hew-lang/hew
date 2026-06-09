@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn style_suggestion_without_loop_rewrite_has_no_action() {
-        let source = "type User { id: int }";
+        let source = "type User { id: i64 }";
         let d = diag(
             "StyleSuggestion",
             "wire `User.id`: field has `since 2` but struct has no version",
@@ -773,7 +773,7 @@ mod tests {
     #[test]
     fn non_exhaustive_match_action_adds_missing_arms_multiline() {
         let source =
-            "fn label(opt: Option<int>) -> int {\n    match opt {\n        None => 0,\n    }\n}\n";
+            "fn label(opt: Option<i64>) -> i64 {\n    match opt {\n        None => 0,\n    }\n}\n";
         let match_start = source.find("match").unwrap();
         let span = OffsetSpan {
             start: match_start,
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn non_exhaustive_match_action_adds_missing_arms_inline() {
-        let source = "fn label(opt: Option<int>) -> int { match opt { None => 0, } }";
+        let source = "fn label(opt: Option<i64>) -> i64 { match opt { None => 0, } }";
         let match_start = source.find("match").unwrap();
         let span = OffsetSpan {
             start: match_start,

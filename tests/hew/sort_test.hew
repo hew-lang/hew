@@ -9,7 +9,7 @@ import std::testing;
 
 #[test]
 fn test_sort_ints_ascending_order() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(3);
     v.push(1);
     v.push(4);
@@ -26,7 +26,7 @@ fn test_sort_ints_ascending_order() {
 
 #[test]
 fn test_sort_ints_does_not_mutate_original() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(9);
     v.push(3);
     v.push(7);
@@ -38,7 +38,7 @@ fn test_sort_ints_does_not_mutate_original() {
 
 #[test]
 fn test_sort_ints_already_sorted() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -50,7 +50,7 @@ fn test_sort_ints_already_sorted() {
 
 #[test]
 fn test_sort_ints_reverse_sorted_input() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(5);
     v.push(4);
     v.push(3);
@@ -63,7 +63,7 @@ fn test_sort_ints_reverse_sorted_input() {
 
 #[test]
 fn test_sort_ints_single_element() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(42);
     let out = sort.sort_ints(v);
     testing.assert_eq(out.len(), 1);
@@ -72,14 +72,14 @@ fn test_sort_ints_single_element() {
 
 #[test]
 fn test_sort_ints_empty() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     let out = sort.sort_ints(v);
     testing.assert_eq(out.len(), 0);
 }
 
 #[test]
 fn test_sort_ints_negative_values() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(0);
     v.push(-5);
     v.push(3);
@@ -193,7 +193,7 @@ fn test_sort_floats_empty() {
 
 #[test]
 fn test_reverse_ints_three_elements() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -205,7 +205,7 @@ fn test_reverse_ints_three_elements() {
 
 #[test]
 fn test_reverse_ints_does_not_mutate_original() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -215,7 +215,7 @@ fn test_reverse_ints_does_not_mutate_original() {
 
 #[test]
 fn test_reverse_ints_single_element() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(7);
     let out = sort.reverse_ints(v);
     testing.assert_eq(out.len(), 1);
@@ -224,14 +224,14 @@ fn test_reverse_ints_single_element() {
 
 #[test]
 fn test_reverse_ints_empty() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     let out = sort.reverse_ints(v);
     testing.assert_eq(out.len(), 0);
 }
 
 #[test]
 fn test_reverse_then_sort_round_trips() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(3);
     v.push(1);
     v.push(2);

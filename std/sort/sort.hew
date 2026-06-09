@@ -9,7 +9,7 @@
 //! import std::sort;
 //!
 //! fn main() {
-//!     let nums: Vec<int> = Vec::new();
+//!     let nums: Vec<i64> = Vec::new();
 //!     nums.push(3);
 //!     nums.push(1);
 //!     nums.push(2);
@@ -19,8 +19,8 @@
 //! ```
 
 // ── Helpers ───────────────────────────────────────────────────────────
-fn copy_ints(v: Vec<int>) -> Vec<int> {
-    let out: Vec<int> = Vec::new();
+fn copy_ints(v: Vec<i64>) -> Vec<i64> {
+    let out: Vec<i64> = Vec::new();
     for i in 0 .. v.len() {
         out.push(v.get(i));
     }
@@ -43,25 +43,25 @@ fn copy_floats(v: Vec<f64>) -> Vec<f64> {
     out
 }
 
-fn swap_ints(v: Vec<int>, i: int, j: int) {
+fn swap_ints(v: Vec<i64>, i: i64, j: i64) {
     let tmp = v.get(i);
     v.set(i, v.get(j));
     v.set(j, tmp);
 }
 
-fn swap_strings(v: Vec<string>, i: int, j: int) {
+fn swap_strings(v: Vec<string>, i: i64, j: i64) {
     let tmp = v.get(i);
     v.set(i, v.get(j));
     v.set(j, tmp);
 }
 
-fn swap_floats(v: Vec<f64>, i: int, j: int) {
+fn swap_floats(v: Vec<f64>, i: i64, j: i64) {
     let tmp = v.get(i);
     v.set(i, v.get(j));
     v.set(j, tmp);
 }
 
-fn sort_ints_in_place(v: Vec<int>) {
+fn sort_ints_in_place(v: Vec<i64>) {
     let n = v.len();
     for i in 0 .. n {
         var min_idx = i;
@@ -95,7 +95,7 @@ fn sort_strings_in_place(v: Vec<string>) {
     }
 }
 
-fn reverse_ints_in_place(v: Vec<int>) {
+fn reverse_ints_in_place(v: Vec<i64>) {
     let n = v.len();
     if n < 2 {
         return;
@@ -141,7 +141,7 @@ fn reverse_floats_in_place(v: Vec<f64>) {
 /// Sort a vector of integers in ascending order.
 ///
 /// Returns a new sorted vector; the original is unchanged.
-pub fn sort_ints(v: Vec<int>) -> Vec<int> {
+pub fn sort_ints(v: Vec<i64>) -> Vec<i64> {
     let out = copy_ints(v);
     sort_ints_in_place(out);
     out
@@ -169,7 +169,7 @@ pub fn sort_floats(v: Vec<f64>) -> Vec<f64> {
 /// Reverse a vector of integers.
 ///
 /// Returns a new reversed vector; the original is unchanged.
-pub fn reverse_ints(v: Vec<int>) -> Vec<int> {
+pub fn reverse_ints(v: Vec<i64>) -> Vec<i64> {
     let out = copy_ints(v);
     reverse_ints_in_place(out);
     out

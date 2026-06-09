@@ -1,6 +1,6 @@
 // Vec operations
 fn main() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     v.push(10);
     v.push(20);
     v.push(30);

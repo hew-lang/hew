@@ -32,7 +32,7 @@ pub fn gzip_compress(data: bytes) -> bytes {
 }
 
 /// Gzip-decompress `data`, returning uncompressed bytes.
-pub fn gzip_decompress(data: bytes, max_output_len: int) -> bytes {
+pub fn gzip_decompress(data: bytes, max_output_len: i64) -> bytes {
     unsafe {
         hew_gzip_decompress_hew(data, max_output_len)
     }
@@ -46,7 +46,7 @@ pub fn deflate_compress(data: bytes) -> bytes {
 }
 
 /// Deflate-decompress `data` (raw DEFLATE), returning uncompressed bytes.
-pub fn deflate_decompress(data: bytes, max_output_len: int) -> bytes {
+pub fn deflate_decompress(data: bytes, max_output_len: i64) -> bytes {
     unsafe {
         hew_deflate_decompress_hew(data, max_output_len)
     }
@@ -60,7 +60,7 @@ pub fn zlib_compress(data: bytes) -> bytes {
 }
 
 /// Zlib-decompress `data`, returning uncompressed bytes.
-pub fn zlib_decompress(data: bytes, max_output_len: int) -> bytes {
+pub fn zlib_decompress(data: bytes, max_output_len: i64) -> bytes {
     unsafe {
         hew_zlib_decompress_hew(data, max_output_len)
     }
@@ -69,9 +69,9 @@ pub fn zlib_decompress(data: bytes, max_output_len: int) -> bytes {
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_gzip_compress_hew(data: bytes) -> bytes;
-    fn hew_gzip_decompress_hew(data: bytes, max_output_len: int) -> bytes;
+    fn hew_gzip_decompress_hew(data: bytes, max_output_len: i64) -> bytes;
     fn hew_deflate_compress_hew(data: bytes) -> bytes;
-    fn hew_deflate_decompress_hew(data: bytes, max_output_len: int) -> bytes;
+    fn hew_deflate_decompress_hew(data: bytes, max_output_len: i64) -> bytes;
     fn hew_zlib_compress_hew(data: bytes) -> bytes;
-    fn hew_zlib_decompress_hew(data: bytes, max_output_len: int) -> bytes;
+    fn hew_zlib_decompress_hew(data: bytes, max_output_len: i64) -> bytes;
 }

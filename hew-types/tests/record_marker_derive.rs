@@ -39,8 +39,8 @@ fn register_tuple_record(reg: &mut TraitRegistry, name: &str, positional: Vec<Ty
 }
 
 // ---------------------------------------------------------------------------
-// record Point { x: int, y: int }
-// All fields are i64 (int). Derives Eq/Hash/Send/Frozen/Clone/Copy/Sync/Ord.
+// record Point { x: i64, y: i64 }
+// All fields are i64 (i64). Derives Eq/Hash/Send/Frozen/Clone/Copy/Sync/Ord.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -50,11 +50,11 @@ fn record_point_derives_eq_and_hash() {
 
     assert!(
         reg.implements_marker(&point, MarkerTrait::Eq),
-        "Point {{ x: int, y: int }} must derive Eq"
+        "Point {{ x: i64, y: i64 }} must derive Eq"
     );
     assert!(
         reg.implements_marker(&point, MarkerTrait::Hash),
-        "Point {{ x: int, y: int }} must derive Hash"
+        "Point {{ x: i64, y: i64 }} must derive Hash"
     );
 }
 
@@ -129,7 +129,7 @@ fn record_measurement_float_field_derives_send_clone_copy() {
 }
 
 // ---------------------------------------------------------------------------
-// record Cb { f: () -> int }
+// record Cb { f: () -> i64 }
 // Function fields are Send/Copy/Clone but NOT Eq/Hash.
 // ---------------------------------------------------------------------------
 
@@ -144,11 +144,11 @@ fn record_cb_function_field_not_eq_not_hash() {
 
     assert!(
         !reg.implements_marker(&cb, MarkerTrait::Eq),
-        "Cb {{ f: () -> int }} must NOT derive Eq (function field)"
+        "Cb {{ f: () -> i64 }} must NOT derive Eq (function field)"
     );
     assert!(
         !reg.implements_marker(&cb, MarkerTrait::Hash),
-        "Cb {{ f: () -> int }} must NOT derive Hash (function field)"
+        "Cb {{ f: () -> i64 }} must NOT derive Hash (function field)"
     );
 }
 
@@ -168,7 +168,7 @@ fn record_cb_function_field_derives_send_copy() {
 }
 
 // ---------------------------------------------------------------------------
-// record Owner { handle: Duplex<int, int> }
+// record Owner { handle: Duplex<i64, i64> }
 // Duplex is a resource: NOT Copy, NOT Clone. Owner must not be Copy or Clone.
 // Resource marker must NOT propagate to the enclosing record.
 // ---------------------------------------------------------------------------
@@ -203,7 +203,7 @@ fn record_owner_duplex_field_not_resource() {
 
 // ---------------------------------------------------------------------------
 // Tuple-record: same rules applied positionally.
-// record PointT(int, int) — positional fields registered for derivation.
+// record PointT(i64, i64) — positional fields registered for derivation.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -213,15 +213,15 @@ fn tuple_record_int_fields_derives_eq_hash_copy() {
 
     assert!(
         reg.implements_marker(&pt, MarkerTrait::Eq),
-        "tuple-record PointT(int, int) must derive Eq"
+        "tuple-record PointT(i64, i64) must derive Eq"
     );
     assert!(
         reg.implements_marker(&pt, MarkerTrait::Hash),
-        "tuple-record PointT(int, int) must derive Hash"
+        "tuple-record PointT(i64, i64) must derive Hash"
     );
     assert!(
         reg.implements_marker(&pt, MarkerTrait::Copy),
-        "tuple-record PointT(int, int) must derive Copy"
+        "tuple-record PointT(i64, i64) must derive Copy"
     );
 }
 
@@ -245,12 +245,12 @@ fn tuple_record_float_field_not_eq_not_hash() {
 fn tuple_record_duplex_field_not_copy_not_resource() {
     let mut reg = TraitRegistry::new();
     let duplex = named_with("Duplex", vec![Ty::I64, Ty::I64]);
-    // record OwnerT(Duplex<int, int>)
+    // record OwnerT(Duplex<i64, i64>)
     let owner_t = register_tuple_record(&mut reg, "OwnerT", vec![duplex]);
 
     assert!(
         !reg.implements_marker(&owner_t, MarkerTrait::Copy),
-        "tuple-record OwnerT(Duplex<int,int>) must NOT derive Copy"
+        "tuple-record OwnerT(Duplex<i64,i64>) must NOT derive Copy"
     );
     assert!(
         !reg.implements_marker(&owner_t, MarkerTrait::Resource),

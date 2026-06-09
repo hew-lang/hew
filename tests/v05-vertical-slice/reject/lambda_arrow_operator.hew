@@ -3,7 +3,7 @@
 // Expected: parse error containing "E_OPERATOR_REMOVED"
 // Use `actor |params| { body }` and call-syntax `handle(msg)` instead.
 fn main() {
-    let printer = actor |x: int| {
+    let printer = actor |x: i64| {
         println(x);
     };
     printer <- 42;

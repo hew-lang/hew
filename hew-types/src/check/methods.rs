@@ -351,7 +351,7 @@ impl Checker {
                     span_key.start..span_key.end,
                     format!(
                         "Channel<{resolved}> is not supported; \
-                         only Channel<string> and Channel<int> are currently supported"
+                         only Channel<string> and Channel<i64> are currently supported"
                     ),
                 );
                 if let Some(module) = &entry.source_module {
@@ -610,6 +610,30 @@ impl Checker {
             if c_symbol != method {
                 self.record_module_qualified_method_call_rewrite(span, c_symbol);
             }
+        }
+    }
+
+    /// Record a direct-call rewrite for a `module.fn(args)` invocation
+    /// against a user-defined module.
+    ///
+    /// Mirrors `record_module_qualified_stdlib_call_rewrite_if_any` but for
+    /// user modules: the qualified `module.fn` key is the rewrite target, no
+    /// receiver is injected (per LESSONS `module-qualified-rewrite-authority`
+    /// — argument list preserved). HIR's `RewriteModuleQualifiedToFunction`
+    /// arm consumes the rewrite to emit a direct function call against the
+    /// qualified symbol.
+    fn record_module_qualified_user_call_rewrite_if_any(
+        &mut self,
+        module_name: &str,
+        method: &str,
+        span: &Span,
+    ) {
+        if !self.user_modules.contains(module_name) {
+            return;
+        }
+        let key = format!("{module_name}.{method}");
+        if self.fn_sigs.contains_key(&key) {
+            self.record_module_qualified_method_call_rewrite(span, key);
         }
     }
 
@@ -2197,6 +2221,7 @@ impl Checker {
                             .insert(key.clone());
                     }
                     self.record_module_qualified_stdlib_call_rewrite_if_any(name, method, span);
+                    self.record_module_qualified_user_call_rewrite_if_any(name, method, span);
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
                         None,
@@ -3108,7 +3133,7 @@ impl Checker {
                                 span,
                                 format!(
                                     "Channel<{resolved_inner}> is not supported; \
-                                     only Channel<string> and Channel<int> are currently supported"
+                                     only Channel<string> and Channel<i64> are currently supported"
                                 ),
                             );
                             return Ty::Error;
@@ -3194,7 +3219,7 @@ impl Checker {
                         span,
                         format!(
                             "Channel<{resolved_inner}> is not supported; \
-                             only Channel<string> and Channel<int> are currently supported"
+                             only Channel<string> and Channel<i64> are currently supported"
                         ),
                     );
                     return Ty::Error;

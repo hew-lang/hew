@@ -18,7 +18,7 @@
 // codegen in hew-codegen-rs/src/llvm.rs). This fixture exercises that path
 // every run: SlowWorker is always the loser and its channel is cancelled.
 actor FastWorker {
-    receive fn compute(query: int) -> int {
+    receive fn compute(query: i64) -> i64 {
 
         // No sleep — reply immediately. This arm always wins the select{}.
         query
@@ -26,7 +26,7 @@ actor FastWorker {
 }
 
 actor SlowWorker {
-    receive fn compute(query: int) -> int {
+    receive fn compute(query: i64) -> i64 {
 
         // Park this thread for 50 ms so FastWorker replies first.
         sleep_ms(50);
@@ -34,7 +34,7 @@ actor SlowWorker {
     }
 }
 
-fn main() -> int {
+fn main() -> i64 {
     let fast = spawn FastWorker;
     let slow = spawn SlowWorker;
     // Ask both workers the same query. Select picks the first reply.

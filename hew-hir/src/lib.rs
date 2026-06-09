@@ -35,3 +35,28 @@ pub use node::{
 };
 pub use value_class::{contains_named_type, named_type_names, TypeClassTable, ValueClass};
 pub use verify::verify_hir;
+
+/// Convert a dotted module-qualified name to a native-object-safe symbol.
+///
+/// Dots in LLVM IR identifiers are legal (emitted as quoted globals,
+/// e.g. `@"greeting.hello"`), but dots in native object-file symbol
+/// names are problematic on macOS and Linux linkers.  This helper
+/// replaces every `.` separator with `$` so the symbol is safe on all
+/// supported targets.
+///
+/// Used symmetrically in HIR fn-registry keying, HIR fn-body emission,
+/// MIR `module_fn_names` collection, and codegen `declare_function`.
+/// All three call sites must use this function — drift between sites
+/// produces wrong-code: the call target and the definition diverge.
+///
+/// Examples
+/// --------
+/// ```
+/// use hew_hir::mangle_dotted_name;
+/// assert_eq!(mangle_dotted_name("greeting.hello"), "greeting$hello");
+/// assert_eq!(mangle_dotted_name("hello"),          "hello");
+/// ```
+#[must_use]
+pub fn mangle_dotted_name(name: &str) -> String {
+    name.replace('.', "$")
+}

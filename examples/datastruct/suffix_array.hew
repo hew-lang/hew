@@ -4,7 +4,7 @@
 
 // Compare suffixes starting at positions a and b in text
 // Returns: negative if suffix_a < suffix_b, 0 if equal, positive if suffix_a > suffix_b
-fn compare_suffixes(text: Vec<int>, a: int, b: int) -> int {
+fn compare_suffixes(text: Vec<i64>, a: i64, b: i64) -> i64 {
     let n = text.len();
     var i = a;
     var j = b;
@@ -29,9 +29,9 @@ fn compare_suffixes(text: Vec<int>, a: int, b: int) -> int {
 }
 
 // Build suffix array using insertion sort (O(n^2 * n) but simple)
-fn build_suffix_array(text: Vec<int>) -> Vec<int> {
+fn build_suffix_array(text: Vec<i64>) -> Vec<i64> {
     let n = text.len();
-    let sa: Vec<int> = Vec::new();
+    let sa: Vec<i64> = Vec::new();
     for i in 0 .. n {
         sa.push(i);
     }
@@ -62,9 +62,9 @@ fn build_suffix_array(text: Vec<int>) -> Vec<int> {
 
 // Compute LCP array from text and suffix array
 // lcp[i] = length of longest common prefix between sa[i-1] and sa[i]
-fn build_lcp_array(text: Vec<int>, sa: Vec<int>) -> Vec<int> {
+fn build_lcp_array(text: Vec<i64>, sa: Vec<i64>) -> Vec<i64> {
     let n = sa.len();
-    let lcp: Vec<int> = Vec::new();
+    let lcp: Vec<i64> = Vec::new();
     lcp.push(0);
     var i = 1;
     while i < n {
@@ -88,7 +88,7 @@ fn build_lcp_array(text: Vec<int>, sa: Vec<int>) -> Vec<int> {
 
 // Search for pattern in text using suffix array (binary search)
 // Returns index in text where pattern starts, or -1 if not found
-fn sa_search(text: Vec<int>, sa: Vec<int>, pattern: Vec<int>) -> int {
+fn sa_search(text: Vec<i64>, sa: Vec<i64>, pattern: Vec<i64>) -> i64 {
     let n = sa.len();
     let plen = pattern.len();
     var lo = 0;
@@ -113,7 +113,7 @@ fn sa_search(text: Vec<int>, sa: Vec<int>, pattern: Vec<int>) -> int {
 
 // Compare pattern against text starting at pos
 // Returns <0 if text suffix < pattern, 0 if match, >0 if text suffix > pattern
-fn compare_prefix(text: Vec<int>, pos: int, pattern: Vec<int>) -> int {
+fn compare_prefix(text: Vec<i64>, pos: i64, pattern: Vec<i64>) -> i64 {
     let n = text.len();
     let plen = pattern.len();
     var i = 0;
@@ -136,7 +136,7 @@ fn main() {
     var passed = 0;
     var failed = 0;
     // Text: [3, 1, 4, 1, 5, 9, 2, 6]
-    let text: Vec<int> = Vec::new();
+    let text: Vec<i64> = Vec::new();
     text.push(3);
     text.push(1);
     text.push(4);
@@ -184,7 +184,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: Search for pattern [1, 4] -> should find at index 1
-    let pat1: Vec<int> = Vec::new();
+    let pat1: Vec<i64> = Vec::new();
     pat1.push(1);
     pat1.push(4);
     let pos1 = sa_search(text, sa, pat1);
@@ -197,7 +197,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 5: Search for pattern [9, 2, 6] -> should find at index 5
-    let pat2: Vec<int> = Vec::new();
+    let pat2: Vec<i64> = Vec::new();
     pat2.push(9);
     pat2.push(2);
     pat2.push(6);
@@ -211,7 +211,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 6: Search for pattern not in text -> -1
-    let pat3: Vec<int> = Vec::new();
+    let pat3: Vec<i64> = Vec::new();
     pat3.push(7);
     pat3.push(7);
     let pos3 = sa_search(text, sa, pat3);
@@ -238,7 +238,7 @@ fn main() {
     }
     // Test 8: LCP detects shared prefixes
     // Text with repeated prefix: [1, 2, 3, 1, 2, 4]
-    let text2: Vec<int> = Vec::new();
+    let text2: Vec<i64> = Vec::new();
     text2.push(1);
     text2.push(2);
     text2.push(3);
@@ -262,7 +262,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 9: Search single element
-    let pat4: Vec<int> = Vec::new();
+    let pat4: Vec<i64> = Vec::new();
     pat4.push(5);
     let pos4 = sa_search(text, sa, pat4);
     if pos4 == 4 {

@@ -1,0 +1,7 @@
+pub fn hello() -> i64 {
+    3
+}
+
+pub fn world() -> i64 {
+    4
+}

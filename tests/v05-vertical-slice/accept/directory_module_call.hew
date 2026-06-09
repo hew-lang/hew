@@ -1,0 +1,5 @@
+import greeting;
+
+fn main() -> i64 {
+    greeting.hello() + greeting.world()
+}

@@ -687,7 +687,7 @@ pub fn add(a: i32, b: i32) -> i32 {
     /// First variant.
     A;
     /// Second variant with payload.
-    B(int);
+    B(i64);
 }
 ";
         let result = hew_parser::parse(source);
@@ -696,7 +696,7 @@ pub fn add(a: i32, b: i32) -> i32 {
         assert!(html.contains("Variants"));
         assert!(html.contains("First variant."));
         assert!(html.contains("Second variant with payload."));
-        assert!(html.contains("B(int)"));
+        assert!(html.contains("B(i64)"));
     }
 
     #[test]
@@ -897,7 +897,7 @@ trait ValueMethods {
     /// Serialize to JSON.
     fn stringify(val: Value) -> String;
     /// Extract integer.
-    fn get_int(val: Value) -> int;
+    fn get_int(val: Value) -> i64;
 }
 ";
         let result = hew_parser::parse(source);

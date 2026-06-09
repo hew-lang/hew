@@ -1,8 +1,8 @@
 // Dynamic Array - array with capacity tracking and growth pattern
-// Layout: Vec<int> where index 0 = logical size, index 1 = capacity, rest is data
+// Layout: Vec<i64> where index 0 = logical size, index 1 = capacity, rest is data
 // Data starts at index 2
-fn da_new(initial_cap: int) -> Vec<int> {
-    let arr: Vec<int> = Vec::new();
+fn da_new(initial_cap: i64) -> Vec<i64> {
+    let arr: Vec<i64> = Vec::new();
     arr.push(0); // index 0: logical size
     arr.push(initial_cap); // index 1: capacity
     // Pre-allocate slots
@@ -12,15 +12,15 @@ fn da_new(initial_cap: int) -> Vec<int> {
     arr
 }
 
-fn da_size(arr: Vec<int>) -> int {
+fn da_size(arr: Vec<i64>) -> i64 {
     arr.get(0)
 }
 
-fn da_capacity(arr: Vec<int>) -> int {
+fn da_capacity(arr: Vec<i64>) -> i64 {
     arr.get(1)
 }
 
-fn da_grow(arr: Vec<int>) {
+fn da_grow(arr: Vec<i64>) {
     let old_cap = arr.get(1);
     let new_cap = old_cap * 2;
     // Add more slots
@@ -30,7 +30,7 @@ fn da_grow(arr: Vec<int>) {
     arr.set(1, new_cap);
 }
 
-fn da_push(arr: Vec<int>, val: int) {
+fn da_push(arr: Vec<i64>, val: i64) {
     let sz = arr.get(0);
     let cap = arr.get(1);
     if sz == cap {
@@ -41,22 +41,22 @@ fn da_push(arr: Vec<int>, val: int) {
     arr.set(0, sz2 + 1);
 }
 
-fn da_get(arr: Vec<int>, idx: int) -> int {
+fn da_get(arr: Vec<i64>, idx: i64) -> i64 {
     arr.get(2 + idx)
 }
 
-fn da_set(arr: Vec<int>, idx: int, val: int) {
+fn da_set(arr: Vec<i64>, idx: i64, val: i64) {
     arr.set(2 + idx, val);
 }
 
-fn da_pop(arr: Vec<int>) -> int {
+fn da_pop(arr: Vec<i64>) -> i64 {
     let sz = arr.get(0);
     let val = arr.get(2 + sz - 1);
     arr.set(0, sz - 1);
     val
 }
 
-fn run_test(name: string, passed: int) -> int {
+fn run_test(name: string, passed: i64) -> i64 {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {

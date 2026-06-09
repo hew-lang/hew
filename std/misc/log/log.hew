@@ -27,10 +27,10 @@
 
 // ── Format constants ─────────────────────────────────────────────────
 /// Coloured text output format (default).
-pub const TEXT: int = 0;
+pub const TEXT: i64 = 0;
 
 /// Single-line JSON (NDJSON) output format.
-pub const JSON: int = 1;
+pub const JSON: i64 = 1;
 
 // ── Module-level functions ────────────────────────────────────────────
 /// Initialize logging at the default INFO level.
@@ -49,14 +49,14 @@ pub fn setup() {
 /// ```
 /// log.set_level(3); // enable debug and above
 /// ```
-pub fn set_level(level: int) {
+pub fn set_level(level: i64) {
     unsafe {
         hew_log_set_level(level as i32)
     };
 }
 
 /// Get the current log level filter.
-pub fn get_level() -> int {
+pub fn get_level() -> i64 {
     unsafe {
         hew_log_get_level()
     }
@@ -72,14 +72,14 @@ pub fn get_level() -> int {
 /// log.set_format(log.JSON);
 /// log.info("structured", service: "api");
 /// ```
-pub fn set_format(format: int) {
+pub fn set_format(format: i64) {
     unsafe {
         hew_log_set_format(format as i32)
     };
 }
 
 /// Get the current log output format.
-pub fn get_format() -> int {
+pub fn get_format() -> i64 {
     unsafe {
         hew_log_get_format()
     }

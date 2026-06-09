@@ -38,10 +38,46 @@ type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
 #[derive(Debug, Clone, Default)]
 pub struct ResolutionCtx;
 
+/// Output of [`lower_program`].
+///
+/// The `diagnostics` field is checked by all production pipelines before the
+/// `module` is passed downstream.  The [`LowerOutput::into_result`] method
+/// provides a fail-closed boundary: it returns `Err(diagnostics)` when any
+/// `CheckerBoundaryViolation` is present, making it impossible to silently
+/// continue past checker-boundary failures.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LowerOutput {
     pub module: HirModule,
     pub diagnostics: Vec<HirDiagnostic>,
+}
+
+impl LowerOutput {
+    /// Converts `self` into `Ok(module)` when no checker-boundary violations
+    /// are present, or `Err(diagnostics)` when at least one
+    /// [`HirDiagnosticKind::CheckerBoundaryViolation`] exists.
+    ///
+    /// Callers that want to continue despite non-fatal diagnostics should
+    /// check `.diagnostics` directly.  This method is the recommended
+    /// entry-point for production pipelines because it makes the fail-closed
+    /// contract impossible to accidentally bypass.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(diagnostics)` when the output contains at least one
+    /// [`HirDiagnosticKind::CheckerBoundaryViolation`] diagnostic.
+    pub fn into_result(self) -> Result<HirModule, Vec<HirDiagnostic>> {
+        let has_boundary_violation = self.diagnostics.iter().any(|d| {
+            matches!(
+                d.kind,
+                crate::HirDiagnosticKind::CheckerBoundaryViolation { .. }
+            )
+        });
+        if has_boundary_violation {
+            Err(self.diagnostics)
+        } else {
+            Ok(self.module)
+        }
+    }
 }
 
 /// Pre-collected signature of a top-level function item.
@@ -141,6 +177,35 @@ pub fn lower_program_with_mono_cap(
             _ => {}
         }
     }
+    // Pre-pass: register user-module pub fn signatures under their qualified,
+    // native-symbol-safe key (e.g. `greeting$hello`) so that HIR's
+    // `RewriteModuleQualifiedToFunction` arm can resolve the callee `ItemId`
+    // at the call site.  Only `pub` functions are callable across module
+    // boundaries; private functions are invisible to importers.
+    //
+    // This walk runs AFTER the root-item pre-pass above so that any name
+    // clash between a qualified key and a root-level function is caught by
+    // the duplicate-short-module diagnostic in the frontend before HIR ingest.
+    if let Some(ref mg) = program.module_graph {
+        for mod_id in &mg.topo_order {
+            if *mod_id == mg.root {
+                continue;
+            }
+            let module_short = mod_id.path.last().map_or("", String::as_str);
+            if let Some(module) = mg.modules.get(mod_id) {
+                for (item, _) in &module.items {
+                    if let Item::Function(func) = item {
+                        if func.visibility.is_pub() {
+                            let qualified =
+                                crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
+                            ctx.register_fn_entry(&qualified, func);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Pre-pass: collect record/type-decl shapes so `Expr::StructInit`
     // lowering in the source-order pass can answer "is this a generic
     // user record?" regardless of declaration order relative to the
@@ -241,7 +306,32 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Function(func) => {
-                items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
+                // If this function carries `#[intrinsic("key")]`, the checker
+                // recorded it in `intrinsic_declarations`. Validate the key
+                // against the stdlib catalog and skip body lowering — the
+                // catalog entry already supplies the semantics. Fail-closed:
+                // an unknown key produces `UnknownIntrinsic` instead of a
+                // silently-incorrect lowering.
+                if let Some(intrinsic_key) = ctx.intrinsic_declarations.get(&func.name).cloned() {
+                    let known = crate::stdlib_catalog::entries()
+                        .iter()
+                        .any(|e| e.name == intrinsic_key);
+                    if !known {
+                        ctx.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::UnknownIntrinsic {
+                                fn_name: func.name.clone(),
+                                intrinsic_key,
+                            },
+                            span.clone(),
+                            "intrinsic key not found in stdlib catalog; \
+                             check the #[intrinsic(\"..\")] argument matches a catalog entry name",
+                        ));
+                    }
+                    // Either way, do not lower a body — the declaration is a
+                    // typed substrate stub that must match an existing catalog entry.
+                } else {
+                    items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
+                }
             }
             Item::Impl(impl_decl)
                 if impl_decl
@@ -276,7 +366,50 @@ pub fn lower_program_with_mono_cap(
                     ctx.lower_supervisor(decl, span.clone()),
                 ));
             }
+            Item::Import(_) => {
+                // Imports are frontend-resolved: module-path imports
+                // (`import greeting;`) are lowered from `program.module_graph`
+                // below under their qualified mangled name (e.g. `greeting$hello`).
+                // File-path imports (`import "util.hew";`) are still flattened
+                // into `program.items` by `flatten_import_items` and lowered in
+                // the loop above.  The residual `Item::Import` stub is kept in
+                // `program.items` for diagnostic source-map attribution (removing
+                // it would require auditing every span consumer — out of scope).
+            }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
+        }
+    }
+
+    // Fourth pass: lower pub fn bodies from non-root modules under their
+    // qualified, native-symbol-safe names (e.g. `greeting$hello`).
+    //
+    // Module-path imports (`import greeting;`) are NOT flattened into
+    // `program.items` (see `flatten_import_items` restriction in
+    // `hew-compile`), so the bodies would otherwise be absent from the
+    // emitted `HirModule`.  Walking `module_graph` here ensures each
+    // imported user module contributes exactly one `HirFn` per pub fn,
+    // keyed by the same mangled name registered in the pre-pass above.
+    if let Some(ref mg) = program.module_graph {
+        for mod_id in &mg.topo_order {
+            if *mod_id == mg.root {
+                continue;
+            }
+            let module_short = mod_id.path.last().map_or("", String::as_str);
+            if let Some(module) = mg.modules.get(mod_id) {
+                for (item, span) in &module.items {
+                    if let Item::Function(func) = item {
+                        if func.visibility.is_pub() {
+                            let qualified =
+                                crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
+                            items.push(HirItem::Function(ctx.lower_fn_with_name(
+                                func,
+                                &qualified,
+                                span.clone(),
+                            )));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -731,6 +864,14 @@ struct LowerCtx {
     /// (refcount-cycle-breaking strategy selection).
     /// (LESSONS: producer-bridge-before-codegen P1)
     cycle_capable_actors: HashSet<String>,
+    /// Per-actor protocol descriptors lifted from the checker
+    /// (`TypeCheckOutput.actor_protocol_descriptors`). Consumed by
+    /// `lower_actor` to populate `HirActorDecl.protocol_descriptor`. An
+    /// actor missing from this map either declares no receive handlers or
+    /// the checker emitted an `ActorProtocolCollision` for it; either way
+    /// the lowered HIR carries `protocol_descriptor: None` and downstream
+    /// MIR fails closed when it tries to derive a `msg_id`.
+    actor_protocol_descriptors: HashMap<String, hew_types::ActorProtocolDescriptor>,
     /// Distinct concrete instantiations of generic top-level user fns,
     /// accumulated as `Expr::Call` lowering walks the program. Drained
     /// into `HirModule.monomorphisations` at the end of `lower_program`.
@@ -782,6 +923,12 @@ struct LowerCtx {
     /// Tracks whether the `RecordLayoutCapExceeded` diagnostic has
     /// already been emitted for this lowering invocation.
     record_layout_cap_diag_emitted: bool,
+    /// Checker-authoritative mapping from qualified function name to the
+    /// intrinsic catalog key declared via `#[intrinsic("key")]`. Functions
+    /// present here must be validated against `stdlib_catalog` and must have
+    /// their bodies skipped during lowering (the body is a placeholder).
+    /// Fail-closed: an unknown key emits `UnknownIntrinsic`.
+    intrinsic_declarations: HashMap<String, String>,
 }
 
 impl LowerCtx {
@@ -813,6 +960,7 @@ impl LowerCtx {
             assign_target_shapes: tc_output.assign_target_shapes.clone(),
             actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
+            actor_protocol_descriptors: tc_output.actor_protocol_descriptors.clone(),
             mono_registry: MonoRegistry::with_cap(mono_cap),
             mono_cap_diag_emitted: false,
             call_site_type_args: HashMap::new(),
@@ -820,6 +968,7 @@ impl LowerCtx {
             record_init_type_args: tc_output.record_init_type_args.clone(),
             record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
             record_layout_cap_diag_emitted: false,
+            intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
         }
     }
 
@@ -1900,6 +2049,7 @@ impl LowerCtx {
             mailbox_capacity: decl.mailbox_capacity,
             overflow_policy: decl.overflow_policy.clone(),
             cycle_capable: self.cycle_capable_actors.contains(&decl.name),
+            protocol_descriptor: self.actor_protocol_descriptors.get(&decl.name).cloned(),
             span,
         }
     }
@@ -2542,6 +2692,50 @@ impl LowerCtx {
                                 ResolvedTy::Unit,
                             )
                         }
+                    } else if matches!(name.as_str(), "link" | "unlink" | "monitor") {
+                        // `link`, `unlink`, and `monitor` are checker-registered
+                        // actor-lifecycle builtins.  The runtime substrate
+                        // (`hew_actor_link`, `hew_actor_monitor`) and the codegen
+                        // arms in `hew-codegen-rs/src/llvm.rs` both exist, but
+                        // wiring the MIR producer requires the Cluster 2
+                        // composite-return spine: `link` returns
+                        // `Result<(), LinkError>` and `monitor` returns
+                        // `MonitorRef { ref_id }`, neither of which can be
+                        // constructed by the current scalar-only codegen.
+                        //
+                        // Fail-closed here so the pipeline never reaches
+                        // `lower_regular_call` → `lower_identifier` →
+                        // `UnresolvedSymbol` (which would look like a typo, not a
+                        // known-pending substrate gap).
+                        //
+                        // WHEN obsolete: when the Cluster 2 spine lands
+                        // enum-variant and struct-literal construction in
+                        // `hew-codegen-rs`, the producer arm in
+                        // `hew-mir/src/lower.rs` can be wired and this intercept
+                        // removed.  At that point `lower_regular_call` reaches
+                        // `user_name_to_c_symbol` → `lower_runtime_call` naturally.
+                        // WHAT: add `"hew_actor_link"` and `"hew_actor_monitor"`
+                        // arms in `lower_runtime_call`; remove this block.
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CutoverUnsupported {
+                                construct: format!("builtin call `{name}`"),
+                                slice_target: "Cluster-2".to_string(),
+                            },
+                            span.clone(),
+                            "link/monitor/unlink require the Cluster 2 composite-return \
+                             spine (Result<(),LinkError> and MonitorRef construction); \
+                             runtime symbols hew_actor_link/hew_actor_monitor exist and \
+                             codegen arms are present — wire the MIR producer when \
+                             enum-variant + struct-literal lowering lands",
+                        ));
+                        let callee = self.unresolved_builtin_callee(name, function.1.clone());
+                        (
+                            HirExprKind::Call {
+                                callee: Box::new(callee),
+                                args,
+                            },
+                            ResolvedTy::Unit,
+                        )
                     } else {
                         self.lower_regular_call(function, args, &span, site)
                     }
@@ -2579,7 +2773,7 @@ impl LowerCtx {
             Expr::StructInit {
                 name,
                 fields,
-                // Surface-level explicit type arguments (`Box<int> { ... }`).
+                // Surface-level explicit type arguments (`Box<i64> { ... }`).
                 // The HIR-recorded `type_args` below comes from the checker's
                 // `record_init_type_args` side-table (which already reconciled
                 // inferred-vs-explicit and substituted enclosing-fn type-params
@@ -3992,20 +4186,13 @@ impl LowerCtx {
                     "i8" => ResolvedTy::I8,
                     "i16" => ResolvedTy::I16,
                     "i32" => ResolvedTy::I32,
-                    // `int` is the user-facing alias for `i64` across the
-                    // type checker (hew-types::stdlib_loader maps `int` to
-                    // Ty::I64; ty.rs's alias table lists `int` as a synonym
-                    // for `i64`). The HIR lowering must match — otherwise
-                    // integer literals (which lower to I64) cannot be
-                    // returned through a function typed `int` without an
-                    // explicit cast. Aligns with hew-types ground truth.
-                    "i64" | "int" => ResolvedTy::I64,
+                    "i64" => ResolvedTy::I64,
                     "u8" => ResolvedTy::U8,
                     "u16" => ResolvedTy::U16,
                     "u32" => ResolvedTy::U32,
                     "u64" => ResolvedTy::U64,
                     // Platform-sized integers: distinct from fixed-width
-                    // int/uint. Codegen branches on target: 32-bit for
+                    // i64/u64. Codegen branches on target: 32-bit for
                     // wasm32, 64-bit for native (B-D1 / Q42 ratification).
                     "isize" => ResolvedTy::Isize,
                     "usize" => ResolvedTy::Usize,
@@ -4269,12 +4456,63 @@ impl LowerCtx {
                     ResolvedTy::Unit,
                 )
             }
-            Some(
-                MethodCallRewrite::RewriteModuleQualifiedToFunction { .. }
-                | MethodCallRewrite::DeferToLowering,
-            ) => {
-                // These rewrite variants target the C++/MLIR pipeline and are
-                // not consumed by the Rust MIR pipeline.  Fail-closed.
+            Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }) => {
+                // Module-qualified direct call: the receiver expression is the
+                // module identifier, not a value.  Lower the args only — do
+                // NOT prepend the receiver (LESSONS
+                // `module-qualified-rewrite-authority`).
+                //
+                // The `c_symbol` from the checker uses dotted notation for
+                // user-module calls (`module.fn`) and `hew_*` for stdlib calls.
+                // User-module keys are stored in `fn_registry` under the mangled
+                // form (`module$fn`) so they are safe as native object-file
+                // symbols on all targets.  Apply `mangle_dotted_name` before
+                // the registry lookup AND in the emitted `BindingRef.name` so
+                // all three consumers (HIR verifier, MIR `module_fn_names`,
+                // codegen `add_function`) see the same mangled key.  Stdlib
+                // `hew_*` symbols contain no dots, so mangling is identity.
+                let symbol = crate::mangle_dotted_name(&c_symbol);
+                let lowered_args: Vec<HirExpr> = args
+                    .iter()
+                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .collect();
+                let ret_ty = self
+                    .expr_types
+                    .get(&key)
+                    .cloned()
+                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+                    .unwrap_or(ResolvedTy::Unit);
+                let resolved_ref = self
+                    .fn_registry
+                    .get(&symbol)
+                    .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id));
+                let callee_ty = ResolvedTy::Function {
+                    params: Vec::new(),
+                    ret: Box::new(ret_ty.clone()),
+                };
+                let callee = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::PersistentShare,
+                    ty: callee_ty,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::BindingRef {
+                        name: symbol,
+                        resolved: resolved_ref,
+                    },
+                    span: span.clone(),
+                };
+                (
+                    HirExprKind::Call {
+                        callee: Box::new(callee),
+                        args: lowered_args,
+                    },
+                    ret_ty,
+                )
+            }
+            Some(MethodCallRewrite::DeferToLowering) => {
+                // `DeferToLowering` targets the C++/MLIR pipeline and is not
+                // consumed by the Rust MIR pipeline.  Fail-closed.
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CutoverUnsupported {
                         construct: format!("method-call rewrite variant for `.{method}`"),
@@ -5258,6 +5496,32 @@ mod tests {
         );
     }
 
+    /// When `closure_capture_facts` are missing, `into_result()` must return
+    /// `Err` — not `Ok` with empty captures.  This pins the fail-closed
+    /// contract at the public API boundary.
+    #[test]
+    fn missing_closure_capture_facts_into_result_is_err() {
+        let (program, mut tco, _) = parse_typecheck_and_lower(
+            r"
+            fn main() {
+                let k: i32 = 2;
+                let f = |n: i32| n + k;
+            }
+            ",
+        );
+        assert!(
+            !tco.closure_capture_facts.is_empty(),
+            "test setup requires checker-produced closure capture facts"
+        );
+        tco.closure_capture_facts.clear();
+
+        let lowered = lower_program(&program, &tco, &ResolutionCtx);
+        assert!(
+            lowered.into_result().is_err(),
+            "into_result() must return Err when closure capture facts are missing"
+        );
+    }
+
     #[test]
     fn stdlib_println_resolves_to_i64_overload() {
         let (_program, _tco, lowered) = parse_typecheck_and_lower(
@@ -5411,7 +5675,7 @@ mod tests {
 
     // ── Select arm-binding scoping ──────────────────────────────────────────
     //
-    // Source shared by several tests below: two actors both returning `int`.
+    // Source shared by several tests below: two actors both returning `i64`.
     // Both arm bodies return the bound name so the arm body types agree (the
     // type checker requires all arm bodies to have the same type).  Distinct
     // binding names (`reply` vs `verdict`) let us prove each arm has its own
@@ -5419,10 +5683,10 @@ mod tests {
 
     const SELECT_SCOPE_SOURCE: &str = r"
         actor Pinger {
-            receive fn ping() -> int { 1 }
+            receive fn ping() -> i64 { 1 }
         }
         actor Counter {
-            receive fn count() -> int { 2 }
+            receive fn count() -> i64 { 2 }
         }
         fn main() {
             let p = spawn Pinger;
@@ -5509,10 +5773,10 @@ mod tests {
         // there is no outer `reply` binding, it must produce UnresolvedSymbol.
         let source = r"
             actor Pinger {
-                receive fn ping() -> int { 1 }
+                receive fn ping() -> i64 { 1 }
             }
             actor Checker {
-                receive fn check() -> int { 2 }
+                receive fn check() -> i64 { 2 }
             }
             fn main() {
                 let p = spawn Pinger;
@@ -5552,7 +5816,7 @@ mod tests {
         // must produce UnresolvedSymbol — the scope is popped on arm exit.
         let source = r"
             actor Pinger {
-                receive fn ping() -> int { 1 }
+                receive fn ping() -> i64 { 1 }
             }
             fn main() {
                 let p = spawn Pinger;

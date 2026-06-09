@@ -1,8 +1,8 @@
 // Accept fixture: ask-shaped lambda actor with call-syntax dispatch.
-// `actor |n: int| -> int { n*2 }` produces `Duplex<int, int>`.
-// Call `dbl(5)` returns `Result<int, AskError>` at the type level.
+// `actor |n: i64| -> i64 { n*2 }` produces `Duplex<i64, i64>`.
+// Call `dbl(5)` returns `Result<i64, AskError>` at the type level.
 // WASM-PASS: type-check level only for slice 2; runtime landing is slice 4.
 fn main() {
-    let dbl = actor |n: int| -> int { n * 2 };
+    let dbl = actor |n: i64| -> i64 { n * 2 };
     let _r = dbl(5);
 }

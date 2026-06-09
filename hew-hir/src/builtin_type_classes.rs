@@ -72,6 +72,29 @@ pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
         "RecvHalf".to_string(),
         (ResourceMarker::Resource, Some("close".to_string())),
     );
+
+    // PanicInfo — the argument type delivered to `#[on(crash)]` hooks.
+    // Defined as `pub type PanicInfo { code: i64; }` in std/failure.hew.
+    // Not a resource: the runtime passes the struct by value; no close method.
+    // `ResourceMarker::None` → `ValueClass::Unknown` in `ValueClass::of_ty`, which
+    // is correct for the ActorHandler call-conv: codegen synthesises the ABI
+    // directly and does not inspect MIR param/return types for this handler.
+    // Seeded here so `push_unknown_type_diagnostics` treats `PanicInfo` as a
+    // known type and does not emit `MirDiagnosticKind::UnknownType`.
+    //
+    // WHY: `register_builtin_failure_surface` in `hew-types/src/check/registration.rs`
+    // registers `PanicInfo` into the checker's `known_types` but does not insert it
+    // into the HIR `TypeClassTable`; this function is the HIR authority.
+    // WHEN-OBSOLETE: when `std/failure.hew` ships as a loaded module whose
+    // `TypeDecl` items populate the table via the normal `Item::TypeDecl` pass.
+    // WHAT-REAL-SOLUTION: load std/failure.hew through the module graph so
+    // user programs see `PanicInfo`/`CrashAction` as ordinary imported types.
+    type_classes.insert("PanicInfo".to_string(), (ResourceMarker::None, None));
+
+    // CrashAction — the return type of `#[on(crash)]` hooks.
+    // Defined as `pub enum CrashAction { Restart; Escalate; Kill; }` in std/failure.hew.
+    // Payload-free enum: no fields, no close method. Same rationale as PanicInfo above.
+    type_classes.insert("CrashAction".to_string(), (ResourceMarker::None, None));
 }
 
 #[cfg(test)]
@@ -151,5 +174,47 @@ mod tests {
             args: vec![ResolvedTy::I64, ResolvedTy::I64],
         };
         assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::AffineResource);
+    }
+
+    #[test]
+    fn panic_info_is_seeded_as_none_marker() {
+        let mut table: TypeClassTable = HashMap::default();
+        seed_builtin_type_classes(&mut table);
+        assert_eq!(
+            table.get("PanicInfo"),
+            Some(&(ResourceMarker::None, None)),
+            "PanicInfo must be in type_classes so push_unknown_type_diagnostics skips it"
+        );
+    }
+
+    #[test]
+    fn crash_action_is_seeded_as_none_marker() {
+        let mut table: TypeClassTable = HashMap::default();
+        seed_builtin_type_classes(&mut table);
+        assert_eq!(
+            table.get("CrashAction"),
+            Some(&(ResourceMarker::None, None)),
+            "CrashAction must be in type_classes so push_unknown_type_diagnostics skips it"
+        );
+    }
+
+    #[test]
+    fn panic_info_named_ty_is_known_to_type_classes() {
+        let mut table: TypeClassTable = HashMap::default();
+        seed_builtin_type_classes(&mut table);
+        assert!(
+            table.contains_key("PanicInfo"),
+            "PanicInfo absent from TypeClassTable; on(crash) hook params would fire UnknownType"
+        );
+    }
+
+    #[test]
+    fn crash_action_named_ty_is_known_to_type_classes() {
+        let mut table: TypeClassTable = HashMap::default();
+        seed_builtin_type_classes(&mut table);
+        assert!(
+            table.contains_key("CrashAction"),
+            "CrashAction absent from TypeClassTable; on(crash) hook return type would fire UnknownType"
+        );
     }
 }

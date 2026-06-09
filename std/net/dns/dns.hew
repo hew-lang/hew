@@ -98,7 +98,7 @@ pub fn try_lookup_host(hostname: string) -> Result<string, fs.IoError> {
 /// ```
 /// let addrs = dns.resolve_timed("slow.example.com", 500);
 /// ```
-pub fn resolve_timed(hostname: string, deadline_ms: int) -> Vec<string> {
+pub fn resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string> {
     unsafe {
         hew_dns_resolve_timed(hostname, deadline_ms as i64)
     } // INTERNAL-ABI: C ABI takes i64 deadline
@@ -108,7 +108,7 @@ pub fn resolve_timed(hostname: string, deadline_ms: int) -> Vec<string> {
 ///
 /// `deadline_ms <= 0` disables the deadline. On deadline expiry or resolution
 /// failure returns an empty string.
-pub fn lookup_host_timed(hostname: string, deadline_ms: int) -> string {
+pub fn lookup_host_timed(hostname: string, deadline_ms: i64) -> string {
     unsafe {
         hew_dns_lookup_host_timed(hostname, deadline_ms as i64)
     } // INTERNAL-ABI: C ABI takes i64 deadline

@@ -2,7 +2,7 @@
 //!
 //! Covers:
 //! - All 8 explicit integer widths + 2 floats admitted as types.
-//! - Aliases `int = i64`, `uint = u64`, `byte = u8`, `float = f64`.
+//! - Aliases `i64 = i64`, `u64 = u64`, `byte = u8`, `float = f64`.
 //! - `isize`/`usize` resolve to distinct `Ty::Isize`/`Ty::Usize` (not aliases
 //!   for I64/U64) — platform-sized per Q42 ratification.
 //! - Mixed-width arithmetic is rejected by the type-checker (unifier).
@@ -35,11 +35,15 @@ fn width_aliases_floats_admitted() {
 
 #[test]
 fn width_aliases_canonical_aliases_resolve_correctly() {
-    // int = i64
-    assert_eq!(Ty::from_name("int"), Some(Ty::I64));
-    assert_eq!(Ty::from_name("Int"), Some(Ty::I64));
-    // uint = u64
-    assert_eq!(Ty::from_name("uint"), Some(Ty::U64));
+    // i64 = i64
+    assert_eq!(Ty::from_name("i64"), Some(Ty::I64));
+    // `int`/`Int` are removed aliases; they must NOT resolve.
+    assert_eq!(Ty::from_name("int"), None);
+    assert_eq!(Ty::from_name("Int"), None);
+    // u64 = u64
+    assert_eq!(Ty::from_name("u64"), Some(Ty::U64));
+    // `uint` is a removed alias; it must NOT resolve.
+    assert_eq!(Ty::from_name("uint"), None);
     // byte = u8
     assert_eq!(Ty::from_name("byte"), Some(Ty::U8));
     // float = f64
@@ -49,7 +53,7 @@ fn width_aliases_canonical_aliases_resolve_correctly() {
 
 #[test]
 fn width_aliases_isize_usize_are_distinct_platform_sized_types() {
-    // isize and usize are distinct from fixed-width int/uint (Q42 ratification).
+    // isize and usize are distinct from fixed-width i64/u64 (Q42 ratification).
     let isize_ty = Ty::from_name("isize").expect("isize must resolve");
     let usize_ty = Ty::from_name("usize").expect("usize must resolve");
 

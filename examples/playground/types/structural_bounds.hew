@@ -9,12 +9,12 @@ trait Named {
 // Two unrelated types — no explicit "impl Named for ..." needed.
 type User {
     name: string;
-    age: int;
+    age: i64;
 }
 
 type Product {
     name: string;
-    price: int;
+    price: i64;
 }
 
 // Bare impl blocks provide the method, satisfying Named structurally.

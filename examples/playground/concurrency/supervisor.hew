@@ -2,9 +2,9 @@
 //! @description Supervision tree for fault-tolerant actors
 
 actor Worker {
-    let id: int;
+    let id: i64;
 
-    receive fn work(x: int) -> int {
+    receive fn work(x: i64) -> i64 {
         print("Worker ");
         print(id);
         print(" processing ");

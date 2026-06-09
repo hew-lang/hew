@@ -211,6 +211,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),
@@ -223,6 +224,7 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
         }
     }
 
@@ -299,7 +301,7 @@ mod tests {
         let source = "sum(";
         let tc = make_tc_with_fn("sum", vec!["value"], vec![Ty::I64], Ty::I64);
         let result = build_signature_help(source, &tc, source.len()).unwrap();
-        assert_eq!(result.signatures[0].label, "fn sum(value: int) -> int");
+        assert_eq!(result.signatures[0].label, "fn sum(value: i64) -> i64");
     }
 
     #[test]
@@ -363,6 +365,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),
@@ -375,6 +378,7 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -384,7 +388,7 @@ mod tests {
         );
         let sh = result.unwrap();
         assert_eq!(sh.active_parameter, Some(0));
-        assert_eq!(sh.signatures[0].label, "fn new(capacity: int)");
+        assert_eq!(sh.signatures[0].label, "fn new(capacity: i64)");
     }
 
     #[test]
@@ -439,6 +443,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),
@@ -451,6 +456,7 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());

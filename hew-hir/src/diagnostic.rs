@@ -287,4 +287,14 @@ pub enum HirDiagnosticKind {
         /// Origin record name.
         name: String,
     },
+    /// A function declared with `#[intrinsic("key")]` names an intrinsic
+    /// key that does not appear in `stdlib_catalog`. Fail-closed: the
+    /// compiler never silently drops a typed declaration — if the key is
+    /// wrong the author must fix the declaration or update the catalog.
+    UnknownIntrinsic {
+        /// The function name that carried the attribute.
+        fn_name: String,
+        /// The intrinsic key that was not found in the catalog.
+        intrinsic_key: String,
+    },
 }

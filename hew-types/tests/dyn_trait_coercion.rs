@@ -21,8 +21,8 @@ use hew_types::error::TypeErrorKind;
 use hew_types::DynCoercion;
 use hew_types::Ty;
 
-/// `int → dyn Display` records a `DynCoercion` whose `concrete_type` is the
-/// canonical integer kind (`i64` after defaulting from `int`), whose
+/// `i64 → dyn Display` records a `DynCoercion` whose `concrete_type` is the
+/// canonical integer kind (`i64` after defaulting from `i64`), whose
 /// `trait_name` is `Display`, and whose `method_table` contains the trait's
 /// single declared method (`fmt`) mapped to the primitive impl key.
 #[test]
@@ -99,7 +99,7 @@ fn two_concrete_types_to_dyn_display_produce_distinct_entries() {
     let int_entry = by_concrete
         .iter()
         .find(|e| e.concrete_type == Ty::I64)
-        .expect("int entry");
+        .expect("i64 entry");
 
     assert_eq!(bool_entry.trait_name, "Display");
     assert_eq!(

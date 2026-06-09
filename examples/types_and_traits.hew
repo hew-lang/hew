@@ -15,11 +15,11 @@
 
 // ── 1. Structs ────────────────────────────────────────────────────────────────
 type Point {
-    x: int;
-    y: int;
+    x: i64;
+    y: i64;
 }
 
-fn point_sum(p: Point) -> int {
+fn point_sum(p: Point) -> i64 {
     p.x + p.y
 }
 
@@ -32,12 +32,12 @@ trait Describe {
 }
 
 type Circle {
-    radius: int;
+    radius: i64;
 }
 
 type Rectangle {
-    width: int;
-    height: int;
+    width: i64;
+    height: i64;
 }
 
 impl Describe for Circle {

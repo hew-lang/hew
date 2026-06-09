@@ -395,7 +395,7 @@ pub fn string_equals(a: string, b: string) -> bool {
 /// ```
 /// let s = string_from_int(42);  // "42"
 /// ```
-pub fn string_from_int(n: int) -> string {
+pub fn string_from_int(n: i64) -> string {
     ""
 }
 
@@ -426,7 +426,7 @@ pub fn string_trim(s: string) -> string {
 }
 
 /// Parse a string as an integer. Returns 0 on failure.
-pub fn string_to_int(s: string) -> int {
+pub fn string_to_int(s: string) -> i64 {
     0
 }
 

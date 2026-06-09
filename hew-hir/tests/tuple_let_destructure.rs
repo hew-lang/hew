@@ -6,7 +6,7 @@
 //!      `HirExprKind::TupleIndex` projections.
 //!   2. A wildcard element in the tuple pattern is bound as `_<idx>`.
 //!
-//! Uses `duplex_pair<int, int>(16)` as the tuple-producing expression because
+//! Uses `duplex_pair<i64, i64>(16)` as the tuple-producing expression because
 //! `duplex_pair` is a checker-registered builtin that returns a genuine
 //! `ResolvedTy::Tuple` — the most realistic producer for the exemplar vertebra.
 //! Both tests run the full typecheck pipeline so the rewrite table is populated.
@@ -43,15 +43,15 @@ fn main_fn(output: &hew_hir::LowerOutput) -> &hew_hir::HirFn {
         .expect("main function must be present")
 }
 
-/// `let (a, b) = duplex_pair<int, int>(16);` produces:
-///   - `let __tuple_N = duplex_pair<int, int>(16);`  (synthetic temp)
+/// `let (a, b) = duplex_pair<i64, i64>(16);` produces:
+///   - `let __tuple_N = duplex_pair<i64, i64>(16);`  (synthetic temp)
 ///   - `let a = __tuple_N.0;`                         (`TupleIndex` 0)
 ///   - `let b = __tuple_N.1;`                         (`TupleIndex` 1)
 #[test]
 fn two_element_tuple_let_produces_three_stmts() {
     let source = r"
-        fn main() -> int {
-            let (a, b) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";
@@ -140,13 +140,13 @@ fn two_element_tuple_let_produces_three_stmts() {
     }
 }
 
-/// Wildcard element `let (a, _) = duplex_pair<int, int>(16);` binds the
+/// Wildcard element `let (a, _) = duplex_pair<i64, i64>(16);` binds the
 /// wildcard as `_1` (synthetic name `_<idx>`).
 #[test]
 fn tuple_let_wildcard_element_binds_synthetic_name() {
     let source = r"
-        fn main() -> int {
-            let (a, _) = duplex_pair<int, int>(16);
+        fn main() -> i64 {
+            let (a, _) = duplex_pair<i64, i64>(16);
             return 0;
         }
     ";

@@ -1,6 +1,6 @@
 // Frequency Counter - Count element frequencies and find top-k elements
 // Uses custom hash map implementation
-fn hash(key: int, capacity: int) -> int {
+fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
         h + capacity
@@ -9,8 +9,8 @@ fn hash(key: int, capacity: int) -> int {
     }
 }
 
-fn make_keys(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_keys(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -18,15 +18,15 @@ fn make_keys(capacity: int) -> Vec<int> {
     v
 }
 
-fn make_vals(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_vals(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     for i in 0 .. capacity {
         v.push(0);
     }
     v
 }
 
-fn find_slot(keys: Vec<int>, key: int) -> int {
+fn find_slot(keys: Vec<i64>, key: i64) -> i64 {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     var idx = hash(key, capacity);
@@ -45,7 +45,7 @@ fn find_slot(keys: Vec<int>, key: int) -> int {
     0 - 1
 }
 
-fn count_element(keys: Vec<int>, vals: Vec<int>, key: int) {
+fn count_element(keys: Vec<i64>, vals: Vec<i64>, key: i64) {
     let EMPTY = 0 - 1;
     let slot = find_slot(keys, key);
     if slot >= 0 {
@@ -59,7 +59,7 @@ fn count_element(keys: Vec<int>, vals: Vec<int>, key: int) {
     }
 }
 
-fn get_freq(keys: Vec<int>, vals: Vec<int>, key: int) -> int {
+fn get_freq(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> i64 {
     let EMPTY = 0 - 1;
     let slot = find_slot(keys, key);
     if slot >= 0 {
@@ -72,7 +72,7 @@ fn get_freq(keys: Vec<int>, vals: Vec<int>, key: int) -> int {
 }
 
 // Count frequencies of all elements in data array
-fn count_all(data: Vec<int>, keys: Vec<int>, vals: Vec<int>) {
+fn count_all(data: Vec<i64>, keys: Vec<i64>, vals: Vec<i64>) {
     let len = data.len();
     for i in 0 .. len {
         count_element(keys, vals, data.get(i));
@@ -80,7 +80,7 @@ fn count_all(data: Vec<int>, keys: Vec<int>, vals: Vec<int>) {
 }
 
 // Find the key with the highest frequency
-fn find_top1(keys: Vec<int>, vals: Vec<int>) -> int {
+fn find_top1(keys: Vec<i64>, vals: Vec<i64>) -> i64 {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     var best_key = EMPTY;
@@ -99,11 +99,11 @@ fn find_top1(keys: Vec<int>, vals: Vec<int>) -> int {
 }
 
 // Find top-k frequent elements, returned in result Vec
-fn find_topk(keys: Vec<int>, vals: Vec<int>, k: int, result: Vec<int>) {
+fn find_topk(keys: Vec<i64>, vals: Vec<i64>, k: i64, result: Vec<i64>) {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     // Make a copy of vals to mark used entries
-    let used: Vec<int> = Vec::new();
+    let used: Vec<i64> = Vec::new();
     for i in 0 .. capacity {
         used.push(0);
     }
@@ -138,7 +138,7 @@ fn main() {
     var failed = 0;
     // Test data: [1, 2, 3, 1, 2, 1, 4, 2, 1, 3]
     // Frequencies: 1->4, 2->3, 3->2, 4->1
-    let data: Vec<int> = Vec::new();
+    let data: Vec<i64> = Vec::new();
     data.push(1);
     data.push(2);
     data.push(3);
@@ -211,7 +211,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: Top-3 frequent elements
-    let result: Vec<int> = Vec::new();
+    let result: Vec<i64> = Vec::new();
     find_topk(keys, vals, 3, result);
     if result.len() == 3 {
         let r0 = result.get(0);
@@ -240,7 +240,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 8: Larger dataset
-    let data2: Vec<int> = Vec::new();
+    let data2: Vec<i64> = Vec::new();
     // 5 appears 10 times, 6 appears 5 times, 7 appears 1 time
     for i in 0 .. 10 {
         data2.push(5);

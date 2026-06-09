@@ -1,9 +1,10 @@
 //! Line-by-line and word-by-word scanner (bufio.Scanner-style).
 //!
-//! `Scanner` iterates through tokens from a string source. The default
-//! split function is `SplitLines` — each call to `scan()` advances past
-//! one newline-terminated line. Use `with_split` to switch to
-//! `SplitWords` (whitespace-separated tokens).
+//! `Scanner` iterates through tokens from a string source, stdin, or a
+//! whole file. The default split function is `SplitLines` — each call to
+//! `scan()` advances past one newline-terminated line and returns the
+//! updated scanner state. Use `with_split` to switch to `SplitWords`
+//! (whitespace-separated tokens).
 //!
 //! # Basic iteration
 //!
@@ -37,19 +38,25 @@
 //!
 //! # Using with files and stdin
 //!
-//! Read the full source with `fs.read(path)` or `io.read_all()` and
-//! pass the resulting string to `from_string`:
+//! `from_stdin()` reads all standard input before scanning. `from_file()`
+//! returns `Result<Scanner, fs.IoError>` and reads the whole file before
+//! scanning:
 //!
 //! ```
-//! import std::io;
+//! import std::fs;
 //! import std::io::scanner;
 //!
 //! fn main() {
-//!     var sc = scanner.from_string(io.read_all());
-//!     sc = scanner.scan(sc);
-//!     while scanner.has_next(sc) {
-//!         println(scanner.text(sc));
-//!         sc = scanner.scan(sc);
+//!     match scanner.from_file("input.txt") {
+//!         Ok(sc0) => {
+//!             var sc = sc0;
+//!             sc = scanner.scan(sc);
+//!             while scanner.has_next(sc) {
+//!                 println(scanner.text(sc));
+//!                 sc = scanner.scan(sc);
+//!             }
+//!         },
+//!         Err(e) => panic(fs.io_error_message(e)),
 //!     }
 //! }
 //! ```
@@ -60,6 +67,10 @@
 //! |---           |---                                                 |
 //! | `SplitLines` | Lines split on `\n`; `\r\n` stripped (default).   |
 //! | `SplitWords` | Fields split on any run of ASCII whitespace.       |
+
+import std::fs;
+
+import std::io;
 
 // ── Split mode ────────────────────────────────────────────────────────
 /// How the scanner tokenises its source.
@@ -82,6 +93,9 @@ pub type Scanner {
     /// Text of the current token.  Valid after `scan()` when `has_next()`
     /// is true; empty string before the first `scan()` or after exhaustion.
     current: string;
+    /// True when the last scan produced a token. Required so a real empty
+    /// line (`"\n"`) remains distinguishable from EOF.
+    valid: bool;
     /// True when all tokens have been emitted.
     done: bool;
     /// Token split mode; fixed at construction or changed via `with_split`.
@@ -108,7 +122,26 @@ pub type Scanner {
 /// }
 /// ```
 pub fn from_string(s: string) -> Scanner {
-    Scanner { source: s, pos: 0, current: "", done: false, mode: SplitLines }
+    Scanner { source: s, pos: 0, current: "", valid: false, done: false, mode: SplitLines }
+}
+
+/// Create a scanner over all data read from standard input.
+///
+/// This v0.5 implementation reads stdin to completion before scanning, rather
+/// than looping on `io.read_line()`, so EOF is not confused with a real empty
+/// line.
+pub fn from_stdin() -> Scanner {
+    from_string(io.read_all())
+}
+
+/// Read `path` into memory and create a scanner over its contents.
+///
+/// Returns `Err(fs.IoError)` if the file cannot be opened or read.
+pub fn from_file(path: string) -> Result<Scanner, fs.IoError> {
+    match fs.try_read(path) {
+        Ok(contents) => Ok(Scanner { source: contents, pos: 0, current: "", valid: false, done: false, mode: SplitLines }),
+        Err(e) => Err(e),
+    }
 }
 
 /// Override the split mode on an existing scanner, resetting to position 0.
@@ -132,7 +165,7 @@ pub fn from_string(s: string) -> Scanner {
 /// }
 /// ```
 pub fn with_split(sc: Scanner, mode: SplitMode) -> Scanner {
-    Scanner { source: sc.source, pos: 0, current: "", done: false, mode: mode }
+    Scanner { source: sc.source, pos: 0, current: "", valid: false, done: false, mode: mode }
 }
 
 // ── Advance ───────────────────────────────────────────────────────────
@@ -162,13 +195,30 @@ pub fn scan(sc: Scanner) -> Scanner {
     }
 }
 
+/// Advance in line mode and return the updated scanner with the next line.
+///
+/// This helper ignores the current split mode and always uses `SplitLines`.
+/// A real empty line returns `Some("")`; EOF returns `None`.
+pub fn next_line(sc: Scanner) -> (Scanner, Option<string>) {
+    let mode = sc.mode;
+    let line_sc = Scanner { source: sc.source, pos: sc.pos, current: sc.current, valid: sc.valid, done: sc.done, mode: SplitLines };
+    let next = scan(line_sc);
+    let restored = Scanner { source: next.source, pos: next.pos, current: next.current, valid: next.valid, done: next.done, mode: mode };
+    if has_next(next) {
+        let line = text(next);
+        (restored, Some(line))
+    } else {
+        (restored, None)
+    }
+}
+
 // ── Observations ─────────────────────────────────────────────────────
 /// Return true if the last `scan()` produced a token.
 ///
 /// Returns false on a freshly constructed scanner (before the first
 /// `scan()`) and after exhaustion.
 pub fn has_next(sc: Scanner) -> bool {
-    !sc.done && sc.pos > 0
+    sc.valid
 }
 
 /// Return the current token text.
@@ -283,19 +333,15 @@ fn scan_line(sc: Scanner) -> Scanner {
     }
     let slen = sc.source.len();
     let pos = sc.pos;
-    // pos > slen: the final segment (possibly empty on a trailing newline)
-    // has already been emitted; mark done without a new empty token.
-    if pos > slen {
-        return Scanner { source: sc.source, pos: pos, current: "", done: true, mode: sc.mode };
+    if pos >= slen {
+        return Scanner { source: sc.source, pos: pos, current: "", valid: false, done: true, mode: sc.mode };
     }
     let rest = sc.source.slice(pos, slen);
     let idx = rest.find("\n");
     if idx < 0 {
         // No newline: remainder is the final token.
-        // Set pos to slen + 1 so the next scan() hits pos > slen and
-        // marks done rather than emitting an empty trailing token.
         let line = sc.source.slice(pos, slen);
-        Scanner { source: sc.source, pos: slen + 1, current: line, done: false, mode: sc.mode }
+        Scanner { source: sc.source, pos: slen, current: line, valid: true, done: false, mode: sc.mode }
     } else {
         let nl_pos = pos + idx;
         // Strip \r before \n for \r\n line endings.
@@ -305,7 +351,7 @@ fn scan_line(sc: Scanner) -> Scanner {
             nl_pos
         };
         let line = sc.source.slice(pos, line_end);
-        Scanner { source: sc.source, pos: nl_pos + 1, current: line, done: false, mode: sc.mode }
+        Scanner { source: sc.source, pos: nl_pos + 1, current: line, valid: true, done: false, mode: sc.mode }
     }
 }
 
@@ -324,7 +370,7 @@ fn scan_word(sc: Scanner) -> Scanner {
         pos = pos + 1;
     }
     if pos >= slen {
-        return Scanner { source: sc.source, pos: pos, current: "", done: true, mode: sc.mode };
+        return Scanner { source: sc.source, pos: pos, current: "", valid: false, done: true, mode: sc.mode };
     }
     // Collect non-whitespace characters.
     var end = pos;
@@ -332,5 +378,5 @@ fn scan_word(sc: Scanner) -> Scanner {
         end = end + 1;
     }
     let word = sc.source.slice(pos, end);
-    Scanner { source: sc.source, pos: end, current: word, done: false, mode: sc.mode }
+    Scanner { source: sc.source, pos: end, current: word, valid: true, done: false, mode: sc.mode }
 }

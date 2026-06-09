@@ -1,0 +1,5 @@
+unicode.try_codepoint_at: index out of bounds
+unicode.try_codepoint_at: index out of bounds
+unicode.try_rune_len: invalid rune
+unicode.try_rune_len: invalid rune
+sentinels=-1,-1

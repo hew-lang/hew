@@ -51,6 +51,27 @@ run_accept_expect_stdout() {
   diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
 }
 
+run_check_run_expect_stdout() {
+  local fixture="$1"
+  "${HEW}" check "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1
+  local status=0
+  if timeout --kill-after=5s 30s "${HEW}" run \
+      "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" \
+      >"${stdout_output}" 2>"${stderr_output}"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 0 ]]; then
+    echo "expected ${fixture} hew run to exit 0, got ${status}" >&2
+    cat "${accept_output}" >&2
+    cat "${stdout_output}" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+  diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
+}
+
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/string_return.hew" >"${accept_output}"
 grep -q 'return_ty: String' "${accept_output}"
 
@@ -375,11 +396,14 @@ run_accept_expect_stdout "print_f64"
 # and exact stdout `Hi\n`.
 run_accept_expect_stdout "bytes_push_round_trip"
 run_accept_expect_stdout "regex_captures_find_all"
+run_check_run_expect_stdout "stdlib_io_scanner_file_oracle"
 run_accept_expect_stdout "tls_ffi_result_lowering"
 run_accept_expect_stdout "template_compiled_free_function_p0"
 run_accept_expect_stdout "template_oracle_02_compiled_substitution"
 run_accept_expect_stdout "template_oracle_03_if_range"
 run_accept_expect_stdout "template_negative_try_errors"
+run_check_run_expect_stdout "unicode_oracle"
+run_check_run_expect_stdout "unicode_error_oracle"
 
 run_accept_expect_status "panic" 101
 grep -q 'panic fixture' "${stderr_output}"
@@ -729,6 +753,12 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_invalid_pattern.hew
   exit 1
 fi
 grep -qF 'invalid regex pattern' "${reject_output}"
+
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/unicode_rune_len_wrong_type.hew" >"${reject_output}" 2>&1; then
+  echo "expected unicode_rune_len_wrong_type fixture to fail" >&2
+  exit 1
+fi
+grep -q 'rune_len' "${reject_output}"
 
 # ---------------------------------------------------------------------------
 # W3.029 — user record/type ValueClass inference

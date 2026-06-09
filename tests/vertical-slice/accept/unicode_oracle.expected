@@ -1,0 +1,13 @@
+upper_A=true upper_eacute=true lower_A=false
+lower_a=true lower_eacute=true upper_a=false
+space_tab=true space_nbsp=true space_A=false
+letter_A=true letter_cjk=true letter_digit=false
+letter_latin_ext_add=true lower_latin_ext_add=true upper_latin_ext_add=7702
+letter_thai=true letter_armenian=true letter_cjk_ext_b=true
+punct_bang=true punct_ideo=true punct_A=false
+title_a=65 title_eacute=201 title_digit=49
+rune_len=1,2,3,4
+rune_count=4 runes_len=4
+runes=65,233,26085,128578
+codepoint_at=65,233,26085,128578
+empty_rune_count=0 empty_runes_len=0

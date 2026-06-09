@@ -1,0 +1,40 @@
+import std::fs;
+import std::io::scanner;
+
+fn print_line(label: string, line: Option<string>) {
+    match line {
+        Some(value) => println(label + value),
+        None => println(label + "<eof>"),
+    }
+}
+
+fn main() {
+    let path = ".tmp/stdlib-io-scanner-oracle-input.txt";
+    let _ = fs.write(path, "red\n\nblue\n");
+
+    match scanner.from_file(path) {
+        Ok(sc0) => {
+            var sc = sc0;
+            let (sc1, first) = scanner.next_line(sc);
+            sc = sc1;
+            let (sc2, blank) = scanner.next_line(sc);
+            sc = sc2;
+            let (sc3, third) = scanner.next_line(sc);
+            sc = sc3;
+            let (_sc4, eof) = scanner.next_line(sc);
+
+            print_line("first=", first);
+            print_line("blank=", blank);
+            print_line("third=", third);
+            print_line("eof=", eof);
+        },
+        Err(e) => println("file_err=" + fs.io_error_message(e)),
+    }
+
+    let _ = fs.delete(path);
+
+    match scanner.from_file(".tmp/stdlib-io-scanner-definitely-missing.txt") {
+        Ok(_) => println("missing=unexpected-ok"),
+        Err(e) => println("missing=" + fs.io_error_message(e)),
+    }
+}

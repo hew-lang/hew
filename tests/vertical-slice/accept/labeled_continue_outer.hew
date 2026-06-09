@@ -1,0 +1,19 @@
+// `continue @outer` inside an inner loop continues the labeled outer loop.
+//
+// Each outer iteration contributes 10 before entering the inner loop. The first
+// inner iteration contributes 1, then `continue @outer` skips the rest of both
+// loop bodies and advances the outer for-range counter. Three outer iterations
+// run, then post-loop `+5` runs. Exit code: (10 + 1) * 3 + 5 = 38.
+fn main() -> i64 {
+    var total: i64 = 0;
+    @outer: for i in 0 .. 3 {
+        total = total + 10;
+        for j in 0 .. 3 {
+            total = total + 1;
+            continue @outer;
+        }
+        total = total + 1000;
+    }
+    total = total + 5;
+    total
+}

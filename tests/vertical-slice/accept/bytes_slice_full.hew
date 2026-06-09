@@ -1,0 +1,10 @@
+extern "C" {
+    fn hew_bytes_from_str(s: string) -> bytes;
+}
+
+fn main() -> i64 {
+    let b: bytes = unsafe { hew_bytes_from_str("wxyz") };
+    let slice: bytes = b[..];
+    println(slice.to_string());
+    slice.len()
+}

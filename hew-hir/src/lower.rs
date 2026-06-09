@@ -3311,7 +3311,7 @@ fn collect_call_sites_in_expr(
         }
         HirExprKind::Scope { body }
         | HirExprKind::ForkBlock { body, .. }
-        | HirExprKind::Loop { body } => {
+        | HirExprKind::Loop { body, .. } => {
             collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
@@ -3340,7 +3340,9 @@ fn collect_call_sites_in_expr(
         HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
             collect_call_sites_in_expr(body, out, trait_out);
         }
-        HirExprKind::While { condition, body } => {
+        HirExprKind::While {
+            condition, body, ..
+        } => {
             collect_call_sites_in_expr(condition, out, trait_out);
             collect_call_sites_in_block(body, out, trait_out);
         }
@@ -5672,7 +5674,9 @@ impl LowerCtx {
                     self.wrap_var_self_explicit_expr_returns(else_expr, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::While { condition, body } => {
+            HirExprKind::While {
+                condition, body, ..
+            } => {
                 self.wrap_var_self_explicit_expr_returns(condition, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
@@ -5701,7 +5705,7 @@ impl LowerCtx {
                     self.wrap_var_self_explicit_returns_in_block(eb, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::Loop { body } => {
+            HirExprKind::Loop { body, .. } => {
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
             HirExprKind::Match { scrutinee, arms } => {
@@ -8671,15 +8675,12 @@ impl LowerCtx {
                 HirStmtKind::Expr(if_expr)
             }
             Stmt::While {
-                label: _,
+                label,
                 condition,
                 body,
             } => {
                 // `while cond { body }` — lowered to a HIR `While` expression
                 // so that MIR can build the header/body/exit CFG shape.
-                // Labels and `break`/`continue` are out of scope for this slice;
-                // the label is dropped here because MIR does not yet wire
-                // break/continue targets.
                 let cond_hir = self.lower_expr(condition, IntentKind::Read);
                 let body_block = self.lower_block(body, &ResolvedTy::Unit);
                 let while_expr = HirExpr {
@@ -8689,6 +8690,7 @@ impl LowerCtx {
                     value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind: HirExprKind::While {
+                        label: label.clone(),
                         condition: Box::new(cond_hir),
                         body: body_block,
                     },
@@ -8697,7 +8699,7 @@ impl LowerCtx {
                 HirStmtKind::Expr(while_expr)
             }
             Stmt::WhileLet {
-                label: _,
+                label,
                 pattern,
                 expr,
                 body,
@@ -8718,10 +8720,6 @@ impl LowerCtx {
                 // missing entries (or-pattern / checker-rejected shapes)
                 // surface a single `NotYetImplemented` diagnostic so callers
                 // never see a half-built node.
-                //
-                // Labels are out of scope for this slice; the label is
-                // dropped here because MIR does not yet wire break/continue
-                // targets.
                 let scrutinee_hir = self.lower_expr(expr, IntentKind::Read);
                 // Register a generic-enum instantiation if the scrutinee's
                 // type is a parameterised enum (`Option<i64>`). No-op for
@@ -8909,6 +8907,7 @@ impl LowerCtx {
                     value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind: HirExprKind::WhileLet {
+                        label: label.clone(),
                         scrutinee: Box::new(scrutinee_hir),
                         variant_match,
                         variant_idx,
@@ -8920,7 +8919,7 @@ impl LowerCtx {
                 HirStmtKind::Expr(while_let_expr)
             }
             Stmt::For {
-                label: _,
+                label,
                 pattern,
                 iterable,
                 body,
@@ -9011,6 +9010,7 @@ impl LowerCtx {
                         self.pop_scope();
 
                         HirExprKind::ForRange {
+                            label: label.clone(),
                             binding,
                             start: Box::new(start_hir),
                             end: Box::new(end_hir),
@@ -9022,6 +9022,7 @@ impl LowerCtx {
                         pattern,
                         iterable,
                         body,
+                        label.as_ref(),
                         span.clone(),
                         *is_await,
                     ),
@@ -9076,14 +9077,10 @@ impl LowerCtx {
                     scope_id: self.current_scope_id,
                 }
             }
-            Stmt::Loop { label: _, body } => {
+            Stmt::Loop { label, body } => {
                 // Bare `loop { body }` — lowered to a HIR `Loop` expression so
                 // MIR can build the body/exit CFG shape with an unconditional
                 // back-edge and a `break`-targeted exit block.
-                //
-                // Labels are out of scope for this slice (labeled break/continue
-                // is deferred to a follow-up); the label is dropped here because
-                // only the innermost-loop forms are wired through MIR.
                 let body_block = self.lower_block(body, &ResolvedTy::Unit);
                 let loop_expr = HirExpr {
                     node: self.ids.node(),
@@ -9091,33 +9088,20 @@ impl LowerCtx {
                     ty: ResolvedTy::Unit,
                     value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
-                    kind: HirExprKind::Loop { body: body_block },
+                    kind: HirExprKind::Loop {
+                        label: label.clone(),
+                        body: body_block,
+                    },
                     span: span.clone(),
                 };
                 HirStmtKind::Expr(loop_expr)
             }
             Stmt::Break { label, value } => {
-                // `break;` / `break <value>;` — early exit from the innermost
-                // enclosing loop. The type checker has already rejected
-                // out-of-loop breaks, so a well-formed loop context is an
-                // invariant here.
-                //
-                // Labeled `break @lbl` is deferred for v0.5: resolving a label
-                // to a non-innermost loop changes the defer-flush window from
-                // "innermost" to "all scopes up to the labeled loop", a
-                // distinct jump-table concern. Fail closed with a structured
-                // diagnostic rather than silently dropping the label
-                // (LESSONS `boundary-fail-closed`).
-                if label.is_some() {
-                    self.unsupported(span.clone(), "labeled-break-continue", "slice-2");
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(
-                            self.unsupported_expr(span.clone(), "labeled break"),
-                        ),
-                        span,
-                    };
-                }
+                // `break;` / `break @label;` / `break <value>;` — early exit
+                // from the innermost enclosing loop, or from the nearest
+                // enclosing loop with the requested label. The type checker has
+                // already rejected out-of-loop breaks and unknown labels; MIR
+                // keeps a defense-in-depth diagnostic for malformed HIR.
                 // Carry the operand of `break <value>` so MIR can lower it for
                 // its side effects (and move-checker correctness) before the
                 // jump. Loop-as-expression value return is out of scope; the
@@ -9133,7 +9117,7 @@ impl LowerCtx {
                     value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Break {
-                        label: None,
+                        label: label.clone(),
                         value: value_hir,
                     },
                     span: span.clone(),
@@ -9141,27 +9125,18 @@ impl LowerCtx {
                 HirStmtKind::Expr(break_expr)
             }
             Stmt::Continue { label } => {
-                // `continue;` — next iteration of the innermost enclosing loop.
-                // Labeled `continue @lbl` is deferred for v0.5; fail closed with
-                // a structured diagnostic rather than dropping the label
-                // silently (LESSONS `boundary-fail-closed`).
-                if label.is_some() {
-                    self.unsupported(span.clone(), "labeled-break-continue", "slice-2");
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(
-                            self.unsupported_expr(span.clone(), "labeled continue"),
-                        ),
-                        span,
-                    };
-                }
+                // `continue;` / `continue @label;` — next iteration of the
+                // innermost enclosing loop, or of the nearest enclosing loop
+                // with the requested label.
                 let continue_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: ResolvedTy::Unit,
                     value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
-                    kind: HirExprKind::Continue { label: None },
+                    kind: HirExprKind::Continue {
+                        label: label.clone(),
+                    },
                     span: span.clone(),
                 };
                 HirStmtKind::Expr(continue_expr)
@@ -13568,6 +13543,7 @@ impl LowerCtx {
         pattern: &Spanned<Pattern>,
         iterable: &Spanned<Expr>,
         body: &Block,
+        label: Option<&String>,
         span: Span,
         is_await: bool,
     ) -> HirExprKind {
@@ -13931,7 +13907,10 @@ impl LowerCtx {
             span.clone(),
         );
         let loop_expr = self.make_expr(
-            HirExprKind::Loop { body: loop_body },
+            HirExprKind::Loop {
+                label: label.cloned(),
+                body: loop_body,
+            },
             ResolvedTy::Unit,
             IntentKind::Read,
             span.clone(),
@@ -17081,7 +17060,9 @@ fn collect_captures_walk(
                 }
             }
         }
-        HirExprKind::While { condition, body } => {
+        HirExprKind::While {
+            condition, body, ..
+        } => {
             collect_captures_walk(condition, param_ids, seen, captures, self_id);
             collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
@@ -17119,7 +17100,7 @@ fn collect_captures_walk(
                 collect_captures_walk_block(eb, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::Loop { body } => {
+        HirExprKind::Loop { body, .. } => {
             collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
     }
@@ -17382,7 +17363,9 @@ fn collect_general_closure_captures_walk(
                 }
             }
         }
-        HirExprKind::While { condition, body } => {
+        HirExprKind::While {
+            condition, body, ..
+        } => {
             collect_general_closure_captures_walk(condition, outer_bindings, seen, captures);
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
@@ -17420,7 +17403,7 @@ fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk_block(eb, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::Loop { body } => {
+        HirExprKind::Loop { body, .. } => {
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
     }
@@ -17979,7 +17962,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                 collect_hir_emitted_events_walk(tail, event_names, out);
             }
         }
-        HirExprKind::While { condition, body } => {
+        HirExprKind::While {
+            condition, body, ..
+        } => {
             collect_hir_emitted_events_walk(condition, event_names, out);
             for stmt in &body.statements {
                 match &stmt.kind {
@@ -18084,7 +18069,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                 collect_hir_emitted_events_walk(value, event_names, out);
             }
         }
-        HirExprKind::Loop { body } => {
+        HirExprKind::Loop { body, .. } => {
             for stmt in &body.statements {
                 match &stmt.kind {
                     HirStmtKind::Expr(e)
@@ -21008,7 +20993,9 @@ fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(v, callable, diagnostics);
             }
         }
-        HirExprKind::While { condition, body } => {
+        HirExprKind::While {
+            condition, body, ..
+        } => {
             scan_expr_for_call_shape(condition, callable, diagnostics);
             scan_block_for_call_shape(body, callable, diagnostics);
         }
@@ -21051,7 +21038,7 @@ fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(value, callable, diagnostics);
             }
         }
-        HirExprKind::Loop { body } => {
+        HirExprKind::Loop { body, .. } => {
             scan_block_for_call_shape(body, callable, diagnostics);
         }
         // Leaf / no-sub-expression variants: Literal, RegexLiteralRef,

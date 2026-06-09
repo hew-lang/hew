@@ -168,7 +168,9 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 }
             }
         }
-        HirExprKind::While { condition, body } => {
+        HirExprKind::While {
+            condition, body, ..
+        } => {
             visit_expr(condition, out);
             visit_block(body, out);
         }
@@ -203,7 +205,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_block(eb, out);
             }
         }
-        HirExprKind::Loop { body } => visit_block(body, out),
+        HirExprKind::Loop { body, .. } => visit_block(body, out),
         HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Select(_)

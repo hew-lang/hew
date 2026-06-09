@@ -1674,7 +1674,9 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
-        HirExprKind::While { condition, body } => {
+        HirExprKind::While {
+            condition, body, ..
+        } => {
             walk_expr(
                 condition,
                 subst,
@@ -1858,7 +1860,7 @@ fn walk_expr(
             }
         }
         HirExprKind::Continue { .. } => {}
-        HirExprKind::Loop { body } => {
+        HirExprKind::Loop { body, .. } => {
             walk_block(
                 body,
                 subst,

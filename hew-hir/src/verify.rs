@@ -366,7 +366,7 @@ impl Verifier {
             | HirExprKind::MachineEventFieldAccess { .. } => {}
             HirExprKind::Scope { body }
             | HirExprKind::ForkBlock { body, .. }
-            | HirExprKind::Loop { body } => self.block(body),
+            | HirExprKind::Loop { body, .. } => self.block(body),
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.expr(duration);
                 self.block(body);
@@ -581,7 +581,9 @@ impl Verifier {
                     }
                 }
             }
-            HirExprKind::While { condition, body } => {
+            HirExprKind::While {
+                condition, body, ..
+            } => {
                 self.expr(condition);
                 self.block(body);
             }

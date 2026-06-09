@@ -4118,7 +4118,9 @@ fn collect_unknown_self_fields_in_expr(
                 }
             }
         }
-        HirExprKind::While { condition, body } => {
+        HirExprKind::While {
+            condition, body, ..
+        } => {
             collect_unknown_self_fields_in_expr(condition, state_fields, seen, unknown);
             collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
         }
@@ -4153,7 +4155,7 @@ fn collect_unknown_self_fields_in_expr(
                 collect_unknown_self_fields_in_block(eb, state_fields, seen, unknown);
             }
         }
-        HirExprKind::Loop { body } => {
+        HirExprKind::Loop { body, .. } => {
             collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
         }
     }
@@ -4802,6 +4804,14 @@ fn short_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
+#[derive(Debug, Clone)]
+struct LoopFrame {
+    label: Option<String>,
+    continue_target: u32,
+    exit_target: u32,
+    scope_depth: usize,
+}
+
 #[derive(Debug, Default)]
 struct Builder {
     /// Checker-authority stream for the *current* basic block. Drained
@@ -5146,8 +5156,7 @@ struct Builder {
     /// walk the full scope chain on early-return paths, emitting defers for
     /// every enclosing scope that has registered bodies.
     active_scopes: Vec<ScopeId>,
-    /// Stack of enclosing loop control targets, innermost at the end. Each
-    /// entry is `(continue_target_bb, exit_bb, scopes_depth_at_entry)`.
+    /// Stack of enclosing loop control targets, innermost at the end.
     ///
     /// `continue_target_bb` is the block a `continue` jumps to (the header for
     /// `while`/`while let`, the increment block for `for`, the body for bare
@@ -5159,11 +5168,12 @@ struct Builder {
     /// defers of every scope opened inside the loop body (LIFO) without
     /// touching the loop's enclosing scopes.
     ///
-    /// Pushed when entering a loop body, popped after the body walk. Read by
-    /// the `Break`/`Continue` arms of `lower_value`; `.last().expect(..)`
-    /// there is fail-closed — break/continue outside a loop is a type error
-    /// and must never reach MIR (LESSONS `boundary-fail-closed`).
-    loop_stack: Vec<(u32, u32, usize)>,
+    /// Pushed when entering a loop body, popped after the body walk. Labeled
+    /// break/continue scans this stack from inner to outer and uses the matched
+    /// frame's `scope_depth` as the bounded defer/drop flush window. Unknown
+    /// labels are a type-checker error; MIR still reports a diagnostic instead
+    /// of panicking if malformed HIR reaches this boundary.
+    loop_stack: Vec<LoopFrame>,
     /// Checker's per-send-site alias classification, keyed by the source span
     /// of each actor-send argument expression (same key as
     /// `TypeCheckOutput::actor_send_aliasing`). Populated by the caller
@@ -5629,6 +5639,39 @@ impl Builder {
         }
     }
 
+    fn resolve_loop_frame(
+        &mut self,
+        label: Option<&str>,
+        keyword: &'static str,
+        site: hew_hir::SiteId,
+    ) -> Option<LoopFrame> {
+        let frame = match label {
+            Some(name) => self
+                .loop_stack
+                .iter()
+                .rev()
+                .find(|frame| frame.label.as_deref() == Some(name)),
+            None => self.loop_stack.last(),
+        };
+        if let Some(frame) = frame {
+            return Some(frame.clone());
+        }
+
+        let reason = match label {
+            Some(name) => format!("{keyword} targets unknown loop label `@{name}`"),
+            None => format!("{keyword} used outside of a loop"),
+        };
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::UnsupportedNode {
+                reason: reason.clone(),
+            },
+            note: format!(
+                "{reason} at site {site:?}; the type checker should reject this before MIR lowering"
+            ),
+        });
+        None
+    }
+
     /// Allocate one `Place::Local` per function parameter and register each
     /// in `binding_locals` so that `BindingRef` expressions in the function
     /// body resolve to a real slot.
@@ -6081,7 +6124,9 @@ impl Builder {
                     self.collect_vec_owned_element_keys_from_expr(eb);
                 }
             }
-            HirExprKind::Block(body) | HirExprKind::Scope { body } | HirExprKind::Loop { body } => {
+            HirExprKind::Block(body)
+            | HirExprKind::Scope { body }
+            | HirExprKind::Loop { body, .. } => {
                 self.collect_vec_owned_element_keys_from_block(body);
             }
             HirExprKind::Match { scrutinee, arms } => {
@@ -6090,7 +6135,9 @@ impl Builder {
                     self.collect_vec_owned_element_keys_from_expr(&arm.body);
                 }
             }
-            HirExprKind::While { condition, body } => {
+            HirExprKind::While {
+                condition, body, ..
+            } => {
                 self.collect_vec_owned_element_keys_from_expr(condition);
                 self.collect_vec_owned_element_keys_from_block(body);
             }
@@ -8406,22 +8453,28 @@ impl Builder {
                 });
                 Some(dest)
             }
-            HirExprKind::While { condition, body } => self.lower_while(condition, body),
+            HirExprKind::While {
+                label,
+                condition,
+                body,
+            } => self.lower_while(label.as_deref(), condition, body),
             HirExprKind::ForRange {
+                label,
                 binding,
                 start,
                 end,
                 inclusive,
                 body,
-            } => self.lower_for_range(binding, start, end, *inclusive, body),
+            } => self.lower_for_range(label.as_deref(), binding, start, end, *inclusive, body),
             HirExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, &expr.ty),
             HirExprKind::WhileLet {
+                label,
                 scrutinee,
                 variant_idx,
                 bindings,
                 body,
                 ..
-            } => self.lower_while_let(scrutinee, *variant_idx, bindings, body),
+            } => self.lower_while_let(label.as_deref(), scrutinee, *variant_idx, bindings, body),
             HirExprKind::IfLet {
                 scrutinee,
                 variant_idx,
@@ -8438,54 +8491,46 @@ impl Builder {
                 else_body.as_ref(),
                 result_ty,
             ),
-            HirExprKind::Loop { body } => self.lower_loop(body),
-            HirExprKind::Break { value, .. } => {
+            HirExprKind::Loop { label, body } => self.lower_loop(label.as_deref(), body),
+            HirExprKind::Break { label, value } => {
                 // Lower the operand for its side effects — `break value` does
                 // not yield a loop value in this slice (loop-as-expression is
                 // out of scope), so the resulting Place is discarded.
                 if let Some(value) = value {
                     let _ = self.lower_value(value);
                 }
-                // Fail closed: `break` outside a loop is a type error and must
-                // never reach MIR (LESSONS `boundary-fail-closed`).
-                let (_, exit_bb, loop_scope_depth) = *self
-                    .loop_stack
-                    .last()
-                    .expect("break outside loop — rejected by type checker");
+                let frame = self.resolve_loop_frame(label.as_deref(), "break", expr.site)?;
                 // Flush in-loop defers before leaving the loop (cleanup-all-exits).
-                self.emit_defers_for_break_continue(loop_scope_depth);
+                self.emit_defers_for_break_continue(frame.scope_depth);
                 // Free the break-iteration's yielded heap value(s) on the break
                 // edge (the body-end drop is past the break — would leak it).
                 // Value before handle: the yielded buffer is inner heap, the
                 // handle owns the thread (LIFO inner-first).
-                self.emit_generator_yield_value_drops_for_break_continue(loop_scope_depth);
+                self.emit_generator_yield_value_drops_for_break_continue(frame.scope_depth);
                 // Release in-loop generators on the break edge so the
                 // break-iteration's context + thread are not leaked.
-                self.emit_generator_drops_for_break_continue(loop_scope_depth);
-                self.finish_current_block(Terminator::Goto { target: exit_bb });
+                self.emit_generator_drops_for_break_continue(frame.scope_depth);
+                self.finish_current_block(Terminator::Goto {
+                    target: frame.exit_target,
+                });
                 // Source following `break` lexically is dead; give it a home.
                 let dead = self.alloc_block();
                 self.start_dead_block(dead);
                 None
             }
-            HirExprKind::Continue { .. } => {
-                // Fail closed: `continue` outside a loop is a type error and
-                // must never reach MIR (LESSONS `boundary-fail-closed`).
-                let (continue_target, _, loop_scope_depth) = *self
-                    .loop_stack
-                    .last()
-                    .expect("continue outside loop — rejected by type checker");
+            HirExprKind::Continue { label } => {
+                let frame = self.resolve_loop_frame(label.as_deref(), "continue", expr.site)?;
                 // Flush in-loop defers before the back-edge (cleanup-all-exits).
-                self.emit_defers_for_break_continue(loop_scope_depth);
+                self.emit_defers_for_break_continue(frame.scope_depth);
                 // Free the continued iteration's yielded heap value(s) on the
                 // continue edge (the body-end drop is past the continue — would
                 // leak it). Value before handle (LIFO inner-first).
-                self.emit_generator_yield_value_drops_for_break_continue(loop_scope_depth);
+                self.emit_generator_yield_value_drops_for_break_continue(frame.scope_depth);
                 // Release in-loop generators on the continue edge so the
                 // skipped iteration's context + thread are not leaked.
-                self.emit_generator_drops_for_break_continue(loop_scope_depth);
+                self.emit_generator_drops_for_break_continue(frame.scope_depth);
                 self.finish_current_block(Terminator::Goto {
-                    target: continue_target,
+                    target: frame.continue_target,
                 });
                 // Source following `continue` lexically is dead; give it a home.
                 let dead = self.alloc_block();
@@ -11534,7 +11579,12 @@ impl Builder {
     ///
     /// The while expression always has type Unit; `None` is returned
     /// (no value Place) matching the semantics of a statement-level loop.
-    fn lower_while(&mut self, condition: &HirExpr, body: &hew_hir::HirBlock) -> Option<Place> {
+    fn lower_while(
+        &mut self,
+        label: Option<&str>,
+        condition: &HirExpr,
+        body: &hew_hir::HirBlock,
+    ) -> Option<Place> {
         let header_bb = self.alloc_block();
         let body_bb = self.alloc_block();
         let exit_bb = self.alloc_block();
@@ -11555,7 +11605,12 @@ impl Builder {
         self.start_block(body_bb);
         // continue → header (re-checks the condition); break → exit.
         let loop_scope_depth = self.active_scopes.len();
-        self.loop_stack.push((header_bb, exit_bb, loop_scope_depth));
+        self.loop_stack.push(LoopFrame {
+            label: label.map(str::to_string),
+            continue_target: header_bb,
+            exit_target: exit_bb,
+            scope_depth: loop_scope_depth,
+        });
         self.active_scopes.push(body.scope);
         for stmt in &body.statements {
             self.stmt(stmt);
@@ -11615,6 +11670,7 @@ impl Builder {
     /// Place) matching `lower_while`.
     fn lower_while_let(
         &mut self,
+        label: Option<&str>,
         scrutinee: &HirExpr,
         variant_idx: u32,
         bindings: &[hew_hir::HirMatchArmBinding],
@@ -11718,7 +11774,12 @@ impl Builder {
         self.active_scopes.push(body.scope);
         // continue → header (re-evaluates scrutinee + tag); break → exit.
         let loop_scope_depth = self.active_scopes.len() - 1;
-        self.loop_stack.push((header_bb, exit_bb, loop_scope_depth));
+        self.loop_stack.push(LoopFrame {
+            label: label.map(str::to_string),
+            continue_target: header_bb,
+            exit_target: exit_bb,
+            scope_depth: loop_scope_depth,
+        });
         for stmt in &body.statements {
             self.stmt(stmt);
         }
@@ -11970,6 +12031,7 @@ impl Builder {
     /// — fail-closed per the reliability tenet.
     fn lower_for_range(
         &mut self,
+        label: Option<&str>,
         binding: &hew_hir::HirBinding,
         start: &HirExpr,
         end: &HirExpr,
@@ -12090,7 +12152,12 @@ impl Builder {
         // break → exit. Depth captured before the body scope push so the
         // in-loop defer window covers body.scope and any nested block scopes.
         let loop_scope_depth = self.active_scopes.len() - 1;
-        self.loop_stack.push((inc_bb, exit_bb, loop_scope_depth));
+        self.loop_stack.push(LoopFrame {
+            label: label.map(str::to_string),
+            continue_target: inc_bb,
+            exit_target: exit_bb,
+            scope_depth: loop_scope_depth,
+        });
         for stmt in &body.statements {
             self.stmt(stmt);
         }
@@ -12168,7 +12235,7 @@ impl Builder {
     /// Always returns `None`: `loop {}` is `Unit`-typed at the MIR boundary
     /// (a `break value` carries its operand for side effects only in this
     /// slice; loop-as-expression is out of scope — see the plan).
-    fn lower_loop(&mut self, body: &hew_hir::HirBlock) -> Option<Place> {
+    fn lower_loop(&mut self, label: Option<&str>, body: &hew_hir::HirBlock) -> Option<Place> {
         let body_bb = self.alloc_block();
         let exit_bb = self.alloc_block();
 
@@ -12179,7 +12246,12 @@ impl Builder {
         self.start_block(body_bb);
         // continue → body_bb (re-enter the top); break → exit.
         let loop_scope_depth = self.active_scopes.len();
-        self.loop_stack.push((body_bb, exit_bb, loop_scope_depth));
+        self.loop_stack.push(LoopFrame {
+            label: label.map(str::to_string),
+            continue_target: body_bb,
+            exit_target: exit_bb,
+            scope_depth: loop_scope_depth,
+        });
         self.active_scopes.push(body.scope);
         for stmt in &body.statements {
             self.stmt(stmt);
@@ -12779,7 +12851,7 @@ impl Builder {
     // Inclusive ranges (`a..=b`) are lowered to half-open `a..(b+1)`
     // with an explicit i64 overflow trap, mirroring the Vec arm. Open
     // endpoints materialise as 0 (start) or `hew_string_char_count` /
-    // bytes `len` field load (end).
+    // `hew_bytes_len` (end).
 
     fn lower_string_index(
         &mut self,
@@ -12835,27 +12907,16 @@ impl Builder {
                 base
             }
         } else {
-            // Open end on string slice would require widening
-            // `hew_string_char_count`'s i32 return to i64 before passing
-            // to `hew_string_slice_codepoints`; the MIR substrate has no
-            // direct i32->i64 sign-extension instruction today.  Fail
-            // closed at MIR construction rather than silently emit a
-            // type-mismatched call.  W3 collections-sugar S2c surface
-            // covers the closed `s[a..b]` and inclusive `s[a..=b]`
-            // forms; open-end follows when a `hew_string_char_count_i64`
-            // helper or a MIR-level IntExtend instruction lands.
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "open-end string slice (s[a..] / s[..])".to_string(),
-                    site: container.site,
-                },
-                note: "W3 collections-sugar S2: closed string ranges \
-                       `s[a..b]` and `s[a..=b]` are supported; open-end \
-                       forms await an i64-returning char-count helper. \
-                       Use an explicit upper bound for now."
-                    .to_string(),
+            let count_i32 = self.alloc_local(ResolvedTy::I32);
+            self.push_runtime_call("hew_string_char_count", vec![s_place], Some(count_i32));
+            let count_i64 = self.alloc_local(ResolvedTy::I64);
+            self.instructions.push(Instr::NumericCast {
+                dest: count_i64,
+                src: count_i32,
+                from_ty: ResolvedTy::I32,
+                to_ty: ResolvedTy::I64,
             });
-            return None;
+            count_i64
         };
 
         let result_place = self.alloc_local(ResolvedTy::String);
@@ -12919,31 +12980,9 @@ impl Builder {
                 base
             }
         } else {
-            // Open end: codegen reads `len` directly off the bytes
-            // triple when materialising `hew_bytes_slice`'s args. To
-            // avoid that backchannel here, emit a sentinel constant
-            // equal to `i64::MAX`: the runtime's `end > len` check
-            // would normally trap, but the open-end form is rare and
-            // the cleanest fix is to call a tiny `hew_bytes_len`
-            // helper.  TODO when codegen wires bytes-triple aware
-            // open-end: replace with a hew_bytes_len call.
-            //
-            // For S2c we conservatively bail on open-end bytes
-            // slicing so the unsupported case fails closed at MIR
-            // construction rather than silently trapping in the
-            // runtime with a misleading "end > len" message.
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "open-end bytes slice (b[a..])".to_string(),
-                    site: container.site,
-                },
-                note: "W3 collections-sugar S2: closed bytes ranges \
-                       `b[a..b]` and `b[a..=b]` are supported; open-end \
-                       `b[a..]` / `b[..]` await a `hew_bytes_len` runtime \
-                       helper. Use an explicit upper bound for now."
-                    .to_string(),
-            });
-            return None;
+            let len_place = self.alloc_local(ResolvedTy::I64);
+            self.push_runtime_call("hew_bytes_len", vec![bytes_place], Some(len_place));
+            len_place
         };
 
         let result_place = self.alloc_local(ResolvedTy::Bytes);
@@ -13979,6 +14018,7 @@ impl Builder {
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
             "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
             "hew_bytes_index" => self.lower_bytes_get_i32(hir_args, site, context),
+            "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
             "hew_observe_read_u64" | "hew_observe_scrape" | "hew_observe_series" => {
                 self.lower_observe_runtime_call(symbol, hir_args, site, context)
             }
@@ -14126,6 +14166,50 @@ impl Builder {
             (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::I32));
         self.push_runtime_call("hew_bytes_index", vec![buf, idx], dest);
         dest
+    }
+
+    /// Emit `hew_string_char_count(s) -> i32`, widened to the Hew-facing `i64`.
+    ///
+    /// The runtime ABI returns i32, while the stdlib-facing
+    /// `string.char_count_utf8()` declaration returns i64. Keep the call ABI
+    /// honest by storing the runtime result in an i32 temporary and inserting
+    /// the same explicit `NumericCast` used by open-end string slicing.
+    fn lower_string_char_count(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 1 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_string_char_count` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_string_char_count` expects 1 argument (receiver), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+
+        let s = self.lower_value(&hir_args[0])?;
+        if context != RuntimeCallContext::ValueNeeded {
+            self.push_runtime_call("hew_string_char_count", vec![s], None);
+            return None;
+        }
+
+        let count_i32 = self.alloc_local(ResolvedTy::I32);
+        self.push_runtime_call("hew_string_char_count", vec![s], Some(count_i32));
+        let count_i64 = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::NumericCast {
+            dest: count_i64,
+            src: count_i32,
+            from_ty: ResolvedTy::I32,
+            to_ty: ResolvedTy::I64,
+        });
+        Some(count_i64)
     }
 
     fn lower_observe_runtime_call(

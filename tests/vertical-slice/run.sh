@@ -51,6 +51,13 @@ run_accept_expect_stdout() {
   diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
 }
 
+run_accept_expect_status_and_stdout() {
+  local fixture="$1"
+  local expected_status="$2"
+  run_accept_expect_status "${fixture}" "${expected_status}"
+  diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
+}
+
 run_check_run_expect_stdout() {
   local fixture="$1"
   "${HEW}" check "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1
@@ -202,6 +209,20 @@ run_accept_expect_status "loop_break" 7
 run_accept_expect_status "break_nested" 6
 # in-loop `defer` fires on the `break` path (cleanup-all-exits): exit 9, not 0.
 run_accept_expect_status "defer_in_loop_break" 9
+# labeled `break @outer` exits both the inner loop and the labeled outer loop,
+# then runs code after the labeled loop.
+run_accept_expect_status "labeled_break_outer" 16
+# labeled `continue @outer` skips the rest of both loop bodies and advances the
+# outer for-range counter.
+run_accept_expect_status "labeled_continue_outer" 38
+# labeled break flushes every intervening defer scope exactly once.
+run_accept_expect_stdout "labeled_break_defer_window"
+
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/labeled_break_unknown_label.hew" >"${reject_output}" 2>&1; then
+  echo "expected labeled_break_unknown_label fixture to fail" >&2
+  exit 1
+fi
+grep -qF "unknown loop label \`@nonexistent\`" "${reject_output}"
 
 # WASM parity: the for-range `continue` CFG (increment block + overflow traps,
 # the most complex loop-control shape) must compile under wasm32. Loop control
@@ -446,6 +467,15 @@ run_accept_expect_stdout "print_f64"
 # `#[repr(C)] BytesTriple` passed by value). Asserts both exit-0 status
 # and exact stdout `Hi\n`.
 run_accept_expect_stdout "bytes_push_round_trip"
+
+# W3 collections-sugar S2: bytes range slices. Each fixture asserts both the
+# runtime-derived slice length (process status) and contents (`to_string()`).
+run_accept_expect_status_and_stdout "bytes_slice_closed" 2
+run_accept_expect_status_and_stdout "bytes_slice_open_left" 3
+run_accept_expect_status_and_stdout "bytes_slice_open_right" 4
+run_accept_expect_status_and_stdout "bytes_slice_full" 4
+run_accept_expect_status_and_stdout "bytes_slice_open_right_loop" 10
+
 run_accept_expect_stdout "regex_captures_find_all"
 run_check_run_expect_stdout "stdlib_io_scanner_file_oracle"
 run_accept_expect_stdout "tls_ffi_result_lowering"
@@ -950,6 +980,12 @@ gtimeout 30 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/hashset_new_turb
 # ---------------------------------------------------------------------------
 # Accept: ASCII codepoint slice. "hello"[1..4] = "ell" → byte_length = 3.
 run_accept_expect_status "string_slice_codepoint" 3
+# Accept: closed range prefix. "héllo"[0..2] = "hé" → byte_length = 3.
+run_accept_expect_status_and_stdout "string_slice_closed_prefix" 3
+# Accept: open-end codepoint slice. "héllo"[1..] = "éllo" → byte_length = 5.
+run_accept_expect_status_and_stdout "string_slice_open_right" 5
+# Accept: full-range codepoint slice. "hié"[..] = "hié" → byte_length = 4.
+run_accept_expect_status_and_stdout "string_slice_full" 4
 # Accept: ASCII single-element index path runs without panic and the
 # accompanying slice [1..2] returns a 1-byte string.
 run_accept_expect_status "string_index_codepoint" 1

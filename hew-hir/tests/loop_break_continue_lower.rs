@@ -4,11 +4,9 @@
 //! Before this lane, `Stmt::Break` / `Stmt::Continue` / `Stmt::Loop` fell
 //! through the `lower_stmt` `_` catchall to `unsupported(..,"slice-2")`,
 //! producing `HirExprKind::Unsupported` plus a `NotYetImplemented`
-//! diagnostic. These tests pin that the *unlabeled* forms now lower to the
-//! dedicated `HirExprKind::Break` / `Continue` / `Loop` nodes and emit no
-//! diagnostic, while the *labeled* forms remain fail-closed gated
-//! (`NotYetImplemented`) per the v0.5 deferral (LESSONS
-//! `boundary-fail-closed`).
+//! diagnostic. These tests pin that both unlabeled and labeled forms lower to
+//! the dedicated `HirExprKind::Break` / `Continue` / loop nodes and emit no
+//! `NotYetImplemented`; MIR owns the target selection and defer-flush window.
 
 use hew_hir::{
     lower_program, HirBlock, HirDiagnosticKind, HirExprKind, HirStmtKind, ResolutionCtx,
@@ -75,7 +73,7 @@ fn expr_has_kind<F: Fn(&HirExprKind) -> bool + Copy>(expr: &hew_hir::HirExpr, pr
         return true;
     }
     match &expr.kind {
-        HirExprKind::Loop { body }
+        HirExprKind::Loop { body, .. }
         | HirExprKind::While { body, .. }
         | HirExprKind::ForRange { body, .. }
         | HirExprKind::WhileLet { body, .. } => block_has_kind(body, pred),
@@ -225,10 +223,10 @@ fn break_with_value_lowers_and_carries_operand() {
     );
 }
 
-// ── Labeled forms remain fail-closed gated (deferred-scope guard) ────────────
+// ── Labeled forms carry labels through HIR ───────────────────────────────────
 
 #[test]
-fn labeled_break_is_not_yet_implemented() {
+fn labeled_break_lowers_with_label() {
     let output = typecheck_and_lower(
         r"
         fn main() {
@@ -239,19 +237,35 @@ fn labeled_break_is_not_yet_implemented() {
         ",
     );
     assert!(
-        has_not_yet_implemented(&output),
-        "labeled `break @outer;` must remain NotYetImplemented (v0.5 deferral): {:#?}",
+        !has_not_yet_implemented(&output),
+        "labeled `break @outer;` must lower without NotYetImplemented: {:#?}",
         output.diagnostics
     );
     let body = main_body(&output);
     assert!(
-        block_has_kind(body, |k| matches!(k, HirExprKind::Unsupported(_))),
-        "labeled break must fail closed to an Unsupported node, never a silent Break"
+        block_has_kind(body, |k| matches!(
+            k,
+            HirExprKind::Loop {
+                label: Some(label),
+                ..
+            } if label == "outer"
+        )),
+        "expected the loop label to survive HIR lowering"
+    );
+    assert!(
+        block_has_kind(body, |k| matches!(
+            k,
+            HirExprKind::Break {
+                label: Some(label),
+                ..
+            } if label == "outer"
+        )),
+        "expected labeled break to carry `outer` into MIR"
     );
 }
 
 #[test]
-fn labeled_continue_is_not_yet_implemented() {
+fn labeled_continue_lowers_with_label() {
     let output = typecheck_and_lower(
         r"
         fn main() {
@@ -262,13 +276,28 @@ fn labeled_continue_is_not_yet_implemented() {
         ",
     );
     assert!(
-        has_not_yet_implemented(&output),
-        "labeled `continue @outer;` must remain NotYetImplemented (v0.5 deferral): {:#?}",
+        !has_not_yet_implemented(&output),
+        "labeled `continue @outer;` must lower without NotYetImplemented: {:#?}",
         output.diagnostics
     );
     let body = main_body(&output);
     assert!(
-        block_has_kind(body, |k| matches!(k, HirExprKind::Unsupported(_))),
-        "labeled continue must fail closed to an Unsupported node, never a silent Continue"
+        block_has_kind(body, |k| matches!(
+            k,
+            HirExprKind::While {
+                label: Some(label),
+                ..
+            } if label == "outer"
+        )),
+        "expected the while label to survive HIR lowering"
+    );
+    assert!(
+        block_has_kind(body, |k| matches!(
+            k,
+            HirExprKind::Continue {
+                label: Some(label)
+            } if label == "outer"
+        )),
+        "expected labeled continue to carry `outer` into MIR"
     );
 }

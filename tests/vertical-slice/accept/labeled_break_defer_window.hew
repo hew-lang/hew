@@ -1,0 +1,17 @@
+// `break @outer` must flush defers for every intervening scope up to the
+// labeled loop's body scope, in the same LIFO discipline as an innermost break.
+//
+// The outer body registers `outer`; the inner body registers `inner`; then
+// `break @outer` exits the labeled loop. Both defers must fire exactly once on
+// that break edge before post-loop `after` runs. Expected stdout:
+// inner, outer, after.
+fn main() {
+    @outer: for i in 0 .. 2 {
+        defer println("outer");
+        for j in 0 .. 2 {
+            defer println("inner");
+            break @outer;
+        }
+    }
+    println("after");
+}

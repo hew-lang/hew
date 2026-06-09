@@ -1709,6 +1709,20 @@ fn intern_runtime_decl<'ctx>(
         // consumer convention (`is_bytes_by_pointer_consumer`); by value the
         // `{ptr,i32,i32}` arg is not reliably ABI-portable. Returns `len` as i64.
         "hew_bytes_len" => i64_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_bytes_slice(ptr, offset, len, start, end) -> BytesTriple.
+        // Returns the same two-eightbyte `[2 x i64]` boundary type used by the
+        // migrated bytes producers; codegen stores it into the `{ptr,i32,i32}`
+        // destination slot.
+        "hew_bytes_slice" => i64_ty.array_type(2).fn_type(
+            &[
+                ptr_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+                i64_ty.into(),
+                i64_ty.into(),
+            ],
+            false,
+        ),
         // hew_bytes_push(triple: &mut BytesTriple, byte: u8) -> void.
         // The receiver is the address of the stack-resident BytesTriple, not a
         // loaded heap Vec pointer.
@@ -1773,6 +1787,7 @@ fn intern_runtime_decl<'ctx>(
         //   Aborts on invalid bounds / null / invalid UTF-8.
         // Drop ownership: returned string follows the existing
         // hew_string_drop / String value-class discipline.
+        "hew_string_char_count" => i32_ty.fn_type(&[ptr_ty.into()], false),
         "hew_string_index" => i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
         "hew_string_slice_codepoints" => {
             ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
@@ -16881,13 +16896,148 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        // ── Bytes mutating receiver ABI ───────────────────────────────────
+        // ── Bytes value ABI ───────────────────────────────────────────────
         //
         // hew_bytes_push(triple: &mut BytesTriple, byte: u8) -> void.
         // args[0]: Place::Local(N) for a bytes local. Pass the alloca address
         // directly so the runtime can write back ptr/offset/len after CoW/grow.
         // args[1]: Hew API accepts i32 for convenience; truncate to u8 at the
         // runtime ABI boundary.
+        "hew_bytes_len" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_bytes_len): expected 1 arg (bytes), got {}",
+                    args.len()
+                )));
+            }
+            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_len arg0 must be a `bytes` receiver; got {:?}",
+                    place_resolved_ty(fn_ctx, args[0])?
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_bytes_len returns a length; producer must supply a dest".into(),
+                )
+            })?;
+            let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[triple_ptr.into()], "hew_bytes_len_call")
+                .llvm_ctx("hew_bytes_len call")?;
+            let len_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_bytes_len returned void".into()))?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, len_val)
+                .llvm_ctx("hew_bytes_len store")?;
+            let _ = (i32_ty, i64_ty, ptr_ty);
+        }
+        // hew_bytes_slice(ptr, offset, len, start, end) -> BytesTriple.
+        // A `bytes` receiver is a stack-resident triple; unpack it field-by-field,
+        // pass the scalar runtime ABI, then store the returned two-eightbyte
+        // BytesTriple directly into the destination bytes slot.
+        "hew_bytes_slice" => {
+            if args.len() != 3 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_bytes_slice): expected 3 args \
+                     (bytes, start, end), got {}",
+                    args.len()
+                )));
+            }
+            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_slice arg0 must be a `bytes` receiver; got {:?}",
+                    place_resolved_ty(fn_ctx, args[0])?
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_bytes_slice returns bytes; producer must supply a dest".into(),
+                )
+            })?;
+            let (triple_ptr, triple_ty) = place_pointer(fn_ctx, args[0])?;
+            let BasicTypeEnum::StructType(triple_struct_ty) = triple_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_slice: bytes receiver alloca has non-struct type {triple_ty:?}; \
+                     expected the `{{ptr, i32, i32}}` BytesTriple layout"
+                )));
+            };
+            let data_ptr_gep = fn_ctx
+                .builder
+                .build_struct_gep(triple_struct_ty, triple_ptr, 0, "bytes_slice_ptr_gep")
+                .llvm_ctx("hew_bytes_slice ptr GEP")?;
+            let data_ptr = fn_ctx
+                .builder
+                .build_load(ptr_ty, data_ptr_gep, "bytes_slice_ptr")
+                .llvm_ctx("hew_bytes_slice ptr load")?
+                .into_pointer_value();
+            let offset_gep = fn_ctx
+                .builder
+                .build_struct_gep(triple_struct_ty, triple_ptr, 1, "bytes_slice_offset_gep")
+                .llvm_ctx("hew_bytes_slice offset GEP")?;
+            let offset_val = fn_ctx
+                .builder
+                .build_load(i32_ty, offset_gep, "bytes_slice_offset")
+                .llvm_ctx("hew_bytes_slice offset load")?
+                .into_int_value();
+            let len_gep = fn_ctx
+                .builder
+                .build_struct_gep(triple_struct_ty, triple_ptr, 2, "bytes_slice_len_gep")
+                .llvm_ctx("hew_bytes_slice len GEP")?;
+            let len_val = fn_ctx
+                .builder
+                .build_load(i32_ty, len_gep, "bytes_slice_len")
+                .llvm_ctx("hew_bytes_slice len load")?
+                .into_int_value();
+            let start_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_bytes_slice start")?;
+            let end_val = load_int_arg(fn_ctx, args[2], i64_ty, "hew_bytes_slice end")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[
+                        data_ptr.into(),
+                        offset_val.into(),
+                        len_val.into(),
+                        start_val.into(),
+                        end_val.into(),
+                    ],
+                    "hew_bytes_slice_call",
+                )
+                .llvm_ctx("hew_bytes_slice call")?;
+            let result_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_bytes_slice returned void".into()))?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            if !matches!(dest_ty, BasicTypeEnum::StructType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_slice dest must be a bytes struct slot, got {dest_ty:?}"
+                )));
+            }
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_val)
+                .llvm_ctx("hew_bytes_slice store")?;
+            let _ = (i8_ty, i64_ty);
+        }
         "hew_bytes_push" => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
@@ -17580,6 +17730,36 @@ fn lower_call_runtime_abi(
                     .llvm_ctx(store_ctx)?;
             }
             let _ = i32_ty;
+        }
+        "hew_string_char_count" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_string_char_count): expected 1 arg (s), got {}",
+                    args.len()
+                )));
+            }
+            let s_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_char_count arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[s_ptr.into()], "hew_string_char_count_call")
+                .llvm_ctx("hew_string_char_count call")?;
+            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_string_char_count returned void".into())
+            })?;
+            if let Some(dest_place) = dest {
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, result_val)
+                    .llvm_ctx("hew_string_char_count store")?;
+            }
+            let _ = (i64_ty, ptr_ty);
         }
         "hew_string_index" => {
             if args.len() != 2 {

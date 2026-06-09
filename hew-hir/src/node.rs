@@ -1613,16 +1613,19 @@ pub enum HirExprKind {
         field_idx: usize,
         field_name: String,
     },
-    /// `while cond { body }` — loops until `cond` evaluates to false.
+    /// `while cond { body }` / `@label: while cond { body }` — loops until
+    /// `cond` evaluates to false.
     ///
     /// The expression type is always `Unit`; a while loop never produces
     /// a value.  MIR lowering emits a header block (condition test) and
     /// a body block with a back-edge to the header.
     While {
+        /// Optional source label targeted by `break @label` / `continue @label`.
+        label: Option<String>,
         condition: Box<HirExpr>,
         body: HirBlock,
     },
-    /// `for binding in start..end { body }` — Range iteration
+    /// `for binding in start..end { body }` / `@label: for ...` — Range iteration
     /// (exclusive or inclusive) over an integer range.
     ///
     /// This node is produced only for `Range`-typed iterables; other
@@ -1633,6 +1636,8 @@ pub enum HirExprKind {
     /// counter local (typed `i64`), a header block (bounds check), a
     /// body block, and a back-edge.
     ForRange {
+        /// Optional source label targeted by `break @label` / `continue @label`.
+        label: Option<String>,
         /// The loop-variable binding.  Immutable, scoped to each
         /// iteration; MIR lowering overwrites the backing local on every
         /// iteration rather than allocating a new one each time.
@@ -1675,8 +1680,9 @@ pub enum HirExprKind {
         /// a wildcard arm or `Some(VariantMatch)` for a unit-variant arm.
         arms: Vec<HirMatchArm>,
     },
-    /// `while let <PayloadVariant>(bindings) = scrutinee { body }` — loops
-    /// while the scrutinee's tag matches `variant_idx`. Each iteration
+    /// `while let <PayloadVariant>(bindings) = scrutinee { body }` /
+    /// `@label: while let ...` — loops while the scrutinee's tag matches
+    /// `variant_idx`. Each iteration
     /// re-evaluates `scrutinee` from scratch (the surface semantics: the
     /// pattern's right-hand side is checked anew on every iteration), then
     /// either binds the variant's payload fields and runs `body` before
@@ -1692,6 +1698,8 @@ pub enum HirExprKind {
     /// rejected at HIR lowering with a structured `NotYetImplemented`
     /// diagnostic — the same shape used by `HirExprKind::Match`.
     WhileLet {
+        /// Optional source label targeted by `break @label` / `continue @label`.
+        label: Option<String>,
         /// Re-evaluated each iteration. Its `ty` is the resolved enum type
         /// (e.g. `Option<i64>`).
         scrutinee: Box<HirExpr>,
@@ -1742,18 +1750,17 @@ pub enum HirExprKind {
         /// in statement position).
         result_ty: ResolvedTy,
     },
-    /// `break;` / `break <value>;` — early exit from the innermost enclosing
-    /// loop, transferring control to the loop's exit block.
+    /// `break;` / `break @label;` / `break <value>;` — early exit from the
+    /// innermost enclosing loop, or from the nearest enclosing loop carrying
+    /// the requested label.
     ///
     /// The expression type is always `Unit`; `break` never produces a value
     /// in the surrounding expression position (loop-as-expression value
     /// return is out of scope for v0.5).
     ///
-    /// **Scope (v0.5)**: only the unlabeled form is lowered here. Labeled
-    /// `break @lbl` is rejected at HIR lowering with a structured
-    /// `NotYetImplemented` diagnostic (`label` resolution to a non-innermost
-    /// loop is a follow-up lane), so `label` is always `None` on a node that
-    /// reaches MIR.
+    /// Labeled forms carry `label: Some(name)` to MIR. The type checker rejects
+    /// unknown labels; MIR keeps a defense-in-depth diagnostic if malformed HIR
+    /// reaches it.
     ///
     /// `value` carries the operand of `break <value>` so MIR can lower it for
     /// its side effects (and move-checker correctness) before emitting the
@@ -1763,25 +1770,27 @@ pub enum HirExprKind {
         label: Option<String>,
         value: Option<Box<HirExpr>>,
     },
-    /// `continue;` — skip to the next iteration of the innermost enclosing
-    /// loop, transferring control to that loop's continue target (the
+    /// `continue;` / `continue @label;` — skip to the next iteration of the
+    /// innermost enclosing loop, or of the nearest enclosing loop carrying the
+    /// requested label, transferring control to that loop's continue target (the
     /// condition/bounds-check header for `while`/`while_let`, the dedicated
     /// increment block for `for`-range, or the body block for a bare `loop`).
     ///
-    /// The expression type is always `Unit`. Only the unlabeled form is
-    /// lowered here; labeled `continue @lbl` is rejected at HIR lowering with
-    /// a structured `NotYetImplemented` diagnostic, so `label` is always
-    /// `None` on a node that reaches MIR.
+    /// The expression type is always `Unit`. Labeled forms carry
+    /// `label: Some(name)` to MIR; the type checker rejects unknown labels.
     Continue {
         label: Option<String>,
     },
-    /// Bare `loop { body }` — an unconditional loop with no header condition.
+    /// Bare `loop { body }` / `@label: loop { body }` — an unconditional loop
+    /// with no header condition.
     ///
     /// The expression type is always `Unit`; an infinite loop only ends via a
     /// `break` inside its body. MIR lowering emits a body block with an
     /// unconditional back-edge to itself and an exit block that is the target
     /// of every enclosed `break`. The continue target is the body block.
     Loop {
+        /// Optional source label targeted by `break @label` / `continue @label`.
+        label: Option<String>,
         body: HirBlock,
     },
     Unsupported(String),

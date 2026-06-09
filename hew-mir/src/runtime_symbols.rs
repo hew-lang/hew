@@ -115,6 +115,12 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     //   `BytesTriple`. Aborts on negative index or index >= len. Emitted by
     //   the MIR producer arm for `b[i]` over `Ty::Bytes` receivers.
     "hew_bytes_index",
+    // `hew_bytes_len(triple: *const BytesTriple) -> i64`
+    //   (`hew-runtime/src/bytes.rs`). Reads the logical byte length from the
+    //   stack-resident triple. Emitted for open-end bytes ranges `b[a..]` /
+    //   `b[..]` so MIR materialises the end bound before calling
+    //   `hew_bytes_slice`.
+    "hew_bytes_len",
     // `hew_bytes_push(&mut BytesTriple, byte: u8)` appends one byte, updating
     // the caller's stack-resident triple after CoW/growth. Emitted for
     // `bytes.push(i32)` receiver methods; codegen truncates the element to u8.
@@ -321,7 +327,12 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // --- SendHalf<T> ---------------------------------------------
     "hew_send_half_send",
     "hew_send_half_try_send",
-    // --- String concat/codepoint index/slice substrate -----------------------
+    // --- String char-count/concat/codepoint index/slice substrate ------------
+    // `hew_string_char_count(s) -> i32` (`hew-runtime/src/string.rs`).
+    //   Counts UTF-8 codepoints. Emitted for open-end string ranges `s[a..]` /
+    //   `s[..]`; MIR widens the i32 result to i64 before passing it to
+    //   `hew_string_slice_codepoints`.
+    "hew_string_char_count",
     // `hew_string_concat(a, b) -> *mut c_char` (`hew-runtime/src/string.rs`).
     //   Fresh owned concatenation result. Emitted for `string + string`;
     //   drop-safety follows the existing `String` value-class discipline.

@@ -974,12 +974,17 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             )
             .expect("write to string");
         }
-        HirExprKind::While { condition, body } => {
-            writeln!(out, "{pad}  while").expect("write to string");
+        HirExprKind::While {
+            label,
+            condition,
+            body,
+        } => {
+            writeln!(out, "{pad}  while label={label:?}").expect("write to string");
             dump_expr(out, condition, indent + 4);
             dump_block(out, body, indent + 4);
         }
         HirExprKind::ForRange {
+            label,
             binding,
             start,
             end,
@@ -988,7 +993,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         } => {
             writeln!(
                 out,
-                "{pad}  for-range {} (inclusive={inclusive})",
+                "{pad}  for-range {} (inclusive={inclusive}, label={label:?})",
                 binding.name
             )
             .expect("write to string");
@@ -1051,6 +1056,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             }
         }
         HirExprKind::WhileLet {
+            label,
             scrutinee,
             variant_match,
             variant_idx,
@@ -1059,7 +1065,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         } => {
             writeln!(
                 out,
-                "{pad}  while-let {}::{} [variant_idx={variant_idx}, bindings={}]",
+                "{pad}  while-let {}::{} [variant_idx={variant_idx}, bindings={}, label={label:?}]",
                 variant_match.type_name,
                 variant_match.variant_name,
                 bindings.len(),
@@ -1101,8 +1107,8 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::Continue { label } => {
             writeln!(out, "{pad}  continue label={label:?}").expect("write to string");
         }
-        HirExprKind::Loop { body } => {
-            writeln!(out, "{pad}  loop").expect("write to string");
+        HirExprKind::Loop { label, body } => {
+            writeln!(out, "{pad}  loop label={label:?}").expect("write to string");
             dump_block(out, body, indent + 4);
         }
     }

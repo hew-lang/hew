@@ -511,7 +511,7 @@ fn walk_expr(
         }
         HirExprKind::Scope { body }
         | HirExprKind::ForkBlock { body, .. }
-        | HirExprKind::Loop { body } => {
+        | HirExprKind::Loop { body, .. } => {
             walk_block(body, subst, residual_domain, disc);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
@@ -540,7 +540,9 @@ fn walk_expr(
         HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
             walk_expr(body, subst, residual_domain, disc);
         }
-        HirExprKind::While { condition, body } => {
+        HirExprKind::While {
+            condition, body, ..
+        } => {
             walk_expr(condition, subst, residual_domain, disc);
             walk_block(body, subst, residual_domain, disc);
         }

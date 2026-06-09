@@ -1,0 +1,6 @@
+fn main() -> i64 {
+    let s: string = "héllo";
+    let slice: string = s[1..];
+    println(slice);
+    slice.len()
+}

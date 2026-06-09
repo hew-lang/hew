@@ -177,7 +177,6 @@ pub unsafe fn validate_set_op_elem(set: *const HewLayoutHashSet, elem: *const c_
 ///
 /// `elem_layout` must be a valid, non-null pointer to a `HewMapKeyLayout`
 /// satisfying the C-1b validator invariants.
-// WASM-TODO(#1820): hew_hashset_new_with_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_new_with_layout(
     elem_layout: *const HewMapKeyLayout,
@@ -247,7 +246,6 @@ pub unsafe extern "C" fn hew_hashset_new_with_layout(
 /// `set` must be a valid `HewLayoutHashSet` pointer obtained from
 /// `hew_hashset_new_with_layout`.  `elem` must point to a readable blob whose
 /// size and alignment match the `elem_layout` registered at construction.
-// WASM-TODO(#1820): hew_hashset_insert_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_insert_layout(
     set: *mut HewLayoutHashSet,
@@ -272,7 +270,6 @@ pub unsafe extern "C" fn hew_hashset_insert_layout(
 /// # Safety
 ///
 /// Same as [`hew_hashset_insert_layout`].
-// WASM-TODO(#1820): hew_hashset_contains_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_contains_layout(
     set: *const HewLayoutHashSet,
@@ -297,7 +294,6 @@ pub unsafe extern "C" fn hew_hashset_contains_layout(
 /// # Safety
 ///
 /// Same as [`hew_hashset_insert_layout`].
-// WASM-TODO(#1820): hew_hashset_remove_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_remove_layout(
     set: *mut HewLayoutHashSet,
@@ -320,7 +316,6 @@ pub unsafe extern "C" fn hew_hashset_remove_layout(
 /// # Safety
 ///
 /// `set` must be a valid `HewLayoutHashSet` pointer.
-// WASM-TODO(#1820): hew_hashset_len_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_len_layout(set: *const HewLayoutHashSet) -> i64 {
     // SAFETY: shared validator; panics if set is null.
@@ -336,7 +331,6 @@ pub unsafe extern "C" fn hew_hashset_len_layout(set: *const HewLayoutHashSet) ->
 /// # Safety
 ///
 /// `set` must be a valid `HewLayoutHashSet` pointer.
-// WASM-TODO(#1820): hew_hashset_is_empty_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_is_empty_layout(set: *const HewLayoutHashSet) -> bool {
     // SAFETY: hew_hashset_len_layout performs the null/handle validation.
@@ -366,7 +360,6 @@ pub unsafe extern "C" fn hew_hashset_is_empty_layout(set: *const HewLayoutHashSe
 /// `set` must have been returned by [`hew_hashset_new_with_layout`] (or be
 /// null, which returns null). The returned pointer must eventually be freed
 /// with [`hew_hashset_free_layout`].
-// WASM-TODO(#1820): hew_hashset_clone_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_clone_layout(
     set: *const HewLayoutHashSet,
@@ -413,7 +406,6 @@ pub unsafe extern "C" fn hew_hashset_clone_layout(
 ///
 /// `set` must have been returned by [`hew_hashset_new_with_layout`] (or be
 /// null). After this call, `set` is invalid and must not be used.
-// WASM-TODO(#1820): hew_hashset_free_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_free_layout(set: *mut HewLayoutHashSet) {
     if set.is_null() {

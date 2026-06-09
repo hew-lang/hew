@@ -4,7 +4,7 @@
 //! exported runtime symbols; compiler/codegen magic uses distinct linkage
 //! variants so the catalog never pretends a HIR shim name is a C ABI symbol.
 
-use hew_types::ResolvedTy;
+use hew_types::{MathGenericOp, ResolvedTy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinClass {
@@ -21,6 +21,32 @@ pub enum PrintKind {
     F64,
     Bool,
     Str,
+}
+
+#[must_use]
+pub fn generic_math_intrinsic_callee(
+    op: MathGenericOp,
+    operand_ty: &ResolvedTy,
+) -> Option<(&'static str, ResolvedTy)> {
+    match operand_ty {
+        ResolvedTy::I64 => Some((
+            match op {
+                MathGenericOp::Abs => "abs",
+                MathGenericOp::Min => "min",
+                MathGenericOp::Max => "max",
+            },
+            ResolvedTy::I64,
+        )),
+        ResolvedTy::F64 => Some((
+            match op {
+                MathGenericOp::Abs => "abs_f",
+                MathGenericOp::Min => "min_f",
+                MathGenericOp::Max => "max_f",
+            },
+            ResolvedTy::F64,
+        )),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,7 +290,6 @@ const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
 const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
 const STRING_STRING_STRING: &[BuiltinTy] =
     &[BuiltinTy::String, BuiltinTy::String, BuiltinTy::String];
-const F64_F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64, BuiltinTy::F64];
 const EMPTY: &[BuiltinTy] = &[];
 const HASHMAP_ANY: &[BuiltinTy] = &[BuiltinTy::HashMapAny];
 const HASHSET_ANY: &[BuiltinTy] = &[BuiltinTy::HashSetAny];
@@ -371,6 +396,13 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
+        "bytes::new",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::Bytes,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
         "sleep_ms",
         BuiltinClass::ClassA,
         I64,
@@ -403,6 +435,84 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_assert",
         },
+    ),
+    // Class A: core math builtins lowered directly by codegen.
+    direct(
+        "sqrt",
+        BuiltinClass::ClassA,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "abs",
+        BuiltinClass::ClassA,
+        I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "min",
+        BuiltinClass::ClassA,
+        I64_I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "max",
+        BuiltinClass::ClassA,
+        I64_I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "abs_f",
+        BuiltinClass::ClassA,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "min_f",
+        BuiltinClass::ClassA,
+        F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "max_f",
+        BuiltinClass::ClassA,
+        F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "pow",
+        BuiltinClass::ClassA,
+        F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "floor",
+        BuiltinClass::ClassA,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "ceil",
+        BuiltinClass::ClassA,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "round",
+        BuiltinClass::ClassA,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // Class A: monomorphic print/println overloads.
     print_entry!("println_i32", "println", I32, I32, true),
@@ -814,9 +924,12 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_chars",
         },
     ),
-    // Class A: declarative bytes receiver bridge. Bytes push has a native ABI;
-    // remaining collection-like bytes methods still name Vec-backed runtime
-    // entry points until matching hew_bytes_* symbols exist.
+    // Class A: declarative bytes receiver bridge. Keep every symbol named by
+    // `std/io.hew`'s `impl bytes` extern declarations in the HIR catalog so
+    // method-call rewrites resolve at the HIR boundary. Bytes push and
+    // to_string use native bytes ABI; the remaining collection-like bytes
+    // methods still name Vec-backed runtime entry points until matching
+    // hew_bytes_* symbols exist.
     direct(
         "hew_bytes_push",
         BuiltinClass::ClassA,
@@ -1598,15 +1711,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
-        "math.abs_f",
-        BuiltinClass::ClassB,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.abs_f",
-        },
-    ),
-    direct(
         "math.tanh",
         BuiltinClass::ClassB,
         F64,
@@ -1667,33 +1771,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::F64,
         BuiltinLinkage::CompilerIntrinsic {
             intrinsic: "math.min",
-        },
-    ),
-    direct(
-        "math.max_f",
-        BuiltinClass::ClassB,
-        F64_F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.max_f",
-        },
-    ),
-    direct(
-        "math.min_f",
-        BuiltinClass::ClassB,
-        F64_F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.min_f",
-        },
-    ),
-    direct(
-        "math.clamp_f",
-        BuiltinClass::ClassB,
-        F64_F64_F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.clamp_f",
         },
     ),
     direct(

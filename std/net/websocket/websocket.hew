@@ -39,14 +39,16 @@ import std::fs;
 ///
 /// Created by calling `websocket.connect(url)`. Use `send_text()` to
 /// send messages and `recv()` to receive them.
-type Conn {
+#[opaque]
+pub type Conn {
 }
 
 /// An incoming WebSocket message handle.
 ///
 /// Obtained from `conn.recv()`. Must be freed with `free()` when no
 /// longer needed.
-type Message {
+#[opaque]
+pub type Message {
 }
 
 // ── Conn methods ──────────────────────────────────────────────────────
@@ -87,12 +89,12 @@ trait ConnMethods {
 impl ConnMethods for Conn {
     fn send_text(conn: Conn, msg: string) -> i64 {
         unsafe {
-            hew_ws_send_text(conn, msg)
+            hew_ws_send_text(conn, msg) as i64
         }
     }
     fn try_send_text(conn: Conn, msg: string) -> Result<(), fs.IoError> {
         let n: i64 = unsafe {
-            hew_ws_send_text(conn, msg)
+            hew_ws_send_text(conn, msg) as i64
         };
         if n < 0 {
             Err(fs.io_error_from_errno(0))
@@ -171,7 +173,8 @@ impl MessageMethods for Message {
 ///
 /// Created by calling `websocket.listen(addr)`. Use `accept()` to wait
 /// for the next client connection.
-type Server {
+#[opaque]
+pub type Server {
 }
 
 /// Methods available on a WebSocket `Server`.

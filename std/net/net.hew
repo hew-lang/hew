@@ -71,13 +71,15 @@ fn net_result_from_status(status: i32) -> Result<(), fs.IoError> { // INTERNAL-A
 ///
 /// Created by `net.listen(addr)`. Returns a negative value (as i32)
 /// on failure when cast; use comparison to check success.
-type Listener {
+#[opaque]
+pub type Listener {
 }
 
 /// An established TCP connection for reading and writing.
 ///
 /// Obtained from `listener.accept()` or `net.connect(addr)`.
-type Connection {
+#[opaque]
+pub type Connection {
 }
 
 // ── Listener methods ──────────────────────────────────────────────────
@@ -341,7 +343,7 @@ pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Con
 /// Used in chat-server patterns to fan out messages.
 pub fn broadcast_except(sender: Connection, message: bytes) -> i64 {
     unsafe {
-        hew_tcp_broadcast_except(sender, message)
+        hew_tcp_broadcast_except(sender, message) as i64
     }
 }
 
@@ -368,7 +370,8 @@ pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<i64, f
 /// Opaque paired stream/sink handle returned by `hew_tcp_stream_from_conn`.
 /// Extract the two halves with `hew_stream_pair_stream_bytes` /
 /// `hew_stream_pair_sink_bytes`, then free with `hew_stream_pair_free`.
-type StreamPair {
+#[opaque]
+pub type StreamPair {
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

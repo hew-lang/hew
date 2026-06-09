@@ -69,7 +69,18 @@ pub struct HewVec {
     /// Element ownership semantics.
     pub elem_kind: ElemKind,
     /// Optional runtime type layout descriptor. Null preserves the legacy ABI path.
+    ///
+    /// When non-null, always points into `layout_storage` (same allocation).
+    /// Callers must not assume this pointer outlives the `HewVec`.
     pub layout: *const HewTypeLayout,
+    /// Inline storage for the layout descriptor copied in by `hew_vec_new_with_layout`.
+    ///
+    /// Keeping the descriptor inside the vec allocation means the `layout`
+    /// pointer above never dangles — the value lives exactly as long as the
+    /// vec itself.  Callers that previously passed a long-lived (static or
+    /// heap-allocated) pointer are unaffected: `hew_vec_new_with_layout` still
+    /// accepts any valid pointer and copies its fields here.
+    pub layout_storage: HewTypeLayout,
 }
 
 /// Equality callback for layout-backed Vec contains.
@@ -381,13 +392,18 @@ mod tests {
     fn hewvec_field_offsets_are_stable() {
         // Construct a HewVec with known sentinel values and read them back
         // to verify field ordering matches the C layout.
-        let v = HewVec {
-            data: 0xAAAA_usize as *mut u8,
-            len: 42,
-            cap: 100,
-            elem_size: 8,
-            elem_kind: ElemKind::String,
-            layout: std::ptr::null(),
+        // SAFETY: layout is null so layout_storage is never read; zeroed bytes
+        // are a valid (unused) initialiser for the inline storage field.
+        let v = unsafe {
+            HewVec {
+                data: 0xAAAA_usize as *mut u8,
+                len: 42,
+                cap: 100,
+                elem_size: 8,
+                elem_kind: ElemKind::String,
+                layout: std::ptr::null(),
+                layout_storage: core::mem::zeroed(),
+            }
         };
         assert_eq!(v.data as usize, 0xAAAA);
         assert_eq!(v.len, 42);
@@ -399,13 +415,17 @@ mod tests {
 
     #[test]
     fn hewvec_debug_output_is_readable() {
-        let v = HewVec {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-            elem_size: 4,
-            elem_kind: ElemKind::Plain,
-            layout: std::ptr::null(),
+        // SAFETY: layout is null so layout_storage is never read.
+        let v = unsafe {
+            HewVec {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                elem_size: 4,
+                elem_kind: ElemKind::Plain,
+                layout: std::ptr::null(),
+                layout_storage: core::mem::zeroed(),
+            }
         };
         let debug = format!("{v:?}");
         // Verify Debug output includes key field names.
@@ -418,13 +438,17 @@ mod tests {
     #[test]
     fn hewvec_default_field_values_are_sane() {
         // A zeroed HewVec (like C's memset-to-zero) should be a valid empty vec.
-        let v = HewVec {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-            elem_size: 0,
-            elem_kind: ElemKind::Plain,
-            layout: std::ptr::null(),
+        // SAFETY: layout is null so layout_storage is never read.
+        let v = unsafe {
+            HewVec {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                elem_size: 0,
+                elem_kind: ElemKind::Plain,
+                layout: std::ptr::null(),
+                layout_storage: core::mem::zeroed(),
+            }
         };
         assert!(v.data.is_null());
         assert_eq!(v.len, 0);
@@ -449,13 +473,17 @@ mod tests {
 
     #[test]
     fn hwvec_to_u8_rejects_non_byte_shape() {
-        let mut vec = HewVec {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-            elem_size: mem::size_of::<i64>(),
-            elem_kind: ElemKind::Plain,
-            layout: std::ptr::null(),
+        // SAFETY: layout is null so layout_storage is never read.
+        let mut vec = unsafe {
+            HewVec {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                elem_size: mem::size_of::<i64>(),
+                elem_kind: ElemKind::Plain,
+                layout: std::ptr::null(),
+                layout_storage: core::mem::zeroed(),
+            }
         };
         let vec_ptr = &raw mut vec;
         // SAFETY: this test intentionally exercises the invalid-shape panic path.

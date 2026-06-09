@@ -25,6 +25,8 @@ pub enum MarkerTrait {
     Eq,
     /// Ordered
     Ord,
+    /// Numeric value accepted by generic math builtins.
+    Num,
     /// Hashable
     Hash,
     /// String formatting via `{}`
@@ -61,6 +63,7 @@ impl std::fmt::Display for MarkerTrait {
             MarkerTrait::Clone => write!(f, "Clone"),
             MarkerTrait::Eq => write!(f, "Eq"),
             MarkerTrait::Ord => write!(f, "Ord"),
+            MarkerTrait::Num => write!(f, "Num"),
             MarkerTrait::Hash => write!(f, "Hash"),
             MarkerTrait::Display => write!(f, "Display"),
             MarkerTrait::Debug => write!(f, "Debug"),
@@ -86,6 +89,7 @@ impl MarkerTrait {
             "Clone" => Some(Self::Clone),
             "Eq" => Some(Self::Eq),
             "Ord" => Some(Self::Ord),
+            "Num" => Some(Self::Num),
             "Hash" => Some(Self::Hash),
             "Display" => Some(Self::Display),
             "Debug" => Some(Self::Debug),
@@ -471,6 +475,9 @@ impl TraitRegistry {
             // Only resource types are Resource; primitives are NOT.
             // Handled per-type below; fall through to the match.
         }
+        if marker == MarkerTrait::Num {
+            return ty.is_numeric();
+        }
         match ty {
             // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug.
             // NOT Resource: primitives own no OS/runtime resource and need no drop close.
@@ -701,7 +708,9 @@ impl TraitRegistry {
                 //     is NOT itself an OS/runtime resource (no drop-close contract).
                 //   - `RcFree` is handled at the top of `implements_marker` before
                 //     this arm is reached.
-                // LESSON exhaustive-coverage: every MarkerTrait arm is explicit.
+                // The two genuine exceptions (Resource, Num) are explicit; all
+                // other markers share the structural `field_derives(marker)` rule
+                // via the fallthrough.
                 if self.records.contains(name) {
                     let field_derives = |m: MarkerTrait| {
                         self.type_fields.get(name).is_some_and(|fields| {
@@ -709,26 +718,10 @@ impl TraitRegistry {
                         })
                     };
                     return match marker {
-                        // Records are not OS/runtime resources.
-                        MarkerTrait::Resource => false,
-                        // All structural markers derive from field types.
-                        MarkerTrait::Send => field_derives(MarkerTrait::Send),
-                        MarkerTrait::Sync => field_derives(MarkerTrait::Sync),
-                        MarkerTrait::Frozen => field_derives(MarkerTrait::Frozen),
-                        MarkerTrait::Copy => field_derives(MarkerTrait::Copy),
-                        MarkerTrait::Clone => field_derives(MarkerTrait::Clone),
-                        MarkerTrait::Eq => field_derives(MarkerTrait::Eq),
-                        MarkerTrait::Ord => field_derives(MarkerTrait::Ord),
-                        MarkerTrait::Hash => field_derives(MarkerTrait::Hash),
-                        MarkerTrait::Display => field_derives(MarkerTrait::Display),
-                        MarkerTrait::Debug => field_derives(MarkerTrait::Debug),
-                        MarkerTrait::Drop => field_derives(MarkerTrait::Drop),
-                        MarkerTrait::Decode => field_derives(MarkerTrait::Decode),
-                        MarkerTrait::Encode => field_derives(MarkerTrait::Encode),
-                        MarkerTrait::Serializable => field_derives(MarkerTrait::Serializable),
-                        // RcFree is resolved at the top of implements_marker before
-                        // reaching this arm; the field-driven path is correct here too.
-                        MarkerTrait::RcFree => field_derives(MarkerTrait::RcFree),
+                        // Records are not OS/runtime resources or scalar numeric values.
+                        MarkerTrait::Resource | MarkerTrait::Num => false,
+                        // All other markers derive from field types.
+                        _ => field_derives(marker),
                     };
                 }
                 // Check if all fields implement the trait

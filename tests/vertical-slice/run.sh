@@ -137,6 +137,10 @@ grep -q 'assertion failed: assert_eq(4, 5)' "${stderr_output}"
 
 run_accept_expect_status "exit_42" 42
 run_accept_expect_status "for_vec_sum_42" 42
+run_accept_expect_stdout "vec_string_for_each"
+run_accept_expect_status "array_literal_int_sum" 6
+run_accept_expect_stdout "array_literal_float_sum"
+run_accept_expect_stdout "array_literal_string_for_each"
 run_accept_expect_status "iter_manual_next_42" 42
 run_accept_expect_status "for_range_regression" 21
 
@@ -925,6 +929,7 @@ run_accept_expect_status "generic_enum_option_none" 99
 # proves the Some payload round-tripped through the match.
 run_accept_expect_status "stdlib_option_none" 99
 run_accept_expect_status "stdlib_option_some" 42
+run_accept_expect_status "stdlib_option_predicates" 0
 
 # WASM parity (W4.042): the bare-`None` builtin Option<i64> path must also lower
 # under wasm32-unknown-unknown. The fix is pure checker-boundary type recording

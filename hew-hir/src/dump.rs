@@ -428,6 +428,18 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
+        HirExprKind::RemoteActorAsk {
+            receiver,
+            msg,
+            timeout_ms,
+            reply_ty,
+        } => {
+            writeln!(out, "{pad}  remote-actor-ask -> {}", reply_ty.user_facing())
+                .expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            dump_expr(out, msg, indent + 4);
+            dump_expr(out, timeout_ms, indent + 4);
+        }
         HirExprKind::Block(block) => {
             writeln!(out, "{pad}  block {}", block.scope).expect("write to string");
         }
@@ -773,6 +785,36 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
+        HirExprKind::VarSelfMethodCall {
+            receiver,
+            target,
+            args,
+            ret_ty,
+            receiver_ty,
+        } => {
+            let target_label = match target {
+                crate::node::HirVarSelfMethodTarget::Direct { callee } => callee.clone(),
+                crate::node::HirVarSelfMethodTarget::StaticTrait {
+                    receiver_type_param,
+                    declaring_trait,
+                    method_name,
+                    ..
+                } => format!(
+                    "{declaring_trait}::{method_name} [receiver_param={receiver_type_param}]"
+                ),
+            };
+            writeln!(
+                out,
+                "{pad}  var-self-call {target_label} -> {} writeback {}",
+                ret_ty.user_facing(),
+                receiver_ty.user_facing()
+            )
+            .expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            for arg in args {
+                dump_expr(out, arg, indent + 4);
+            }
+        }
         HirExprKind::ResolvedImplCall {
             receiver,
             impl_id,
@@ -921,6 +963,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             for arm in arms {
                 let label = match &arm.predicate {
                     crate::node::HirMatchArmPredicate::Wildcard => "_".to_string(),
+                    crate::node::HirMatchArmPredicate::Binding { name, .. } => {
+                        format!("binding {name}")
+                    }
                     crate::node::HirMatchArmPredicate::EnumVariant { variant_match, .. } => {
                         format!(
                             "{}::{}",

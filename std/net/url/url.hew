@@ -25,7 +25,8 @@ import std::string;
 ///
 /// Created by `url.parse(s)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
-type Url {
+#[opaque]
+pub type Url {
 }
 
 /// Methods available on a parsed `Url`.
@@ -275,7 +276,7 @@ fn decode_impl(s: string) -> string {
                 }
                 let visible: bytes = bytes::new();
                 for j in 0 .. visible_len {
-                    visible.push(pending.get(j));
+                    visible.push(pending.get(j as i64));
                 }
                 return out + visible.to_string();
             }
@@ -293,7 +294,7 @@ fn decode_impl(s: string) -> string {
             }
             let visible: bytes = bytes::new();
             for j in 0 .. visible_len {
-                visible.push(pending.get(j));
+                visible.push(pending.get(j as i64));
             }
             return out + visible.to_string();
         }
@@ -344,7 +345,7 @@ fn is_unreserved_char(ch: char) -> bool {
 }
 
 fn byte_char(code: i32) -> char { // INTERNAL-ABI: byte-level ASCII code 0-127; internal URL percent-encoder helper
-    string_char_at(string.from_char(code), 0)
+    string_char_at(string.from_char(code as i64), 0)
 }
 
 fn percent_encode_byte(ch: char) -> string {

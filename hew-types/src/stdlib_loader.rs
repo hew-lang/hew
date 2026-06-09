@@ -3,6 +3,7 @@
 //! Parses `.hew` files and extracts type information: function signatures,
 //! clean name mappings, handle types, and handle method mappings.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use hew_parser::ast::{
@@ -30,6 +31,10 @@ pub struct CFunction {
 pub struct WrapperFn {
     /// The Hew function name (e.g. `"parse"`).
     pub name: String,
+    /// Function type parameters.
+    pub type_params: Vec<String>,
+    /// Trait bounds keyed by type parameter name.
+    pub type_param_bounds: HashMap<String, Vec<String>>,
     /// Parameter types.
     pub params: Vec<Ty>,
     /// Return type.
@@ -230,13 +235,16 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
             }
             Item::Function(fn_decl) if fn_decl.visibility.is_pub() => {
                 // Extract wrapper function's own signature
-                let (params, return_type) = wrapper_fn_sig(fn_decl, module_short);
+                let (type_params, type_param_bounds, params, return_type) =
+                    wrapper_fn_sig(fn_decl, module_short);
                 if signature_contains_error_type(&params, &return_type) {
                     info.unsupported_type_signatures
                         .push(format!("public function `{}`", fn_decl.name));
                 }
                 info.wrapper_fns.push(WrapperFn {
                     name: fn_decl.name.clone(),
+                    type_params,
+                    type_param_bounds,
                     params,
                     return_type,
                 });
@@ -308,19 +316,55 @@ fn extern_fn_sig(func: &ExternFnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
 
 /// Convert a wrapper `pub fn` declaration to type checker types.
 /// Mirrors `extern_fn_sig` but works on `FnDecl` params (`Param` not `ExternParam`).
-fn wrapper_fn_sig(func: &FnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
+fn wrapper_fn_sig(
+    func: &FnDecl,
+    module_short: &str,
+) -> (Vec<String>, HashMap<String, Vec<String>>, Vec<Ty>, Ty) {
+    let (type_params, type_param_bounds) = wrapper_fn_type_params(func);
+    let type_param_names: HashSet<String> = type_params.iter().cloned().collect();
     let params: Vec<Ty> = func
         .params
         .iter()
-        .map(|p| type_expr_to_ty(&p.ty.0, module_short))
+        .map(|p| type_expr_to_ty_with_params(&p.ty.0, module_short, &type_param_names))
         .collect();
 
-    let ret = func
-        .return_type
-        .as_ref()
-        .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
+    let ret = func.return_type.as_ref().map_or(Ty::Unit, |rt| {
+        type_expr_to_ty_with_params(&rt.0, module_short, &type_param_names)
+    });
 
-    (params, ret)
+    (type_params, type_param_bounds, params, ret)
+}
+
+fn wrapper_fn_type_params(func: &FnDecl) -> (Vec<String>, HashMap<String, Vec<String>>) {
+    let mut type_params = Vec::new();
+    let mut bounds = HashMap::new();
+    if let Some(params) = &func.type_params {
+        for param in params {
+            type_params.push(param.name.clone());
+            bounds.insert(
+                param.name.clone(),
+                param
+                    .bounds
+                    .iter()
+                    .map(|bound| bound.name.clone())
+                    .collect(),
+            );
+        }
+    }
+    let type_param_names: HashSet<String> = type_params.iter().cloned().collect();
+    if let Some(where_clause) = &func.where_clause {
+        for predicate in &where_clause.predicates {
+            if let TypeExpr::Named { name, type_args } = &predicate.ty.0 {
+                if type_args.as_ref().is_none_or(Vec::is_empty) && type_param_names.contains(name) {
+                    bounds
+                        .entry(name.clone())
+                        .or_insert_with(Vec::new)
+                        .extend(predicate.bounds.iter().map(|bound| bound.name.clone()));
+                }
+            }
+        }
+    }
+    (type_params, bounds)
 }
 
 /// Convert a Hew type expression to the type checker's `Ty`.
@@ -329,6 +373,18 @@ fn wrapper_fn_sig(func: &FnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
     reason = "type mapping covers all primitive and generic variants"
 )]
 fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
+    type_expr_to_ty_with_params(texpr, module_short, &HashSet::new())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "type mapping covers all primitive and generic variants"
+)]
+fn type_expr_to_ty_with_params(
+    texpr: &TypeExpr,
+    module_short: &str,
+    type_params: &HashSet<String>,
+) -> Ty {
     match texpr {
         TypeExpr::Named { name, type_args } => {
             // Primitive types never take type args; delegate entirely to the
@@ -342,11 +398,25 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                 }
             }
             match name.as_str() {
+                param
+                    if type_args.as_ref().is_none_or(Vec::is_empty)
+                        && type_params.contains(param) =>
+                {
+                    Ty::Named {
+                        builtin: None,
+                        name: param.to_string(),
+                        args: vec![],
+                    }
+                }
                 // Option<T> → Ty::option() helper
                 "Option" => {
                     if let Some(args) = type_args {
                         if let Some(first) = args.first() {
-                            return Ty::option(type_expr_to_ty(&first.0, module_short));
+                            return Ty::option(type_expr_to_ty_with_params(
+                                &first.0,
+                                module_short,
+                                type_params,
+                            ));
                         }
                     }
                     Ty::normalize_named("Option".to_string(), vec![])
@@ -356,8 +426,8 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                     if let Some(args) = type_args {
                         if args.len() >= 2 {
                             return Ty::result(
-                                type_expr_to_ty(&args[0].0, module_short),
-                                type_expr_to_ty(&args[1].0, module_short),
+                                type_expr_to_ty_with_params(&args[0].0, module_short, type_params),
+                                type_expr_to_ty_with_params(&args[1].0, module_short, type_params),
                             );
                         }
                     }
@@ -369,7 +439,9 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                         .as_ref()
                         .map(|a| {
                             a.iter()
-                                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                                .map(|(te, _)| {
+                                    type_expr_to_ty_with_params(te, module_short, type_params)
+                                })
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -382,7 +454,9 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                         .as_ref()
                         .map(|args| {
                             args.iter()
-                                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                                .map(|(te, _)| {
+                                    type_expr_to_ty_with_params(te, module_short, type_params)
+                                })
                                 .collect()
                         })
                         .unwrap_or_default(),
@@ -394,28 +468,39 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                         .as_ref()
                         .map(|args| {
                             args.iter()
-                                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                                .map(|(te, _)| {
+                                    type_expr_to_ty_with_params(te, module_short, type_params)
+                                })
                                 .collect()
                         })
                         .unwrap_or_default(),
                 ),
             }
         }
-        TypeExpr::Option(inner) => Ty::option(type_expr_to_ty(&inner.0, module_short)),
+        TypeExpr::Option(inner) => Ty::option(type_expr_to_ty_with_params(
+            &inner.0,
+            module_short,
+            type_params,
+        )),
         TypeExpr::Result { ok, err } => Ty::result(
-            type_expr_to_ty(&ok.0, module_short),
-            type_expr_to_ty(&err.0, module_short),
+            type_expr_to_ty_with_params(&ok.0, module_short, type_params),
+            type_expr_to_ty_with_params(&err.0, module_short, type_params),
         ),
         TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
         TypeExpr::Tuple(elems) => Ty::Tuple(
             elems
                 .iter()
-                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                .map(|(te, _)| type_expr_to_ty_with_params(te, module_short, type_params))
                 .collect(),
         ),
-        TypeExpr::Array { element, size } => {
-            Ty::Array(Box::new(type_expr_to_ty(&element.0, module_short)), *size)
-        }
+        TypeExpr::Array { element, size } => Ty::Array(
+            Box::new(type_expr_to_ty_with_params(
+                &element.0,
+                module_short,
+                type_params,
+            )),
+            *size,
+        ),
         TypeExpr::Slice(_) | TypeExpr::Infer => Ty::Error,
         TypeExpr::Function {
             params,
@@ -423,20 +508,32 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
         } => Ty::Function {
             params: params
                 .iter()
-                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                .map(|(te, _)| type_expr_to_ty_with_params(te, module_short, type_params))
                 .collect(),
-            ret: Box::new(type_expr_to_ty(&return_type.0, module_short)),
+            ret: Box::new(type_expr_to_ty_with_params(
+                &return_type.0,
+                module_short,
+                type_params,
+            )),
         },
         TypeExpr::Pointer {
             is_mutable,
             pointee,
         } => Ty::Pointer {
             is_mutable: *is_mutable,
-            pointee: Box::new(type_expr_to_ty(&pointee.0, module_short)),
+            pointee: Box::new(type_expr_to_ty_with_params(
+                &pointee.0,
+                module_short,
+                type_params,
+            )),
         },
         // `&T` immutable borrow — first-class no-retain shared reference.
         TypeExpr::Borrow(inner) => Ty::Borrow {
-            pointee: Box::new(type_expr_to_ty(&inner.0, module_short)),
+            pointee: Box::new(type_expr_to_ty_with_params(
+                &inner.0,
+                module_short,
+                type_params,
+            )),
         },
         TypeExpr::TraitObject(bounds) => Ty::TraitObject {
             traits: bounds

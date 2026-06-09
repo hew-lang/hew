@@ -407,6 +407,21 @@ impl<'a> Formatter<'a> {
             return;
         }
         self.write_outer_doc(decl.doc_comment.as_ref());
+        match decl.resource_marker {
+            crate::ast::ResourceMarker::None => {}
+            crate::ast::ResourceMarker::Resource => {
+                self.write_indent();
+                self.write("#[resource]\n");
+            }
+            crate::ast::ResourceMarker::Linear => {
+                self.write_indent();
+                self.write("#[linear]\n");
+            }
+        }
+        if decl.is_opaque {
+            self.write_indent();
+            self.write("#[opaque]\n");
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         if decl.is_indirect {
@@ -470,12 +485,51 @@ impl<'a> Formatter<'a> {
                         usize::MAX
                     };
                     self.flush_comments_before(pos);
-                    self.format_fn(f, self.source.len());
+                    let has_consuming_self =
+                        decl.consuming_methods.iter().any(|name| name == &f.name);
+                    self.format_type_body_method(f, self.source.len(), has_consuming_self);
                 }
             }
         }
         self.indent -= 1;
         self.writeln("}");
+    }
+
+    fn format_type_body_method(
+        &mut self,
+        decl: &FnDecl,
+        span_end: usize,
+        has_consuming_self: bool,
+    ) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
+        self.format_attributes(&decl.attributes);
+        self.write_indent();
+        if decl.is_async {
+            self.write("async ");
+        }
+        if decl.is_generator {
+            self.write("gen ");
+        }
+        self.write("fn ");
+        self.write(&decl.name);
+        self.format_opt_type_params(decl.type_params.as_ref());
+        self.write("(");
+        if has_consuming_self {
+            self.write("consuming self");
+            if !decl.params.is_empty() {
+                self.write(", ");
+            }
+        }
+        self.format_params(&decl.params);
+        self.write(")");
+        if let Some(ret) = &decl.return_type {
+            self.write(" -> ");
+            self.format_type_expr(&ret.0);
+        }
+        self.format_opt_where_clause(decl.where_clause.as_ref());
+        self.write(" ");
+        self.format_block(&decl.body, span_end);
+        self.newline();
     }
 
     fn format_wire_type_decl(&mut self, decl: &TypeDecl, wire: &WireMetadata) {
@@ -1209,6 +1263,10 @@ impl<'a> Formatter<'a> {
         self.write(&f.name);
         self.write(": ");
         self.format_type_expr(&f.ty.0);
+        if let Some(default) = &f.default {
+            self.write(" = ");
+            self.format_expr(&default.0);
+        }
         self.write(";\n");
     }
 
@@ -1332,7 +1390,11 @@ impl<'a> Formatter<'a> {
         self.write(&spec.actor_type);
         if !spec.args.is_empty() {
             self.write("(");
-            self.comma_sep(&spec.args, |f, arg| f.format_expr(&arg.0));
+            self.comma_sep(&spec.args, |f, (field_name, arg)| {
+                f.write(field_name);
+                f.write(": ");
+                f.format_expr(&arg.0);
+            });
             self.write(")");
         }
         if let Some(restart) = &spec.restart {

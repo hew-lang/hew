@@ -669,7 +669,7 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
         Item::Const(c) => count_idents_in_expr(&c.value.0, counts),
         Item::Supervisor(s) => {
             for child in &s.children {
-                for arg in &child.args {
+                for (_field_name, arg) in &child.args {
                     count_idents_in_expr(&arg.0, counts);
                 }
             }
@@ -1269,7 +1269,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker(make_config());\n",
+            "    child w: Worker(init: make_config());\n",
             "}",
         );
         let pr = parse(source);
@@ -1293,6 +1293,48 @@ mod tests {
              (previously 0 due to Supervisor skip); count={count}, find={}",
             find_spans.len(),
         );
+    }
+
+    #[test]
+    fn parse_supervisor_named_child_arg_stores_expr() {
+        use hew_parser::ast::Item;
+        // Verify that the parser stores named child args in ChildSpec.args
+        // so analysis passes can walk them.
+        let source = concat!(
+            "fn make_config() -> Int { 42 }\n",
+            "actor Worker {\n",
+            "    receive fn start() {}\n",
+            "}\n",
+            "supervisor Pool {\n",
+            "    child w: Worker(init: make_config());\n",
+            "}",
+        );
+        let pr = parse(source);
+        // Verify no parse errors and args are stored
+        assert!(
+            pr.errors.is_empty(),
+            "parse must succeed with no errors; got: {:?}",
+            pr.errors
+        );
+        let sup = pr
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| {
+                if let Item::Supervisor(s) = item {
+                    Some(s)
+                } else {
+                    None
+                }
+            })
+            .expect("supervisor should be in AST");
+        assert_eq!(sup.children.len(), 1);
+        assert_eq!(
+            sup.children[0].args.len(),
+            1,
+            "child w must have 1 named arg"
+        );
+        assert_eq!(sup.children[0].args[0].0, "init");
     }
 
     #[test]

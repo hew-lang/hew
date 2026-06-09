@@ -41,10 +41,10 @@ pub use check::{
     CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode,
     ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
     DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, ImplDef, ImplId,
-    ImplRegistry, LookupError, MachineMethodKind, MethodCallReceiverKind, MethodCallRewrite,
-    MethodTarget, NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness,
-    NumericWidth, PatternKind, ResolvedCall, RuntimeAbi, SpanKey, TyPattern, TypeCheckOutput,
-    VariantDef, VariantMatch,
+    ImplRegistry, LookupError, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
+    MethodCallRewrite, MethodTarget, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
+    NumericSignedness, NumericWidth, PatternKind, ResolvedCall, RuntimeAbi, SpanKey, TyPattern,
+    TypeCheckOutput, VariantDef, VariantMatch,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

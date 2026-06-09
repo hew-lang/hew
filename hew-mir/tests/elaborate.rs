@@ -10,8 +10,11 @@
 //! value class.
 
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
-use hew_mir::{lower_hir_module, BlockKind, DropKind, ElaboratedMirFunction, ExitPath, IrPipeline};
-use hew_types::TypeCheckOutput;
+use hew_mir::{
+    lower_hir_module, BlockKind, DropKind, ElaboratedMirFunction, ExitPath, IrPipeline, Place,
+    Terminator,
+};
+use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 
 fn pipeline(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -26,6 +29,50 @@ fn pipeline(source: &str) -> IrPipeline {
     let verify = verify_hir(&output.module);
     assert!(verify.is_empty(), "{verify:?}");
     lower_hir_module(&output.module)
+}
+
+fn checked_pipeline(source: &str) -> IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(tc_output.errors.is_empty(), "{:?}", tc_output.errors);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "{verify:?}");
+    lower_hir_module(&output.module)
+}
+
+fn main_function<'a, T>(items: &'a [T], name: impl Fn(&'a T) -> &'a str) -> &'a T {
+    items
+        .iter()
+        .find(|item| name(item) == "main")
+        .expect("main present")
+}
+
+fn main_ask_reply_dest(p: &IrPipeline) -> Place {
+    let main = main_function(&p.raw_mir, |func| func.name.as_str());
+    let mut ask_reply_dests = main
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Ask { reply_dest, .. } => Some(*reply_dest),
+            _ => None,
+        });
+    let reply_dest = ask_reply_dests
+        .next()
+        .expect("main should contain one actor ask terminator");
+    assert!(
+        ask_reply_dests.next().is_none(),
+        "main should contain exactly one actor ask terminator"
+    );
+    reply_dest
 }
 
 fn first(p: &IrPipeline) -> &ElaboratedMirFunction {
@@ -111,6 +158,33 @@ fn nonescaping_cowvalue_string_gets_function_scope_drop() {
 }
 
 #[test]
+fn awaited_actor_ask_lowers_to_ask_terminator_with_no_diagnostics() {
+    // R-ASK unification (R312/Q368): `await echo.get()` lowers to an Ask
+    // terminator with a reply_dest slot for the raw reply value and a
+    // result_dest slot for the Result<string, AskError> binding.  The
+    // pipeline must be diagnostic-free and the Ask terminator must be present.
+    let awaited = checked_pipeline(
+        r#"
+        actor Echo {
+            receive fn get() -> string {
+                "pong"
+            }
+        }
+
+        fn main() {
+            let echo = spawn Echo;
+            let reply = await echo.get();
+        }
+        "#,
+    );
+
+    assert!(awaited.diagnostics.is_empty(), "{:?}", awaited.diagnostics);
+
+    // The Ask terminator must be present with the R-ASK fields.
+    let _reply_dest = main_ask_reply_dest(&awaited);
+}
+
+#[test]
 fn call_arg_source_excluded_so_call_result_is_freed_once() {
     // W5-011 P3, the double-free fix. `let _t = id(s)` shares `s` by value
     // into `id`, which returns its argument *unretained* — so `s` and `_t`
@@ -144,6 +218,58 @@ fn call_arg_source_excluded_so_call_result_is_freed_once() {
          excluded (alias-escape), the call result `_t` is freed once — \
          dropping both would double-free; got {:?}",
         return_plan.1.drops
+    );
+}
+
+#[test]
+fn user_record_string_field_drops_record_once() {
+    let p = checked_pipeline(
+        r#"
+        type User {
+            id: i64,
+            name: string,
+        }
+
+        fn main() {
+            let first = "Ada";
+            let last = "Lovelace";
+            let full = first + " " + last;
+            let user = User { id: 7, name: full };
+            println(user.name);
+        }
+        "#,
+    );
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let func = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main present");
+    let return_plan = func
+        .drop_plans
+        .iter()
+        .find(|(e, _)| matches!(e, ExitPath::Return { .. }))
+        .expect("Return exit present on every function");
+    let record_drops = return_plan
+        .1
+        .drops
+        .iter()
+        .filter(|d| matches!(d.kind, DropKind::RecordInPlace))
+        .count();
+    let cow_drops = return_plan
+        .1
+        .drops
+        .iter()
+        .filter(|d| matches!(d.kind, DropKind::CowHeap { .. }))
+        .count();
+    assert_eq!(
+        record_drops, 1,
+        "owned-string record must get exactly one in-place record drop; got {:?}",
+        return_plan.1.drops
+    );
+    assert_eq!(
+        cow_drops, 0,
+        "strings moved into/read through the record must not also get standalone CowHeap drops"
     );
 }
 

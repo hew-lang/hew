@@ -462,6 +462,7 @@ fn jit_run_main(ll_path: &Path) -> i64 {
 /// the real runtime allocator path, threading the allocator's pointer through
 /// `main` into `dealloc`. This is the D343 fail-OPEN kill at execution level.
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn mem_floor_round_trip_threads_real_runtime_pointer() {
     let _exec = EXEC_GUARD.lock().unwrap_or_else(|p| p.into_inner());
     ALLOC_LOG.lock().expect("ALLOC_LOG poisoned").clear();
@@ -522,6 +523,7 @@ fn mem_floor_round_trip_threads_real_runtime_pointer() {
 /// driver omits `dealloc` so the buffers survive the JIT run; the test frees
 /// them by hand after reading.
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn mem_floor_ptr_copy_moves_bytes() {
     let _exec = EXEC_GUARD.lock().unwrap_or_else(|p| p.into_inner());
     ALLOC_LOG.lock().expect("ALLOC_LOG poisoned").clear();

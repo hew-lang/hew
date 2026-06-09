@@ -27,9 +27,9 @@ fn main() {
             let stack: Vec<i32> = Vec::new();
             stack.push(start as i32 * 2);
             while stack.len() > 0 {
-                let entry = stack.pop();
-                let node = entry / 2;
-                let phase = entry % 2;
+                let entry: i64 = stack.pop() as i64;
+                let node: i64 = entry / 2;
+                let phase: i64 = entry % 2;
                 if phase == 1 {
                     colour1.set(node, 2);
                 } else {
@@ -40,17 +40,19 @@ fn main() {
                             // already gray, skip
                         } else {
                             colour1.set(node, 1);
-                            stack.push(node * 2 + 1);
-                            let s = adj1_offsets.get(node);
-                            let e = adj1_offsets.get(node + 1);
-                            var idx = s;
+                            let push1_i64: i64 = node * 2 + 1;
+                            stack.push(push1_i64 as i32);
+                            let s: i64 = adj1_offsets.get(node) as i64;
+                            let e: i64 = adj1_offsets.get(node + 1) as i64;
+                            var idx: i64 = s;
                             while idx < e {
-                                let v = adj1_nodes.get(idx);
+                                let v: i64 = adj1_nodes.get(idx) as i64;
                                 if colour1.get(v) == 1 {
                                     has_cycle1 = 1;
                                 } else {
                                     if colour1.get(v) == 0 {
-                                        stack.push(v * 2);
+                                        let push2_i64: i64 = v * 2;
+                                        stack.push(push2_i64 as i32);
                                     }
                                 }
                                 idx = idx + 1;
@@ -83,9 +85,9 @@ fn main() {
             let stack: Vec<i32> = Vec::new();
             stack.push(start as i32 * 2);
             while stack.len() > 0 {
-                let entry = stack.pop();
-                let node = entry / 2;
-                let phase = entry % 2;
+                let entry: i64 = stack.pop() as i64;
+                let node: i64 = entry / 2;
+                let phase: i64 = entry % 2;
                 if phase == 1 {
                     colour2.set(node, 2);
                 } else {
@@ -96,17 +98,19 @@ fn main() {
                             // skip
                         } else {
                             colour2.set(node, 1);
-                            stack.push(node * 2 + 1);
-                            let s = adj2_offsets.get(node);
-                            let e = adj2_offsets.get(node + 1);
-                            var idx = s;
+                            let push1_i64: i64 = node * 2 + 1;
+                            stack.push(push1_i64 as i32);
+                            let s: i64 = adj2_offsets.get(node) as i64;
+                            let e: i64 = adj2_offsets.get(node + 1) as i64;
+                            var idx: i64 = s;
                             while idx < e {
-                                let v = adj2_nodes.get(idx);
+                                let v: i64 = adj2_nodes.get(idx) as i64;
                                 if colour2.get(v) == 1 {
                                     has_cycle2 = 1;
                                 } else {
                                     if colour2.get(v) == 0 {
-                                        stack.push(v * 2);
+                                        let push2_i64: i64 = v * 2;
+                                        stack.push(push2_i64 as i32);
                                     }
                                 }
                                 idx = idx + 1;

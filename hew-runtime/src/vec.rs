@@ -471,9 +471,14 @@ pub unsafe extern "C" fn hew_vec_from_u8_data(data: *const u8, len: u32) -> *mut
 /// Stage 1 only records the descriptor and fails closed for layout-aware
 /// operations that need full clone/drop semantics.
 ///
+/// The descriptor is **copied** into the vec's inline `layout_storage` field
+/// so that `(*v).layout` always points into the same allocation as the vec
+/// itself.  Callers no longer need to ensure the pointer outlives the vec —
+/// the descriptor value is owned from this point.
+///
 /// # Safety
 ///
-/// `layout` must be a valid, non-null pointer that outlives the returned vec.
+/// `layout` must be a valid, non-null pointer for the duration of this call.
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -> *mut HewVec {
@@ -492,7 +497,13 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
             HewTypeOwnershipKind::String => ElemKind::String,
             HewTypeOwnershipKind::Plain | HewTypeOwnershipKind::LayoutManaged => ElemKind::Plain,
         };
-        (*v).layout = layout;
+        // Copy the descriptor into the inline storage so the `layout` pointer
+        // remains valid for the entire lifetime of the vec regardless of
+        // whether the caller's original pointer lives longer.  This closes the
+        // use-after-return class: callers that passed a stack-local or
+        // temporary layout are now safe.
+        (*v).layout_storage = *descriptor;
+        (*v).layout = core::ptr::addr_of!((*v).layout_storage);
         v
     }
 }
@@ -738,7 +749,51 @@ pub unsafe extern "C" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c
 }
 
 vec_get_primitive!(hew_vec_get_f64, f64);
-vec_get_primitive!(hew_vec_get_ptr, *mut c_void);
+
+/// Abort when `hew_vec_get_ptr` is called on a vec whose `elem_size` is not
+/// pointer-sized. This indicates a misroute: a value-record (`BitCopy`)
+/// element type that should have been lowered through `hew_vec_get_layout`
+/// was mistakenly routed here, which would produce silently-wrong results.
+/// Failing closed here converts a silent data-corruption bug into a loud abort.
+unsafe fn abort_ptr_stride_mismatch(elem_size: usize) -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        let msg = b"PANIC: hew_vec_get_ptr called on a vec with elem_size != sizeof(pointer); \
+                    use hew_vec_get_layout for value-record element types\n\0";
+        write_stderr(&msg[..msg.len() - 1]);
+        let _ = elem_size; // suppress unused warning; carries diagnostic context
+        libc::abort();
+    }
+}
+
+/// Get a pointer-shaped (heap-handle) element at `index`. Aborts if out of
+/// bounds or if the vec's `elem_size` is not pointer-sized.
+///
+/// **Fail-closed guard**: `hew_vec_get_ptr` assumes every element occupies
+/// exactly `size_of::<*mut c_void>()` bytes (8 bytes on 64-bit targets).
+/// If called on a vec whose `elem_size` differs (e.g. a value-record vec
+/// that should route through `hew_vec_get_layout`), it aborts with a
+/// diagnostic rather than returning silently-wrong data.
+///
+/// # Safety
+///
+/// `v` must be a valid `HewVec` pointer whose elements are pointer-sized
+/// opaque handles.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let expected = core::mem::size_of::<*mut c_void>();
+        if (*v).elem_size != expected {
+            abort_ptr_stride_mismatch((*v).elem_size);
+        }
+        let index = index as usize;
+        if index >= (*v).len {
+            abort_oob(index, (*v).len);
+        }
+        (*v).data.cast::<*mut c_void>().add(index).read()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Range-slice (C-3)
@@ -2453,13 +2508,18 @@ mod tests {
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
         };
 
-        // SAFETY: layout is valid and outlives the returned empty vec.
+        // SAFETY: layout is valid for this call; the vec copies the descriptor.
         unsafe {
             let v = hew_vec_new_with_layout(&raw const layout);
             assert!(!v.is_null());
             assert_eq!((*v).elem_size, core::mem::size_of::<Payload>());
             assert_eq!((*v).elem_kind, ElemKind::Plain);
-            assert_eq!((*v).layout, &raw const layout);
+            // layout is copied into layout_storage; the pointer now points
+            // into the vec itself, not the caller's original address.
+            assert!(!(*v).layout.is_null());
+            assert_eq!((*(*v).layout).size, layout.size);
+            assert_eq!((*(*v).layout).align, layout.align);
+            assert_eq!((*(*v).layout).ownership_kind, layout.ownership_kind);
             assert_eq!(hew_vec_len(v), 0);
             hew_vec_free(v);
         }

@@ -1097,6 +1097,11 @@ pub enum MethodCallRewrite {
         c_symbol: String,
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
+    /// Rewrite a generic `math.abs/min/max` call to the concrete intrinsic
+    /// selected from the lowered argument type in HIR.
+    GenericMathIntrinsic {
+        op: MathGenericOp,
+    },
     DeferToLowering,
     /// Checker-authoritative `CancellationToken.is_cancelled()` intrinsic.
     ///
@@ -1116,6 +1121,12 @@ pub enum MethodCallRewrite {
     BuiltinVecIterNext {
         elem_ty: crate::resolved_ty::ResolvedTy,
     },
+    /// Remote `RemotePid<T>::ask(msg, timeout_ms)` request/reply dispatch.
+    ///
+    /// HIR consumes this structured marker and emits a dedicated
+    /// `HirExprKind::RemoteActorAsk`, preserving the checker-authoritative
+    /// `Result<T::Reply, AskError>` return type.
+    RemoteActorAsk,
     /// Static trait dispatch: the method was resolved from the bounds on a
     /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
     /// resolves the concrete callee at monomorphization time.
@@ -1134,7 +1145,16 @@ pub enum MethodCallRewrite {
         declaring_trait: String,
         /// Method identity within the trait.
         method_name: String,
+        /// Checker-owned receiver ABI bit from the declaring trait signature.
+        requires_mutable_receiver: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MathGenericOp {
+    Abs,
+    Min,
+    Max,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1784,6 +1804,14 @@ pub struct Checker {
     pub(super) fn_def_spans: HashMap<String, (Span, Option<String>)>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
     pub(super) type_def_spans: HashMap<String, Span>,
+    /// Per-module type-name uniqueness ledger. Keyed by `(defining-module, name)`
+    /// so two different modules may each declare a `pub type` with the same bare
+    /// name (e.g. `json.Value` and `toml.Value`) without colliding, while a
+    /// second declaration of the same name *within one module* is still a
+    /// `duplicate_definition` error. `None` is the root/flat-file namespace (the
+    /// user's own program and flat file imports share one module). Builtins are
+    /// registered without going through this gate and stay globally visible.
+    pub(super) type_namespace_owners: HashMap<(Option<String>, String), Span>,
     /// Tracks public top-level names introduced by prior flat file imports so later
     /// flat imports can reject collisions instead of silently overwriting them.
     pub(super) flat_file_import_pub_spans: HashMap<String, Span>,
@@ -1853,6 +1881,11 @@ pub struct Checker {
     pub(super) reported_actor_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
     pub(super) current_return_type: Option<Ty>,
     pub(super) in_generator: bool,
+    /// Set to `true` for the duration of synthesizing the inner expression of
+    /// `Expr::Await(inner)`.  Enables `check_named_method_fallback` to
+    /// distinguish an actor ask under `await` (valid) from an actor ask without
+    /// `await` (rejected: requires explicit `await`).
+    pub(super) inside_await_expr: bool,
     pub(super) loop_depth: u32,
     /// Labels of enclosing loops, for validating `break @label` / `continue @label`.
     pub(super) loop_labels: Vec<String>,
@@ -2196,6 +2229,7 @@ impl Checker {
             deferred_monomorphic_sites: Vec::new(),
             fn_def_spans: HashMap::new(),
             type_def_spans: HashMap::new(),
+            type_namespace_owners: HashMap::new(),
             flat_file_import_pub_spans: HashMap::new(),
             registered_flat_file_import_sources: HashSet::new(),
             registered_stdlib_hew_sources: HashSet::new(),
@@ -2208,6 +2242,7 @@ impl Checker {
             reported_actor_bound_violations: HashSet::new(),
             current_return_type: None,
             in_generator: false,
+            inside_await_expr: false,
             loop_depth: 0,
             loop_labels: Vec::new(),
             modules: HashSet::new(),

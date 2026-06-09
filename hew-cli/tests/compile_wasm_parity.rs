@@ -11,8 +11,8 @@
 //!    only the native binary.
 //!
 //! 3. `CodegenError::WasmUnsupportedSubstrate` diagnostics keep the category
-//!    selected by the codegen display path: HashMap/HashSet report #1820,
-//!    generators report generator parity, and duplex remains duplex/#1451.
+//!    selected by the codegen display path: generators report generator parity,
+//!    and duplex remains duplex/#1451.
 //!
 //! 4. WASM-TODO(#1451): `hew_duplex_*` symbols are excluded from wasm32
 //!    builds via `hew-runtime/src/duplex.rs:54`. The codegen layer returns
@@ -150,11 +150,6 @@ fn bare_compile_skips_wasm_for_non_duplex() {
 fn wasm_unsupported_substrate_diagnostics_preserve_symbol_category() {
     require_codegen();
 
-    assert_wasm_unsupported_category(
-        "examples/ux/15_hashmap.hew",
-        &["HashMap", "#1820"],
-        &["duplex"],
-    );
     assert_wasm_unsupported_category(
         "tests/vertical-slice/accept/gen_block_outside_receive.hew",
         &["generator"],

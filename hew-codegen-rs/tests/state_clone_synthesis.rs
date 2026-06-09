@@ -77,6 +77,7 @@ fn classified_actor(
         name: name.to_string(),
         state_field_names: state_field_names.into_iter().map(String::from).collect(),
         state_field_tys,
+        state_field_defaults: vec![],
         init_param_names: vec![],
         init_param_tys: vec![],
         init_symbol: None,
@@ -843,6 +844,7 @@ fn state_clone_zero_state_actor_emits_trivial_bodies() {
         name: "Empty".into(),
         state_field_names: vec![],
         state_field_tys: vec![],
+        state_field_defaults: vec![],
         init_param_names: vec![],
         init_param_tys: vec![],
         init_symbol: None,
@@ -910,6 +912,7 @@ fn state_clone_actor_enum_field_tag_dispatches_payload_clone_and_drop() {
                 field_tys: vec![],
             },
         ],
+        is_indirect: false,
     }];
 
     let ir = emit_to_string(&pipeline, "actor-enum-field");

@@ -1347,6 +1347,8 @@ pub struct ActorInit {
 pub struct FieldDecl {
     pub name: String,
     pub ty: Spanned<TypeExpr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Spanned<Expr>>,
     #[serde(default)]
     pub doc_comment: Option<String>,
 }
@@ -1393,7 +1395,11 @@ pub enum SupervisorStrategy {
 pub struct ChildSpec {
     pub name: String,
     pub actor_type: String,
-    pub args: Vec<Spanned<Expr>>,
+    /// Named init args for this child's actor, e.g. `child w: Worker(id: 7)`.
+    /// Mirrors `Spawn.args` at the AST level: each entry is `(field_name, expr)`.
+    /// Positional args (no `name:` prefix) are rejected by the parser with a
+    /// migration diagnostic.
+    pub args: Vec<(String, Spanned<Expr>)>,
     #[serde(default)]
     pub restart: Option<RestartPolicy>,
     /// Declarative sibling wiring: maps init-param name → sibling child name.

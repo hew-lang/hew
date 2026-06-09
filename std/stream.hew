@@ -131,7 +131,7 @@ pub fn try_from_file(path: string) -> Result<Stream<string>, fs.IoError> {
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(fs.io_error_from_errno(errno))
+            Err(fs.io_error_from_errno(errno as i64))
         }
     }
 }
@@ -177,7 +177,7 @@ pub fn try_to_file(path: string) -> Result<Sink<string>, fs.IoError> {
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(fs.io_error_from_errno(errno))
+            Err(fs.io_error_from_errno(errno as i64))
         }
     }
 }
@@ -202,7 +202,8 @@ pub fn forward(source: Stream<string>, dest: Sink<string>) {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 /// Internal paired channel handle.
-type StreamPair {
+#[opaque]
+pub type StreamPair {
 }
 
 extern "C" {

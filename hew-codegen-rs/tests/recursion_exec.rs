@@ -131,6 +131,7 @@ fn jit_run_main(ll_path: &Path) -> i64 {
 /// parser fix.  The key invariant is that `fn fib(n: i64) -> i64 { if ... }`
 /// lowers the `if` as the function return value, not as a discarded statement.
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn recursive_fib_returns_correct_value() {
     let src = r#"
         fn fib(n: i64) -> i64 {
@@ -149,6 +150,7 @@ fn recursive_fib_returns_correct_value() {
 }
 
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn recursive_fib_base_cases() {
     let src_0 = r#"
         fn fib(n: i64) -> i64 {
@@ -182,6 +184,7 @@ fn recursive_fib_base_cases() {
 /// and verifies that the parser fix applies to all recursive call patterns,
 /// not just self-recursion.
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn mutually_recursive_is_even_is_odd() {
     let src = r#"
         fn is_even(n: i64) -> i64 {

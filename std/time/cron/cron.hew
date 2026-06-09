@@ -21,7 +21,8 @@
 ///
 /// Created by `cron.parse(expr)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
-type Expr {
+#[opaque]
+pub type Expr {
 }
 
 /// Structured cron scheduling errors surfaced by the native ABI.

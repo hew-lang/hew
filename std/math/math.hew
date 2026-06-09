@@ -1,13 +1,13 @@
 //! Mathematical operations.
 //!
-//! Integer functions (absolute value, min, max, clamp, sign) and
-//! floating-point functions (sqrt, pow, floor, ceil, round) plus
-//! common constants.
+//! Generic numeric functions (absolute value, min, max), integer helpers
+//! (clamp, sign), and floating-point functions (sqrt, pow, floor, ceil,
+//! round) plus common constants.
 //!
-//! Integer helpers and constants are implemented directly in Hew.
-//! Floating-point functions are lowered to MLIR/LLVM math ops by the
-//! codegen backend. The Rust crate in `src/lib.rs` remains only as a
-//! workspace build placeholder.
+//! Generic numeric and floating-point functions are lowered to LLVM math ops by
+//! the codegen backend. Integer-only helpers and constants are
+//! implemented directly in Hew. The Rust crate in `src/lib.rs` remains only
+//! as a workspace build placeholder.
 //!
 //! # Examples
 //!
@@ -33,34 +33,20 @@ pub fn e() -> f64 {
     2.718281828459045
 }
 
+// ── Generic numeric operations ────────────────────────────────────────
+/// Return the absolute value of a numeric value.
+#[intrinsic("math.abs")]
+pub fn abs<T: Num>(x: T) -> T {}
+
+/// Return the smaller of two numeric values.
+#[intrinsic("math.min")]
+pub fn min<T: Num>(a: T, b: T) -> T {}
+
+/// Return the larger of two numeric values.
+#[intrinsic("math.max")]
+pub fn max<T: Num>(a: T, b: T) -> T {}
+
 // ── Integer operations ────────────────────────────────────────────────
-/// Return the absolute value of an integer.
-pub fn abs(x: i64) -> i64 {
-    if x < 0 {
-        -x
-    } else {
-        x
-    }
-}
-
-/// Return the smaller of two integers.
-pub fn min(a: i64, b: i64) -> i64 {
-    if a < b {
-        a
-    } else {
-        b
-    }
-}
-
-/// Return the larger of two integers.
-pub fn max(a: i64, b: i64) -> i64 {
-    if a > b {
-        a
-    } else {
-        b
-    }
-}
-
 /// Clamp `x` to the range [`lo`, `hi`].
 pub fn clamp(x: i64, lo: i64, hi: i64) -> i64 {
     if x < lo {
@@ -84,46 +70,8 @@ pub fn sign(x: i64) -> i64 {
 }
 
 // ── Floating-point operations ─────────────────────────────────────────
-// Codegen emits MLIR math-dialect intrinsics for these. The bodies
+// Codegen emits LLVM math intrinsics for these. The bodies
 // below are compile-time stubs that satisfy the type-checker.
-/// Return the absolute value of a float.
-pub fn abs_f(x: f64) -> f64 {
-    if x < 0.0 {
-        -x
-    } else {
-        x
-    }
-}
-
-/// Return the smaller of two floats.
-pub fn min_f(a: f64, b: f64) -> f64 {
-    if a < b {
-        a
-    } else {
-        b
-    }
-}
-
-/// Return the larger of two floats.
-pub fn max_f(a: f64, b: f64) -> f64 {
-    if a > b {
-        a
-    } else {
-        b
-    }
-}
-
-/// Clamp `x` to the range [`lo`, `hi`].
-pub fn clamp_f(x: f64, lo: f64, hi: f64) -> f64 {
-    if x < lo {
-        return lo;
-    }
-    if x > hi {
-        return hi;
-    }
-    x
-}
-
 // WHY: `#[intrinsic("math.sqrt")]` is the typed-declaration substrate introduced
 // in the stdlib-refactor early-substrate lane. The attribute names the catalog key
 // so HIR can skip body lowering and route to the existing CompilerIntrinsic entry.
@@ -131,31 +79,31 @@ pub fn clamp_f(x: f64, lo: f64, hi: f64) -> f64 {
 // removed, this comment becomes the authoritative declaration and the WHY/WHEN block
 // can be dropped in favour of a plain doc-comment.
 // WHAT: slices 4-7 remove the parallel catalog entry and make this declaration the
-// sole source of truth; codegen emits the MLIR math-dialect op by intrinsic key.
+// sole source of truth; codegen emits the LLVM intrinsic by intrinsic key.
 /// Return the square root of a float.
 #[intrinsic("math.sqrt")]
 pub fn sqrt(x: f64) -> f64 {}
 
 /// Raise `base` to the power `exp`.
 pub fn pow(base: f64, exp: f64) -> f64 {
-    // Codegen maps to mlir::math::PowFOp
+    // Codegen maps to an LLVM math intrinsic.
     0.0
 }
 
 /// Return the largest integer value less than or equal to `x`.
 pub fn floor(x: f64) -> f64 {
-    // Codegen maps to mlir::math::FloorOp
+    // Codegen maps to an LLVM math intrinsic.
     0.0
 }
 
 /// Return the smallest integer value greater than or equal to `x`.
 pub fn ceil(x: f64) -> f64 {
-    // Codegen maps to mlir::math::CeilOp
+    // Codegen maps to an LLVM math intrinsic.
     0.0
 }
 
 /// Round to the nearest integer, with ties rounding away from zero.
 pub fn round(x: f64) -> f64 {
-    // Codegen maps to mlir::math::RoundOp
+    // Codegen maps to an LLVM math intrinsic.
     0.0
 }

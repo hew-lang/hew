@@ -42,8 +42,8 @@ fn main() {
         name = os.args(2);
     }
     let addr = f"127.0.0.1:{port}";
-    let connect_timeout_sec: i32 = 5;
-    let connect_timeout_usec: i32 = 0;
+    let connect_timeout_sec: i64 = 5;
+    let connect_timeout_usec: i64 = 0;
     let conn = net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec);
     match conn.set_read_timeout(-1) {
         Ok(_) => {},

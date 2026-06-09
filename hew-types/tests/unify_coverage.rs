@@ -2,10 +2,10 @@
 //!
 //! These tests target code paths not covered by the inline unit tests,
 //! including slices, pointers, trait objects, machine types, qualified
-//! name matching, `can_coerce` branches, error display, and `bind` edge cases.
+//! name matching, error display, and `bind` edge cases.
 
 use hew_types::ty::{Substitution, TraitObjectBound, Ty, TypeVar};
-use hew_types::unify::{bind, can_coerce, unify, UnifyError};
+use hew_types::unify::{bind, unify, UnifyError};
 
 // ---------------------------------------------------------------------------
 // Helper: fresh substitution
@@ -489,86 +489,6 @@ fn never_on_right_unifies_with_anything() {
 fn error_on_right_unifies_with_anything() {
     let mut subst = fresh_subst();
     assert!(unify(&mut subst, &Ty::I32, &Ty::Error).is_ok());
-}
-
-// ===========================================================================
-// can_coerce() — additional branches
-// ===========================================================================
-
-#[test]
-fn can_coerce_array_to_slice() {
-    let arr = Ty::Array(Box::new(Ty::I32), 10);
-    let slc = Ty::Slice(Box::new(Ty::I32));
-    assert!(can_coerce(&arr, &slc));
-}
-
-#[test]
-fn can_coerce_array_to_slice_element_mismatch() {
-    let arr = Ty::Array(Box::new(Ty::I32), 10);
-    let slc = Ty::Slice(Box::new(Ty::Bool));
-    assert!(!can_coerce(&arr, &slc));
-}
-
-#[test]
-fn can_coerce_mut_pointer_to_const_pointer() {
-    let mut_ptr = Ty::Pointer {
-        is_mutable: true,
-        pointee: Box::new(Ty::I32),
-    };
-    let const_ptr = Ty::Pointer {
-        is_mutable: false,
-        pointee: Box::new(Ty::I32),
-    };
-    assert!(can_coerce(&mut_ptr, &const_ptr));
-}
-
-#[test]
-fn can_coerce_const_pointer_to_mut_pointer_fails() {
-    let const_ptr = Ty::Pointer {
-        is_mutable: false,
-        pointee: Box::new(Ty::I32),
-    };
-    let mut_ptr = Ty::Pointer {
-        is_mutable: true,
-        pointee: Box::new(Ty::I32),
-    };
-    assert!(!can_coerce(&const_ptr, &mut_ptr));
-}
-
-#[test]
-fn can_coerce_mut_pointer_pointee_mismatch() {
-    let mut_ptr = Ty::Pointer {
-        is_mutable: true,
-        pointee: Box::new(Ty::I32),
-    };
-    let const_ptr = Ty::Pointer {
-        is_mutable: false,
-        pointee: Box::new(Ty::Bool),
-    };
-    assert!(!can_coerce(&mut_ptr, &const_ptr));
-}
-
-#[test]
-fn can_coerce_error_on_right() {
-    assert!(can_coerce(&Ty::I32, &Ty::Error));
-    assert!(can_coerce(&Ty::String, &Ty::Error));
-}
-
-#[test]
-fn can_coerce_error_on_left() {
-    assert!(can_coerce(&Ty::Error, &Ty::I64));
-}
-
-#[test]
-fn can_coerce_never_on_left() {
-    assert!(can_coerce(&Ty::Never, &Ty::Bool));
-    assert!(can_coerce(&Ty::Never, &Ty::String));
-}
-
-#[test]
-fn can_coerce_incompatible_types() {
-    assert!(!can_coerce(&Ty::I32, &Ty::String));
-    assert!(!can_coerce(&Ty::Bool, &Ty::F64));
 }
 
 // ===========================================================================

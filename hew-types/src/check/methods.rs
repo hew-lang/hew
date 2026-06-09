@@ -1446,9 +1446,49 @@ impl Checker {
             .module_registry
             .resolve_module_call(module_name, method)
         {
-            if c_symbol != method {
-                self.record_module_qualified_method_call_rewrite(span, c_symbol);
-            }
+            let symbol = if c_symbol == method {
+                let qualified = format!("{module_name}.{method}");
+                if !self.fn_sigs.contains_key(&qualified) {
+                    return;
+                }
+                if module_name == "math" && Self::is_direct_math_intrinsic(method) {
+                    method.to_string()
+                } else {
+                    qualified
+                }
+            } else {
+                c_symbol
+            };
+            self.record_module_qualified_method_call_rewrite(span, symbol);
+        }
+    }
+
+    fn is_direct_math_intrinsic(method: &str) -> bool {
+        matches!(
+            method,
+            "sqrt"
+                | "abs"
+                | "min"
+                | "max"
+                | "abs_f"
+                | "min_f"
+                | "max_f"
+                | "pow"
+                | "floor"
+                | "ceil"
+                | "round"
+        )
+    }
+
+    fn generic_math_intrinsic_op(module_name: &str, method: &str) -> Option<MathGenericOp> {
+        if module_name != "math" {
+            return None;
+        }
+        match method {
+            "abs" => Some(MathGenericOp::Abs),
+            "min" => Some(MathGenericOp::Min),
+            "max" => Some(MathGenericOp::Max),
+            _ => None,
         }
     }
 
@@ -1630,6 +1670,33 @@ impl Checker {
     }
 
     /// Look up a non-builtin named method via `type_defs` first, then `fn_sigs`.
+    /// The last `.`-separated segment of `current_module`, i.e. the *short*
+    /// module name used as the qualified type-alias prefix (`websocket` for
+    /// `std.net.websocket`). Returns `None` at the root / flat namespace, where
+    /// type names are unqualified.
+    pub(super) fn current_module_short(&self) -> Option<&str> {
+        self.current_module
+            .as_deref()
+            .map(|m| m.rsplit('.').next().unwrap_or(m))
+    }
+
+    /// Resolve a method signature against the *module-local* type definition.
+    ///
+    /// When the checker is inside module `m` and resolving `Type::method`, the
+    /// authoritative definition is `m`'s own `Type` (registered under the
+    /// qualified `{short}.{Type}` key), not the bare `Type` key which is
+    /// last-write-wins across every module that declares a same-named type.
+    /// Used by the impl-body return-type check so a method body in module `m`
+    /// is validated against `m`'s type, not whichever module registered the
+    /// bare key last. Returns `None` outside a module or when the qualified
+    /// type def / method is absent (caller falls back to the bare lookup).
+    pub(super) fn module_local_method_sig(&self, type_name: &str, method: &str) -> Option<FnSig> {
+        let short = self.current_module_short()?;
+        let qualified = format!("{short}.{type_name}");
+        let td = self.type_defs.get(&qualified)?;
+        td.methods.get(method).cloned()
+    }
+
     pub(super) fn lookup_named_method_sig(
         &self,
         type_name: &str,
@@ -1750,6 +1817,19 @@ impl Checker {
         );
     }
 
+    fn report_nonserializable_remote_actor_reply(&mut self, ty: &Ty, span: &Span) {
+        self.report_error(
+            TypeErrorKind::BoundsNotSatisfied,
+            span,
+            format!(
+                "remote actor reply type `{}` must implement Serializable before it can \
+                 cross a RemotePid ask boundary; {}",
+                ty.user_facing(),
+                self.serializable_failure_reason(ty)
+            ),
+        );
+    }
+
     fn enforce_remote_actor_msg_serializable(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
@@ -1764,6 +1844,39 @@ impl Checker {
             self.report_nonserializable_remote_actor_msg(&resolved, span);
             false
         }
+    }
+
+    fn enforce_remote_actor_reply_serializable(&mut self, ty: &Ty, span: &Span) -> bool {
+        let projected = self.project_assoc_types(ty);
+        let resolved = self.subst.resolve(&projected);
+        if matches!(resolved, Ty::Var(_) | Ty::Error) {
+            return true;
+        }
+        if self
+            .registry
+            .implements_marker(&resolved, MarkerTrait::Serializable)
+        {
+            true
+        } else {
+            self.report_nonserializable_remote_actor_reply(&resolved, span);
+            false
+        }
+    }
+
+    fn enforce_remote_actor_ask_reply_serializable(&mut self, return_ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(return_ty);
+        let Ty::Named {
+            builtin: Some(BuiltinType::Result),
+            args,
+            ..
+        } = resolved
+        else {
+            return true;
+        };
+        let Some(reply_ty) = args.first() else {
+            return true;
+        };
+        self.enforce_remote_actor_reply_serializable(reply_ty, span)
     }
 
     /// Enforce the A640 remote serializability floor after method signature
@@ -1863,6 +1976,26 @@ impl Checker {
                         },
                     );
                     self.enforce_actor_method_send_args(args);
+                    // Ask-without-await guard: if this receive fn returns a value
+                    // (ask-shaped), is not a generator (those use `for await`, not
+                    // bare `await`), and the call is not directly under `await`,
+                    // reject it with a clear diagnostic pointing at the fix.
+                    let resolved_ty = self.subst.resolve(&ty);
+                    let is_ask_shaped = !matches!(resolved_ty, Ty::Unit)
+                        && !self.receive_generator_methods.contains(&method_key);
+                    if is_ask_shaped && !self.inside_await_expr {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "actor ask `{name}::{method_name}` requires `await`; \
+                                 write `let v? = await ref.{method_name}(...)` \
+                                 or `match await ref.{method_name}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
+                            ),
+                        );
+                        // Still record the dispatch so HIR/MIR have a sane entry; the
+                        // type checker already emitted the error so this is recovery.
+                    }
                     self.record_actor_method_dispatch(span, method_key, ty.clone());
                 } else {
                     self.record_method_call_receiver_kind(
@@ -2654,9 +2787,10 @@ impl Checker {
     /// override; until then this is the authority-transfer seam from registry
     /// admission to per-element kernel selection.
     fn record_resolved_vec_call(&mut self, method: &str, elem_ty: &Ty, span: &Span) {
+        let elem_ty = self.subst.resolve(elem_ty).materialize_literal_defaults();
         let receiver = TyPattern::App {
             ctor: "Vec".to_string(),
-            args: vec![self.ty_to_dispatch_pattern(elem_ty)],
+            args: vec![self.ty_to_dispatch_pattern(&elem_ty)],
         };
         let key = SpanKey::from(span);
         self.record_resolved_collection_call("Seq", method, &receiver, span);
@@ -2664,7 +2798,7 @@ impl Checker {
             return;
         }
 
-        let Some(symbol_name) = self.resolve_vec_runtime_symbol(method, elem_ty, span) else {
+        let Some(symbol_name) = self.resolve_vec_runtime_symbol(method, &elem_ty, span) else {
             self.resolved_calls.remove(&key);
             return;
         };
@@ -2789,7 +2923,10 @@ impl Checker {
                 if !validated {
                     return false;
                 }
-                if matches!(method, "insert" | "get" | "remove" | "contains_key" | "len") {
+                if matches!(
+                    method,
+                    "insert" | "get" | "remove" | "contains_key" | "len" | "keys" | "values"
+                ) {
                     self.record_resolved_hashmap_call(method, &cx.key, &cx.val, span);
                 }
             }
@@ -3392,6 +3529,7 @@ impl Checker {
             },
             true,
         );
+        let method_key = format!("{canonical}::{method}");
         self.record_method_call_receiver_kind(
             span,
             MethodCallReceiverKind::PrimitiveTraitImpl {
@@ -3399,6 +3537,15 @@ impl Checker {
                 canonical_receiver: canonical,
             },
         );
+        if self.fn_sigs.contains_key(&method_key) {
+            self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::RewriteToFunction {
+                    c_symbol: method_key,
+                    elem_ty: None,
+                },
+            );
+        }
         Some(applied_sig.return_type)
     }
 
@@ -3633,6 +3780,12 @@ impl Checker {
                     if key == "channel.new" {
                         let t = Ty::Var(TypeVar::fresh());
                         return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
+                    }
+                    if let Some(op) = Self::generic_math_intrinsic_op(name, method) {
+                        self.record_method_call_rewrite(
+                            span,
+                            MethodCallRewrite::GenericMathIntrinsic { op },
+                        );
                     }
                     return applied_sig.return_type;
                 }
@@ -4187,6 +4340,24 @@ impl Checker {
                                 actor_name: actor_name.clone(),
                             },
                         );
+                        // Ask-without-await guard: ask-shaped receive fn must be
+                        // awaited. Generator methods (`receive gen fn`) use `for
+                        // await` at the call site and are exempt from this guard.
+                        let resolved_ret = self.subst.resolve(&sig.return_type);
+                        if !matches!(resolved_ret, Ty::Unit)
+                            && !self.receive_generator_methods.contains(&method_key)
+                            && !self.inside_await_expr
+                        {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "actor ask `{actor_name}::{method}` requires `await`; \
+                                     write `let v? = await ref.{method}(...)` \
+                                     or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
+                                ),
+                            );
+                        }
                         self.record_actor_method_dispatch(
                             span,
                             method_key,
@@ -4232,13 +4403,28 @@ impl Checker {
                             },
                             true,
                         );
-                        if method == "tell" {
+                        let return_type = if method == "ask" {
+                            self.project_assoc_types(&applied_sig.return_type)
+                        } else {
+                            applied_sig.return_type.clone()
+                        };
+                        if matches!(method, "tell" | "ask") {
                             self.enforce_actor_method_send_args(args);
                             // A640/S3: this is only a compile-time floor. The
                             // native RemotePid lowering still wraps raw
                             // in-memory ABI bytes in the CBOR envelope; a
                             // structural Hew-value encoder is a later slice.
                             self.enforce_remote_actor_method_serializable_args(args);
+                            if method == "ask" {
+                                self.enforce_remote_actor_ask_reply_serializable(
+                                    &return_type,
+                                    span,
+                                );
+                                self.method_call_rewrites
+                                    .insert(SpanKey::from(span), MethodCallRewrite::RemoteActorAsk);
+                            }
+                        }
+                        if method == "tell" {
                             // S5: real RemotePid<T>::tell lowering. Record a
                             // direct-call rewrite so HIR/MIR lower the call
                             // to `hew_remote_pid_tell`, which codegen
@@ -4258,7 +4444,7 @@ impl Checker {
                                 },
                             );
                         }
-                        return applied_sig.return_type;
+                        return return_type;
                     }
                 }
                 for arg in args {
@@ -4306,6 +4492,24 @@ impl Checker {
                                     actor_name: actor_name.clone(),
                                 },
                             );
+                            // Ask-without-await guard: ask-shaped receive fn must be
+                            // awaited. Generator methods (`receive gen fn`) use `for
+                            // await` at the call site and are exempt from this guard.
+                            let resolved_ret = self.subst.resolve(&sig.return_type);
+                            if !matches!(resolved_ret, Ty::Unit)
+                                && !self.receive_generator_methods.contains(&method_key)
+                                && !self.inside_await_expr
+                            {
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "actor ask `{actor_name}::{method}` requires `await`; \
+                                         write `let v? = await ref.{method}(...)` \
+                                         or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
+                                    ),
+                                );
+                            }
                             self.record_actor_method_dispatch(
                                 span,
                                 method_key,
@@ -4981,8 +5185,11 @@ impl Checker {
                         || self.dyn_trait_method_calls.contains_key(&span_key)
                         || self.resolved_calls.contains_key(&span_key);
                     if !already_rewritten {
-                        let method_key = format!("{name}::{method}");
-                        if name == "VecIter" && method == "next" {
+                        let method_owner = name
+                            .rsplit_once('.')
+                            .map_or(name.as_str(), |(_, unqualified)| unqualified);
+                        let method_key = format!("{method_owner}::{method}");
+                        if method_owner == "VecIter" && method == "next" {
                             if let Some(elem_ty) = type_args.first() {
                                 if let Ok(elem_resolved) =
                                     ResolvedTy::from_ty(&self.subst.resolve(elem_ty))
@@ -5144,6 +5351,7 @@ impl Checker {
                                 bound_trait,
                                 declaring_trait,
                                 method_name: method.to_string(),
+                                requires_mutable_receiver: trait_sig.requires_mutable_receiver,
                             },
                         );
                         return self.project_assoc_types(&applied_sig.return_type);
@@ -5443,6 +5651,24 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "len".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_len_layout".to_string(),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "keys".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_keys_layout".to_string(),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "values".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_values_layout".to_string(),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,

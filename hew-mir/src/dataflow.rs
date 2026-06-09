@@ -318,6 +318,7 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
             | Terminator::Yield { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
+            | Terminator::RemoteAsk { next, .. }
             | Terminator::Select { next, .. } => emit_edge(*next),
         }
     }
@@ -337,6 +338,7 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         | Terminator::Yield { next, .. }
         | Terminator::Send { next, .. }
         | Terminator::Ask { next, .. }
+        | Terminator::RemoteAsk { next, .. }
         | Terminator::Select { next, .. } => vec![*next],
     }
 }
@@ -472,6 +474,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::IntArithCheckedOption { dest, lhs, rhs, .. }
         | Instr::IntArithSaturating { dest, lhs, rhs, .. }
         | Instr::IntCmp { dest, lhs, rhs, .. }
+        | Instr::FloatCmp { dest, lhs, rhs, .. }
         | Instr::IdentityCompare { dest, lhs, rhs }
         | Instr::FloatAdd { dest, lhs, rhs, .. }
         | Instr::FloatSub { dest, lhs, rhs, .. }
@@ -1037,6 +1040,7 @@ fn is_yield_equivalent(block: &BasicBlock) -> bool {
         Terminator::Yield { .. }
             | Terminator::Send { .. }
             | Terminator::Ask { .. }
+            | Terminator::RemoteAsk { .. }
             | Terminator::Select { .. }
     )
 }

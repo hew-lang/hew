@@ -224,7 +224,7 @@ pub fn try_read(file_path: string) -> Result<string, IoError> {
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(io_error_from_errno(errno))
+            Err(io_error_from_errno(errno as i64))
         }
     }
 }
@@ -235,7 +235,7 @@ pub fn try_read(file_path: string) -> Result<string, IoError> {
 /// Use `try_write` for a structured `Result<i64, IoError>` surface.
 pub fn write(path: string, content: string) -> i64 {
     unsafe {
-        hew_file_write(path, content)
+        hew_file_write(path, content) as i64
     }
 }
 
@@ -257,7 +257,7 @@ pub fn try_write(file_path: string, content: string) -> Result<i64, IoError> {
 /// Use `try_append` for a structured `Result<i64, IoError>` surface.
 pub fn append(path: string, content: string) -> i64 {
     unsafe {
-        hew_file_append(path, content)
+        hew_file_append(path, content) as i64
     }
 }
 
@@ -290,7 +290,7 @@ pub fn exists(path: string) -> bool {
 /// Delete a file. Returns 0 on success.
 pub fn delete(path: string) -> i64 {
     unsafe {
-        hew_file_delete(path)
+        hew_file_delete(path) as i64
     }
 }
 
@@ -338,7 +338,7 @@ pub fn try_read_bytes(file_path: string) -> Result<bytes, IoError> {
         let data = hew_file_read_bytes(file_path);
         let errno = hew_stream_last_errno();
         if errno != 0 {
-            Err(io_error_from_errno(errno))
+            Err(io_error_from_errno(errno as i64))
         } else {
             Ok(clone_bytes(data))
         }
@@ -351,7 +351,7 @@ pub fn try_read_bytes(file_path: string) -> Result<bytes, IoError> {
 /// Use `try_write_bytes` for a structured `Result<i64, IoError>` surface.
 pub fn write_bytes(path: string, data: bytes) -> i64 {
     unsafe {
-        hew_file_write_bytes(path, data)
+        hew_file_write_bytes(path, data) as i64
     }
 }
 
@@ -374,7 +374,7 @@ pub fn try_write_bytes(file_path: string, data: bytes) -> Result<i64, IoError> {
 /// parent directories automatically.
 pub fn mkdir(path: string) -> i64 {
     unsafe {
-        hew_fs_mkdir(path)
+        hew_fs_mkdir(path) as i64
     }
 }
 
@@ -393,7 +393,7 @@ pub fn try_mkdir(dir_path: string) -> Result<i64, IoError> {
 /// Returns 0 on success, -1 on error.
 pub fn mkdir_all(path: string) -> i64 {
     unsafe {
-        hew_fs_mkdir_all(path)
+        hew_fs_mkdir_all(path) as i64
     }
 }
 
@@ -454,7 +454,7 @@ pub fn try_list_dir(dir_path: string) -> Result<Vec<string>, IoError> {
 /// Returns 0 on success, -1 on error.
 pub fn rename(from: string, to: string) -> i64 {
     unsafe {
-        hew_fs_rename(from, to)
+        hew_fs_rename(from, to) as i64
     }
 }
 
@@ -475,7 +475,7 @@ pub fn try_rename(from: string, to: string) -> Result<i64, IoError> {
 /// Returns 0 on success, -1 on error.
 pub fn copy(from: string, to: string) -> i64 {
     unsafe {
-        hew_fs_copy(from, to)
+        hew_fs_copy(from, to) as i64
     }
 }
 
@@ -499,7 +499,8 @@ pub fn is_dir(path: string) -> bool {
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-type FileReadStream {
+#[opaque]
+pub type FileReadStream {
 }
 
 extern "C" {

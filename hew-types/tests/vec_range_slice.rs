@@ -57,9 +57,8 @@ fn fully_open_slice_on_vec_typechecks_clean() {
 
 #[test]
 fn slice_on_vec_string_typechecks_clean() {
-    // Vec<string> range-slice is supported; the runtime strdups each
-    // element into the fresh vec. Element-type dispatch is by the MIR
-    // emitter.
+    // Vec<string> range-slice is supported; the runtime copies header-aware
+    // elements into the fresh vec. Element-type dispatch is by the MIR emitter.
     assert_clean("fn f(xs: Vec<string>, a: i64, b: i64) -> Vec<string> { xs[a..b] }");
 }
 

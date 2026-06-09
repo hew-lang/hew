@@ -7,11 +7,12 @@ fn climb(n: i32) -> i32 {
         let dp: Vec<i32> = Vec::new();
         dp.push(1);
         dp.push(1);
-        for i in 2 .. n + 1 {
+        let n64: i64 = n as i64;
+        for i in 2 .. n64 + 1 {
             let val = dp.get(i - 1) + dp.get(i - 2);
             dp.push(val);
         }
-        dp.get(n)
+        dp.get(n64)
     }
 }
 

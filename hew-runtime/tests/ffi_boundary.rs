@@ -59,15 +59,15 @@ use hew_runtime::string::{
 use hew_runtime::vec::{
     hew_vec_clear, hew_vec_clone, hew_vec_contains_f64, hew_vec_contains_i32, hew_vec_contains_i64,
     hew_vec_contains_str, hew_vec_contains_thunk, hew_vec_free, hew_vec_get_f64,
-    hew_vec_get_generic, hew_vec_get_i32, hew_vec_get_i64, hew_vec_get_layout, hew_vec_get_str,
-    hew_vec_is_empty, hew_vec_len, hew_vec_new, hew_vec_new_f64, hew_vec_new_generic,
-    hew_vec_new_i64, hew_vec_new_str, hew_vec_new_with_layout, hew_vec_pop_f64,
-    hew_vec_pop_generic, hew_vec_pop_i32, hew_vec_pop_i64, hew_vec_pop_layout, hew_vec_push_f64,
-    hew_vec_push_generic, hew_vec_push_i32, hew_vec_push_i64, hew_vec_push_layout,
-    hew_vec_push_str, hew_vec_reverse_i32, hew_vec_set_f64, hew_vec_set_generic, hew_vec_set_i32,
-    hew_vec_set_i64, hew_vec_set_layout, hew_vec_set_str, hew_vec_sort_f64, hew_vec_sort_i32,
-    hew_vec_sort_i64, hew_vec_swap, hew_vec_truncate, ElemKind, HewTypeLayout,
-    HewTypeOwnershipKind,
+    hew_vec_get_generic, hew_vec_get_i32, hew_vec_get_i64, hew_vec_get_layout, hew_vec_get_ptr,
+    hew_vec_get_str, hew_vec_is_empty, hew_vec_len, hew_vec_new, hew_vec_new_f64,
+    hew_vec_new_generic, hew_vec_new_i64, hew_vec_new_str, hew_vec_new_with_layout,
+    hew_vec_pop_f64, hew_vec_pop_generic, hew_vec_pop_i32, hew_vec_pop_i64, hew_vec_pop_layout,
+    hew_vec_push_f64, hew_vec_push_generic, hew_vec_push_i32, hew_vec_push_i64,
+    hew_vec_push_layout, hew_vec_push_str, hew_vec_reverse_i32, hew_vec_set_f64,
+    hew_vec_set_generic, hew_vec_set_i32, hew_vec_set_i64, hew_vec_set_layout, hew_vec_set_str,
+    hew_vec_sort_f64, hew_vec_sort_i32, hew_vec_sort_i64, hew_vec_swap, hew_vec_truncate, ElemKind,
+    HewTypeLayout, HewTypeOwnershipKind,
 };
 use hew_runtime::{hew_clear_error, hew_last_error};
 
@@ -1954,7 +1954,12 @@ mod generic_vec_tests {
         unsafe {
             let v = hew_vec_new_with_layout(&raw const layout);
             assert!(!v.is_null());
-            assert_eq!((*v).layout, &raw const layout);
+            // layout is copied into the vec's inline storage; the pointer
+            // no longer equals the caller's address but the values are identical.
+            assert!(!(*v).layout.is_null());
+            assert_eq!((*(*v).layout).size, layout.size);
+            assert_eq!((*(*v).layout).align, layout.align);
+            assert_eq!((*(*v).layout).ownership_kind, layout.ownership_kind);
             assert_eq!((*v).elem_size, core::mem::size_of::<Point>());
             assert_eq!(hew_vec_len(v), 0);
             hew_vec_free(v);
@@ -2328,6 +2333,66 @@ mod generic_vec_tests {
             let empty = hew_vec_pop_generic(v, out.as_mut_ptr().cast());
             assert_eq!(empty, 0);
             hew_vec_free(v);
+        }
+    }
+
+    // ── hew_vec_get_ptr stride-mismatch fail-closed guard ──────────────
+    //
+    // `hew_vec_get_ptr` assumes 8-byte pointer-sized elements. Calling it
+    // on a layout vec (elem_size = 24 for Point{x,y,z}) must abort rather
+    // than return silently-wrong data.  The guard is tested via the
+    // subprocess death-test pattern so the libc::abort() does not terminate
+    // the test runner process.
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_ptr_stride_mismatch_fails_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generic_vec_tests::helper_get_ptr_stride_mismatch_fails_closed",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "helper_get_ptr_stride_mismatch_fails_closed",
+            )
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "hew_vec_get_ptr on a wide-element vec must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("hew_vec_get_ptr called on a vec with elem_size != sizeof(pointer)"),
+            "hew_vec_get_ptr stride mismatch must report the fail-closed diagnostic; \
+             stderr was: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn helper_get_ptr_stride_mismatch_fails_closed() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |v| v != "helper_get_ptr_stride_mismatch_fails_closed")
+        {
+            return;
+        }
+        // Point is 24 bytes (three i64 fields) — wider than a pointer (8 bytes).
+        // A layout vec for Point has elem_size=24; hew_vec_get_ptr must abort.
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let p = Point { x: 1, y: 2, z: 3 };
+            hew_vec_push_layout(v, (&raw const p).cast(), &raw const layout);
+            // This call must abort — elem_size=24 != sizeof(*mut c_void)=8.
+            let _ = hew_vec_get_ptr(v, 0);
         }
     }
 }

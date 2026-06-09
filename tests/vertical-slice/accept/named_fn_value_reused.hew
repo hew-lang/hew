@@ -1,0 +1,33 @@
+// Regression: the same named function used as a value at multiple call sites
+// must not produce duplicate/undefined shim symbols in the LLVM module.
+fn double(x: i64) -> i64 {
+    return x * 2;
+}
+
+fn triple(x: i64) -> i64 {
+    return x * 3;
+}
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    return f(x);
+}
+
+fn use_a() -> i64 {
+    return apply(double, 1);
+}
+
+fn use_b() -> i64 {
+    return apply(double, 10);
+}
+
+fn use_c() -> i64 {
+    return apply(triple, 10);
+}
+
+fn main() {
+    println(use_a()); // 2
+    println(use_b()); // 20
+    println(use_c()); // 30
+    let g = double;
+    println(g(50));
+} // 100

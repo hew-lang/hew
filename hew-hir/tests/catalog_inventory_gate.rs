@@ -158,3 +158,29 @@ fn stable_symbol_parser_is_non_empty() {
         "hew_sleep_ms missing from stable"
     );
 }
+
+#[test]
+fn catalog_contains_bytes_constructor_and_method_targets() {
+    let mut names: HashSet<&str> = HashSet::new();
+    for entry in entries() {
+        names.insert(entry.name);
+        if let Some(symbol) = entry.linkage.runtime_symbol() {
+            names.insert(symbol);
+        }
+    }
+    for name in [
+        "bytes::new",
+        "hew_bytes_push",
+        "hew_vec_pop_i32",
+        "hew_vec_len",
+        "hew_vec_get_i32",
+        "hew_vec_set_i32",
+        "hew_vec_is_empty",
+        "hew_vec_clear",
+        "hew_vec_contains_i32",
+        "hew_bytes_to_string",
+        "hew_vec_append",
+    ] {
+        assert!(names.contains(name), "missing bytes catalog row `{name}`");
+    }
+}

@@ -58,15 +58,15 @@ trait VersionMethods {
 impl VersionMethods for Version {
     /// Return the major version number.
     fn major(ver: Version) -> i64 {
-        ver.maj
+        ver.maj as i64
     }
     /// Return the minor version number.
     fn minor(ver: Version) -> i64 {
-        ver.min
+        ver.min as i64
     }
     /// Return the patch version number.
     fn patch(ver: Version) -> i64 {
-        ver.pat
+        ver.pat as i64
     }
     /// Return the pre-release label, or an empty string if none.
     fn pre(ver: Version) -> string {
@@ -156,7 +156,7 @@ fn version_to_string(v: Version) -> string {
     let pat = v.pat;
     let pre = v.pre_release;
     let bld = v.build_meta;
-    var s = string.from_int(maj) + "." + string.from_int(min) + "." + string.from_int(pat);
+    var s = string.from_int(maj as i64) + "." + string.from_int(min as i64) + "." + string.from_int(pat as i64);
     if pre.len() > 0 {
         s = s + "-" + pre;
     }

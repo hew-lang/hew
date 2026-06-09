@@ -157,6 +157,18 @@ impl Session {
     /// Build a complete Hew program from session state plus a known input kind.
     #[must_use]
     pub fn build_program_with_kind(&self, input: &str, kind: InputKind) -> SyntheticProgram {
+        self.build_program_with_kind_and_auto_print(input, kind, true)
+    }
+
+    /// Build a complete Hew program from session state plus a known input kind,
+    /// with caller-selected expression auto-printing.
+    #[must_use]
+    pub fn build_program_with_kind_and_auto_print(
+        &self,
+        input: &str,
+        kind: InputKind,
+        auto_print_expressions: bool,
+    ) -> SyntheticProgram {
         let mut source = String::new();
         let mut diagnostic_view = None;
 
@@ -209,17 +221,29 @@ impl Session {
                 }
                 let trimmed = input.trim();
                 let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
-                // Wrap the expression for auto-printing via the
-                // type-generic `println()` builtin.
-                source.push_str("    println(");
-                let input_start = source.len();
-                source.push_str(trimmed);
-                let input_end = source.len();
-                source.push_str(");\n}\n");
-                diagnostic_view = Some(SyntheticDiagnosticView {
-                    source: trimmed.to_string(),
-                    input_span: input_start..input_end,
-                });
+                source.push_str("    ");
+                if auto_print_expressions {
+                    // Wrap the expression for auto-printing via the
+                    // type-generic `println()` builtin.
+                    source.push_str("println(");
+                    let input_start = source.len();
+                    source.push_str(trimmed);
+                    let input_end = source.len();
+                    source.push_str(");\n}\n");
+                    diagnostic_view = Some(SyntheticDiagnosticView {
+                        source: trimmed.to_string(),
+                        input_span: input_start..input_end,
+                    });
+                } else {
+                    let input_start = source.len();
+                    source.push_str(trimmed);
+                    let input_end = source.len();
+                    source.push_str(";\n}\n");
+                    diagnostic_view = Some(SyntheticDiagnosticView {
+                        source: trimmed.to_string(),
+                        input_span: input_start..input_end,
+                    });
+                }
             }
             InputKind::Command(_) => {
                 // Commands are handled before we get here; return a no-op program.

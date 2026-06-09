@@ -520,8 +520,6 @@ pub mod pool;
 pub mod process;
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod remote_sup;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod routing;
 /// Session-scoped reset-hook registry.  Unconditionally compiled — both the
 /// WASM cooperative scheduler and the native work-stealing scheduler share

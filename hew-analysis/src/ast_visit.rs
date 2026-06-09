@@ -290,7 +290,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     .enter_body(body_info, Self::context(Some(body_info)));
                 self.push_scope(Vec::new());
                 for child in &supervisor.children {
-                    for arg in &child.args {
+                    for (_field_name, arg) in &child.args {
                         self.walk_expr(&arg.0, &arg.1, Some(body_info));
                     }
                 }
@@ -362,7 +362,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.visitor.enter_body(body_info, Self::context(Some(body_info)));
                 self.push_scope(Vec::new());
                 for child in &supervisor.children {
-                    for arg in &child.args {
+                    for (_field_name, arg) in &child.args {
                         self.walk_expr(&arg.0, &arg.1, Some(body_info));
                     }
                 }

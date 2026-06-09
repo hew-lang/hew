@@ -36,6 +36,25 @@ pub const FRAME_TYPE_CONTROL: u8 = 0;
 /// Discriminant for an envelope frame (`frame_type` field value 1).
 pub const FRAME_TYPE_ENVELOPE: u8 = 1;
 
+/// Control-frame kind for registry-name gossip.
+pub const CTRL_REGISTRY_GOSSIP: u64 = 1;
+
+/// Registry-gossip payload op for actor-name registration.
+///
+/// Matches `cluster::GOSSIP_REGISTRY_ADD` on native targets.
+pub const REGISTRY_GOSSIP_OP_ADD: u8 = 5;
+
+/// Registry-gossip payload op for actor-name removal.
+///
+/// Matches `cluster::GOSSIP_REGISTRY_REMOVE` on native targets.
+pub const REGISTRY_GOSSIP_OP_REMOVE: u8 = 6;
+
+/// Maximum accepted registry-gossip control payload size.
+pub const MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES: usize = 4096;
+
+/// Maximum accepted registry name length on the gossip wire, in UTF-8 bytes.
+pub const MAX_REGISTRY_GOSSIP_NAME_BYTES: usize = 1024;
+
 /// A control frame: node-level signalling with an opaque byte payload.
 ///
 /// CDDL: `control-frame` rule in `schemas/envelope.cddl`.
@@ -130,6 +149,19 @@ pub enum WireFrame {
     Control(ControlFrame),
     /// Actor-to-actor message frame.
     Envelope(EnvelopeFrame),
+}
+
+/// Bounded registry-gossip control payload.
+///
+/// Encoded as a definite CBOR map `{1: op, 2: name, 3: actor_id}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryGossipPayload {
+    /// Registry operation (`REGISTRY_GOSSIP_OP_ADD` or `_REMOVE`).
+    pub op: u8,
+    /// Registered actor name.
+    pub name: String,
+    /// Packed actor PID. Non-zero for add events; ignored for removals.
+    pub actor_id: u64,
 }
 
 struct PayloadBytes<'a>(&'a [u8]);
@@ -239,6 +271,100 @@ impl From<ciborium::ser::Error<std::io::Error>> for EncodeError {
     }
 }
 
+/// Errors returned by the bounded registry-gossip payload codec.
+#[derive(Debug)]
+pub enum RegistryGossipPayloadError {
+    /// Payload exceeded [`MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES`].
+    PayloadTooLarge { len: usize, max: usize },
+    /// Payload CBOR was malformed or truncated.
+    CborDecode(ciborium::de::Error<std::io::Error>),
+    /// Payload CBOR encoding failed.
+    CborEncode(ciborium::ser::Error<std::io::Error>),
+    /// Top-level payload shape was not the expected map.
+    MalformedPayload { reason: &'static str },
+    /// A payload map key was malformed.
+    MalformedKey,
+    /// Required payload key was absent.
+    MissingKey { key: u64 },
+    /// Unsupported payload key was present.
+    UnknownKey { key: u64 },
+    /// Payload key appeared more than once.
+    DuplicateKey { key: u64 },
+    /// Payload field had the wrong CBOR type or value range.
+    MalformedField { key: u64, expected: &'static str },
+    /// Registry op was not add or remove.
+    InvalidOp { op: u8 },
+}
+
+impl std::fmt::Display for RegistryGossipPayloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PayloadTooLarge { len, max } => {
+                write!(f, "registry gossip payload is too large ({len} > {max})")
+            }
+            Self::CborDecode(e) => write!(f, "registry gossip CBOR decode failed: {e}"),
+            Self::CborEncode(e) => write!(f, "registry gossip CBOR encode failed: {e}"),
+            Self::MalformedPayload { reason } => {
+                write!(f, "malformed registry gossip payload: {reason}")
+            }
+            Self::MalformedKey => write!(
+                f,
+                "registry gossip payload map key is not a non-negative integer"
+            ),
+            Self::MissingKey { key } => {
+                write!(f, "registry gossip payload is missing required key {key}")
+            }
+            Self::UnknownKey { key } => {
+                write!(f, "registry gossip payload contains unsupported key {key}")
+            }
+            Self::DuplicateKey { key } => {
+                write!(f, "registry gossip payload contains duplicate key {key}")
+            }
+            Self::MalformedField { key, expected } => {
+                write!(f, "registry gossip payload key {key} is not {expected}")
+            }
+            Self::InvalidOp { op } => write!(f, "registry gossip op {op} is unsupported"),
+        }
+    }
+}
+
+impl std::error::Error for RegistryGossipPayloadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::CborDecode(e) => Some(e),
+            Self::CborEncode(e) => Some(e),
+            Self::PayloadTooLarge { .. }
+            | Self::MalformedPayload { .. }
+            | Self::MalformedKey
+            | Self::MissingKey { .. }
+            | Self::UnknownKey { .. }
+            | Self::DuplicateKey { .. }
+            | Self::MalformedField { .. }
+            | Self::InvalidOp { .. } => None,
+        }
+    }
+}
+
+impl From<DecodeError> for RegistryGossipPayloadError {
+    fn from(err: DecodeError) -> Self {
+        match err {
+            DecodeError::Cbor(e) => Self::CborDecode(e),
+            DecodeError::MalformedFrame { reason } => Self::MalformedPayload { reason },
+            DecodeError::MalformedKey => Self::MalformedKey,
+            DecodeError::MissingKey { key } => Self::MissingKey { key },
+            DecodeError::UnknownKey { key } => Self::UnknownKey { key },
+            DecodeError::DuplicateKey { key } => Self::DuplicateKey { key },
+            DecodeError::MalformedField { key, expected } => Self::MalformedField { key, expected },
+            DecodeError::FrameTypeMissing
+            | DecodeError::FrameTypeMalformed
+            | DecodeError::FrameTypeUnsupported { .. }
+            | DecodeError::UnknownVersion { .. } => Self::MalformedPayload {
+                reason: "unexpected wire-frame field in registry gossip payload",
+            },
+        }
+    }
+}
+
 impl EnvelopeFrame {
     /// Construct a fire-and-forget envelope with no reply routing.
     ///
@@ -261,6 +387,17 @@ impl EnvelopeFrame {
             source_node_id: 0,
         }
     }
+}
+
+/// Encode a CBOR [`ControlFrame`].
+///
+/// # Errors
+///
+/// Returns [`EncodeError::Cbor`] when ciborium fails to serialise the frame.
+pub fn encode_control_frame(frame: &ControlFrame) -> Result<Vec<u8>, EncodeError> {
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(frame, &mut bytes)?;
+    Ok(bytes)
 }
 
 /// Encode a CBOR [`EnvelopeFrame`].
@@ -313,6 +450,43 @@ pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
         request_id,
         source_node_id,
     })
+}
+
+/// Encode a bounded registry-gossip control payload.
+///
+/// # Errors
+///
+/// Returns [`RegistryGossipPayloadError`] if `payload` is not schema-valid, is
+/// too large, or CBOR serialisation fails.
+pub fn encode_registry_gossip_payload(
+    payload: &RegistryGossipPayload,
+) -> Result<Vec<u8>, RegistryGossipPayloadError> {
+    validate_registry_gossip_payload(payload)?;
+
+    let value = Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            Value::Integer(Integer::from(payload.op)),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Text(payload.name.clone()),
+        ),
+        (
+            Value::Integer(Integer::from(3u64)),
+            Value::Integer(Integer::from(payload.actor_id)),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&value, &mut bytes)
+        .map_err(RegistryGossipPayloadError::CborEncode)?;
+    if bytes.len() > MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES {
+        return Err(RegistryGossipPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES,
+        });
+    }
+    Ok(bytes)
 }
 
 // -- Fail-closed decode surface --------------------------------------------
@@ -456,6 +630,47 @@ pub fn decode_control_frame(bytes: &[u8]) -> Result<ControlFrame, DecodeError> {
     let frame = control_frame_from_value(&value)?;
     ensure_wire_version(frame.version)?;
     Ok(frame)
+}
+
+/// Decode a bounded registry-gossip control payload.
+///
+/// # Errors
+///
+/// Returns [`RegistryGossipPayloadError`] if the payload is too large, malformed,
+/// contains unknown keys, or carries an unsupported operation.
+pub fn decode_registry_gossip_payload(
+    bytes: &[u8],
+) -> Result<RegistryGossipPayload, RegistryGossipPayloadError> {
+    if bytes.len() > MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES {
+        return Err(RegistryGossipPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES,
+        });
+    }
+
+    let value: Value =
+        ciborium::de::from_reader(bytes).map_err(RegistryGossipPayloadError::CborDecode)?;
+    let map = collect_map(&value).map_err(RegistryGossipPayloadError::from)?;
+    ensure_exact_keys(&map, &[1, 2, 3]).map_err(RegistryGossipPayloadError::from)?;
+    let payload = RegistryGossipPayload {
+        op: value_to_u8(
+            required(&map, 1).map_err(RegistryGossipPayloadError::from)?,
+            1,
+        )
+        .map_err(RegistryGossipPayloadError::from)?,
+        name: value_to_text(
+            required(&map, 2).map_err(RegistryGossipPayloadError::from)?,
+            2,
+        )
+        .map_err(RegistryGossipPayloadError::from)?,
+        actor_id: value_to_u64(
+            required(&map, 3).map_err(RegistryGossipPayloadError::from)?,
+            3,
+        )
+        .map_err(RegistryGossipPayloadError::from)?,
+    };
+    validate_registry_gossip_payload(&payload)?;
+    Ok(payload)
 }
 
 fn control_frame_from_value(value: &Value) -> Result<ControlFrame, DecodeError> {
@@ -607,6 +822,47 @@ fn value_to_bytes(value: &Value, key: u64) -> Result<Vec<u8>, DecodeError> {
             expected: "a CBOR byte string",
         }),
     }
+}
+
+fn value_to_text(value: &Value, key: u64) -> Result<String, DecodeError> {
+    match value {
+        Value::Text(text) => Ok(text.clone()),
+        _ => Err(DecodeError::MalformedField {
+            key,
+            expected: "a CBOR text string",
+        }),
+    }
+}
+
+fn validate_registry_gossip_payload(
+    payload: &RegistryGossipPayload,
+) -> Result<(), RegistryGossipPayloadError> {
+    match payload.op {
+        REGISTRY_GOSSIP_OP_ADD => {
+            if payload.actor_id == 0 {
+                return Err(RegistryGossipPayloadError::MalformedField {
+                    key: 3,
+                    expected: "a non-zero actor id for add",
+                });
+            }
+        }
+        REGISTRY_GOSSIP_OP_REMOVE => {}
+        op => return Err(RegistryGossipPayloadError::InvalidOp { op }),
+    }
+
+    if payload.name.len() > MAX_REGISTRY_GOSSIP_NAME_BYTES {
+        return Err(RegistryGossipPayloadError::MalformedField {
+            key: 2,
+            expected: "a registry name within the gossip name length bound",
+        });
+    }
+    if payload.name.as_bytes().contains(&0) {
+        return Err(RegistryGossipPayloadError::MalformedField {
+            key: 2,
+            expected: "a registry name without NUL bytes",
+        });
+    }
+    Ok(())
 }
 
 fn integer_to_i128(integer: Integer) -> i128 {

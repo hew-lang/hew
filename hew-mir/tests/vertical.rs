@@ -1,7 +1,7 @@
 use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, ResolutionCtx};
 use hew_mir::{
-    lower_hir_module, CmpPred, Instr, MirCheck, MirDiagnosticKind, MirStatement, Place, Terminator,
-    TrapKind,
+    lower_hir_module, CmpPred, FloatWidth, Instr, MirCheck, MirDiagnosticKind, MirStatement, Place,
+    Terminator, TrapKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 
@@ -768,6 +768,103 @@ fn non_bitcopy_user_record_instantiation_reports_precise_valueclass_diagnostic()
     );
 }
 
+fn source_has_user_record_w3029(src: &str, record_name: &str) -> bool {
+    let parsed = hew_parser::parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(tc_output.errors.is_empty(), "{:?}", tc_output.errors);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let pipeline = lower_hir_module(&output.module);
+    pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::UnsupportedUserRecordValueClass { name, .. }
+                if name == record_name
+        )
+    })
+}
+
+#[test]
+fn user_record_string_copy_still_reports_w3029() {
+    assert!(source_has_user_record_w3029(
+        r#"
+        type User { name: string }
+        fn main() -> i64 {
+            let first = "Ada";
+            let last = "Lovelace";
+            let full = first + " " + last;
+            let user = User { name: full };
+            let _copy = user;
+            0
+        }
+        "#,
+        "User",
+    ));
+}
+
+#[test]
+fn user_record_string_return_still_reports_w3029() {
+    assert!(source_has_user_record_w3029(
+        r#"
+        type User { name: string }
+        fn make() -> User {
+            let first = "Ada";
+            let last = "Lovelace";
+            let full = first + " " + last;
+            let user = User { name: full };
+            return user;
+        }
+        fn main() -> i64 { 0 }
+        "#,
+        "User",
+    ));
+}
+
+#[test]
+fn user_record_string_functional_update_still_reports_w3029() {
+    assert!(source_has_user_record_w3029(
+        r#"
+        type User { name: string }
+        fn main() -> i64 {
+            let first = "Ada";
+            let last = "Lovelace";
+            let full = first + " " + last;
+            let user = User { name: full };
+            let updated = User { name: "Grace", ..user };
+            println(updated.name);
+            0
+        }
+        "#,
+        "User",
+    ));
+}
+
+#[test]
+fn user_record_string_nested_record_still_reports_w3029() {
+    assert!(source_has_user_record_w3029(
+        r#"
+        type User { name: string }
+        type Boxed { user: User }
+        fn main() -> i64 {
+            let first = "Ada";
+            let last = "Lovelace";
+            let full = first + " " + last;
+            let user = User { name: full };
+            let boxed = Boxed { user: user };
+            0
+        }
+        "#,
+        "User",
+    ));
+}
+
 #[test]
 fn record_field_closure_accepts_registered_enum_field_type() {
     // Mirrors the Stage-1-provable part of the CrashNotification.kind: CrashKind
@@ -975,6 +1072,69 @@ fn lower_all_six_comparison_preds() {
             })
             .unwrap_or_else(|| panic!("no IntCmp emitted for {src}"));
         assert_eq!(got, *expected, "wrong CmpPred for {src}");
+    }
+}
+
+#[test]
+fn lower_float_comparisons_emit_floatcmp_for_f64_and_f32() {
+    let cases: &[(&str, CmpPred, FloatWidth)] = &[
+        (
+            "fn f() -> i64 { let a: f64 = 1.0; let b: f64 = 2.0; let r = a == b; 0 }",
+            CmpPred::Eq,
+            FloatWidth::F64,
+        ),
+        (
+            "fn f() -> i64 { let a: f64 = 1.0; let b: f64 = 2.0; let r = a != b; 0 }",
+            CmpPred::NotEq,
+            FloatWidth::F64,
+        ),
+        (
+            "fn f() -> i64 { let a: f64 = 1.0; let b: f64 = 2.0; let r = a < b; 0 }",
+            CmpPred::SignedLess,
+            FloatWidth::F64,
+        ),
+        (
+            "fn f() -> i64 { let a: f64 = 1.0; let b: f64 = 2.0; let r = a <= b; 0 }",
+            CmpPred::SignedLessEq,
+            FloatWidth::F64,
+        ),
+        (
+            "fn f() -> i64 { let a: f64 = 1.0; let b: f64 = 2.0; let r = a > b; 0 }",
+            CmpPred::SignedGreater,
+            FloatWidth::F64,
+        ),
+        (
+            "fn f() -> i64 { let a: f64 = 1.0; let b: f64 = 2.0; let r = a >= b; 0 }",
+            CmpPred::SignedGreaterEq,
+            FloatWidth::F64,
+        ),
+        (
+            "fn f() -> i64 { let a: f32 = 1.0; let b: f32 = 2.0; let r = a < b; 0 }",
+            CmpPred::SignedLess,
+            FloatWidth::F32,
+        ),
+    ];
+    for (src, expected_pred, expected_width) in cases {
+        let pipeline = pipeline(src);
+        let func = &pipeline.raw_mir[0];
+        let (got_pred, got_width) = func.blocks[0]
+            .instructions
+            .iter()
+            .find_map(|i| match i {
+                Instr::FloatCmp { pred, width, .. } => Some((*pred, *width)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no FloatCmp emitted for {src}"));
+        assert_eq!(got_pred, *expected_pred, "wrong FloatCmp pred for {src}");
+        assert_eq!(got_width, *expected_width, "wrong FloatCmp width for {src}");
+        assert!(
+            !func.blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instr::IntCmp { .. })),
+            "float comparison must not lower to IntCmp for {src}: {:#?}",
+            func.blocks[0].instructions
+        );
     }
 }
 

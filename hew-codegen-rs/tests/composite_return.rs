@@ -54,6 +54,7 @@ fn option_some_pipeline() -> IrPipeline {
                 field_tys: vec![],
             },
         ],
+        is_indirect: false,
     };
     // MIR: local_0: Option<i64>, local_1: i64 (tag), local_2: i64 (payload)
     let maybe_fn = RawMirFunction {
@@ -143,6 +144,7 @@ fn option_string_pipeline() -> IrPipeline {
                 field_tys: vec![],
             },
         ],
+        is_indirect: false,
     };
     let greet_fn = RawMirFunction {
         name: "main".to_string(),
@@ -291,6 +293,7 @@ fn envelope_i64_pipeline() -> IrPipeline {
                 field_tys: vec![ResolvedTy::String],
             },
         ],
+        is_indirect: false,
     };
     // Minimal MIR: fn send() -> Envelope<i64> { /* unreachable body — rejected before emit */ }
     let send_fn = RawMirFunction {

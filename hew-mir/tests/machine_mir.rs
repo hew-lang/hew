@@ -479,6 +479,7 @@ fn resource_field_transition_out_drops() {
         vec![HirField {
             name: "handle".to_string(),
             ty: handle_ty.clone(),
+            default: None,
             span: 0..0,
         }],
     );
@@ -527,6 +528,7 @@ fn resource_field_transition_out_drops() {
         fields: vec![HirField {
             name: "raw".to_string(),
             ty: ResolvedTy::I64,
+            default: None,
             span: 0..0,
         }],
         span: 0..0,

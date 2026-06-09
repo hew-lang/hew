@@ -26,7 +26,8 @@
 ///
 /// Created by `protobuf.new()`. Fields are accessed by their field
 /// number. Must be freed with `free()` when no longer needed.
-type Message {
+#[opaque]
+pub type Message {
 }
 
 /// Methods available on a protobuf `Message`.

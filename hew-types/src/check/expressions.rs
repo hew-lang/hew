@@ -315,18 +315,7 @@ impl Checker {
             }
 
             // Array
-            Expr::Array(elems) => {
-                if elems.is_empty() {
-                    let v = TypeVar::fresh();
-                    Ty::Array(Box::new(Ty::Var(v)), 0)
-                } else {
-                    let first_ty = self.synthesize(&elems[0].0, &elems[0].1);
-                    for elem in &elems[1..] {
-                        self.check_against(&elem.0, &elem.1, &first_ty);
-                    }
-                    Ty::Array(Box::new(first_ty), elems.len() as u64)
-                }
-            }
+            Expr::Array(elems) => self.synthesize_array_literal(elems, span),
             Expr::ArrayRepeat { value, count } => self.synthesize_array_repeat(value, count, span),
 
             Expr::MapLiteral { entries } => self.synthesize_map_literal(entries, span),
@@ -365,7 +354,12 @@ impl Checker {
 
             // Await
             Expr::Await(inner) => {
+                // Signal to check_named_method_fallback that an actor-ask method
+                // call under `await` is valid.  Cleared immediately after.
+                self.inside_await_expr = true;
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
+                self.inside_await_expr = false;
+
                 // await Task<T> → T (simplified)
                 match inner_ty {
                     Ty::Task(inner) => *inner,
@@ -376,6 +370,20 @@ impl Checker {
                         && !matches!(inner.0, Expr::MethodCall { .. }) =>
                     {
                         Ty::Unit
+                    }
+                    // Named-actor ask: `await ref.method(args)` where the method is
+                    // an ask-shaped receive fn (non-unit return). The checker recorded
+                    // an `ActorMethodKind::Ask` entry for the inner method-call span;
+                    // unify with the lambda/remote paths by returning `Result<R, AskError>`.
+                    _ if matches!(inner.0, Expr::MethodCall { .. }) => {
+                        let inner_span_key = SpanKey::from(&inner.1);
+                        if let Some(ActorMethodKind::Ask(_, reply_ty)) =
+                            self.actor_method_dispatch.get(&inner_span_key).cloned()
+                        {
+                            Ty::result(reply_ty, Ty::ask_error())
+                        } else {
+                            inner_ty
+                        }
                     }
                     _ => inner_ty,
                 }
@@ -760,6 +768,19 @@ impl Checker {
                 );
             }
         }
+        self.make_vec_type(elem_ty, span)
+    }
+
+    pub(super) fn synthesize_array_literal(&mut self, elems: &[Spanned<Expr>], span: &Span) -> Ty {
+        let elem_ty = if elems.is_empty() {
+            Ty::Var(TypeVar::fresh())
+        } else {
+            let first_ty = self.synthesize(&elems[0].0, &elems[0].1);
+            for elem in &elems[1..] {
+                self.check_against(&elem.0, &elem.1, &first_ty);
+            }
+            first_ty
+        };
         self.make_vec_type(elem_ty, span)
     }
 
@@ -2056,16 +2077,6 @@ impl Checker {
                     ..
                 },
             ) if block.stmts.is_empty() && block.trailing_expr.is_none() => {
-                self.record_type(span, expected);
-                expected.clone()
-            }
-
-            // Array literal coercion to Array<T, N> type
-            (Expr::Array(elems), Ty::Array(elem_ty, _)) => {
-                for elem in elems {
-                    let (expr, sp) = (&elem.0, &elem.1);
-                    self.check_against(expr, sp, elem_ty);
-                }
                 self.record_type(span, expected);
                 expected.clone()
             }
@@ -3939,6 +3950,38 @@ impl Checker {
         field: &str,
         span: &Span,
     ) -> Ty {
+        if matches!(&object.0, Expr::This) && self.current_actor_type.is_some() {
+            if self.current_actor_fields.iter().any(|name| name == field) {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedField,
+                    span,
+                    format!(
+                        "`this` is the actor handle, not actor state; access actor field \
+                         `{field}` as a bare name (`{field}`), not `this.{field}`"
+                    ),
+                    vec![field.to_string()],
+                );
+            } else {
+                self.report_error(
+                    TypeErrorKind::UndefinedField,
+                    span,
+                    format!(
+                        "`this` is the actor handle, not actor state; actor body has no \
+                         field `{field}`"
+                    ),
+                );
+            }
+            return Ty::Error;
+        }
+
+        if let Expr::Identifier(name) = &object.0 {
+            if name == "self" {
+                if let Some(ty) = self.check_machine_transition_self_field_access(field, span) {
+                    return ty;
+                }
+            }
+        }
+
         // Pre-dispatch: module-qualified value-constructor reference, e.g.
         // `m.Type::Variant` (unit or tuple-naked).  This must run BEFORE
         // `synthesize(object)` because `module` is not bound in `self.env`
@@ -4189,6 +4232,58 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    fn check_machine_transition_self_field_access(
+        &mut self,
+        field: &str,
+        span: &Span,
+    ) -> Option<Ty> {
+        let (machine_name, source_state, _) = self.current_machine_transition.clone()?;
+        if source_state == "_" {
+            self.report_error(
+                TypeErrorKind::UndefinedField,
+                span,
+                format!(
+                    "cannot read `self.{field}` in wildcard transition for machine \
+                     `{machine_name}` because `_` has no single source-state payload"
+                ),
+            );
+            return Some(Ty::Error);
+        }
+
+        let variant_fields = match self.lookup_type_def(&machine_name) {
+            Some(td) if td.kind == TypeDefKind::Machine => td.variants.get(&source_state).cloned(),
+            _ => None,
+        };
+        let Some(VariantDef::Struct(variant_fields)) = variant_fields else {
+            self.report_error(
+                TypeErrorKind::UndefinedField,
+                span,
+                format!(
+                    "state `{source_state}` of machine `{machine_name}` has no payload field \
+                     `{field}`"
+                ),
+            );
+            return Some(Ty::Error);
+        };
+
+        if let Some((_, field_ty)) = variant_fields
+            .iter()
+            .find(|(field_name, _)| field_name == field)
+        {
+            return Some(field_ty.clone());
+        }
+
+        let similar =
+            crate::error::find_similar(field, variant_fields.iter().map(|(name, _)| name.as_str()));
+        self.report_error_with_suggestions(
+            TypeErrorKind::UndefinedField,
+            span,
+            format!("state `{source_state}` of machine `{machine_name}` has no field `{field}`"),
+            similar,
+        );
+        Some(Ty::Error)
     }
 
     pub(super) fn check_match_expr(

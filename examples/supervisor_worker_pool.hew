@@ -49,9 +49,9 @@ supervisor WorkerPool {
     max_restarts: 10;
     window: 60;
 
-    child w1: Worker(1, 0);
-    child w2: Worker(2, 0);
-    child w3: Worker(3, 0);
+    child w1: Worker(id: 1, processed: 0);
+    child w2: Worker(id: 2, processed: 0);
+    child w3: Worker(id: 3, processed: 0);
 }
 
 fn main() {

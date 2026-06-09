@@ -26,7 +26,8 @@ import std::fs;
 /// Created by calling `http.listen(addr)`. Use `accept()` to wait for
 /// incoming requests in a loop, then call `close()` before the value goes
 /// out of scope.
-type Server {
+#[opaque]
+pub type Server {
 }
 
 /// An incoming HTTP request.
@@ -35,7 +36,8 @@ type Server {
 /// method, path, headers, and body. Must be responded to with one of
 /// the `respond` methods. Call `free()` before the value goes out of
 /// scope; dropping without `free()` is a resource leak.
-type Request {
+#[opaque]
+pub type Request {
 }
 
 // ── Server methods ────────────────────────────────────────────────────
@@ -64,7 +66,7 @@ impl ServerMethods for Server {
     /// Set the per-request body read deadline in milliseconds.
     fn set_request_timeout_ms(srv: Server, timeout_ms: i64) -> i64 {
         unsafe {
-            hew_http_server_set_request_timeout_ms(srv, timeout_ms as i64)
+            hew_http_server_set_request_timeout_ms(srv, timeout_ms as i64) as i64
         } // INTERNAL-ABI: C ABI timeout is i64
     }
     /// Canonical release path for `Server`.
@@ -182,19 +184,19 @@ impl RequestMethods for Request {
     /// Send a full HTTP response with status, content-type, and body.
     fn respond(req: Request, status: i64, content_type: string, body: string) -> i64 {
         unsafe {
-            hew_http_respond_bridge(req, status as i32, content_type, body)
+            hew_http_respond_bridge(req, status as i32, content_type, body) as i64
         } // INTERNAL-ABI: C ABI status is i32
     }
     /// Send a plain-text HTTP response.
     fn respond_text(req: Request, status: i64, body: string) -> i64 {
         unsafe {
-            hew_http_respond_text(req, status as i32, body)
+            hew_http_respond_text(req, status as i32, body) as i64
         } // INTERNAL-ABI: C ABI status is i32
     }
     /// Send a JSON HTTP response with `Content-Type: application/json`.
     fn respond_json(req: Request, status: i64, json: string) -> i64 {
         unsafe {
-            hew_http_respond_json(req, status as i32, json)
+            hew_http_respond_json(req, status as i32, json) as i64
         } // INTERNAL-ABI: C ABI status is i32
     }
     /// Begin a streaming response and return a `Sink` for chunked output.

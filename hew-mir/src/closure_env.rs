@@ -291,6 +291,7 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
         HirExprKind::AwaitTask { .. }
         | HirExprKind::Yield { .. }
         | HirExprKind::ActorAsk { .. }
+        | HirExprKind::RemoteActorAsk { .. }
         | HirExprKind::ActorSend { .. } => {
             *found = true;
         }
@@ -396,7 +397,8 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
         HirExprKind::CoerceToDynTrait { value, .. } => walk_expr_for_suspend(value, found),
         HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
             walk_expr_for_suspend(receiver, found);
             for a in args {
                 walk_expr_for_suspend(a, found);

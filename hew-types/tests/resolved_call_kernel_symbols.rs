@@ -61,6 +61,8 @@ extern "C" {
     fn hew_hashmap_contains_key_layout(m: *const c_void, key: *const c_void) -> bool;
     fn hew_hashmap_remove_layout(m: *mut c_void, key: *const c_void) -> bool;
     fn hew_hashmap_len_layout(m: *const c_void) -> i64;
+    fn hew_hashmap_keys_layout(m: *const c_void) -> *mut c_void;
+    fn hew_hashmap_values_layout(m: *const c_void) -> *mut c_void;
     fn hew_hashset_insert_layout(s: *mut c_void, elem: *const c_void) -> bool;
     fn hew_hashset_contains_layout(s: *const c_void, elem: *const c_void) -> bool;
     fn hew_hashset_remove_layout(s: *mut c_void, elem: *const c_void) -> bool;
@@ -94,6 +96,14 @@ fn known_linked_kernel_symbols() -> HashMap<&'static str, *const ()> {
     m.insert(
         "hew_hashmap_len_layout",
         hew_hashmap_len_layout as *const (),
+    );
+    m.insert(
+        "hew_hashmap_keys_layout",
+        hew_hashmap_keys_layout as *const (),
+    );
+    m.insert(
+        "hew_hashmap_values_layout",
+        hew_hashmap_values_layout as *const (),
     );
     m.insert(
         "hew_hashset_insert_layout",
@@ -262,12 +272,13 @@ fn every_stage_b_method_target_symbol_is_link_resolved() {
         checked.len(),
     );
 
-    // Defensive lower-bound: the Stage B registry seeds 5 HashMap methods
-    // + 4 HashSet methods = 9 symbols. A drift below this means the
+    // Defensive lower-bound: the Stage B registry seeds 7 HashMap methods
+    // (insert, get, contains_key, remove, len, keys, values)
+    // + 5 HashSet methods = 12 symbols. A drift below this means the
     // registry shrank silently; the gate forces an explicit reckoning.
     assert!(
-        checked.len() >= 9,
-        "expected ≥ 9 distinct kernel symbols in the Stage B registry, \
+        checked.len() >= 12,
+        "expected ≥ 11 distinct kernel symbols in the Stage B registry, \
          saw {} ({:?})",
         checked.len(),
         checked,

@@ -36,7 +36,8 @@ pub enum ParseError {
 /// or object. Created by `json.parse(s)` or by navigating into a
 /// parsed value. Call `free()` before the value goes out of scope;
 /// dropping without `free()` is a resource leak.
-type Value {
+#[opaque]
+pub type Value {
 }
 
 /// Methods available on a JSON `Value`.
@@ -155,7 +156,7 @@ impl CanonicalValueMethods for Value {
     }
     fn array_len(val: Value) -> i64 {
         unsafe {
-            hew_json_array_len(val)
+            hew_json_array_len(val) as i64
         }
     }
     fn array_get(val: Value, index: i64) -> Value {

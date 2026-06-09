@@ -10,10 +10,10 @@
 //! let doubled_first_two = iter::take(iter::map(it, |x: i64| x * 2), 2);
 //! ```
 //!
-//! `Iterator::next` is by-move (`fn next(self) -> Option<Self::Item>`) per
-//! the Q001 trait surface lock; wrapper records re-bind through the `var`
-//! introduced by the for-loop desugar (lands in a later stage of the
-//! iteration-foundation lane).
+//! `Iterator::next` takes a mutable receiver (`fn next(var self) -> Option<Self::Item>`).
+//! Call sites write the returned `Self` state back into the caller binding; the
+//! for-loop desugar that will introduce and drive that binding lands in a later
+//! stage of the iteration-foundation lane.
 //!
 //! ## Lazy combinator surface
 //!
@@ -83,14 +83,14 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
         // item (a previous shape of this body) silently drops every
         // non-matching prefix and makes the filter look empty.
         //
-        // Under the Q001-locked by-move `fn next(self)` shape, `self.iter`
+        // Under the mutable-receiver `fn next(var self)` shape, `self.iter`
         // is moved on the first inner-`next()` call inside one invocation,
         // so a multi-call loop cannot be written without either (a) a
         // shared-state cell that survives the move, or (b) threading the
         // residual inner iterator out through the return shape. Neither
         // primitive exists on the substrate yet.
-        // Tracked: Q001 (by-move next), Q297 (lazy wrapper substrate), v06-followups.md
-        panic("Filter::next is unimplemented: by-move `next(self)` cannot loop over `self.iter.next()` to skip rejected items under the current substrate. See std/iter.hew Filter<I,A> doc-comment and v06-followups.md (iterator-foundation lane).");
+        // Tracked: var-self write-back, Q297 (lazy wrapper substrate), v06-followups.md
+        panic("Filter::next is unimplemented: deferred iterator wrapper substrate cannot yet loop over `self.iter.next()` to skip rejected items under the current substrate. See std/iter.hew Filter<I,A> doc-comment and v06-followups.md (iterator-foundation lane).");
         None
     }
 }
@@ -115,13 +115,13 @@ impl<I, A> Iterator for Take<I> where I: Iterator<Item = A> {
         //
         // Q296=B (record-field mutation under a `var` binding) just landed
         // at 5a1f3764, but it does not compose with the Q001-locked
-        // by-move `fn next(self)` shape: `self` is consumed on every
+        // mutable-receiver `fn next(var self)` shape: `self` is threaded through every
         // call, so any field-write to `self.remaining` is lost when the
         // function returns. The remaining-counter has to be carried out
         // through the return shape (or held in a shared cell); neither
         // primitive exists yet.
-        // Tracked: Q001 (by-move next), Q296=B (record-field mutation), Q297 (lazy wrapper substrate), v06-followups.md
-        panic("Take::next is unimplemented: by-move `next(self)` cannot persist a decremented `remaining` across calls under the current substrate. See std/iter.hew Take<I> doc-comment and v06-followups.md (iterator-foundation lane).");
+        // Tracked: var-self write-back, Q296=B (record-field mutation), Q297 (lazy wrapper substrate), v06-followups.md
+        panic("Take::next is unimplemented: deferred iterator wrapper substrate cannot yet persist a decremented `remaining` across calls under the current substrate. See std/iter.hew Take<I> doc-comment and v06-followups.md (iterator-foundation lane).");
         None
     }
 }
@@ -145,12 +145,12 @@ impl<I, A> Iterator for Skip<I> where I: Iterator<Item = A> {
         // observable effect.
         //
         // Same substrate gap as `Filter::next` and `Take::next`: the
-        // Q001-locked by-move `fn next(self)` shape moves `self.iter` on
+        // mutable-receiver `fn next(var self)` shape threads `self.iter` on
         // the first inner call, so a multi-call skip loop is not
         // expressible without a shared-state cell or a return-shape
         // change.
-        // Tracked: Q001 (by-move next), Q297 (lazy wrapper substrate), v06-followups.md
-        panic("Skip::next is unimplemented: by-move `next(self)` cannot loop over `self.iter.next()` to drop the skipped prefix under the current substrate. See std/iter.hew Skip<I> doc-comment and v06-followups.md (iterator-foundation lane).");
+        // Tracked: var-self write-back, Q297 (lazy wrapper substrate), v06-followups.md
+        panic("Skip::next is unimplemented: deferred iterator wrapper substrate cannot yet loop over `self.iter.next()` to drop the skipped prefix under the current substrate. See std/iter.hew Skip<I> doc-comment and v06-followups.md (iterator-foundation lane).");
         None
     }
 }

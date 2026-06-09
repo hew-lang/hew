@@ -8,23 +8,18 @@
 //
 // This fixture proves the fix at the compile+run level. The MIR and codegen
 // unit tests prove lexical ordering and per-symbol emission separately.
-
 actor Sequencer {
     let counter: i64;
-
     init(start: i64) {
         counter = start;
     }
-
     receive fn value() -> i64 {
         counter
     }
-
     #[on(stop)]
     fn cleanup_a() {
         counter = counter + 1;
     }
-
     #[on(stop)]
     fn cleanup_b() {
         counter = counter + 10;
@@ -33,5 +28,8 @@ actor Sequencer {
 
 fn main() -> i64 {
     let s = spawn Sequencer(start: 0);
-    s.value()
+    match await s.value() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
 }

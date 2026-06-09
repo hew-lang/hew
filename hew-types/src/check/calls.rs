@@ -1215,7 +1215,14 @@ impl Checker {
         }
 
         let ty = {
+            // Treat the method call inside a select arm or join as if it is
+            // under `await` so the ask-without-await guard does not fire here.
+            // Select / join sources are the select-flavoured equivalent of
+            // awaited asks — the caller is the concurrency construct itself.
+            let prev = self.inside_await_expr;
+            self.inside_await_expr = true;
             let synthesized = self.synthesize(method_expr, method_span);
+            self.inside_await_expr = prev;
             self.subst.resolve(&synthesized)
         };
         if ty == Ty::Unit {

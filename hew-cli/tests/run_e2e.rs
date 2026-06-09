@@ -231,6 +231,75 @@ fn run_program_with_simple_arithmetic_succeeds() {
 }
 
 #[test]
+fn run_float_comparison_branches_for_f64_and_f32() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("float_comparison_branches.hew");
+    std::fs::write(
+        &path,
+        r"
+        fn score_f64() -> i64 {
+            let a: f64 = 1.25;
+            let b: f64 = 2.5;
+            var passed = 0;
+            if a < b { passed = passed + 1; } else { passed = passed + 1000; }
+            if b < a { passed = passed + 1000; } else { passed = passed + 1; }
+            if b > a { passed = passed + 1; } else { passed = passed + 1000; }
+            if a > b { passed = passed + 1000; } else { passed = passed + 1; }
+            if a <= b { passed = passed + 1; } else { passed = passed + 1000; }
+            if b <= a { passed = passed + 1000; } else { passed = passed + 1; }
+            if a <= a { passed = passed + 1; } else { passed = passed + 1000; }
+            if b >= a { passed = passed + 1; } else { passed = passed + 1000; }
+            if a >= b { passed = passed + 1000; } else { passed = passed + 1; }
+            if a >= a { passed = passed + 1; } else { passed = passed + 1000; }
+            if a == a { passed = passed + 1; } else { passed = passed + 1000; }
+            if a == b { passed = passed + 1000; } else { passed = passed + 1; }
+            if a != b { passed = passed + 1; } else { passed = passed + 1000; }
+            if a != a { passed = passed + 1000; } else { passed = passed + 1; }
+            passed
+        }
+
+        fn score_f32() -> i64 {
+            let a: f32 = 1.25;
+            let b: f32 = 2.5;
+            var passed = 0;
+            if a < b { passed = passed + 1; } else { passed = passed + 1000; }
+            if b < a { passed = passed + 1000; } else { passed = passed + 1; }
+            if b > a { passed = passed + 1; } else { passed = passed + 1000; }
+            if a > b { passed = passed + 1000; } else { passed = passed + 1; }
+            if a <= b { passed = passed + 1; } else { passed = passed + 1000; }
+            if b <= a { passed = passed + 1000; } else { passed = passed + 1; }
+            if a <= a { passed = passed + 1; } else { passed = passed + 1000; }
+            if b >= a { passed = passed + 1; } else { passed = passed + 1000; }
+            if a >= b { passed = passed + 1000; } else { passed = passed + 1; }
+            if a >= a { passed = passed + 1; } else { passed = passed + 1000; }
+            if a == a { passed = passed + 1; } else { passed = passed + 1000; }
+            if a == b { passed = passed + 1000; } else { passed = passed + 1; }
+            if a != b { passed = passed + 1; } else { passed = passed + 1000; }
+            if a != a { passed = passed + 1000; } else { passed = passed + 1; }
+            passed
+        }
+
+        fn main() {
+            println(score_f64() + score_f32());
+        }
+        ",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, dir.path());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "28\n");
+}
+
+#[test]
 fn run_generic_vec_into_iter_static_dispatch_outputs_first_value() {
     require_codegen();
 
@@ -326,6 +395,310 @@ fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
 }
 
 #[test]
+fn var_self_countdown_loop_writes_receiver_back() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("var_self_countdown.hew");
+    std::fs::write(
+        &source,
+        r"
+pub type Countdown { n: i64; }
+
+impl Iterator for Countdown {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+fn main() {
+    var cd = Countdown { n: 3 };
+    var total = 0;
+    loop {
+        match cd.next() {
+            Some(v) => { total = total + v; },
+            None => { break; },
+        }
+    }
+    println(total);
+}
+",
+    )
+    .expect("write var-self countdown fixture");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "6\n");
+}
+
+#[test]
+fn var_self_direct_second_next_observes_mutated_receiver() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("var_self_direct_second.hew");
+    std::fs::write(
+        &source,
+        r"
+pub type Counter { n: i64; }
+
+impl Iterator for Counter {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        self.n = self.n + 1;
+        Some(self.n)
+    }
+}
+
+fn main() {
+    var c = Counter { n: 0 };
+    let _first = c.next();
+    match c.next() {
+        Some(v2) => { println(v2); },
+        None => { println(-1); },
+    }
+}
+",
+    )
+    .expect("write var-self direct second fixture");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "2\n");
+}
+
+#[test]
+fn var_self_cowvalue_receiver_survives_storeback_without_double_drop() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("var_self_cowvalue.hew");
+    std::fs::write(
+        &source,
+        r#"
+fn main() {
+    let words: Vec<string> = Vec::new();
+    words.push("first");
+    words.push("second");
+    var it = words.into_iter();
+    let _first = it.next();
+    match it.next() {
+        Some(v2) => { println(v2); },
+        None => { println("none"); },
+    }
+}
+"#,
+    )
+    .expect("write var-self CowValue receiver fixture");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed without receiver double-drop; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "second\n");
+}
+
+#[test]
+fn var_self_nested_block_value_does_not_get_abi_wrapped() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("var_self_nested_block.hew");
+    std::fs::write(
+        &source,
+        r"
+pub type Counter { n: i64; }
+
+impl Iterator for Counter {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        let before = { self.n };
+        self.n = self.n + 1;
+        Some(before)
+    }
+}
+
+fn main() {
+    var c = Counter { n: 1 };
+    let _first = c.next();
+    match c.next() {
+        Some(v2) => { println(v2); },
+        None => { println(-1); },
+    }
+}
+",
+    )
+    .expect("write var-self nested block fixture");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "2\n");
+}
+
+#[test]
+fn var_self_generic_impl_direct_second_next_resolves_monomorphized_callee() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("var_self_generic_impl_direct.hew");
+    std::fs::write(
+        &source,
+        r"
+pub type Slot<T> { x: T; n: i64; }
+
+trait Tick {
+    type Item;
+    fn next(var self) -> Option<Self::Item>;
+}
+
+impl<T> Tick for Slot<T> {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        self.n = self.n + 1;
+        Some(self.n)
+    }
+}
+
+fn main() {
+    var s = Slot<i64> { x: 0, n: 0 };
+    let _first = s.next();
+    match s.next() {
+        Some(v2) => { println(v2); },
+        None => { println(-1); },
+    }
+}
+",
+    )
+    .expect("write var-self generic impl direct fixture");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "2\n");
+}
+
+#[test]
+fn var_self_generic_method_direct_resolves_impl_and_method_type_args() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("var_self_generic_method_direct.hew");
+    std::fs::write(
+        &source,
+        r"
+pub type Slot<T> { x: T; }
+
+trait Tick {
+    fn take<U>(var self, u: U) -> U;
+}
+
+impl<T> Tick for Slot<T> {
+    fn take<U>(var self, u: U) -> U { u }
+}
+
+fn main() {
+    var s = Slot<i64> { x: 5 };
+    println(s.take(7));
+}
+",
+    )
+    .expect("write var-self generic method direct fixture");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "7\n");
+}
+
+#[test]
+fn var_self_generic_static_dispatch_second_next_observes_mutated_receiver() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("var_self_generic_static_dispatch.hew");
+    std::fs::write(
+        &source,
+        r"
+fn second_or_zero<I>(var it: I) -> i64 where I: Iterator<Item = i64> {
+    let _first = it.next();
+    match it.next() {
+        Some(x) => x,
+        None => 0,
+    }
+}
+
+fn main() {
+    let values: Vec<i64> = Vec::new();
+    values.push(1);
+    values.push(2);
+    println(second_or_zero(values.into_iter()));
+}
+",
+    )
+    .expect("write var-self generic static dispatch fixture");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "2\n");
+}
+
+#[test]
 fn run_string_methods_smoke_matches_expected() {
     require_codegen();
 
@@ -345,6 +718,45 @@ fn run_string_methods_smoke_matches_expected() {
 
     let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+#[test]
+fn run_tuple_numeric_field_access_reads_distinct_mixed_type_elements() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("tuple_numeric_field_access.hew");
+    std::fs::write(
+        &source,
+        r#"
+fn main() -> i64 {
+    let t0 = (42, false);
+    let t1 = (0, true);
+    print(t0.0);
+    println("");
+    print(t1.1);
+    println("");
+    if t1.1 {
+        t0.0
+    } else {
+        99
+    }
+}
+"#,
+    )
+    .expect("write tuple numeric field access fixture");
+
+    let output = run_bounded_hew_run(&source, dir.path());
+
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "expected exit 42 from t0.0 gated by t1.1; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "42\ntrue\n", "stdout mismatch");
 }
 
 /// W5-011 function-scope drop elaboration: a `string` returned from a user
@@ -481,6 +893,29 @@ fn run_fn_local_string_is_dropped_bounded_memory() {
     assert!(
         output.status.success(),
         "fn_local_string_dropped should run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+#[test]
+fn run_user_record_string_field_is_dropped_once() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/user_record_string_field.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/user_record_string_field.expected"),
+    )
+    .expect("read user_record_string_field.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "user_record_string_field should run cleanly (a double-free would abort); \
+         stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -800,6 +1235,30 @@ fn for_range_i32_bound_runs_and_returns_correct_value() {
     );
 }
 
+#[test]
+fn i32_match_integer_literal_arm_runs_correct_branch() {
+    require_codegen();
+
+    let fixture = repo_root().join("tests/vertical-slice/accept/i32_match_literal.hew");
+    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
+
+    let output = run_bounded_hew_run(&fixture, repo_root());
+
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "expected exit 42 from the i32 literal match arm; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "expected no diagnostics; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 /// Regression oracle — mixed-width range bounds (i32..i64) produce a loop
 /// variable typed at the wider bound (i64), not the narrower start bound.
 ///
@@ -876,4 +1335,84 @@ fn for_range_negative_literal_bound_runs_and_returns_correct_value() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+/// Named functions used as first-class values: passed as arguments,
+/// stored in let bindings, and called through a local binding.
+/// Also guards that lambda literals continue to work (regression guard).
+///
+/// Before this fix, `apply(double, 7)` printed nothing and exited 0 because
+/// the wildcard `BindingRef { .. } => None` arm in `lower_value` silently
+/// swallowed the `ResolvedRef::Item` case, causing the argument to be missing
+/// from the call and the let-binding `r` to have no backend slot.
+#[test]
+fn named_fn_as_value_four_line_oracle() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/named_fn_as_value.hew");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "named_fn_as_value should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual, "14\n6\n10\n21\n",
+        "expected four lines 14/6/10/21; got: {actual:?}"
+    );
+}
+
+/// Regression: the same named function used as a value at more than one call
+/// site previously caused duplicate/undefined shim symbols in the LLVM module
+/// (`__hew_named_fn_invoke_double` and `__hew_named_fn_invoke_double.1`),
+/// failing module verification with exit 125.  The fix deduplicates shims at
+/// the module-collection level so the body is emitted exactly once regardless
+/// of how many sites reference the same named function.
+#[test]
+fn named_fn_value_reused_across_sites() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/named_fn_value_reused.hew");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "named_fn_value_reused should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual, "2\n20\n30\n100\n",
+        "expected 2/20/30/100; got: {actual:?}"
+    );
+}
+
+/// Named function returned from a function and called through the result.
+///
+/// Before this fix, `get_double()` returned an uninitialised closure pair
+/// because `lower_value(double)` returned None in the return-statement path,
+/// causing `f(7)` to call through a garbage function pointer (exit 1,
+/// no output).
+#[test]
+fn named_fn_returned_and_called() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/named_fn_return.hew");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "named_fn_return should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "14\n", "expected 14; got: {actual:?}");
 }

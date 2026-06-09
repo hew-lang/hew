@@ -21,7 +21,8 @@
 ///
 /// Created by `semaphore.new(count)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
-type Semaphore {
+#[opaque]
+pub type Semaphore {
 }
 
 /// Methods available on a `Semaphore`.
@@ -77,7 +78,7 @@ impl SemaphoreMethods for Semaphore {
     /// Return the current number of available permits.
     fn count(sem: Semaphore) -> i64 {
         unsafe {
-            hew_semaphore_count(sem)
+            hew_semaphore_count(sem) as i64
         }
     }
     /// Release the semaphore resources.

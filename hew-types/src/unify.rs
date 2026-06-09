@@ -398,40 +398,6 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
     }
 }
 
-/// Check if type `a` can be coerced to type `b`.
-///
-/// This is more permissive than unification and allows:
-/// - Never coerces to anything
-/// - Integer literals can coerce to any integer type
-/// - Float literals can coerce to any float type
-#[must_use]
-pub fn can_coerce(a: &Ty, b: &Ty) -> bool {
-    match (a, b) {
-        // Never/Error coerces to anything
-        (Ty::Never | Ty::Error, _) | (_, Ty::Error) => true,
-
-        // Same types
-        _ if a == b => true,
-
-        // Array to slice coercion
-        (Ty::Array(elem_a, _), Ty::Slice(elem_b)) => can_coerce(elem_a, elem_b),
-
-        // Mutable pointer to const pointer
-        (
-            Ty::Pointer {
-                is_mutable: true,
-                pointee: pa,
-            },
-            Ty::Pointer {
-                is_mutable: false,
-                pointee: pb,
-            },
-        ) => can_coerce(pa, pb),
-
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,13 +560,6 @@ mod tests {
         subst.insert(v, &Ty::FloatLiteral).unwrap();
         assert!(unify(&mut subst, &Ty::Var(v), &Ty::F32).is_ok());
         assert_eq!(subst.resolve(&Ty::Var(v)), Ty::F32);
-    }
-
-    #[test]
-    fn test_can_coerce() {
-        assert!(can_coerce(&Ty::Never, &Ty::I32));
-        assert!(can_coerce(&Ty::I32, &Ty::I32));
-        assert!(!can_coerce(&Ty::I32, &Ty::Bool));
     }
 
     #[test]

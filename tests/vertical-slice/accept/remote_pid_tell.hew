@@ -28,6 +28,7 @@ actor Worker {
 
 impl ActorMsg for Worker {
     type Msg = Ping;
+    type Reply = ();
 }
 
 fn main() -> i64 {

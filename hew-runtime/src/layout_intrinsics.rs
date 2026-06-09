@@ -52,14 +52,12 @@
 //! `Option<fn>` cleanly; the niche-optimised null discriminant relies on the
 //! function pointer being a bare ABI-stable pointer.
 //!
-//! # WASM-TODO(#1820)
+//! # WASM parity (#1820)
 //!
-//! Like the rest of the layout-backed hashmap surface, these descriptors are
-//! not yet exercised on wasm32. The runtime entry points (`hew_hashmap_*_layout`)
-//! already carry the same WASM-parity note; the descriptors themselves are
-//! pure data (no syscalls) and compile on wasm32, but consumers should
-//! continue to gate hashmap-layout integration tests off wasm32 until the
-//! tracking issue lands.
+//! These descriptors are linked into the wasm32-wasip1 runtime archive and are
+//! used by wasm HashMap/HashSet codegen for primitive keys and values. Record
+//! descriptors are still synthesized by codegen, with LLVM lowering their
+//! address-taken thunks through the wasm function table.
 
 #![allow(
     unsafe_op_in_unsafe_fn,

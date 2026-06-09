@@ -316,6 +316,41 @@ pub fn classify_actor_state_fields_with_enum_layouts(
         .collect()
 }
 
+/// owned-string-record classifier for a direct user record with owned `string` fields.
+///
+/// This intentionally reuses the actor-state classifier, then narrows its
+/// output to the first slice's closed surface: declaration-order fields must
+/// be either [`StateFieldCloneKind::BitCopy`] or [`StateFieldCloneKind::String`],
+/// and at least one field must be `String`. Nested records, enums, bytes,
+/// collections, IO handles, and any unsupported type remain outside owned-string-record.
+///
+/// # Errors
+///
+/// Same conditions as [`classify_actor_state_fields_with_enum_layouts`].
+pub fn classify_owned_string_record_fields(
+    field_tys: &[ResolvedTy],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> Result<Option<Vec<StateFieldCloneKind>>, ClassificationError> {
+    let kinds =
+        classify_actor_state_fields_with_enum_layouts(field_tys, record_layouts, enum_layouts)?;
+    let mut has_string = false;
+    for kind in &kinds {
+        match kind {
+            StateFieldCloneKind::BitCopy { .. } => {}
+            StateFieldCloneKind::String => has_string = true,
+            StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::Vec { .. }
+            | StateFieldCloneKind::HashMap { .. }
+            | StateFieldCloneKind::HashSet { .. }
+            | StateFieldCloneKind::IoHandle { .. }
+            | StateFieldCloneKind::UserRecord { .. }
+            | StateFieldCloneKind::Enum { .. } => return Ok(None),
+        }
+    }
+    Ok(has_string.then_some(kinds))
+}
+
 /// Single-field classifier. Public so test fixtures can exercise the
 /// per-shape arms without building a full `ActorLayout`. `visited` is
 /// supplied by the caller so nested-record recursion can re-enter
@@ -1012,6 +1047,7 @@ mod tests {
                     field_tys: vec![],
                 },
             ],
+            is_indirect: false,
         }
     }
 
@@ -1059,6 +1095,7 @@ mod tests {
                     field_tys: vec![ResolvedTy::String],
                 },
             ],
+            is_indirect: false,
         }];
         let ty = ResolvedTy::Named {
             name: "Result".to_string(),
@@ -1091,6 +1128,7 @@ mod tests {
                     field_tys: vec![],
                 },
             ],
+            is_indirect: false,
         }];
         let ty = ResolvedTy::Named {
             name: "Envelope".to_string(),
@@ -1125,6 +1163,7 @@ mod tests {
                     ret: Box::new(ResolvedTy::Unit),
                 }],
             }],
+            is_indirect: false,
         }];
         let ty = ResolvedTy::Named {
             name: "Bad".to_string(),
@@ -1180,6 +1219,7 @@ mod tests {
                 name: "Message".to_string(),
                 field_tys: vec![ResolvedTy::String],
             }],
+            is_indirect: false,
         }];
         let ty = ResolvedTy::Named {
             name: "Holder".to_string(),

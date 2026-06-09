@@ -128,7 +128,7 @@ fn collect_inlay_hints_from_item(
         }
         Item::Supervisor(s) => {
             for child in &s.children {
-                for arg in &child.args {
+                for (_field_name, arg) in &child.args {
                     collect_inlay_hints_from_expr(source, &arg.0, tc, hints);
                 }
             }

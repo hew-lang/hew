@@ -67,7 +67,7 @@ use_case = "WASI execution — `hew build --target=wasm32-wasi`"
 runnable = true
 
 # ---------------------------------------------------------------------------
-# Feature disposition table (29 rows; mirror of the markdown table).
+# Feature disposition table (30 rows; mirror of the markdown table).
 # Row order matches docs/wasm-capability-matrix.md top-to-bottom.
 # ---------------------------------------------------------------------------
 
@@ -102,6 +102,15 @@ checker = "pass"
 runtime = "implemented"
 runtime_status = "Implemented"
 categories = ["stdlib", "collections"]
+
+[[feature]]
+id = "layout-hashmap-hashset"
+label = "Layout-backed `HashMap` / `HashSet`"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime"
+categories = ["stdlib", "collections"]
+tracking = "#1820"
 
 [[feature]]
 id = "actor-ask-reply"

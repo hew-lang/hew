@@ -24,28 +24,26 @@
 //!
 //! ## What this canary still guards
 //!
-//! Header-awareness is settled, but MIR lowering must not *yet* emit a
-//! String-element accessor for any container. Indexing a `vec<string>`
-//! (`xs[i]`) still falls through the element-type dispatch in `lower_vec_index`
-//! (`hew-mir/src/lower.rs`) to a `NotYetImplemented` diagnostic — it never
-//! lowers to `hew_vec_get_str` / `hew_vec_pop_str`. Two reasons keep this guard
-//! load-bearing post-P2b-maps:
+//! Header-awareness is settled, but MIR lowering must only emit a
+//! String-element accessor when it also balances that accessor's ownership
+//! contract. `hew_vec_get_str` returns a retained/header-aware owner; a lowered
+//! `for word in words` binding must therefore be followed by exactly one
+//! `hew_string_drop` after the loop body uses `word`. Two reasons keep this
+//! guard load-bearing post-P2b-maps:
 //!
-//! 1. **The P3 retain/drop elaboration is not wired yet.** The typed string
-//!    getters now return a *retained* owner (vec) or expose a *borrowed* slot
-//!    (`hew_hashmap_get_layout` returns a borrowed, not retained, pointer).
-//!    Emitting either before the frontend knows to balance the retain (vec) or
-//!    to retain-on-read the borrowed slot (maps) would leak or alias every
-//!    accessed element. The VWT bindings (`hew-hir/src/value_class.rs`,
-//!    `LayoutWitness::VEC` / `::HASHMAP` / `::HASHSET`) are declarative and not
-//!    consumed until P3.
+//! 1. **The vec getter retain must be drop-balanced.** The typed string getter
+//!    returns a retained owner. Emitting it without an owned binding drop would
+//!    leak every accessed element; emitting a drop on a borrowed/aliased value
+//!    would double-free. The for-in lowering is therefore fail-closed: it emits
+//!    `hew_vec_get_str` only for the synthetic Vec iterator path and pairs the
+//!    per-iteration binding with `hew_string_drop`.
 //! 2. **No map String-element accessor exists.** `get_layout` hands back a
 //!    BORROWED slot, not a retained owner; emitting a map string getter is a
 //!    P3+ change that must first wire retain-on-read, so this guard keeps the
 //!    accessor out of lowering until then.
 //!
-//! This canary fails loudly if a future change starts emitting a String-element
-//! accessor for a container index/pop before those conditions are met. It is a
+//! This canary fails loudly if a future change emits a String-element accessor
+//! for a container path without the corresponding ownership balancing. It is a
 //! compile-time / unit guard with **zero release-path behaviour change** — it
 //! only inspects lowered MIR, it does not alter it.
 
@@ -89,71 +87,87 @@ fn emitted_runtime_symbols(pl: &IrPipeline) -> Vec<String> {
 }
 
 /// Premise of the domain separation: the String-element vec *getter* exists in
-/// the runtime-ABI allowlist (so a future P2b slice can wire it) but is not
-/// emitted by today's lowering; the String *pop* accessor is not even
-/// allowlisted (a stronger separation). If `hew_vec_get_str` were ever removed
-/// from the allowlist, the canary below (which asserts it is not emitted) would
-/// silently become vacuous — pin its presence so the guard keeps its teeth.
+/// the runtime-ABI allowlist and may be emitted only when the retained owner is
+/// balanced; the String *pop* accessor is not even allowlisted (a stronger
+/// separation). Pin both facts so the guard keeps its teeth.
 #[test]
 fn string_element_vec_accessors_are_allowlisted_but_guarded() {
     assert!(
         is_known_runtime_symbol("hew_vec_get_str"),
         "`hew_vec_get_str` must remain allowlisted; the container-domain canary \
-         asserts it is never *emitted*, which is only meaningful while the symbol \
-         exists",
+         asserts emitted uses are balanced, which is only meaningful while the \
+         symbol exists",
     );
     // `hew_vec_pop_str` is intentionally NOT allowlisted in MIR today; the
     // emission guard below covers it regardless of allowlist status.
     assert!(
         !is_known_runtime_symbol("hew_vec_pop_str"),
-        "`hew_vec_pop_str` is expected to remain un-allowlisted until the P3 \
-         retain/drop elaboration is wired; if it becomes allowlisted, confirm \
-         the frontend balances the retained owner it returns and update this \
-         canary",
+        "`hew_vec_pop_str` is expected to remain un-allowlisted until retained \
+         pop ownership is wired; if it becomes allowlisted, confirm the \
+         frontend balances the retained owner it returns and update this canary",
     );
 }
 
-/// Indexing a `vec<string>` must NOT lower to `hew_vec_get_str` — it must hit
-/// the `NotYetImplemented` element-dispatch arm in `lower_vec_index`. This is
-/// the load-bearing guard: post-P2b-vec/P2b-maps every container string element
-/// is header-aware, so the danger is no longer heap corruption but that the P3
-/// retain/drop balancing is not wired yet — `hew_vec_get_str` returns a
-/// *retained* owner (vec) and the map slot accessor exposes a *borrowed* slot
-/// (`hew_hashmap_get_layout`), both of which must be balanced by P3 before any
-/// String-element accessor may be emitted.
+/// `for word in words` over `Vec<string>` may lower to `hew_vec_get_str`, but
+/// only if the retained per-iteration owner is balanced with exactly one
+/// `hew_string_drop` after the body uses `word`.
 #[test]
-fn vec_string_index_never_emits_headerless_string_accessor() {
+fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
     let pl = pipeline_with_tc(
-        "fn get_first(xs: vec<string>) -> string {
-             xs[0]
-         }",
+        r#"fn main() {
+            let words: Vec<string> = Vec::new();
+            words.push("red");
+            words.push("blue");
+            var count: i64 = 0;
+            for word in words {
+                println(word);
+                count = count + 1;
+            }
+            println(f"count={count}");
+        }"#,
     );
 
     let symbols = emitted_runtime_symbols(&pl);
     assert!(
-        !symbols
-            .iter()
-            .any(|s| s == "hew_vec_get_str" || s == "hew_vec_pop_str"),
-        "DOMAIN-SEPARATION VIOLATION: lowering a vec<string> index emitted a \
-         String-element accessor {symbols:?}. Post-P2b-vec/P2b-maps every \
-         container string element is header-aware, so this no longer corrupts \
-         the heap, but `hew_vec_get_str` now returns a *retained* owner — \
-         emitting it before the P3 retain/drop elaboration is wired would leak \
-         every indexed element, and the same arm covers hashmap/hashset \
-         elements whose `get_layout` slot is *borrowed* (not retained). Wire P3 \
-         (retain-on-read / drop-balancing) before emitting String-element \
-         accessors.",
+        symbols.iter().any(|s| s == "hew_vec_get_str"),
+        "Vec<string> for-in must lower through the real retained getter, not \
+        a fake-green literal/range/get workaround; symbols: {symbols:?}",
+    );
+    assert!(
+        !symbols.iter().any(|s| s == "hew_vec_pop_str"),
+        "Vec<string> for-in must not route through the unallowlisted pop accessor; \
+        symbols: {symbols:?}",
+    );
+
+    let mut string_drops = Vec::new();
+    for f in &pl.raw_mir {
+        for b in &f.blocks {
+            for instr in &b.instructions {
+                if let Instr::Drop {
+                    ty: hew_types::ResolvedTy::String,
+                    drop_fn: Some(drop_fn),
+                    ..
+                } = instr
+                {
+                    string_drops.push(drop_fn.clone());
+                }
+            }
+        }
+    }
+    assert_eq!(
+        string_drops,
+        vec!["hew_string_drop".to_string()],
+        "hew_vec_get_str returns a retained owner; the for-in word binding must \
+        receive exactly one explicit hew_string_drop after the body, not leak \
+        or double-drop. Full drop list: {string_drops:?}; diagnostics: {:?}",
+        pl.diagnostics,
     );
 
     assert!(
-        pl.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::NotYetImplemented { construct, .. }
-                if construct.contains("element type for xs[i]")
-        )),
-        "expected a NotYetImplemented element-dispatch diagnostic for vec<string> \
-         indexing (the gate that keeps container String elements out of \
-         hew_string_drop); diagnostics: {:?}",
+        !pl.diagnostics
+            .iter()
+            .any(|d| matches!(&d.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "Vec<string> for-in must not trip a MIR NotYetImplemented gate; diagnostics: {:?}",
         pl.diagnostics,
     );
 }

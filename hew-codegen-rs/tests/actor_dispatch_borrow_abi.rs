@@ -627,6 +627,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
                 field_tys: vec![],
             },
         ],
+        is_indirect: false,
     };
     // Receive handler `Keeper.stash(s: string)`:
     //   local 0: string   // the borrowed receive param (taint root)

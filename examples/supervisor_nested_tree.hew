@@ -58,8 +58,8 @@ supervisor WorkerPool {
     max_restarts: 3;
     window: 60;
 
-    child w1: Worker(1, 0);
-    child w2: Worker(2, 0);
+    child w1: Worker(id: 1, count: 0);
+    child w2: Worker(id: 2, count: 0);
 }
 
 // Inner supervisor: manages cache actors
@@ -68,7 +68,7 @@ supervisor CacheManager {
     max_restarts: 2;
     window: 60;
 
-    child cache: Cache(1000, 0);
+    child cache: Cache(capacity: 1000, entries: 0);
 }
 
 // Root supervisor: manages the inner supervisors

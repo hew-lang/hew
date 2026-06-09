@@ -654,6 +654,8 @@ pub struct ActorLayout {
     pub state_field_names: Vec<String>,
     /// Actor state field types in declaration order.
     pub state_field_tys: Vec<ResolvedTy>,
+    /// Actor state field defaults in declaration order.
+    pub state_field_defaults: Vec<Option<hew_hir::HirExpr>>,
     /// Actor init parameter names in declaration order. Empty when the actor
     /// has no explicit init block.
     pub init_param_names: Vec<String>,
@@ -855,6 +857,36 @@ pub struct SupervisorChildLayout {
     /// planning. Codegen serializes this into `HewChildSpec` so the runtime
     /// preserves the bit across supervisor restarts.
     pub cycle_capable: bool,
+    /// Per-field literal init args for this child's actor state template.
+    ///
+    /// Each entry is `(field_name, value)` in actor-state-field declaration order.
+    /// Empty means no `(...)` clause on the child declaration; codegen emits
+    /// `init_state = NULL` only when the actor's `state_field_names` is also empty
+    /// (stateless actor). For a stateful actor with an empty `init_state_fields`,
+    /// codegen emits `CodegenError::FailClosed` rather than a null template.
+    ///
+    /// Populated in the post-loop pass in `lower_hir_module` after the
+    /// actor-layout map is available, so declaration order between supervisor
+    /// and actor is irrelevant.
+    ///
+    /// SHIM: first slice supports POD (i64/i32/bool/f64) state only.
+    /// WHY: owned-heap fields (String/Vec) require verified semantic clone via
+    ///   `state_clone_fn`; byte-copy clone is correct only for plain-old-data.
+    /// WHEN obsolete: follow-up slice after clone verification is proven.
+    /// WHAT: extend `ChildInitArg` and verify `state_clone_fn` covers owned types.
+    pub init_state_fields: Vec<(String, ChildInitArg)>,
+}
+
+/// A self-contained literal value for a supervisor child init arg.
+///
+/// Kept separate from MIR instructions so codegen can read these directly
+/// without a running `FnCtx`. Only covers POD types in the first slice.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChildInitArg {
+    I64(i64),
+    I32(i32),
+    Bool(bool),
+    F64(f64),
 }
 
 /// Layout descriptor for one state variant in a `machine` declaration.
@@ -953,6 +985,12 @@ pub struct EnumLayout {
     /// Per-variant layouts in declaration order. Index `i` matches the
     /// `variant_idx` stored in `machine_ctor_registry` for this enum's ctors.
     pub variants: Vec<MachineVariantLayout>,
+    /// True for `indirect enum` declarations. Every variable of this type holds
+    /// a `ptr` to a heap-allocated tagged-union struct rather than an inline
+    /// struct value. Codegen routes all `Place::EnumTag` / `Place::EnumVariant`
+    /// accesses through a pointer load and emits `hew_alloc` on construction
+    /// plus `hew_dealloc` on drop. Propagated from `HirTypeDecl::is_indirect`.
+    pub is_indirect: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1364,6 +1402,7 @@ impl BasicBlock {
             | Terminator::Yield { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
+            | Terminator::RemoteAsk { next, .. }
             | Terminator::Select { next, .. } => vec![*next],
         }
     }
@@ -1512,7 +1551,33 @@ pub enum Terminator {
         actor: Place,
         msg_type: i32,
         value: Place,
+        /// `Result<R, AskError>` slot — the user-visible binding type after
+        /// the R-ASK unification.  Codegen emits `Ok(reply_value)` on a
+        /// successful reply (non-null pointer from `hew_actor_ask`) and
+        /// `Err(AskError::<variant>)` on failure (null pointer), obtaining
+        /// the error discriminant from `hew_actor_ask_take_last_error`.
+        result_dest: Place,
+        /// Raw reply slot; holds the unwrapped `R` value written by the
+        /// runtime on a successful ask.  Used as the `Ok` payload of
+        /// `result_dest`.
         reply_dest: Place,
+        /// `AskError` slot populated by `hew_actor_ask_take_last_error` on
+        /// the null-return (failure) path, then folded into `result_dest`
+        /// as the `Err` variant payload.
+        error_dest: Place,
+        next: u32,
+    },
+    /// Remote actor ask: send `value` to a `RemotePid<T>` and construct
+    /// `Result<Reply, AskError>` in `result_dest`.
+    RemoteAsk {
+        actor: Place,
+        msg_type: i32,
+        value: Place,
+        timeout_ms: Place,
+        result_dest: Place,
+        reply_dest: Place,
+        error_dest: Place,
+        reply_ty: ResolvedTy,
         next: u32,
     },
     /// Sealed `select{}` construct. The terminator carries the per-arm
@@ -2580,6 +2645,18 @@ pub enum Instr {
         rhs: Place,
         width: FloatWidth,
     },
+    /// `dest = (lhs <pred> rhs)` on IEEE 754 floats.
+    ///
+    /// The result is written as an integer truth value, matching `IntCmp`.
+    /// Codegen lowers the six source comparison predicates through ordered
+    /// LLVM float predicates (`oeq`/`one`/`olt`/`ole`/`ogt`/`oge`).
+    FloatCmp {
+        dest: Place,
+        pred: CmpPred,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
+    },
     /// Construct a `dyn Trait` fat pointer from a concrete value.
     ///
     /// Produced from `HirExprKind::CoerceToDynTrait` at every accepted
@@ -3234,7 +3311,7 @@ pub struct ElabDrop {
 ///
 /// The pre-M2 path emits `DropKind::Resource` for every owned
 /// `@resource` binding — the existing close-method dispatch through
-/// `drop_fn = Some("Type::close")`. The three M2 variants encode the
+/// `drop_fn = Some("Type::close")`. The M2 variants encode the
 /// dual-queue Duplex protocol's three drop shapes (design §7.3-§7.4
 /// + §5.9 ratification 2):
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -3302,6 +3379,18 @@ pub enum DropKind {
     /// is `&'static str` (a fixed runtime release-symbol literal); the
     /// emitter declares it as `void(ptr)` via `get_or_declare_drop_helper`.
     CowHeap { drop_fn: &'static str },
+    /// owned-string-record — function-scope in-place drop of a stack-local user record whose
+    /// direct fields are only `BitCopy` values plus one or more `string` fields.
+    /// The record identity lives in the paired [`ElabDrop::ty`], so the kind can
+    /// stay Copy while codegen resolves and calls the synthesized
+    /// `__hew_record_drop_inplace_<Record>` helper. `ElabDrop::drop_fn` must be
+    /// `None`; this path is not the `@resource` close-method dispatcher.
+    ///
+    /// This is deliberately narrower than [`DropKind::AggregateRecursive`]:
+    /// named user records may also be `@resource` or otherwise unsupported on
+    /// the value-class surface, so the MIR producer emits this kind only for the
+    /// Lane-A let-bound record-construction slice.
+    RecordInPlace,
     /// W5.011 — function-scope recursive drop of a heap-owning aggregate
     /// `CowValue` local whose payload transitively contains heap-owning
     /// leaves (`Tuple`, `Array`). There is no separate descriptor registry

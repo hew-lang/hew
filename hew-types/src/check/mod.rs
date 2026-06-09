@@ -36,6 +36,7 @@ mod methods;
 pub use self::methods::collection_dispatch_registry_for_tests;
 mod patterns;
 mod registration;
+pub use registration::intrinsic_floor_modules;
 mod resolution;
 mod statements;
 #[cfg(test)]
@@ -48,10 +49,10 @@ pub use self::types::{
     ArmResolution, AssignTargetKind, AssignTargetShape, CaptureModeOrigin, Checker, ChildKind,
     ChildSlot, ClosureCaptureFact, ClosureCaptureMode, ClosureEscapeFact, ClosureEscapeKind,
     ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
-    ExecutionContextReader, FnSig, MachineMethodKind, MethodCallReceiverKind, MethodCallRewrite,
-    NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
-    PatternKind, PayloadBinding, SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind,
-    VariantDef, VariantMatch,
+    ExecutionContextReader, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
+    MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
+    NumericSignedness, NumericWidth, PatternKind, PayloadBinding, SpanKey, StackHint,
+    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,

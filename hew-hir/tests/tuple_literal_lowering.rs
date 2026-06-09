@@ -1,9 +1,11 @@
-use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx, TargetArch};
+use hew_hir::{lower_program, HirDiagnosticKind, HirExprKind, ResolutionCtx, TargetArch};
 use hew_parser::{
     ast::{Expr, Item},
     parse,
 };
-use hew_types::{module_registry::ModuleRegistry, Checker, SpanKey, Ty, TypeCheckOutput};
+use hew_types::{
+    module_registry::ModuleRegistry, Checker, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
+};
 
 #[test]
 fn tuple_literal_basic_construction() {
@@ -121,6 +123,101 @@ fn main() -> i64 {
 
     let verify = hew_hir::verify_hir(&output.module);
     assert!(verify.is_empty(), "HIR verify errors: {verify:#?}");
+}
+
+#[test]
+fn tuple_numeric_field_access_lowers_to_tuple_index() {
+    let source = r"
+fn first(t: (i64, bool)) -> i64 {
+    t.0
+}
+
+fn second(t: (i64, bool)) -> bool {
+    t.1
+}
+";
+    let parsed = parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(&parsed.program);
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+
+    let output = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
+    assert!(
+        output.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        output.diagnostics
+    );
+    let verify = hew_hir::verify_hir(&output.module);
+    assert!(verify.is_empty(), "HIR verify errors: {verify:#?}");
+
+    let first = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::node::HirItem::Function(f) if f.name == "first" => Some(f),
+            _ => None,
+        })
+        .expect("first function must be lowered");
+    let first_tail = first.body.tail.as_ref().expect("first has a tail expr");
+    assert_eq!(first_tail.ty, ResolvedTy::I64);
+    assert!(
+        matches!(&first_tail.kind, HirExprKind::TupleIndex { index: 0, .. }),
+        "first must lower t.0 to TupleIndex(0), got: {:#?}",
+        first_tail.kind
+    );
+
+    let second = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::node::HirItem::Function(f) if f.name == "second" => Some(f),
+            _ => None,
+        })
+        .expect("second function must be lowered");
+    let second_tail = second.body.tail.as_ref().expect("second has a tail expr");
+    assert_eq!(second_tail.ty, ResolvedTy::Bool);
+    assert!(
+        matches!(&second_tail.kind, HirExprKind::TupleIndex { index: 1, .. }),
+        "second must lower t.1 to TupleIndex(1), got: {:#?}",
+        second_tail.kind
+    );
+}
+
+#[test]
+fn tuple_numeric_field_access_out_of_bounds_fails_closed_in_hir() {
+    let source = "fn bad(t: (i64, bool)) -> i64 { t.2 }";
+    let parsed = parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(&parsed.program);
+    assert!(
+        !tco.errors.is_empty(),
+        "checker must reject out-of-bounds tuple field access"
+    );
+
+    let output = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                if name == "tuple index .2" && reason.contains("out of range")
+        )),
+        "HIR must fail closed on poisoned/out-of-bounds tuple field access; got: {:#?}",
+        output.diagnostics
+    );
 }
 
 /// Verifier regression test: a `TupleLiteral` with 2 elements but a 3-tuple

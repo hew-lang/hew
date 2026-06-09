@@ -27,5 +27,8 @@ supervisor App {
 fn main() -> i64 {
     let app = spawn App;
     let w = app.w1;
-    w.ping(42)
+    match await w.ping(42) {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
 }

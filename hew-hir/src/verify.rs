@@ -303,11 +303,22 @@ impl Verifier {
             | HirExprKind::ActorAsk { receiver, args, .. }
             | HirExprKind::CallDynMethod { receiver, args, .. }
             | HirExprKind::ResolvedImplCall { receiver, args, .. }
-            | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+            | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+            | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
                 self.expr(receiver);
                 for arg in args {
                     self.expr(arg);
                 }
+            }
+            HirExprKind::RemoteActorAsk {
+                receiver,
+                msg,
+                timeout_ms,
+                ..
+            } => {
+                self.expr(receiver);
+                self.expr(msg);
+                self.expr(timeout_ms);
             }
             HirExprKind::NumericMethod { receiver, arg, .. } => {
                 self.expr(receiver);
@@ -574,11 +585,15 @@ impl Verifier {
                             );
                         }
                         HirMatchArmPredicate::Wildcard
+                        | HirMatchArmPredicate::Binding { .. }
                         | HirMatchArmPredicate::EnumVariant { .. }
                         | HirMatchArmPredicate::Regex { .. } => {}
                     }
                     for binding in &arm.bindings {
                         self.binding(binding.binding, arm.span.clone());
+                    }
+                    if let Some(guard) = &arm.guard {
+                        self.expr(guard);
                     }
                     self.expr(&arm.body);
                 }
@@ -644,13 +659,15 @@ impl Verifier {
     }
 
     fn match_literal_predicate(&mut self, lit: &HirLiteral, ty: &ResolvedTy, span: Range<usize>) {
-        let valid = matches!(
-            (lit, ty),
-            (HirLiteral::Integer(_), ResolvedTy::I64)
-                | (HirLiteral::Bool(_), ResolvedTy::Bool)
-                | (HirLiteral::Char(_), ResolvedTy::Char)
-                | (HirLiteral::String(_), ResolvedTy::String)
-        );
+        let valid = match (lit, ty) {
+            (HirLiteral::Integer(_), ty) => {
+                ty.is_integer() && !matches!(ty, ResolvedTy::Isize | ResolvedTy::Usize)
+            }
+            (HirLiteral::Bool(_), ResolvedTy::Bool)
+            | (HirLiteral::Char(_), ResolvedTy::Char)
+            | (HirLiteral::String(_), ResolvedTy::String) => true,
+            _ => false,
+        };
         if !valid {
             self.diagnostics.push(self.diagnostic(
                 HirDiagnosticKind::NotYetImplemented {

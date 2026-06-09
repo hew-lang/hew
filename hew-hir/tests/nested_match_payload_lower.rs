@@ -144,6 +144,43 @@ fn classify(s: string) -> i64 {
 }
 
 #[test]
+fn integer_literal_match_lowers_to_scrutinee_width() {
+    let output = lower_checked(
+        r"
+fn classify(x: i32) -> i32 {
+    match x {
+        41 => 1,
+        42 => 2,
+        _ => 0,
+    }
+}",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "classify") else {
+        panic!("expected match expression")
+    };
+    assert!(matches!(
+        &arms[0].predicate,
+        HirMatchArmPredicate::Literal {
+            lit: HirLiteral::Integer(41),
+            ty: ResolvedTy::I32,
+        }
+    ));
+    assert!(matches!(
+        &arms[1].predicate,
+        HirMatchArmPredicate::Literal {
+            lit: HirLiteral::Integer(42),
+            ty: ResolvedTy::I32,
+        }
+    ));
+}
+
+#[test]
 fn record_destructure_match_lowers_to_record_project() {
     let output = lower_checked(
         r"

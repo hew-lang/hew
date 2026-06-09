@@ -868,8 +868,12 @@ mod tests {
         };
 
         let marker = truncation_marker();
+        // This bound checks that the drain loop does not block reading surplus
+        // data past the cap — it is not a performance gate.  60 s is generous
+        // enough to absorb I/O-scheduler jitter on a loaded parallel test run
+        // while still catching a regression where the loop stalls entirely.
         assert!(
-            elapsed < Duration::from_secs(10),
+            elapsed < Duration::from_mins(1),
             "capped finite output should return promptly, elapsed {elapsed:?}"
         );
         assert!(

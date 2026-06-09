@@ -311,16 +311,15 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         ],
         terminator: Terminator::Return,
     };
+    // ClosureInvoke shims receive the execution context as an ABI parameter;
+    // they must NOT carry EnterContext/ExitContext (those are only legal on
+    // scheduler-installed context boundaries such as ActorHandler and TaskEntry).
     let closure_block = BasicBlock {
         id: 0,
         statements: vec![],
-        instructions: vec![
-            Instr::EnterContext,
-            Instr::UnitLit {
-                dest: Place::Local(1),
-            },
-            Instr::ExitContext,
-        ],
+        instructions: vec![Instr::UnitLit {
+            dest: Place::Local(1),
+        }],
         terminator: Terminator::Return,
     };
     IrPipeline {

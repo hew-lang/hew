@@ -70,11 +70,11 @@ fn pipeline_const_42() -> IrPipeline {
     }
 }
 
-/// A pipeline whose function declares an F64 return type. F64 return is
-/// outside the current spine subset; codegen rejects it with
+/// A pipeline whose function declares an array return type. Array returns are
+/// outside the current spine subset; codegen rejects them with
 /// `CodegenError::Unsupported`.
-fn pipeline_unsupported_f64_return() -> IrPipeline {
-    let return_ty = ResolvedTy::F64;
+fn pipeline_unsupported_array_return() -> IrPipeline {
+    let return_ty = ResolvedTy::Array(Box::new(ResolvedTy::I64), 2);
     let main = RawMirFunction {
         name: "main".to_string(),
         return_ty: return_ty.clone(),
@@ -151,10 +151,10 @@ fn validate_codegen_front_succeeds_for_valid_pipeline_and_creates_no_artifacts()
 }
 
 /// `validate_codegen_front` returns a structured `CodegenError` for a pipeline
-/// with an unsupported construct (F64 return). No artifacts are created.
+/// with an unsupported construct (array return). No artifacts are created.
 #[test]
 fn validate_codegen_front_returns_codegen_error_for_unsupported_construct() {
-    let pipeline = pipeline_unsupported_f64_return();
+    let pipeline = pipeline_unsupported_array_return();
 
     let cwd = std::env::current_dir().expect("cwd must be readable");
     let before: std::collections::BTreeSet<_> = std::fs::read_dir(&cwd)
@@ -181,7 +181,7 @@ fn validate_codegen_front_returns_codegen_error_for_unsupported_construct() {
         result.expect_err("validate_codegen_front must return Err for an unsupported construct");
     assert!(
         matches!(err, CodegenError::Unsupported(_)),
-        "F64 return must surface as CodegenError::Unsupported, got: {err:?}"
+        "array return must surface as CodegenError::Unsupported, got: {err:?}"
     );
 }
 

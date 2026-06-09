@@ -50,11 +50,22 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
-        | HirExprKind::ResolvedImplCall { receiver, args, .. } => {
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
             visit_expr(receiver, out);
             for arg in args {
                 visit_expr(arg, out);
             }
+        }
+        HirExprKind::RemoteActorAsk {
+            receiver,
+            msg,
+            timeout_ms,
+            ..
+        } => {
+            visit_expr(receiver, out);
+            visit_expr(msg, out);
+            visit_expr(timeout_ms, out);
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
@@ -272,4 +283,73 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
         "await c.print_total() should lower to HirExprKind::ActorAsk: {:#?}",
         main.body
     );
+}
+
+#[test]
+fn await_actor_ask_let_value_lowers_to_same_actor_ask_as_unawaited_form() {
+    let awaited = lower_checked(
+        r"
+        actor Getter {
+            receive fn get() -> i64 {
+                7
+            }
+        }
+
+        fn main() -> i64 {
+            let g = spawn Getter;
+            let v = await g.get();
+            return v;
+        }
+        ",
+    );
+    let unawaited = lower_checked(
+        r"
+        actor Getter {
+            receive fn get() -> i64 {
+                7
+            }
+        }
+
+        fn main() -> i64 {
+            let g = spawn Getter;
+            let v = g.get();
+            return v;
+        }
+        ",
+    );
+
+    #[allow(clippy::items_after_statements, reason = "test-local helper")]
+    fn bound_actor_ask(output: &hew_hir::LowerOutput) -> (&str, &hew_types::ResolvedTy) {
+        let main = output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(func) if func.name == "main" => Some(func),
+                _ => None,
+            })
+            .expect("main function should lower");
+        let HirStmtKind::Let(binding, Some(value)) = &main.body.statements[1].kind else {
+            panic!(
+                "second statement should be `let v = <actor ask>`; got {:#?}",
+                main.body.statements[1]
+            );
+        };
+        assert_eq!(binding.name, "v");
+        match &value.kind {
+            HirExprKind::ActorAsk {
+                method_id,
+                reply_ty,
+                ..
+            } => (method_id.as_str(), reply_ty),
+            other => panic!("bound value should lower to ActorAsk, got {other:#?}"),
+        }
+    }
+
+    assert!(
+        awaited.diagnostics.is_empty(),
+        "awaited actor ask let-value should be accepted: {:?}",
+        awaited.diagnostics
+    );
+    assert_eq!(bound_actor_ask(&awaited), bound_actor_ask(&unawaited));
 }

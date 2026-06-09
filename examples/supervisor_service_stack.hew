@@ -68,9 +68,9 @@ supervisor ServiceStack {
     max_restarts: 5;
     window: 60;
 
-    child cache: Cache(1000, 0);
-    child db: Database(4);
-    child api: ApiHandler(8080);
+    child cache: Cache(capacity: 1000, entries: 0);
+    child db: Database(connections: 4);
+    child api: ApiHandler(port: 8080);
 }
 
 fn main() {

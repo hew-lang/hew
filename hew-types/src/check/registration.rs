@@ -130,6 +130,11 @@ pub enum LookupError {
 ///   empty-body no-op.
 const INTRINSIC_FLOOR_MODULES: &[&str] = &["std.math", "std.mem"];
 
+#[must_use]
+pub fn intrinsic_floor_modules() -> &'static [&'static str] {
+    INTRINSIC_FLOOR_MODULES
+}
+
 /// Returns `true` iff `module` is a stdlib-floor module permitted to declare
 /// `#[intrinsic]` functions (see [`INTRINSIC_FLOOR_MODULES`]).
 ///
@@ -396,6 +401,10 @@ impl Checker {
         self.register_builtin_fn("sqrt", vec![Ty::F64], Ty::F64);
         self.register_builtin_fn("min", vec![Ty::I64, Ty::I64], Ty::I64);
         self.register_builtin_fn("max", vec![Ty::I64, Ty::I64], Ty::I64);
+        self.register_builtin_fn("pow", vec![Ty::F64, Ty::F64], Ty::F64);
+        self.register_builtin_fn("floor", vec![Ty::F64], Ty::F64);
+        self.register_builtin_fn("ceil", vec![Ty::F64], Ty::F64);
+        self.register_builtin_fn("round", vec![Ty::F64], Ty::F64);
         self.register_builtin_fn("to_float", vec![Ty::I64], Ty::F64);
 
         // String operations
@@ -643,16 +652,15 @@ impl Checker {
         self.modules.insert("math".to_string());
         // Single-argument math functions: f64 → f64
         for name in &[
-            "exp", "log", "sqrt", "sin", "cos", "floor", "ceil", "abs", "abs_f", "tanh", "log2",
-            "log10", "exp2",
+            "exp", "log", "sqrt", "sin", "cos", "floor", "ceil", "tanh", "log2", "log10", "exp2",
         ] {
             self.register_builtin_fn(&format!("math.{name}"), vec![Ty::F64], Ty::F64);
         }
+        self.register_builtin_num_math_fn("math.abs", 1);
         // Two-argument math functions: (f64, f64) → f64
-        for name in &["pow", "max", "min", "max_f", "min_f"] {
-            self.register_builtin_fn(&format!("math.{name}"), vec![Ty::F64, Ty::F64], Ty::F64);
-        }
-        self.register_builtin_fn("math.clamp_f", vec![Ty::F64, Ty::F64, Ty::F64], Ty::F64);
+        self.register_builtin_fn("math.pow", vec![Ty::F64, Ty::F64], Ty::F64);
+        self.register_builtin_num_math_fn("math.max", 2);
+        self.register_builtin_num_math_fn("math.min", 2);
         // Constants (zero-argument): () → f64
         for name in &["pi", "e"] {
             self.register_builtin_fn(&format!("math.{name}"), vec![], Ty::F64);
@@ -1062,6 +1070,21 @@ impl Checker {
         );
     }
 
+    fn register_builtin_num_math_fn(&mut self, name: &str, arity: usize) {
+        let t = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        self.register_builtin_fn_with_bounds(
+            name,
+            vec!["T".to_string()],
+            HashMap::from([("T".to_string(), vec!["Num".to_string()])]),
+            vec![t.clone(); arity],
+            t,
+        );
+    }
+
     fn register_builtin_sig(&mut self, name: &str, sig: FnSig) {
         if name.contains('.') {
             self.module_fn_exports.insert(name.to_string());
@@ -1183,7 +1206,7 @@ impl Checker {
         for (item, span) in &program.items {
             match item {
                 Item::TypeDecl(td) => {
-                    if !self.register_type_namespace_name(&td.name, span) {
+                    if !self.register_type_namespace_name(None, &td.name, span) {
                         continue;
                     }
                     self.register_type_decl(td);
@@ -1191,21 +1214,21 @@ impl Checker {
                     self.source_type_defs.insert(td.name.clone());
                 }
                 Item::Actor(ad) => {
-                    if !self.register_type_namespace_name(&ad.name, span) {
+                    if !self.register_type_namespace_name(None, &ad.name, span) {
                         continue;
                     }
                     self.register_actor_decl(ad);
                     self.source_type_defs.insert(ad.name.clone());
                 }
                 Item::Wire(wd) => {
-                    if !self.register_type_namespace_name(&wd.name, span) {
+                    if !self.register_type_namespace_name(None, &wd.name, span) {
                         continue;
                     }
                     self.register_wire_decl(wd);
                     self.source_type_defs.insert(wd.name.clone());
                 }
                 Item::TypeAlias(ta) => {
-                    if !self.register_type_namespace_name(&ta.name, span) {
+                    if !self.register_type_namespace_name(None, &ta.name, span) {
                         continue;
                     }
                     let mut hole_vars = Vec::new();
@@ -1215,7 +1238,7 @@ impl Checker {
                     self.source_type_defs.insert(ta.name.clone());
                 }
                 Item::Trait(td) => {
-                    if !self.register_type_namespace_name(&td.name, span) {
+                    if !self.register_type_namespace_name(None, &td.name, span) {
                         continue;
                     }
                     let mut trait_errors = Vec::new();
@@ -1259,7 +1282,7 @@ impl Checker {
                     );
                 }
                 Item::Machine(md) => {
-                    if !self.register_machine_type_namespace_names(&md.name, span) {
+                    if !self.register_machine_type_namespace_names(None, &md.name, span) {
                         continue;
                     }
                     self.register_machine_decl(md, span);
@@ -1267,7 +1290,7 @@ impl Checker {
                     self.source_type_defs.insert(md.name.clone());
                 }
                 Item::Record(rd) => {
-                    if !self.register_type_namespace_name(&rd.name, span) {
+                    if !self.register_type_namespace_name(None, &rd.name, span) {
                         continue;
                     }
                     self.register_record_decl(rd);
@@ -1425,13 +1448,33 @@ impl Checker {
         self.handle_bearing_dirty = true;
     }
 
-    pub(super) fn register_type_namespace_name(&mut self, name: &str, span: &Span) -> bool {
-        if let Some(prev_span) = self.type_def_spans.get(name).cloned() {
+    /// Reserve a type-name in the given module's namespace and reject a second
+    /// declaration of the same name *within the same module*.
+    ///
+    /// `module_short` is the defining module (the last import-path segment for
+    /// stdlib / user modules; `None` for the root program and flat file imports,
+    /// which share one namespace). Two distinct modules may each declare a type
+    /// of the same bare name — the durable cross-module identity is the qualified
+    /// `{module}.{name}` key inserted by `register_qualified_type_alias`. The bare
+    /// `type_def_spans` entry is still populated for the span-lookup consumers
+    /// (cycle / actor-ref diagnostics); it is last-write-wins across modules and
+    /// is no longer the uniqueness authority.
+    pub(super) fn register_type_namespace_name(
+        &mut self,
+        module_short: Option<&str>,
+        name: &str,
+        span: &Span,
+    ) -> bool {
+        let owner_key = (module_short.map(str::to_string), name.to_string());
+        if let Some(prev_span) = self.type_namespace_owners.get(&owner_key).cloned() {
             self.report_duplicate_type_namespace_name(name, span, prev_span);
             return false;
         }
 
-        self.type_def_spans.insert(name.to_string(), span.clone());
+        self.type_namespace_owners.insert(owner_key, span.clone());
+        self.type_def_spans
+            .entry(name.to_string())
+            .or_insert_with(|| span.clone());
         true
     }
 
@@ -1450,23 +1493,31 @@ impl Checker {
 
     pub(super) fn register_machine_type_namespace_names(
         &mut self,
+        module_short: Option<&str>,
         machine_name: &str,
         span: &Span,
     ) -> bool {
-        if let Some(prev_span) = self.type_def_spans.get(machine_name).cloned() {
+        let machine_key = (module_short.map(str::to_string), machine_name.to_string());
+        if let Some(prev_span) = self.type_namespace_owners.get(&machine_key).cloned() {
             self.report_duplicate_type_namespace_name(machine_name, span, prev_span);
             return false;
         }
 
         let event_type_name = format!("{machine_name}Event");
-        if let Some(prev_span) = self.type_def_spans.get(&event_type_name).cloned() {
+        let event_key = (module_short.map(str::to_string), event_type_name.clone());
+        if let Some(prev_span) = self.type_namespace_owners.get(&event_key).cloned() {
             self.report_duplicate_type_namespace_name(&event_type_name, span, prev_span);
             return false;
         }
 
+        self.type_namespace_owners.insert(machine_key, span.clone());
+        self.type_namespace_owners.insert(event_key, span.clone());
         self.type_def_spans
-            .insert(machine_name.to_string(), span.clone());
-        self.type_def_spans.insert(event_type_name, span.clone());
+            .entry(machine_name.to_string())
+            .or_insert_with(|| span.clone());
+        self.type_def_spans
+            .entry(event_type_name)
+            .or_insert_with(|| span.clone());
         true
     }
 
@@ -5376,6 +5427,8 @@ impl Checker {
                         let accepts_kwargs = module_path == "std::misc::log"
                             && Self::LOG_KWARGS_FUNCTIONS.contains(&wfn.name.as_str());
                         let sig = FnSig {
+                            type_params: wfn.type_params,
+                            type_param_bounds: wfn.type_param_bounds,
                             params: wfn.params,
                             return_type: wfn.return_type,
                             accepts_kwargs,
@@ -5652,7 +5705,7 @@ impl Checker {
                     if !td.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_type_namespace_name(&td.name, span) {
+                    if !self.register_type_namespace_name(Some(module_short), &td.name, span) {
                         continue;
                     }
                     self.register_type_decl(td);
@@ -5662,7 +5715,11 @@ impl Checker {
                     if !md.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_machine_type_namespace_names(&md.name, span) {
+                    if !self.register_machine_type_namespace_names(
+                        Some(module_short),
+                        &md.name,
+                        span,
+                    ) {
                         continue;
                     }
                     self.register_machine_decl(md, span);
@@ -5673,7 +5730,7 @@ impl Checker {
                     if !tr.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_type_namespace_name(&tr.name, span) {
+                    if !self.register_type_namespace_name(Some(module_short), &tr.name, span) {
                         continue;
                     }
                     let info = Self::trait_info_from_decl(tr);
@@ -5705,7 +5762,7 @@ impl Checker {
                     }
                 }
                 Item::Actor(ad) => {
-                    if !self.register_type_namespace_name(&ad.name, span) {
+                    if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
                         continue;
                     }
                     self.register_actor_base(ad);
@@ -5998,8 +6055,10 @@ impl Checker {
         name: &str,
         span: &Span,
     ) -> bool {
+        // Flat file imports register top-level names without a module namespace,
+        // sharing the root/flat namespace (`None`).
         self.register_flat_file_import_pub_name(current_import_pub_spans, name, span)
-            && self.register_type_namespace_name(name, span)
+            && self.register_type_namespace_name(None, name, span)
     }
 
     fn flat_file_import_already_registered(&mut self, decl: &ImportDecl) -> bool {
@@ -6092,7 +6151,7 @@ impl Checker {
                     if !td.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_type_namespace_name(&td.name, span) {
+                    if !self.register_type_namespace_name(Some(module_short), &td.name, span) {
                         continue;
                     }
                     self.register_type_decl(td);
@@ -6104,7 +6163,11 @@ impl Checker {
                     if !md.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_machine_type_namespace_names(&md.name, span) {
+                    if !self.register_machine_type_namespace_names(
+                        Some(module_short),
+                        &md.name,
+                        span,
+                    ) {
                         continue;
                     }
                     self.register_machine_decl(md, span);
@@ -6121,7 +6184,14 @@ impl Checker {
                     let import_binding = if Self::should_import_name(&tr.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &tr.name)
                             .unwrap_or_else(|| tr.name.clone());
-                        if self.register_type_namespace_name(&binding_name, span) {
+                        // The unqualified trait binding lands in the *importing*
+                        // module's namespace, not the source module's.
+                        let importer = self.current_module.clone();
+                        if self.register_type_namespace_name(
+                            importer.as_deref(),
+                            &binding_name,
+                            span,
+                        ) {
                             Some(binding_name)
                         } else {
                             None
@@ -6223,7 +6293,7 @@ impl Checker {
                     }
                 }
                 Item::Actor(ad) => {
-                    if !self.register_type_namespace_name(&ad.name, span) {
+                    if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
                         continue;
                     }
                     self.register_actor_base(ad);

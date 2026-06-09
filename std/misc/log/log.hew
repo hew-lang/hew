@@ -58,7 +58,7 @@ pub fn set_level(level: i64) {
 /// Get the current log level filter.
 pub fn get_level() -> i64 {
     unsafe {
-        hew_log_get_level()
+        hew_log_get_level() as i64
     }
 }
 
@@ -81,7 +81,7 @@ pub fn set_format(format: i64) {
 /// Get the current log output format.
 pub fn get_format() -> i64 {
     unsafe {
-        hew_log_get_format()
+        hew_log_get_format() as i64
     }
 }
 

@@ -52,6 +52,7 @@ fn supervisor_pipeline() -> IrPipeline {
         name: "Worker".to_string(),
         state_field_names: vec![],
         state_field_tys: vec![],
+        state_field_defaults: vec![],
         init_param_names: vec![],
         init_param_tys: vec![],
         init_symbol: None,
@@ -138,6 +139,7 @@ fn supervisor_pipeline() -> IrPipeline {
             on_crash_symbol: None,
             max_heap_bytes: None,
             cycle_capable: false,
+            init_state_fields: vec![],
         }],
     };
 
@@ -263,6 +265,7 @@ fn on_crash_pipeline() -> IrPipeline {
         name: "CrasherActor".to_string(),
         state_field_names: vec![],
         state_field_tys: vec![],
+        state_field_defaults: vec![],
         init_param_names: vec![],
         init_param_tys: vec![],
         init_symbol: None,
@@ -354,6 +357,7 @@ fn on_crash_pipeline() -> IrPipeline {
             on_crash_symbol: Some(on_crash_symbol.clone()),
             max_heap_bytes: None,
             cycle_capable: false,
+            init_state_fields: vec![],
         }],
     };
 

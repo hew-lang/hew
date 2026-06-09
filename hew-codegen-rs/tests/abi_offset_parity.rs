@@ -105,4 +105,9 @@ fn hew_ctx_offset_parity() {
         hew_runtime::HEW_CTX_OFFSET_LOCK_SEAT,
         "codegen HEW_CTX_OFFSET_LOCK_SEAT drifted from runtime"
     );
+    assert_eq!(
+        usize::try_from(llvm::HEW_CTX_SIZE).expect("codegen ctx size fits usize"),
+        hew_runtime::execution_context::HEW_CTX_SIZE,
+        "codegen HEW_CTX_SIZE drifted from runtime"
+    );
 }

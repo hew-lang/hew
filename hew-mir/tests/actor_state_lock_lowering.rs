@@ -119,6 +119,7 @@ fn minimal_actor(
         state_fields: vec![HirField {
             name: "count".to_string(),
             ty: ResolvedTy::I64,
+            default: None,
             span: 0..0,
         }],
         init: Some(hew_hir::HirActorInit {

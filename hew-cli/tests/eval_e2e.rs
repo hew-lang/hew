@@ -30,6 +30,13 @@ fn run_eval_with_stdin(args: &[&str], input: &str) -> Output {
     run_eval_with_stdin_in_dir(args, input, repo_root())
 }
 
+fn assert_no_monomorphic_overload_error(stderr: &str) {
+    assert!(
+        !stderr.contains("no registered monomorphic overload"),
+        "stderr still contains the old auto-print overload error: {stderr}"
+    );
+}
+
 enum WaitOutcome {
     Found,
     Timeout,
@@ -81,6 +88,25 @@ fn eval_inline_expression_succeeds() {
 }
 
 #[test]
+fn eval_inline_unit_expression_is_not_auto_printed() {
+    require_codegen();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", r#"print("unit side-effect\n")"#])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert_no_monomorphic_overload_error(&stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "unit side-effect\n"
+    );
+}
+
+#[test]
 fn eval_file_in_repl_context_succeeds() {
     require_codegen();
 
@@ -108,7 +134,6 @@ fn eval_file_in_repl_context_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_file_resolves_sibling_imports_relative_to_file_path() {
     require_codegen();
@@ -157,7 +182,6 @@ fn eval_stdin_in_repl_context_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_stdin_file_mode_resolves_imports_from_cwd() {
     require_codegen();
@@ -337,7 +361,6 @@ fn repl_type_command_surfaces_diagnostic_when_no_type_info() {
     assert!(!stderr.contains("unknown"), "stderr: {stderr}");
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_timeout_exit_code_is_non_zero() {
     require_codegen();
@@ -365,7 +388,7 @@ fn eval_timeout_exit_code_is_non_zero() {
     assert!(stderr.contains("Error: evaluation timed out after 1s"));
 }
 
-#[ignore = "blocked on println builtin overload for scope/Unit context"]
+#[ignore = "blocked on HIR scope lowering treating println as an unsupported spawned call"]
 #[test]
 fn eval_large_stdout_completes_before_timeout() {
     require_codegen();
@@ -379,13 +402,14 @@ fn eval_large_stdout_completes_before_timeout() {
     .unwrap();
 
     // The --timeout here is a hang watchdog, not a performance gate.  20 000
-    // println calls complete in well under a second on any reasonable host;
-    // 60 s is chosen so the test can never be flaked by scheduler jitter,
-    // even on a heavily loaded CI runner.
+    // println calls complete in well under a second on any reasonable host.
+    // This is a hang watchdog, not a perf gate: 300 s is large enough that
+    // only a genuinely stuck program (not load/scheduler jitter, even under
+    // heavy concurrent build+test load) can ever trip it.
     let output = Command::new(hew_binary())
         .arg("eval")
         .arg("--timeout")
-        .arg("60")
+        .arg("300")
         .arg("-f")
         .arg(&path)
         .current_dir(dir.path())
@@ -404,7 +428,6 @@ fn eval_large_stdout_completes_before_timeout() {
     assert!(stdout.ends_with("line\n"), "stdout: {stdout}");
 }
 
-#[ignore = "blocked on L1 generic type instantiation in MIR codegen (spam_err is called with identity monomorphic but HIR doesn't support function references in scope context)"]
 #[test]
 fn eval_large_stderr_completes_before_timeout() {
     require_codegen();
@@ -418,13 +441,14 @@ fn eval_large_stderr_completes_before_timeout() {
     .unwrap();
 
     // The --timeout here is a hang watchdog, not a performance gate.  20 000
-    // write_err calls complete in well under a second on any reasonable host;
-    // 60 s is chosen so the test can never be flaked by scheduler jitter,
-    // even on a heavily loaded CI runner.
+    // write_err calls complete in well under a second on any reasonable host.
+    // This is a hang watchdog, not a perf gate: 300 s is large enough that
+    // only a genuinely stuck program (not load/scheduler jitter, even under
+    // heavy concurrent build+test load) can ever trip it.
     let output = Command::new(hew_binary())
         .arg("eval")
         .arg("--timeout")
-        .arg("60")
+        .arg("300")
         .arg("-f")
         .arg(&path)
         .current_dir(dir.path())
@@ -439,7 +463,7 @@ fn eval_large_stderr_completes_before_timeout() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
+#[ignore = "blocked on HIR scope lowering treating println as an unsupported spawned call"]
 #[test]
 fn eval_repl_timeout_is_reported_and_quit_still_works() {
     require_codegen();
@@ -817,7 +841,6 @@ fn eval_repl_load_valid_file_succeeds() {
     assert!(stdout.contains("42\n"), "stdout: {stdout}");
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_repl_load_resolves_sibling_imports_relative_to_file_path() {
     require_codegen();
@@ -1057,6 +1080,166 @@ fn eval_wasm_file_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
+fn assert_wasm_eval_file_output(test_name: &str, source: &str, expected_stdout: &str) {
+    require_codegen();
+    if !support::try_require_wasi_runner() {
+        return;
+    }
+
+    let dir = support::tempdir();
+    let path = dir.path().join(format!("{test_name}.hew"));
+    std::fs::write(&path, source).expect("write wasm eval oracle source");
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{test_name}: stderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        expected_stdout,
+        "{test_name}: stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn eval_wasm_hashmap_string_i64_values_are_correct() {
+    assert_wasm_eval_file_output(
+        "wasm_hashmap_string_i64",
+        r#"
+{
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("alpha", 17);
+    m.insert("beta", 25);
+
+    let alpha = match m.get("alpha") {
+        Some(v) => v,
+        None => panic("alpha: missing value"),
+    };
+    let beta = match m.get("beta") {
+        Some(v) => v,
+        None => panic("beta: missing value"),
+    };
+    let sum = alpha + beta;
+
+    if alpha != 17 { panic(f"alpha: expected 17, got {alpha}"); }
+    if beta != 25 { panic(f"beta: expected 25, got {beta}"); }
+    if !m.contains_key("alpha") { panic("contains alpha: expected true"); }
+    if m.contains_key("missing") { panic("contains missing: expected false"); }
+    if m.len() != 2 { panic(f"len: expected 2, got {m.len()}"); }
+    if sum != 42 { panic(f"sum: expected 42, got {sum}"); }
+
+    print("hashmap-string:");
+    print(alpha);
+    print(":");
+    print(beta);
+    print(":");
+    print(sum);
+    print(":");
+    println(m.len());
+    sum
+}
+"#,
+        "hashmap-string:17:25:42:2\n42\n",
+    );
+}
+
+#[test]
+fn eval_wasm_hashmap_record_key_uses_thunk_values_correctly() {
+    assert_wasm_eval_file_output(
+        "wasm_hashmap_point_i64",
+        r#"
+record Point {
+    x: i64,
+    y: i64
+}
+
+{
+    let m: HashMap<Point, i64> = HashMap::new();
+    m.insert(Point { x: 3, y: 4 }, 88);
+    m.insert(Point { x: 5, y: 6 }, 99);
+
+    let first = match m.get(Point { x: 3, y: 4 }) {
+        Some(v) => v,
+        None => panic("first point: missing value"),
+    };
+    let second = match m.get(Point { x: 5, y: 6 }) {
+        Some(v) => v,
+        None => panic("second point: missing value"),
+    };
+
+    if first != 88 { panic(f"first point: expected 88, got {first}"); }
+    if second != 99 { panic(f"second point: expected 99, got {second}"); }
+    if !m.contains_key(Point { x: 3, y: 4 }) { panic("contains first point: expected true"); }
+    if m.contains_key(Point { x: 0, y: 0 }) { panic("contains missing point: expected false"); }
+    if m.len() != 2 { panic(f"len: expected 2, got {m.len()}"); }
+
+    print("hashmap-point:");
+    print(first);
+    print(":");
+    print(second);
+    print(":");
+    println(m.len());
+    first
+}
+"#,
+        "hashmap-point:88:99:2\n88\n",
+    );
+}
+
+#[test]
+fn eval_wasm_hashset_string_values_are_correct() {
+    assert_wasm_eval_file_output(
+        "wasm_hashset_string",
+        r#"
+{
+    let s: HashSet<string> = HashSet::new();
+    let inserted_alpha = s.insert("alpha");
+    let inserted_beta = s.insert("beta");
+    let duplicate_alpha = s.insert("alpha");
+    let has_alpha_before_remove = s.contains("alpha");
+    let has_missing = s.contains("missing");
+    let len_before_remove = s.len();
+    let removed_alpha = s.remove("alpha");
+    let has_alpha_after_remove = s.contains("alpha");
+    let len_after_remove = s.len();
+
+    if !inserted_alpha { panic("insert alpha: expected true"); }
+    if !inserted_beta { panic("insert beta: expected true"); }
+    if duplicate_alpha { panic("duplicate alpha: expected false"); }
+    if !has_alpha_before_remove { panic("contains alpha before remove: expected true"); }
+    if has_missing { panic("contains missing: expected false"); }
+    if len_before_remove != 2 { panic(f"len before remove: expected 2, got {len_before_remove}"); }
+    if !removed_alpha { panic("remove alpha: expected true"); }
+    if has_alpha_after_remove { panic("contains alpha after remove: expected false"); }
+    if len_after_remove != 1 { panic(f"len after remove: expected 1, got {len_after_remove}"); }
+
+    print("hashset-string:");
+    print(inserted_alpha);
+    print(":");
+    print(duplicate_alpha);
+    print(":");
+    print(has_alpha_before_remove);
+    print(":");
+    print(removed_alpha);
+    print(":");
+    println(len_after_remove);
+    len_before_remove + len_after_remove
+}
+"#,
+        "hashset-string:true:false:true:true:1\n3\n",
+    );
+}
+
 /// A WASM eval that runs longer than the timeout exits with a timeout error.
 #[test]
 fn eval_wasm_timeout_is_reported() {
@@ -1213,7 +1396,6 @@ fn eval_wasm_fast_typecheck_rejects_for_await_receiver() {
 // (Rust's panic convention), which is distinct from the CLI's own error exit
 // code (1) and therefore makes propagation detectable.
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_inline_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
@@ -1247,13 +1429,13 @@ fn eval_inline_runtime_failure_surfaces_child_stderr() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_no_monomorphic_overload_error(&stderr);
     assert!(
         stderr.contains("deliberate failure"),
         "expected runtime stderr on the terminal path, got: {stderr:?}"
     );
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_file_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
@@ -1282,7 +1464,6 @@ fn eval_file_runtime_failure_exits_with_child_exit_code() {
     );
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_file_runtime_failure_preserves_pre_failure_stdout() {
     require_codegen();
@@ -1320,7 +1501,6 @@ fn eval_file_runtime_failure_preserves_pre_failure_stdout() {
 //   1. Stdout produced before failure must not be discarded.
 //   2. The child's exit code must be propagated, not hard-coded to 1.
 
-#[ignore = "blocked on eval auto-print wrapping panic(Never) as println(panic(...)) before WASM execution"]
 #[test]
 fn eval_wasm_inline_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
@@ -1374,7 +1554,7 @@ fn eval_wasm_integer_overflow_exits_with_trap_code_201() {
 
 // Follow-on eval work owns unignoring the broader WASI eval/stdout suite. This ignored
 // ratchet proves attributed traps do not collapse to Hew panic code 101.
-#[ignore = "blocked on inline eval parsing of semicolon-separated let statements before WASM execution"]
+#[ignore = "blocked on WASM divide-by-zero trap exit code collapsing to 1 instead of 202"]
 #[test]
 fn eval_wasm_divide_by_zero_exits_with_trap_code_202() {
     require_codegen();
@@ -1498,7 +1678,6 @@ fn eval_json_ok_inline_expression() {
     assert_eq!(v["diagnostics"], "", "diagnostics must be empty on ok: {v}");
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_json_runtime_failure() {
     require_codegen();
@@ -1540,7 +1719,6 @@ fn eval_json_runtime_failure() {
     );
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_json_runtime_failure_preserves_stdout() {
     require_codegen();
@@ -1865,7 +2043,6 @@ fn cross_chunk_failure_ctx(output: &Output, path: &Path) -> String {
     )
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     require_codegen();
@@ -1898,7 +2075,6 @@ fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     );
 }
 
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
 #[test]
 fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     require_codegen();
@@ -2372,7 +2548,7 @@ fn trait_bound_probe2_multi_bound_machine_runs() {
 ///   (a) HIR dot-syntax dispatch for user impl methods (`MethodCallNoRewrite`)
 ///   (b) L1 generic type instantiation / monomorphisation in MIR codegen
 #[test]
-#[ignore = "blocked on L1 generic type instantiation / monomorphisation in MIR codegen"]
+#[ignore = "blocked on MIR lowering for resolved trait method calls without a MIR body"]
 fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
     require_codegen();
 

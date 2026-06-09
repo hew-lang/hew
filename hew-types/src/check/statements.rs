@@ -47,6 +47,15 @@ impl Checker {
             });
         }
 
+        if self.type_satisfies_trait_bound(&resolved, "IntoIterator") {
+            let item_projection = Ty::AssocType {
+                base: Box::new(resolved),
+                trait_name: "IntoIterator".into(),
+                assoc_name: "Item".into(),
+            };
+            return Some(self.project_assoc_types(&item_projection));
+        }
+
         if !self.type_satisfies_trait_bound(&resolved, "Iterator") {
             return None;
         }

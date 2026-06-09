@@ -7,7 +7,7 @@
 //!   - `@__hew_map_key_layout_*` and `@__hew_map_value_layout_*` private
 //!     globals shaped to match `hew_cabi::map::HewMapKeyLayout` /
 //!     `HewMapValueLayout`.
-//!   - Fail-closed `WasmUnsupportedSubstrate` for the wasm32 target.
+//!   - wasm32 object emission for the descriptor/thunk path.
 //!
 //! The synthesis seam is reached via two probe callees:
 //! `__hew_codegen_emit_hashmap_layout_probe(key_local, val_local)` and
@@ -16,7 +16,7 @@
 //! lowering slice will lower (`hew_hashmap_new_with_layout`, etc.) so this
 //! synthesis slice does not commit to an operation-lowering pathway yet.
 
-use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
+use hew_codegen_rs::{emit_module, emit_module_objects, CodegenError, EmitOptions};
 use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
     ExitPath, Instr, IrPipeline, Place, RawMirFunction, RecordLayout, Terminator,
@@ -246,8 +246,7 @@ fn hashmap_layout_global_includes_hash_eq_fn_pointers() {
 }
 
 #[test]
-fn hashmap_layout_value_global_synthesizes_descriptor() {
-    // Scalar i64 value => size 8, align 8.
+fn hashmap_layout_primitive_value_uses_runtime_descriptor() {
     let ll = emit_hashmap_probe_ll(
         named("Point"),
         ResolvedTy::I64,
@@ -255,8 +254,27 @@ fn hashmap_layout_value_global_synthesizes_descriptor() {
         "value_global",
     );
     assert!(
-        ll.contains("@__hew_map_value_layout_8_8_plain"),
-        "missing @__hew_map_value_layout_8_8_plain global in:\n{ll}"
+        ll.contains("@hew_layout_val_i64 = external constant i8"),
+        "primitive i64 value must use the runtime descriptor extern:\n{ll}"
+    );
+    assert!(
+        !ll.contains("@__hew_map_value_layout_8_8_plain"),
+        "primitive i64 value must not synthesize a Plain value descriptor:\n{ll}"
+    );
+}
+
+#[test]
+fn hashmap_layout_record_value_global_synthesizes_descriptor() {
+    // Record Point value => size 16, align 8.
+    let ll = emit_hashmap_probe_ll(
+        named("Point"),
+        named("Point"),
+        vec![point_layout()],
+        "record_value_global",
+    );
+    assert!(
+        ll.contains("@__hew_map_value_layout_16_8_plain"),
+        "missing @__hew_map_value_layout_16_8_plain global in:\n{ll}"
     );
 }
 
@@ -698,15 +716,11 @@ fn hashset_layout_probe_emits_key_global_without_value_global() {
 }
 
 // ===========================================================================
-// WASM fail-closed
+// WASM descriptor/thunk object emission
 // ===========================================================================
 
 #[test]
-fn hashmap_layout_emit_for_wasm_target_fails_closed() {
-    // The brief (council Rev 7) requires that emitting a layout HashMap on
-    // wasm32 surfaces a structured `WasmUnsupportedSubstrate` naming the
-    // runtime substrate symbol the user would need.  No layout HashMap
-    // symbols are emitted into the wasm module.
+fn hashmap_layout_emit_for_wasm_target_emits_descriptor_object() {
     let block = BasicBlock {
         id: 0,
         statements: vec![],
@@ -723,37 +737,45 @@ fn hashmap_layout_emit_for_wasm_target_fails_closed() {
         vec![named("Point"), ResolvedTy::I64],
         vec![point_layout()],
     );
-    let tmp = std::env::temp_dir().join("hew-hashmap-layout-wasm");
-    std::fs::create_dir_all(&tmp).expect("create out_dir");
+    let tmp = tempfile::Builder::new()
+        .prefix("hew-hashmap-layout-wasm-")
+        .tempdir()
+        .expect("create out_dir");
     let options = EmitOptions {
-        module_name: "wasm_fail_closed",
-        out_dir: &tmp,
+        module_name: "wasm_hashmap_descriptor",
+        out_dir: tmp.path(),
         native: false,
         wasm: true,
     };
-    match emit_module(&pipeline, &options) {
-        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
-            assert_eq!(
-                symbol, "hew_hashmap_new_with_layout",
-                "WasmUnsupportedSubstrate must name the layout-map substrate \
-                 symbol; got {symbol}"
-            );
-        }
-        other => panic!(
-            "expected WasmUnsupportedSubstrate {{ symbol: \
-             \"hew_hashmap_new_with_layout\" }}; got: {other:?}"
-        ),
-    }
-    // The wasm artefact must not have been written.
-    let wasm_obj = tmp.join("wasm_fail_closed.wasm.o");
+    let artefacts = emit_module_objects(&pipeline, &options)
+        .expect("layout HashMap descriptor path must emit a wasm object");
+    let wasm_obj = artefacts
+        .wasm_obj_path
+        .expect("wasm object path must be recorded");
     assert!(
-        !wasm_obj.exists(),
-        "wasm object must not be written when substrate gate fires"
+        wasm_obj.exists(),
+        "wasm object must be written for the layout HashMap descriptor path"
+    );
+    assert!(
+        artefacts.wasm_path.is_none(),
+        "emit_module_objects must not freestanding-link the wasm object"
+    );
+    let ll = std::fs::read_to_string(
+        artefacts
+            .ll_path
+            .expect("textual IR path must be recorded for wasm descriptor emission"),
+    )
+    .expect("read emitted .ll");
+    assert!(
+        ll.contains("@__hew_map_key_layout_16_8_")
+            && ll.contains("@__hew_hash_thunk_16_8_")
+            && ll.contains("@__hew_eq_thunk_16_8_"),
+        "wasm descriptor emission must retain key-layout global and hash/eq thunks:\n{ll}"
     );
 }
 
 #[test]
-fn hashset_layout_emit_for_wasm_target_fails_closed() {
+fn hashset_layout_emit_for_wasm_target_emits_descriptor_object() {
     let block = BasicBlock {
         id: 0,
         statements: vec![],
@@ -766,27 +788,35 @@ fn hashset_layout_emit_for_wasm_target_fails_closed() {
         },
     };
     let pipeline = base_pipeline(block, vec![named("Point")], vec![point_layout()]);
-    let tmp = std::env::temp_dir().join("hew-hashset-layout-wasm");
-    std::fs::create_dir_all(&tmp).expect("create out_dir");
+    let tmp = tempfile::Builder::new()
+        .prefix("hew-hashset-layout-wasm-")
+        .tempdir()
+        .expect("create out_dir");
     let options = EmitOptions {
-        module_name: "set_wasm_fail_closed",
-        out_dir: &tmp,
+        module_name: "wasm_hashset_descriptor",
+        out_dir: tmp.path(),
         native: false,
         wasm: true,
     };
-    match emit_module(&pipeline, &options) {
-        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
-            assert_eq!(
-                symbol, "hew_hashset_new_with_layout",
-                "WasmUnsupportedSubstrate must name the layout-set substrate \
-                 symbol; got {symbol}"
-            );
-        }
-        other => panic!(
-            "expected WasmUnsupportedSubstrate {{ symbol: \
-             \"hew_hashset_new_with_layout\" }}; got: {other:?}"
-        ),
-    }
+    let artefacts = emit_module_objects(&pipeline, &options)
+        .expect("layout HashSet descriptor path must emit a wasm object");
+    let wasm_obj = artefacts
+        .wasm_obj_path
+        .expect("wasm object path must be recorded");
+    assert!(
+        wasm_obj.exists(),
+        "wasm object must be written for the layout HashSet descriptor path"
+    );
+    let ll = std::fs::read_to_string(
+        artefacts
+            .ll_path
+            .expect("textual IR path must be recorded for wasm descriptor emission"),
+    )
+    .expect("read emitted .ll");
+    assert!(
+        ll.contains("@__hew_map_key_layout_16_8_") && !ll.contains("@__hew_map_value_layout_"),
+        "wasm HashSet descriptor emission must retain key-layout global only:\n{ll}"
+    );
 }
 
 // ===========================================================================

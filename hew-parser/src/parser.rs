@@ -2007,8 +2007,18 @@ impl<'src> Parser<'src> {
                     span: field_start..field_end,
                 });
 
-                // Comma or end of body
+                // Comma or end of body. Semicolons are common when users
+                // switch from `type` fields; keep them invalid but recover
+                // with a targeted hint instead of cascading item-level errors.
                 if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                } else if self.peek() == Some(&Token::Semicolon) {
+                    let semi_span = self.peek_span();
+                    self.error_at_with_hint(
+                        "expected `,` or `}` after record field, found `;`".to_string(),
+                        semi_span,
+                        "record fields use commas; write `field: Type,` instead of `field: Type;`",
+                    );
                     self.advance();
                 } else {
                     break;
@@ -2632,6 +2642,11 @@ impl<'src> Parser<'src> {
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
+                let default = if self.eat(&Token::Equal) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
                     self.advance();
@@ -2639,6 +2654,7 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    default,
                     doc_comment,
                 });
             } else if self.peek() == Some(&Token::Var) {
@@ -2646,10 +2662,11 @@ impl<'src> Parser<'src> {
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
-                // Skip optional `= expr` initializer
-                if self.eat(&Token::Equal) && self.parse_expr().is_none() {
-                    self.error("expected expression for field initializer".to_string());
-                }
+                let default = if self.eat(&Token::Equal) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
                     self.advance();
@@ -2657,6 +2674,7 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    default,
                     doc_comment,
                 });
             } else if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "mailbox") {
@@ -2680,6 +2698,11 @@ impl<'src> Parser<'src> {
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
+                let default = if self.eat(&Token::Equal) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
                     self.advance();
@@ -2687,6 +2710,7 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    default,
                     doc_comment,
                 });
             } else {
@@ -3120,10 +3144,56 @@ impl<'src> Parser<'src> {
                     self.expect(&Token::Colon)?;
                     let actor_type = self.expect_ident()?;
 
-                    let mut args = Vec::new();
+                    // Parse named init args: `child w: Worker(field: expr, ...)`.
+                    // Mirrors plain `spawn Worker(field: expr, ...)` at parser.rs:6047.
+                    // Positional args (no `name:` prefix) are rejected with a migration
+                    // diagnostic to guide users to the named form.
+                    let mut args: Vec<(String, Spanned<Expr>)> = Vec::new();
                     if self.eat(&Token::LeftParen) {
-                        while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                            args.push(self.parse_expr()?);
+                        while !self.at_end() && !matches!(self.peek(), Some(Token::RightParen)) {
+                            // Try to parse `ident_or_kw: expr` (named form). Speculatively
+                            // consume the potential field name; if a `:` follows, commit.
+                            // If no `:` follows, it's a positional arg — reject it.
+                            let saved = self.save_pos();
+                            let maybe_field = self.expect_ident();
+                            if let Some(field_name) = maybe_field {
+                                if !matches!(self.peek(), Some(Token::Colon)) {
+                                    // Ident not followed by `:` — positional arg.
+                                    self.restore_pos(saved);
+                                    self.error(
+                                        "supervisor child init args must use named form: \
+                                         `child w: Worker(field: value)` \
+                                         — positional args are not accepted"
+                                            .to_string(),
+                                    );
+                                    while !self.at_end()
+                                        && !matches!(self.peek(), Some(Token::RightParen))
+                                    {
+                                        self.advance();
+                                    }
+                                    break;
+                                }
+                                // Named form confirmed: `field_name: expr`.
+                                self.expect(&Token::Colon)?;
+                                let value = self.parse_expr()?;
+                                args.push((field_name, value));
+                            } else {
+                                // Either the ident parse failed or no `:` follows — positional.
+                                self.restore_pos(saved);
+                                self.error(
+                                    "supervisor child init args must use named form: \
+                                     `child w: Worker(field: value)` \
+                                     — positional args are not accepted"
+                                        .to_string(),
+                                );
+                                // Consume through to `)` for error recovery.
+                                while !self.at_end()
+                                    && !matches!(self.peek(), Some(Token::RightParen))
+                                {
+                                    self.advance();
+                                }
+                                break;
+                            }
                             if !self.eat(&Token::Comma) {
                                 break;
                             }
@@ -7325,12 +7395,42 @@ mod tests {
     }
 
     #[test]
+    fn parse_record_named_fields_with_semicolon_emits_hint() {
+        let source = "record Point { x: i32; y: i32 }";
+        let result = parse(source);
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        assert_eq!(
+            result.errors[0].message,
+            "expected `,` or `}` after record field, found `;`"
+        );
+        assert_eq!(
+            result.errors[0].hint.as_deref(),
+            Some("record fields use commas; write `field: Type,` instead of `field: Type;`")
+        );
+        assert_eq!(result.program.items.len(), 1);
+        let Item::Record(record) = &result.program.items[0].0 else {
+            panic!("expected recovered record item");
+        };
+        let RecordKind::Named(fields) = &record.kind else {
+            panic!("expected named record");
+        };
+        assert_eq!(fields.len(), 2);
+    }
+
+    #[test]
     fn parse_actor_decl() {
         let source =
-            "actor Counter { count: i32; receive fn increment() { self.count = self.count + 1; } }";
+            "actor Counter { var count: i32 = 0; receive fn increment() { count = count + 1; } }";
         let result = parse(source);
         assert!(result.errors.is_empty());
         assert_eq!(result.program.items.len(), 1);
+        if let Item::Actor(actor) = &result.program.items[0].0 {
+            assert_eq!(actor.fields.len(), 1);
+            assert_eq!(actor.fields[0].name, "count");
+            assert_eq!(actor.receive_fns.len(), 1);
+        } else {
+            panic!("expected actor item");
+        }
     }
 
     #[test]

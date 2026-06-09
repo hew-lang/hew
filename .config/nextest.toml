@@ -1,9 +1,32 @@
 # Nextest configuration for the Hew workspace.
 # https://nexte.st/docs/configuration/
 
+# ── Test groups ────────────────────────────────────────────────────────────────
+# subprocess-intensive: tests that spawn the full `hew` compiler binary
+# (compile + codegen + link + run).  Each test consumes several cores while the
+# compiler runs, so allowing all 16 to run in parallel causes self-starvation:
+# compile times balloon and timeout hang-guards fire even though no test is
+# genuinely stuck.  Capping at 8 concurrent subprocess tests leaves headroom for
+# the OS scheduler and avoids the oversubscription that causes eval_e2e flakes.
+[test-groups]
+subprocess-intensive = { max-threads = 8 }
+
 [profile.default]
 # Exclude hew-wasm by default (requires wasmtime).
 default-filter = "not package(hew-wasm)"
+# Global concurrency cap: defaults to all available cores (num-cpus), which is
+# fine for pure in-process tests.  The subprocess-intensive group above provides
+# the finer-grained cap for tests that spawn child processes.
+test-threads = "num-cpus"
+
+[[profile.default.overrides]]
+# eval_e2e and adze eval tests each spawn the full hew compiler binary (AOT
+# compile + codegen + link + subprocess execute).  Route them into the
+# subprocess-intensive group so at most 8 run concurrently, preventing
+# compiler-process oversubscription that inflates compile times and causes
+# the eval hang-guard to fire spuriously.
+filter = "binary(eval_e2e)"
+test-group = "subprocess-intensive"
 
 [profile.ci]
 # CI profile: runs all tests and produces JUnit XML for GitHub Actions reporting.
@@ -14,6 +37,14 @@ default-filter = "not package(hew-wasm) - binary(test_runner_e2e)"
 # Defense-in-depth for tests that bypass the bounded exec helper: nextest kills
 # tests after 3 × 100 s = 300 s without status updates/output.
 slow-timeout = { period = "100s", terminate-after = 3 }
+
+[[profile.ci.overrides]]
+# eval_e2e tests spawn the full hew compiler binary (AOT compile + codegen +
+# link + subprocess execute).  Route them into the subprocess-intensive group
+# so at most 8 run concurrently, preventing compiler-process oversubscription
+# that inflates compile times and causes the eval hang-guard to fire spuriously.
+filter = "binary(eval_e2e)"
+test-group = "subprocess-intensive"
 
 [[profile.ci.overrides]]
 # connection_drop_wakes_pending_remote_ask is a known timing-sensitive test

@@ -4,17 +4,6 @@
 )]
 use super::*;
 
-pub(super) fn can_implicitly_coerce_integer(actual: &Ty, expected: &Ty) -> bool {
-    let Some(actual_info) = integer_type_info(actual) else {
-        return false;
-    };
-    let Some(expected_info) = integer_type_info(expected) else {
-        return false;
-    };
-    // Only allow widening: same sign and actual width fits in expected width
-    actual_info.signed == expected_info.signed && actual_info.width <= expected_info.width
-}
-
 pub(super) fn common_integer_type(a: &Ty, b: &Ty) -> Option<Ty> {
     match (a, b) {
         (Ty::IntLiteral, Ty::IntLiteral) => return Some(Ty::IntLiteral),
@@ -240,10 +229,6 @@ impl Checker {
             if expected_resolved == Ty::Bool && actual_resolved == Ty::I32 {
                 return;
             }
-            // Allow same-signed integer coercions (e.g. i32 <-> i64, u16 <-> u32).
-            if can_implicitly_coerce_integer(&actual_resolved, &expected_resolved) {
-                return;
-            }
             // Allow concrete type → dyn Trait coercion when the type implements all traits.
             // Records a `DynCoercion` side-table entry for the downstream MIR and LLVM
             // vtable emitters, and rejects non-object-safe traits at the coercion site
@@ -261,6 +246,35 @@ impl Checker {
                         return;
                     }
                 }
+            }
+            // Integer width mismatch: emit a targeted diagnostic that names both
+            // widths and directs the user to an explicit `as` cast.  This covers
+            // same-sign widening (i32 → i64) and narrowing alike.  Neither is
+            // allowed implicitly; the LLVM IR verifier rejects the silent widen.
+            //
+            // Safety note: `Ty::is_integer()` returns true for `Ty::IntLiteral`
+            // as well as concrete integer types.  This guard is entered only
+            // from the `unify(...) == Err` arm above, and `unify` returns `Ok`
+            // for `IntLiteral` vs any concrete integer width (see unify.rs
+            // ~line 178-187).  Therefore untyped integer literals never reach
+            // this branch and are never spuriously rejected.  If a future
+            // refactor changes the `unify`-Ok path for literals, re-examine
+            // this guard before the `is_integer()` check becomes over-eager.
+            if actual_resolved.is_integer() && expected_resolved.is_integer() {
+                self.report_error(
+                    TypeErrorKind::Mismatch {
+                        expected: expected_resolved.user_facing().to_string(),
+                        actual: actual_resolved.user_facing().to_string(),
+                    },
+                    span,
+                    format!(
+                        "cannot implicitly convert `{}` to `{}`; use an explicit `as {}` cast",
+                        actual_resolved.user_facing(),
+                        expected_resolved.user_facing(),
+                        expected_resolved.user_facing(),
+                    ),
+                );
+                return;
             }
             if expected_resolved.is_numeric() && actual_resolved.is_numeric() {
                 self.report_error(

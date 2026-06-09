@@ -68,6 +68,7 @@ fn colour_red_pipeline() -> IrPipeline {
                 field_tys: vec![],
             },
         ],
+        is_indirect: false,
     };
     let main_fn = RawMirFunction {
         name: "main".to_string(),
@@ -322,6 +323,23 @@ fn run_shape_struct_ctor_fixture_executes() {
 #[test]
 fn run_shape_mixed_match_fixture_executes() {
     run_enum_fixture_executes("run_shape_mixed_match");
+}
+
+/// End-to-end regression for `indirect enum` (spec §3.7.4) — recursive
+/// heap-allocated tagged-union evaluation.  Runs
+/// `examples/enums/run_indirect_enum_eval.hew` through the in-tree `hew`
+/// binary and diffs stdout against the `.expected` file.
+///
+/// Prior to the fix in this branch, the generated binary crashed with
+/// SIGTRAP (exit 133) due to a buffer overflow: the `Neg(Expr)` variant
+/// payload was sized for `Lit(i64)` (8 bytes) but attempted to store an
+/// inline `Expr` struct (16 bytes ABI).  The fix routes `indirect enum`
+/// types through `opaque_handle_names` so all variables hold a `ptr` to a
+/// heap-allocated struct, and emits `hew_alloc` at function entry for each
+/// non-parameter indirect-enum local.
+#[test]
+fn run_indirect_enum_eval_fixture_executes() {
+    run_enum_fixture_executes("run_indirect_enum_eval");
 }
 
 /// Shared helper: run `examples/enums/<name>.hew` through the in-tree

@@ -5,8 +5,9 @@
 //! downstream codegen can rely on the checker's resolved type (not re-infer
 //! from AST).
 
-use hew_hir::{lower_program, HirItem, ResolutionCtx};
+use hew_hir::{lower_program, HirBlock, HirExpr, HirExprKind, HirItem, HirStmtKind, ResolutionCtx};
 use hew_types::module_registry::ModuleRegistry;
+use hew_types::BuiltinType;
 use hew_types::{Checker, Ty};
 use std::path::Path;
 
@@ -15,6 +16,69 @@ fn repo_root() -> std::path::PathBuf {
         .parent()
         .expect("hew-hir crate should live under repo root")
         .to_path_buf()
+}
+
+fn expr_contains_remote_actor_ask(expr: &HirExpr) -> bool {
+    match &expr.kind {
+        HirExprKind::RemoteActorAsk { reply_ty, .. } => {
+            matches!(reply_ty, hew_types::ResolvedTy::I64)
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => block_contains_remote_actor_ask(block),
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            expr_contains_remote_actor_ask(callee)
+                || args.iter().any(expr_contains_remote_actor_ask)
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+            expr_contains_remote_actor_ask(receiver)
+                || args.iter().any(expr_contains_remote_actor_ask)
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            base.as_deref().is_some_and(expr_contains_remote_actor_ask)
+                || fields
+                    .iter()
+                    .any(|(_, expr)| expr_contains_remote_actor_ask(expr))
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            expr_contains_remote_actor_ask(condition)
+                || expr_contains_remote_actor_ask(then_expr)
+                || else_expr
+                    .as_deref()
+                    .is_some_and(expr_contains_remote_actor_ask)
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            expr_contains_remote_actor_ask(scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| expr_contains_remote_actor_ask(&arm.body))
+        }
+        _ => false,
+    }
+}
+
+fn block_contains_remote_actor_ask(block: &HirBlock) -> bool {
+    block.statements.iter().any(|stmt| match &stmt.kind {
+        HirStmtKind::Let(_, Some(expr))
+        | HirStmtKind::Expr(expr)
+        | HirStmtKind::Return(Some(expr)) => expr_contains_remote_actor_ask(expr),
+        HirStmtKind::Assign { target, value } => {
+            expr_contains_remote_actor_ask(target) || expr_contains_remote_actor_ask(value)
+        }
+        HirStmtKind::Defer { body, .. } => expr_contains_remote_actor_ask(body),
+        HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => false,
+    }) || block
+        .tail
+        .as_deref()
+        .is_some_and(expr_contains_remote_actor_ask)
 }
 
 fn lower_with_types(source: &str) -> (hew_types::TypeCheckOutput, hew_hir::LowerOutput) {
@@ -112,6 +176,7 @@ fn hir_module_has_main() {
             let v: i32;
             init() {}
         }
+
         fn main() {
             let _f = spawn Foo(v: 0);
         }
@@ -122,4 +187,66 @@ fn hir_module_has_main() {
         _ => false,
     });
     assert!(has_main, "HIR module should have a main function item");
+}
+
+#[test]
+fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
+    let source = r"
+        record Job {
+            n: i32,
+        }
+
+        actor Worker {
+            let id: i32;
+            init() {}
+            receive fn run(job: Job) -> i64 { 21 }
+        }
+
+        impl ActorMsg for Worker {
+            type Msg = Job;
+            type Reply = i64;
+        }
+
+        fn main() {
+            let remote: RemotePid<Worker>;
+            let result: Result<i64, AskError> = remote.ask(Job { n: 9 }, 250);
+        }
+    ";
+    let (_tc, lower) = lower_with_types(source);
+    assert!(
+        lower.diagnostics.is_empty(),
+        "HIR lowering should accept RemotePid.ask: {:#?}",
+        lower.diagnostics
+    );
+    let main = lower
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(f) if f.name == "main" => Some(f),
+            _ => None,
+        })
+        .expect("main function should lower");
+    assert!(
+        block_contains_remote_actor_ask(&main.body),
+        "RemotePid.ask should lower to HirExprKind::RemoteActorAsk: {main:#?}"
+    );
+    let has_result_ask_error_layout = lower.module.enum_layouts.iter().any(|layout| {
+        layout.key.origin_name == "Result"
+            && matches!(
+                layout.key.type_args.as_slice(),
+                [
+                    hew_types::ResolvedTy::I64,
+                    hew_types::ResolvedTy::Named {
+                        builtin: Some(BuiltinType::AskError),
+                        ..
+                    }
+                ]
+            )
+    });
+    assert!(
+        has_result_ask_error_layout,
+        "RemotePid.ask should register Result<i64, AskError> layout: {:#?}",
+        lower.module.enum_layouts
+    );
 }

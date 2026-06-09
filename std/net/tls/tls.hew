@@ -29,7 +29,8 @@ import std::fs;
 /// An established TLS connection to a remote host.
 ///
 /// Created by `tls.connect(host, port)`. Must be released with `close()`.
-type TlsStream {
+#[opaque]
+pub type TlsStream {
 }
 
 type TlsWriteFfiResult {

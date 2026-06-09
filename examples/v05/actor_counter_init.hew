@@ -22,5 +22,8 @@ actor Counter {
 fn main() -> i64 {
     let counter = spawn Counter(initial: 9);
     counter.increment(32);
-    counter.total()
+    match await counter.total() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
 }

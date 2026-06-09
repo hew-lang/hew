@@ -98,7 +98,8 @@ import std::fs;
 ///
 /// Created by `quic.new_client()` or `quic.new_server(addr)`.
 /// Must be released with `close()`.
-type QUICEndpoint {
+#[opaque]
+pub type QUICEndpoint {
 }
 
 /// An established QUIC connection to a remote peer.
@@ -106,7 +107,8 @@ type QUICEndpoint {
 /// A connection multiplexes many independent streams over a single UDP path.
 /// Obtained from `endpoint.connect()` (client) or `endpoint.accept()` (server).
 /// Must be released with `disconnect()`.
-type QUICConnection {
+#[opaque]
+pub type QUICConnection {
 }
 
 /// A bidirectional QUIC stream within a connection.
@@ -117,14 +119,16 @@ type QUICConnection {
 /// Obtained from `conn.open_stream()` or `conn.accept_stream()`.
 /// Finish the send side with `finish()` when no more data will be sent;
 /// the receive side drains naturally.
-type QUICStream {
+#[opaque]
+pub type QUICStream {
 }
 
 /// An observed QUIC event emitted by an endpoint or connection.
 ///
 /// Used by the blocking event API to react to queued connection and channel
 /// events. Pair this with `observe()` for non-destructive snapshots.
-type QUICEvent {
+#[opaque]
+pub type QUICEvent {
 }
 
 /// Non-destructive endpoint observation.

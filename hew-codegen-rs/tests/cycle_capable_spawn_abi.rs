@@ -57,6 +57,7 @@ fn spawn_pipeline(
         name: actor_name.to_string(),
         state_field_names: vec![],
         state_field_tys: vec![],
+        state_field_defaults: vec![],
         init_param_names: vec![],
         init_param_tys: vec![],
         init_symbol: None,

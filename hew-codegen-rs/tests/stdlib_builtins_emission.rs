@@ -165,3 +165,51 @@ fn builtins_print_overloads_use_print_value_tags() {
         "print must pass newline=false:\n{ll}"
     );
 }
+
+#[test]
+fn free_math_builtins_emit_llvm_intrinsics() {
+    let ll = emit_ll(
+        r#"
+        fn main() -> i64 {
+            let a: f64 = sqrt(9.0);
+            let b: i64 = abs(-7);
+            let c: i64 = min(4, 9);
+            let d: i64 = max(4, 9);
+            let e: f64 = math.abs(-1.5);
+            let f: f64 = math.min(1.5, 2.5);
+            let g: f64 = math.max(1.5, 2.5);
+            let h: f64 = pow(2, 10);
+            let i: f64 = floor(2.75);
+            let j: f64 = ceil(2.25);
+            let k: f64 = round(2.5);
+            b + c + d
+        }
+        "#,
+        "free_math_intrinsics",
+    );
+
+    for intrinsic in [
+        "declare double @llvm.sqrt.f64(double)",
+        "declare i64 @llvm.abs.i64(i64, i1 immarg)",
+        "declare i64 @llvm.smin.i64(i64, i64)",
+        "declare i64 @llvm.smax.i64(i64, i64)",
+        "declare double @llvm.fabs.f64(double)",
+        "declare double @llvm.minnum.f64(double, double)",
+        "declare double @llvm.maxnum.f64(double, double)",
+        "declare double @llvm.pow.f64(double, double)",
+        "declare double @llvm.floor.f64(double)",
+        "declare double @llvm.ceil.f64(double)",
+        "declare double @llvm.round.f64(double)",
+    ] {
+        assert!(ll.contains(intrinsic), "missing `{intrinsic}`:\n{ll}");
+    }
+
+    assert!(
+        !ll.contains("declare double @sqrt("),
+        "free sqrt must not be emitted as an external user function:\n{ll}"
+    );
+    assert!(
+        !ll.contains("declare i64 @abs("),
+        "free abs must not be emitted as an external user function:\n{ll}"
+    );
+}

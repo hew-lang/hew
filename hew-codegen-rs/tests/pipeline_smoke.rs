@@ -233,7 +233,10 @@ fn actor_multiple_on_stop_emits_fan_out_trampoline_calling_both_hooks() {
         }
         fn main() -> i64 {
             let s = spawn Sequencer(counter: 0);
-            s.value()
+            match await s.value() {
+                Ok(v) => v,
+                Err(_e) => 0,
+            }
         }
     "#;
     let ir = emit_ll_for_source(src, "actor_multi_on_stop_ir");

@@ -76,7 +76,7 @@ impl TableMethods for Table {
         if col < 0 {
             return "";
         }
-        tbl.get(row, col)
+        tbl.get(row, col as i64)
     }
     /// No-op for compatibility (struct tables don't need manual freeing).
     fn free(tbl: Table) {

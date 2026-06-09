@@ -1300,6 +1300,38 @@ fn walk_expr(
                 );
             }
         }
+        HirExprKind::RemoteActorAsk {
+            receiver,
+            msg,
+            timeout_ms,
+            reply_ty,
+        } => {
+            visit_ty(
+                reply_ty,
+                &expr.span,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            for child in [receiver.as_ref(), msg.as_ref(), timeout_ms.as_ref()] {
+                walk_expr(
+                    child,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+        }
         HirExprKind::CallDynMethod { receiver, args, .. } => {
             walk_expr(
                 receiver,
@@ -1327,7 +1359,8 @@ fn walk_expr(
             }
         }
         HirExprKind::ResolvedImplCall { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
             walk_expr(
                 receiver,
                 subst,
@@ -1688,6 +1721,19 @@ fn walk_expr(
                 cap_diag_emitted,
             );
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    walk_expr(
+                        guard,
+                        subst,
+                        machine_decls,
+                        residual_domain,
+                        seen,
+                        order,
+                        cap,
+                        diagnostics,
+                        cap_diag_emitted,
+                    );
+                }
                 walk_expr(
                     &arm.body,
                     subst,

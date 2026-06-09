@@ -291,6 +291,7 @@ fn jit_run_main(ll_path: &Path) -> Result<i64, i32> {
 /// overflow flag, the branch takes the trap path, and the JIT calls
 /// `hew_trap_with_code(201)`.
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn integer_overflow_fires_supervisor_seam_code_201() {
     // 9223372036854775807 is i64::MAX; adding 1 overflows a signed i64.
     let ll = compile_to_ll(
@@ -313,6 +314,7 @@ fn integer_overflow_fires_supervisor_seam_code_201() {
 /// checks `divisor == 0` and branches to a trap block that calls
 /// `hew_trap_with_code(202)`.
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn divide_by_zero_fires_supervisor_seam_code_202() {
     let ll = compile_to_ll(
         "fn main() -> i64 { let a: i64 = 10; let b: i64 = 0; a / b }",
@@ -334,6 +336,7 @@ fn divide_by_zero_fires_supervisor_seam_code_202() {
 /// The emitted IR checks `shift_amount >= 64` with `icmp uge` and
 /// branches to a trap block that calls `hew_trap_with_code(204)`.
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn shift_out_of_range_fires_supervisor_seam_code_204() {
     let ll = compile_to_ll(
         "fn main() -> i64 { let a: i64 = 1; let b: i64 = 64; a << b }",

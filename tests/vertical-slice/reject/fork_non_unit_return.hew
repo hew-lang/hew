@@ -14,8 +14,9 @@
 //   - E_NOT_YET_IMPLEMENTED
 //   - "spawned call"
 //   - "no-argument functions returning unit"
-
-fn returns_i64() -> i64 { 42 }
+fn returns_i64() -> i64 {
+    42
+}
 
 actor _Worker {
     receive fn run() -> i64 {
@@ -28,5 +29,8 @@ actor _Worker {
 
 fn main() -> i64 {
     let w = spawn _Worker;
-    w.run()
+    match await w.run() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
 }

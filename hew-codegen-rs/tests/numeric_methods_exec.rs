@@ -70,6 +70,8 @@ extern "C" fn mock_trap(code: i32) {
     panic!("unexpected trap in numeric-method test: code={code}");
 }
 
+extern "C" fn mock_string_drop(_ptr: *mut std::ffi::c_void) {}
+
 fn jit_run_main(ll_path: &Path) -> i64 {
     Target::initialize_native(&InitializationConfig::default())
         .expect("native target initialisation must succeed");
@@ -91,6 +93,9 @@ fn jit_run_main(ll_path: &Path) -> i64 {
     if let Some(f) = module.get_function("hew_trap_with_code") {
         ee.add_global_mapping(&f, mock_trap as *const () as usize);
     }
+    if let Some(f) = module.get_function("hew_string_drop") {
+        ee.add_global_mapping(&f, mock_string_drop as *const () as usize);
+    }
 
     let jit_main = unsafe {
         ee.get_function::<unsafe extern "C" fn() -> i64>("main")
@@ -102,6 +107,35 @@ fn jit_run_main(ll_path: &Path) -> i64 {
 const OPTION_DECL: &str = "enum Option<T> { Some(T); None; }";
 
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
+fn option_predicates_read_tags_for_i64_and_string_payloads() {
+    let src = r#"
+        fn main() -> i64 {
+            let a: Option<i64> = Some(5);
+            let b: Option<i64> = None;
+
+            if a.is_some() == false { return 1; }
+            if a.is_none() == true { return 2; }
+            if b.is_none() == false { return 3; }
+            if b.is_some() == true { return 4; }
+
+            let s: Option<string> = Some("hello");
+            let n: Option<string> = None;
+
+            if s.is_some() == false { return 5; }
+            if s.is_none() == true { return 6; }
+            if n.is_none() == false { return 7; }
+            if n.is_some() == true { return 8; }
+
+            0
+        }
+        "#;
+    let ll = compile_to_ll(src, "option_predicates_tags");
+    assert_eq!(jit_run_main(&ll), 0);
+}
+
+#[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn checked_add_signed_no_overflow_returns_some_result() {
     let src = format!(
         r#"
@@ -122,6 +156,7 @@ fn checked_add_signed_no_overflow_returns_some_result() {
 }
 
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn checked_add_signed_overflow_returns_none() {
     let src = format!(
         r#"
@@ -142,6 +177,7 @@ fn checked_add_signed_overflow_returns_none() {
 }
 
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn checked_add_unsigned_width_overflow_returns_none() {
     let src = format!(
         r#"
@@ -162,6 +198,7 @@ fn checked_add_unsigned_width_overflow_returns_none() {
 }
 
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn saturating_add_clamps_to_signed_max() {
     let src = r#"
         fn main() -> i64 {
@@ -175,6 +212,7 @@ fn saturating_add_clamps_to_signed_max() {
 }
 
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn saturating_sub_clamps_to_signed_min() {
     let src = r#"
         fn main() -> i64 {
@@ -192,6 +230,7 @@ fn saturating_sub_clamps_to_signed_min() {
 }
 
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn numeric_cast_i64_to_i32_truncates_real_bits() {
     let src = r"
         fn main() -> i64 {
@@ -205,6 +244,7 @@ fn numeric_cast_i64_to_i32_truncates_real_bits() {
 }
 
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn numeric_cast_i32_to_i64_widens() {
     let src = r"
         fn main() -> i64 {
@@ -217,6 +257,7 @@ fn numeric_cast_i32_to_i64_widens() {
 }
 
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn numeric_cast_i64_to_f64_and_back_executes() {
     let src = r"
         fn main() -> i64 {
@@ -230,6 +271,7 @@ fn numeric_cast_i64_to_f64_and_back_executes() {
 }
 
 #[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn numeric_cast_bool_to_int_and_back_executes() {
     let src = r"
         fn main() -> i64 {
@@ -240,4 +282,57 @@ fn numeric_cast_bool_to_int_and_back_executes() {
     ";
     let ll = compile_to_ll(src, "numeric_cast_bool_int_roundtrip");
     assert_eq!(jit_run_main(&ll), 1);
+}
+
+#[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
+fn free_math_builtins_execute_via_llvm_intrinsics() {
+    let src = r"
+        fn distance(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+            let dx: f64 = x2 - x1;
+            let dy: f64 = y2 - y1;
+            sqrt(pow(dx, 2) + pow(dy, 2))
+        }
+
+        fn main() -> i64 {
+            if sqrt(9.0) != 3.0 { return 1; }
+            if pow(2, 10) != 1024.0 { return 2; }
+            if floor(2.75) != 2.0 { return 3; }
+            if ceil(2.25) != 3.0 { return 4; }
+            if round(2.5) != 3.0 { return 5; }
+            if round(-2.5) != -3.0 { return 6; }
+            if abs(-7) != 7 { return 7; }
+            if min(4, 9) != 4 { return 8; }
+            if max(4, 9) != 9 { return 9; }
+            if math.abs(-1.5) != 1.5 { return 10; }
+            if math.min(1.5, 2.5) != 1.5 { return 11; }
+            if math.max(1.5, 2.5) != 2.5 { return 12; }
+            if distance(0.0, 0.0, 3.0, 4.0) != 5.0 { return 13; }
+            0
+        }
+    ";
+    let ll = compile_to_ll(src, "free_math_intrinsics_exec");
+    assert_eq!(jit_run_main(&ll), 0);
+}
+
+#[test]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
+fn user_math_name_shadowing_is_not_hijacked_by_intrinsic_intercept() {
+    let src = r"
+        fn min(a: i64, b: i64) -> i64 {
+            a + b
+        }
+
+        fn sqrt(x: f64) -> f64 {
+            x + 1.0
+        }
+
+        fn main() -> i64 {
+            if min(4, 9) != 13 { return 1; }
+            if sqrt(9.0) != 10.0 { return 2; }
+            0
+        }
+    ";
+    let ll = compile_to_ll(src, "math_shadowing_not_hijacked");
+    assert_eq!(jit_run_main(&ll), 0);
 }

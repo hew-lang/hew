@@ -646,10 +646,74 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
     hew_parser::module::ModuleId::new(segments)
 }
 
-#[expect(
-    clippy::ptr_arg,
-    reason = "items are cloned into module graph, needs Vec"
-)]
+fn canonical_floor_module_for_source(source_file: &Path) -> Option<hew_parser::module::ModuleId> {
+    let input_canonical = std::fs::canonicalize(source_file).ok()?;
+    let search_roots = hew_types::module_registry::build_module_search_paths();
+
+    for dotted in hew_types::check::intrinsic_floor_modules() {
+        let segments = dotted.split('.').collect::<Vec<_>>();
+        let Some(last) = segments.last() else {
+            continue;
+        };
+        let rel = segments.iter().collect::<PathBuf>();
+        let candidates = [rel.join(format!("{last}.hew")), rel.with_extension("hew")];
+
+        for root in &search_roots {
+            for candidate in &candidates {
+                let Ok(candidate_canonical) = std::fs::canonicalize(root.join(candidate)) else {
+                    continue;
+                };
+                if candidate_canonical == input_canonical {
+                    return Some(hew_parser::module::ModuleId::new(
+                        segments
+                            .iter()
+                            .map(|segment| (*segment).to_string())
+                            .collect(),
+                    ));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn rewrite_direct_floor_module_root(
+    module_graph: &mut hew_parser::module::ModuleGraph,
+    items: &mut Vec<Spanned<Item>>,
+    source_file: &Path,
+) -> Result<(), FrontendFailure> {
+    use hew_parser::module::{Module, ModuleId};
+
+    let Some(floor_id) = canonical_floor_module_for_source(source_file) else {
+        return Ok(());
+    };
+
+    let original_root = module_graph.root.clone();
+    let Some(mut floor_module) = module_graph.modules.remove(&original_root) else {
+        return Ok(());
+    };
+
+    floor_module.id = floor_id.clone();
+    module_graph.root = ModuleId::root();
+    module_graph.modules.insert(floor_id, floor_module);
+    module_graph
+        .add_module(Module {
+            id: module_graph.root.clone(),
+            items: Vec::new(),
+            imports: Vec::new(),
+            source_paths: Vec::new(),
+            doc: None,
+        })
+        .expect("synthetic floor-check root is unique");
+    module_graph
+        .compute_topo_order()
+        .map_err(|cycle_err| FrontendFailure::message_only(cycle_err.to_string()))?;
+    items.clear();
+
+    Ok(())
+}
+
 fn build_module_graph_with_diagnostics(
     source_file: &Path,
     items: &mut Vec<Spanned<Item>>,
@@ -686,7 +750,7 @@ fn build_module_graph_with_diagnostics(
         id: root_id,
         items: items.clone(),
         imports: root_imports,
-        source_paths: vec![input_canonical],
+        source_paths: vec![input_canonical.clone()],
         doc: module_doc,
     };
     graph
@@ -696,6 +760,7 @@ fn build_module_graph_with_diagnostics(
     if let Err(cycle_err) = graph.compute_topo_order() {
         return Err(FrontendFailure::message_only(cycle_err.to_string()));
     }
+    rewrite_direct_floor_module_root(&mut graph, items, &input_canonical)?;
 
     // Reject programs where two different module imports share the same short
     // name (the last path segment).  HIR keys all cross-module fn registrations
@@ -743,6 +808,26 @@ pub fn build_module_graph(
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
     let mut diagnostics = Vec::new();
     build_module_graph_with_diagnostics(source_file, items, module_doc, ctx, &mut diagnostics)
+}
+
+fn flatten_file_import_items(program: &mut Program) {
+    let mut extra = Vec::new();
+    for (item, _) in &program.items {
+        let Item::Import(decl) = item else { continue };
+        if decl.file_path.is_none() {
+            continue;
+        }
+        let Some(resolved_items) = &decl.resolved_items else {
+            continue;
+        };
+        extra.extend(
+            resolved_items
+                .iter()
+                .filter(|(resolved_item, _)| !matches!(resolved_item, Item::Import(_)))
+                .cloned(),
+        );
+    }
+    program.items.extend(extra);
 }
 
 fn extract_module_info(
@@ -1276,6 +1361,8 @@ pub fn run_file_frontend_to_typecheck(
             Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
         };
 
+    flatten_file_import_items(&mut program);
+
     Ok(FileFrontendState {
         program,
         diagnostics,
@@ -1322,6 +1409,8 @@ pub fn run_program_frontend_to_typecheck(
             }
             Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
         };
+
+    flatten_file_import_items(&mut program);
 
     let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
     Ok(ProgramFrontendState {
@@ -1755,6 +1844,34 @@ mod tests {
         assert!(
             failure.diagnostics.iter().any(super::is_warning_diagnostic),
             "expected warning diagnostics, got: {:?}",
+            failure.diagnostics
+        );
+    }
+
+    #[test]
+    fn check_file_rejects_direct_non_floor_intrinsic_source() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let input = write_source(
+            dir.path(),
+            "math.hew",
+            r#"#[intrinsic("math.abs")] pub fn abs<T: Num>(x: T) -> T;"#,
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("non-floor direct file must not declare intrinsics");
+        assert!(
+            failure.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Type(error)
+                    if matches!(
+                        &error.kind,
+                        hew_types::error::TypeErrorKind::IntrinsicOutsideFloor {
+                            intrinsic_key,
+                            ..
+                        } if intrinsic_key == "math.abs"
+                    )
+            )),
+            "expected IntrinsicOutsideFloor for temp math.hew, got: {:?}",
             failure.diagnostics
         );
     }

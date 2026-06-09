@@ -30,7 +30,8 @@
 import std::string;
 
 /// A handle to a completed command invocation inside the runtime.
-type ProcessResultHandle {
+#[opaque]
+pub type ProcessResultHandle {
 }
 
 /// A handle to a running child process.
@@ -39,7 +40,8 @@ type ProcessResultHandle {
 /// the process exits, or `kill()` to terminate it. Dropping the
 /// handle reaps it automatically; a still-running child is killed
 /// and waited on at scope exit.
-type Child {
+#[opaque]
+pub type Child {
 }
 
 /// Captured output from a completed command.

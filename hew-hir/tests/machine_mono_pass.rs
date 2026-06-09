@@ -620,8 +620,8 @@ supervisor Root {
     max_restarts: 3;
     window: 10;
 
-    child w1: Worker(1);
-    child w2: Worker(2);
+    child w1: Worker(id: 1);
+    child w2: Worker(id: 2);
 }
 
 fn main() {}

@@ -137,6 +137,12 @@ fn terminator_reads(term: &Terminator) -> Vec<Place> {
         Terminator::Send { actor, value, .. } | Terminator::Ask { actor, value, .. } => {
             vec![*actor, *value]
         }
+        Terminator::RemoteAsk {
+            actor,
+            value,
+            timeout_ms,
+            ..
+        } => vec![*actor, *value, *timeout_ms],
         Terminator::Select { arms, .. } => arms
             .iter()
             .flat_map(|arm| match &arm.kind {

@@ -249,3 +249,53 @@ fn run_machine_fixtures_execute_with_expected_stdout() {
         assert_eq!(stdout, expected, "{} stdout mismatch", fixture.stem);
     }
 }
+
+#[test]
+fn counter_machine_example_executes_self_field_increment() {
+    let repo = repo_root();
+    ensure_hew_runtime_lib(&repo);
+
+    let machine_source = std::fs::read_to_string(
+        repo.join("examples")
+            .join("machine")
+            .join("counter_machine.hew"),
+    )
+    .expect("read counter_machine example");
+    let dir = tempfile::tempdir().expect("create counter machine tempdir");
+    let path = dir.path().join("counter_machine_run.hew");
+    std::fs::write(
+        &path,
+        format!(
+            "{machine_source}\n\
+             fn main() {{\n\
+             \x20   var c = Zero;\n\
+             \x20   c.step(Inc);\n\
+             \x20   c.step(Inc);\n\
+             \x20   println(c.state_name());\n\
+             \x20   let value = match c {{\n\
+             \x20       NonZero {{ value }} => value,\n\
+             \x20       Zero => 0,\n\
+             \x20   }};\n\
+             \x20   println(value);\n\
+             }}\n"
+        ),
+    )
+    .expect("write counter machine runner");
+
+    let mut command = hew_command(&repo);
+    command.arg("run").arg(&path);
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        format!("hew run {}", path.display()),
+        hew_testutil::DEFAULT_EXEC_TIMEOUT,
+    )
+    .expect("spawn hew run");
+    assert!(
+        output.status.success(),
+        "hew run counter_machine exited non-zero (status={:?}); stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("fixture stdout is utf-8");
+    assert_eq!(stdout, "NonZero\n2\n");
+}

@@ -5,6 +5,7 @@
 use super::*;
 use crate::eq_eligibility::{ty_is_eq_eligible, EqEligibility};
 use crate::module_registry::ModuleRegistry;
+use crate::BuiltinType;
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{ImportName, TraitMethod, TypeExpr, Visibility};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
@@ -34,6 +35,19 @@ fn check_source(source: &str) -> TypeCheckOutput {
 fn test_empty_program() {
     let output = check_source("");
     assert!(output.errors.is_empty());
+}
+
+#[test]
+fn tuple_numeric_field_access_out_of_bounds_is_rejected() {
+    let output = check_source("fn main() -> i64 { let t = (1, false); t.2 }");
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedField
+                && error.message.contains("tuple index 2 out of range")
+        }),
+        "expected tuple index out-of-range UndefinedField error, got: {:#?}",
+        output.errors
+    );
 }
 
 #[test]
@@ -1729,6 +1743,40 @@ fn main() {
     );
 }
 
+#[test]
+fn module_qualified_pure_hew_stdlib_wrapper_rewrites_to_qualified_symbol() {
+    let parsed = hew_parser::parse(
+        r#"
+import std::path;
+
+fn main() {
+    let _ = path.dirname("a/b");
+}
+"#,
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "expected clean parse, got: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
+                if c_symbol == "path.dirname"
+        )),
+        "expected pure-Hew stdlib wrapper to rewrite to module-qualified symbol, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
 // Helper functions for testing AST construction
 fn make_int_literal(n: i64, span: Span) -> Spanned<Expr> {
     (
@@ -2603,6 +2651,27 @@ fn var_bound_literal_unifies_to_i32_when_added_to_i32_result() {
     );
 }
 
+#[test]
+fn integer_literal_match_pattern_must_fit_scrutinee_width() {
+    let output = check_source(
+        r"
+        fn classify(x: i8) -> i64 {
+            match x {
+                128 => 1,
+                _ => 0,
+            }
+        }
+    ",
+    );
+    assert!(
+        output.errors.iter().any(|err| err
+            .message
+            .contains("does not fit in match scrutinee type `i8`")),
+        "expected i8 match literal range error, got: {:#?}",
+        output.errors
+    );
+}
+
 /// `for i in 2 .. n + 1` with `n: i32` — the checker must infer the range
 /// element type as I32 so that uses of `i` as a narrower operand don't get
 /// widened to I64.  Regression: if the range element type defaults to I64
@@ -2709,8 +2778,10 @@ fn typecheck_rejects_implicit_signedness_change_in_call() {
         output
             .errors
             .iter()
-            .any(|e| e.message.contains("implicit numeric coercion")),
-        "expected explicit coercion diagnostic, got: {:?}",
+            .any(|e| e.message.contains("cannot implicitly convert")
+                && e.message.contains("i64")
+                && e.message.contains("u32")),
+        "expected integer-mismatch rejection diagnostic, got: {:?}",
         output.errors
     );
 }
@@ -2743,7 +2814,10 @@ fn typecheck_rejects_implicit_integer_to_float_in_call() {
 }
 
 #[test]
-fn typecheck_allows_safe_integer_widening_in_call() {
+fn typecheck_rejects_implicit_integer_widening_in_call() {
+    // Passing i32 where i64 is expected is an error; the caller must write
+    // `takes_i64(n as i64)`.  Silent widening was removed because LLVM's
+    // IR verifier rejects the resulting mistyped call instruction.
     let source = concat!(
         "fn takes_i64(x: i64) -> i64 { x }\n",
         "fn main() -> i64 {\n",
@@ -2760,8 +2834,13 @@ fn typecheck_allows_safe_integer_widening_in_call() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     assert!(
-        output.errors.is_empty(),
-        "unexpected errors: {:?}",
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("cannot implicitly convert")
+                && e.message.contains("i32")
+                && e.message.contains("i64")),
+        "expected integer-widening rejection diagnostic, got: {:?}",
         output.errors
     );
 }
@@ -5293,6 +5372,31 @@ fn test_actor_fn_method_field_shadowing_is_error() {
     );
 }
 
+#[test]
+fn actor_this_field_points_to_bare_state_field() {
+    let source = r"
+        actor Counter {
+            let count: i64;
+            receive fn get() -> i64 {
+                this.count
+            }
+        }
+    ";
+    let (errors, _) = parse_and_check(source);
+    assert!(
+        errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedField
+                && error.message.contains("`this` is the actor handle")
+                && error.message.contains("not `this.count`")
+                && error
+                    .suggestions
+                    .iter()
+                    .any(|suggestion| suggestion == "count")
+        }),
+        "`this.field` in actor body should suggest bare field access; got: {errors:?}",
+    );
+}
+
 // ── Dead Code (Unused Function) Tests ───────────────────────────────
 
 #[test]
@@ -6174,6 +6278,38 @@ fn primitive_trait_dispatch_builtins_blanket_no_redeclare() {
         ",
         "i64",
         "Display",
+    );
+}
+
+#[test]
+fn primitive_trait_dispatch_records_rewrite_for_builtin_fmt() {
+    let parsed = hew_parser::parse(
+        r"
+            fn main() {
+                let x: i64 = 42;
+                let _ = x.fmt();
+            }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "i64::fmt"
+        )),
+        "primitive-trait fmt dispatch must record a function rewrite, got: {:?}",
+        output.method_call_rewrites
     );
 }
 
@@ -8379,7 +8515,7 @@ fn test_wire_since_without_version_uses_registered_decl_span() {
     };
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.register_type_namespace_name("TestMsg", &(10..50));
+    checker.register_type_namespace_name(None, "TestMsg", &(10..50));
     checker.validate_wire_version_constraints("TestMsg", &wire);
 
     assert_eq!(checker.warnings.len(), 1);
@@ -9189,10 +9325,10 @@ fn literal_coercion_integer_fits_u64() {
     assert!(!integer_fits_type(-1, &Ty::U64));
 }
 
-// ── Array literal → Array type coercion tests ────────────────────
+// ── Array literal → Vec type coercion tests ──────────────────────
 
 #[test]
-fn literal_coercion_array_to_i32_array() {
+fn array_literal_synthesizes_vec() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let elems = vec![
         make_int_literal(1, 1..2),
@@ -9200,13 +9336,71 @@ fn literal_coercion_array_to_i32_array() {
         make_int_literal(3, 7..8),
     ];
     let arr = (Expr::Array(elems), 0..9);
-    let expected = Ty::Array(Box::new(Ty::I32), 3);
+    let ty = checker.synthesize(&arr.0, &arr.1);
+    assert_eq!(
+        ty,
+        Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            name: "Vec".to_string(),
+            args: vec![Ty::IntLiteral],
+        }
+    );
+    assert!(
+        checker.errors.is_empty(),
+        "unexpected errors: {checker_errors:#?}",
+        checker_errors = checker.errors
+    );
+}
+
+#[test]
+fn literal_coercion_array_to_i32_vec() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let elems = vec![
+        make_int_literal(1, 1..2),
+        make_int_literal(2, 4..5),
+        make_int_literal(3, 7..8),
+    ];
+    let arr = (Expr::Array(elems), 0..9);
+    let expected = Ty::Named {
+        builtin: Some(BuiltinType::Vec),
+        name: "Vec".to_string(),
+        args: vec![Ty::I32],
+    };
     let ty = checker.check_against(&arr.0, &arr.1, &expected);
     assert_eq!(ty, expected);
     assert!(
         checker.errors.is_empty(),
         "unexpected errors: {checker_errors:#?}",
         checker_errors = checker.errors
+    );
+}
+
+#[test]
+fn array_literal_methods_index_and_get_resolve() {
+    let output = check_source(
+        r"
+        fn main() -> i64 {
+            let values = [1, 2, 3];
+            if values.len() != 3 { return 10; }
+            if values[0] != 1 { return 11; }
+            if values.get(0) != 1 { return 12; }
+            0
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "array literal should type as Vec<T> for methods and indexing: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .resolved_calls
+            .values()
+            .any(|call| call.method_name == "get"),
+        "Vec::get on an inferred integer array literal must record a resolved call: {:#?}",
+        output.resolved_calls
     );
 }
 
@@ -9458,7 +9652,10 @@ fn const_default_width_registers_in_const_values() {
 }
 
 #[test]
-fn const_explicit_width_not_in_const_values_widening_ok() {
+fn const_explicit_width_not_in_const_values() {
+    // Explicit-width consts (`const N: i32 = 100`) must not be registered
+    // in `const_values` because they have a known non-literal type and cannot
+    // be widened freely at use sites.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let decl = ConstDecl {
         visibility: Visibility::Private,
@@ -9479,6 +9676,27 @@ fn const_explicit_width_not_in_const_values_widening_ok() {
         !checker.const_values.contains_key("N"),
         "explicit-width consts should not register const_values"
     );
+}
+
+#[test]
+fn const_explicit_width_assigned_to_wider_type_is_rejected() {
+    // `const N: i32 = 100; let y: i64 = N;` must be a type error now that
+    // implicit integer widening is removed.  The caller must write `N as i64`.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let decl = ConstDecl {
+        visibility: Visibility::Private,
+        name: "N".to_string(),
+        ty: (
+            TypeExpr::Named {
+                name: "i32".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        value: make_int_literal(100, 0..3),
+        doc_comment: None,
+    };
+    checker.check_const(&decl, &(0..3));
 
     let target_stmt = Stmt::Let {
         pattern: (Pattern::Identifier("y".to_string()), 10..11),
@@ -9495,9 +9713,32 @@ fn const_explicit_width_not_in_const_values_widening_ok() {
 
     let binding = checker.env.lookup_ref("N").expect("N should be defined");
     assert_eq!(binding.ty, Ty::I32);
+
+    // The widening rejection must fire exactly once, on the assignment span
+    // (10..21), not on the const declaration span (0..3).
+    let widening_errors: Vec<_> = checker
+        .errors
+        .iter()
+        .filter(|e| {
+            e.message.contains("cannot implicitly convert")
+                && e.message.contains("i32")
+                && e.message.contains("i64")
+        })
+        .collect();
+    assert_eq!(
+        widening_errors.len(),
+        1,
+        "expected exactly one widening-rejection error, got: {:?}",
+        checker.errors
+    );
+    // No error should reference the const decl span (0..3) — the decl itself
+    // is well-typed; only the assignment is rejected.
     assert!(
-        checker.errors.is_empty(),
-        "unexpected errors: {:?}",
+        !checker
+            .errors
+            .iter()
+            .any(|e| e.span.start < 3 && e.span.end <= 3),
+        "unexpected error on const decl span: {:?}",
         checker.errors
     );
 }
@@ -11875,6 +12116,64 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
         .expect("fn_sigs fallback should resolve");
     assert_eq!(sig.params, vec![Ty::String]);
     assert_eq!(sig.return_type, Ty::String);
+}
+
+#[test]
+fn module_qualified_named_type_method_rewrite_uses_unqualified_method_symbol() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.type_defs.insert(
+        "Thing".to_string(),
+        make_test_type_def("Thing", vec![], HashMap::new()),
+    );
+    checker.fn_sigs.insert(
+        "Thing::label".to_string(),
+        FnSig {
+            return_type: Ty::String,
+            ..FnSig::default()
+        },
+    );
+    checker.env.define(
+        "thing".to_string(),
+        Ty::Named {
+            builtin: None,
+            name: "widgets.Thing".to_string(),
+            args: vec![],
+        },
+        false,
+    );
+
+    let receiver = (Expr::Identifier("thing".to_string()), 0..5);
+    let ty = checker.check_method_call(&receiver, "label", &[], &(0..13));
+
+    assert_eq!(ty, Ty::String);
+    assert!(
+        checker.errors.is_empty(),
+        "expected clean module-qualified method dispatch, got: {:?}",
+        checker.errors
+    );
+    assert!(
+        checker
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(
+                rewrite,
+                MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Thing::label"
+            )),
+        "module-qualified receiver must rewrite via unqualified method key, got: {:?}",
+        checker.method_call_rewrites
+    );
+    assert!(
+        !checker
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(
+                rewrite,
+                MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                    if c_symbol == "widgets.Thing::label"
+            )),
+        "qualified type prefix must not leak into method rewrite symbol: {:?}",
+        checker.method_call_rewrites
+    );
 }
 
 #[test]
@@ -21137,6 +21436,71 @@ fn non_generic_machine_struct_state_constructor_regression_free() {
         output.errors.is_empty(),
         "non-generic machine struct-state constructor must stay green (regression); \
          got errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_transition_self_field_reads_source_payload() {
+    let output = check_source(
+        r"
+        machine Counter {
+            state Zero;
+            state NonZero { value: i64; }
+
+            event Inc;
+            event Reset;
+
+            on Inc: Zero -> NonZero {
+                NonZero { value: 1 }
+            }
+            on Inc: NonZero -> NonZero @reenter {
+                NonZero { value: self.value + 1 }
+            }
+            on Reset: NonZero -> Zero {
+                Zero
+            }
+            on Reset: Zero -> Zero @reenter {
+                Zero
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "`self.field` inside a concrete machine transition must type-check; \
+         got errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_transition_bare_self_remains_rejected() {
+    let output = check_source(
+        r"
+        machine Counter {
+            state Zero;
+            state NonZero { value: i64; }
+            event Reset;
+
+            on Reset: NonZero -> Zero {
+                self
+            }
+            on Reset: Zero -> Zero @reenter {
+                Zero
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedVariable
+                && error.message.contains("`self` is not a valid identifier")),
+        "bare `self` must remain rejected outside `self.field`; got errors: {:#?}",
         output.errors
     );
 }

@@ -1,0 +1,12 @@
+fn double(x: i64) -> i64 {
+    x * 2
+}
+
+fn get_double() -> fn(i64) -> i64 {
+    double
+}
+
+fn main() {
+    let f = get_double();
+    println(f(7));
+} // 14: named fn returned and called

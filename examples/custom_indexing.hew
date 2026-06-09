@@ -11,7 +11,7 @@ type Grid {
 impl Index for Grid {
     type Output = i32;
     fn at(g: Grid, index: i32) -> i32 {
-        g.data.get(index)
+        g.data.get(index as i64)
     }
 }
 

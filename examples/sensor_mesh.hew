@@ -29,9 +29,9 @@ actor Monitor {
             logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {threshold}");
         }
         if readings.len() % 3 == 0 {
-            var sum = 0;
+            var sum: i64 = 0;
             for i in 0 .. readings.len() {
-                sum = sum + readings.get(i);
+                sum = sum + readings.get(i) as i64;
             }
             let avg = sum / readings.len();
             logger.log_event("monitor", f"avg={avg} over {readings.len()} readings");

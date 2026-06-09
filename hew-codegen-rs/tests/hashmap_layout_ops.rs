@@ -7,12 +7,7 @@
 //!      onto the pipeline via `IrPipeline::attach_lowering_facts`; codegen
 //!      enforces a `Pending` fact has been consumed before module
 //!      finalization via `assert_lowering_facts_consistent`.
-//!   2. Expansion of the wasm fail-closed substrate-symbol map to cover
-//!      every layout-backed `HashMap`/`HashSet` runtime ABI symbol (7 for
-//!      HashMap, 6 for HashSet).  Reaching any of these under a wasm32
-//!      emission produces a structured `WasmUnsupportedSubstrate` diagnostic
-//!      naming the offending symbol before any link attempt.
-//!   3. W3.041b-i: 12-arm op-call dispatch + Pending→Finalized fact walk.
+//!   2. W3.041b-i: 12-arm op-call dispatch + Pending→Finalized fact walk.
 //!      `is_hashmap_layout_runtime_symbol` + `lower_hashmap_layout_direct_call`
 //!      mirror the Vec pattern.  `finalize_layout_facts_against_pipeline`
 //!      drives the Pending→Finalized transition before the consistency gate.
@@ -115,113 +110,6 @@ fn pipeline_with_entry_terminator(
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
     }
-}
-
-/// Try to emit `pipeline` as a wasm module; return the resulting error
-/// (the wasm fail-closed substrate check fires before any link / IR
-/// emission, so this never produces a real `.wasm` artefact).
-fn emit_wasm(pipeline: &IrPipeline, module_name: &str) -> CodegenError {
-    let tmp = std::env::temp_dir().join(format!("hew-hashmap-ops-{module_name}"));
-    std::fs::create_dir_all(&tmp).expect("create out_dir");
-    let options = EmitOptions {
-        module_name,
-        out_dir: &tmp,
-        native: false,
-        wasm: true,
-    };
-    emit_module(pipeline, &options).expect_err("wasm emission must fail closed on layout symbols")
-}
-
-// ============================================================================
-// Wasm fail-closed for every layout-backed runtime ABI symbol (Rev 7)
-// ============================================================================
-
-/// One symbol per row → exhaustive list of the 13 operation callees the
-/// council Rev 7 wasm fail-closed gate must recognise.
-fn all_layout_op_symbols() -> &'static [&'static str] {
-    &[
-        "hew_hashmap_new_with_layout",
-        "hew_hashmap_insert_layout",
-        "hew_hashmap_get_layout",
-        "hew_hashmap_contains_key_layout",
-        "hew_hashmap_remove_layout",
-        "hew_hashmap_len_layout",
-        "hew_hashmap_free_layout",
-        "hew_hashset_new_with_layout",
-        "hew_hashset_insert_layout",
-        "hew_hashset_contains_layout",
-        "hew_hashset_remove_layout",
-        "hew_hashset_len_layout",
-        "hew_hashset_free_layout",
-    ]
-}
-
-#[test]
-fn wasm_fail_closed_for_every_layout_op_symbol() {
-    for symbol in all_layout_op_symbols() {
-        let pipeline = pipeline_with_entry_terminator(
-            Terminator::Call {
-                callee: (*symbol).to_string(),
-                args: vec![],
-                dest: None,
-                next: 1,
-            },
-            vec![],
-            vec![point_layout()],
-        );
-        let err = emit_wasm(&pipeline, &format!("wasm_fc_{symbol}"));
-        match err {
-            CodegenError::WasmUnsupportedSubstrate { symbol: reported } => {
-                assert_eq!(
-                    reported, *symbol,
-                    "wasm fail-closed must name the offending substrate symbol exactly"
-                );
-            }
-            other => panic!(
-                "wasm emission for `{symbol}` must produce WasmUnsupportedSubstrate, got {other:?}"
-            ),
-        }
-    }
-}
-
-#[test]
-fn wasm_fail_closed_diagnostic_labels_hashmap_construct() {
-    let pipeline = pipeline_with_entry_terminator(
-        Terminator::Call {
-            callee: "hew_hashmap_insert_layout".to_string(),
-            args: vec![],
-            dest: None,
-            next: 1,
-        },
-        vec![],
-        vec![point_layout()],
-    );
-    let err = emit_wasm(&pipeline, "wasm_hashmap_label");
-    let text = err.to_string();
-    assert!(
-        text.contains("layout-backed `HashMap`"),
-        "wasm diagnostic for hashmap layout symbol should label the construct: {text}"
-    );
-}
-
-#[test]
-fn wasm_fail_closed_diagnostic_labels_hashset_construct() {
-    let pipeline = pipeline_with_entry_terminator(
-        Terminator::Call {
-            callee: "hew_hashset_contains_layout".to_string(),
-            args: vec![],
-            dest: None,
-            next: 1,
-        },
-        vec![],
-        vec![point_layout()],
-    );
-    let err = emit_wasm(&pipeline, "wasm_hashset_label");
-    let text = err.to_string();
-    assert!(
-        text.contains("layout-backed `HashSet`"),
-        "wasm diagnostic for hashset layout symbol should label the construct: {text}"
-    );
 }
 
 // ============================================================================
@@ -828,10 +716,8 @@ fn hashmap_new_without_pending_fact_still_emits() {
 // (updated in the same commit). The tests below provide complementary
 // coverage at the symbol-table level:
 //
-//   1. The wasm fail-closed substrate map already names both
-//      `_free_layout` symbols (asserted by
-//      `wasm_fail_closed_for_every_layout_op_symbol` above) so the
-//      reroute target is wasm-gate-honoured.
+//   1. The layout-keyed `_free_layout` symbols remain the drop reroute target
+//      now that HashMap/HashSet are enabled for wasm32.
 //   2. These tests verify the codegen-side ABI declaration shape so the
 //      drop dispatch and constructor agree on the handle's pointer type.
 

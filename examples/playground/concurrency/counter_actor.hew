@@ -16,7 +16,10 @@ fn main() {
     let c = spawn Counter(count: 0);
     await c.increment(5);
     await c.increment(3);
-    let total = c.increment(12);
+    let total = match await c.increment(12) {
+        Ok(v) => v,
+        Err(_e) => 0,
+    };
     print("Final total: ");
     println(total);
 }

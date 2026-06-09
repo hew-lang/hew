@@ -35,7 +35,7 @@ actor Echoer {
 }
 
 fn main() -> i64 {
-    let e = spawn Echoer();
+    let e = spawn Echoer;
     var i: i64 = 0;
     while i < 1000 {
         let s = string_concat("msg-", "payload");
@@ -43,5 +43,9 @@ fn main() -> i64 {
         i = i + 1;
     }
     println("done");
-    e.count() * 0
+    let c = match await e.count() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    };
+    c * 0
 }

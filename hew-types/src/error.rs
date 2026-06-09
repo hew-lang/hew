@@ -384,6 +384,13 @@ pub enum TypeErrorKind {
     /// `UndefinedMethod`: the method is found in multiple traits, not
     /// missing. See W3.022 §4 V6 / V14.
     AmbiguousTraitMethod,
+    /// An unqualified type name is exported by more than one imported module
+    /// (e.g. both `std::net::smtp` and `std::net::websocket` export `Conn`),
+    /// so the reference cannot bind to a single definition without a module
+    /// qualifier. Distinct from `UndefinedType` (no def) and
+    /// `DuplicateDefinition` (two defs in one module): the name resolves to
+    /// several valid defs across modules.
+    AmbiguousType,
     /// Value cannot be sent to another actor
     InvalidSend,
     /// Operation not supported for this type
@@ -833,6 +840,7 @@ impl TypeErrorKind {
             Self::UndefinedField => "UndefinedField",
             Self::UndefinedMethod => "UndefinedMethod",
             Self::AmbiguousTraitMethod => "AmbiguousTraitMethod",
+            Self::AmbiguousType => "AmbiguousType",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
             Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",

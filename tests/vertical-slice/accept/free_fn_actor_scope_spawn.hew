@@ -3,7 +3,6 @@
 //
 // Harness verb: hew compile; execute binary
 // Expected stdout: free-fn task-entry
-
 fn worker() {
     println("free-fn task-entry");
 }
@@ -11,7 +10,9 @@ fn worker() {
 actor _Driver {
     receive fn drive() -> i64 {
         scope {
-            fork { worker(); }
+            fork {
+                worker();
+            }
         };
         0
     }
@@ -19,5 +20,8 @@ actor _Driver {
 
 fn main() -> i64 {
     let d = spawn _Driver;
-    d.drive()
+    match await d.drive() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
 }

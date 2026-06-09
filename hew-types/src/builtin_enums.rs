@@ -121,5 +121,44 @@ pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
             ],
             suppress_from_sandbox_emit: false,
         },
+        BuiltinMonomorphicEnum {
+            name: "AskError",
+            variants: &[
+                BuiltinMonomorphicEnumVariant { name: "NoError" },
+                BuiltinMonomorphicEnumVariant {
+                    name: "NodeNotRunning",
+                },
+                BuiltinMonomorphicEnumVariant {
+                    name: "RoutingFailed",
+                },
+                BuiltinMonomorphicEnumVariant {
+                    name: "EncodeFailed",
+                },
+                BuiltinMonomorphicEnumVariant { name: "SendFailed" },
+                BuiltinMonomorphicEnumVariant { name: "Timeout" },
+                BuiltinMonomorphicEnumVariant {
+                    name: "ConnectionDropped",
+                },
+                BuiltinMonomorphicEnumVariant {
+                    name: "PayloadSizeMismatch",
+                },
+                BuiltinMonomorphicEnumVariant {
+                    name: "WorkerAtCapacity",
+                },
+                BuiltinMonomorphicEnumVariant {
+                    name: "ActorStopped",
+                },
+                BuiltinMonomorphicEnumVariant {
+                    name: "MailboxFull",
+                },
+                BuiltinMonomorphicEnumVariant {
+                    name: "OrphanedAsk",
+                },
+                BuiltinMonomorphicEnumVariant {
+                    name: "NoRunnableWork",
+                },
+            ],
+            suppress_from_sandbox_emit: false,
+        },
     ]
 }

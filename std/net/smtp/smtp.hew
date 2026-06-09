@@ -27,7 +27,8 @@
 ///
 /// Created by calling `smtp.connect(...)` or `smtp.connect_tls(...)`.
 /// Use `send()` or `send_html()` to deliver messages.
-type Conn {
+#[opaque]
+pub type Conn {
 }
 
 // ── Conn methods ──────────────────────────────────────────────────────

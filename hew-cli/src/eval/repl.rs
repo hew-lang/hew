@@ -8,7 +8,13 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DEFAULT_EVAL_TIMEOUT: Duration = Duration::from_secs(30);
+// The hang-guard exists to catch genuinely hung programs (e.g. an infinite
+// loop that never terminates).  Under parallel test load the Hew compiler
+// itself can take >30 s just to compile, so 30 s is too tight — it fires on
+// load-induced compile jitter rather than real hangs.  120 s gives generous
+// headroom even on a loaded CI runner while still catching a process that is
+// truly stuck.
+const DEFAULT_EVAL_TIMEOUT: Duration = Duration::from_mins(5);
 const TYPE_QUERY_NO_INFO: &str = "could not determine type: no type information for expression";
 const TYPE_QUERY_MARKER: &str = "__repl_type_query = ";
 
@@ -119,7 +125,13 @@ enum EvalCheckFailure {
 
 enum TypeQueryFailure {
     Check(EvalCheckFailure),
+    Frontend(hew_compile::FrontendFailure),
     NoTypeInfo,
+}
+
+enum ExpressionEvalPlan {
+    Compile { auto_print: bool },
+    Display(String),
 }
 
 enum CompiledEvalError {
@@ -271,6 +283,7 @@ fn type_query_failure_messages(error: TypeQueryFailure) -> Vec<String> {
         TypeQueryFailure::Check(EvalCheckFailure::Type { errors, .. }) => {
             errors.into_iter().map(|error| error.message).collect()
         }
+        TypeQueryFailure::Frontend(failure) => vec![failure.message],
         TypeQueryFailure::NoTypeInfo => vec![TYPE_QUERY_NO_INFO.to_string()],
     }
 }
@@ -299,6 +312,14 @@ fn render_type_query_failure(input_name: &str, error: TypeQueryFailure) -> CliEv
                 &module_source_map,
             );
             CliEvalError::DiagnosticsRendered
+        }
+        TypeQueryFailure::Frontend(failure) => {
+            if failure.diagnostics.is_empty() {
+                CliEvalError::Message(failure.message)
+            } else {
+                crate::compile::render_frontend_diagnostics(&failure.diagnostics);
+                CliEvalError::DiagnosticsRendered
+            }
         }
         TypeQueryFailure::NoTypeInfo => CliEvalError::Message(TYPE_QUERY_NO_INFO.to_string()),
     }
@@ -523,16 +544,16 @@ impl ReplSession {
             return self.handle_command(cmd);
         }
 
-        if matches!(kind, InputKind::Expression) {
-            match self.generator_display_override(trimmed) {
-                Ok(Some(output)) => {
+        let auto_print_expressions = if matches!(kind, InputKind::Expression) {
+            match self.expression_eval_plan(trimmed, "<repl>") {
+                Ok(ExpressionEvalPlan::Display(output)) => {
                     return EvalResult {
                         output,
                         had_errors: false,
                         errors: Vec::new(),
                     };
                 }
-                Ok(None) => {}
+                Ok(ExpressionEvalPlan::Compile { auto_print }) => auto_print,
                 Err(error) => {
                     return EvalResult {
                         output: String::new(),
@@ -541,10 +562,12 @@ impl ReplSession {
                     };
                 }
             }
-        }
+        } else {
+            true
+        };
 
         // Build the synthetic program.
-        let checked_program = match self.prepare_program(trimmed, kind) {
+        let checked_program = match self.prepare_program(trimmed, kind, auto_print_expressions) {
             Ok(program) => program,
             Err(EvalCheckFailure::Parse { errors, .. }) => {
                 return EvalResult {
@@ -624,15 +647,17 @@ impl ReplSession {
             return self.handle_cli_command(cmd, input_name);
         }
 
-        if matches!(kind, InputKind::Expression) {
-            match self.generator_display_override(trimmed) {
-                Ok(Some(output)) => return Ok(output),
-                Ok(None) => {}
+        let auto_print_expressions = if matches!(kind, InputKind::Expression) {
+            match self.expression_eval_plan(trimmed, input_name) {
+                Ok(ExpressionEvalPlan::Display(output)) => return Ok(output),
+                Ok(ExpressionEvalPlan::Compile { auto_print }) => auto_print,
                 Err(error) => return Err(render_type_query_failure(input_name, error)),
             }
-        }
+        } else {
+            true
+        };
 
-        let checked_program = match self.prepare_program(trimmed, kind) {
+        let checked_program = match self.prepare_program(trimmed, kind, auto_print_expressions) {
             Ok(program) => program,
             Err(EvalCheckFailure::Parse {
                 source,
@@ -708,15 +733,21 @@ impl ReplSession {
             return self.handle_cli_command(cmd, input_name);
         }
 
-        if matches!(kind, InputKind::Expression) {
-            match self.generator_display_override(trimmed) {
-                Ok(Some(output)) => return Ok(output),
-                Ok(None) => {}
+        let auto_print_expressions = if matches!(kind, InputKind::Expression) {
+            match self.expression_eval_plan(trimmed, source_label) {
+                Ok(ExpressionEvalPlan::Display(output)) => return Ok(output),
+                Ok(ExpressionEvalPlan::Compile { auto_print }) => auto_print,
                 Err(error) => return Err(render_type_query_failure(input_name, error)),
             }
-        }
+        } else {
+            true
+        };
 
-        let synthetic_program = self.session.build_program_with_kind(trimmed, kind.clone());
+        let synthetic_program = self.session.build_program_with_kind_and_auto_print(
+            trimmed,
+            kind.clone(),
+            auto_print_expressions,
+        );
         let parse_result = hew_parser::parse(&synthetic_program.source);
         if !parse_result.errors.is_empty() {
             render_eval_parse_diagnostics(
@@ -786,10 +817,25 @@ impl ReplSession {
     }
 
     fn type_of_checked(&mut self, expr: &str) -> Result<String, TypeQueryFailure> {
-        Ok(self.type_of_ty_checked(expr)?.user_facing().to_string())
+        self.type_of_checked_with_source(expr, "<repl>")
     }
 
-    fn type_of_ty_checked(&mut self, expr: &str) -> Result<hew_types::Ty, TypeQueryFailure> {
+    fn type_of_checked_with_source(
+        &mut self,
+        expr: &str,
+        source_label: &str,
+    ) -> Result<String, TypeQueryFailure> {
+        Ok(self
+            .type_of_ty_checked(expr, source_label)?
+            .user_facing()
+            .to_string())
+    }
+
+    fn type_of_ty_checked(
+        &mut self,
+        expr: &str,
+        source_label: &str,
+    ) -> Result<hew_types::Ty, TypeQueryFailure> {
         let synthetic_program = self.session.build_type_query_program(expr);
         let diagnostic_view = synthetic_program.diagnostic_view.clone();
         let parse_result = hew_parser::parse(&synthetic_program.source);
@@ -801,8 +847,32 @@ impl ReplSession {
             }));
         }
 
-        let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
-        let module_source_map = crate::diagnostic::build_module_source_map(&parse_result.program);
+        let (tco, module_source_map) = if program_has_imports(&parse_result.program) {
+            let options = hew_compile::FrontendOptions {
+                enable_wasm_target: self.is_wasm_target(),
+                project_dir: self.project_dir.clone(),
+                ..hew_compile::FrontendOptions::default()
+            };
+            let state = hew_compile::run_program_frontend_to_typecheck(
+                parse_result.program,
+                &synthetic_program.source,
+                source_label,
+                &options,
+            )
+            .map_err(TypeQueryFailure::Frontend)?;
+            let tco = state
+                .typecheck_result
+                .tco
+                .ok_or(TypeQueryFailure::NoTypeInfo)?;
+            let module_source_map = crate::diagnostic::build_module_source_map(&state.program);
+            (tco, module_source_map)
+        } else {
+            let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
+            let module_source_map =
+                crate::diagnostic::build_module_source_map(&parse_result.program);
+            (tco, module_source_map)
+        };
+
         let query_ty = find_type_query_expr_type(&synthetic_program.source, &tco.expr_types);
         if !tco.errors.is_empty() {
             if query_ty.is_none()
@@ -824,12 +894,19 @@ impl ReplSession {
         query_ty.ok_or(TypeQueryFailure::NoTypeInfo)
     }
 
-    fn generator_display_override(
+    fn expression_eval_plan(
         &mut self,
         expr: &str,
-    ) -> Result<Option<String>, TypeQueryFailure> {
-        let ty = self.type_of_ty_checked(expr)?;
-        Ok(generator_description(&ty).map(|description| format!("{description}\n")))
+        source_label: &str,
+    ) -> Result<ExpressionEvalPlan, TypeQueryFailure> {
+        let ty = self.type_of_ty_checked(expr, source_label)?;
+        if let Some(description) = generator_description(&ty) {
+            return Ok(ExpressionEvalPlan::Display(format!("{description}\n")));
+        }
+
+        Ok(ExpressionEvalPlan::Compile {
+            auto_print: !matches!(ty, hew_types::Ty::Unit | hew_types::Ty::Never),
+        })
     }
 
     fn eval_type_command_cli(
@@ -843,7 +920,7 @@ impl ReplSession {
             ));
         }
 
-        match self.type_of_checked(expr) {
+        match self.type_of_checked_with_source(expr, input_name) {
             Ok(ty) => Ok(format!("{ty}\n")),
             Err(error) => Err(render_type_query_failure(input_name, error)),
         }
@@ -1000,8 +1077,13 @@ impl ReplSession {
         &self,
         input: &str,
         kind: InputKind,
+        auto_print_expressions: bool,
     ) -> Result<CheckedProgram, EvalCheckFailure> {
-        let synthetic_program = self.session.build_program_with_kind(input, kind.clone());
+        let synthetic_program = self.session.build_program_with_kind_and_auto_print(
+            input,
+            kind.clone(),
+            auto_print_expressions,
+        );
         let diagnostic_view = synthetic_program.diagnostic_view.clone();
 
         let parse_result = hew_parser::parse(&synthetic_program.source);

@@ -527,8 +527,8 @@ pub fn contains(s: string, sub: string) -> bool {
 pub fn is_ascii(s: string) -> bool {
     let len = s.len();
     for i in 0 .. len {
-        let ch = string_char_at(s, i);
-        if ch > '~' {
+        let ch = s.char_at(i);
+        if ch > 126 {
             return false;
         }
     }

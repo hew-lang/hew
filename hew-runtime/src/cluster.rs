@@ -267,6 +267,17 @@ impl MembershipCallbackBinding {
     }
 }
 
+// WHY: MembershipCallbackGeneration and its accessors were consumed only by
+// remote_sup.rs (now deleted), so this epoch machinery is currently dead —
+// `hew_cluster_replace_membership_callback` only writes the binding and does
+// not exercise generation()/in_flight()/invoke(). Retained under
+// #[allow(dead_code)] as the membership-callback epoch discipline a future
+// supervision protocol would build on.
+// WHEN obsolete: when that protocol lands and consumes it, or it is removed.
+#[allow(
+    dead_code,
+    reason = "sole consumer was remote_sup.rs (deleted); epoch discipline retained for replace_membership_callback"
+)]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MembershipCallbackGeneration {
     binding: MembershipCallbackBinding,
@@ -274,18 +285,22 @@ pub(crate) struct MembershipCallbackGeneration {
 }
 
 impl MembershipCallbackGeneration {
+    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
     fn new(binding: MembershipCallbackBinding, epoch: Arc<MembershipCallbackEpoch>) -> Self {
         Self { binding, epoch }
     }
 
+    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
     pub(crate) fn binding(&self) -> MembershipCallbackBinding {
         self.binding
     }
 
+    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
     pub(crate) fn in_flight(&self) -> usize {
         self.epoch.in_flight()
     }
 
+    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
     pub(crate) fn invoke(&self, node_id: u16, event: u8) {
         if let Some(callback) = self.binding.callback {
             callback(node_id, event, self.binding.user_data());
@@ -306,6 +321,7 @@ impl MembershipCallbackEpoch {
         }
     }
 
+    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
     pub(crate) fn in_flight(&self) -> usize {
         self.in_flight.load(Ordering::Acquire)
     }
@@ -1018,10 +1034,12 @@ impl HewCluster {
         }
     }
 
+    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
     fn membership_callback_binding(&self) -> MembershipCallbackBinding {
         *self.membership_callback_binding.lock_or_recover()
     }
 
+    #[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
     fn membership_callback_generation(&self) -> MembershipCallbackGeneration {
         MembershipCallbackGeneration::new(
             self.membership_callback_binding(),
@@ -1702,6 +1720,7 @@ pub unsafe extern "C" fn hew_cluster_set_membership_callback(
 ///
 /// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
 #[cfg(test)]
+#[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
 pub(crate) unsafe fn hew_cluster_membership_callback_binding(
     cluster: *mut HewCluster,
 ) -> MembershipCallbackBinding {
@@ -1718,6 +1737,7 @@ pub(crate) unsafe fn hew_cluster_membership_callback_binding(
 /// # Safety
 ///
 /// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+#[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
 pub(crate) unsafe fn hew_cluster_membership_callback_generation(
     cluster: *mut HewCluster,
 ) -> MembershipCallbackGeneration {
@@ -1747,6 +1767,7 @@ pub(crate) unsafe fn hew_cluster_replace_membership_callback(
 }
 
 #[cfg(test)]
+#[allow(dead_code, reason = "sole consumer was remote_sup.rs (deleted)")]
 pub(crate) unsafe fn hew_cluster_test_fire_membership_callback(
     cluster: *mut HewCluster,
     node_id: u16,

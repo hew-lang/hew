@@ -169,3 +169,34 @@ fn float_emission_rem_emits_frem() {
         "FloatRem must emit `frem double`; got:\n{ll}"
     );
 }
+
+#[test]
+fn float_emission_cmp_emits_ordered_fcmp_for_f64_and_f32() {
+    let ll = emit_ll(
+        "fn main() -> i64 {
+            let a: f64 = 1.0;
+            let b: f64 = 2.0;
+            let eq = a == b;
+            let ne = a != b;
+            let lt = a < b;
+            let le = a <= b;
+            let gt = a > b;
+            let ge = a >= b;
+            0
+        }",
+        "float_cmp",
+    );
+    for expected in [
+        "fcmp oeq double",
+        "fcmp one double",
+        "fcmp olt double",
+        "fcmp ole double",
+        "fcmp ogt double",
+        "fcmp oge double",
+    ] {
+        assert!(
+            ll.contains(expected),
+            "FloatCmp must emit ordered `{expected}`; got:\n{ll}"
+        );
+    }
+}

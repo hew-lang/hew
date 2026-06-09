@@ -292,12 +292,13 @@ fn mixed_dep_warning_remains_attributed_to_dep_before_deep_gate_failure() {
         // main.hew calls dep_value() which is clean.
         (
             "main.hew",
-            "import \"dep.hew\";\n\nfn main() {\n    let v = dep_value();\n    println(v);\n}\n",
+            "import dep;\n\nfn main() {\n    let v = dep.dep_value();\n    println(v);\n}\n",
         ),
-        // dep.hew exports dep_value(); the internal helper has an unused variable.
+        // dep.hew exports dep_value(); the body has an unused variable warning
+        // before a HIR-unsupported or-pattern with a literal payload branch.
         (
             "dep.hew",
-            "pub fn dep_value() -> i64 { let ignored = 0; 42 }\n",
+            "pub fn dep_value() -> i64 { let ignored = 0; let x: Option<i64> = Some(0); match x { Some(0) | None => 0, Some(n) => n } }\n",
         ),
     ]);
 
@@ -332,7 +333,9 @@ fn mixed_dep_warning_remains_attributed_to_dep_before_deep_gate_failure() {
         "warning line should not point at main.hew; got:\n{stderr}"
     );
     assert!(
-        stderr.contains("E_HIR") || stderr.contains("E_MIR"),
+        stderr.contains("E_HIR")
+            || stderr.contains("E_MIR")
+            || stderr.contains("E_NOT_YET_IMPLEMENTED"),
         "fixture should reach a Stage 2 deep gate after rendering the warning; got:\n{stderr}"
     );
 }
@@ -341,9 +344,13 @@ fn mixed_dep_warning_remains_attributed_to_dep_before_deep_gate_failure() {
 
 #[test]
 fn root_hir_diagnostic_rendered_with_source_context() {
+    // `Some(0) | None` is an or-pattern where one branch is a constructor
+    // with a literal payload. HIR rejects the or-pattern leaf because
+    // constructor-with-payload inside an or-branch is not yet classified.
+    // This is a stable HIR-level failure that preserves the 3:15 position.
     let fixture = write_fixture(&[(
         "main.hew",
-        "fn main() -> i64 {\n    let x = 1;\n    match x { y => y }\n}\n",
+        "fn main() -> i64 {\n    let x: Option<i64> = Some(0);\n    match x { Some(0) | None => 0, Some(n) => n }\n}\n",
     )]);
     let main_path = fixture.path().join("main.hew");
 
@@ -364,7 +371,7 @@ fn root_hir_diagnostic_rendered_with_source_context() {
         "root HIR diagnostic must include file:line:col; got:\n{stderr}"
     );
     assert!(
-        stderr.contains("match x { y => y }"),
+        stderr.contains("Some(0)"),
         "root HIR diagnostic must render source excerpt; got:\n{stderr}"
     );
     assert!(
@@ -376,10 +383,13 @@ fn root_hir_diagnostic_rendered_with_source_context() {
 #[test]
 fn imported_hir_diagnostic_rendered_with_imported_source_context() {
     let fixture = write_fixture(&[
-        ("main.hew", "import \"dep.hew\";\nfn main() -> i64 { 0 }\n"),
+        (
+            "main.hew",
+            "import dep;\nfn main() -> i64 { dep.entry() }\n",
+        ),
         (
             "dep.hew",
-            "const ANSWER: i64 = 42;\npub fn entry() -> i64 { ANSWER }\n",
+            "pub fn entry() -> i64 {\n    let x: Option<i64> = Some(0);\n    match x { Some(0) | None => 0, Some(n) => n }\n}\n",
         ),
     ]);
     let main_path = fixture.path().join("main.hew");
@@ -397,7 +407,7 @@ fn imported_hir_diagnostic_rendered_with_imported_source_context() {
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        stderr.contains("dep.hew:2:25: error: E_HIR"),
+        stderr.contains("dep.hew:3:15: error: E_NOT_YET_IMPLEMENTED"),
         "imported HIR diagnostic must name dep.hew; got:\n{stderr}"
     );
     assert!(
@@ -406,7 +416,7 @@ fn imported_hir_diagnostic_rendered_with_imported_source_context() {
         "imported HIR diagnostic must not fall back to main.hew; got:\n{stderr}"
     );
     assert!(
-        stderr.contains("pub fn entry() -> i64 { ANSWER }"),
+        stderr.contains("Some(0)"),
         "imported HIR diagnostic must render dep.hew excerpt; got:\n{stderr}"
     );
     assert!(

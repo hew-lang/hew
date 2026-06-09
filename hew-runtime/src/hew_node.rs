@@ -592,6 +592,17 @@ fn remote_reply_data_to_ptr(reply_data: &[u8], reply_size: usize) -> *mut c_void
         };
     }
 
+    // The reply payload arrives from a remote (possibly malicious or corrupt)
+    // peer, while the caller's generated code reads exactly `reply_size` bytes
+    // (the static size of the expected `Reply` type). A peer-supplied payload
+    // whose length differs from `reply_size` must fail closed — a shorter
+    // payload would otherwise be read past its allocation (heap over-read), and
+    // a longer one silently truncated. The call site maps null to
+    // `AskError::PayloadSizeMismatch`.
+    if reply_data.len() != reply_size {
+        return ptr::null_mut();
+    }
+
     // SAFETY: malloc for reply buffer.
     let result = unsafe { libc::malloc(reply_data.len()) };
     if result.is_null() {
@@ -1704,13 +1715,21 @@ pub unsafe extern "C" fn hew_node_register(
         .into_owned();
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
-    let mut map = reg.remote_names.lock_or_recover();
-    map.insert(key.clone(), actor);
+    {
+        let mut map = reg.remote_names.lock_or_recover();
+        map.insert(key.clone(), actor);
+    }
 
     // Propagate to cluster gossip so remote nodes learn about this actor.
     if !node.cluster.is_null() {
         // SAFETY: cluster pointer is valid while the node is alive.
         unsafe { cluster::hew_cluster_registry_add(node.cluster, name, actor) };
+    }
+    if !node.conn_mgr.is_null() {
+        // SAFETY: connection manager pointer is valid while the node is alive.
+        unsafe {
+            connection::hew_connmgr_broadcast_registry_gossip(node.conn_mgr, &key, actor, true);
+        }
     }
 
     0
@@ -1743,13 +1762,21 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
         .into_owned();
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
-    let mut map = reg.remote_names.lock_or_recover();
-    map.remove(&key);
+    {
+        let mut map = reg.remote_names.lock_or_recover();
+        map.remove(&key);
+    }
 
     // Propagate removal to cluster gossip.
     if !node.cluster.is_null() {
         // SAFETY: cluster pointer is valid while the node is alive.
         unsafe { cluster::hew_cluster_registry_remove(node.cluster, name) };
+    }
+    if !node.conn_mgr.is_null() {
+        // SAFETY: connection manager pointer is valid while the node is alive.
+        unsafe {
+            connection::hew_connmgr_broadcast_registry_gossip(node.conn_mgr, &key, 0, false);
+        }
     }
 
     0
@@ -2171,14 +2198,6 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     }
 }
 
-/// Default timeout for remote ask operations (5 seconds).
-#[cfg(not(test))]
-const REMOTE_ASK_TIMEOUT_MS: u64 = 5_000;
-
-/// Short timeout for test isolation.
-#[cfg(test)]
-const REMOTE_ASK_TIMEOUT_MS: u64 = 250;
-
 enum RemoteAskSetupResult {
     Ok((u64, Arc<PendingReply>)),
     Error(AskError),
@@ -2208,6 +2227,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
     msg_type: i32,
     data: *mut c_void,
     size: usize,
+    timeout_ms: u64,
     reply_size: usize,
 ) -> *mut c_void {
     let target_node_id = crate::pid::hew_pid_node(pid);
@@ -2295,9 +2315,8 @@ pub unsafe extern "C" fn hew_node_api_ask(
         RemoteAskSetupResult::Error(e) => return ask_null(e),
     };
 
-    // Block until the reply arrives or the timeout elapses.
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_millis(REMOTE_ASK_TIMEOUT_MS);
+    // Block until the reply arrives or the caller-supplied timeout elapses.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     let mut outcome_guard = pending
         .outcome
         .lock()
@@ -2341,7 +2360,10 @@ pub unsafe extern "C" fn hew_node_api_ask(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::process::{Child, Command, Output, Stdio};
+    use std::time::{Duration, Instant};
+
+    const TEST_REMOTE_ASK_TIMEOUT_MS: u64 = 250;
 
     struct ResetCurrentNode(usize);
 
@@ -2394,6 +2416,671 @@ mod tests {
             unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
                 .expect("started TCP test node must expose its bound listener port");
         (node, port)
+    }
+
+    const TWO_PROCESS_REGISTRY_SERVER_NODE: u16 = 620;
+    const TWO_PROCESS_REGISTRY_CLIENT_NODE: u16 = 621;
+    const TWO_PROCESS_REGISTRY_MSG_TYPE: i32 = 123;
+    const TWO_PROCESS_REGISTRY_NAME: &str = "two-process-registry-worker";
+    const TWO_PROCESS_ASK_ECHO_NAME: &str = "two-process-ask-echo-worker";
+    const TWO_PROCESS_ASK_TIMEOUT_NAME: &str = "two-process-ask-timeout-worker";
+    const TWO_PROCESS_HELPER_ENV: &str = "HEW_REGISTRY_GOSSIP_HELPER";
+    const TWO_PROCESS_READY_FILE_ENV: &str = "HEW_REGISTRY_GOSSIP_READY_FILE";
+    const TWO_PROCESS_SERVER_PORT_ENV: &str = "HEW_REGISTRY_GOSSIP_SERVER_PORT";
+
+    static TWO_PROCESS_REGISTRY_DELIVERY: (Mutex<bool>, Condvar) =
+        (Mutex::new(false), Condvar::new());
+    static TWO_PROCESS_ASK_OBSERVED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+    struct ManagedChild {
+        name: &'static str,
+        child: Option<Child>,
+    }
+
+    impl ManagedChild {
+        fn new(name: &'static str, child: Child) -> Self {
+            Self {
+                name,
+                child: Some(child),
+            }
+        }
+
+        fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
+            self.child
+                .as_mut()
+                .expect("child already waited")
+                .try_wait()
+                .expect("child try_wait failed")
+        }
+
+        fn wait_output(&mut self, timeout: Duration) -> Output {
+            let child = self.child.take().expect("child already waited");
+            wait_child_output(self.name, child, timeout)
+        }
+    }
+
+    impl Drop for ManagedChild {
+        fn drop(&mut self) {
+            let Some(mut child) = self.child.take() else {
+                return;
+            };
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
+    }
+
+    fn wait_child_output(name: &str, mut child: Child, timeout: Duration) -> Output {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if child.try_wait().expect("child try_wait failed").is_some() {
+                return child.wait_with_output().expect("child output failed");
+            }
+            if Instant::now() >= deadline {
+                let pid = child.id();
+                let _ = child.kill();
+                let output = child.wait_with_output().expect("timed-out child output");
+                panic!(
+                    "{name} helper process {pid} timed out\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn assert_child_success(name: &str, output: &Output) {
+        assert!(
+            output.status.success(),
+            "{name} helper failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn spawn_registry_gossip_helper(
+        helper_name: &'static str,
+        role: &'static str,
+        envs: &[(&str, String)],
+    ) -> ManagedChild {
+        let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+        command
+            .args(["--exact", helper_name, "--nocapture"])
+            .env("RUST_TEST_THREADS", "1")
+            .env(TWO_PROCESS_HELPER_ENV, role)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        ManagedChild::new(role, command.spawn().expect("spawn helper process"))
+    }
+
+    fn wait_for_ready_port(
+        ready_file: &std::path::Path,
+        server: &mut ManagedChild,
+        timeout: Duration,
+    ) -> u16 {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(text) = std::fs::read_to_string(ready_file) {
+                if let Ok(port) = text.trim().parse::<u16>() {
+                    return port;
+                }
+            }
+            if server.try_wait().is_some() {
+                let output = server.wait_output(Duration::from_secs(1));
+                panic!(
+                    "server exited before writing readiness file\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            assert!(
+                Instant::now() < deadline,
+                "server did not write readiness file before timeout"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn wait_for_single_connection(node: *mut HewNode, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            // SAFETY: caller passes a live node pointer for this bounded wait.
+            if unsafe { connection::hew_connmgr_count((*node).conn_mgr) > 0 } {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn wait_for_remote_lookup(
+        node: *mut HewNode,
+        name: *const c_char,
+        expected_node_id: u16,
+        timeout: Duration,
+    ) -> Option<u64> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            // SAFETY: node/name are valid for this bounded wait.
+            let pid = unsafe { hew_node_lookup(node, name) };
+            if pid != 0 && crate::pid::hew_pid_node(pid) == expected_node_id {
+                return Some(pid);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn reset_two_process_delivery() {
+        let mut delivered = TWO_PROCESS_REGISTRY_DELIVERY
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *delivered = false;
+    }
+
+    fn wait_for_two_process_delivery(timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut delivered = TWO_PROCESS_REGISTRY_DELIVERY
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*delivered {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (guard, result) = TWO_PROCESS_REGISTRY_DELIVERY
+                .1
+                .wait_timeout(delivered, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            delivered = guard;
+            if result.timed_out() && !*delivered {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn reset_two_process_ask_observed() {
+        let mut observed = TWO_PROCESS_ASK_OBSERVED
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *observed = false;
+    }
+
+    fn mark_two_process_ask_observed() {
+        let mut observed = TWO_PROCESS_ASK_OBSERVED
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *observed = true;
+        TWO_PROCESS_ASK_OBSERVED.1.notify_all();
+    }
+
+    fn wait_for_two_process_ask_observed(timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut observed = TWO_PROCESS_ASK_OBSERVED
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*observed {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (guard, result) = TWO_PROCESS_ASK_OBSERVED
+                .1
+                .wait_timeout(observed, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            observed = guard;
+            if result.timed_out() && !*observed {
+                return false;
+            }
+        }
+        true
+    }
+
+    unsafe extern "C-unwind" fn two_process_registry_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) {
+        if msg_type == TWO_PROCESS_REGISTRY_MSG_TYPE {
+            let mut delivered = TWO_PROCESS_REGISTRY_DELIVERY
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *delivered = true;
+            TWO_PROCESS_REGISTRY_DELIVERY.1.notify_all();
+        }
+    }
+
+    fn run_registry_gossip_server_helper() {
+        crate::registry::hew_registry_clear();
+        reset_two_process_delivery();
+        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+
+        let (node, port) = start_tcp_test_listener_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
+        crate::pid::hew_pid_set_local_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
+
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let worker = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(two_process_registry_dispatch))
+        };
+        assert!(!worker.is_null(), "server worker spawn failed");
+        // SAFETY: actor was just spawned successfully.
+        let worker_pid = unsafe { (*worker).id };
+        assert_eq!(
+            crate::pid::hew_pid_node(worker_pid),
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            "server worker PID must encode the server node id"
+        );
+
+        let name = CString::new(TWO_PROCESS_REGISTRY_NAME).expect("valid registry name");
+        // SAFETY: node/name/worker_pid are valid in this helper process.
+        let register_rc = unsafe { hew_node_register(node.as_ptr(), name.as_ptr(), worker_pid) };
+        assert_eq!(register_rc, 0, "server register");
+
+        let ready_file = std::env::var(TWO_PROCESS_READY_FILE_ENV).expect("ready file env");
+        std::fs::write(&ready_file, port.to_string()).expect("write ready file");
+
+        let delivered = wait_for_two_process_delivery(Duration::from_secs(30));
+
+        // SAFETY: actor and node are owned by this helper process.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(worker);
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+        assert!(delivered, "server did not observe two-process tell");
+    }
+
+    fn run_registry_gossip_client_helper() {
+        crate::registry::hew_registry_clear();
+        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+
+        let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
+            .expect("server port env")
+            .parse::<u16>()
+            .expect("server port");
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is valid for this helper scope.
+        let node = unsafe { TestNode::new(TWO_PROCESS_REGISTRY_CLIENT_NODE, &bind_addr) };
+        assert!(!node.as_ptr().is_null(), "client node allocation failed");
+        // SAFETY: node pointer is valid.
+        assert_eq!(unsafe { hew_node_start(node.as_ptr()) }, 0, "client start");
+
+        let connect_addr = CString::new(format!(
+            "{TWO_PROCESS_REGISTRY_SERVER_NODE}@127.0.0.1:{server_port}"
+        ))
+        .expect("valid connect addr");
+        // SAFETY: node and connect_addr are valid.
+        unsafe { connect_with_retry(node.as_ptr(), &connect_addr) };
+        assert!(
+            wait_for_single_connection(node.as_ptr(), Duration::from_secs(5)),
+            "client connection did not become active"
+        );
+
+        let name = CString::new(TWO_PROCESS_REGISTRY_NAME).expect("valid registry name");
+        let remote_pid = wait_for_remote_lookup(
+            node.as_ptr(),
+            name.as_ptr(),
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            Duration::from_secs(30),
+        )
+        .expect("client lookup did not resolve remote registry gossip");
+
+        // SAFETY: remote_pid was resolved from registry gossip; null payload is
+        // valid for this signal message.
+        let rc = unsafe {
+            hew_node_send(
+                node.as_ptr(),
+                remote_pid,
+                TWO_PROCESS_REGISTRY_MSG_TYPE,
+                ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(rc, 0, "client tell send");
+
+        // SAFETY: node is owned by this helper process.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    fn run_two_process_ask_server_helper(
+        node_id: u16,
+        name: &str,
+        dispatch: unsafe extern "C-unwind" fn(
+            *mut crate::execution_context::HewExecutionContext,
+            *mut c_void,
+            i32,
+            *mut c_void,
+            usize,
+            i32,
+        ),
+        hold_after_observed: Duration,
+    ) {
+        crate::registry::hew_registry_clear();
+        reset_two_process_ask_observed();
+        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+
+        let (node, port) = start_tcp_test_listener_node(node_id);
+        crate::pid::hew_pid_set_local_node(node_id);
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let worker = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(dispatch)) };
+        assert!(!worker.is_null(), "ask server worker spawn failed");
+        // SAFETY: actor was just spawned successfully.
+        let worker_pid = unsafe { (*worker).id };
+        assert_eq!(crate::pid::hew_pid_node(worker_pid), node_id);
+
+        let name = CString::new(name).expect("valid ask registry name");
+        // SAFETY: node/name/worker_pid are valid in this helper process.
+        let register_rc = unsafe { hew_node_register(node.as_ptr(), name.as_ptr(), worker_pid) };
+        assert_eq!(register_rc, 0, "ask server register");
+
+        let ready_file = std::env::var(TWO_PROCESS_READY_FILE_ENV).expect("ready file env");
+        std::fs::write(&ready_file, port.to_string()).expect("write ready file");
+
+        assert!(
+            wait_for_two_process_ask_observed(Duration::from_secs(30)),
+            "ask server did not observe remote ask"
+        );
+        thread::sleep(hold_after_observed);
+
+        // SAFETY: actor and node are owned by this helper process.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(worker);
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    fn run_two_process_ask_echo_client_helper() {
+        let (node, remote_pid) = run_two_process_ask_client_setup(
+            TWO_PROCESS_REGISTRY_CLIENT_NODE,
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_ASK_ECHO_NAME,
+        );
+        let send_value: u32 = 21;
+        // SAFETY: remote_pid was resolved from a separate helper process over TCP.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                remote_pid,
+                TWO_PROCESS_REGISTRY_MSG_TYPE,
+                (&raw const send_value).cast::<c_void>().cast_mut(),
+                std::mem::size_of::<u32>(),
+                1_000,
+                std::mem::size_of::<u32>(),
+            )
+        };
+        assert!(!reply_ptr.is_null(), "two-process echo ask returned null");
+        // SAFETY: reply_ptr was malloc'd by hew_node_api_ask; valid for u32 read.
+        let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
+        // SAFETY: reply_ptr was malloc'd and is our responsibility to free.
+        unsafe { libc::free(reply_ptr) };
+        assert_eq!(
+            reply_value, 42,
+            "two-process echo-double ask must return 42"
+        );
+        assert_eq!(hew_node_ask_take_last_error(), AskError::None as i32);
+        // SAFETY: node is owned by this helper process.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    fn run_two_process_ask_timeout_client_helper() {
+        let (node, remote_pid) = run_two_process_ask_client_setup(
+            TWO_PROCESS_REGISTRY_CLIENT_NODE,
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_ASK_TIMEOUT_NAME,
+        );
+        let send_value: u32 = 21;
+        let started = Instant::now();
+        // SAFETY: remote_pid was resolved from a separate helper process over TCP.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                remote_pid,
+                TWO_PROCESS_REGISTRY_MSG_TYPE,
+                (&raw const send_value).cast::<c_void>().cast_mut(),
+                std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            )
+        };
+        let elapsed = started.elapsed();
+        assert!(
+            reply_ptr.is_null(),
+            "timeout ask unexpectedly returned a reply"
+        );
+        assert_eq!(hew_node_ask_take_last_error(), AskError::Timeout as i32);
+        assert!(
+            elapsed < Duration::from_millis(1_500),
+            "timeout ask took {elapsed:?}, expected <1500ms"
+        );
+        // SAFETY: node is owned by this helper process.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    fn run_two_process_ask_client_setup(
+        client_node_id: u16,
+        server_node_id: u16,
+        registry_name: &str,
+    ) -> (TestNode, u64) {
+        crate::registry::hew_registry_clear();
+        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+
+        let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
+            .expect("server port env")
+            .parse::<u16>()
+            .expect("server port");
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is valid for this helper scope.
+        let node = unsafe { TestNode::new(client_node_id, &bind_addr) };
+        assert!(
+            !node.as_ptr().is_null(),
+            "ask client node allocation failed"
+        );
+        // SAFETY: node pointer is valid.
+        assert_eq!(unsafe { hew_node_start(node.as_ptr()) }, 0, "client start");
+
+        let connect_addr = CString::new(format!("{server_node_id}@127.0.0.1:{server_port}"))
+            .expect("valid connect addr");
+        // SAFETY: node and connect_addr are valid.
+        unsafe { connect_with_retry(node.as_ptr(), &connect_addr) };
+        assert!(
+            wait_for_single_connection(node.as_ptr(), Duration::from_secs(5)),
+            "ask client connection did not become active"
+        );
+
+        let name = CString::new(registry_name).expect("valid registry name");
+        let remote_pid = wait_for_remote_lookup(
+            node.as_ptr(),
+            name.as_ptr(),
+            server_node_id,
+            Duration::from_secs(30),
+        )
+        .expect("ask client lookup did not resolve remote registry gossip");
+        assert_ne!(
+            crate::pid::hew_pid_node(remote_pid),
+            client_node_id,
+            "ask test must not resolve to a local pid"
+        );
+        (node, remote_pid)
+    }
+
+    #[test]
+    fn registry_gossip_two_process_server_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("server")
+        ) {
+            return;
+        }
+        run_registry_gossip_server_helper();
+    }
+
+    #[test]
+    fn registry_gossip_two_process_client_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("client")
+        ) {
+            return;
+        }
+        run_registry_gossip_client_helper();
+    }
+
+    #[test]
+    fn remote_ask_two_process_echo_server_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("ask_echo_server")
+        ) {
+            return;
+        }
+        run_two_process_ask_server_helper(
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_ASK_ECHO_NAME,
+            ask_probe_dispatch,
+            Duration::ZERO,
+        );
+    }
+
+    #[test]
+    fn remote_ask_two_process_echo_client_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("ask_echo_client")
+        ) {
+            return;
+        }
+        run_two_process_ask_echo_client_helper();
+    }
+
+    #[test]
+    fn remote_ask_two_process_timeout_server_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("ask_timeout_server")
+        ) {
+            return;
+        }
+        run_two_process_ask_server_helper(
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_ASK_TIMEOUT_NAME,
+            blocked_ask_probe_dispatch,
+            Duration::from_millis(1_750),
+        );
+    }
+
+    #[test]
+    fn remote_ask_two_process_timeout_client_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("ask_timeout_client")
+        ) {
+            return;
+        }
+        run_two_process_ask_timeout_client_helper();
+    }
+
+    #[test]
+    fn two_process_registry_gossip_lookup_then_tell() {
+        let _guard = crate::runtime_test_guard();
+        let ready_dir = tempfile::tempdir().expect("ready tempdir");
+        let ready_file = ready_dir.path().join("server-ready");
+        let ready_file_s = ready_file.to_string_lossy().into_owned();
+
+        let mut server = spawn_registry_gossip_helper(
+            "hew_node::tests::registry_gossip_two_process_server_helper",
+            "server",
+            &[(TWO_PROCESS_READY_FILE_ENV, ready_file_s)],
+        );
+        let server_port = wait_for_ready_port(&ready_file, &mut server, Duration::from_secs(10));
+
+        let mut client = spawn_registry_gossip_helper(
+            "hew_node::tests::registry_gossip_two_process_client_helper",
+            "client",
+            &[(TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string())],
+        );
+        let client_output = client.wait_output(Duration::from_secs(40));
+        assert_child_success("client", &client_output);
+
+        let server_output = server.wait_output(Duration::from_secs(40));
+        assert_child_success("server", &server_output);
+    }
+
+    fn run_two_process_remote_ask_case(
+        server_helper: &'static str,
+        server_role: &'static str,
+        client_helper: &'static str,
+        client_role: &'static str,
+    ) {
+        let _guard = crate::runtime_test_guard();
+        let ready_dir = tempfile::tempdir().expect("ready tempdir");
+        let ready_file = ready_dir.path().join("ask-server-ready");
+        let ready_file_s = ready_file.to_string_lossy().into_owned();
+
+        let mut server = spawn_registry_gossip_helper(
+            server_helper,
+            server_role,
+            &[(TWO_PROCESS_READY_FILE_ENV, ready_file_s)],
+        );
+        let server_port = wait_for_ready_port(&ready_file, &mut server, Duration::from_secs(10));
+
+        let mut client = spawn_registry_gossip_helper(
+            client_helper,
+            client_role,
+            &[(TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string())],
+        );
+        let client_output = client.wait_output(Duration::from_secs(40));
+        assert_child_success(client_role, &client_output);
+
+        let server_output = server.wait_output(Duration::from_secs(40));
+        assert_child_success(server_role, &server_output);
+    }
+
+    #[test]
+    fn two_process_remote_ask_echo_double_returns_42() {
+        run_two_process_remote_ask_case(
+            "hew_node::tests::remote_ask_two_process_echo_server_helper",
+            "ask_echo_server",
+            "hew_node::tests::remote_ask_two_process_echo_client_helper",
+            "ask_echo_client",
+        );
+    }
+
+    #[test]
+    fn two_process_remote_ask_timeout_returns_timeout_under_1500ms() {
+        run_two_process_remote_ask_case(
+            "hew_node::tests::remote_ask_two_process_timeout_server_helper",
+            "ask_timeout_server",
+            "hew_node::tests::remote_ask_two_process_timeout_client_helper",
+            "ask_timeout_client",
+        );
     }
 
     /// Start a node whose transport has been pre-allocated as a `quic_mesh`
@@ -2802,6 +3489,7 @@ mod tests {
                 7,
                 ptr::null_mut(),
                 0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u64>(),
             )
         };
@@ -3090,6 +3778,28 @@ mod tests {
         assert_eq!(outcome.status, ReplyStatus::Failed);
         assert_eq!(outcome.ask_error, AskError::WorkerAtCapacity);
         assert!(outcome.data.is_empty());
+    }
+
+    #[test]
+    fn remote_reply_payload_length_mismatch_fails_closed_not_overread() {
+        // A peer's reply payload whose length differs from the caller's static
+        // `reply_size` must fail closed (null → PayloadSizeMismatch), never be
+        // handed to the codegen typed-load that reads `reply_size` bytes.
+        // Short payload: 1 byte where the caller expects 4 — the over-read case.
+        assert!(
+            remote_reply_data_to_ptr(&[0xAB], 4).is_null(),
+            "short reply payload must fail closed, not be read past its allocation"
+        );
+        // Long payload: 8 bytes where the caller expects 4 — silent-truncation case.
+        assert!(
+            remote_reply_data_to_ptr(&[0u8; 8], 4).is_null(),
+            "over-long reply payload must fail closed, not be silently truncated"
+        );
+        // Exact match still succeeds (non-null, owned buffer the caller frees).
+        let ok = remote_reply_data_to_ptr(&[1u8, 2, 3, 4], 4);
+        assert!(!ok.is_null(), "exact-size reply payload must succeed");
+        // SAFETY: ok was malloc'd by remote_reply_data_to_ptr; free it once.
+        unsafe { libc::free(ok) };
     }
 
     #[test]
@@ -3704,6 +4414,10 @@ mod tests {
                 std::mem::size_of::<u32>(),
             );
         }
+        // Mark observed only AFTER the reply has been handed to the channel, so
+        // the server helper (which tears down on observe) cannot drop the
+        // connection before the reply flushes to the asking node.
+        mark_two_process_ask_observed();
     }
 
     unsafe extern "C-unwind" fn void_ask_probe_dispatch(
@@ -3743,6 +4457,7 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) {
+        mark_two_process_ask_observed();
     }
 
     #[test]
@@ -3787,7 +4502,16 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid and no reply buffer is expected.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         assert_eq!(reply_ptr, remote_void_reply_sentinel());
         assert_eq!(
             hew_node_ask_take_last_error(),
@@ -3868,6 +4592,7 @@ mod tests {
                 1,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
                 std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u32>(),
             )
         };
@@ -3936,7 +4661,16 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
 
         assert!(
@@ -4001,7 +4735,16 @@ mod tests {
         unsafe { crate::actor::hew_actor_stop(actor) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
 
         assert!(
@@ -4083,7 +4826,16 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
 
         assert!(
@@ -4147,7 +4899,16 @@ mod tests {
 
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
 
@@ -4237,7 +4998,16 @@ mod tests {
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
         let ask_start = std::time::Instant::now();
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
 
@@ -4251,7 +5021,7 @@ mod tests {
             "pre-rejection peer fallback must time out instead of returning WorkerAtCapacity"
         );
         assert!(
-            ask_start.elapsed() < Duration::from_millis(REMOTE_ASK_TIMEOUT_MS * 3),
+            ask_start.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS * 3),
             "fallback ask should resolve near the timeout deadline, not block indefinitely"
         );
 
@@ -4307,7 +5077,14 @@ mod tests {
 
         // SAFETY: non-void remote ask expects a u32-sized reply; an empty success must fail closed.
         let reply_ptr = unsafe {
-            hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>())
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            )
         };
         assert!(
             reply_ptr.is_null(),
@@ -4372,7 +5149,14 @@ mod tests {
         let ask_start = std::time::Instant::now();
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let reply_ptr = unsafe {
-            hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>())
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            )
         };
         let err = hew_node_ask_take_last_error();
 
@@ -4383,7 +5167,7 @@ mod tests {
             "remote ask that receives no reply must report Timeout"
         );
         assert!(
-            ask_start.elapsed() < Duration::from_millis(REMOTE_ASK_TIMEOUT_MS * 3),
+            ask_start.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS * 3),
             "ask should complete near the timeout deadline, not block indefinitely"
         );
 
@@ -4440,7 +5224,14 @@ mod tests {
 
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr = hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>());
+            let ptr = hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            );
             let err = hew_node_ask_take_last_error();
             (ptr as usize, err)
         });
@@ -4554,7 +5345,14 @@ mod tests {
 
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr = hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>());
+            let ptr = hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            );
             let err = hew_node_ask_take_last_error();
             (ptr as usize, err)
         });
@@ -4598,7 +5396,7 @@ mod tests {
             "connection drop should report ConnectionDropped"
         );
         assert!(
-            disconnect_started.elapsed() < Duration::from_millis(REMOTE_ASK_TIMEOUT_MS / 2),
+            disconnect_started.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS / 2),
             "pending remote ask should wake well before the full remote ask timeout"
         );
 
@@ -4872,6 +5670,7 @@ mod tests {
                 1,
                 std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
                 std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u32>(),
             )
         };
@@ -4970,7 +5769,16 @@ mod tests {
         // the void-success sentinel because the rejection sent an empty payload
         // which remote_reply_data_to_ptr mistook for a void success.
         // SAFETY: null payload / size-0 are valid; this is a void ask.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
 
         // Restore before any assertions so the teardown path is clean.
@@ -5045,6 +5853,7 @@ mod tests {
                 1,
                 std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
                 std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u32>(),
             )
         };

@@ -461,7 +461,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
             }
             Item::Supervisor(s) => {
                 for child in &s.children {
-                    for arg in &child.args {
+                    for (_field_name, arg) in &child.args {
                         collect_locals_from_spanned_expr(arg, offset, &mut locals);
                     }
                 }

@@ -439,7 +439,12 @@ fn test_pub_type_accessible_qualified() {
 }
 
 #[test]
-fn test_pub_type_import_conflicting_with_local_type_errors() {
+fn test_pub_type_import_coexists_with_local_same_name() {
+    // Per-module type namespacing (R313): a local `Config` and an imported
+    // `config.Config` are distinct types keyed by their defining module, so
+    // they coexist. The local def is reachable bare; the imported def is
+    // reachable through its qualifier. This is NOT a duplicate definition —
+    // the collision is only between two declarations *in the same module*.
     let local_type = TypeDecl {
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
@@ -486,11 +491,290 @@ fn test_pub_type_import_conflicting_with_local_type_errors() {
     let output = checker.check_program(&program);
 
     assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::DuplicateDefinition),
+        "local and imported same-named types must coexist, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output.type_defs.contains_key("Config"),
+        "local type must be reachable bare as `Config`"
+    );
+    assert!(
+        output.type_defs.contains_key("config.Config"),
+        "imported type must be reachable qualified as `config.Config`"
+    );
+}
+
+// ── per-module type namespacing (R313) ────────────────────────────────────────
+
+fn pub_struct(name: &str) -> TypeDecl {
+    TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Struct,
+        name: name.to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
+        consuming_methods: Vec::new(),
+    }
+}
+
+#[test]
+fn two_modules_export_same_type_name_coexist() {
+    // VC4: importing two modules that each export a `Value` must not produce a
+    // duplicate-definition error; both defs are reachable under their qualifier.
+    let import_a = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let import_b = make_user_import(
+        &["pkg", "beta"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let program = Program {
+        items: vec![
+            (Item::Import(import_a), 0..0),
+            (Item::Import(import_b), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::DuplicateDefinition),
+        "same-named types from different modules must coexist, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output.type_defs.contains_key("alpha.Value"),
+        "alpha.Value must be registered"
+    );
+    assert!(
+        output.type_defs.contains_key("beta.Value"),
+        "beta.Value must be registered"
+    );
+}
+
+#[test]
+fn same_module_duplicate_type_name_still_errors() {
+    // VC3: the per-module scoping must NOT weaken same-module uniqueness. Two
+    // `Value` declarations *in one module* are still a duplicate definition.
+    let import = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![
+            (Item::TypeDecl(pub_struct("Value")), 0..0),
+            (Item::TypeDecl(pub_struct("Value")), 10..20),
+        ],
+    );
+    let program = Program {
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    assert!(
         output
             .errors
             .iter()
             .any(|e| e.kind == hew_types::error::TypeErrorKind::DuplicateDefinition),
-        "expected DuplicateDefinition, got errors: {:?}",
+        "two `Value` decls in one module must still be a DuplicateDefinition, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn qualified_same_name_types_resolve_to_own_module_def() {
+    // VC5: `alpha.Value` and `beta.Value` must each carry their own module's
+    // export entry, guarding against first-wins mis-resolution.
+    let import_a = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let import_b = make_user_import(
+        &["pkg", "beta"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let program = Program {
+        items: vec![
+            (Item::Import(import_a), 0..0),
+            (Item::Import(import_b), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    // Both qualified keys resolve to distinct, present type defs.
+    assert!(
+        output.type_defs.contains_key("alpha.Value") && output.type_defs.contains_key("beta.Value"),
+        "both qualified defs must resolve, got keys: {:?}",
+        output.type_defs.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn qualified_param_type_carries_module_into_resolved_sig() {
+    // Slice 4 (downstream identity): a parameter typed `alpha.Value` must
+    // resolve to `Ty::Named { name: "alpha.Value" }`, so the qualified name —
+    // not the last-write-wins bare `Value` — is the identity carried into
+    // HIR/MIR layout, mangle, and vtable keys. Two co-imported `Value`s would
+    // otherwise collide under one bare key downstream.
+    let import_a = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let import_b = make_user_import(
+        &["pkg", "beta"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let consumer = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        name: "take_alpha".to_string(),
+        type_params: None,
+        params: vec![Param {
+            name: "v".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "alpha.Value".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            is_mutable: false,
+        }],
+        return_type: None,
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: None,
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+        fn_span: 0..0,
+        intrinsic: None,
+    };
+    let program = Program {
+        items: vec![
+            (Item::Import(import_a), 0..0),
+            (Item::Import(import_b), 0..0),
+            (Item::Function(consumer), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    let sig = output
+        .fn_sigs
+        .get("take_alpha")
+        .expect("take_alpha sig must be registered");
+    let param = sig.params.first().expect("take_alpha has one param");
+    match param {
+        Ty::Named { name, .. } => assert_eq!(
+            name, "alpha.Value",
+            "param type must carry the module qualifier into the resolved sig"
+        ),
+        other => panic!("expected Ty::Named, got {other:?}"),
+    }
+}
+
+#[test]
+fn unqualified_ambiguous_type_is_typed_error() {
+    // VC6: a bare reference to a type exported by two imported modules must be a
+    // typed AmbiguousType error, not a silent first-wins pick.
+    let import_a = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let import_b = make_user_import(
+        &["pkg", "beta"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    // A function signature referencing bare `Value`.
+    let consumer = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Private,
+        name: "use_value".to_string(),
+        type_params: None,
+        params: vec![Param {
+            name: "v".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "Value".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            is_mutable: false,
+        }],
+        return_type: None,
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: None,
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+        fn_span: 0..0,
+        intrinsic: None,
+    };
+    let program = Program {
+        items: vec![
+            (Item::Import(import_a), 0..0),
+            (Item::Import(import_b), 0..0),
+            (Item::Function(consumer), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::AmbiguousType),
+        "bare `Value` with two exporters must be AmbiguousType, got: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::DuplicateDefinition),
+        "ambiguity must not be reported as DuplicateDefinition, got: {:?}",
         output.errors
     );
 }

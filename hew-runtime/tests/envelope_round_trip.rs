@@ -4,10 +4,14 @@
 //! explicit `frame_type`, and `bstr` payload fields.
 
 use ciborium::value::{Integer, Value};
+use hew_runtime::cluster::{GOSSIP_REGISTRY_ADD, GOSSIP_REGISTRY_REMOVE};
 use hew_runtime::envelope::{
-    decode_control_frame, decode_envelope_frame, decode_wire_frame, encode_envelope_frame,
-    ControlFrame, DecodeError, EncodeError, EnvelopeFrame, WireFrame, FRAME_TYPE_CONTROL,
-    FRAME_TYPE_ENVELOPE, WIRE_VERSION,
+    decode_control_frame, decode_envelope_frame, decode_registry_gossip_payload, decode_wire_frame,
+    encode_control_frame, encode_envelope_frame, encode_registry_gossip_payload, ControlFrame,
+    DecodeError, EncodeError, EnvelopeFrame, RegistryGossipPayload, RegistryGossipPayloadError,
+    WireFrame, CTRL_REGISTRY_GOSSIP, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE,
+    MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD,
+    REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
 
 fn to_cbor<T: serde::Serialize>(value: &T) -> Vec<u8> {
@@ -82,6 +86,13 @@ fn assert_bytes_value(value: &Value, expected: &[u8]) {
     }
 }
 
+fn assert_text_value(value: &Value, expected: &str) {
+    match value {
+        Value::Text(text) => assert_eq!(text, expected),
+        other => panic!("expected CBOR text payload, got {other:?}"),
+    }
+}
+
 fn envelope_frame(
     target_actor_id: u64,
     source_actor_id: u64,
@@ -150,6 +161,14 @@ fn minimal_control() -> ControlFrame {
 
 fn minimal_envelope() -> EnvelopeFrame {
     envelope_frame(0, 0, 0, vec![])
+}
+
+fn registry_payload(op: u8, name: &str, actor_id: u64) -> RegistryGossipPayload {
+    RegistryGossipPayload {
+        op,
+        name: name.to_owned(),
+        actor_id,
+    }
 }
 
 fn well_formed_envelope_value_with_frame_type(frame_type: Value) -> Value {
@@ -294,6 +313,118 @@ fn control_frame_with_payload_round_trips() {
     let bytes = to_cbor(&original);
     let decoded: ControlFrame = from_cbor(&bytes);
     assert_eq!(original, decoded);
+}
+
+#[test]
+fn control_frame_public_encoder_round_trips() {
+    let original = ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: CTRL_REGISTRY_GOSSIP,
+        payload: b"registry-gossip".to_vec(),
+    };
+
+    let bytes = encode_control_frame(&original).expect("control frame should encode");
+    cddl_control_shape(&original);
+    assert_eq!(decode_control_frame(&bytes).unwrap(), original);
+}
+
+#[test]
+fn registry_gossip_payload_round_trips_and_matches_cluster_ops() {
+    assert_eq!(REGISTRY_GOSSIP_OP_ADD, GOSSIP_REGISTRY_ADD);
+    assert_eq!(REGISTRY_GOSSIP_OP_REMOVE, GOSSIP_REGISTRY_REMOVE);
+
+    let original = registry_payload(REGISTRY_GOSSIP_OP_ADD, "worker", 0x6200_0000_0000_0042);
+    let bytes = encode_registry_gossip_payload(&original).expect("payload should encode");
+    let decoded = decode_registry_gossip_payload(&bytes).expect("payload should decode");
+    assert_eq!(decoded, original);
+
+    let value = decode_value(&bytes);
+    let entries = map_entries(&value);
+    assert_eq!(entries.len(), 3);
+    assert_integer_keys_and_order(entries, &[1, 2, 3]);
+    assert_integer_value(find_field(entries, 1), i128::from(REGISTRY_GOSSIP_OP_ADD));
+    assert_text_value(find_field(entries, 2), "worker");
+    assert_integer_value(find_field(entries, 3), 0x6200_0000_0000_0042_i128);
+
+    let remove = registry_payload(REGISTRY_GOSSIP_OP_REMOVE, "worker", 0);
+    let remove_bytes = encode_registry_gossip_payload(&remove).expect("remove payload");
+    assert_eq!(
+        decode_registry_gossip_payload(&remove_bytes).unwrap(),
+        remove
+    );
+}
+
+#[test]
+fn registry_gossip_payload_codec_rejects_malformed_payloads() {
+    let unknown_op = Value::Map(vec![
+        (int(1u64), int(99u8)),
+        (int(2u64), Value::Text("worker".to_owned())),
+        (int(3u64), int(42u64)),
+    ]);
+    assert!(matches!(
+        decode_registry_gossip_payload(&value_to_cbor(&unknown_op)),
+        Err(RegistryGossipPayloadError::InvalidOp { op: 99 })
+    ));
+
+    let missing_name = Value::Map(vec![(int(1u64), int(REGISTRY_GOSSIP_OP_ADD))]);
+    assert!(matches!(
+        decode_registry_gossip_payload(&value_to_cbor(&missing_name)),
+        Err(RegistryGossipPayloadError::MissingKey { key: 2 })
+    ));
+
+    let duplicate_name = Value::Map(vec![
+        (int(1u64), int(REGISTRY_GOSSIP_OP_ADD)),
+        (int(2u64), Value::Text("worker".to_owned())),
+        (int(2u64), Value::Text("other".to_owned())),
+        (int(3u64), int(42u64)),
+    ]);
+    assert!(matches!(
+        decode_registry_gossip_payload(&value_to_cbor(&duplicate_name)),
+        Err(RegistryGossipPayloadError::DuplicateKey { key: 2 })
+    ));
+
+    let unknown_key = Value::Map(vec![
+        (int(1u64), int(REGISTRY_GOSSIP_OP_ADD)),
+        (int(2u64), Value::Text("worker".to_owned())),
+        (int(3u64), int(42u64)),
+        (int(4u64), int(0u64)),
+    ]);
+    assert!(matches!(
+        decode_registry_gossip_payload(&value_to_cbor(&unknown_key)),
+        Err(RegistryGossipPayloadError::UnknownKey { key: 4 })
+    ));
+
+    let add_zero_actor = registry_payload(REGISTRY_GOSSIP_OP_ADD, "worker", 0);
+    assert!(matches!(
+        encode_registry_gossip_payload(&add_zero_actor),
+        Err(RegistryGossipPayloadError::MalformedField { key: 3, .. })
+    ));
+
+    let nul_name = Value::Map(vec![
+        (int(1u64), int(REGISTRY_GOSSIP_OP_ADD)),
+        (int(2u64), Value::Text("bad\0name".to_owned())),
+        (int(3u64), int(42u64)),
+    ]);
+    assert!(matches!(
+        decode_registry_gossip_payload(&value_to_cbor(&nul_name)),
+        Err(RegistryGossipPayloadError::MalformedField { key: 2, .. })
+    ));
+
+    let long_name = registry_payload(
+        REGISTRY_GOSSIP_OP_ADD,
+        &"x".repeat(MAX_REGISTRY_GOSSIP_NAME_BYTES + 1),
+        42,
+    );
+    assert!(matches!(
+        encode_registry_gossip_payload(&long_name),
+        Err(RegistryGossipPayloadError::MalformedField { key: 2, .. })
+    ));
+
+    let oversized = vec![0u8; MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES + 1];
+    assert!(matches!(
+        decode_registry_gossip_payload(&oversized),
+        Err(RegistryGossipPayloadError::PayloadTooLarge { .. })
+    ));
 }
 
 // -- Byte-shape conformance -------------------------------------------------

@@ -29,6 +29,8 @@ wire-frame = control-frame / envelope-frame
 ;
 ; Used for node-level signalling: keep-alive, capability negotiation, etc.
 ; Payload is a byte string whose interpretation is protocol-defined.
+;
+; ctrl_kind = 1 carries registry-gossip-payload.
 
 control-frame = {
     version:    1 => wire-version,
@@ -36,6 +38,14 @@ control-frame = {
     ctrl_kind:  3 => uint,         ; protocol-defined control kind tag
     payload:    4 => bstr,         ; 0..* bytes; empty bstr for bare signals
 }
+
+registry-gossip-payload = {
+    op:       1 => registry-gossip-op,
+    name:     2 => text,           ; bounded by runtime to 1024 UTF-8 bytes
+    actor_id: 3 => actor-id,       ; non-zero for add; ignored for remove
+}
+
+registry-gossip-op = 5 / 6         ; add / remove
 
 ; ── Envelope frame ───────────────────────────────────────────────────────────
 ;

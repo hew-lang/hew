@@ -321,36 +321,47 @@ fn test_arity_mismatch() {
 }
 
 #[test]
-fn test_numeric_same_sign_coercion_allowed() {
-    // With width check, narrowing i64 -> i8 should be rejected
+fn test_numeric_widening_i8_to_i64_rejected() {
+    // Implicit same-sign widening (i8 → i64) is not allowed; requires `as i64`.
     let output = typecheck(
         r"
         fn main() {
             let x: i8 = 42;
-            let y: i64 = x; // OK: widening i8 -> i64
+            let y: i64 = x;
         }
     ",
     );
     assert!(
-        output.errors.is_empty(),
-        "Widening integer coercion should be allowed, got: {:?}",
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("cannot implicitly convert")
+                && e.message.contains("i8")
+                && e.message.contains("i64")),
+        "expected integer-widening rejection for i8 -> i64, got: {:?}",
         output.errors
     );
 }
 
 #[test]
-fn test_numeric_widening_allowed() {
+fn test_numeric_widening_i8_to_i32_rejected() {
+    // Implicit same-sign widening (i8 → i32) is not allowed; requires `as i32`.
     let output = typecheck(
         r"
         fn main() {
             let x: i8 = 42;
-            let y: i32 = x; // OK: widening i8 -> i32
+            let y: i32 = x;
         }
     ",
     );
     assert!(
-        output.errors.is_empty(),
-        "Expected no errors for i8 -> i32 widening, got: {:?}",
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("cannot implicitly convert")
+                && e.message.contains("i8")
+                && e.message.contains("i32")),
+        "expected integer-widening rejection for i8 -> i32, got: {:?}",
         output.errors
     );
 }

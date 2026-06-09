@@ -273,21 +273,47 @@ impl Checker {
                         span,
                         "float literal patterns are not supported in match arms".to_string(),
                     );
-                } else if !matches!(ty, Ty::Var(_) | Ty::Error)
-                    && !literal_pattern_matches_type(literal, ty)
-                {
-                    let expected = ty.user_facing().to_string();
-                    let actual = literal_pattern_label(literal).to_string();
-                    self.report_error(
-                        TypeErrorKind::Mismatch {
-                            expected: expected.clone(),
-                            actual: actual.clone(),
-                        },
-                        span,
-                        format!(
-                            "literal pattern `{actual}` cannot match scrutinee type `{expected}`"
-                        ),
-                    );
+                } else {
+                    if let Literal::Integer { value, .. } = literal {
+                        if let Some(info) = integer_type_info(ty) {
+                            if *value < 0 && !info.signed {
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "negative literal `{value}` cannot be used as pattern for unsigned scrutinee type `{}`",
+                                        ty.user_facing()
+                                    ),
+                                );
+                            } else if !integer_fits_type(*value, ty) {
+                                let (lo, hi) = integer_type_range(ty).unwrap_or((0, 0));
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "integer literal `{value}` does not fit in match scrutinee type `{}` (range {lo}..={hi})",
+                                        ty.user_facing()
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    if !matches!(ty, Ty::Var(_) | Ty::Error)
+                        && !literal_pattern_matches_type(literal, ty)
+                    {
+                        let expected = ty.user_facing().to_string();
+                        let actual = literal_pattern_label(literal).to_string();
+                        self.report_error(
+                            TypeErrorKind::Mismatch {
+                                expected: expected.clone(),
+                                actual: actual.clone(),
+                            },
+                            span,
+                            format!(
+                                "literal pattern `{actual}` cannot match scrutinee type `{expected}`"
+                            ),
+                        );
+                    }
                 }
             }
             Pattern::Identifier(name) => {

@@ -348,6 +348,93 @@ fn impl_param_count_mismatch_fails_closed() {
     );
 }
 
+/// Impl function with a concrete value-type (non-pointer) receiver.
+/// Used by `thunk_loads_value_type_receiver_through_data_ptr` to build
+/// a scaffold that takes `i64` directly (not `ptr`) as param 0.
+fn impl_method_stub_value_recv(name: &str, ret: ResolvedTy) -> RawMirFunction {
+    // Receiver is `i64` (value-type), not `ptr`.
+    let params = vec![ResolvedTy::I64];
+    let local_idx = u32::try_from(params.len()).expect("param count fits u32");
+    let instructions = match &ret {
+        ResolvedTy::I64 => vec![
+            Instr::ConstI64 {
+                dest: Place::Local(local_idx),
+                value: 77,
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(local_idx),
+            },
+        ],
+        ResolvedTy::Unit => vec![],
+        other => panic!("impl_method_stub_value_recv: unsupported ret {other:?}"),
+    };
+    let mut locals: Vec<ResolvedTy> = params.clone();
+    if matches!(ret, ResolvedTy::I64) {
+        locals.push(ret.clone());
+    }
+    RawMirFunction {
+        name: name.to_string(),
+        return_ty: ret,
+        call_conv: FunctionCallConv::Default,
+        params,
+        locals,
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions,
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        intrinsic_id: None,
+    }
+}
+
+/// When the impl function's first parameter is a non-pointer value type
+/// (e.g. `i64`) the thunk must emit a `load i64, ptr %0` before the
+/// forward call, not pass the data pointer directly.
+///
+/// This pins the `impl_first_param_is_ptr == false` branch in
+/// `emit_dyn_trait_thunks`: the CoerceToDynTrait site places the
+/// concrete value's alloca address in the fat-pointer data word, so
+/// `ptr %0` always dereferences to the correct value.
+#[test]
+fn thunk_loads_value_type_receiver_through_data_ptr() {
+    // Build an impl stub whose first parameter is `i64` (not `ptr`).
+    let impl_fn = impl_method_stub_value_recv("i64_area_impl", ResolvedTy::I64);
+    let entry = vtable_entry("Shape", "area", "i64_area_impl", Ty::I64, vec![]);
+    let vtable = vtable_instance(
+        0,
+        "Shape",
+        ResolvedTy::I64,
+        vec![("area".to_string(), "i64_area_impl".to_string(), entry)],
+    );
+    let p = pipeline_with(vec![impl_fn], vec![vtable]);
+    let ll = emit_ll(&p, "value_type_recv");
+    let thunk = mangle_dyn_thunk_symbol(0, 0, "Shape", &ResolvedTy::I64);
+
+    // The thunk's own signature: `(ptr) -> i64` — erased receiver.
+    assert!(
+        ll.contains(&format!("define private i64 @{thunk}(ptr")),
+        "thunk must have `ptr` parameter (erased self); got:\n{ll}"
+    );
+
+    // The thunk body must contain a `load i64, ptr` instruction to
+    // dereference the data pointer before calling the impl.
+    let body_start = ll
+        .find(&format!("@{thunk}"))
+        .expect("thunk symbol must appear in IR");
+    let body = &ll[body_start..];
+    assert!(
+        body.contains("load i64, ptr"),
+        "thunk body must emit `load i64, ptr` for a value-type receiver; got:\n{body}"
+    );
+    assert!(
+        body.contains("call i64 @i64_area_impl"),
+        "thunk body must forward to `@i64_area_impl`; got:\n{body}"
+    );
+}
+
 /// A method whose vtable-entry signature carries a non-trivial
 /// `params` list produces a thunk whose LLVM signature mirrors it
 /// after the leading erased `ptr`. This pins the contract that

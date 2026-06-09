@@ -16,8 +16,8 @@ supervisor CounterPool {
     max_restarts: 5;
     window: 60;
 
-    child c1: Counter(0);
-    child c2: Counter(0);
+    child c1: Counter(count: 0);
+    child c2: Counter(count: 0);
 }
 
 // Wire types are first-class.

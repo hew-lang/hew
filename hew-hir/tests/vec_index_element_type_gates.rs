@@ -6,14 +6,16 @@
 //! diagnostic instead of letting MIR emit `NotYetImplemented` deep in
 //! lowering.
 //!
-//! Scalar-index allowlist: bool, char, i32, u32, i64, u64, f64, and
-//! `Named { .. }` (user-defined types dispatched via `hew_vec_get_ptr`).
+//! Scalar-index allowlist: bool, char, i32, u32, i64, u64, f64, tuples, and
+//! `Named { .. }` (user-defined types dispatched via `hew_vec_get_ptr` for
+//! heap handles or `hew_vec_get_layout` for `BitCopy` value records).
+//! Source-level scalar indexing still excludes `String` until the retained
+//! `hew_vec_get_str` owner is balanced outside the synthetic Vec for-in path.
 //! Range-slice allowlist: i32, u32, i64, u64, f64, `String`, and
-//! `Named { .. }` (`hew_vec_slice_range_str` strdups each element). Note the
-//! asymmetry: `String` is allowed for range-slice but not scalar index because
-//! the runtime ABI lacks `hew_vec_get_str`, while bool/char scalar indexing is
-//! supported but range slicing is still fail-closed pending width
-//! normalisation.
+//! `Named { .. }` (`hew_vec_slice_range_str` copies header-aware elements into
+//! the fresh vec). Note the asymmetry: `String` is allowed for range-slice but
+//! not source-level scalar index, while bool/char scalar indexing is supported
+//! but range slicing is still fail-closed pending width normalisation.
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx, TargetArch};
 use hew_types::{module_registry::ModuleRegistry, Checker};
@@ -177,9 +179,9 @@ fn vec_slice_unsupported_element_types_rejected() {
 
 #[test]
 fn vec_index_supported_element_types_accepted() {
-    // Scalar index on bool / char / i32 / i64 / f64 / user-defined Named type
-    // must NOT fire. Bool dispatches to hew_vec_get_bool; char reuses
-    // hew_vec_get_i32.
+    // Scalar index on bool / char / i32 / i64 / f64 / tuple / user-defined
+    // Named type must NOT fire. Bool dispatches to hew_vec_get_bool; char
+    // reuses hew_vec_get_i32; tuples route through hew_vec_get_layout.
     let out = lower(
         r"
         record UserRecord { x: i32 }
@@ -189,6 +191,7 @@ fn vec_index_supported_element_types_accepted() {
         fn pick_i64(xs: Vec<i64>, i: i64) -> i64 { xs[i] }
         fn pick_f64(xs: Vec<f64>, i: i64) -> f64 { xs[i] }
         fn pick_named(xs: Vec<UserRecord>, i: i64) -> UserRecord { xs[i] }
+        fn pick_tuple(xs: Vec<(i64, i64)>, i: i64) -> (i64, i64) { xs[i] }
         ",
     );
 

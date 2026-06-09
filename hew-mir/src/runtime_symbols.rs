@@ -398,14 +398,19 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // --- Vec<T> indexing (C-2) ----------------------------------
     // hew_vec_get_T(v: *mut HewVec, index: i64) -> T — one per element type.
     // Element types supported: bool, i32, i64, f64, ptr (handle/opaque), str (returns
-    // strdup copy — caller owns; deferred to a follow-on slice for managed drop).
-    // String (hew_vec_get_str) is allowlisted but not emitted by this slice's
-    // MIR producer; the caller would need to manage the strdup return.
+    // a retained/header-aware owner; caller balances with hew_string_drop).
+    // Vec<String> for-in lowering emits hew_vec_get_str only when the retained
+    // per-iteration owner is paired with an explicit hew_string_drop.
+    // hew_vec_get_layout(v, index, layout) -> *const c_void — layout-descriptor
+    // path for BitCopy Named records and tuples; codegen reads the element back
+    // through the dest-place type. Emitted by subscript (xs[i]) and for-in
+    // lowering for value-record element types.
     // Lexicographic note: hew_vec_get_* < hew_vec_len (g < l).
     "hew_vec_get_bool",
     "hew_vec_get_f64",
     "hew_vec_get_i32",
     "hew_vec_get_i64",
+    "hew_vec_get_layout",
     "hew_vec_get_ptr",
     "hew_vec_get_str",
     // hew_vec_len(v: *mut HewVec) -> i64
@@ -416,8 +421,8 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // bounds-checks `start <= end` and `end <= len(v)` with trap-on-OOB
     // before calling; runtime defends-in-depth with the same checks.
     // Element types covered: i32, i64, f64, ptr (handle/opaque), str
-    // (strdup copy per element; result vec owns and frees via existing
-    // ElemKind::String free-on-drop path in hew_vec_free).
+    // (header-aware copy per element; result vec owns and releases via
+    // existing ElemKind::String free-on-drop path in hew_vec_free).
     // Lexicographic note: hew_vec_len < hew_vec_slice_range_* (l < s).
     "hew_vec_slice_range_f64",
     "hew_vec_slice_range_i32",

@@ -1281,11 +1281,59 @@ impl Checker {
                             .is_some_and(|(_, short)| short == name)
                     })
                     .collect();
-                let resolved_name = if self.type_defs.contains_key(name) {
+                // A bare reference binds to the current module's own type when the
+                // name is locally defined (root program or the module being
+                // checked). Imported types must be reached through their qualifier;
+                // a bare `type_defs` hit on a non-local name is only the
+                // last-write-wins residue of a cross-module same-name collision and
+                // must not be treated as an unambiguous resolution.
+                let is_local = self.local_type_defs.contains(name.as_str())
+                    || self.source_type_defs.contains(name.as_str());
+                // Distinct importing modules that export this bare name, per the
+                // authoritative `module_type_exports` registry (populated on every
+                // registration path: stdlib Pass 3, user-module, handle types).
+                // `known_types` alone is insufficient — it carries qualified keys
+                // only for the C-binding handle path, not pure-Hew user modules.
+                let mut owner_modules: Vec<&str> = self
+                    .module_type_exports
+                    .iter()
+                    .filter(|(_, exports)| exports.contains(name.as_str()))
+                    .map(|(module, _)| module.as_str())
+                    .collect();
+                owner_modules.sort_unstable();
+                owner_modules.dedup();
+                if !is_local && owner_modules.len() > 1 {
+                    // Unqualified name exported by more than one imported module.
+                    // Fail closed with a typed ambiguity error naming the
+                    // candidates, rather than silently first-winning a def.
+                    let mut candidates: Vec<String> = owner_modules
+                        .iter()
+                        .map(|m| format!("{m}.{name}"))
+                        .collect();
+                    candidates.sort();
+                    self.report_error_with_suggestions(
+                        TypeErrorKind::AmbiguousType,
+                        &te.1,
+                        format!(
+                            "ambiguous type `{name}`: exported by {} imported modules",
+                            owner_modules.len()
+                        ),
+                        candidates
+                            .iter()
+                            .map(|c| format!("qualify the reference, e.g. `{c}`"))
+                            .collect(),
+                    );
+                    return Ty::Error;
+                }
+                let resolved_name = if is_local && self.type_defs.contains_key(name) {
                     name.clone()
                 } else {
                     match handle_matches.as_slice() {
+                        // Exactly one importing module exports this name: bind to
+                        // its qualified def.
                         [qualified] => (*qualified).clone(),
+                        // Zero qualified matches: keep the bare name (builtin,
+                        // alias, or a downstream undefined-type diagnostic).
                         _ => name.clone(),
                     }
                 };

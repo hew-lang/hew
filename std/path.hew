@@ -23,7 +23,8 @@
 ///
 /// Created by `path.glob(pattern)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
-type GlobResult {
+#[opaque]
+pub type GlobResult {
 }
 
 /// Methods available on a `GlobResult`.
@@ -42,7 +43,7 @@ impl GlobResultMethods for GlobResult {
     /// Return the number of matched paths.
     fn count(res: GlobResult) -> i64 {
         unsafe {
-            hew_glob_count(res)
+            hew_glob_count(res) as i64
         }
     }
     /// Return the matched path at the given index.

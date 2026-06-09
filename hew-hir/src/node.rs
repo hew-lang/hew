@@ -661,6 +661,13 @@ pub struct HirSupervisorChild {
     /// Assigned by the HIR lowering pass by counting each partition in source order.
     /// MIR lowering reads this field to emit the correct runtime ABI call.
     pub slot_index: u32,
+    /// Named init args from the child declaration, e.g. `child w: Worker(id: 7)`.
+    ///
+    /// Each entry is `(field_name, expr)`, mirroring `HirSpawnExpr.args`.
+    /// Empty when no `(...)` clause appears on the child declaration.
+    /// MIR lowering reads these to build `SupervisorChildLayout.init_state_fields`
+    /// so codegen can construct the per-child state template.
+    pub init_args: Vec<(String, HirExpr)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -697,6 +704,17 @@ pub struct HirTypeDecl {
     /// to recognise opacity specifically, since `BitCopy` is also used by
     /// non-opaque substrate records.
     pub is_opaque: bool,
+    /// `indirect enum` — this enum is heap-allocated; every variable of this
+    /// type holds a pointer to a heap-allocated tagged-union struct. Enables
+    /// recursive data types (the enum value itself is a pointer so its size
+    /// is finite even when variants reference the type recursively).
+    ///
+    /// Downstream stages: MIR adds the name to `opaque_handle_names` so
+    /// codegen emits `ptr`-typed alloca slots and routes all
+    /// `Place::EnumTag` / `Place::EnumVariant` accesses through a pointer
+    /// dereference. Construction emits `hew_alloc` + write + ptr-store;
+    /// drop emits `hew_dealloc` after recursively freeing sub-trees.
+    pub is_indirect: bool,
     /// Names of methods declared with a `consuming self` receiver in the
     /// type body. Lifted verbatim from `TypeDecl.consuming_methods`.
     pub consuming_methods: Vec<String>,
@@ -781,6 +799,7 @@ impl HirVariant {
 pub struct HirField {
     pub name: String,
     pub ty: ResolvedTy,
+    pub default: Option<HirExpr>,
     pub span: Span,
 }
 
@@ -871,6 +890,23 @@ pub struct HirExpr {
     pub intent: IntentKind,
     pub kind: HirExprKind,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirVarSelfMethodTarget {
+    Direct {
+        callee: String,
+    },
+    StaticTrait {
+        /// Type-parameter name that carries the bound (e.g. "T").
+        receiver_type_param: String,
+        /// The bound trait through which the method was reached.
+        bound_trait: String,
+        /// The trait that directly declares the method (canonical identity for impl lookup).
+        declaring_trait: String,
+        /// Method name within the declaring trait.
+        method_name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -968,6 +1004,16 @@ pub enum HirExprKind {
         receiver: Box<HirExpr>,
         method_id: String,
         args: Vec<HirExpr>,
+        reply_ty: ResolvedTy,
+    },
+    /// Cross-node request/reply dispatch on `RemotePid<T>::ask(msg, timeout_ms)`.
+    ///
+    /// The expression type is the full `Result<T::Reply, AskError>`; `reply_ty`
+    /// carries the decoded Ok payload type for MIR/codegen reply sizing.
+    RemoteActorAsk {
+        receiver: Box<HirExpr>,
+        msg: Box<HirExpr>,
+        timeout_ms: Box<HirExpr>,
         reply_ty: ResolvedTy,
     },
     Block(HirBlock),
@@ -1125,8 +1171,9 @@ pub enum HirExprKind {
     },
     /// Project one element out of a tuple value: `expr.<index>`.
     ///
-    /// Produced exclusively by tuple-let lowering (`let (a, b) = …`) — not a
-    /// surface syntax node.  `index` is the zero-based element position.
+    /// Produced by tuple-let lowering (`let (a, b) = …`) and by surface numeric
+    /// field access on tuple-typed expressions (`t.0`, `t.1`). `index` is the
+    /// zero-based element position.
     TupleIndex {
         /// The tuple expression being projected.
         tuple: Box<HirExpr>,
@@ -1263,6 +1310,24 @@ pub enum HirExprKind {
         method_name: String,
         args: Vec<HirExpr>,
         ret_ty: ResolvedTy,
+    },
+    /// Var-self method dispatch using the Slice-1 dual-return ABI.
+    ///
+    /// The lowered callee returns `(method_result, Self)`. MIR consumes the
+    /// receiver binding, calls the selected method, stores tuple field 1 back
+    /// into the original binding slot, marks the binding live again for the
+    /// move-checker, and yields tuple field 0 as the expression value.
+    ///
+    /// Produced only for method signatures whose checker-owned signature has
+    /// `requires_mutable_receiver`; ordinary methods continue through `Call`
+    /// / `CallTraitMethodStatic`, and builtin resolved impl calls remain in the
+    /// closed `ResolvedImplCall` arm.
+    VarSelfMethodCall {
+        receiver: Box<HirExpr>,
+        target: HirVarSelfMethodTarget,
+        args: Vec<HirExpr>,
+        ret_ty: ResolvedTy,
+        receiver_ty: ResolvedTy,
     },
     /// Builtin-generic trait dispatch resolved at type-check time via the
     /// structured impl registry (`hew_types::check::dispatch::ImplRegistry`).
@@ -1643,6 +1708,26 @@ pub enum HirMatchArmPredicate {
     /// `_` wildcard — matches any scrutinee value. At most one per match
     /// expression; the checker enforces this.
     Wildcard,
+    /// A plain lowercase-identifier binding arm (e.g. `x => ...`).
+    ///
+    /// Matches any scrutinee value (like `Wildcard`) and additionally
+    /// binds the entire scrutinee value to `name` in the arm body scope.
+    /// `ty` is the checker-resolved scrutinee type.
+    ///
+    /// MIR lowering emits a `Move` from the scrutinee local to a fresh
+    /// binding local before running the arm body, then registers
+    /// `binding_id → local` in `binding_locals` so guard/body
+    /// `BindingRef`s resolve correctly.
+    Binding {
+        /// Stable binding id allocated during HIR lowering. Identical in
+        /// role to an `HirMatchArmBinding::binding` id; MIR registers the
+        /// local under this id so guard/body refs resolve correctly.
+        binding_id: BindingId,
+        /// Surface binding name as written in the pattern.
+        name: String,
+        /// Checker-resolved scrutinee type for the binding.
+        ty: ResolvedTy,
+    },
     /// A unit-variant constructor arm (e.g. `Colour::Red`).
     ///
     /// `variant_match` is the checker-resolved `(type_name, variant_name)`
@@ -1655,9 +1740,10 @@ pub enum HirMatchArmPredicate {
     },
     /// A top-level scalar literal pattern arm (e.g. `0`, `true`, `'a'`).
     ///
-    /// Stage 2 supports only i64 / bool / char. `ty` is the checker-resolved
-    /// scrutinee/comparand type so MIR can allocate the constant local at the
-    /// same integer width as the scrutinee before emitting `IntCmp Eq`.
+    /// Integer literal arms are coerced to the scrutinee integer type. `ty` is
+    /// the checker-resolved scrutinee/comparand type so MIR can allocate the
+    /// constant local at the same integer width as the scrutinee before
+    /// emitting `IntCmp Eq`.
     Literal { lit: HirLiteral, ty: ResolvedTy },
     /// A plain record match-arm project pattern (e.g. `Point { x, y }`).
     ///
@@ -1710,8 +1796,9 @@ pub struct HirPayloadPredicate {
 /// Payload-bearing constructor patterns carry their per-field bindings in
 /// `bindings`. Literal payload subpatterns carry their per-field checks in
 /// `payload_predicates`; this vector is empty for older constructor shapes.
-/// Guards still never produce a `HirMatchArm` and are rejected at HIR lowering
-/// with a structured diagnostic.
+/// Arms with a `guard` expression fire only when the pattern matches AND
+/// the guard evaluates to `true`; a `false` guard falls through to the next
+/// arm exactly as if the pattern had not matched.
 ///
 /// `body` is the arm's right-hand-side expression. The arm's source span
 /// is preserved for diagnostics.
@@ -1724,6 +1811,15 @@ pub struct HirMatchArm {
     /// Literal checks for constructor payload fields, evaluated after the
     /// outer tag check and before the arm body.
     pub payload_predicates: Vec<HirPayloadPredicate>,
+    /// Optional guard expression (`Pattern if <guard> => ...`).
+    ///
+    /// When `Some`, the arm fires only if the pattern matches AND the guard
+    /// evaluates to `true`. MIR lowering emits bindings (if any), evaluates
+    /// the guard, and branches: true → body block, false → fallthrough to the
+    /// next arm's check block.
+    ///
+    /// `None` for arms without a guard (the common case).
+    pub guard: Option<HirExpr>,
     /// Arm body expression. Evaluates only when this arm's predicate wins.
     pub body: HirExpr,
     /// Source span of the arm (pattern through body).

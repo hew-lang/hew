@@ -57,12 +57,48 @@ pub enum LookupError {
     NotFound;
 }
 
+/// Error returned when a remote actor ask cannot complete.
+///
+/// Variant order matches the native runtime ask ABI so codegen can project
+/// the runtime error discriminant directly into this public enum.
+pub enum AskError {
+    /// Internal no-error sentinel; should not be returned as `Err`.
+    NoError;
+    /// The local node is not running.
+    NodeNotRunning;
+    /// The destination node or actor could not be routed.
+    RoutingFailed;
+    /// The request payload could not be encoded.
+    EncodeFailed;
+    /// The request could not be sent.
+    SendFailed;
+    /// The caller-supplied timeout elapsed before a reply arrived.
+    Timeout;
+    /// The remote connection closed before the reply arrived.
+    ConnectionDropped;
+    /// The reply payload did not match the expected reply size.
+    PayloadSizeMismatch;
+    /// The remote ask worker is at capacity.
+    WorkerAtCapacity;
+    /// The destination actor is stopped.
+    ActorStopped;
+    /// The destination actor mailbox is full.
+    MailboxFull;
+    /// A reply arrived after its waiter was gone.
+    OrphanedAsk;
+    /// The runtime had no runnable work while waiting for the reply.
+    NoRunnableWork;
+}
+
 /// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.
 ///
 /// Named actors opt into the erased `Pid` surface by implementing this trait
-/// and binding `Msg` to the envelope type accepted by `.tell`.
+/// and binding `Msg` to the envelope type accepted by `.tell` / `.ask`, plus
+/// `Reply` to the response type returned by `.ask`.
 pub trait ActorMsg {
     type Msg;
+
+    type Reply;
 }
 
 /// Trait satisfied by both `LocalPid<A>` and `RemotePid<A>`.
@@ -127,6 +163,11 @@ impl<T: ActorMsg> RemotePid<T> {
     /// WASM-TODO(#1451)).
     fn tell(pid: RemotePid<T>, msg: T::Msg) -> Result<(), SendError> {
         Err(SendError::NodeRoutingNotWired)
+    }
+    /// Ask this remote actor for a reply, failing with `AskError` if the
+    /// caller-supplied timeout elapses or routing/reply delivery fails.
+    fn ask(pid: RemotePid<T>, msg: T::Msg, timeout_ms: u64) -> Result<T::Reply, AskError> {
+        Err(AskError::NodeNotRunning)
     }
 }
 

@@ -209,7 +209,7 @@ pub fn min_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit i
             m = val;
         }
     }
-    Some(m)
+    Some(m as i64)
 }
 
 /// Return `Some` of the smallest element in a `Vec<i64>`, or `None` if empty.
@@ -258,7 +258,7 @@ pub fn max_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit i
             m = val;
         }
     }
-    Some(m)
+    Some(m as i64)
 }
 
 /// Return `Some` of the largest element in a `Vec<i64>`, or `None` if empty.

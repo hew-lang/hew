@@ -38,7 +38,8 @@
 ///
 /// Obtained from `http_client.request(...)`, `http_client.get(...)`, or
 /// `http_client.post(...)`. Must be freed with `free()` when no longer needed.
-type Response {
+#[opaque]
+pub type Response {
 }
 
 // ── Response methods ──────────────────────────────────────────────────
@@ -75,7 +76,7 @@ impl ResponseMethods for Response {
     /// Return the HTTP status code (e.g. 200, 404).
     fn status(resp: Response) -> i64 {
         unsafe {
-            hew_http_response_status(resp)
+            hew_http_response_status(resp) as i64
         }
     }
     /// Return a copy of the response body as a string.

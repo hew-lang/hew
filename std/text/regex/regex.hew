@@ -21,7 +21,8 @@
 ///
 /// Created by `regex.new(pattern)`. Call `free()` before the value goes out of
 /// scope; dropping without `free()` is a resource leak.
-type Pattern {
+#[opaque]
+pub type Pattern {
 }
 
 /// Methods available on a compiled `Pattern`.

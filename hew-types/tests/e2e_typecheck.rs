@@ -3228,18 +3228,14 @@ fn vec_array_annotation_rejected() {
     );
 }
 
-#[test]
-fn vec_from_array_elements_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v = Vec::from([[1, 2]]);
-            println(v.len());
-        }",
-        "Vec<[i64; 2]> is not supported",
-        "Vec::from([[1, 2]])",
-    );
-}
+// NOTE: the former `vec_from_array_elements_rejected` and
+// `vec_tuple_with_array_elements_rejected` tests were removed: they constructed
+// the array-element case via array LITERALS (`[1, 2]`), which now type as
+// `Vec<i64>` (array literals desugar to Vec), so the `Vec<[i64; 2]> is not
+// supported` rejection no longer applies to that syntax. The fixed-size-array
+// (`[T; N]`) Vec-element rejection is still covered by the annotation-based
+// tests below (`vec_nested_vec_array_annotation_rejected`,
+// `vec_generic_wrapper_array_annotation_rejected`).
 
 #[test]
 fn vec_nested_vec_array_annotation_rejected() {
@@ -3251,20 +3247,6 @@ fn vec_nested_vec_array_annotation_rejected() {
         }",
         "Vec<[i64; 2]> is not supported",
         "annotated Vec<Vec<[i64; 2]>>",
-    );
-}
-
-#[test]
-fn vec_tuple_with_array_elements_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v = Vec::new();
-            v.push((1, [2, 3]));
-            println(v.len());
-        }",
-        "Vec<(i64, [i64; 2])> is not supported",
-        "Vec tuple element with nested array",
     );
 }
 

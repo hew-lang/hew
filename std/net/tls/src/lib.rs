@@ -99,6 +99,9 @@ fn get_tls_last_error() -> String {
 }
 
 fn empty_hew_vec() -> HewVec {
+    // SAFETY: `layout` is null so `layout_storage` is never read; zeroed bytes
+    // are a valid (unused) initialiser for the inline storage field.
+    let layout_storage = unsafe { core::mem::zeroed() };
     HewVec {
         data: std::ptr::null_mut(),
         len: 0,
@@ -106,6 +109,7 @@ fn empty_hew_vec() -> HewVec {
         elem_size: 1,
         elem_kind: hew_cabi::vec::ElemKind::Plain,
         layout: std::ptr::null(),
+        layout_storage,
     }
 }
 
@@ -115,6 +119,9 @@ fn build_hew_vec(bytes: &[u8]) -> Option<HewVec> {
     if ptr.is_null() {
         return None;
     }
+    // SAFETY: `layout` is null so `layout_storage` is never read; zeroed bytes
+    // are a valid (unused) initialiser for the inline storage field.
+    let layout_storage = unsafe { core::mem::zeroed() };
     Some(HewVec {
         data: ptr,
         len,
@@ -122,6 +129,7 @@ fn build_hew_vec(bytes: &[u8]) -> Option<HewVec> {
         elem_size: 1,
         elem_kind: hew_cabi::vec::ElemKind::Plain,
         layout: std::ptr::null(),
+        layout_storage,
     })
 }
 

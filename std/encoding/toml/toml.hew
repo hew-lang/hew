@@ -38,7 +38,8 @@ pub enum ParseError {
 /// table, or datetime. The canonical shared wire tag prefix reserves
 /// `0` for null, even though TOML itself has no null value. Must be freed
 /// with `free()` when no longer needed.
-type Value {
+#[opaque]
+pub type Value {
 }
 
 /// Methods available on a TOML `Value`.
@@ -141,7 +142,7 @@ impl CanonicalValueMethods for Value {
     }
     fn array_len(val: Value) -> i64 {
         unsafe {
-            hew_toml_array_len(val)
+            hew_toml_array_len(val) as i64
         }
     }
     fn array_get(val: Value, index: i64) -> Value {

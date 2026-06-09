@@ -54,12 +54,13 @@ fn run_check_in_fixture_dir(dir: &std::path::Path) -> std::process::Output {
 
 #[test]
 fn check_fails_on_hir_gate_before_ok() {
+    // `Some(0) | None` in an or-pattern is a HIR-rejected shape (constructor
+    // with literal payload in an or-branch is not yet classified). This is a
+    // stable HIR gate trigger; the old `y => y` fixture now lowers cleanly.
     let (_dir, path) = write_fixture(
         "fn main() -> i64 {\n\
-         \x20\x20\x20\x20let x = 1;\n\
-         \x20\x20\x20\x20return match x {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20y => y,\n\
-         \x20\x20\x20\x20};\n\
+         \x20\x20\x20\x20let x: Option<i64> = Some(0);\n\
+         \x20\x20\x20\x20match x { Some(0) | None => 0, Some(n) => n }\n\
          }\n",
     );
 
@@ -143,7 +144,9 @@ fn check_runs_codegen_front_on_success_without_artifacts() {
 
 #[test]
 fn check_fails_on_codegen_front_gate_before_ok_without_artifacts() {
-    let (dir, _path) = write_fixture("fn main() -> f64 {\n    return 1.0;\n}\n");
+    let (dir, _path) = write_fixture(
+        "fn unsupported(x: [i64; 2]) -> [i64; 2] {\n    return x;\n}\nfn main() {\n}\n",
+    );
 
     let output = run_check_in_fixture_dir(dir.path());
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -251,14 +254,15 @@ fn check_no_typecheck_skips_hir_mir_gates() {
 
 #[test]
 fn show_stack_hints_render_before_later_hir_failure() {
+    // The closure `|x| x+1` triggers HEW-PERF-001 (ClosureEnv stack hint).
+    // The `Some(0) | None` or-pattern triggers E_NOT_YET_IMPLEMENTED at HIR.
+    // The test asserts the stack hint is rendered BEFORE the gate diagnostic.
     let (_dir, path) = write_fixture(
         "fn main() -> i64 {\n\
          \x20\x20\x20\x20let f = |x: i64| -> i64 { x + 1 };\n\
          \x20\x20\x20\x20let _r = f(1);\n\
-         \x20\x20\x20\x20let x = 1;\n\
-         \x20\x20\x20\x20return match x {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20y => y,\n\
-         \x20\x20\x20\x20};\n\
+         \x20\x20\x20\x20let x: Option<i64> = Some(0);\n\
+         \x20\x20\x20\x20match x { Some(0) | None => 0, Some(n) => n }\n\
          }\n",
     );
 
@@ -367,6 +371,55 @@ fn check_accepts_requested_target_for_deep_gates() {
     assert!(
         output.status.success(),
         "hew check should parse and thread a requested target into deep gates\n{}",
+        describe_output(&output),
+    );
+}
+
+// ── integer widening ─────────────────────────────────────────────────────────
+
+/// Assigning an i32 variable where an i64 is expected must be a type error
+/// with a diagnostic naming both types and suggesting `as i64`.
+/// (Implicit same-sign widening was removed because it generates invalid LLVM IR.)
+#[test]
+fn check_rejects_implicit_integer_widening_i32_to_i64() {
+    let (_dir, path) =
+        write_fixture("fn main() -> i64 {\n    let x: i32 = 5;\n    let y: i64 = x;\n    y\n}\n");
+
+    let output = run_check(&["check", path.to_str().unwrap()]);
+
+    assert!(
+        !output.status.success(),
+        "hew check must reject implicit i32 → i64 widening\n{}",
+        describe_output(&output),
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("cannot implicitly convert"),
+        "diagnostic must mention 'cannot implicitly convert'; got:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("i32") && stderr.contains("i64"),
+        "diagnostic must name both types; got:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("as i64"),
+        "diagnostic must suggest `as i64`; got:\n{stderr}",
+    );
+}
+
+/// After an explicit `as i64` cast, the widening is accepted.
+#[test]
+fn check_accepts_explicit_integer_widening_cast_i32_to_i64() {
+    let (_dir, path) = write_fixture(
+        "fn main() -> i64 {\n    let x: i32 = 5;\n    let y: i64 = x as i64;\n    y\n}\n",
+    );
+
+    let output = run_check(&["check", path.to_str().unwrap()]);
+
+    assert!(
+        output.status.success(),
+        "hew check must accept explicit `x as i64` cast\n{}",
         describe_output(&output),
     );
 }

@@ -10,6 +10,7 @@ actor Worker {
 
 impl ActorMsg for Worker {
     type Msg = fn(i64) -> i64;
+    type Reply = ();
 }
 
 fn send_remote(pid: RemotePid<Worker>) -> Result<(), SendError> {

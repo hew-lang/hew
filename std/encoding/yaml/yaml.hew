@@ -34,7 +34,8 @@ pub enum ParseError {
 ///
 /// Represents any YAML type: null, bool, integer, float, string,
 /// sequence, or mapping. Must be freed with `free()` when no longer needed.
-type Value {
+#[opaque]
+pub type Value {
 }
 
 /// Methods available on a YAML `Value`.
@@ -147,7 +148,7 @@ impl CanonicalValueMethods for Value {
     }
     fn array_len(val: Value) -> i64 {
         unsafe {
-            hew_yaml_array_len(val)
+            hew_yaml_array_len(val) as i64
         }
     }
     fn array_get(val: Value, index: i64) -> Value {

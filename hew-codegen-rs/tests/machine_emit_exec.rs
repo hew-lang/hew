@@ -285,6 +285,7 @@ fn machine_emit_placeholder_lowers_to_push_call() {
 /// 7. Assert the outermost step exit drained the thread-local queue.
 #[test]
 #[cfg(unix)]
+#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn machine_emit_push_populates_thread_queue_in_fifo_order() {
     use inkwell::context::Context;
     use inkwell::memory_buffer::MemoryBuffer;

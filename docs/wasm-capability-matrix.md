@@ -77,7 +77,7 @@ The **Checker disposition** column documents what the type checker emits when
 | Generators / async streams | ⚠️ WASM-TODO (not checker-gated; codegen fail-closed at `hew_gen_yield`) | Scoped for v0.5; generator substrate wasm parity is in progress, not passing today | WASM-TODO(#1451) |
 | Pattern matching, ADTs, generics | ✅ Pass | Implemented | — |
 | Arithmetic and wasm-safe collection surfaces | ✅ Pass | Implemented | — |
-| Layout-backed `HashMap` / `HashSet` | ⚠️ WASM-TODO (not checker-gated; codegen fail-closed on `hew_hashmap_*_layout` / `hew_hashset_*_layout`) | Scoped for v0.5 per A650; descriptor ABI and wasm-table validation are in progress | WASM-TODO(#1820) |
+| Layout-backed `HashMap` / `HashSet` | ✅ Pass | Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime | #1820 |
 | Actor ask/reply (`reply_channel_wasm`) | ✅ Pass | Implemented | — |
 | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | ⚠️ WASM-TODO (not checker-gated) | Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer | WASM-TODO |
 | `select {}` (any timeout expression, any arm count) | ✅ Pass | Implemented | — |

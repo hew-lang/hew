@@ -692,9 +692,9 @@ pub enum HirDiagnosticKind {
     /// expression. Supported scalar element types are `bool`, `char`, `i32`,
     /// `u32`, `i64`, `u64`, `f64`, and any user-defined `Named` type (records, enums,
     /// `Duplex`, `LambdaActorHandle`, etc., dispatched via
-    /// `hew_vec_get_ptr`). `Vec<String>` is intentionally excluded from
-    /// scalar indexing because there is no `hew_vec_get_str` strdup-aware
-    /// getter — the range-slice path covers the `String` case.
+    /// `hew_vec_get_ptr`). Source-level `Vec<String>` scalar indexing is
+    /// intentionally excluded until its retained/header-aware getter owner is
+    /// balanced outside the synthetic Vec for-in path.
     VecIndexElementTypeUnsupported {
         /// User-facing rendering of the unsupported element type
         /// (e.g. `"bool"`, `"char"`, `"String"`, `"f32"`).

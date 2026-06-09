@@ -47,7 +47,10 @@ use rand::RngExt;
 
 use crate::cluster::HewCluster;
 use crate::envelope::{
-    encode_envelope_frame_from_raw_parts, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, WIRE_VERSION,
+    decode_registry_gossip_payload, decode_wire_frame, encode_control_frame,
+    encode_envelope_frame_from_raw_parts, encode_registry_gossip_payload, ControlFrame,
+    RegistryGossipPayload, WireFrame, CTRL_REGISTRY_GOSSIP, FRAME_TYPE_CONTROL,
+    FRAME_TYPE_ENVELOPE, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
@@ -80,6 +83,7 @@ const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 /// reply envelopes.  A node MUST only send the rejection sentinel to peers that
 /// advertise this flag; old nodes would misinterpret it as a void-success reply.
 pub(crate) const HEW_FEATURE_SUPPORTS_ASK_REJECTION: u32 = 1 << 3;
+const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
 const FNV1A32_OFFSET_BASIS: u32 = 2_166_136_261;
 const FNV1A32_PRIME: u32 = 16_777_619;
 
@@ -415,6 +419,7 @@ fn publish_connection_established(
     mgr: &HewConnMgr,
     peer_node_id: u16,
     conn_id: c_int,
+    peer_feature_flags: u32,
     publication_token: u64,
     publication_sync: &Arc<Mutex<()>>,
     publication_removed: &Arc<AtomicBool>,
@@ -453,6 +458,8 @@ fn publish_connection_established(
         // SAFETY: pointer validity is checked by the callee.
         unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
     }
+
+    flush_registry_gossip_to_connection(mgr, conn_id, peer_feature_flags);
 }
 
 fn retire_connection_publication(
@@ -646,6 +653,10 @@ fn local_feature_flags() -> u32 {
 
 pub(crate) fn supports_ask_rejection(flags: u32) -> bool {
     flags & HEW_FEATURE_SUPPORTS_ASK_REJECTION != 0
+}
+
+pub(crate) fn supports_gossip(flags: u32) -> bool {
+    flags & HEW_FEATURE_SUPPORTS_GOSSIP != 0
 }
 
 fn is_ask_rejection_reply(msg_type: i32, peer_feature_flags: u32) -> bool {
@@ -885,6 +896,123 @@ unsafe fn encode_envelope(
     }
 }
 
+fn encode_registry_gossip_control(name: &str, actor_id: u64, is_add: bool) -> Option<Vec<u8>> {
+    let op = if is_add {
+        crate::cluster::GOSSIP_REGISTRY_ADD
+    } else {
+        crate::cluster::GOSSIP_REGISTRY_REMOVE
+    };
+    let payload = RegistryGossipPayload {
+        op,
+        name: name.to_owned(),
+        actor_id,
+    };
+    let payload = match encode_registry_gossip_payload(&payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "registry gossip control payload encode failure: {err}"
+            ));
+            return None;
+        }
+    };
+    let frame = ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: CTRL_REGISTRY_GOSSIP,
+        payload,
+    };
+    match encode_control_frame(&frame) {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            set_last_error(format!(
+                "registry gossip control frame encode failure: {err}"
+            ));
+            None
+        }
+    }
+}
+
+fn handle_control_frame(mgr: *mut HewConnMgr, peer_feature_flags: u32, control: &ControlFrame) {
+    if control.ctrl_kind != CTRL_REGISTRY_GOSSIP {
+        set_last_error(format!(
+            "connection reader unknown control frame kind {}",
+            control.ctrl_kind
+        ));
+        return;
+    }
+    if !supports_gossip(peer_feature_flags) {
+        set_last_error("connection reader rejected registry gossip from non-gossip peer");
+        return;
+    }
+
+    let payload = match decode_registry_gossip_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader registry gossip payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    let is_add = match payload.op {
+        REGISTRY_GOSSIP_OP_ADD => true,
+        REGISTRY_GOSSIP_OP_REMOVE => false,
+        op => {
+            set_last_error(format!("connection reader registry gossip unknown op {op}"));
+            return;
+        }
+    };
+    if mgr.is_null() {
+        set_last_error("connection reader registry gossip missing manager");
+        return;
+    }
+    // SAFETY: reader_loop owns a live manager pointer for this connection.
+    let mgr_ref = unsafe { &*mgr };
+    if mgr_ref.cluster.is_null() {
+        set_last_error("connection reader registry gossip missing cluster");
+        return;
+    }
+    // SAFETY: cluster pointer is owned by the live node/manager and remains
+    // valid while the reader thread is running.
+    unsafe {
+        (&*mgr_ref.cluster).apply_registry_event(&payload.name, payload.actor_id, is_add);
+    }
+}
+
+fn active_gossip_connection_ids(mgr: &HewConnMgr) -> Vec<c_int> {
+    mgr.connections.access(|conns| {
+        conns
+            .iter()
+            .filter(|c| {
+                c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && supports_gossip(c.peer_feature_flags)
+            })
+            .map(|c| c.conn_id)
+            .collect()
+    })
+}
+
+fn flush_registry_gossip_to_connection(mgr: &HewConnMgr, conn_id: c_int, peer_feature_flags: u32) {
+    if !supports_gossip(peer_feature_flags) || mgr.cluster.is_null() {
+        return;
+    }
+
+    // SAFETY: cluster pointer belongs to this live connection manager.
+    let events = unsafe { (&*mgr.cluster).take_registry_gossip(MAX_REGISTRY_GOSSIP_FLUSH_EVENTS) };
+    for event in events {
+        let Some(bytes) = encode_registry_gossip_control(&event.name, event.actor_id, event.is_add)
+        else {
+            continue;
+        };
+        // SAFETY: mgr is live and `bytes` is a complete encoded control frame.
+        if unsafe { send_preencoded_on_manager(mgr, conn_id, bytes.as_ptr(), bytes.len()) } != 0 {
+            set_last_error(format!(
+                "registry gossip flush send failed for conn {conn_id}"
+            ));
+        }
+    }
+}
+
 #[cfg(feature = "encryption")]
 fn supports_encryption(flags: u32) -> bool {
     flags & HEW_FEATURE_SUPPORTS_ENCRYPTION != 0
@@ -1092,19 +1220,27 @@ fn reader_loop(
         let now = unsafe { crate::io_time::hew_now_ms() };
         last_activity.store(now, Ordering::Release);
 
-        // Decode CBOR envelope and route.
-        if let Some(router_fn) = router {
-            // SAFETY: buf contains `read_len` valid bytes from recv.
-            unsafe {
-                let frame_bytes = std::slice::from_raw_parts(payload_ptr.cast_const(), payload_len);
-                let mut envelope = match crate::envelope::decode_envelope_frame(frame_bytes) {
-                    Ok(envelope) => envelope,
-                    Err(err) => {
-                        set_last_error(format!(
-                            "connection reader CBOR envelope decode failure: {err}"
-                        ));
-                        continue;
-                    }
+        // Decode CBOR wire frame and route.
+        // SAFETY: buf contains `payload_len` valid bytes from recv/decrypt.
+        let frame_bytes =
+            unsafe { std::slice::from_raw_parts(payload_ptr.cast_const(), payload_len) };
+        let wire_frame = match decode_wire_frame(frame_bytes) {
+            Ok(frame) => frame,
+            Err(err) => {
+                set_last_error(format!(
+                    "connection reader CBOR wire-frame decode failure: {err}"
+                ));
+                continue;
+            }
+        };
+
+        match wire_frame {
+            WireFrame::Control(control) => {
+                handle_control_frame(mgr, peer_feature_flags, &control);
+            }
+            WireFrame::Envelope(mut envelope) => {
+                let Some(router_fn) = router else {
+                    continue;
                 };
 
                 // Reply envelopes (request_id > 0, source_node_id == 0) are
@@ -1143,15 +1279,20 @@ fn reader_loop(
                     } else {
                         envelope.payload.as_mut_ptr()
                     };
-                    router_fn(
-                        envelope.target_actor_id,
-                        envelope.msg_type,
-                        payload_ptr,
-                        envelope.payload.len(),
-                        envelope.request_id,
-                        envelope.source_node_id,
-                        mgr,
-                    );
+                    // SAFETY: router_fn is the manager's configured inbound
+                    // router; payload_ptr is null for empty payloads or points
+                    // at envelope-owned bytes valid for this call.
+                    unsafe {
+                        router_fn(
+                            envelope.target_actor_id,
+                            envelope.msg_type,
+                            payload_ptr,
+                            envelope.payload.len(),
+                            envelope.request_id,
+                            envelope.source_node_id,
+                            mgr,
+                        );
+                    }
                     if let Some(saved) = saved_ctx {
                         crate::tracing::io_recv_span_end(saved);
                     }
@@ -1602,6 +1743,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         mgr,
         peer_hs.node_id,
         conn_id,
+        peer_hs.feature_flags,
         publication_token,
         &publication_sync,
         &publication_removed,
@@ -1825,30 +1967,12 @@ pub unsafe extern "C" fn hew_connmgr_send(
     }
 }
 
-/// Send a pre-encoded wire frame over a specific connection, applying noise
-/// encryption when the connection is encrypted.
-///
-/// Unlike [`hew_connmgr_send`], this function takes bytes that are already
-/// encoded into the Hew wire format (e.g., a full ask/reply envelope). The
-/// only transformation applied is noise encryption (when enabled).
-///
-/// Returns 0 on success, -1 on failure.
-///
-/// # Safety
-///
-/// - `mgr` must be a valid pointer for the duration of the call.
-/// - `data` must point to at least `len` readable bytes.
-pub(crate) unsafe fn hew_connmgr_send_preencoded(
-    mgr: *mut HewConnMgr,
+unsafe fn send_preencoded_on_manager(
+    mgr_ref: &HewConnMgr,
     conn_id: c_int,
     data: *const u8,
     len: usize,
 ) -> c_int {
-    if mgr.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
-    let mgr_ref = unsafe { &*mgr };
     #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
@@ -1916,6 +2040,73 @@ pub(crate) unsafe fn hew_connmgr_send_preencoded(
     } else {
         -1
     }
+}
+
+/// Send a pre-encoded wire frame over a specific connection, applying noise
+/// encryption when the connection is encrypted.
+///
+/// Unlike [`hew_connmgr_send`], this function takes bytes that are already
+/// encoded into the Hew wire format (e.g., a full ask/reply envelope). The
+/// only transformation applied is noise encryption (when enabled).
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+///
+/// - `mgr` must be a valid pointer for the duration of the call.
+/// - `data` must point to at least `len` readable bytes.
+pub(crate) unsafe fn hew_connmgr_send_preencoded(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    data: *const u8,
+    len: usize,
+) -> c_int {
+    if mgr.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
+    let mgr_ref = unsafe { &*mgr };
+    // SAFETY: forwarded caller contract.
+    unsafe { send_preencoded_on_manager(mgr_ref, conn_id, data, len) }
+}
+
+/// Broadcast a registry-gossip control frame to active gossip-capable peers.
+///
+/// Returns the number of successful sends.
+///
+/// # Safety
+///
+/// `mgr` must be a valid connection manager pointer for the duration of the
+/// call when non-null.
+pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
+    mgr: *mut HewConnMgr,
+    name: &str,
+    actor_id: u64,
+    is_add: bool,
+) -> c_int {
+    if mgr.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees manager pointer validity.
+    let mgr_ref = unsafe { &*mgr };
+    let Some(bytes) = encode_registry_gossip_control(name, actor_id, is_add) else {
+        return 0;
+    };
+
+    let conn_ids = active_gossip_connection_ids(mgr_ref);
+    let mut success_count: c_int = 0;
+    for conn_id in conn_ids {
+        // SAFETY: manager is live and bytes is a complete encoded control frame.
+        if unsafe { send_preencoded_on_manager(mgr_ref, conn_id, bytes.as_ptr(), bytes.len()) } == 0
+        {
+            success_count += 1;
+        } else {
+            set_last_error(format!(
+                "registry gossip broadcast send failed for conn {conn_id}"
+            ));
+        }
+    }
+    success_count
 }
 
 /// Return the connection ID of the first active connection whose handshake
@@ -2206,6 +2397,116 @@ mod tests {
             !is_ask_rejection_reply(0, HEW_FEATURE_SUPPORTS_ASK_REJECTION),
             "normal replies must not be reclassified as rejections"
         );
+    }
+
+    unsafe extern "C" fn record_registry_gossip_send(
+        impl_ptr: *mut std::ffi::c_void,
+        conn_id: c_int,
+        data: *const std::ffi::c_void,
+        len: usize,
+    ) -> c_int {
+        // SAFETY: test installs a Mutex<Vec<_>> as the transport impl payload.
+        let sends = unsafe { &*(impl_ptr.cast::<Mutex<Vec<(c_int, Vec<u8>)>>>()) };
+        // SAFETY: send_preencoded_on_manager passes an encoded frame valid for len bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }.to_vec();
+        sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((conn_id, bytes));
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "test payload lengths fit c_int"
+        )]
+        {
+            len as c_int
+        }
+    }
+
+    #[test]
+    fn registry_gossip_broadcast_targets_only_active_gossip_peers() {
+        let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(record_registry_gossip_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: sends.cast(),
+        }));
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup below.
+        unsafe {
+            let mgr = hew_connmgr_new(
+                transport_ptr,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+            );
+            assert!(!mgr.is_null());
+
+            let mut gossip_peer = ConnectionActor::new(10);
+            gossip_peer.peer_node_id = 2;
+            gossip_peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            gossip_peer
+                .state
+                .store(CONN_STATE_ACTIVE, Ordering::Release);
+
+            let mut old_peer = ConnectionActor::new(11);
+            old_peer.peer_node_id = 3;
+            old_peer.peer_feature_flags = 0;
+            old_peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+
+            let mut draining_peer = ConnectionActor::new(12);
+            draining_peer.peer_node_id = 4;
+            draining_peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            draining_peer
+                .state
+                .store(CONN_STATE_DRAINING, Ordering::Release);
+
+            (&*mgr).connections.access(|conns| {
+                conns.push(gossip_peer);
+                conns.push(old_peer);
+                conns.push(draining_peer);
+            });
+
+            let actor_id = crate::pid::hew_pid_make(2, 0x42);
+            assert_eq!(
+                hew_connmgr_broadcast_registry_gossip(mgr, "worker", actor_id, true),
+                1
+            );
+
+            {
+                let sends_ref = &*sends;
+                let sends_guard = sends_ref
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(sends_guard.len(), 1);
+                assert_eq!(sends_guard[0].0, 10);
+                let WireFrame::Control(control) =
+                    decode_wire_frame(&sends_guard[0].1).expect("control frame")
+                else {
+                    panic!("registry gossip broadcast must send a control frame");
+                };
+                assert_eq!(control.ctrl_kind, CTRL_REGISTRY_GOSSIP);
+                let payload =
+                    decode_registry_gossip_payload(&control.payload).expect("gossip payload");
+                assert_eq!(payload.op, crate::cluster::GOSSIP_REGISTRY_ADD);
+                assert_eq!(payload.name, "worker");
+                assert_eq!(payload.actor_id, actor_id);
+            }
+
+            hew_connmgr_free(mgr);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(sends));
+        }
+        drop(ops);
     }
 
     /// Defense-in-depth: `ConnectionActor::drop` must close the transport
@@ -2612,6 +2913,7 @@ mod tests {
                 &*mgr,
                 2,
                 11,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
                 old_token,
                 &old_publication_sync,
                 &old_publication_removed,
@@ -2680,6 +2982,7 @@ mod tests {
                 &*mgr,
                 2,
                 22,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
                 replacement_token,
                 &replacement_publication_sync,
                 &replacement_publication_removed,
@@ -2782,6 +3085,7 @@ mod tests {
                 &*mgr,
                 2,
                 31,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
                 publication_token,
                 &publication_sync,
                 &publication_removed,
@@ -2932,6 +3236,7 @@ mod tests {
                     &*mgr.0,
                     2,
                     22,
+                    HEW_FEATURE_SUPPORTS_GOSSIP,
                     2,
                     &publication_sync,
                     &publication_removed,
@@ -3117,6 +3422,7 @@ mod tests {
                 &*mgr,
                 2,
                 44,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
                 publication_token,
                 &publication_sync,
                 &publication_removed,

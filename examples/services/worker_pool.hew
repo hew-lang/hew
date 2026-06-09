@@ -45,10 +45,10 @@ supervisor Pool {
     max_restarts: 10;
     window: 60;
 
-    child w0: Worker(0, 0);
-    child w1: Worker(1, 0);
-    child w2: Worker(2, 0);
-    child w3: Worker(3, 0);
+    child w0: Worker(id: 0, jobs_done: 0);
+    child w1: Worker(id: 1, jobs_done: 0);
+    child w2: Worker(id: 2, jobs_done: 0);
+    child w3: Worker(id: 3, jobs_done: 0);
 }
 
 fn main() {

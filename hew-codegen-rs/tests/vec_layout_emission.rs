@@ -4,8 +4,9 @@
 //! `hew_vec_*_layout` only for Copy element types.  MIR represents those as
 //! source-level `Terminator::Call`s; codegen must synthesize the hidden
 //! `HewTypeLayout*` operand and pass value slots by address.
-//! `Vec::new` descriptor construction is narrower: only named record layouts
-//! are descriptor-backed until tuple layout semantics are owned end-to-end.
+//! `Vec::new` descriptor construction admits named record layouts and tuples
+//! whose fields are all BitCopy; non-BitCopy tuples stay fail-closed until the
+//! clone/drop descriptor lane owns them.
 
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
@@ -20,6 +21,10 @@ fn point_ty() -> ResolvedTy {
         args: vec![],
         builtin: None,
     }
+}
+
+fn i64_pair_ty() -> ResolvedTy {
+    ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64])
 }
 
 fn base_pipeline(
@@ -157,7 +162,36 @@ fn vec_layout_new_constructs_with_descriptor() {
 }
 
 #[test]
-fn vec_tuple_new_constructor_is_not_descriptor_backed() {
+fn vec_bitcopy_tuple_new_constructs_with_plain_descriptor() {
+    let tuple_ty = i64_pair_ty();
+    let vec_ty = ResolvedTy::Named {
+        name: "Vec".to_string(),
+        args: vec![tuple_ty],
+        builtin: None,
+    };
+    let block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![],
+        terminator: Terminator::Call {
+            callee: "Vec::new".to_string(),
+            args: vec![],
+            dest: Some(Place::Local(0)),
+            next: 1,
+        },
+    };
+    let ll = emit_ll(
+        base_pipeline(block, vec![vec_ty], ResolvedTy::Unit),
+        "tuple_new_bitcopy",
+    );
+
+    assert!(ll.contains("@__hew_layout_new_16_8_plain"));
+    assert!(ll.contains("declare ptr @hew_vec_new_with_layout(ptr)"));
+    assert!(ll.contains("call ptr @hew_vec_new_with_layout"));
+}
+
+#[test]
+fn vec_non_bitcopy_tuple_new_constructor_is_not_descriptor_backed() {
     let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::String]);
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
@@ -182,7 +216,8 @@ fn vec_tuple_new_constructor_is_not_descriptor_backed() {
 
     assert!(
         error.contains("Vec::new has no constructor lowering for element type Tuple"),
-        "tuple Vec::new must fail closed instead of fabricating a layout descriptor: {error}"
+        "non-BitCopy tuple Vec::new must fail closed instead of fabricating a \
+         Plain layout descriptor: {error}"
     );
 }
 
@@ -551,6 +586,7 @@ fn vec_layout_contains_thunk_enum_tag_dispatches_not_byte_compares() {
                 field_tys: vec![],
             },
         ],
+        is_indirect: false,
     }];
 
     let ll = emit_ll(pipeline, "contains_thunk_enum");

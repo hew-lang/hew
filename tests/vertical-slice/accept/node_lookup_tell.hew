@@ -18,6 +18,7 @@ actor Worker {
 
 impl ActorMsg for Worker {
     type Msg = Ping;
+    type Reply = i64;
 }
 
 fn main() -> i64 {
@@ -49,7 +50,11 @@ fn main() -> i64 {
                 Result::Err(_) => 20,
             };
             if send_code == 0 {
-                assert_eq(worker.total(), 42);
+                let total = match await worker.total() {
+                    Ok(v) => v,
+                    Err(_e) => -1,
+                };
+                assert_eq(total, 42);
                 0
             } else {
                 send_code

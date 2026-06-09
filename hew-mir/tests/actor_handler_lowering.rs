@@ -181,6 +181,7 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
         state_fields: vec![HirField {
             name: "count".to_string(),
             ty: ResolvedTy::I64,
+            default: None,
             span: 0..0,
         }],
         init: Some(hew_hir::HirActorInit {
@@ -341,6 +342,7 @@ fn supervisor_child_layout_mirrors_cycle_capable_actor_metadata() {
             wired_to: None,
             is_pool: false,
             slot_index: 0,
+            init_args: Vec::new(),
         }],
         span: 0..0,
     };

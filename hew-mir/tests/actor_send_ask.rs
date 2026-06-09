@@ -41,7 +41,10 @@ fn actor_send_ask_lower_to_mir_terminators_and_state_access() {
         fn main() -> i64 {
             let counter = spawn Counter(count: 0);
             counter.increment(10);
-            counter.total()
+            match await counter.total() {
+                Ok(v) => v,
+                Err(_e) => 0,
+            }
         }
         ",
     );
@@ -107,4 +110,54 @@ fn actor_send_ask_lower_to_mir_terminators_and_state_access() {
         .iter()
         .flat_map(|block| &block.instructions)
         .any(|instr| matches!(instr, Instr::ActorStateFieldLoad { .. })));
+}
+
+#[test]
+fn remote_pid_ask_lowers_to_remote_ask_terminator() {
+    let pipeline = lower_checked(
+        r"
+        record Ping {
+            n: i64,
+        }
+
+        actor Worker {
+            receive fn double(msg: Ping) -> i64 {
+                msg.n * 2
+            }
+        }
+
+        impl ActorMsg for Worker {
+            type Msg = Ping;
+            type Reply = i64;
+        }
+
+        fn main() -> i64 {
+            let remote = RemotePid::<Worker>::from_raw(2, 7);
+            let result: Result<i64, AskError> = remote.ask(Ping { n: 21 }, 250);
+            0
+        }
+        ",
+    );
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let double_id = i32::from_ne_bytes(compute_default_msg_id("Worker::double").to_ne_bytes());
+    let main = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("main MIR");
+    assert!(main.blocks.iter().any(|block| {
+        matches!(
+            &block.terminator,
+            Terminator::RemoteAsk {
+                msg_type,
+                reply_ty: hew_types::ResolvedTy::I64,
+                ..
+            } if *msg_type == double_id
+        )
+    }));
 }

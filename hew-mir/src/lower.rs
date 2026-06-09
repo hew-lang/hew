@@ -19,8 +19,8 @@ use hew_hir::{
     named_type_components, named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock,
     HirConstValue, HirExpr, HirExprKind, HirFn, HirItem, HirLifecycleHookKind, HirLiteral,
     HirMachineDecl, HirMachineTransition, HirModule, HirNodeId, HirSelect, HirSelectArmKind,
-    HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, IntentKind, ResolvedRef,
-    ResourceMarker, ScopeId, SiteId, ValueClass,
+    HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirVarSelfMethodTarget,
+    IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_types::{
@@ -83,10 +83,8 @@ fn context_reader_offset(reader: ExecutionContextReader) -> usize {
 }
 
 fn literal_match_scrutinee_ty(ty: &ResolvedTy) -> bool {
-    matches!(
-        ty,
-        ResolvedTy::I64 | ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String
-    )
+    (ty.is_integer() && !matches!(ty, ResolvedTy::Isize | ResolvedTy::Usize))
+        || matches!(ty, ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String)
 }
 
 /// Classify a resolved integer type as signed or unsigned. Returns
@@ -211,6 +209,18 @@ fn actor_name_from_handle_ty(ty: &ResolvedTy) -> Option<&str> {
     }
 }
 
+fn actor_name_from_remote_pid_ty(ty: &ResolvedTy) -> Option<&str> {
+    match ty {
+        ResolvedTy::Named { name, args, .. } if name == "RemotePid" && args.len() == 1 => {
+            match &args[0] {
+                ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn named_type_marker(
     ty: &ResolvedTy,
     type_classes: &hew_hir::TypeClassTable,
@@ -326,6 +336,7 @@ fn register_builtin_monomorphic_enum_layouts(
             name: spec.name.to_string(),
             tag_width,
             variants,
+            is_indirect: false,
         });
         registered.push(spec.name.to_string());
     }
@@ -778,6 +789,12 @@ pub fn lower_hir_module_with_facts(
     let mut machine_layouts: Vec<crate::model::MachineLayout> = Vec::new();
     let mut enum_layouts: Vec<crate::model::EnumLayout> = Vec::new();
     let mut gen_state_layouts: Vec<crate::model::GenStateLayout> = Vec::new();
+    // Named-fn invoke shims are synthesised per-use-site inside each
+    // `lower_function` builder, so the same shim can appear in
+    // `lowered.generated` for every function that references the same
+    // named function as a value.  Guard the module-level collection with
+    // a seen-set keyed on shim name so the body is emitted exactly once.
+    let mut emitted_named_fn_shims: HashSet<String> = HashSet::new();
     // Actor state-field classification is deferred to a second pass (below,
     // after generic record/enum instantiations and builtin enums are merged
     // into `record_layouts`/`enum_layouts`). The classifier must see the
@@ -788,6 +805,12 @@ pub fn lower_hir_module_with_facts(
     // Collected in source order so the resulting `actor_layouts` order is
     // unchanged from the single-pass form.
     let mut deferred_actors: Vec<&HirActorDecl> = Vec::new();
+    // Collect supervisor child init_args from HIR during the item loop.
+    // The post-loop pass converts these to `ChildInitArg` literals using the
+    // actor-layout map (which isn't fully built until after the item loop).
+    // Key: (supervisor_name, child_name) → Vec<(field_name, HirExpr)>.
+    let mut supervisor_child_hir_init_args: HashMap<(String, String), Vec<(String, HirExpr)>> =
+        HashMap::new();
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -873,6 +896,7 @@ pub fn lower_hir_module_with_facts(
                         name: decl.name.clone(),
                         tag_width,
                         variants,
+                        is_indirect: decl.is_indirect,
                     });
                 }
             }
@@ -910,6 +934,17 @@ pub fn lower_hir_module_with_facts(
                 // already spawned.
                 if let Some(layout) = build_supervisor_layout(sup, &mut diagnostics) {
                     supervisor_layouts.push(layout);
+                }
+                // Stash each child's HIR init_args keyed by (sup_name, child_name).
+                // These are lowered to ChildInitArg literals in the post-loop pass
+                // once the actor-layout map is available for field validation.
+                for child in &sup.children {
+                    if !child.init_args.is_empty() {
+                        supervisor_child_hir_init_args.insert(
+                            (sup.name.clone(), child.name.clone()),
+                            child.init_args.clone(),
+                        );
+                    }
                 }
             }
             _ => {}
@@ -978,6 +1013,10 @@ pub fn lower_hir_module_with_facts(
             name: hir_layout.mangled_name.clone(),
             tag_width,
             variants,
+            // Generic enum instantiations (e.g. `Option<i64>`) are never
+            // `indirect` — the `indirect` modifier is only allowed on
+            // monomorphic user-declared enums.
+            is_indirect: false,
         });
     }
     // Register the synthetic `__HewChildLookupResult` record layout used by the
@@ -1118,6 +1157,11 @@ pub fn lower_hir_module_with_facts(
                 .iter()
                 .map(|field| field.ty.clone())
                 .collect(),
+            state_field_defaults: actor
+                .state_fields
+                .iter()
+                .map(|field| field.default.clone())
+                .collect(),
             init_param_names: actor
                 .init
                 .as_ref()
@@ -1164,8 +1208,8 @@ pub fn lower_hir_module_with_facts(
         .map(|layout| (layout.name.clone(), layout))
         .collect();
 
-    // Post-loop pass: populate on_crash_symbol, max_heap_bytes, and
-    // cycle_capable on each SupervisorChildLayout using the now-complete
+    // Post-loop pass: populate on_crash_symbol, max_heap_bytes, cycle_capable,
+    // and init_state_fields on each SupervisorChildLayout using the now-complete
     // actor_layout_map.
     // build_supervisor_layout runs inside the single-pass item loop, so actor
     // declarations that follow a supervisor in source order would not have been
@@ -1176,6 +1220,209 @@ pub fn lower_hir_module_with_facts(
             child.on_crash_symbol = al.and_then(|al| al.on_crash_symbol.clone());
             child.max_heap_bytes = al.and_then(|al| al.max_heap_bytes);
             child.cycle_capable = al.is_some_and(|al| al.cycle_capable);
+
+            // Build the complete init_state_fields plan for this child's actor.
+            //
+            // Strategy: for every state field on the actor (in declaration order),
+            // apply the priority chain:
+            //   1. explicit named arg from the child declaration
+            //   2. declared field default (from the actor's `state_field_defaults`)
+            //   3. fail-closed diagnostic — required field not supplied
+            //
+            // This mirrors the canonical `lower_spawn_actor_state` chain and ensures
+            // `init_state_fields` is always the COMPLETE ordered field set.  Codegen's
+            // uniform loop then writes every field; no alloca is left unwritten.
+            //
+            // The previous code only iterated the explicitly-supplied args, leaving
+            // defaulted-but-omitted fields as stack garbage in the template alloca.
+            // The fix re-converges with the plain-spawn path so both paths implement
+            // the same priority chain from one authoritative place (MIR).
+            let key = (sup_layout.name.clone(), child.name.clone());
+            let explicit_hir_args: &[(String, HirExpr)] = supervisor_child_hir_init_args
+                .get(&key)
+                .map_or(&[], Vec::as_slice);
+
+            // Validate that every explicitly-supplied field name exists on the actor.
+            for (field_name, hir_expr) in explicit_hir_args {
+                let field_known =
+                    al.is_some_and(|al| al.state_field_names.iter().any(|n| n == field_name));
+                if !field_known {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "supervisor `{}` child `{}` init arg `{field_name}` is \
+                                 not a declared state field on actor `{}`",
+                                sup_layout.name, child.name, child.actor_name
+                            ),
+                            site: hir_expr.site,
+                        },
+                        note: "child init arg field names must match actor state field \
+                               declarations"
+                            .to_string(),
+                    });
+                }
+            }
+
+            // Only build the complete field plan when the actor layout is known
+            // and has state fields.  Missing actor layout → silently empty (codegen
+            // will fail-closed for stateful actors via its existing gate).
+            if let Some(actor_layout) = al {
+                if !actor_layout.state_field_names.is_empty() {
+                    // Index explicit args by field name for O(1) lookup.
+                    let explicit_by_name: HashMap<&str, &HirExpr> = explicit_hir_args
+                        .iter()
+                        .map(|(name, expr)| (name.as_str(), expr))
+                        .collect();
+
+                    let mut init_fields: Vec<(String, crate::model::ChildInitArg)> = Vec::new();
+                    let mut all_ok = true;
+
+                    'fields: for (field_idx, field_name) in
+                        actor_layout.state_field_names.iter().enumerate()
+                    {
+                        let field_ty = actor_layout.state_field_tys.get(field_idx);
+
+                        // Resolve the source expression: explicit arg wins over
+                        // declared default.
+                        let source_expr: &HirExpr =
+                            if let Some(expr) = explicit_by_name.get(field_name.as_str()) {
+                                expr
+                            } else if let Some(default_expr) = actor_layout
+                                .state_field_defaults
+                                .get(field_idx)
+                                .and_then(Option::as_ref)
+                            {
+                                default_expr
+                            } else {
+                                // Required field not supplied and no declared default →
+                                // fail-closed diagnostic.
+                                diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: format!(
+                                            "supervisor `{}` child `{}` is missing a value \
+                                             for required state field `{field_name}` on actor \
+                                             `{}` (field has no declared default)",
+                                            sup_layout.name, child.name, child.actor_name
+                                        ),
+                                        site: SiteId(0),
+                                    },
+                                    note: format!(
+                                        "supply a value: `child {}: {}({field_name}: <value>)`",
+                                        child.name, child.actor_name
+                                    ),
+                                });
+                                all_ok = false;
+                                continue 'fields;
+                            };
+
+                        // Lower the resolved expression to a ChildInitArg,
+                        // respecting the declared field width.
+                        //
+                        // Resolve the declared field type — required to choose the
+                        // correct ChildInitArg width for integer literals.  Without
+                        // this, every integer would be emitted as I64, causing an
+                        // 8-byte store into a sub-i64 field slot that clobbers the
+                        // adjacent field and writes past the end of the struct.
+                        let init_arg = match &source_expr.kind {
+                            HirExprKind::Literal(HirLiteral::Integer(n)) => {
+                                match field_ty {
+                                    // 32-bit signed: use I32 so codegen emits a
+                                    // 4-byte store that doesn't clobber the
+                                    // adjacent field.  Range-check the literal so
+                                    // an out-of-range constant is a compile error
+                                    // rather than a silent truncation.
+                                    Some(ResolvedTy::I32) => {
+                                        let Ok(v) = i32::try_from(*n) else {
+                                            diagnostics.push(MirDiagnostic {
+                                                kind: MirDiagnosticKind::NotYetImplemented {
+                                                    construct: format!(
+                                                        "supervisor `{}` child `{}` field \
+                                                         `{field_name}` value {n} overflows i32",
+                                                        sup_layout.name, child.name
+                                                    ),
+                                                    site: source_expr.site,
+                                                },
+                                                note: "integer literal must fit in the declared \
+                                                       field type"
+                                                    .to_string(),
+                                            });
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::I32(v)
+                                    }
+                                    // 64-bit signed (or unresolved — fail-open to
+                                    // I64 preserving the original behaviour when
+                                    // the field type is unavailable).
+                                    Some(ResolvedTy::I64) | None => {
+                                        crate::model::ChildInitArg::I64(*n)
+                                    }
+                                    // Sub-i32 widths and unsigned integers are not
+                                    // yet represented in ChildInitArg.  Emit NYI
+                                    // rather than silently widening to I64, which
+                                    // would clobber adjacent fields.
+                                    //
+                                    // WHY: ChildInitArg lacks I8/I16/U* variants.
+                                    // WHEN: obsolete once those variants are added.
+                                    // WHAT: add ChildInitArg::I8/I16/U8/U16/U32/U64
+                                    //       and matching codegen arms.
+                                    Some(other_ty) => {
+                                        diagnostics.push(MirDiagnostic {
+                                            kind: MirDiagnosticKind::NotYetImplemented {
+                                                construct: format!(
+                                                    "supervisor `{}` child `{}` field \
+                                                     `{field_name}` has type `{other_ty}` which \
+                                                     is not yet supported as a child init arg \
+                                                     (only i32 and i64 are supported in this slice)",
+                                                    sup_layout.name, child.name
+                                                ),
+                                                site: source_expr.site,
+                                            },
+                                            note: "add ChildInitArg variants for the required \
+                                                   integer width"
+                                                .to_string(),
+                                        });
+                                        all_ok = false;
+                                        continue 'fields;
+                                    }
+                                }
+                            }
+                            HirExprKind::Literal(HirLiteral::Bool(b)) => {
+                                crate::model::ChildInitArg::Bool(*b)
+                            }
+                            HirExprKind::Literal(HirLiteral::Float(f)) => {
+                                crate::model::ChildInitArg::F64(*f)
+                            }
+                            other => {
+                                diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: format!(
+                                            "supervisor `{}` child `{}` field `{field_name}` \
+                                             resolves to a non-literal expression ({other:?}); \
+                                             only integer, bool, and float literals are \
+                                             supported as child init values in this slice",
+                                            sup_layout.name, child.name
+                                        ),
+                                        site: source_expr.site,
+                                    },
+                                    note: "const-expr and sibling-ref child args are a \
+                                           follow-up slice"
+                                        .to_string(),
+                                });
+                                all_ok = false;
+                                continue 'fields;
+                            }
+                        };
+                        init_fields.push((field_name.clone(), init_arg));
+                    }
+
+                    // Only assign the complete plan when every field resolved
+                    // cleanly; partial plans would silently omit fields.
+                    if all_ok {
+                        child.init_state_fields = init_fields;
+                    }
+                }
+            }
         }
     }
 
@@ -1396,6 +1643,11 @@ pub fn lower_hir_module_with_facts(
                 record_layouts.extend(lowered.record_layouts);
                 gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                 for generated in lowered.generated {
+                    if generated.raw.name.starts_with("__hew_named_fn_invoke_")
+                        && !emitted_named_fn_shims.insert(generated.raw.name.clone())
+                    {
+                        continue; // duplicate shim from a second use-site — body already emitted
+                    }
                     thir.push(generated.thir);
                     raw_mir.push(generated.raw);
                     checked_mir.push(generated.checked);
@@ -1430,6 +1682,11 @@ pub fn lower_hir_module_with_facts(
                     record_layouts.extend(lowered.record_layouts);
                     gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                     for generated in lowered.generated {
+                        if generated.raw.name.starts_with("__hew_named_fn_invoke_")
+                            && !emitted_named_fn_shims.insert(generated.raw.name.clone())
+                        {
+                            continue; // duplicate shim — body already emitted
+                        }
                         thir.push(generated.thir);
                         raw_mir.push(generated.raw);
                         checked_mir.push(generated.checked);
@@ -1465,6 +1722,11 @@ pub fn lower_hir_module_with_facts(
                     record_layouts.extend(lowered.record_layouts);
                     gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                     for generated in lowered.generated {
+                        if generated.raw.name.starts_with("__hew_named_fn_invoke_")
+                            && !emitted_named_fn_shims.insert(generated.raw.name.clone())
+                        {
+                            continue; // duplicate shim — body already emitted
+                        }
                         thir.push(generated.thir);
                         raw_mir.push(generated.raw);
                         checked_mir.push(generated.checked);
@@ -1629,6 +1891,11 @@ pub fn lower_hir_module_with_facts(
         record_layouts.extend(lowered.record_layouts);
         gen_state_layouts.extend(lowered.gen_state_layouts.clone());
         for generated in lowered.generated {
+            if generated.raw.name.starts_with("__hew_named_fn_invoke_")
+                && !emitted_named_fn_shims.insert(generated.raw.name.clone())
+            {
+                continue; // duplicate shim — body already emitted
+            }
             thir.push(generated.thir);
             raw_mir.push(generated.raw);
             checked_mir.push(generated.checked);
@@ -1702,7 +1969,16 @@ pub fn lower_hir_module_with_facts(
             .items
             .iter()
             .filter_map(|item| match item {
+                // `#[opaque]` runtime handles lower to ptr-sized slots.
                 HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.clone()),
+                // `indirect enum` values are heap-allocated; every variable
+                // of the type holds a `ptr` to the heap struct.  Adding the
+                // name here causes `resolve_ty` in codegen to return `ptr`
+                // for all alloca slots, function parameters, and field types
+                // that reference this enum — including the self-referential
+                // variant payloads that would otherwise produce an oversized
+                // inline struct (the root cause of the recursive-enum crash).
+                HirItem::TypeDecl(decl) if decl.is_indirect => Some(decl.name.clone()),
                 _ => None,
             })
             .collect(),
@@ -3092,6 +3368,8 @@ fn build_supervisor_layout(
             on_crash_symbol: None,
             max_heap_bytes: None,
             cycle_capable: false,
+            // Populated in the post-loop pass along with actor layout fields.
+            init_state_fields: Vec::new(),
         })
         .collect();
 
@@ -3270,6 +3548,25 @@ fn lower_supervisor_bootstrap(
         // the child's wired_to map in a deterministic (sorted) order so
         // the emitted MIR is stable across runs.
         let mut spawn_args: Vec<(String, HirExpr)> = Vec::new();
+        // Named init args: include literal values from the child declaration so
+        // the synthesized spawn satisfies the per-field arity gate in
+        // lower_spawn_actor_state. The bootstrap body is a stub that codegen
+        // discards (see SHIM comment below); these args exist only to pass the
+        // MIR completeness check. The real state template is built by codegen
+        // from SupervisorChildLayout.init_state_fields.
+        for (field_name, hir_expr) in &child.init_args {
+            let arg_expr = HirExpr {
+                node: fresh_node(),
+                site: fresh_site(),
+                ty: hir_expr.ty.clone(),
+                value_class: hir_expr.value_class,
+                intent: IntentKind::Read,
+                kind: hir_expr.kind.clone(),
+                span: sup.span.clone(),
+            };
+            spawn_args.push((field_name.clone(), arg_expr));
+        }
+
         if let Some(wired) = &child.wired_to {
             let mut entries: Vec<(&String, &String)> = wired.iter().collect();
             entries.sort_by(|a, b| a.0.cmp(b.0));
@@ -3555,11 +3852,22 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             for arg in args {
                 collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
             }
+        }
+        HirExprKind::RemoteActorAsk {
+            receiver,
+            msg,
+            timeout_ms,
+            ..
+        } => {
+            collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(msg, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(timeout_ms, state_fields, seen, unknown);
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
@@ -4138,6 +4446,17 @@ fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
     }
 }
 
+fn monomorphic_user_record_key(ty: &ResolvedTy) -> Option<String> {
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: None,
+        } if args.is_empty() => Some(name.clone()),
+        _ => None,
+    }
+}
+
 fn vec_iter_record_layout_key(ty: &ResolvedTy) -> Option<String> {
     let key = user_record_layout_key(ty)?;
     (key == "VecIter" || key.starts_with("VecIter$$")).then_some(key)
@@ -4277,6 +4596,16 @@ struct Builder {
     /// diagnostics. Keyed by the same bare/mangled record-layout key used by
     /// `record_field_orders`.
     unsupported_user_record_value_classes: HashSet<String>,
+    /// owned-string-record allow-list of expression sites that may classify a user record as
+    /// `CowValue` without opening the general user-record value-class surface.
+    /// Populated only for the RHS `StructInit` of a let-bound, monomorphic,
+    /// direct-string record and for direct field-access object `BindingRef`
+    /// sites against such bindings.
+    owned_string_record_value_sites: HashSet<SiteId>,
+    /// Let bindings whose value was introduced by the owned-string record-construction
+    /// gate. Field access and drop elaboration consult this binding-scoped proof
+    /// instead of re-opening arbitrary user-record reads.
+    owned_string_record_bindings: HashSet<BindingId>,
     /// Per-named-type marker registry, cloned from the parent `HirModule` at
     /// builder construction. Read by every `ValueClass::of_ty` call site in
     /// MIR lowering so the marker is the single fact about whether a Named
@@ -4578,6 +4907,66 @@ impl Builder {
         }
         hew_hir::lower::substitute_ty(ty, &self.subst)
     }
+
+    fn record_layouts_for_classification(&self) -> Vec<crate::model::RecordLayout> {
+        self.record_field_orders
+            .iter()
+            .map(|(name, fields)| crate::model::RecordLayout {
+                name: name.clone(),
+                field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+            })
+            .collect()
+    }
+
+    fn owned_string_record_field_kinds_for_key(
+        &self,
+        key: &str,
+    ) -> Option<Vec<crate::state_clone::StateFieldCloneKind>> {
+        let fields = self.record_field_orders.get(key)?;
+        let field_tys: Vec<ResolvedTy> = fields.iter().map(|(_, ty)| ty.clone()).collect();
+        let record_layouts = self.record_layouts_for_classification();
+        crate::state_clone::classify_owned_string_record_fields(&field_tys, &record_layouts, &[])
+            .ok()
+            .flatten()
+    }
+
+    fn owned_string_record_init_key_for_let(
+        &self,
+        binding_ty: &ResolvedTy,
+        value: &HirExpr,
+    ) -> Option<String> {
+        let HirExprKind::StructInit { base, .. } = &value.kind else {
+            return None;
+        };
+        if base.is_some() {
+            return None;
+        }
+        let binding_key = monomorphic_user_record_key(binding_ty)?;
+        let value_ty = self.subst_ty(&value.ty);
+        if monomorphic_user_record_key(&value_ty).as_deref() != Some(binding_key.as_str()) {
+            return None;
+        }
+        self.owned_string_record_field_kinds_for_key(&binding_key)
+            .map(|_| binding_key)
+    }
+
+    fn mark_owned_string_record_field_site(&mut self, object: &HirExpr) {
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } = &object.kind
+        else {
+            return;
+        };
+        if !self.owned_string_record_bindings.contains(id) {
+            return;
+        }
+        let object_ty = self.subst_ty(&object.ty);
+        if monomorphic_user_record_key(&object_ty).is_some() {
+            self.owned_string_record_value_sites.insert(object.site);
+        }
+    }
+
     /// Materialize all pending defers for `scope_id` in LIFO order.
     ///
     /// Called at every exit from a scope: the tail of a `Block` expression,
@@ -4869,6 +5258,12 @@ impl Builder {
     fn stmt(&mut self, stmt: &hew_hir::HirStmt) {
         match &stmt.kind {
             HirStmtKind::Let(binding, Some(value)) => {
+                let binding_ty = self.subst_ty(&binding.ty);
+                let owned_string_record_key =
+                    self.owned_string_record_init_key_for_let(&binding_ty, value);
+                if owned_string_record_key.is_some() {
+                    self.owned_string_record_value_sites.insert(value.site);
+                }
                 // Mirror the HIR forward-bind discipline at the MIR
                 // layer for actor-lambda RHS. When the value is
                 // `HirExprKind::SpawnLambdaActor`, pre-allocate the
@@ -4899,7 +5294,6 @@ impl Builder {
                     self.pending_lambda_actor_handle = None;
                 }
                 self.decide(value);
-                let binding_ty = self.subst_ty(&binding.ty);
                 self.statements.push(MirStatement::Bind {
                     binding: binding.id,
                     name: binding.name.clone(),
@@ -5016,6 +5410,9 @@ impl Builder {
                     // boundary-fail-closed, raii-null-after-move.
                     self.owned_locals
                         .push((binding.id, binding.name.clone(), binding_ty.clone()));
+                }
+                if owned_string_record_key.is_some() && value_place.is_some() {
+                    self.owned_string_record_bindings.insert(binding.id);
                 }
                 // Backend stream: the binding owns a fresh local that the
                 // initialiser's value is moved into. The pre-allocated
@@ -5378,6 +5775,76 @@ impl Builder {
                 });
                 Some(dest)
             }
+            // Named top-level function used as a first-class value.
+            // Synthesise a ClosureInvoke-ABI shim that forwards user args
+            // to the original function, then package it as a closure pair
+            // with a null (Unit) env. The shim body never loads from the
+            // env_ptr, so a null or garbage env_ptr is safe at call time.
+            //
+            // WHY: the uniform closure-call path (lower_call_closure) needs
+            // a (fn_ptr, env_ptr) pair regardless of whether the callee
+            // captures anything. Named functions have no captures, so the
+            // env_ptr is a dummy.
+            // WHEN-OBSOLETE: if Hew gains a dedicated fn-pointer ABI.
+            // WHAT-REAL: emit a native fn-pointer pair without the env slot.
+            HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Item(_),
+            } if matches!(&expr.ty, ResolvedTy::Function { .. }) => {
+                // Resolve the function's symbol. Only same-module non-generic
+                // named functions are supported; anything else fails closed
+                // with a NotYetImplemented diagnostic.
+                let fn_symbol = if self.module_fn_names.contains(name.as_str()) {
+                    name.clone()
+                } else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "named function `{name}` used as a value (only same-module \
+                                 non-generic named functions are currently supported)"
+                            ),
+                            site: expr.site,
+                        },
+                        note: "cross-module or generic named functions as values are not yet \
+                               implemented in the current spine"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let (param_tys, fn_ret_ty) = match &expr.ty {
+                    ResolvedTy::Function { params, ret } => (params.clone(), (**ret).clone()),
+                    _ => unreachable!("guard above ensures Function ty"),
+                };
+                let shim_name = format!(
+                    "__hew_named_fn_invoke_{}",
+                    Self::sanitize_symbol_component(&fn_symbol)
+                );
+                // Emit the shim only once per named fn (dedup by shim_name).
+                if !self
+                    .generated_functions
+                    .iter()
+                    .any(|f| f.raw.name == shim_name)
+                {
+                    let shim = self
+                        .lower_named_fn_invoke_shim(&fn_symbol, &shim_name, &param_tys, &fn_ret_ty);
+                    self.generated_functions.push(shim);
+                }
+                // Null-env local: ResolvedTy::Unit so codegen allocates an i8
+                // alloca. The shim ignores env_ptr entirely — zero loads.
+                let null_env = self.alloc_local(ResolvedTy::Unit);
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
+                self.instructions.push(Instr::MakeClosure {
+                    fn_symbol: shim_name,
+                    env: null_env,
+                    dest,
+                });
+                Some(dest)
+            }
+            // Catch-all for any other BindingRef shape not explicitly handled
+            // above (e.g. unresolved refs, struct items used in expression
+            // position before HIR checker gates them). Returns None so the
+            // caller sees a missing-value signal. Diagnostics for these cases
+            // are produced by the HIR checker; MIR need not repeat them.
             HirExprKind::BindingRef { .. } => None,
             HirExprKind::Binary { op, left, right } => {
                 // Short-circuit logical operators must intercept BEFORE the rhs
@@ -5392,7 +5859,9 @@ impl Builder {
                 let lhs = self.lower_value(left);
                 let rhs = self.lower_value(right);
                 match (lhs, rhs) {
-                    (Some(lhs), Some(rhs)) => self.lower_binary(*op, lhs, rhs, &expr.ty, expr.site),
+                    (Some(lhs), Some(rhs)) => {
+                        self.lower_binary(*op, lhs, rhs, &left.ty, &right.ty, &expr.ty, expr.site)
+                    }
                     _ => None,
                 }
             }
@@ -5924,6 +6393,7 @@ impl Builder {
                     });
                     return None;
                 };
+                self.mark_owned_string_record_field_site(object);
                 let record_place = self.lower_value(object)?;
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.instructions.push(Instr::RecordFieldLoad {
@@ -5976,7 +6446,13 @@ impl Builder {
                 method_id,
                 args,
                 reply_ty,
-            } => self.lower_actor_ask(receiver, method_id, args, reply_ty, expr.site),
+            } => self.lower_actor_ask(receiver, method_id, args, reply_ty, expr),
+            HirExprKind::RemoteActorAsk {
+                receiver,
+                msg,
+                timeout_ms,
+                reply_ty,
+            } => self.lower_remote_actor_ask(receiver, msg, timeout_ms, reply_ty, expr),
             HirExprKind::Closure {
                 params,
                 ret_ty,
@@ -6473,6 +6949,20 @@ impl Builder {
                 self.start_block(next);
                 dest
             }
+            HirExprKind::VarSelfMethodCall {
+                receiver,
+                target,
+                args,
+                ret_ty,
+                receiver_ty,
+            } => self.lower_var_self_method_call(
+                expr.site,
+                receiver,
+                target,
+                args,
+                ret_ty,
+                receiver_ty,
+            ),
             HirExprKind::MachineEmit { event_idx, fields } => {
                 // Lower each payload field expression to a Place. Collect
                 // even if some fail (return None) to maximise diagnostic
@@ -6910,6 +7400,14 @@ impl Builder {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single match over every HirLiteral variant; splitting would scatter the literal-lowering authority"
+    )]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "an integer literal accepted by the checker in an f32/f64 context is converted to that float type; literals are within exact range at written precision"
+    )]
     fn lower_literal(
         &mut self,
         lit: &HirLiteral,
@@ -6923,6 +7421,27 @@ impl Builder {
         // `None` on checker-invariant violations.
         match lit {
             HirLiteral::Integer(value) => {
+                if matches!(ty, ResolvedTy::F32 | ResolvedTy::F64) {
+                    let (value_bits, width) = match ty {
+                        ResolvedTy::F32 => {
+                            #[allow(
+                                clippy::cast_possible_truncation,
+                                reason = "checker accepted this integer literal in an f32 context"
+                            )]
+                            let narrowed = *value as f32;
+                            (u64::from(narrowed.to_bits()), FloatWidth::F32)
+                        }
+                        ResolvedTy::F64 => ((*value as f64).to_bits(), FloatWidth::F64),
+                        _ => unreachable!("guarded by matches! above"),
+                    };
+                    let dest = self.alloc_local(ty.clone());
+                    self.instructions.push(Instr::FloatLit {
+                        dest,
+                        value_bits,
+                        width,
+                    });
+                    return Some(dest);
+                }
                 let dest = self.alloc_local(ty.clone());
                 self.instructions.push(Instr::ConstI64 {
                     dest,
@@ -7053,11 +7572,17 @@ impl Builder {
                   with the operator set (i64 + float arms). Splitting would obscure the \
                   per-operator codegen path each reader expects to find here."
     )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "comparison/arithmetic lowering needs op, both operand places, both operand types, result type, and site"
+    )]
     fn lower_binary(
         &mut self,
         op: BinaryOp,
         lhs: Place,
         rhs: Place,
+        lhs_ty: &ResolvedTy,
+        rhs_ty: &ResolvedTy,
         ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
@@ -7080,6 +7605,21 @@ impl Builder {
             _ => None,
         };
         if let Some(pred) = cmp_pred {
+            let lhs_ty = self.subst_ty(lhs_ty);
+            let rhs_ty = self.subst_ty(rhs_ty);
+            if let (Some(lhs_width), Some(rhs_width)) = (float_width(&lhs_ty), float_width(&rhs_ty))
+            {
+                if lhs_width == rhs_width {
+                    self.instructions.push(Instr::FloatCmp {
+                        dest,
+                        pred,
+                        lhs,
+                        rhs,
+                        width: lhs_width,
+                    });
+                    return Some(dest);
+                }
+            }
             self.instructions.push(Instr::IntCmp {
                 dest,
                 pred,
@@ -7799,21 +8339,10 @@ impl Builder {
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
-        if let Some(arm) = arms.iter().find(|arm| !arm.payload_predicates.is_empty()) {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "match constructor payload literal predicates".to_string(),
-                    site: scrutinee.site,
-                },
-                note: format!(
-                    "MIR lowering cannot yet compare constructor or aggregate payload fields \
-                     before entering the arm body ({} pending \
-                     predicate(s) on this arm)",
-                    arm.payload_predicates.len()
-                ),
-            });
-            return None;
-        }
+        // Payload predicates (literal comparisons against constructor payload
+        // fields) are now lowered inside `lower_match_enum_tag`. No early
+        // exit here — the dispatcher routes to the correct sub-function which
+        // handles them.
 
         // Dispatch: regex-predicate arms require ordered predicate dispatch
         // through the runtime ABI; enum-tag arms use the fast tag-compare chain.
@@ -7839,6 +8368,21 @@ impl Builder {
                     | hew_hir::HirMatchArmPredicate::TupleProject { .. }
             )
         });
+        // A "pure binding/guard chain" is a match where every arm is either
+        // `Binding` or `Wildcard` (all catch-all predicates). These must be
+        // lowered as an ordered chain — not as a single wildcard — because
+        // each arm may have a guard that falls through on failure.
+        let is_pure_binding_chain = !has_regex
+            && !has_literal
+            && !has_variant
+            && !has_project
+            && arms.iter().all(|a| {
+                matches!(
+                    a.predicate,
+                    hew_hir::HirMatchArmPredicate::Wildcard
+                        | hew_hir::HirMatchArmPredicate::Binding { .. }
+                )
+            });
         let project_scrutinee = self.is_project_match_scrutinee_ty(&scrutinee.ty);
 
         assert!(
@@ -7856,6 +8400,10 @@ impl Builder {
 
         if has_regex {
             self.lower_match_regex(scrutinee, arms, result_ty)
+        } else if is_pure_binding_chain {
+            // Ordered chain of binding/wildcard arms, each with an optional
+            // guard. Falls through on guard failure.
+            self.lower_match_binding_chain(scrutinee, arms, result_ty)
         } else if has_literal || literal_match_scrutinee_ty(&scrutinee.ty) {
             self.lower_match_literal(scrutinee, arms, result_ty)
         } else if has_project || project_scrutinee {
@@ -7873,6 +8421,183 @@ impl Builder {
         }
     }
 
+    fn is_vec_string_iter_next_scrutinee(&self, scrutinee: &HirExpr) -> bool {
+        matches!(
+            &self.subst_ty(&scrutinee.ty),
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin: None,
+            } if name == "Option" && matches!(args.as_slice(), [ResolvedTy::String])
+        ) && hir_expr_contains_synthetic_vec_string_index(scrutinee)
+    }
+
+    fn retained_string_iter_binding_drop_safe(
+        &self,
+        start_block_id: u32,
+        start_instr_len: usize,
+        local: u32,
+    ) -> bool {
+        let mut visiting = HashSet::new();
+        let mut memo = HashMap::new();
+        self.retained_string_block_paths_drop_safe(
+            start_block_id,
+            start_block_id,
+            start_instr_len,
+            local,
+            &mut visiting,
+            &mut memo,
+        )
+    }
+
+    fn retained_string_block_paths_drop_safe(
+        &self,
+        block_id: u32,
+        start_block_id: u32,
+        start_instr_len: usize,
+        local: u32,
+        visiting: &mut HashSet<u32>,
+        memo: &mut HashMap<u32, bool>,
+    ) -> bool {
+        if let Some(ok) = memo.get(&block_id) {
+            return *ok;
+        }
+        if block_id == self.current_block_id {
+            let start = if block_id == start_block_id {
+                start_instr_len
+            } else {
+                0
+            };
+            return self.instructions[start..]
+                .iter()
+                .all(|instr| retained_string_instr_drop_safe(instr, local));
+        }
+        if !visiting.insert(block_id) {
+            return false;
+        }
+        let ok = self
+            .pending_blocks
+            .iter()
+            .find(|block| block.id == block_id)
+            .is_some_and(|block| {
+                let start = if block_id == start_block_id {
+                    start_instr_len
+                } else {
+                    0
+                };
+                if !block.instructions[start..]
+                    .iter()
+                    .all(|instr| retained_string_instr_drop_safe(instr, local))
+                {
+                    return false;
+                }
+                if !retained_string_terminator_drop_safe(&block.terminator, local) {
+                    return false;
+                }
+                match &block.terminator {
+                    Terminator::Goto { target } => self.retained_string_block_paths_drop_safe(
+                        *target,
+                        start_block_id,
+                        start_instr_len,
+                        local,
+                        visiting,
+                        memo,
+                    ),
+                    Terminator::Call { next, .. } => self.retained_string_block_paths_drop_safe(
+                        *next,
+                        start_block_id,
+                        start_instr_len,
+                        local,
+                        visiting,
+                        memo,
+                    ),
+                    Terminator::Branch {
+                        then_target,
+                        else_target,
+                        ..
+                    } => {
+                        self.retained_string_block_paths_drop_safe(
+                            *then_target,
+                            start_block_id,
+                            start_instr_len,
+                            local,
+                            visiting,
+                            memo,
+                        ) && self.retained_string_block_paths_drop_safe(
+                            *else_target,
+                            start_block_id,
+                            start_instr_len,
+                            local,
+                            visiting,
+                            memo,
+                        )
+                    }
+                    Terminator::Trap { .. } => true,
+                    Terminator::Return
+                    | Terminator::Yield { .. }
+                    | Terminator::Send { .. }
+                    | Terminator::Ask { .. }
+                    | Terminator::RemoteAsk { .. }
+                    | Terminator::Select { .. } => false,
+                }
+            });
+        visiting.remove(&block_id);
+        memo.insert(block_id, ok);
+        ok
+    }
+
+    fn emit_vec_string_iter_binding_drop(
+        &mut self,
+        binding: BindingId,
+        place: Place,
+        ty: &ResolvedTy,
+        body_start_block_id: u32,
+        body_start_instr_len: usize,
+        site: hew_hir::SiteId,
+    ) {
+        if !matches!(ty, ResolvedTy::String) {
+            return;
+        }
+        let Some(local) = base_local(place) else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "Vec<String> for-in retained binding drop".to_string(),
+                    site,
+                },
+                note: format!(
+                    "for-in binding {binding:?} must lower to a Place::Local-backed string \
+                     owner so the retained hew_vec_get_str result can be balanced with \
+                     hew_string_drop; got {place:?}"
+                ),
+            });
+            return;
+        };
+        if self.retained_string_iter_binding_drop_safe(
+            body_start_block_id,
+            body_start_instr_len,
+            local,
+        ) {
+            self.instructions.push(Instr::Drop {
+                place,
+                ty: ty.clone(),
+                drop_fn: Some("hew_string_drop".to_string()),
+            });
+        } else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "Vec<String> for-in retained binding drop".to_string(),
+                    site,
+                },
+                note: "for-in over Vec<String> lowered hew_vec_get_str, which returns a \
+                       retained/header-aware owner. This body shape does not yet have a \
+                       proven single post-body drop point or contains an ownership-escaping \
+                       use of the iteration binding, so MIR refuses to emit the getter \
+                       without a balancing hew_string_drop."
+                    .to_string(),
+            });
+        }
+    }
+
     fn project_match_scrutinee_is_bitcopy(&self, ty: &ResolvedTy) -> bool {
         match self.subst_ty(ty) {
             ResolvedTy::Tuple(items) => items.iter().all(|item| {
@@ -7880,6 +8605,128 @@ impl Builder {
             }),
             other => ValueClass::of_ty(&other, &self.type_classes) == ValueClass::BitCopy,
         }
+    }
+
+    /// Lower a match whose arms are all `Wildcard` or `Binding`, each with
+    /// an optional guard. Arms are tried in source order; a guard failure
+    /// falls through to the next arm. The last arm (which must succeed if
+    /// the checker accepted the match as exhaustive) emits an
+    /// `ExhaustivenessFallthrough` trap if its guard also fails.
+    ///
+    /// Block topology:
+    /// ```text
+    /// arm_0_bb:
+    ///   bind x = scrutinee (Binding only)
+    ///   guard_0 = lower(guard)  (if present)
+    ///   Branch { guard_0, then: body_0_bb, else: arm_1_bb }
+    /// body_0_bb: result = body; Goto join
+    ///
+    /// arm_1_bb: ... (same pattern)
+    /// ...
+    /// join_bb: (result)
+    /// ```
+    fn lower_match_binding_chain(
+        &mut self,
+        scrutinee: &HirExpr,
+        arms: &[hew_hir::HirMatchArm],
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let result_place = self.alloc_local(result_ty.clone());
+        let join_bb = self.alloc_block();
+
+        let scrutinee_place = self.lower_value(scrutinee)?;
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(n) => n,
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "binding chain match scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "binding chain match scrutinee must lower to Place::Local; got {other:?}"
+                    ),
+                });
+                return None;
+            }
+        };
+
+        // Allocate arm blocks up front and link them together.
+        let arm_bbs: Vec<u32> = (0..arms.len()).map(|_| self.alloc_block()).collect();
+        // Jump from the entry block to the first arm.
+        self.finish_current_block(Terminator::Goto { target: arm_bbs[0] });
+
+        for (i, arm) in arms.iter().enumerate() {
+            self.start_block(arm_bbs[i]);
+
+            // The fallthrough target when this arm's guard fails: the next
+            // arm's block, or the exhaustiveness trap.
+            let fallthrough_bb = if i + 1 < arms.len() {
+                arm_bbs[i + 1]
+            } else {
+                let trap_bb = self.alloc_block();
+                // We'll emit this trap block after the loop.
+                // Use a dedicated block to keep the CFG well-formed.
+                trap_bb
+            };
+
+            // For Binding arms, bind the scrutinee to the pattern name.
+            if let hew_hir::HirMatchArmPredicate::Binding {
+                binding_id,
+                name,
+                ty,
+            } = &arm.predicate
+            {
+                let binding_ty = self.subst_ty(ty);
+                self.statements.push(MirStatement::Bind {
+                    binding: *binding_id,
+                    name: name.clone(),
+                    site: arm.body.site,
+                    ty: binding_ty.clone(),
+                });
+                let dest = self.alloc_local(binding_ty);
+                self.instructions.push(Instr::Move {
+                    dest,
+                    src: Place::Local(scrutinee_local),
+                });
+                self.binding_locals.insert(*binding_id, dest);
+            }
+
+            // Guard check: failure branches to the next arm.
+            if let Some(guard) = &arm.guard {
+                let guard_place = self.lower_value(guard);
+                if let Some(guard_local) = guard_place {
+                    let body_entry_bb = self.alloc_block();
+                    self.finish_current_block(Terminator::Branch {
+                        cond: guard_local,
+                        then_target: body_entry_bb,
+                        else_target: fallthrough_bb,
+                    });
+                    self.start_block(body_entry_bb);
+                }
+            }
+
+            // Arm body.
+            let value = self.lower_value(&arm.body);
+            if let Some(src) = value {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            self.finish_current_block(Terminator::Goto { target: join_bb });
+
+            // Emit the fallthrough trap for the last arm (if no next arm).
+            if i + 1 == arms.len() {
+                self.start_block(fallthrough_bb);
+                self.finish_current_block(Terminator::Trap {
+                    kind: crate::model::TrapKind::ExhaustivenessFallthrough,
+                });
+            }
+        }
+
+        self.start_block(join_bb);
+        Some(result_place)
     }
 
     #[allow(
@@ -7898,6 +8745,7 @@ impl Builder {
                 hew_hir::HirMatchArmPredicate::RecordProject { .. }
                     | hew_hir::HirMatchArmPredicate::TupleProject { .. }
                     | hew_hir::HirMatchArmPredicate::Wildcard
+                    | hew_hir::HirMatchArmPredicate::Binding { .. }
             )
         })?;
 
@@ -7996,13 +8844,16 @@ impl Builder {
                         dest,
                     });
                 }
-                hew_hir::HirMatchArmPredicate::Wildcard => {
+                hew_hir::HirMatchArmPredicate::Wildcard
+                | hew_hir::HirMatchArmPredicate::Binding { .. } => {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::NotYetImplemented {
-                            construct: "wildcard match arm with project bindings".to_string(),
+                            construct: "wildcard/binding match arm with project bindings"
+                                .to_string(),
                             site: selected.body.site,
                         },
-                        note: "wildcard match arms must not carry project bindings; this is a checker/HIR bug"
+                        note: "wildcard/binding match arms must not carry project bindings; \
+                               this is a checker/HIR bug"
                             .to_string(),
                     });
                     return None;
@@ -8060,7 +8911,10 @@ impl Builder {
                         literal_arms.push(arm);
                     }
                 }
-                hew_hir::HirMatchArmPredicate::Wildcard => {
+                hew_hir::HirMatchArmPredicate::Wildcard
+                | hew_hir::HirMatchArmPredicate::Binding { .. } => {
+                    // Binding arms are catch-all (like Wildcard) in the literal
+                    // dispatch; the scrutinee binding is handled in the body block.
                     if wildcard_arm.is_none() {
                         wildcard_arm = Some(arm);
                     }
@@ -8101,6 +8955,7 @@ impl Builder {
             .collect();
         let tail_bb = self.alloc_block();
 
+        let mut fallthrough_bbs: Vec<u32> = Vec::with_capacity(literal_arms.len());
         for (i, arm) in literal_arms.iter().enumerate() {
             let (lit, ty) = match &arm.predicate {
                 hew_hir::HirMatchArmPredicate::Literal { lit, ty } => (lit, ty),
@@ -8122,6 +8977,7 @@ impl Builder {
             } else {
                 tail_bb
             };
+            fallthrough_bbs.push(next_target);
             self.finish_current_block(Terminator::Branch {
                 cond: cond_local,
                 then_target: body_bbs[i],
@@ -8131,6 +8987,21 @@ impl Builder {
         }
 
         if let Some(wildcard) = wildcard_arm {
+            // Binding and Wildcard arms may have guards; failure traps.
+            let guard_failed_bb = self.alloc_block();
+            self.emit_match_arm_binding(wildcard, Place::Local(scrutinee_local), None);
+            if let Some(guard) = &wildcard.guard {
+                let guard_place = self.lower_value(guard);
+                if let Some(guard_local) = guard_place {
+                    let body_bb = self.alloc_block();
+                    self.finish_current_block(Terminator::Branch {
+                        cond: guard_local,
+                        then_target: body_bb,
+                        else_target: guard_failed_bb,
+                    });
+                    self.start_block(body_bb);
+                }
+            }
             if let Some(src) = self.lower_value(&wildcard.body) {
                 self.instructions.push(Instr::Move {
                     dest: result_place,
@@ -8138,6 +9009,10 @@ impl Builder {
                 });
             }
             self.finish_current_block(Terminator::Goto { target: join_bb });
+            self.start_block(guard_failed_bb);
+            self.finish_current_block(Terminator::Trap {
+                kind: TrapKind::ExhaustivenessFallthrough,
+            });
         } else {
             self.finish_current_block(Terminator::Trap {
                 kind: TrapKind::ExhaustivenessFallthrough,
@@ -8146,6 +9021,20 @@ impl Builder {
 
         for (i, arm) in literal_arms.iter().enumerate() {
             self.start_block(body_bbs[i]);
+            let fallthrough_bb = fallthrough_bbs[i];
+            // Guard check on literal arm: failure falls through to next arm.
+            if let Some(guard) = &arm.guard {
+                let guard_place = self.lower_value(guard);
+                if let Some(guard_local) = guard_place {
+                    let body_entry_bb = self.alloc_block();
+                    self.finish_current_block(Terminator::Branch {
+                        cond: guard_local,
+                        then_target: body_entry_bb,
+                        else_target: fallthrough_bb,
+                    });
+                    self.start_block(body_entry_bb);
+                }
+            }
             if !arm.bindings.is_empty() {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
@@ -8177,7 +9066,9 @@ impl Builder {
         site: SiteId,
     ) -> Option<Place> {
         match (lit, ty) {
-            (HirLiteral::Integer(value), ResolvedTy::I64) => {
+            (HirLiteral::Integer(value), ty)
+                if ty.is_integer() && !matches!(ty, ResolvedTy::Isize | ResolvedTy::Usize) =>
+            {
                 let dest = self.alloc_local(ty.clone());
                 self.instructions.push(Instr::ConstI64 {
                     dest,
@@ -8228,8 +9119,9 @@ impl Builder {
                         construct: format!("unsupported literal match predicate {lit:?}: {ty:?}"),
                         site,
                     },
-                    note: "literal match lowering is wired only for i64, bool, char, and string"
-                        .to_string(),
+                    note:
+                        "literal match lowering is wired only for integers, bool, char, and string"
+                            .to_string(),
                 });
                 None
             }
@@ -8311,7 +9203,8 @@ impl Builder {
                 hew_hir::HirMatchArmPredicate::Regex { .. } => {
                     regex_arms.push(arm);
                 }
-                hew_hir::HirMatchArmPredicate::Wildcard => {
+                hew_hir::HirMatchArmPredicate::Wildcard
+                | hew_hir::HirMatchArmPredicate::Binding { .. } => {
                     if wildcard_arm.is_none() {
                         wildcard_arm = Some(arm);
                     }
@@ -8801,7 +9694,11 @@ impl Builder {
                 hew_hir::HirMatchArmPredicate::EnumVariant { .. } => {
                     variant_arms.push(arm);
                 }
-                hew_hir::HirMatchArmPredicate::Wildcard => {
+                hew_hir::HirMatchArmPredicate::Wildcard
+                | hew_hir::HirMatchArmPredicate::Binding { .. } => {
+                    // Binding arms act as catch-all, identical to Wildcard from
+                    // the tag-dispatch perspective. The difference (binding the
+                    // scrutinee to a name) is handled in the body block below.
                     if wildcard_arm.is_none() {
                         wildcard_arm = Some(arm);
                     }
@@ -8823,6 +9720,7 @@ impl Builder {
                 }
             }
         }
+        let vec_string_iter_next_scrutinee = self.is_vec_string_iter_next_scrutinee(scrutinee);
 
         // Lower the scrutinee in the entry block. A failure propagates
         // via `?`; the half-built match leaves no dangling block.
@@ -8858,7 +9756,7 @@ impl Builder {
         let join_bb = self.alloc_block();
 
         // Reserve one body block per variant arm and one block for the
-        // wildcard (or the fail-closed trap when no wildcard exists).
+        // wildcard/binding (or the fail-closed trap when neither exists).
         let body_bbs: Vec<u32> = (0..variant_arms.len())
             .map(|_| self.alloc_block())
             .collect();
@@ -8868,6 +9766,11 @@ impl Builder {
         // in the entry block (current block immediately after the tag
         // load); subsequent compares are in their own blocks linked
         // through `else_target`.
+        //
+        // Also collect `fallthrough_bbs[i]` — the block arm i jumps to when
+        // its payload predicates or guard fail. For arm i this is
+        // check_bb_{i+1} (or tail_bb for the last arm).
+        let mut fallthrough_bbs: Vec<u32> = Vec::with_capacity(variant_arms.len());
         for (i, arm) in variant_arms.iter().enumerate() {
             // Allocate a constant local for the variant index and an
             // i1 result local for the equality compare.
@@ -8897,6 +9800,7 @@ impl Builder {
             } else {
                 tail_bb
             };
+            fallthrough_bbs.push(next_target);
             self.finish_current_block(Terminator::Branch {
                 cond: cond_local,
                 then_target: body_bbs[i],
@@ -8908,8 +9812,32 @@ impl Builder {
             self.start_block(next_target);
         }
 
-        // Tail block: either the wildcard body or the fail-closed trap.
+        // Tail block: either the wildcard/binding body or the fail-closed trap.
         if let Some(wildcard) = wildcard_arm {
+            // Wildcard and binding arms may also have guards. When a guard is
+            // present, failing it falls through to the exhaustiveness trap (no
+            // subsequent arm can match a wildcard's position).
+            let guard_failed_bb = self.alloc_block();
+
+            self.emit_match_arm_binding(
+                wildcard,
+                Place::Local(scrutinee_local),
+                None, // no variant_idx; entire scrutinee is bound
+            );
+
+            if let Some(guard) = &wildcard.guard {
+                let guard_place = self.lower_value(guard);
+                if let Some(guard_local) = guard_place {
+                    let body_bb = self.alloc_block();
+                    self.finish_current_block(Terminator::Branch {
+                        cond: guard_local,
+                        then_target: body_bb,
+                        else_target: guard_failed_bb,
+                    });
+                    self.start_block(body_bb);
+                }
+            }
+
             let value = self.lower_value(&wildcard.body);
             if let Some(src) = value {
                 self.instructions.push(Instr::Move {
@@ -8918,6 +9846,13 @@ impl Builder {
                 });
             }
             self.finish_current_block(Terminator::Goto { target: join_bb });
+
+            // Guard-failed block: belt-and-braces trap (exhaustiveness still
+            // holds but guard rejected the sole remaining catch-all).
+            self.start_block(guard_failed_bb);
+            self.finish_current_block(Terminator::Trap {
+                kind: crate::model::TrapKind::ExhaustivenessFallthrough,
+            });
         } else {
             // Belt-and-braces runtime guard per LESSONS `match-fail-closed`
             // (P0). The checker rejects non-exhaustive enum matches at
@@ -8928,9 +9863,12 @@ impl Builder {
             });
         }
 
-        // Variant arm body blocks. Payload bindings are initialised from the
-        // dominated variant payload field before lowering the arm body so body
-        // `BindingRef`s resolve through `binding_locals` like ordinary lets.
+        // Variant arm body blocks. Payload predicates are checked first (if
+        // any), then payload bindings are initialised from the dominated variant
+        // payload field, then guards are evaluated (guards may reference those
+        // payload bindings), then the arm body is lowered so body `BindingRef`s
+        // resolve through `binding_locals` like ordinary lets.
+        // Order: predicates → bindings → guard → body.
         for (i, arm) in variant_arms.iter().enumerate() {
             self.start_block(body_bbs[i]);
             let variant_idx = match &arm.predicate {
@@ -8939,7 +9877,46 @@ impl Builder {
                     "variant_arms must only contain EnumVariant predicates; got {other:?}"
                 ),
             };
+            let fallthrough_bb = fallthrough_bbs[i];
+
+            // Payload predicate checks: compare literal values against
+            // constructor payload fields. Each failed comparison branches to
+            // `fallthrough_bb` (the next arm's check block or the tail).
+            for pred in &arm.payload_predicates {
+                let field_place = Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: pred.field_idx,
+                };
+                let expected =
+                    self.lower_match_literal_constant(&pred.literal, &pred.ty, arm.body.site)?;
+                let cond_local = self.alloc_local(ResolvedTy::Bool);
+                self.instructions.push(Instr::IntCmp {
+                    pred: CmpPred::Eq,
+                    lhs: field_place,
+                    rhs: expected,
+                    dest: cond_local,
+                });
+                let pass_bb = self.alloc_block();
+                self.finish_current_block(Terminator::Branch {
+                    cond: cond_local,
+                    then_target: pass_bb,
+                    else_target: fallthrough_bb,
+                });
+                self.start_block(pass_bb);
+            }
+
+            let arm_is_vec_iter_some = vec_string_iter_next_scrutinee
+                && matches!(
+                    &arm.predicate,
+                    hew_hir::HirMatchArmPredicate::EnumVariant {
+                        variant_match,
+                        variant_idx: 0,
+                    } if variant_match.type_name == "Option"
+                        && variant_match.variant_name == "Some"
+                );
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
+            let mut retained_vec_string_iter_bindings = Vec::new();
             for binding in &arm.bindings {
                 let binding_ty = self.subst_ty(&binding.ty);
                 self.statements.push(MirStatement::Bind {
@@ -8968,8 +9945,35 @@ impl Builder {
                 });
                 let previous = self.binding_locals.insert(binding.binding, dest);
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
+                if arm_is_vec_iter_some && matches!(binding_ty, ResolvedTy::String) {
+                    retained_vec_string_iter_bindings.push((
+                        binding.binding,
+                        dest,
+                        binding_ty,
+                        arm.body.site,
+                    ));
+                }
             }
 
+            // Guard check: evaluate the guard expression and branch. Placed
+            // after payload bindings so guard expressions may reference the
+            // arm's own constructor-payload bindings (e.g. `Some(n) if n > 0`).
+            // Failure falls through to `fallthrough_bb` (re-try next arm).
+            if let Some(guard) = &arm.guard {
+                let guard_place = self.lower_value(guard);
+                if let Some(guard_local) = guard_place {
+                    let body_entry_bb = self.alloc_block();
+                    self.finish_current_block(Terminator::Branch {
+                        cond: guard_local,
+                        then_target: body_entry_bb,
+                        else_target: fallthrough_bb,
+                    });
+                    self.start_block(body_entry_bb);
+                }
+            }
+
+            let body_start_block_id = self.current_block_id;
+            let body_start_instr_len = self.instructions.len();
             let value = self.lower_value(&arm.body);
 
             for (binding, previous, keep_for_drop_elab) in overwritten_bindings.into_iter().rev() {
@@ -8991,12 +9995,58 @@ impl Builder {
                     src,
                 });
             }
+            for (binding, place, ty, site) in retained_vec_string_iter_bindings {
+                self.emit_vec_string_iter_binding_drop(
+                    binding,
+                    place,
+                    &ty,
+                    body_start_block_id,
+                    body_start_instr_len,
+                    site,
+                );
+            }
             self.finish_current_block(Terminator::Goto { target: join_bb });
         }
 
         // Join. Subsequent lowering continues here.
         self.start_block(join_bb);
         Some(result_place)
+    }
+
+    /// Emit the binding for a `Binding`-predicate arm: move the entire
+    /// scrutinee value into a fresh local and register it in `binding_locals`.
+    ///
+    /// `variant_idx` is `Some` when the arm is inside an enum-tag dispatch
+    /// (binding a variant payload rather than the whole scrutinee); `None`
+    /// for top-level binding arms where the entire scrutinee is bound.
+    fn emit_match_arm_binding(
+        &mut self,
+        arm: &hew_hir::HirMatchArm,
+        scrutinee_local: Place,
+        _variant_idx: Option<u32>,
+    ) {
+        let hew_hir::HirMatchArmPredicate::Binding {
+            binding_id,
+            name,
+            ty,
+        } = &arm.predicate
+        else {
+            // Not a binding arm — nothing to do.
+            return;
+        };
+        let binding_ty = self.subst_ty(ty);
+        self.statements.push(MirStatement::Bind {
+            binding: *binding_id,
+            name: name.clone(),
+            site: arm.body.site,
+            ty: binding_ty.clone(),
+        });
+        let dest = self.alloc_local(binding_ty);
+        self.instructions.push(Instr::Move {
+            dest,
+            src: scrutinee_local,
+        });
+        self.binding_locals.insert(*binding_id, dest);
     }
 
     /// Lower `while cond { body }` to a three-block CFG:
@@ -9645,7 +10695,13 @@ impl Builder {
     /// - `char`/`i32` → `hew_vec_get_i32`
     /// - `i64` → `hew_vec_get_i64`
     /// - `f64` → `hew_vec_get_f64`
-    /// - ptr-shaped (`Duplex`, `LambdaActorHandle`, Named heap types) → `hew_vec_get_ptr`
+    /// - `String` → `hew_vec_get_str` (retained/header-aware owner;
+    ///   callers that bind it must balance with `hew_string_drop`)
+    /// - `BitCopy` `Named` value records and `Tuple` → `hew_vec_get_layout`
+    ///   (layout-descriptor path; codegen loads the element via the dest-place
+    ///   type so the full record stride is honoured)
+    /// - ptr-shaped (`Duplex`, `LambdaActorHandle`, non-`BitCopy` Named heap
+    ///   types) → `hew_vec_get_ptr`
     ///
     /// Unsupported element types emit `MirDiagnostic::NotYetImplemented`
     /// and return `None` (tracked gap, not silent shim).
@@ -9698,14 +10754,34 @@ impl Builder {
         self.start_block(cont_bb);
 
         // Dispatch to the typed runtime getter based on element type.
+        //
+        // Named element types split into two paths:
+        //   - BitCopy value records (e.g. `type Point { x: i64; y: i64 }`) and
+        //     tuples: their elements are stored inline in the vec buffer at the
+        //     full record stride.  `hew_vec_get_ptr` uses a hard-coded 8-byte
+        //     (pointer) stride and returns garbage for any record wider than 8
+        //     bytes.  These types MUST use `hew_vec_get_layout` so the runtime
+        //     applies the correct per-element stride via the layout descriptor.
+        //   - Heap-handle nominals (Resource / Linear): stored as pointer-sized
+        //     opaque handles; `hew_vec_get_ptr` is correct for these.
         let get_symbol = match elem_ty {
             ResolvedTy::Bool => "hew_vec_get_bool",
             ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
             ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_get_i64",
             ResolvedTy::F64 => "hew_vec_get_f64",
-            // Pointer-shaped heap handles: Duplex, LambdaActorHandle, and
-            // Named types that are resource/linear (their heap-backing is
-            // opaque to the element-load ABI). hew_vec_get_ptr returns a
+            ResolvedTy::String => "hew_vec_get_str",
+            // BitCopy Named value records: use layout-descriptor getter so the
+            // runtime applies the correct element stride.
+            ResolvedTy::Named { .. }
+                if ValueClass::of_ty(elem_ty, &self.type_classes) == ValueClass::BitCopy =>
+            {
+                "hew_vec_get_layout"
+            }
+            // Tuples are BitCopy aggregates stored inline; same layout path.
+            ResolvedTy::Tuple(_) => "hew_vec_get_layout",
+            // Pointer-shaped heap handles (Resource, Linear): Duplex,
+            // LambdaActorHandle, and non-BitCopy Named types whose heap-backing
+            // is opaque to the element-load ABI. hew_vec_get_ptr returns a
             // *mut c_void which codegen casts to the appropriate pointer.
             ResolvedTy::Named { .. } => "hew_vec_get_ptr",
             other => {
@@ -9715,10 +10791,11 @@ impl Builder {
                         site,
                     },
                     note: "hew_vec_get_T dispatch: element types supported by this \
-                           slice are bool, char/i32/u32, i64/u64, f64, and Named heap types. \
-                           String (hew_vec_get_str strdup ownership) is a follow-on \
-                           slice. Other scalars map to i32/i64 in a future \
-                           width-normalisation slice."
+                           slice are bool, char/i32/u32, i64/u64, f64, String \
+                           (retained/header-aware owner), BitCopy Named value \
+                           records and tuples (layout-descriptor path), and \
+                           heap-handle Named types (pointer path). Other scalars \
+                           map to i32/i64 in a future width-normalisation slice."
                         .to_string(),
                 });
                 return None;
@@ -9782,8 +10859,8 @@ impl Builder {
     /// Element-type dispatch (`hew_vec_slice_range_T`) covers the same
     /// set as `hew_vec_get_T` (C-2) plus `str`: i32/u32, i64/u64, f64,
     /// Named heap (ptr), and `String`. For Vec<String> the runtime
-    /// strdups each element into the fresh vec and sets `elem_kind ==
-    /// String` so the existing free-on-drop path frees them.
+    /// copies each element into the fresh header-aware vec and sets
+    /// `elem_kind == String` so the existing free-on-drop path releases them.
     #[expect(
         clippy::too_many_lines,
         reason = "explicit CFG construction: each block + bounds-check branch is its own \
@@ -10764,6 +11841,276 @@ impl Builder {
     /// argument fails to produce a Place (an unsupported construct in its
     /// own right), the whole call fails closed and returns `None` —
     /// diagnostics from the argument lowering already capture the root cause.
+    fn resolve_static_trait_method_callee(
+        &mut self,
+        receiver_type_param: &str,
+        declaring_trait: &str,
+        method_name: &str,
+        site: SiteId,
+    ) -> Option<String> {
+        let Some(concrete_ty) = self.subst.get(receiver_type_param).cloned() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnresolvedStaticDispatchSubstitution {
+                    receiver_type_param: receiver_type_param.to_string(),
+                    declaring_trait: declaring_trait.to_string(),
+                    method_name: method_name.to_string(),
+                    site,
+                },
+                note: format!(
+                    "static trait dispatch `{declaring_trait}::{method_name}` reached \
+                     MIR in a concrete function body without a substitution for \
+                     receiver type parameter `{receiver_type_param}`; this indicates \
+                     a missing monomorphization binding (the generic origin should \
+                     not be emitted)"
+                ),
+            });
+            return None;
+        };
+        let Some((self_type_name, type_args)) =
+            hew_hir::dispatch::receiver_self_type_for_impl_lookup(&concrete_ty)
+        else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "static trait dispatch on receiver shape `{concrete_ty:?}` \
+                         for `{declaring_trait}::{method_name}`"
+                    ),
+                    site,
+                },
+                note: "receiver type has no canonical impl-self name; \
+                       static dispatch supports nominal and primitive receivers only"
+                    .to_string(),
+            });
+            return None;
+        };
+        let key = (
+            declaring_trait.to_string(),
+            self_type_name.clone(),
+            method_name.to_string(),
+        );
+        let Some(entry) = self.trait_impl_index.get(&key).cloned() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::StaticDispatchImplNotFound {
+                    declaring_trait: declaring_trait.to_string(),
+                    self_type_name: self_type_name.clone(),
+                    method_name: method_name.to_string(),
+                    site,
+                },
+                note: format!(
+                    "no impl of trait `{declaring_trait}` for `{self_type_name}` \
+                     registered in the static-dispatch index; the checker should \
+                     have rejected this call"
+                ),
+            });
+            return None;
+        };
+        if entry.impl_type_params.is_empty() {
+            if !self.module_fn_names.contains(&entry.method_symbol) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::StaticDispatchImplNotFound {
+                        declaring_trait: declaring_trait.to_string(),
+                        self_type_name: self_type_name.clone(),
+                        method_name: method_name.to_string(),
+                        site,
+                    },
+                    note: format!(
+                        "impl method `{}` is registered in the static-dispatch \
+                         index but not in module_fn_names",
+                        entry.method_symbol
+                    ),
+                });
+                return None;
+            }
+            return Some(entry.method_symbol);
+        }
+        let mangled = hew_hir::monomorph::mangle(&entry.method_symbol, &type_args);
+        if !self.module_fn_names.contains(&mangled) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::StaticDispatchMonomorphisationMissing {
+                    method_symbol: entry.method_symbol.clone(),
+                    mangled: mangled.clone(),
+                    site,
+                },
+                note: format!(
+                    "static dispatch resolved to generic impl method `{}` \
+                     but no monomorphisation `{}` was registered by HIR's \
+                     closure_under_substitution",
+                    entry.method_symbol, mangled
+                ),
+            });
+            return None;
+        }
+        Some(mangled)
+    }
+
+    fn resolve_var_self_direct_callee(
+        &mut self,
+        callee: &str,
+        site: SiteId,
+        receiver_ty: &ResolvedTy,
+    ) -> Option<String> {
+        if let Some(type_args) = self.call_site_type_args.get(&site).cloned() {
+            let substituted: Vec<ResolvedTy> = type_args.iter().map(|t| self.subst_ty(t)).collect();
+            let mangled = hew_hir::monomorph::mangle(callee, &substituted);
+            if self.module_fn_names.contains(&mangled) {
+                return Some(mangled);
+            }
+        }
+        let substituted_receiver = self.subst_ty(receiver_ty);
+        if let ResolvedTy::Named { args, .. } = &substituted_receiver {
+            if !args.is_empty() {
+                let mangled = hew_hir::monomorph::mangle(callee, args);
+                if self.module_fn_names.contains(&mangled) {
+                    return Some(mangled);
+                }
+            }
+        }
+        if self.module_fn_names.contains(callee) {
+            return Some(callee.to_string());
+        }
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: format!("var-self method callee `{callee}`"),
+                site,
+            },
+            note: "var-self write-back dispatch resolved to a method symbol that has \
+                   no MIR body in module_fn_names; HIR should have registered the \
+                   impl method or its monomorphisation"
+                .to_string(),
+        });
+        None
+    }
+
+    fn restore_var_self_receiver_binding(
+        &mut self,
+        binding_id: BindingId,
+        name: &str,
+        ty: &ResolvedTy,
+        site: SiteId,
+    ) {
+        self.statements.push(MirStatement::Bind {
+            binding: binding_id,
+            name: name.to_string(),
+            site,
+            ty: ty.clone(),
+        });
+        if ValueClass::of_ty(ty, &self.type_classes) != ValueClass::BitCopy
+            && !self
+                .owned_locals
+                .iter()
+                .any(|(binding, _, _)| *binding == binding_id)
+        {
+            self.owned_locals
+                .push((binding_id, name.to_string(), ty.clone()));
+        }
+    }
+
+    fn lower_var_self_method_call(
+        &mut self,
+        site: SiteId,
+        receiver: &HirExpr,
+        target: &HirVarSelfMethodTarget,
+        args: &[HirExpr],
+        ret_ty: &ResolvedTy,
+        receiver_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding_id),
+            name: receiver_name,
+        } = &receiver.kind
+        else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: format!(
+                        "var-self method call has non-binding receiver {:?}; checker should have rejected this",
+                        receiver.kind
+                    ),
+                },
+                note: "var-self receivers must be mutable local bindings so the \
+                       dual-return Self value can be written back in place"
+                    .to_string(),
+            });
+            return None;
+        };
+        let Some(receiver_slot) = self.binding_locals.get(binding_id).copied() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnresolvedPlace {
+                    binding: *binding_id,
+                    name: receiver_name.clone(),
+                    site: receiver.site,
+                },
+                note: "var-self receiver binding has no MIR place".to_string(),
+            });
+            return None;
+        };
+        if !matches!(receiver_slot, Place::Local(_)) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: format!(
+                        "var-self receiver `{receiver_name}` maps to non-local place {receiver_slot:?}"
+                    ),
+                },
+                note: "var-self write-back currently supports ordinary local bindings only"
+                    .to_string(),
+            });
+            return None;
+        }
+        let callee_symbol = match target {
+            HirVarSelfMethodTarget::Direct { callee } => {
+                self.resolve_var_self_direct_callee(callee, site, receiver_ty)?
+            }
+            HirVarSelfMethodTarget::StaticTrait {
+                receiver_type_param,
+                declaring_trait,
+                method_name,
+                ..
+            } => self.resolve_static_trait_method_callee(
+                receiver_type_param,
+                declaring_trait,
+                method_name,
+                site,
+            )?,
+        };
+        let self_arg = self.lower_value(receiver)?;
+        let mut arg_places = Vec::with_capacity(args.len() + 1);
+        arg_places.push(self_arg);
+        for arg in args {
+            arg_places.push(self.lower_value(arg)?);
+        }
+        let resolved_ret_ty = self.subst_ty(ret_ty);
+        let resolved_receiver_ty = self.subst_ty(receiver_ty);
+        let tuple_ty =
+            ResolvedTy::Tuple(vec![resolved_ret_ty.clone(), resolved_receiver_ty.clone()]);
+        let tuple_place = self.alloc_local(tuple_ty);
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: callee_symbol,
+            args: arg_places,
+            dest: Some(tuple_place),
+            next,
+        });
+        self.start_block(next);
+
+        let result_place = self.alloc_local(resolved_ret_ty);
+        self.instructions.push(Instr::TupleFieldLoad {
+            tuple: tuple_place,
+            field_index: 0,
+            dest: result_place,
+        });
+        self.instructions.push(Instr::TupleFieldLoad {
+            tuple: tuple_place,
+            field_index: 1,
+            dest: receiver_slot,
+        });
+        self.restore_var_self_receiver_binding(
+            *binding_id,
+            receiver_name,
+            &resolved_receiver_ty,
+            site,
+        );
+        Some(result_place)
+    }
+
     ///
     /// The `dest` Place is allocated here and written by the emitted
     /// call terminator. For unit-returning functions (`ret_ty` is
@@ -11806,8 +13153,9 @@ impl Builder {
         method_id: &str,
         args: &[hew_hir::HirExpr],
         reply_ty: &ResolvedTy,
-        site: hew_hir::SiteId,
+        expr: &HirExpr,
     ) -> Option<Place> {
+        let site = expr.site;
         let info = self.actor_method_info(&receiver.ty, method_id, site)?;
         if info.return_ty != *reply_ty {
             self.diagnostics.push(MirDiagnostic {
@@ -11839,17 +13187,109 @@ impl Builder {
         }
         let actor = self.lower_value(receiver)?;
         let value = self.lower_actor_payload(args, site)?;
+        // `result_dest` holds `Result<R, AskError>` — the R-ASK unified return type.
+        // Its type comes from the HIR expression's checker-assigned type, which is
+        // `Result<reply_ty, AskError>` after the unification fix in the type checker.
+        let result_dest = self.alloc_local(self.subst_ty(&expr.ty));
         let reply_dest = self.alloc_local(reply_ty.clone());
+        let error_dest = self.alloc_local(ResolvedTy::Named {
+            name: "AskError".to_string(),
+            args: Vec::new(),
+            builtin: Some(BuiltinType::AskError),
+        });
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Ask {
             actor,
             msg_type: info.msg_type,
             value,
+            result_dest,
             reply_dest,
+            error_dest,
             next,
         });
         self.start_block(next);
-        Some(reply_dest)
+        Some(result_dest)
+    }
+
+    fn remote_actor_method_info(
+        &mut self,
+        receiver_ty: &ResolvedTy,
+        msg_ty: &ResolvedTy,
+        reply_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<ActorMethodInfo> {
+        let actor_name = actor_name_from_remote_pid_ty(receiver_ty)?;
+        let Some(layout) = self.actor_layouts.get(actor_name) else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("remote actor ask on unknown actor `{actor_name}`"),
+                    site,
+                },
+                note: "RemotePid<T> named an actor with no MIR actor layout".to_string(),
+            });
+            return None;
+        };
+        let Some(handler) = layout.handlers.iter().find(|handler| {
+            handler
+                .param_tys
+                .first()
+                .is_some_and(|param| param == msg_ty)
+                && handler.return_ty == *reply_ty
+        }) else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("remote actor ask handler lookup for `{actor_name}`"),
+                    site,
+                },
+                note: format!(
+                    "no receive handler accepts {} and returns {}",
+                    msg_ty.user_facing(),
+                    reply_ty.user_facing()
+                ),
+            });
+            return None;
+        };
+        Some(ActorMethodInfo {
+            msg_type: handler.msg_type,
+            param_tys: handler.param_tys.clone(),
+            return_ty: handler.return_ty.clone(),
+        })
+    }
+
+    fn lower_remote_actor_ask(
+        &mut self,
+        receiver: &HirExpr,
+        msg: &HirExpr,
+        timeout_ms: &HirExpr,
+        reply_ty: &ResolvedTy,
+        expr: &HirExpr,
+    ) -> Option<Place> {
+        let msg_ty = self.subst_ty(&msg.ty);
+        let info = self.remote_actor_method_info(&receiver.ty, &msg_ty, reply_ty, expr.site)?;
+        let actor = self.lower_value(receiver)?;
+        let value = self.lower_value(msg)?;
+        let timeout_ms = self.lower_value(timeout_ms)?;
+        let result_dest = self.alloc_local(self.subst_ty(&expr.ty));
+        let reply_dest = self.alloc_local(reply_ty.clone());
+        let error_dest = self.alloc_local(ResolvedTy::Named {
+            name: "AskError".to_string(),
+            args: Vec::new(),
+            builtin: Some(BuiltinType::AskError),
+        });
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::RemoteAsk {
+            actor,
+            msg_type: info.msg_type,
+            value,
+            timeout_ms,
+            result_dest,
+            reply_dest,
+            error_dest,
+            reply_ty: reply_ty.clone(),
+            next,
+        });
+        self.start_block(next);
+        Some(result_dest)
     }
 
     fn lower_spawn_actor(
@@ -11909,26 +13349,35 @@ impl Builder {
         } else {
             &layout.state_field_names
         };
-        if args.len() != expected_arg_names.len() {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!(
-                        "spawn `{actor_name}` {} arity mismatch",
-                        if explicit_init { "init" } else { "state" }
-                    ),
-                    site: expr.site,
-                },
-                note: format!(
-                    "actor expects {} {} argument(s), spawn supplied {} initializer(s)",
-                    expected_arg_names.len(),
-                    if explicit_init { "init" } else { "state" },
-                    args.len()
-                ),
-            });
-            return None;
-        }
         let mut explicit: HashMap<&str, &HirExpr> = HashMap::new();
         for (name, arg) in args {
+            if !expected_arg_names.iter().any(|expected| expected == name) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "spawn `{actor_name}` unknown {} argument `{name}`",
+                            if explicit_init { "init" } else { "state" }
+                        ),
+                        site: expr.site,
+                    },
+                    note: format!(
+                        "actor `{actor_name}` has no {} parameter or field named `{name}`",
+                        if explicit_init { "init" } else { "state" }
+                    ),
+                });
+                return None;
+            }
+            if explicit.contains_key(name.as_str()) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!("spawn `{actor_name}` duplicate argument `{name}`"),
+                        site: expr.site,
+                    },
+                    note: "actor spawn arguments are named; each name may be supplied at most once"
+                        .to_string(),
+                });
+                return None;
+            }
             explicit.insert(name.as_str(), arg);
         }
         let init_args =
@@ -12002,7 +13451,15 @@ impl Builder {
         let dest = self.alloc_local(state_ty.clone());
         let mut fields = Vec::new();
         for (idx, field_name) in layout.state_field_names.iter().enumerate() {
-            let src = if explicit_init {
+            let src = if let Some(arg) = explicit.get(field_name.as_str()) {
+                self.lower_value(arg).ok_or(())?
+            } else if let Some(default) = layout
+                .state_field_defaults
+                .get(idx)
+                .and_then(std::option::Option::as_ref)
+            {
+                self.lower_value(default).ok_or(())?
+            } else if explicit_init {
                 self.default_actor_state_field_value(
                     actor_name,
                     field_name,
@@ -12373,6 +13830,146 @@ impl Builder {
                 span: body.span.clone(),
             },
             span: body.span.clone(),
+        };
+        let dataflow_result = check_function(&builder, &raw.blocks, &synthetic_func);
+        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
+            .checks
+            .iter()
+            .filter_map(check_to_diagnostic)
+            .collect();
+        diagnostics.append(&mut builder.diagnostics);
+        collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
+        let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+        let checked = CheckedMirFunction {
+            name: shim_name.to_string(),
+            return_ty: ret_ty.clone(),
+            blocks: raw.blocks.clone(),
+            decisions: builder.decisions.clone(),
+            checks: dataflow_result.checks.clone(),
+            cooperate_sites,
+        };
+        let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
+
+        LoweredFunction {
+            thir,
+            raw,
+            checked,
+            elaborated,
+            diagnostics,
+            generated: builder.generated_functions,
+            record_layouts: builder.closure_record_layouts,
+            gen_state_layouts: builder.gen_state_layouts,
+        }
+    }
+
+    /// Synthesise a `ClosureInvoke`-ABI shim that forwards its user
+    /// arguments to the named top-level function `fn_symbol` and stores
+    /// the result into `ReturnSlot`. The shim is the bridge between the
+    /// closure-pair calling convention (`ctx_ptr`, `env_ptr`, `...user_args`)
+    /// and the plain calling convention of the target function.
+    ///
+    /// The `env_ptr` parameter (`locals[0]`) is **never loaded** — the named
+    /// function has no captures. This is the core safety invariant: a
+    /// null or garbage `env_ptr` is safe because the shim body contains
+    /// zero `ClosureEnvFieldLoad` instructions.
+    ///
+    /// WHY: Named functions used as first-class values need a
+    /// `FunctionCallConv::ClosureInvoke` wrapper so the uniform closure-call
+    /// path (`lower_call_closure`) can invoke them through the closure pair.
+    /// WHEN-OBSOLETE: if the runtime gains a separate fn-pointer ABI.
+    /// WHAT-REAL: a native fn-pointer type that doesn't pretend to be a closure.
+    fn lower_named_fn_invoke_shim(
+        &self,
+        fn_symbol: &str,
+        shim_name: &str,
+        param_tys: &[ResolvedTy],
+        ret_ty: &ResolvedTy,
+    ) -> LoweredFunction {
+        let env_ptr_ty = Self::closure_env_pointer_ty(&ResolvedTy::Unit);
+        let mut builder = Builder {
+            type_classes: self.type_classes.clone(),
+            record_field_orders: self.record_field_orders.clone(),
+            machine_layout_names: self.machine_layout_names.clone(),
+            module_fn_names: self.module_fn_names.clone(),
+            module_generic_fn_names: self.module_generic_fn_names.clone(),
+            subst: self.subst.clone(),
+            call_site_type_args: self.call_site_type_args.clone(),
+            supervisor_child_slots: self.supervisor_child_slots.clone(),
+            actor_send_aliasing: self.actor_send_aliasing.clone(),
+            current_function_symbol: shim_name.to_string(),
+            current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
+            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            ..Builder::default()
+        };
+
+        // Allocate locals for env_ptr (ignored) and each user argument.
+        // locals[0] = env_ptr (ClosureInvoke ABI; never loaded)
+        // locals[1..n] = user arguments forwarded to fn_symbol
+        let _env_place = builder.alloc_local(env_ptr_ty.clone());
+        let mut arg_places = Vec::with_capacity(param_tys.len());
+        for ty in param_tys {
+            arg_places.push(builder.alloc_local(ty.clone()));
+        }
+
+        // Block 0: call the original function, storing return value into ReturnSlot.
+        let ret_block_id = builder.alloc_block();
+        builder.finish_current_block(Terminator::Call {
+            callee: fn_symbol.to_string(),
+            args: arg_places.clone(),
+            dest: Some(Place::ReturnSlot),
+            next: ret_block_id,
+        });
+
+        // Block 1: return.
+        builder.start_block(ret_block_id);
+        let blocks = builder.finalize_blocks(Terminator::Return);
+
+        let thir_statements: Vec<MirStatement> = blocks
+            .iter()
+            .flat_map(|b| b.statements.iter().cloned())
+            .collect();
+        let thir = ThirFunction {
+            name: shim_name.to_string(),
+            return_ty: ret_ty.clone(),
+            statements: thir_statements,
+        };
+
+        // Build params list: env_ptr_ty first (ClosureInvoke ABI), then user params.
+        let mut raw_params = Vec::with_capacity(param_tys.len() + 1);
+        raw_params.push(env_ptr_ty);
+        raw_params.extend_from_slice(param_tys);
+        let raw = RawMirFunction {
+            name: shim_name.to_string(),
+            return_ty: ret_ty.clone(),
+            call_conv: crate::model::FunctionCallConv::ClosureInvoke,
+            params: raw_params,
+            locals: builder.locals.clone(),
+            blocks: blocks.clone(),
+            decisions: builder.decisions.clone(),
+            intrinsic_id: None,
+        };
+
+        // Synthetic HirFn for dataflow checking — no HIR params (the shim
+        // params are positional locals, not HIR bindings). An empty param list
+        // is conservative: no param is pre-seeded as Live, so the checker
+        // only sees the Bind/Move generated by the Terminator::Call dest.
+        let synthetic_func = HirFn {
+            id: hew_hir::ItemId(0),
+            node: hew_hir::HirNodeId(0),
+            name: shim_name.to_string(),
+            type_params: Vec::new(),
+            intrinsic_id: None,
+            params: Vec::new(),
+            return_ty: ret_ty.clone(),
+            body: hew_hir::HirBlock {
+                node: hew_hir::HirNodeId(0),
+                scope: hew_hir::ScopeId(0),
+                statements: Vec::new(),
+                tail: None,
+                ty: ret_ty.clone(),
+                span: 0..0,
+            },
+            span: 0..0,
         };
         let dataflow_result = check_function(&builder, &raw.blocks, &synthetic_func);
         let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
@@ -12847,9 +14444,14 @@ impl Builder {
                 inferred
             } else if self.is_known_actor_runtime_ty(&resolved_ty) {
                 ValueClass::BitCopy
-            } else if vec_iter_record_layout_key(&resolved_ty)
-                .is_some_and(|key| self.record_field_orders.contains_key(&key))
+            } else if (self.owned_string_record_value_sites.contains(&expr.site)
+                && monomorphic_user_record_key(&resolved_ty).is_some())
+                || vec_iter_record_layout_key(&resolved_ty)
+                    .is_some_and(|key| self.record_field_orders.contains_key(&key))
             {
+                // Two distinct owned-aggregate gates that both classify as
+                // CowValue: the owned-string-record let-bound direct-string record site, and
+                // the VecIter record layout.
                 ValueClass::CowValue
             } else {
                 ValueClass::Unknown
@@ -13230,6 +14832,7 @@ fn elaborate(
         &builder.binding_locals,
         &builder.type_classes,
         &builder.dyn_trait_storage,
+        &builder.owned_string_record_bindings,
         &cow_drop_allowed,
     );
     let (elab_blocks, drop_plans) = enumerate_exits(
@@ -13354,16 +14957,7 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
         let block = exit_block_id(exit);
         let kind_label = exit_kind_label(exit);
         for drop in &plan.drops {
-            // Extract the storage discriminator from the elaborated
-            // drop kind itself so the dispatcher can re-derive the
-            // same `DropKind::TraitObject { storage }` for the
-            // expected-vs-actual comparison. Non-dyn drops pass
-            // `None` (the dispatcher ignores it).
-            let dyn_storage = match drop.kind {
-                DropKind::TraitObject { storage } => Some(storage),
-                _ => None,
-            };
-            let expected = drop_kind_for(drop.place, &drop.ty, dyn_storage);
+            let expected = expected_drop_kind_for_validation(drop);
             if drop.kind != expected {
                 findings.push(MirCheck::DropPlanUndetermined {
                     block,
@@ -13384,11 +14978,7 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
     // DropPlan.
     for block in &elab.blocks {
         for drop in &block.drops {
-            let dyn_storage = match drop.kind {
-                DropKind::TraitObject { storage } => Some(storage),
-                _ => None,
-            };
-            let expected = drop_kind_for(drop.place, &drop.ty, dyn_storage);
+            let expected = expected_drop_kind_for_validation(drop);
             if drop.kind != expected {
                 findings.push(MirCheck::DropPlanUndetermined {
                     block: block.id,
@@ -13405,6 +14995,31 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
     }
     validate_lambda_captures(&elab.lambda_captures, &mut findings);
     findings
+}
+
+fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
+    match drop.kind {
+        // owned-string record drops are keyed by both kind and `ElabDrop::ty`: the
+        // place remains an ordinary stack `Local`, while the synthesized helper
+        // identity is the monomorphic user-record type. Keep `drop_kind_for`
+        // closed for generic `@resource` locals; this validation arm accepts
+        // only the dedicated kind on local user-record storage.
+        DropKind::RecordInPlace => {
+            if matches!(drop.place, Place::Local(_))
+                && monomorphic_user_record_key(&drop.ty).is_some()
+            {
+                DropKind::RecordInPlace
+            } else {
+                drop_kind_for(drop.place, &drop.ty, None)
+            }
+        }
+        // Extract the storage discriminator from the elaborated drop kind
+        // itself so the dispatcher can re-derive the same
+        // `DropKind::TraitObject { storage }` for the expected-vs-actual
+        // comparison. Non-dyn drops pass `None` (the dispatcher ignores it).
+        DropKind::TraitObject { storage } => drop_kind_for(drop.place, &drop.ty, Some(storage)),
+        _ => drop_kind_for(drop.place, &drop.ty, None),
+    }
 }
 
 /// Lambda-actor capture invariants. The capture side-table encodes the
@@ -13762,6 +15377,7 @@ fn validate_cross_block_split_consume(
             | Terminator::Yield { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
+            | Terminator::RemoteAsk { next, .. }
             | Terminator::Select { next, .. } => emit(*next),
         }
     }
@@ -13779,6 +15395,7 @@ fn validate_cross_block_split_consume(
             | Terminator::Yield { next, .. }
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
+            | Terminator::RemoteAsk { next, .. }
             | Terminator::Select { next, .. } => vec![*next],
         }
     };
@@ -13981,6 +15598,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntShl { dest, lhs, rhs }
         | Instr::IntShr { dest, lhs, rhs, .. }
         | Instr::IntCmp { dest, lhs, rhs, .. }
+        | Instr::FloatCmp { dest, lhs, rhs, .. }
         | Instr::IdentityCompare { dest, lhs, rhs } => vec![*dest, *lhs, *rhs],
         Instr::CancellationTokenIsCancelled { dest, token } => vec![*dest, *token],
         Instr::IntArithChecked {
@@ -14247,6 +15865,7 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntShl { lhs, rhs, .. }
         | Instr::IntShr { lhs, rhs, .. }
         | Instr::IntCmp { lhs, rhs, .. }
+        | Instr::FloatCmp { lhs, rhs, .. }
         | Instr::IdentityCompare { lhs, rhs, .. }
         | Instr::IntArithChecked { lhs, rhs, .. }
         | Instr::FloatAdd { lhs, rhs, .. }
@@ -14345,6 +15964,12 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // `reply_dest` is the slot the reply is written into — a write, not
         // a source.
         Terminator::Ask { actor, value, .. } => vec![*actor, *value],
+        Terminator::RemoteAsk {
+            actor,
+            value,
+            timeout_ms,
+            ..
+        } => vec![*actor, *value, *timeout_ms],
         Terminator::Select { arms, .. } => {
             let mut places = Vec::new();
             for arm in arms {
@@ -14366,6 +15991,73 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
             places
         }
     }
+}
+
+fn hir_expr_contains_synthetic_vec_string_index(expr: &HirExpr) -> bool {
+    match &expr.kind {
+        HirExprKind::Block(block) => {
+            block
+                .statements
+                .iter()
+                .any(hir_stmt_is_synthetic_vec_string_index)
+                || block
+                    .tail
+                    .as_deref()
+                    .is_some_and(hir_expr_contains_synthetic_vec_string_index)
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            hir_expr_contains_synthetic_vec_string_index(condition)
+                || hir_expr_contains_synthetic_vec_string_index(then_expr)
+                || else_expr
+                    .as_deref()
+                    .is_some_and(hir_expr_contains_synthetic_vec_string_index)
+        }
+        _ => false,
+    }
+}
+
+fn hir_stmt_is_synthetic_vec_string_index(stmt: &HirStmt) -> bool {
+    matches!(
+        &stmt.kind,
+        HirStmtKind::Let(binding, Some(value))
+            if binding.name.starts_with("__hew_iter_value_")
+                && matches!(binding.ty, ResolvedTy::String)
+                && matches!(value.kind, HirExprKind::Index { .. })
+                && matches!(value.ty, ResolvedTy::String)
+    )
+}
+
+fn place_refs_local(place: Place, local: u32) -> bool {
+    base_local(place) == Some(local)
+}
+
+fn retained_string_instr_drop_safe(instr: &Instr, local: u32) -> bool {
+    !instr_source_places(instr)
+        .into_iter()
+        .any(|place| place_refs_local(place, local))
+}
+
+fn retained_string_terminator_drop_safe(term: &Terminator, local: u32) -> bool {
+    let reads_binding = terminator_source_places(term)
+        .into_iter()
+        .any(|place| place_refs_local(place, local));
+    if !reads_binding {
+        return true;
+    }
+    matches!(
+        term,
+        Terminator::Call {
+            callee,
+            args,
+            dest: None,
+            ..
+        } if matches!(callee.as_str(), "print" | "println" | "print_str" | "println_str")
+            && matches!(args.as_slice(), [arg] if place_refs_local(*arg, local))
+    )
 }
 
 /// The destination of an instruction that loads an *interior pointer* out
@@ -14448,6 +16140,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::FloatMul { .. }
         | Instr::FloatDiv { .. }
         | Instr::FloatRem { .. }
+        | Instr::FloatCmp { .. }
         | Instr::CoerceToDynTrait { .. }
         | Instr::CallTraitMethod { .. }
         | Instr::MachineEmitPlaceholder { .. }
@@ -14844,10 +16537,27 @@ fn build_lifo_drops(
     binding_locals: &HashMap<BindingId, Place>,
     type_classes: &hew_hir::TypeClassTable,
     dyn_trait_storage: &HashMap<BindingId, TraitObjectStorage>,
+    owned_string_record_bindings: &HashSet<BindingId>,
     cow_drop_allowed: &HashSet<BindingId>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
+        if owned_string_record_bindings.contains(binding) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: owned-string record binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::RecordInPlace,
+            });
+            continue;
+        }
         // W3.031 Stage 1: `dyn Trait` owned locals (ValueClass::PersistentShare
         // by `ValueClass::of_ty`) carry their drop ritual on the vtable's
         // slot 0 (`drop_in_place`) plus a storage-discriminated release
@@ -15173,9 +16883,12 @@ fn enumerate_exits(
                 actor,
                 msg_type: _,
                 value: _,
+                result_dest: _,
                 reply_dest: _,
+                error_dest: _,
                 next,
-            } => (
+            }
+            | Terminator::RemoteAsk { actor, next, .. } => (
                 ExitPath::Ask {
                     block: block_id,
                     actor: *actor,
@@ -15720,6 +17433,7 @@ mod slice3_invariants {
                     DropKind::Resource
                     | DropKind::LambdaActorRelease
                     | DropKind::CowHeap { .. }
+                    | DropKind::RecordInPlace
                     | DropKind::AggregateRecursive
                     | DropKind::TraitObject { .. } => {}
                 }
@@ -16965,6 +18679,7 @@ mod enum_layout_tests {
             name: "Shape".to_string(),
             marker: ResourceMarker::None,
             is_opaque: false,
+            is_indirect: false,
             consuming_methods: vec![],
             type_params: vec![],
             fields: vec![],
@@ -16994,7 +18709,7 @@ mod enum_layout_tests {
         let user_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| l.name != "LookupError" && l.name != "SendError")
+            .filter(|l| l.name != "LookupError" && l.name != "SendError" && l.name != "AskError")
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
         let layout = user_layouts[0];
@@ -17023,6 +18738,7 @@ mod enum_layout_tests {
             name: "Colour".to_string(),
             marker: ResourceMarker::None,
             is_opaque: false,
+            is_indirect: false,
             consuming_methods: vec![],
             type_params: vec![],
             fields: vec![],
@@ -17044,7 +18760,7 @@ mod enum_layout_tests {
         let user_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| l.name != "LookupError" && l.name != "SendError")
+            .filter(|l| l.name != "LookupError" && l.name != "SendError" && l.name != "AskError")
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
         assert_eq!(user_layouts[0].name, "Colour");
@@ -17066,6 +18782,7 @@ mod enum_layout_tests {
             name: "Option".to_string(),
             marker: ResourceMarker::None,
             is_opaque: false,
+            is_indirect: false,
             consuming_methods: vec![],
             type_params: vec!["T".to_string()],
             fields: vec![],
@@ -17118,7 +18835,7 @@ mod enum_layout_tests {
         let user_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| l.name != "LookupError" && l.name != "SendError")
+            .filter(|l| l.name != "LookupError" && l.name != "SendError" && l.name != "AskError")
             .collect();
         assert_eq!(
             user_layouts.len(),

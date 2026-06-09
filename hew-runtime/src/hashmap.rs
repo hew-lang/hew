@@ -17,8 +17,11 @@
     reason = "table index fits in isize on all supported platforms; usize→i64 is safe for realistic lengths"
 )]
 
-use core::ffi::c_char;
+use core::ffi::{c_char, c_void};
 use core::ptr;
+
+use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
+use hew_cabi::vec::HewTypeOwnershipKind;
 
 /// Entry states.
 const EMPTY: u8 = 0;
@@ -723,6 +726,928 @@ pub unsafe extern "C" fn hew_hashmap_free_impl(m: *mut HewHashMap) {
         }
         libc::free((*m).entries.cast()); // ALLOCATOR-PAIRING: libc
         libc::free(m.cast()); // ALLOCATOR-PAIRING: libc
+    }
+}
+
+// ===========================================================================
+// Layout-backed HashMap (`HewLayoutHashMap`) — C-1b (W3.003 slice C-1b)
+// ===========================================================================
+//
+// A sibling of `HewHashMap` that stores opaque key/value blobs whose identity
+// is delegated to caller-supplied hash and equality thunks. Slot layout per
+// council Rev 1:
+//
+//   [state: u8][pad to key_align][key blob: key_size]
+//                  [pad to val_align][val blob: val_size][pad to max(key_align,val_align)]
+//
+// All `#[no_mangle]` entry points are fail-closed per LESSONS `boundary-fail-closed`
+// (P0): null pointers, missing thunks, zero-size keys, non-power-of-two alignment,
+// stride overflow, and `LayoutManaged` ownership are rejected at the boundary.
+//
+// Ownership contract (LESSONS `ffi-ownership-contracts` P0):
+//   - The map owns the byte blobs it copies into its slots.
+//   - The map does NOT own `key_layout` / `val_layout` — caller keeps these alive
+//     for the lifetime of the map (the runtime reads `hash_fn`/`eq_fn` and the
+//     size/align fields on every probe and on free).
+//   - For `ownership_kind == Plain` (only supported variant in this slice), blobs
+//     are byte-copy-safe — no per-slot drop is run on free / overwrite / removal.
+
+/// Initial capacity for a layout-backed map (must be a power of two).
+const LAYOUT_INIT_CAP: usize = 16;
+
+/// Layout-backed open-addressing hash map with variable-stride slots.
+///
+/// The struct shape is fixed by the C ABI; field order and types are part of
+/// the contract that C-3 codegen synthesizes against.
+///
+/// # Concurrency
+///
+/// This type contains **no internal synchronisation**. Every operation
+/// (`insert_layout` / `get_layout` / `contains_key_layout` / `remove_layout`
+/// / `len_layout` / `free_layout`) requires the caller to guarantee exclusive
+/// access for the duration of the call. Borrowed value pointers returned by
+/// `get_layout` are invalidated by any subsequent mutating call (insert /
+/// remove / free) — concurrent access from another thread, or retention of
+/// such pointers across a free, is undefined behaviour. See
+/// [`hew_hashmap_free_layout`] for the precise free-time contract.
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewLayoutHashMap {
+    /// Pointer to the raw byte storage holding `cap * stride` bytes.
+    pub entries: *mut u8,
+    /// Number of `OCCUPIED` slots.
+    pub len: usize,
+    /// Total slot count; always a power of two.
+    pub cap: usize,
+    /// Byte offset of the key blob inside a slot (after the `state` byte and
+    /// any padding required to reach `key_layout.align`).
+    pub key_offset: usize,
+    /// Byte offset of the value blob inside a slot.
+    pub val_offset: usize,
+    /// Total slot size in bytes (already padded to `max(key_align, val_align)`).
+    pub stride: usize,
+    /// Caller-owned key descriptor; must outlive the map.
+    pub key_layout: *const HewMapKeyLayout,
+    /// Caller-owned value descriptor; must outlive the map.
+    pub val_layout: *const HewMapValueLayout,
+}
+
+/// Round `offset` up to the next multiple of `align`. `align` must be a
+/// non-zero power of two. Returns `None` on overflow.
+#[inline]
+fn align_up(offset: usize, align: usize) -> Option<usize> {
+    debug_assert!(
+        align.is_power_of_two(),
+        "align_up requires power-of-two alignment"
+    );
+    let mask = align - 1;
+    offset.checked_add(mask).map(|sum| sum & !mask)
+}
+
+/// Compute `(key_offset, val_offset, stride, entries_align)` for a given key
+/// and value layout. Returns `None` on any overflow.
+fn compute_slot_layout(
+    key_size: usize,
+    key_align: usize,
+    val_size: usize,
+    val_align: usize,
+) -> Option<(usize, usize, usize, usize)> {
+    // State byte sits at offset 0; key blob follows after padding to key_align.
+    let key_offset = align_up(1, key_align)?;
+    let after_key = key_offset.checked_add(key_size)?;
+    let val_offset = align_up(after_key, val_align)?;
+    let after_val = val_offset.checked_add(val_size)?;
+    let entries_align = core::cmp::max(key_align, val_align);
+    let stride = align_up(after_val, entries_align)?;
+    // Guard total table size against isize::MAX/4 per council Rev 1.
+    // Caller will multiply stride * cap; pre-check stride alone now and recheck
+    // after multiplying by capacity at allocation time.
+    if stride > (isize::MAX as usize) / 4 {
+        return None;
+    }
+    Some((key_offset, val_offset, stride, entries_align))
+}
+
+/// Allocate the entries byte array for a layout map with `cap` slots of size
+/// `stride`, zero-initialised. Aborts on overflow or allocation failure.
+///
+/// # Safety
+///
+/// `stride > 0`, `cap > 0`, `entries_align` is a power of two.
+unsafe fn alloc_layout_entries(cap: usize, stride: usize, entries_align: usize) -> *mut u8 {
+    let total = match cap.checked_mul(stride) {
+        Some(n) if n <= (isize::MAX as usize) / 4 => n,
+        Some(_) | None => {
+            crate::set_last_error("HewLayoutHashMap: entries allocation size overflow");
+            std::process::abort();
+        }
+    };
+    let Ok(layout) = std::alloc::Layout::from_size_align(total, entries_align) else {
+        crate::set_last_error("HewLayoutHashMap: invalid entries Layout");
+        std::process::abort();
+    };
+    // SAFETY: layout has non-zero size (stride > 0, cap > 0).
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    ptr
+}
+
+/// Free the entries byte array allocated by `alloc_layout_entries`.
+///
+/// # Safety
+///
+/// `entries` must have been returned by `alloc_layout_entries` with the same
+/// `cap`, `stride`, and `entries_align`.
+unsafe fn dealloc_layout_entries(
+    entries: *mut u8,
+    cap: usize,
+    stride: usize,
+    entries_align: usize,
+) {
+    if entries.is_null() || cap == 0 || stride == 0 {
+        return;
+    }
+    let total = cap.saturating_mul(stride);
+    if let Ok(layout) = std::alloc::Layout::from_size_align(total, entries_align) {
+        // SAFETY: pointer came from alloc_zeroed with this exact layout.
+        unsafe { std::alloc::dealloc(entries, layout) };
+    }
+}
+
+/// Slot view helpers — pure pointer arithmetic; never reads through the layout
+/// pointers, so safe to call during resize while layout fields are mid-update.
+#[inline]
+unsafe fn slot_state(entries: *mut u8, idx: usize, stride: usize) -> *mut u8 {
+    // SAFETY: caller guarantees idx < cap and stride matches allocation.
+    unsafe { entries.add(idx * stride) }
+}
+
+#[inline]
+unsafe fn slot_key(entries: *mut u8, idx: usize, stride: usize, key_offset: usize) -> *mut u8 {
+    // SAFETY: caller guarantees idx < cap and offsets match allocation.
+    unsafe { entries.add(idx * stride + key_offset) }
+}
+
+#[inline]
+unsafe fn slot_val(entries: *mut u8, idx: usize, stride: usize, val_offset: usize) -> *mut u8 {
+    // SAFETY: caller guarantees idx < cap and offsets match allocation.
+    unsafe { entries.add(idx * stride + val_offset) }
+}
+
+/// Validate a `HewMapKeyLayout` at constructor time. Aborts fail-closed on any
+/// violation (LESSONS `boundary-fail-closed` P0).
+///
+/// Exposed `pub` so `should_panic` tests can target the validator directly:
+/// panics cannot unwind across the `extern "C"` boundary under
+/// `panic = "abort"`, so test coverage of the abort gates lives at this
+/// layer.
+///
+/// # Panics
+///
+/// Panics if `key_layout` is null, `hash_fn`/`eq_fn` are `None`, `size == 0`,
+/// `align` is not a power of two, or `ownership_kind` is `LayoutManaged`.
+///
+/// # Safety
+///
+/// `key_layout` must be non-null and point to a valid `HewMapKeyLayout`.
+pub unsafe fn validate_key_layout(key_layout: *const HewMapKeyLayout) {
+    if key_layout.is_null() {
+        crate::set_last_error("HewLayoutHashMap: key_layout is null");
+        panic!("HewLayoutHashMap: key_layout is null");
+    }
+    // SAFETY: caller guarantees non-null + valid.
+    let kl = unsafe { &*key_layout };
+    if kl.hash_fn.is_none() {
+        crate::set_last_error("HewLayoutHashMap: key_layout.hash_fn is None");
+        panic!("HewLayoutHashMap: key_layout.hash_fn is None");
+    }
+    if kl.eq_fn.is_none() {
+        crate::set_last_error("HewLayoutHashMap: key_layout.eq_fn is None");
+        panic!("HewLayoutHashMap: key_layout.eq_fn is None");
+    }
+    if kl.size == 0 {
+        crate::set_last_error("HewLayoutHashMap: zero-size keys are not admissible");
+        panic!("HewLayoutHashMap: zero-size keys are not admissible");
+    }
+    if !kl.align.is_power_of_two() {
+        crate::set_last_error("HewLayoutHashMap: key_layout.align is not a power of two");
+        panic!("HewLayoutHashMap: key_layout.align is not a power of two");
+    }
+    if matches!(kl.ownership_kind, HewTypeOwnershipKind::LayoutManaged) {
+        crate::set_last_error("HewLayoutHashMap: LayoutManaged key ownership is out of scope");
+        panic!("HewLayoutHashMap: LayoutManaged key ownership is out of scope");
+    }
+}
+
+/// Validate a `HewMapValueLayout` at constructor time.
+///
+/// Exposed `pub` for the same reason as [`validate_key_layout`].
+///
+/// # Panics
+///
+/// Panics if `val_layout` is null, `align` is not a power of two, a zero-size
+/// value layout has `align != 1`, or `ownership_kind` is `LayoutManaged`.
+///
+/// # Safety
+///
+/// `val_layout` must be non-null and point to a valid `HewMapValueLayout`.
+pub unsafe fn validate_val_layout(val_layout: *const HewMapValueLayout) {
+    if val_layout.is_null() {
+        crate::set_last_error("HewLayoutHashMap: val_layout is null");
+        panic!("HewLayoutHashMap: val_layout is null");
+    }
+    // SAFETY: caller guarantees non-null + valid.
+    let vl = unsafe { &*val_layout };
+    if !vl.align.is_power_of_two() {
+        crate::set_last_error("HewLayoutHashMap: val_layout.align is not a power of two");
+        panic!("HewLayoutHashMap: val_layout.align is not a power of two");
+    }
+    if vl.size == 0 && vl.align != 1 {
+        crate::set_last_error(
+            "HewLayoutHashMap: zero-size value layout must have align == 1 (HashSet ZST contract)",
+        );
+        panic!("HewLayoutHashMap: zero-size value layout must have align == 1");
+    }
+    if matches!(vl.ownership_kind, HewTypeOwnershipKind::LayoutManaged) {
+        crate::set_last_error("HewLayoutHashMap: LayoutManaged value ownership is out of scope");
+        panic!("HewLayoutHashMap: LayoutManaged value ownership is out of scope");
+    }
+}
+
+/// Validate both layouts and return the slot geometry. Panics on overflow.
+///
+/// Exposed `pub` so `should_panic` tests can drive the full constructor-side
+/// gate chain without crossing an `extern "C"` frame.
+///
+/// # Panics
+///
+/// Panics under any condition documented by [`validate_key_layout`] and
+/// [`validate_val_layout`], plus on slot stride overflow.
+///
+/// # Safety
+///
+/// Both pointers must be non-null and point to valid descriptors.
+#[must_use]
+pub unsafe fn validate_and_compute_slot_layout(
+    key_layout: *const HewMapKeyLayout,
+    val_layout: *const HewMapValueLayout,
+) -> (usize, usize, usize, usize) {
+    // SAFETY: forwarded; the validator itself null-checks.
+    unsafe { validate_key_layout(key_layout) };
+    // SAFETY: same.
+    unsafe { validate_val_layout(val_layout) };
+    // SAFETY: validated non-null above.
+    let kl = unsafe { &*key_layout };
+    // SAFETY: validated non-null above.
+    let vl = unsafe { &*val_layout };
+    let Some(t) = compute_slot_layout(kl.size, kl.align, vl.size, vl.align) else {
+        crate::set_last_error("HewLayoutHashMap: slot stride overflow");
+        panic!("HewLayoutHashMap: slot stride overflow");
+    };
+    t
+}
+
+/// Fail-closed gate for operational entry points (`insert`/`get`/`contains`/
+/// `remove`). Centralises the null checks so both the `extern "C"` boundary
+/// and `should_panic` tests drive the same code path — under `panic = "abort"`
+/// the panics on this path abort the process (matching the precedent set by
+/// `hew_vtable_dispatch_panic_on_oob` in `trait_object.rs`), while under the
+/// test profile they unwind so the negative gates can be observed.
+///
+/// `val` carries insert semantics: `Some(v)` means "the caller is performing
+/// an insert with payload `v`"; the gate then consults `(*m).val_layout.size`
+/// and rejects `v.is_null()` when `size > 0`. `None` means the op carries no
+/// value payload (get / contains / remove).
+///
+/// # Panics
+///
+/// Panics if `m` is null, `key` is null, or `val` is `Some(null)` while the
+/// registered value layout has non-zero size.
+///
+/// # Safety
+///
+/// When `val` is `Some(_)` and `m` is non-null, the function dereferences
+/// `(*m).val_layout` to read its size; the layout pointer must remain valid
+/// for the duration of the call (it is caller-stable per the ownership
+/// contract documented on [`HewLayoutHashMap`]).
+pub unsafe fn validate_op_inputs(
+    m: *const HewLayoutHashMap,
+    key: *const c_void,
+    val: Option<*const c_void>,
+) {
+    if m.is_null() {
+        crate::set_last_error("HewLayoutHashMap op: m is null");
+        panic!("HewLayoutHashMap op: m is null");
+    }
+    if key.is_null() {
+        crate::set_last_error("HewLayoutHashMap op: key is null");
+        panic!("HewLayoutHashMap op: key is null");
+    }
+    if let Some(v) = val {
+        // SAFETY: m non-null per check above; val_layout pointer stable per
+        // the HewLayoutHashMap ownership contract.
+        let val_size = unsafe { (*(*m).val_layout).size };
+        if val_size > 0 && v.is_null() {
+            crate::set_last_error("HewLayoutHashMap op: val is null but value size > 0");
+            panic!("HewLayoutHashMap op: val is null but value size > 0");
+        }
+    }
+}
+
+/// Fail-closed null check for the single-pointer ops (`len`). Exposed `pub`
+/// so `should_panic` tests can drive the gate directly.
+///
+/// # Panics
+///
+/// Panics if `m` is null.
+///
+/// # Safety
+///
+/// Performs only a null check; safe to call with any `*const`.
+pub unsafe fn validate_op_map(m: *const HewLayoutHashMap) {
+    if m.is_null() {
+        crate::set_last_error("HewLayoutHashMap op: m is null");
+        panic!("HewLayoutHashMap op: m is null");
+    }
+}
+
+/// Probe the map for `key` starting at its hashed slot. Returns the slot index
+/// of an existing OCCUPIED match, the first TOMBSTONE encountered, or the
+/// first EMPTY slot. The shared walker is used by insert, get, contains, and
+/// remove — there is exactly one probe implementation in this module.
+///
+/// `found_existing` is set to `true` when the returned slot already contains
+/// the searched-for key (OCCUPIED + eq).
+///
+/// # Safety
+///
+/// All pointers must come from a live `HewLayoutHashMap`. `hash_fn` and
+/// `eq_fn` must be the thunks registered on its `key_layout`. `cap` must be a
+/// non-zero power of two.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "layout fields are read as separate locals before reborrow to avoid \
+              re-deriving them through &self mid-resize (council Rev 1 §7)"
+)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "hash truncation u64 -> usize is intentional masking via probe modulus"
+)]
+unsafe fn layout_probe(
+    entries: *mut u8,
+    cap: usize,
+    stride: usize,
+    key_offset: usize,
+    key: *const c_void,
+    hash_fn: unsafe extern "C" fn(*const c_void) -> u64,
+    eq_fn: unsafe extern "C" fn(*const c_void, *const c_void) -> i32,
+) -> (usize, bool) {
+    let mask = cap - 1;
+    // SAFETY: caller guarantees key is valid for the type.
+    let h = unsafe { hash_fn(key) };
+    let start = (h as usize) & mask;
+    let mut idx = start;
+    let mut first_tombstone: Option<usize> = None;
+    loop {
+        // SAFETY: idx < cap; stride/key_offset come from a valid map.
+        let state_ptr = unsafe { slot_state(entries, idx, stride) };
+        // SAFETY: state byte is in-bounds.
+        let state = unsafe { *state_ptr };
+        match state {
+            EMPTY => {
+                return (first_tombstone.unwrap_or(idx), false);
+            }
+            OCCUPIED => {
+                // SAFETY: key offset is in-bounds.
+                let slot_key_ptr = unsafe { slot_key(entries, idx, stride, key_offset) };
+                // SAFETY: caller-supplied thunk; both pointers valid for layout.
+                let eq = unsafe { eq_fn(slot_key_ptr.cast::<c_void>(), key) };
+                if eq != 0 {
+                    return (idx, true);
+                }
+            }
+            TOMBSTONE => {
+                if first_tombstone.is_none() {
+                    first_tombstone = Some(idx);
+                }
+            }
+            _ => unreachable!("HewLayoutHashMap: invalid slot state"),
+        }
+        idx = (idx + 1) & mask;
+        if idx == start {
+            // Probed the whole table; must have a tombstone or we would have
+            // hit EMPTY (resize keeps load < 100%).
+            let Some(slot) = first_tombstone else {
+                crate::set_last_error("HewLayoutHashMap: full table without empty/tombstone");
+                std::process::abort();
+            };
+            return (slot, false);
+        }
+    }
+}
+
+/// Resize the table to double capacity, re-hashing every OCCUPIED slot.
+///
+/// # Safety
+///
+/// `m` must be a valid, fully-initialised `HewLayoutHashMap` pointer.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "hash truncation u64 -> usize on 32-bit targets is intentional probe masking"
+)]
+unsafe fn layout_resize(m: *mut HewLayoutHashMap) {
+    // Council Rev 1 §7: bind every layout-derived value as a scalar / raw-pointer
+    // local BEFORE any allocator call. No Rust reference (`&*m`, `&mut *m`, or
+    // a reference borrowed through them) is retained across `alloc(...)` or
+    // `dealloc(...)`. The rebuild loop below operates exclusively on these
+    // locals and the raw entries pointers; field writes back to `*m` happen
+    // only after the dealloc of the old entries.
+
+    // -- Step 1: copy all needed map fields as scalars / raw pointers ----------
+    // SAFETY: caller guarantees `m` is a valid, fully-initialised pointer; the
+    // raw field projections below read plain scalar / raw-pointer fields and
+    // do not borrow `*m`.
+    let (old_entries, old_cap, stride, key_offset, val_offset, key_layout_ptr, val_layout_ptr): (
+        *mut u8,
+        usize,
+        usize,
+        usize,
+        usize,
+        *const HewMapKeyLayout,
+        *const HewMapValueLayout,
+    ) = unsafe {
+        (
+            (*m).entries,
+            (*m).cap,
+            (*m).stride,
+            (*m).key_offset,
+            (*m).val_offset,
+            (*m).key_layout,
+            (*m).val_layout,
+        )
+    };
+
+    // -- Step 2: copy needed layout descriptor fields as scalars ---------------
+    // The layout descriptors are caller-stable per the ownership contract;
+    // reading their fields here and storing scalars in locals decouples the
+    // rebuild loop from any &-borrow of the descriptors across the allocator.
+    // SAFETY: key_layout_ptr / val_layout_ptr are non-null per constructor gate
+    // and remain valid for the lifetime of the map.
+    let (key_size, key_align, val_size, val_align, hash_fn_opt) = unsafe {
+        (
+            (*key_layout_ptr).size,
+            (*key_layout_ptr).align,
+            (*val_layout_ptr).size,
+            (*val_layout_ptr).align,
+            (*key_layout_ptr).hash_fn,
+        )
+    };
+    let entries_align = core::cmp::max(key_align, val_align);
+
+    let Some(hash_fn) = hash_fn_opt else {
+        crate::set_last_error(
+            "HewLayoutHashMap: hash_fn None at resize (constructor guard violated)",
+        );
+        std::process::abort();
+    };
+
+    let Some(new_cap) = old_cap.checked_mul(2) else {
+        crate::set_last_error("HewLayoutHashMap: capacity doubling overflow");
+        std::process::abort();
+    };
+
+    // -- Step 3: allocate new entries (no Rust reference to *m is live here) --
+    // SAFETY: stride > 0 by construction; new_cap > 0.
+    let new_entries = unsafe { alloc_layout_entries(new_cap, stride, entries_align) };
+
+    // -- Step 4: rebuild via raw pointers and scalar locals only --------------
+    let new_mask = new_cap - 1;
+    for i in 0..old_cap {
+        // SAFETY: i < old_cap; old_entries valid for the original table.
+        let state = unsafe { *slot_state(old_entries, i, stride) };
+        if state != OCCUPIED {
+            continue;
+        }
+        // SAFETY: occupied slot has valid key + value blobs at known offsets.
+        let src_key = unsafe { slot_key(old_entries, i, stride, key_offset) };
+        // SAFETY: hash_fn is the thunk registered on key_layout, which has not
+        // moved across the resize (caller-stable descriptors).
+        let h = unsafe { hash_fn(src_key.cast::<c_void>()) };
+        let mut idx = (h as usize) & new_mask;
+        loop {
+            // SAFETY: idx < new_cap; new_entries freshly zero-initialised so
+            // every state byte is EMPTY (0) until we write OCCUPIED.
+            let dst_state = unsafe { slot_state(new_entries, idx, stride) };
+            // SAFETY: in-bounds; state byte is u8.
+            if unsafe { *dst_state } == EMPTY {
+                // SAFETY: dst_state is in-bounds; OCCUPIED constant is u8.
+                unsafe { *dst_state = OCCUPIED };
+                // SAFETY: dst key/value offsets in-bounds; src equally so;
+                // key_size / val_size are the scalar copies bound above.
+                unsafe {
+                    let dst_key = slot_key(new_entries, idx, stride, key_offset);
+                    ptr::copy_nonoverlapping(src_key, dst_key, key_size);
+                    if val_size > 0 {
+                        let src_val = slot_val(old_entries, i, stride, val_offset);
+                        let dst_val = slot_val(new_entries, idx, stride, val_offset);
+                        ptr::copy_nonoverlapping(src_val, dst_val, val_size);
+                    }
+                }
+                break;
+            }
+            idx = (idx + 1) & new_mask;
+        }
+    }
+
+    // -- Step 5: release the old entries before writing back ------------------
+    // SAFETY: old_entries was allocated with (old_cap, stride, entries_align).
+    unsafe { dealloc_layout_entries(old_entries, old_cap, stride, entries_align) };
+
+    // -- Step 6: write the new pointer / capacity back via raw field writes ---
+    // No `&mut *m` borrow is taken; the writes go through the raw pointer
+    // directly. `len` is unchanged (every OCCUPIED slot moved exactly once).
+    // SAFETY: `m` is a valid pointer; fields are plain scalars / raw pointers.
+    unsafe {
+        (*m).entries = new_entries;
+        (*m).cap = new_cap;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Constructor (layout-backed)
+// ---------------------------------------------------------------------------
+
+/// Create a new layout-backed `HewLayoutHashMap`.
+///
+/// Fail-closed gates (council Rev 2/3): aborts on null layout pointers, missing
+/// hash/eq thunks, zero-size key, non-power-of-two alignment, malformed ZST
+/// value layout, `LayoutManaged` ownership, or stride overflow.
+///
+/// # Safety
+///
+/// `key_layout` and `val_layout` must point to valid descriptors that outlive
+/// the returned map. The returned pointer must be freed with
+/// [`hew_hashmap_free_layout`].
+// WASM-TODO: hew_hashmap_new_with_layout not yet ported to wasm32
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_new_with_layout(
+    key_layout: *const HewMapKeyLayout,
+    val_layout: *const HewMapValueLayout,
+) -> *mut HewLayoutHashMap {
+    if key_layout.is_null() {
+        crate::set_last_error("hew_hashmap_new_with_layout: key_layout is null");
+        // SAFETY: extern "C" cannot unwind; abort the process. Tests cover the
+        // null-layout case via the testable `validate_key_layout` helper.
+        std::process::abort();
+    }
+    if val_layout.is_null() {
+        crate::set_last_error("hew_hashmap_new_with_layout: val_layout is null");
+        // SAFETY: same — abort across the C boundary.
+        std::process::abort();
+    }
+    // SAFETY: non-null checked above; validator panics fail-closed on any
+    // gate violation. Under `panic = "abort"` the panic aborts the process
+    // before unwinding crosses this frame, preserving the C ABI contract.
+    let (key_offset, val_offset, stride, entries_align) =
+        unsafe { validate_and_compute_slot_layout(key_layout, val_layout) };
+
+    let cap = LAYOUT_INIT_CAP;
+    // SAFETY: cap > 0, stride > 0, entries_align is power of two.
+    let entries = unsafe { alloc_layout_entries(cap, stride, entries_align) };
+
+    let struct_layout = std::alloc::Layout::new::<HewLayoutHashMap>();
+    // SAFETY: non-zero size; alloc returns a pointer aligned to
+    // `align_of::<HewLayoutHashMap>()` per Layout, so the typed cast below
+    // is sound. We cast through a typed `NonNull` to make the intent obvious.
+    let raw_bytes = unsafe { std::alloc::alloc(struct_layout) };
+    if raw_bytes.is_null() {
+        // SAFETY: entries just allocated with these params.
+        unsafe { dealloc_layout_entries(entries, cap, stride, entries_align) };
+        std::alloc::handle_alloc_error(struct_layout);
+    }
+    let raw: *mut HewLayoutHashMap = raw_bytes.cast();
+    // SAFETY: raw is a fresh allocation of HewLayoutHashMap size.
+    unsafe {
+        ptr::write(
+            raw,
+            HewLayoutHashMap {
+                entries,
+                len: 0,
+                cap,
+                key_offset,
+                val_offset,
+                stride,
+                key_layout,
+                val_layout,
+            },
+        );
+    }
+    raw
+}
+
+// ---------------------------------------------------------------------------
+// Insert / Get / Contains / Remove / Len (layout-backed)
+// ---------------------------------------------------------------------------
+
+/// Insert or overwrite `key -> val`. Returns `true` if a new entry was added,
+/// `false` if an existing key was overwritten.
+///
+/// `val` may be null only when the value layout's `size` is zero (`HashSet`
+/// contract); otherwise null aborts fail-closed.
+///
+/// # Safety
+///
+/// `m` must be a valid `HewLayoutHashMap`. `key` must point to a readable
+/// blob of the registered key layout. `val` likewise for the value layout
+/// (when size > 0).
+// WASM-TODO: hew_hashmap_insert_layout not yet ported to wasm32
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_insert_layout(
+    m: *mut HewLayoutHashMap,
+    key: *const c_void,
+    val: *const c_void,
+) -> bool {
+    // SAFETY: forwarded to the shared `pub` gate; null inputs abort under the
+    // workspace `panic = "abort"` profile.
+    unsafe { validate_op_inputs(m.cast_const(), key, Some(val)) };
+
+    // Council Rev 1 §7: do NOT hold a Rust reference (`&mut *m`) across the
+    // possible `layout_resize` call below. Read every needed scalar / raw
+    // pointer via raw projection BEFORE the resize decision. Re-read fields
+    // that resize may mutate (`entries`, `cap`) AFTER resize completes.
+
+    // Snapshot layout descriptor fields we need (the descriptors themselves are
+    // caller-stable; we only need their scalar fields and the thunk pointers).
+    // SAFETY: m non-null per validate_op_inputs above; raw field projections
+    // read plain scalar / raw-pointer fields without borrowing `*m`.
+    let (key_size, val_size, hash_fn_opt, eq_fn_opt) = unsafe {
+        let klp = (*m).key_layout;
+        let vlp = (*m).val_layout;
+        ((*klp).size, (*vlp).size, (*klp).hash_fn, (*klp).eq_fn)
+    };
+    let (Some(hash_fn), Some(eq_fn)) = (hash_fn_opt, eq_fn_opt) else {
+        crate::set_last_error(
+            "hew_hashmap_insert_layout: hash_fn/eq_fn None (constructor guard violated)",
+        );
+        std::process::abort();
+    };
+
+    // Resize BEFORE probing so the slot we choose lives in the post-resize table.
+    // Load factor threshold = 75%.
+    // SAFETY: m non-null; raw field reads only — no Rust reference is held
+    // across the resize call.
+    let (len_now, cap_now) = unsafe { ((*m).len, (*m).cap) };
+    if len_now.saturating_add(1) * 100 >= cap_now * LOAD_PCTG {
+        // SAFETY: m valid; resize itself observes the Rev 1 §7 discipline.
+        unsafe { layout_resize(m) };
+    }
+
+    // Re-read post-resize geometry via raw projection.
+    // SAFETY: m valid; raw scalar field reads only.
+    let (entries, cap, stride, key_offset, val_offset) = unsafe {
+        (
+            (*m).entries,
+            (*m).cap,
+            (*m).stride,
+            (*m).key_offset,
+            (*m).val_offset,
+        )
+    };
+
+    // SAFETY: thunks valid; key valid per caller contract.
+    let (idx, existed) =
+        unsafe { layout_probe(entries, cap, stride, key_offset, key, hash_fn, eq_fn) };
+
+    // SAFETY: idx < cap, offsets in-bounds.
+    let state_ptr = unsafe { slot_state(entries, idx, stride) };
+    // SAFETY: idx < cap.
+    let dst_key = unsafe { slot_key(entries, idx, stride, key_offset) };
+    // SAFETY: idx < cap.
+    let dst_val = unsafe { slot_val(entries, idx, stride, val_offset) };
+
+    // SAFETY: state byte in-bounds.
+    unsafe { *state_ptr = OCCUPIED };
+    // SAFETY: dst_key and key are valid blobs of `key_size` bytes.
+    unsafe { ptr::copy_nonoverlapping(key.cast::<u8>(), dst_key, key_size) };
+    if val_size > 0 {
+        // SAFETY: dst_val and val are valid blobs of `val_size` bytes (val
+        // non-null was enforced by validate_op_inputs when val_size > 0).
+        unsafe { ptr::copy_nonoverlapping(val.cast::<u8>(), dst_val, val_size) };
+    }
+    if !existed {
+        // SAFETY: m valid; raw scalar increment.
+        unsafe { (*m).len += 1 };
+    }
+    !existed
+}
+
+/// Look up a key. Returns a borrowed pointer to the value blob, or null if the
+/// key is absent.
+///
+/// **Pointer validity contract.** When the returned pointer is non-null it is
+/// valid for reads of exactly `val_layout.size` bytes (the size registered on
+/// the value layout descriptor at construction). The pointer remains valid
+/// only until the next mutation of `m` (`insert_layout`, `remove_layout`,
+/// `free_layout`, or any operation that may trigger a resize) — after such a
+/// mutation the pointer is dangling and must not be read.
+///
+/// **ZST values (`HashSet` contract).** When `val_layout.size == 0` the
+/// returned pointer is a *presence token* only: it indicates the key is
+/// present but does not point to any readable byte. Dereferencing it is
+/// undefined behaviour. Callers that only need a presence answer should use
+/// [`hew_hashmap_contains_key_layout`] instead, which returns a `bool` and
+/// avoids the misuse hazard.
+///
+/// The caller must not free the returned pointer or write through it.
+///
+/// # Safety
+///
+/// `m` must be a valid `HewLayoutHashMap`. `key` must point to a valid key blob.
+// WASM-TODO: hew_hashmap_get_layout not yet ported to wasm32
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_get_layout(
+    m: *const HewLayoutHashMap,
+    key: *const c_void,
+) -> *const c_void {
+    // SAFETY: shared fail-closed gate; no value pointer involved in lookup.
+    unsafe { validate_op_inputs(m, key, None) };
+    // SAFETY: m non-null per gate.
+    let map = unsafe { &*m };
+    if map.cap == 0 || map.len == 0 {
+        return ptr::null();
+    }
+    // SAFETY: layout pointers stable.
+    let kl = unsafe { &*map.key_layout };
+    let (Some(hash_fn), Some(eq_fn)) = (kl.hash_fn, kl.eq_fn) else {
+        crate::set_last_error(
+            "hew_hashmap_get_layout: hash_fn/eq_fn None (constructor guard violated)",
+        );
+        std::process::abort();
+    };
+    // SAFETY: layout fields valid.
+    let (idx, found) = unsafe {
+        layout_probe(
+            map.entries,
+            map.cap,
+            map.stride,
+            map.key_offset,
+            key,
+            hash_fn,
+            eq_fn,
+        )
+    };
+    if !found {
+        return ptr::null();
+    }
+    // SAFETY: idx < cap; val_offset valid.
+    let val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
+    val_ptr.cast::<c_void>().cast_const()
+}
+
+/// Predicate form of `hew_hashmap_get_layout`.
+///
+/// # Safety
+///
+/// Same as [`hew_hashmap_get_layout`].
+// WASM-TODO: hew_hashmap_contains_key_layout not yet ported to wasm32
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_contains_key_layout(
+    m: *const HewLayoutHashMap,
+    key: *const c_void,
+) -> bool {
+    // SAFETY: forwarded to get_layout which validates inputs.
+    !unsafe { hew_hashmap_get_layout(m, key) }.is_null()
+}
+
+/// Remove a key. Returns `true` if a matching entry was found and tombstoned,
+/// `false` otherwise.
+///
+/// # Safety
+///
+/// Same as [`hew_hashmap_get_layout`].
+// WASM-TODO: hew_hashmap_remove_layout not yet ported to wasm32
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_remove_layout(
+    m: *mut HewLayoutHashMap,
+    key: *const c_void,
+) -> bool {
+    // SAFETY: shared fail-closed gate.
+    unsafe { validate_op_inputs(m.cast_const(), key, None) };
+    // SAFETY: m non-null per gate.
+    let map = unsafe { &mut *m };
+    if map.cap == 0 || map.len == 0 {
+        return false;
+    }
+    // SAFETY: layout pointers stable.
+    let kl = unsafe { &*map.key_layout };
+    let (Some(hash_fn), Some(eq_fn)) = (kl.hash_fn, kl.eq_fn) else {
+        crate::set_last_error(
+            "hew_hashmap_remove_layout: hash_fn/eq_fn None (constructor guard violated)",
+        );
+        std::process::abort();
+    };
+    // SAFETY: layout fields valid.
+    let (idx, found) = unsafe {
+        layout_probe(
+            map.entries,
+            map.cap,
+            map.stride,
+            map.key_offset,
+            key,
+            hash_fn,
+            eq_fn,
+        )
+    };
+    if !found {
+        return false;
+    }
+    // SAFETY: idx < cap.
+    let state_ptr = unsafe { slot_state(map.entries, idx, map.stride) };
+    // SAFETY: state byte in-bounds.
+    unsafe { *state_ptr = TOMBSTONE };
+    map.len -= 1;
+    true
+}
+
+/// Number of occupied entries.
+///
+/// # Safety
+///
+/// `m` must be a valid `HewLayoutHashMap`.
+// WASM-TODO: hew_hashmap_len_layout not yet ported to wasm32
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_len_layout(m: *const HewLayoutHashMap) -> i64 {
+    // SAFETY: shared fail-closed gate (map-only variant).
+    unsafe { validate_op_map(m) };
+    // SAFETY: m non-null per gate.
+    let map = unsafe { &*m };
+    // Workspace caps len well below i64::MAX; the cast is documented lossless
+    // by the crate-level `cast_possible_wrap` allow above.
+    map.len as i64
+}
+
+/// Free a layout-backed map and its byte storage. A null `m` is a documented
+/// no-op (LESSONS `boundary-fail-closed`: fail-closed shape, not silent
+/// success — null in / null out, no further work).
+///
+/// # Concurrency contract
+///
+/// All `HewLayoutHashMap` operations — including `free_layout` — require
+/// **external synchronisation by the caller**. The type does *not* contain
+/// internal locking. Specifically, when this function is called:
+///
+/// * No other thread may hold a reference to (or pointer into) `*m`.
+/// * No other thread may be mid-probe (mid-call) on any of the
+///   `insert_layout` / `get_layout` / `contains_key_layout` / `remove_layout`
+///   / `len_layout` entry points against `m`.
+/// * No thread may still be holding a borrowed value pointer returned by a
+///   prior `get_layout` call against `m` (such pointers become dangling the
+///   instant this function returns; reading them after the free is undefined
+///   behaviour).
+///
+/// Violating any of these requirements is undefined behaviour. The map ABI is
+/// designed for single-owner / single-threaded use at the boundary; callers
+/// that need shared ownership must layer their own synchronisation
+/// (`Mutex<*mut HewLayoutHashMap>` or equivalent) above this surface.
+///
+/// # Safety
+///
+/// `m` must have been returned by [`hew_hashmap_new_with_layout`] (or be null).
+/// After this call, `m` is invalid.
+// WASM-TODO: hew_hashmap_free_layout not yet ported to wasm32
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
+    if m.is_null() {
+        return;
+    }
+    // SAFETY: m non-null and constructed via hew_hashmap_new_with_layout.
+    let map_ref = unsafe { &*m };
+    let entries = map_ref.entries;
+    let cap = map_ref.cap;
+    let stride = map_ref.stride;
+    // SAFETY: layout pointer stable per ownership contract.
+    let kl = unsafe { &*map_ref.key_layout };
+    // SAFETY: same.
+    let vl = unsafe { &*map_ref.val_layout };
+    let entries_align = core::cmp::max(kl.align, vl.align);
+
+    // Plain ownership: blobs are byte-copy safe, no per-slot drop. LayoutManaged
+    // was rejected at constructor time.
+    debug_assert!(matches!(kl.ownership_kind, HewTypeOwnershipKind::Plain));
+    debug_assert!(matches!(vl.ownership_kind, HewTypeOwnershipKind::Plain));
+
+    // SAFETY: entries allocated by alloc_layout_entries with these exact params.
+    unsafe { dealloc_layout_entries(entries, cap, stride, entries_align) };
+
+    // SAFETY: m allocated by std::alloc::alloc with Layout::new::<HewLayoutHashMap>().
+    unsafe {
+        ptr::drop_in_place(m);
+        std::alloc::dealloc(
+            m.cast::<u8>(),
+            std::alloc::Layout::new::<HewLayoutHashMap>(),
+        );
     }
 }
 

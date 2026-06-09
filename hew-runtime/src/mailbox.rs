@@ -132,6 +132,17 @@ pub struct HewMsgNode {
     pub envelope: *mut HewMsgEnvelope,
     /// Trace context captured when the message was enqueued.
     pub trace_context: HewTraceContext,
+    /// Payload classification for mailbox envelope routing.
+    /// `MailboxPayloadClass::Unit (0)` on all existing allocators (zero-init
+    /// backward-compatible). See `crate::mailbox_envelope::MailboxPayloadClass`.
+    pub payload_class: u8,
+    /// Source actor PID for attribution and cross-node routing.
+    /// `SOURCE_PID_UNKNOWN (0)` when the origin is not recorded.
+    pub source_pid: u64,
+    /// Opaque handle for an associated `HewCancellationToken`.
+    /// `CANCEL_TOKEN_NONE (0)` when no token is attached.
+    /// Cross-node serialisation of this field is deferred to a future lane.
+    pub cancel_token_handle: u64,
 }
 
 // ── Phase-α COW message envelope ────────────────────────────────────────
@@ -487,6 +498,18 @@ unsafe fn msg_node_alloc(
         // flips selected sites to `msg_node_alloc_aliased` later.
         (*node).envelope = ptr::null_mut();
         (*node).trace_context = crate::tracing::current_context();
+        // Explicit zero-init for the mailbox-envelope ABI fields.
+        // These fields are NEW; mailbox_malloc uses libc::malloc (not calloc)
+        // so they are NOT zero-initialized by the allocator. An uninitialized
+        // payload_class byte that happened to equal SerializedCrossNode (3)
+        // would silently pass the cross-node gate — defeating the fail-closed
+        // invariant. Zero maps to the canonical sentinels:
+        //   payload_class = 0  →  MailboxPayloadClass::Unit
+        //   source_pid    = 0  →  SOURCE_PID_UNKNOWN
+        //   cancel_token  = 0  →  CANCEL_TOKEN_NONE
+        (*node).payload_class = 0;
+        (*node).source_pid = 0;
+        (*node).cancel_token_handle = 0;
 
         // Deep-copy message data for actor isolation.
         if data_size > 0 && !data.is_null() {
@@ -550,6 +573,11 @@ unsafe fn msg_node_alloc_aliased(
         (*node).reply_channel = reply_channel;
         (*node).envelope = envelope;
         (*node).trace_context = crate::tracing::current_context();
+        // Explicit zero-init for the mailbox-envelope ABI fields.
+        // See msg_node_alloc for the rationale; same invariant applies here.
+        (*node).payload_class = 0;
+        (*node).source_pid = 0;
+        (*node).cancel_token_handle = 0;
     }
 
     node
@@ -637,6 +665,11 @@ fn alloc_sentinel() -> *mut HewMsgNode {
         // hew_msg_node_free routes through the legacy `libc::free` path.
         (*node).envelope = ptr::null_mut();
         (*node).trace_context = HewTraceContext::default();
+        // Explicit zero-init for the mailbox-envelope ABI fields.
+        // See msg_node_alloc for the rationale; same invariant applies here.
+        (*node).payload_class = 0;
+        (*node).source_pid = 0;
+        (*node).cancel_token_handle = 0;
     }
     node
 }

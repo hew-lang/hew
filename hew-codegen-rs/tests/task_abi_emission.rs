@@ -93,6 +93,9 @@ fn pipeline_with_task_abi_call(
         regex_literals: vec![],
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     }
 }
 
@@ -177,6 +180,9 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         regex_literals: vec![],
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     }
 }
 
@@ -252,6 +258,9 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         regex_literals: vec![],
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     }
 }
 
@@ -350,6 +359,9 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         regex_literals: vec![],
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     }
 }
 
@@ -528,6 +540,9 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         regex_literals: vec![],
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     };
 
     let tmp = std::env::temp_dir().join("hew-task-abi-task-scope-spawn-paired");

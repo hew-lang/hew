@@ -839,6 +839,16 @@ impl Checker {
             include_str!("../../../std/io.hew"),
             &["bytes"],
         );
+        self.register_compiled_stdlib_receiver_impls(
+            "option",
+            include_str!("../../../std/option.hew"),
+            &["Option"],
+        );
+        self.register_compiled_stdlib_receiver_impls(
+            "result",
+            include_str!("../../../std/result.hew"),
+            &["Result"],
+        );
     }
 
     fn register_compiled_stdlib_receiver_impls(
@@ -1261,6 +1271,7 @@ impl Checker {
         }
 
         let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
         let mut variants = HashMap::new();
         let mut hole_vars = Vec::new();
         let enum_return_args: Vec<Ty> = type_param_names
@@ -1276,6 +1287,7 @@ impl Checker {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
                     let field_ty = self.resolve_registered_annotation_ty(ty, &mut hole_vars);
+                    field_order.push(name.clone());
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
@@ -1345,6 +1357,7 @@ impl Checker {
             name: td.name.clone(),
             type_params: type_param_names,
             fields,
+            field_order,
             variants,
             methods: HashMap::new(),
             doc_comment: td.doc_comment.clone(),
@@ -1409,6 +1422,7 @@ impl Checker {
         };
 
         let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
         let mut variants = HashMap::new();
         let mut hole_vars = Vec::new();
         let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
@@ -1449,6 +1463,7 @@ impl Checker {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
                     let field_ty = self.resolve_registered_annotation_ty(ty, &mut hole_vars);
+                    field_order.push(name.clone());
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
@@ -1523,6 +1538,7 @@ impl Checker {
             name: td.name.clone(),
             type_params: type_param_names.clone(),
             fields,
+            field_order,
             variants,
             methods: HashMap::new(),
             doc_comment: td.doc_comment.clone(),
@@ -1594,6 +1610,7 @@ impl Checker {
         };
 
         let mut fields: HashMap<String, Ty> = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
         let mut hole_vars = Vec::new();
         // Positional field types for tuple records, collected for marker
         // derivation (A-4). Named-record fields come from `type_def.fields`.
@@ -1603,6 +1620,7 @@ impl Checker {
             RecordKind::Named(record_fields) => {
                 for rf in record_fields {
                     let field_ty = self.resolve_registered_annotation_ty(&rf.ty, &mut hole_vars);
+                    field_order.push(rf.name.clone());
                     fields.insert(rf.name.clone(), field_ty);
                 }
             }
@@ -1639,6 +1657,7 @@ impl Checker {
             name: rd.name.clone(),
             type_params: type_param_names.clone(),
             fields,
+            field_order,
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: rd.doc_comment.clone(),
@@ -1915,9 +1934,25 @@ impl Checker {
         // mirrored onto unit-state constructor FnSigs for the call path.
         //
         // Validate before collect_type_param_bounds erases positional type args.
-        self.validate_type_param_bound_shapes(Some(&md.type_params), None, span);
+        self.validate_type_param_bound_shapes(
+            Some(&md.type_params),
+            md.where_clause.as_ref(),
+            span,
+        );
         let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.clone()).collect();
-        let type_param_bounds = self.collect_type_param_bounds(Some(&md.type_params), None);
+        // Collect inline `<T: Trait>` and `where T: Trait` bounds into a
+        // single side table keyed by machine name then param name. At
+        // the checker layer, a bound's source (inline vs where clause)
+        // does not affect the enforcement question — the bound is
+        // "satisfied at the instantiation site iff the substituted
+        // type implements the trait" regardless of where the bound
+        // was authored — so duplicates on the same (param, trait) pair
+        // dedupe. Source provenance is preserved at the parser layer
+        // (separate `type_params` / `where_clause` fields on
+        // `MachineDecl`) so future lowering layers that want to point
+        // diagnostics at the predicate's span can recover it.
+        let type_param_bounds =
+            self.collect_type_param_bounds(Some(&md.type_params), md.where_clause.as_ref());
         if !type_param_bounds.is_empty() {
             self.machine_type_param_bounds
                 .insert(md.name.clone(), type_param_bounds.clone());
@@ -1985,6 +2020,7 @@ impl Checker {
             name: md.name.clone(),
             type_params: type_param_names.clone(),
             fields: HashMap::new(),
+            field_order: vec![],
             variants,
             methods: HashMap::new(),
             doc_comment: None,
@@ -2031,6 +2067,7 @@ impl Checker {
             name: event_type_name.clone(),
             type_params: type_param_names.clone(),
             fields: HashMap::new(),
+            field_order: vec![],
             variants: event_variants,
             methods: HashMap::new(),
             doc_comment: None,
@@ -2492,6 +2529,14 @@ impl Checker {
     /// to a registered trait. Emits `UndefinedType` at the machine decl span
     /// for any unknown name. Called from `check_machine_exhaustiveness`,
     /// after Pass 2 has populated `trait_defs` for all in-scope traits.
+    ///
+    /// Walks both inline `<T: Trait>` bounds (via `md.type_params`) and
+    /// `where T: Trait` clause predicates (via `md.where_clause`). The
+    /// where-clause arm also verifies the predicate's left-hand side
+    /// names one of the machine's own declared type parameters — a
+    /// `where Foo: Trait` for an undeclared `Foo` is a closed user
+    /// error (`UndefinedType` at the predicate span) rather than a
+    /// silently-ignored predicate.
     pub(super) fn validate_machine_type_param_bounds(&mut self, md: &MachineDecl, span: &Span) {
         for param in &md.type_params {
             for bound in &param.bounds {
@@ -2509,6 +2554,66 @@ impl Checker {
                         "unknown trait `{bound}` in bound on type parameter `{param_name}` of machine `{machine}`",
                         bound = bound.name,
                         param_name = param.name,
+                        machine = md.name,
+                    ),
+                    similar,
+                );
+            }
+        }
+
+        let Some(where_clause) = md.where_clause.as_ref() else {
+            return;
+        };
+        let declared_params: std::collections::HashSet<&str> =
+            md.type_params.iter().map(|p| p.name.as_str()).collect();
+        for predicate in &where_clause.predicates {
+            // Left-hand side of the predicate must name one of the
+            // machine's declared type params. `where Foo: Resource`
+            // for a `Foo` that isn't in `<…>` is a user error.
+            let lhs_name = match &predicate.ty.0 {
+                hew_parser::ast::TypeExpr::Named { name, type_args } if type_args.is_none() => {
+                    Some(name.as_str())
+                }
+                _ => None,
+            };
+            match lhs_name {
+                Some(name) if declared_params.contains(name) => {}
+                Some(name) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::UndefinedType,
+                        predicate.ty.1.clone(),
+                        format!(
+                            "where-clause predicate references `{name}` which is not a declared type parameter of machine `{machine}`",
+                            machine = md.name,
+                        ),
+                    ));
+                }
+                None => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::UndefinedType,
+                        predicate.ty.1.clone(),
+                        format!(
+                            "where-clause predicate on machine `{machine}` must name a single type parameter",
+                            machine = md.name,
+                        ),
+                    ));
+                }
+            }
+            for bound in &predicate.bounds {
+                if self.is_known_trait(&bound.name) {
+                    continue;
+                }
+                let similar = crate::error::find_similar(
+                    &bound.name,
+                    self.trait_defs.keys().map(String::as_str),
+                );
+                let lhs_label = lhs_name.unwrap_or("<predicate>");
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    &predicate.ty.1,
+                    format!(
+                        "unknown trait `{bound}` in where-clause bound on `{lhs_label}` of machine `{machine}`",
+                        bound = bound.name,
                         machine = md.name,
                     ),
                     similar,
@@ -2640,8 +2745,10 @@ impl Checker {
             // transition body see `T: Resource` and recognise `T` as
             // satisfying its bound. Pops at the end of this iteration's
             // body block.
-            let machine_bounds_scope =
-                self.collect_type_param_scope_with_bounds(Some(&md.type_params), None);
+            let machine_bounds_scope = self.collect_type_param_scope_with_bounds(
+                Some(&md.type_params),
+                md.where_clause.as_ref(),
+            );
             let pushed_machine_bounds = !machine_bounds_scope.is_empty();
             if pushed_machine_bounds {
                 self.current_type_param_bounds.push(machine_bounds_scope);
@@ -2753,8 +2860,10 @@ impl Checker {
 
             // Push generic-param bounds so that type-param-bound resolution
             // inside a lifecycle block mirrors what transition bodies see.
-            let machine_bounds_scope =
-                self.collect_type_param_scope_with_bounds(Some(&md.type_params), None);
+            let machine_bounds_scope = self.collect_type_param_scope_with_bounds(
+                Some(&md.type_params),
+                md.where_clause.as_ref(),
+            );
             let pushed_machine_bounds = !machine_bounds_scope.is_empty();
             if pushed_machine_bounds {
                 self.current_type_param_bounds.push(machine_bounds_scope);
@@ -2824,9 +2933,11 @@ impl Checker {
 
     pub(super) fn register_actor_decl(&mut self, ad: &ActorDecl) {
         let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
         let mut hole_vars = Vec::new();
         for field in &ad.fields {
             let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
+            field_order.push(field.name.clone());
             fields.insert(field.name.clone(), field_ty);
         }
 
@@ -2835,6 +2946,7 @@ impl Checker {
             name: ad.name.clone(),
             type_params: vec![],
             fields,
+            field_order,
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: ad.doc_comment.clone(),
@@ -2887,12 +2999,14 @@ impl Checker {
     pub(super) fn register_wire_decl(&mut self, wd: &WireDecl) {
         // Wire types are similar to regular types but use string field types
         let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
         for field in &wd.fields {
             let ty = Ty::from_name(&field.ty).unwrap_or_else(|| Ty::Named {
                 builtin: None,
                 name: field.ty.clone(),
                 args: vec![],
             });
+            field_order.push(field.name.clone());
             fields.insert(field.name.clone(), ty);
         }
 
@@ -2933,6 +3047,7 @@ impl Checker {
             name: wd.name.clone(),
             type_params: vec![],
             fields,
+            field_order,
             variants,
             methods: HashMap::new(),
             doc_comment: None,

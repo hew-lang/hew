@@ -2101,3 +2101,487 @@ fn let_propagate_sugar_in_non_result_fn_rejected() {
         output.errors
     );
 }
+
+// ── 23. Vec layout-element accepted/fail-closed boundary ─────────────
+//
+// BitCopy Plain layout Vec push/get/set/pop are now backed by runtime + codegen
+// for Copy record and tuple elements; the checker accepts those calls and
+// records a `_layout`-suffix rewrite. Every other layout-backed Vec method
+// (contains, remove, clear, clone, append, extend) still has no runtime
+// backing and must fail closed with `InvalidOperation` at the call site
+// naming the would-be runtime symbol — rather than cascading as
+// `UnresolvedSymbol` from HIR/MIR.
+
+#[test]
+fn vec_push_copy_record_element_is_accepted() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            v.push(Point { x: 1, y: 2 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Copy record Vec::push must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_push_copy_tuple_element_is_accepted() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            v.push((1, 2.0));
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Copy tuple Vec::push must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_get_copy_record_element_is_accepted() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let _p = v.get(0);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Copy record Vec::get must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 23b. Fix-forward: contains / remove / clear / clone / append / extend ──
+//
+// The initial squash wired the fail-closed fence for push/pop/get/set but
+// missed three classes of bug:
+//
+//   (1) `contains` — returned `None` from `resolve_vec_method` for layout
+//       types (because the match had no `"layout"` arm), which caused
+//       `resolve_vec_runtime_symbol` to early-return `None` without emitting
+//       any diagnostic. `Ty::Bool` was returned silently.
+//
+//   (2) `remove` — `resolve_vec_method` always returned the monomorphic
+//       `hew_vec_remove_at` for every element type, so the `_layout` suffix
+//       check in `resolve_vec_runtime_symbol` never triggered.
+//
+//   (3) `clear` / `clone` / `append` / `extend` — same as (2): always
+//       returned monomorphic symbols, bypassing the fence entirely.
+
+#[test]
+fn vec_contains_eligible_copy_record_compiles_after_w3_032_slice_3() {
+    // W3.032 Slice 3e: equality-eligible Copy records (all integer fields) are
+    // now lifted via `hew_vec_contains_thunk`.  Compiles cleanly with no
+    // diagnostic.
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let p = Point { x: 1, y: 2 };
+            let _ = v.contains(p);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<Point>::contains (eligible Copy record) must compile: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_contains_tuple_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            let _ = v.contains((1, 2.0));
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::contains`")
+                && e.message.contains("floating-point")
+                && e.message.contains("f64")
+                && e.message.contains("no runtime method rewrite was recorded")),
+        "Expected layout fail-closed diagnostic for Vec<(i32,f64)>::contains, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_contains_float_record_element_has_eq_eligibility_diagnostic() {
+    let output = typecheck(
+        r"
+        type Measurement {
+            value: f32;
+        }
+        fn main() {
+            let v: Vec<Measurement> = Vec::new();
+            let needle = Measurement { value: 1.0 };
+            let _ = v.contains(needle);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::contains`")
+                && e.message.contains("floating-point")
+                && e.message.contains("f32")),
+        "Expected float-field equality eligibility diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_contains_layout_managed_record_element_has_eq_eligibility_diagnostic() {
+    let output = typecheck(
+        r#"
+        type Person {
+            name: string;
+        }
+        fn main() {
+            var v: Vec<Person> = [];
+            let needle = Person { name: "ada" };
+            let _ = v.contains(needle);
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::contains`")
+                && e.message.contains("layout-managed/non-Copy")
+                && e.message.contains("string")),
+        "Expected layout-managed equality eligibility diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
+// Vec::remove is now runtime-backed for BitCopy layout elements (W3.003).
+// These tests verify the happy path; the old fail-closed behaviour is gone.
+#[test]
+fn vec_remove_copy_record_element_now_succeeds() {
+    // Vec<T>::remove where T is a Copy record must resolve without errors
+    // after W3.003 lifts the gate.
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            v.remove(0);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<Point>::remove must succeed after W3.003, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_remove_copy_tuple_element_now_succeeds() {
+    // Vec<T>::remove where T is a Copy tuple must resolve without errors
+    // after W3.003 lifts the gate.
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, i64)> = Vec::new();
+            v.remove(0);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<(i32,i64)>::remove must succeed after W3.003, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clear_record_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            v.clear();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::clear`")
+                && e.message.contains("not runtime-backed yet")
+                && e.message.contains("hew_vec_clear_layout")),
+        "Expected layout fail-closed diagnostic for Vec<Point>::clear, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clear_tuple_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            v.clear();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::clear`")
+                && e.message.contains("not runtime-backed yet")
+                && e.message.contains("hew_vec_clear_layout")),
+        "Expected layout fail-closed diagnostic for Vec<(i32,f64)>::clear, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clone_bitcopy_record_element_is_permitted() {
+    // Point has only i32 fields → Copy → clone is allowed via hew_vec_clone_layout.
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    let layout_fence_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("hew_vec_clone_layout")
+        })
+        .collect();
+    assert!(
+        layout_fence_errors.is_empty(),
+        "Vec<Point>::clone (BitCopy record) must NOT trigger the layout fence: {layout_fence_errors:?}",
+    );
+}
+
+#[test]
+fn vec_clone_bitcopy_tuple_element_is_permitted() {
+    // (i32, f64) has only scalar fields → Copy → clone is allowed via hew_vec_clone_layout.
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    let layout_fence_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("hew_vec_clone_layout")
+        })
+        .collect();
+    assert!(
+        layout_fence_errors.is_empty(),
+        "Vec<(i32,f64)>::clone (BitCopy tuple) must NOT trigger the layout fence: {layout_fence_errors:?}",
+    );
+}
+
+#[test]
+fn vec_clone_owning_record_element_is_layout_fail_closed() {
+    // Person has a string field → not Copy / LayoutManaged → the checker must
+    // fail closed.  For named types the construction gate (`Vec::new()` with a
+    // LayoutManaged element) fires before the clone gate, so either
+    // `hew_vec_new_with_layout` or `hew_vec_clone_layout` in the error message
+    // is correct evidence of the fail-closed boundary.
+    let output = typecheck(
+        r"
+        type Person {
+            name: string;
+            age: i64;
+        }
+        fn main() {
+            let v: Vec<Person> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && (e.message.contains("hew_vec_clone_layout")
+                    || e.message.contains("hew_vec_new_with_layout"))),
+        "Expected layout fail-closed diagnostic for Vec<Person> (Owning), got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clone_owning_tuple_element_is_layout_fail_closed() {
+    // (string, i64) contains a string → not Copy / LayoutManaged → clone must remain fail-closed.
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(string, i64)> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("hew_vec_clone_layout")),
+        "Expected layout fail-closed diagnostic for Vec<(string,i64)>::clone (Owning), got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_append_record_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let other: Vec<Point> = Vec::new();
+            v.append(other);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::append`")
+                && e.message.contains("not runtime-backed yet")
+                && e.message.contains("hew_vec_append_layout")),
+        "Expected layout fail-closed diagnostic for Vec<Point>::append, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_extend_record_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let other: Vec<Point> = Vec::new();
+            v.extend(other);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::extend`")
+                && e.message.contains("not runtime-backed yet")
+                // extend maps to the append runtime entry
+                && e.message.contains("hew_vec_append_layout")),
+        "Expected layout fail-closed diagnostic for Vec<Point>::extend, got: {:?}",
+        output.errors
+    );
+}
+
+// ── 23c. `len` and `is_empty` are header-only and must NOT fire the fence ──
+//
+// `Vec::len` bypasses `resolve_vec_runtime_symbol` entirely (hardcoded
+// `len_vec` rewrite in `check_vec_method`). `Vec::is_empty` routes through
+// the resolver but `resolve_vec_method` returns the monomorphic
+// `hew_vec_is_empty` which does not end with `_layout`, so no diagnostic
+// is emitted. Both methods are provably safe for layout-backed Vecs because
+// they only read the length header, not the element data.
+
+#[test]
+fn vec_len_and_is_empty_on_layout_element_do_not_fire_fence() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let _n = v.len();
+            let _e = v.is_empty();
+        }
+        ",
+    );
+    // Neither `len` nor `is_empty` should emit layout-fence diagnostics.
+    let layout_fence_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("not runtime-backed yet")
+        })
+        .collect();
+    assert!(
+        layout_fence_errors.is_empty(),
+        "`Vec::len` and `Vec::is_empty` must not trigger the layout fence: {layout_fence_errors:?}",
+    );
+}

@@ -7037,19 +7037,20 @@ machine Traffic {
     // specific LSP surface on an accepted fixture using Stage 1 helpers.
     // Organisation mirrors the Stage 2 scope:
     //
-    //   Group A — Composite returns: record field-access hover
-    //   Group B — Records / wires:   field-declaration hover
-    //   Group C — Static trait dispatch: goto-definition + find-references
-    //   Group D — Match enum:        pattern-binding hover
-    //   Group E — Machines:          precision document-symbol assertions
-    //   Group F — Canonical primitives: integer-literal hover
+    //   Group A — Field-access hover:        record field-access hover in call sites / impl bodies
+    //   Group B — Records / wires:           field-declaration hover
+    //   Group C — Static trait dispatch:     goto-definition + find-references
+    //   Group D — Match enum:                pattern-binding hover
+    //   Group E — Machines:                  precision document-symbol assertions
+    //   Group F — Canonical primitives:      integer-literal hover
+    //   Group G — Result/Option constructors: enum-variant goto-definition
 
-    // ── Group A: Composite returns — record field-access hover ───────────────
+    // ── Group A: Field-access hover — call sites and impl bodies ─────────────
 
     /// `value.count` field access in `record_decl_probe` must surface
     /// `count: i64` via the field-access hover path.
     #[test]
-    fn v05_record_decl_composite_return_field_access_hover_pins_type() {
+    fn v05_record_decl_field_access_hover_pins_count_type() {
         let source = include_str!("../../tests/fixtures/v05_record_decl.hew");
         let offset = source
             .find("value.count")
@@ -7133,19 +7134,31 @@ machine Traffic {
         assert_v05_goto_definition("v05_trait_bounds", source, "describe");
     }
 
-    /// `Describable` must appear in at least one reference location as found by
-    /// `build_reference_locations` from the last occurrence (the `<T: Describable>`
-    /// bound).  The reference engine currently returns only the trait declaration
-    /// site; it does not yet trace the impl header or type-bound usages as
-    /// cross-references.  This assertion pins the observable substrate behaviour
-    /// (declaration found) and will tighten naturally when the reference engine
-    /// gains full trait-name tracking.
+    /// `Describable` in `<T: Describable>` (the last occurrence) must navigate
+    /// back to the `trait Describable { … }` declaration via goto-definition.
+    /// Uses `rfind("Describable")` which resolves the type-bound usage site;
+    /// the AST-walk locates `Item::Trait("Describable")` as the definition.
     #[test]
+    fn v05_trait_bounds_trait_name_has_goto_definition_from_type_bound() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        // rfind finds <T: Describable>; assert navigation reaches the declaration.
+        assert_v05_goto_definition("v05_trait_bounds", source, "Describable");
+    }
+
+    /// Substrate-pending: the reference engine returns only the declaration site
+    /// when queried at the type-bound position `<T: Describable>`.
+    /// `min_count=1` is trivially satisfiable and does not prove declaration +
+    /// use-site behaviour; this test is therefore reclassified as ignored rather
+    /// than kept as a green accepted-surface assertion.
+    /// Unignore and raise to `min_count >= 3` (declaration + `impl Describable`
+    /// header + `<T: Describable>` type-bound) when the reference engine gains
+    /// full trait-name cross-reference tracking.
+    #[test]
+    #[ignore = "substrate: reference engine returns declaration-only for trait names; min_count=1 does not prove cross-reference behaviour"]
     fn v05_trait_bounds_trait_name_find_references_includes_declaration() {
         let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
-        // Substrate note: the reference engine finds the declaration site only.
-        // The impl-header and type-bound usages are not yet tracked.
-        assert_v05_find_references("v05_trait_bounds", source, "Describable", 1);
+        // When unignored this should assert >= 3: declaration + impl header + type-bound.
+        assert_v05_find_references("v05_trait_bounds", source, "Describable", 3);
     }
 
     /// The last occurrence of `show` in the fixture is the `holder.show()` call
@@ -7223,5 +7236,54 @@ machine Traffic {
             .expect("count: 7 literal in record constructor")
             + "count: ".len();
         assert_v05_hover_contains("v05_record_decl", source, offset, "i64");
+    }
+
+    // ── Group G: Result/Option constructors — enum-variant goto-definition ────
+    //
+    // Stage 2 targeted coverage for the `v05_result_option_ctors` fixture.
+    // The Stage 0/1 smoke test (`v05_result_option_ctors_lsp_coverage`) only
+    // probes the sentinel function `result_option_probe`.  These tests prove
+    // that enum variant constructors at their call sites are navigable via
+    // goto-definition.
+    //
+    // Substrate note: `enum Result<T, E>` and `enum Option<T>` are both parsed
+    // as `Item::TypeDecl(TypeDeclKind::Enum)`; their variant names are
+    // `TypeBodyItem::Variant` nodes that `find_definition_in_ast` (via
+    // `hew_analysis::definition::find_definition`) locates by name.
+    // `rfind` therefore navigates from the last call-site occurrence of each
+    // variant name to the variant declaration in the enum body.
+
+    /// `Result::Ok(…)` call site (last "Ok") must navigate to the `Ok(T);`
+    /// variant declaration in `enum Result`.
+    #[test]
+    fn v05_result_option_ctors_ok_constructor_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
+        // rfind("Ok") = Result::Ok(result_option_probe()) constructor call site
+        assert_v05_goto_definition("v05_result_option_ctors", source, "Ok");
+    }
+
+    /// `Result::Err(true)` call site (last "Err") must navigate to the `Err(E);`
+    /// variant declaration in `enum Result`.
+    #[test]
+    fn v05_result_option_ctors_err_constructor_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
+        assert_v05_goto_definition("v05_result_option_ctors", source, "Err");
+    }
+
+    /// `Option::Some(…)` call site (last "Some") must navigate to the `Some(T);`
+    /// variant declaration in `enum Option`.
+    #[test]
+    fn v05_result_option_ctors_some_constructor_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
+        assert_v05_goto_definition("v05_result_option_ctors", source, "Some");
+    }
+
+    /// `Option::None` unit-variant site (last "None") must navigate to the
+    /// `None;` variant declaration in `enum Option`.
+    #[test]
+    fn v05_result_option_ctors_none_unit_variant_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
+        // rfind("None") = Option::None; unit variant — no payload, still navigable
+        assert_v05_goto_definition("v05_result_option_ctors", source, "None");
     }
 }

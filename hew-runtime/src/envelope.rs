@@ -108,6 +108,17 @@ pub struct EnvelopeFrame {
     /// Non-zero on outbound ask requests; zero on reply envelopes and
     /// fire-and-forget messages.
     ///
+    /// # Invariant
+    ///
+    /// `source_node_id` must equal `hew_pid_node(sender_pid)` for every
+    /// outbound ask frame. The remote peer uses this value to select the
+    /// return connection; a mismatch causes the reply to be unroutable.
+    ///
+    /// W4.025 risk: if a multi-node PID is sent across a node-ID boundary
+    /// without re-encoding, `source_node_id` will encode the *original*
+    /// node rather than the forwarding node, breaking the reply path.
+    /// Reject or re-encode any forwarded ask at the transport boundary.
+    ///
     /// CDDL key 8.
     pub source_node_id: u16,
 }

@@ -340,10 +340,11 @@ impl ExternSymbolTemplate {
         }
         let cc = RuntimeCallingConvention::for_ty_with_layout(type_arg, type_defs);
         if cc == RuntimeCallingConvention::LayoutDescriptor {
-            // W3.001 fail-closed: no runtime entry points for
-            // `LayoutDescriptor` exist yet (W3.003 wires them). Emit
-            // the *would-be* symbol name so Stage 5 negative tests
-            // can pin the diagnostic exactly.
+            // W3.003 Stage 3a fail-closed: BitCopy runtime entry points
+            // exist, but codegen does not yet synthesize the layout
+            // descriptor pseudo-FFI operands needed to call them safely.
+            // Emit the *would-be* symbol name so negative tests can pin the
+            // diagnostic exactly.
             let mut would_be = String::with_capacity(self.raw.len());
             for seg in &self.segments {
                 match seg {
@@ -373,17 +374,17 @@ impl ExternSymbolTemplate {
 /// Failure produced by [`ExternSymbolTemplate::expand`] when a
 /// monomorphization cannot resolve to a runtime entry point.
 ///
-/// W3.001 scope: the only failure mode today is
+/// W3.003 Stage 3a scope: the only failure mode today is
 /// [`Self::UnsupportedCallingConvention`] — the requested type maps to
-/// [`RuntimeCallingConvention::LayoutDescriptor`], for which no
-/// runtime entry points exist in this wave. The `expected_symbol`
-/// field carries the would-be symbol name so Stage-5 negative tests
+/// [`RuntimeCallingConvention::LayoutDescriptor`], for which codegen cannot
+/// yet synthesize safe layout descriptor pseudo-FFI operands. The
+/// `expected_symbol` field carries the would-be symbol name so negative tests
 /// can pin the diagnostic verbatim
 /// (`UnsupportedRuntimeCallingConvention { expected_symbol: "hew_vec_push_layout" }`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemplateExpansionError {
-    /// The substituted type resolves to a calling convention with no
-    /// runtime entry point in W3.001 scope.
+    /// The substituted type resolves to a calling convention that lacks
+    /// complete codegen pseudo-FFI lowering in W3.003 Stage 3a scope.
     UnsupportedCallingConvention {
         /// The fully-expanded would-be symbol (with the convention's
         /// canonical token substituted). Used by negative-test
@@ -587,6 +588,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: true,
             },
         );
@@ -655,19 +657,15 @@ mod tests {
     }
 
     #[test]
-    fn expand_fails_closed_for_bool_and_char() {
-        // Stage 5 negative-test cases (per plan §6 Stage 5 table):
-        // `Vec<bool>::push` and `Vec<char>::push` must produce
-        // `UnsupportedRuntimeCallingConvention { expected_symbol:
-        // "hew_vec_push_layout" }`.
+    fn expand_routes_bool_and_char_to_stage2_vec_symbols() {
         let t = ExternSymbolTemplate::parse("hew_vec_push_{T}").unwrap();
-        for ty in [Ty::Bool, Ty::Char] {
-            let err = t.expand(&ty, &HashMap::new()).unwrap_err();
-            match err {
-                TemplateExpansionError::UnsupportedCallingConvention {
-                    expected_symbol, ..
-                } => assert_eq!(expected_symbol, "hew_vec_push_layout"),
-            }
-        }
+        assert_eq!(
+            t.expand(&Ty::Bool, &HashMap::new()).unwrap(),
+            "hew_vec_push_bool"
+        );
+        assert_eq!(
+            t.expand(&Ty::Char, &HashMap::new()).unwrap(),
+            "hew_vec_push_i32"
+        );
     }
 }

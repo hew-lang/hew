@@ -373,6 +373,49 @@ pub enum HirLifecycleHookKind {
 
 // ── Machine declarations ─────────────────────────────────────────────────────
 
+/// Provenance for a single machine-level trait bound: distinguishes
+/// inline `<T: Trait>` bounds from `where T: Trait` predicates.
+///
+/// The checker-side bound enforcement does not branch on origin —
+/// a bound is satisfied at the instantiation site iff the substituted
+/// type implements the trait, regardless of where the predicate was
+/// authored. Origin is preserved for downstream diagnostics that
+/// want to point at the predicate's source span (e.g. "the bound on
+/// `T` declared on line 12 is not satisfied"). For inline bounds the
+/// span is implicit in the surrounding `HirMachineDecl.span`; for
+/// where-clause bounds the span carries the LHS type's span lifted
+/// from `WherePredicate.ty`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WhereOrigin {
+    /// The bound was authored inline in the type-parameter list,
+    /// e.g. `machine Holder<T: Resource>`.
+    Inline,
+    /// The bound was authored in a `where` clause, e.g.
+    /// `machine Holder<T> where T: Resource`. The carried span is the
+    /// `WherePredicate.ty` span (the LHS of the predicate).
+    WhereClause(Span),
+}
+
+/// One `(param, trait_bound)` entry from a machine's combined inline
+/// `<T: Trait>` and `where T: Trait` predicates.
+///
+/// `param` is the bare type-parameter name (e.g. `"T"`); `trait_bound`
+/// reuses the cross-layer `ResolvedTraitBound` carrier from `hew-types`
+/// rather than forking a parallel HIR shape. Per Q230-B the carrier
+/// is a flat `Vec<HirMachineBound>`, one entry per `(param, trait)` pair —
+/// not a `HashMap<param, Vec<bounds>>` — so iteration order is the
+/// authored order and duplicate `(param, trait)` pairs from inline+where
+/// dedup can be observed by downstream consumers if they care to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMachineBound {
+    /// The bound type-parameter name.
+    pub param: String,
+    /// The trait constraint.
+    pub trait_bound: hew_types::ResolvedTraitBound,
+    /// Where the predicate was authored.
+    pub origin: WhereOrigin,
+}
+
 /// Lowered machine declaration. Carries the full structural shape needed for
 /// static checks and visualisation; transition bodies are not lowered to `HirExpr`
 /// in Lane A (codegen/execution is Lane B).
@@ -387,6 +430,19 @@ pub struct HirMachineDecl {
     /// the parser AST; subsequent layers (type checker, MIR, codegen) are
     /// responsible for interpreting these names.
     pub type_params: Vec<String>,
+    /// Trait bounds declared on the machine's type parameters, drawn from
+    /// both the inline `<T: Trait>` form and the trailing `where T: Trait`
+    /// clause. One entry per `(param, trait_bound)` pair in authored order;
+    /// `WhereOrigin` preserves which form each entry came from for
+    /// diagnostic span recovery.
+    ///
+    /// Empty when the machine declares no type-param bounds. The checker's
+    /// canonical bound-enforcement seam consults a separate, dedup'd side
+    /// table during type checking; this HIR field exists so post-checker
+    /// passes (static trait dispatch, const-generic substrate, future
+    /// const-arg validation) have a structured carrier to read instead of
+    /// re-walking the parser AST.
+    pub type_param_bounds: Vec<HirMachineBound>,
     pub states: Vec<HirMachineState>,
     pub events: Vec<HirMachineEvent>,
     pub transitions: Vec<HirMachineTransition>,
@@ -926,6 +982,12 @@ pub enum HirExprKind {
         ret_ty: ResolvedTy,
         body: Box<HirExpr>,
         captures: Vec<HirClosureCapture>,
+        /// Conservative escape classification recorded by the checker's
+        /// `closure_escape_facts` side-table. Consumed by MIR's
+        /// `ClosureEnvLayout::allocation_strategy` to dispatch between
+        /// stack-allocated (`Local`), heap-boxed (`Escapes`), and
+        /// scope-owned (`Forked`) environment storage.
+        escape_kind: hew_types::ClosureEscapeKind,
     },
     /// `gen { ... }` generator literal.
     ///
@@ -1044,6 +1106,18 @@ pub enum HirExprKind {
         slot: u32,
         args: Vec<HirExpr>,
         ret_ty: ResolvedTy,
+        /// Caller-side method signature after the checker substituted
+        /// trait type parameters and associated-type bindings from the
+        /// receiver's `Ty::TraitObject` bound (e.g. `Self::Item -> int`).
+        /// Mirrors [`hew_types::DynMethodCall::signature`]; MIR lowering
+        /// clones it onto `Instr::CallTraitMethod.signature` so codegen
+        /// (W3.031 Stage 7) can derive the erased indirect-call type
+        /// without re-resolving the trait/method. Receiver parameter is
+        /// already filtered out.
+        ///
+        /// Boxed to keep the `HirExprKind` variant under the
+        /// `clippy::large_enum_variant` threshold.
+        signature: Box<hew_types::FnSig>,
     },
     /// Static trait dispatch: the method was resolved at type-check time from
     /// trait bounds on a generic type parameter. Unlike `CallDynMethod` (vtable
@@ -1447,6 +1521,12 @@ pub struct HirClosureCapture {
     pub mode: hew_types::ClosureCaptureMode,
     /// Whether the captured type satisfies the checker-owned Send contract.
     pub is_send: bool,
+    /// Whether the captured type satisfies the checker-owned `Sync` contract.
+    /// Plumbed from `ClosureCaptureFact::is_sync`; consumed by
+    /// `ClosureEnvLayout::lock_slot_for` in MIR to decide whether a
+    /// non-`Sync` `BorrowMut` capture needs an auto-lock slot when the
+    /// follow-on auto-lock consumer enables lock injection.
+    pub is_sync: bool,
 }
 
 /// Capture-strength selector for an `HirLambdaCapture`. Mirrors

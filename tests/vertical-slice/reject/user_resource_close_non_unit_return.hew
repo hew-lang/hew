@@ -1,0 +1,18 @@
+// W3.030 V12 — `#[resource]` whose inherent-impl `close` returns a
+// non-unit type must be rejected at HIR with `ResourceCloseMustReturnUnit`.
+// The implicit drop contract dispatches `close` on every scope-exit
+// path (`Return`, `Goto`, `Branch`, `Trap`, `Cancel`); propagating a
+// value off, say, `Trap` has no defined semantics in v0.5. Fallible
+// cleanup composes via `defer`, not via a non-unit `close` return.
+#[resource]
+type Conn {
+    fd: i64
+}
+
+impl Conn {
+    fn close(c: Conn) -> i64 { 0 }
+}
+
+fn main() -> i64 {
+    0
+}

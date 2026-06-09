@@ -1,0 +1,27 @@
+// W3.030 V8 — Multiple distinct user-resource types in one scope close
+// in LIFO declaration order.
+//
+// `c` is declared before `l`; the implicit drop contract emits the
+// drop ledger in LIFO order, so `Lock::close` fires before
+// `Conn::close` on the tail return.
+//
+// Expected stdout:
+//   lock
+//   conn
+#[resource]
+type Conn { fd: i64 }
+impl Conn {
+    fn close(c: Conn) { println("conn"); }
+}
+
+#[resource]
+type Lock { id: i64 }
+impl Lock {
+    fn close(l: Lock) { println("lock"); }
+}
+
+fn main() -> i64 {
+    let c: Conn = Conn { fd: 1 };
+    let l: Lock = Lock { id: 2 };
+    0
+}

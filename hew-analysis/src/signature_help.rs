@@ -222,6 +222,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -231,6 +232,8 @@ mod tests {
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         }
     }
 
@@ -333,6 +336,7 @@ mod tests {
                 name: "ChannelModule".to_string(),
                 type_params: vec![],
                 fields: HashMap::new(),
+                field_order: vec![],
                 variants: HashMap::new(),
                 methods: HashMap::from([(
                     "new".to_string(),
@@ -383,6 +387,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -392,6 +397,8 @@ mod tests {
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -426,6 +433,7 @@ mod tests {
                 name: "Widget".to_string(),
                 type_params: vec![],
                 fields: HashMap::new(),
+                field_order: vec![],
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
@@ -468,6 +476,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -477,6 +486,8 @@ mod tests {
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());

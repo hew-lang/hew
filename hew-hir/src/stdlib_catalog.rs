@@ -163,8 +163,10 @@ const BOOL: &[BuiltinTy] = &[BuiltinTy::Bool];
 const CHAR: &[BuiltinTy] = &[BuiltinTy::Char];
 const STRING: &[BuiltinTy] = &[BuiltinTy::String];
 const VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny];
+const VEC_ANY_BOOL: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::Bool];
 const VEC_ANY_I32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I32];
 const VEC_ANY_I64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64];
+const VEC_ANY_I64_BOOL: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::Bool];
 const VEC_ANY_I64_I32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::I32];
 const VEC_ANY_VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::VecAny];
 const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
@@ -254,6 +256,17 @@ macro_rules! assert_entry {
 
 pub const CATALOG: &[BuiltinEntry] = &[
     // Class A: direct builtin calls.
+    // `Vec::new()` is a compiler-lowered constructor. Codegen selects the
+    // concrete runtime allocator from the checker-authoritative destination
+    // type (`hew_vec_new_bool`, `hew_vec_new_i64`, `hew_vec_new_with_layout`,
+    // etc.), so there is no single C ABI symbol to declare here.
+    direct(
+        "Vec::new",
+        BuiltinClass::ClassA,
+        EMPTY,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
     direct(
         "sleep_ms",
         BuiltinClass::ClassA,
@@ -376,6 +389,144 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::I64,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_len",
+        },
+    ),
+    // Receiver-method rewrite targets for builtin Option/Result methods.
+    // The rewrite arm supplies the receiver and actual args directly; these
+    // catalog rows make the runtime symbols resolvable to HIR/MIR.
+    direct(
+        "hew_option_is_none",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_option_is_none",
+        },
+    ),
+    direct(
+        "hew_option_is_some",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_option_is_some",
+        },
+    ),
+    direct(
+        "hew_option_unwrap_f64",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::F64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_option_unwrap_f64",
+        },
+    ),
+    direct(
+        "hew_option_unwrap_i32",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::I32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_option_unwrap_i32",
+        },
+    ),
+    direct(
+        "hew_option_unwrap_i64",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_option_unwrap_i64",
+        },
+    ),
+    direct(
+        "hew_option_unwrap_or_f64",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::F64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_option_unwrap_or_f64",
+        },
+    ),
+    direct(
+        "hew_option_unwrap_or_i32",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::I32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_option_unwrap_or_i32",
+        },
+    ),
+    direct(
+        "hew_option_unwrap_or_i64",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_option_unwrap_or_i64",
+        },
+    ),
+    direct(
+        "hew_result_is_err",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_result_is_err",
+        },
+    ),
+    direct(
+        "hew_result_is_ok",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_result_is_ok",
+        },
+    ),
+    direct(
+        "hew_result_unwrap_f64",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::F64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_result_unwrap_f64",
+        },
+    ),
+    direct(
+        "hew_result_unwrap_i32",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::I32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_result_unwrap_i32",
+        },
+    ),
+    direct(
+        "hew_result_unwrap_i64",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_result_unwrap_i64",
+        },
+    ),
+    direct(
+        "hew_result_unwrap_or_i32",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::I32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_result_unwrap_or_i32",
+        },
+    ),
+    direct(
+        "hew_result_unwrap_or_i64",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_result_unwrap_or_i64",
         },
     ),
     // Class A: string predicate overloads (ABI-safe: bool return, no i32/i64 conflict).
@@ -564,12 +715,30 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // is Vec<i32>-backed, so these direct rows expose the checked-in runtime
     // entry points that `std/io.hew` names with `#[extern_symbol]`.
     direct(
+        "hew_vec_push_bool",
+        BuiltinClass::ClassA,
+        VEC_ANY_BOOL,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_bool",
+        },
+    ),
+    direct(
         "hew_vec_push_i32",
         BuiltinClass::ClassA,
         VEC_ANY_I32,
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_push_i32",
+        },
+    ),
+    direct(
+        "hew_vec_pop_bool",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_bool",
         },
     ),
     direct(
@@ -582,12 +751,30 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_get_bool",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_bool",
+        },
+    ),
+    direct(
         "hew_vec_get_i32",
         BuiltinClass::ClassA,
         VEC_ANY_I64,
         BuiltinTy::I32,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_get_i32",
+        },
+    ),
+    direct(
+        "hew_vec_set_bool",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_BOOL,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_bool",
         },
     ),
     direct(
@@ -598,6 +785,75 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_set_i32",
         },
+    ),
+    // Layout-backed Vec<T> methods are checker-only rewrite targets for
+    // Copy record/tuple elements.  Codegen intercepts these callee names and
+    // synthesises the hidden `HewTypeLayout*` / data-pointer operands before
+    // calling the real runtime ABI.  They are intentionally not declared as
+    // `RuntimeFfiShim` rows because their source-level arity differs from the
+    // C ABI.
+    direct(
+        "hew_vec_push_layout",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_vec_get_layout",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_vec_set_layout",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_vec_pop_layout",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // W3.032 Slice 3: `Vec<Record/Tuple>::contains` for equality-eligible Copy
+    // record/tuple elements routes through `hew_vec_contains_thunk`.  The
+    // hidden third operand (a codegen-emitted per-type `__hew_eq_thunk_*`
+    // function pointer) is synthesized by `lower_layout_vec_direct_call`;
+    // checker authority is the sole eligibility gate (see
+    // `hew-types/src/eq_eligibility.rs` and `check_vec_method` `contains`).
+    direct(
+        "hew_vec_contains_thunk",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // W3.003: `Vec<T>::remove(index: i64)` for BitCopy layout-backed elements.
+    // Routes through `hew_vec_remove_at_layout`; the hidden `HewTypeLayout*`
+    // operand is synthesized by codegen from the Vec element type.
+    // Arity: receiver Vec + explicit index = 2 source-level parameters.
+    direct(
+        "hew_vec_remove_at_layout",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // W3.003: `Vec<T>::clone()` for BitCopy layout-backed elements.
+    // Routes through `hew_vec_clone_layout`; the hidden `HewTypeLayout*`
+    // operand is synthesized by codegen from the Vec element type.
+    // Arity: receiver Vec only — returns a freshly allocated `*mut HewVec`.
+    direct(
+        "hew_vec_clone_layout",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
         "hew_vec_is_empty",

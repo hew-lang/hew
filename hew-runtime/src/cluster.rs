@@ -134,8 +134,8 @@ struct MemberEvent {
 pub struct RegistryEvent {
     /// The registered actor name.
     pub name: String,
-    /// PID of the actor (0 for removals).
-    pub actor_pid: u64,
+    /// Actor ID (PID) for this registration; `0` for removal events.
+    pub actor_id: u64,
     /// Whether this is an add (`true`) or remove (`false`) event.
     pub is_add: bool,
     /// How many times this event has been piggybacked.
@@ -203,7 +203,7 @@ struct PendingMemberTransitions {
 
 /// Callback for registry gossip notifications.
 ///
-/// Signature: `fn(name: *const c_char, actor_pid: u64, is_add: bool, user_data: *mut c_void)`.
+/// Signature: `fn(name: *const c_char, actor_id: u64, is_add: bool, user_data: *mut c_void)`.
 pub type HewRegistryGossipCallback = extern "C" fn(*const c_char, u64, bool, *mut c_void);
 
 /// Cluster configuration.
@@ -1429,7 +1429,7 @@ impl HewCluster {
     // ── Registry gossip ────────────────────────────────────────────────
 
     /// Queue a registry add event for gossip dissemination.
-    pub fn emit_registry_add(&self, name: &str, actor_pid: u64) {
+    pub fn emit_registry_add(&self, name: &str, actor_id: u64) {
         let mut events = self.registry_events.lock_or_recover();
         // Deduplicate: remove prior event for the same name.
         events.retain(|e| e.name != name);
@@ -1438,7 +1438,7 @@ impl HewCluster {
         }
         events.push_back(RegistryEvent {
             name: name.to_owned(),
-            actor_pid,
+            actor_id,
             is_add: true,
             dissemination_count: 0,
         });
@@ -1453,7 +1453,7 @@ impl HewCluster {
         }
         events.push_back(RegistryEvent {
             name: name.to_owned(),
-            actor_pid: 0,
+            actor_id: 0,
             is_add: false,
             dissemination_count: 0,
         });
@@ -1482,7 +1482,7 @@ impl HewCluster {
     }
 
     /// Process an inbound registry gossip event received from a peer.
-    pub fn apply_registry_event(&self, name: &str, actor_pid: u64, is_add: bool) {
+    pub fn apply_registry_event(&self, name: &str, actor_id: u64, is_add: bool) {
         let Some(cb) = self.registry_callback else {
             return;
         };
@@ -1491,7 +1491,7 @@ impl HewCluster {
         };
         cb(
             c_name.as_ptr(),
-            actor_pid,
+            actor_id,
             is_add,
             self.registry_callback_user_data,
         );
@@ -1786,7 +1786,7 @@ pub unsafe fn hew_cluster_set_partition_registry(
 
 /// Register a callback for registry gossip events.
 ///
-/// The callback receives `(name, actor_pid, is_add, user_data)`.
+/// The callback receives `(name, actor_id, is_add, user_data)`.
 ///
 /// # Safety
 ///
@@ -1818,7 +1818,7 @@ pub unsafe extern "C" fn hew_cluster_set_registry_callback(
 pub unsafe extern "C" fn hew_cluster_registry_add(
     cluster: *mut HewCluster,
     name: *const c_char,
-    actor_pid: u64,
+    actor_id: u64,
 ) {
     if cluster.is_null() || name.is_null() {
         return;
@@ -1827,7 +1827,7 @@ pub unsafe extern "C" fn hew_cluster_registry_add(
     let cluster = unsafe { &*cluster };
     // SAFETY: caller guarantees `name` is a valid null-terminated C string.
     let name_str = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-    cluster.emit_registry_add(&name_str, actor_pid);
+    cluster.emit_registry_add(&name_str, actor_id);
 }
 
 /// Queue a registry-remove gossip event for dissemination.
@@ -3181,7 +3181,7 @@ mod tests {
         let events = cluster.take_registry_gossip(10);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].name, "counter");
-        assert_eq!(events[0].actor_pid, 0x1234);
+        assert_eq!(events[0].actor_id, 0x1234);
         assert!(events[0].is_add);
     }
 
@@ -3194,7 +3194,7 @@ mod tests {
         let events = cluster.take_registry_gossip(10);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].name, "counter");
-        assert_eq!(events[0].actor_pid, 0);
+        assert_eq!(events[0].actor_id, 0);
         assert!(!events[0].is_add);
     }
 
@@ -3207,7 +3207,7 @@ mod tests {
 
         let events = cluster.take_registry_gossip(10);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].actor_pid, 0x2222);
+        assert_eq!(events[0].actor_id, 0x2222);
     }
 
     #[test]

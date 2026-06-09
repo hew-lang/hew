@@ -1394,7 +1394,6 @@ mod tests {
         HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 1,
-            pid: 0,
             state: ptr::null_mut(),
             state_size: 0,
             dispatch: None,
@@ -1519,7 +1518,6 @@ mod tests {
         let actor = HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 42,
-            pid: 0,
             state: ptr::null_mut(),
             state_size: 0,
             dispatch: Some(noop_dispatch),
@@ -2033,7 +2031,6 @@ mod tests {
         let actor = HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 7,
-            pid: 0,
             state: ptr::null_mut(),
             state_size: 0,
             dispatch: Some(noop_dispatch),

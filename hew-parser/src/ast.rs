@@ -1427,6 +1427,15 @@ pub struct MachineDecl {
     /// `docs/specs/HEW-SPEC-2026.md` §3.11.8).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_params: Vec<TypeParam>,
+    /// Optional `where T: Trait, U: Trait + Trait, …` clause appearing
+    /// between the `<…>` type-parameter list and the opening `{` of the
+    /// machine body. Inline bounds on `type_params` and where-clause
+    /// predicates are stored separately so downstream lowering can
+    /// preserve per-entry provenance (inline vs where-clause source
+    /// span); the type checker folds both forms into a single
+    /// per-machine bound table consulted at instantiation sites.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub where_clause: Option<WhereClause>,
     pub states: Vec<MachineState>,
     pub events: Vec<MachineEvent>,
     pub transitions: Vec<MachineTransition>,

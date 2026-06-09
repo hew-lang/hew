@@ -162,13 +162,14 @@ pub fn lookup_named_method_sig(
         }
     }
 
-    let type_params = lookup_user_type_def(type_defs, type_name)
-        .map(|td| td.type_params.clone())
-        .unwrap_or_default();
+    let type_params = lookup_user_type_def(type_defs, type_name).map(|td| td.type_params.clone());
 
     lookup_user_fn_sig(fn_sigs, &format!("{type_name}::{method}"))
         .cloned()
-        .map(|sig| instantiate_named_method_sig(sig, &type_params, type_args))
+        .map(|sig| {
+            let type_params = type_params.unwrap_or_else(|| sig.type_params.clone());
+            instantiate_named_method_sig(sig, &type_params, type_args)
+        })
 }
 
 /// Look up a builtin method signature for `Sender`, `Receiver`, `Stream`, or `Sink`.
@@ -326,6 +327,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -365,6 +367,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -423,6 +426,7 @@ mod tests {
                     methods
                 },
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -466,6 +470,7 @@ mod tests {
                     methods
                 },
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );

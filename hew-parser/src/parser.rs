@@ -1488,6 +1488,11 @@ impl<'src> Parser<'src> {
                         t.doc_comment = doc_comment;
                         Item::TypeDecl(t)
                     }
+                    Some(Token::Enum) if attrs.iter().any(|a| a.name == "wire") => {
+                        let mut t = self.parse_wire_enum(&attrs, vis)?;
+                        t.doc_comment = doc_comment;
+                        Item::TypeDecl(t)
+                    }
                     Some(Token::Enum) => {
                         let mut t = self.parse_struct_or_enum(vis, &attrs)?;
                         t.doc_comment = doc_comment;
@@ -1575,6 +1580,11 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Indirect) => {
                 let mut t = self.parse_indirect_enum(Visibility::Private)?;
+                t.doc_comment = doc_comment;
+                Item::TypeDecl(t)
+            }
+            Some(Token::Enum) if attrs.iter().any(|a| a.name == "wire") => {
+                let mut t = self.parse_wire_enum(&attrs, Visibility::Private)?;
                 t.doc_comment = doc_comment;
                 Item::TypeDecl(t)
             }
@@ -2838,6 +2848,13 @@ impl<'src> Parser<'src> {
             Vec::new()
         };
 
+        // Optional `where T: Trait, U: Trait + Trait` clause between the
+        // generic parameter list and the body's `{`. The clause may also
+        // appear when no `<…>` list is present (mirrors fn/type/trait
+        // sibling decls). Bound enforcement is the type-checker's job;
+        // the parser threads the clause verbatim onto `MachineDecl`.
+        let where_clause = self.parse_opt_where_clause()?;
+
         self.expect(&Token::LeftBrace)?;
 
         let mut states = Vec::new();
@@ -3029,6 +3046,7 @@ impl<'src> Parser<'src> {
             visibility,
             name,
             type_params,
+            where_clause,
             states,
             events,
             transitions,
@@ -3556,6 +3574,79 @@ impl<'src> Parser<'src> {
             resource_marker: ResourceMarker::None,
             consuming_methods: Vec::new(),
         })
+    }
+
+    /// Parse `#[wire] enum Name { Variant1, Variant2(T), Variant3 { f: U } }` into a
+    /// `TypeDecl` with wire metadata attached.  Enums carry the type-level wire
+    /// metadata (`version`, `min_version`, `json_case`, `yaml_case`) but no
+    /// per-field tag numbers — variant payloads are tagged by the variant
+    /// index, not by `@N` annotations on individual fields.
+    ///
+    /// The enum body itself is parsed by the shared `parse_struct_or_enum`
+    /// helper (which handles unit / tuple / struct variant payloads, type
+    /// parameters, and where clauses).  This function attaches the wire
+    /// metadata to the resulting `TypeDecl` and validates the marker-conflict
+    /// rules that also apply to `#[wire] struct`.
+    fn parse_wire_enum(&mut self, attrs: &[Attribute], visibility: Visibility) -> Option<TypeDecl> {
+        // `#[wire]` is exclusive with `#[resource]` and `#[linear]`: wire types
+        // describe runtime traffic shapes; resource/linear are ownership-
+        // discipline markers.  Same rule as `parse_wire_struct`.
+        for attr in attrs {
+            if attr.name == "resource" || attr.name == "linear" {
+                self.error_at(
+                    format!(
+                        "#[wire] cannot be combined with #[{}] on the same type — \
+                         wire types are traffic-shape declarations; #[resource] and \
+                         #[linear] are ownership-discipline markers \
+                         [E_TYPE_MARKER_CONFLICT]",
+                        attr.name
+                    ),
+                    attr.span.clone(),
+                );
+            }
+        }
+
+        // Delegate enum-body parsing to the shared helper.  It consumes the
+        // `enum` keyword, name, type-params, where-clause, body braces, and
+        // populates `body` with `TypeBodyItem::Variant` entries.  The
+        // resulting `TypeDecl` has `wire: None`, which we override below.
+        let mut td = self.parse_struct_or_enum(visibility, attrs)?;
+        if td.kind != TypeDeclKind::Enum {
+            // Caller dispatched us on `Token::Enum`; parse_struct_or_enum
+            // should have produced an Enum.  Anything else is a parser bug.
+            self.error("internal: parse_wire_enum reached non-enum TypeDecl".to_string());
+            return None;
+        }
+
+        let WireNamingCases {
+            json_case,
+            yaml_case,
+        } = Self::extract_wire_naming_cases(attrs);
+
+        // Extract version/min_version from `#[wire(version = N, min_version = M)]`.
+        let wire_attr = attrs.iter().find(|a| a.name == "wire");
+        let version = wire_attr.and_then(|a| {
+            a.args.iter().find_map(|arg| match arg {
+                AttributeArg::KeyValue { key, value } if key == "version" => value.parse().ok(),
+                _ => None,
+            })
+        });
+        let min_version = wire_attr.and_then(|a| {
+            a.args.iter().find_map(|arg| match arg {
+                AttributeArg::KeyValue { key, value } if key == "min_version" => value.parse().ok(),
+                _ => None,
+            })
+        });
+
+        td.wire = Some(WireMetadata {
+            field_meta: Vec::new(),
+            reserved_numbers: Vec::new(),
+            json_case,
+            yaml_case,
+            version,
+            min_version,
+        });
+        Some(td)
     }
 
     #[expect(
@@ -8780,6 +8871,254 @@ struct Msg {
         assert_eq!(meta.field_number, 2);
         assert!(meta.is_optional);
         assert_eq!(meta.yaml_name.as_deref(), Some("added_name"));
+    }
+
+    /// `#[wire] enum E { A; B; C; }` — unit-only variants attach wire metadata
+    /// at the type level (version / naming-cases) and produce
+    /// `Item::TypeDecl { kind: Enum, wire: Some(_) }`.  Variants carry no
+    /// per-field tag numbers (variants are tagged by index, not `@N`).
+    #[test]
+    fn parse_wire_enum_unit_variants() {
+        let source = "\
+#[wire]
+enum Command {
+    Start;
+    Stop;
+    Pause;
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        assert_eq!(decl.kind, TypeDeclKind::Enum);
+        assert_eq!(decl.name, "Command");
+        let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
+        assert!(wire.field_meta.is_empty(), "enum variants have no @N tags");
+        assert!(wire.reserved_numbers.is_empty());
+        assert_eq!(decl.body.len(), 3);
+        for item in &decl.body {
+            match item {
+                TypeBodyItem::Variant(v) => assert!(matches!(v.kind, VariantKind::Unit)),
+                _ => panic!("expected variant, got {item:?}"),
+            }
+        }
+    }
+
+    /// `#[wire] enum E { V1 { x: i64 }; V2 { y: String } }` — struct-payload
+    /// variants parse through the shared enum-body helper; wire metadata at
+    /// the type level is attached by `parse_wire_enum`.
+    #[test]
+    fn parse_wire_enum_struct_payload_variants() {
+        let source = "\
+#[wire(version = 2, min_version = 1)]
+enum Packet {
+    V1 { x: i64 };
+    V2 { y: String, z: bool };
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        assert_eq!(decl.kind, TypeDeclKind::Enum);
+        let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
+        assert_eq!(wire.version, Some(2));
+        assert_eq!(wire.min_version, Some(1));
+        assert_eq!(decl.body.len(), 2);
+        let TypeBodyItem::Variant(v1) = &decl.body[0] else {
+            panic!("expected variant V1");
+        };
+        assert_eq!(v1.name, "V1");
+        assert!(matches!(v1.kind, VariantKind::Struct(ref fs) if fs.len() == 1));
+        let TypeBodyItem::Variant(v2) = &decl.body[1] else {
+            panic!("expected variant V2");
+        };
+        assert_eq!(v2.name, "V2");
+        assert!(matches!(v2.kind, VariantKind::Struct(ref fs) if fs.len() == 2));
+    }
+
+    /// `#[wire] enum E { A(i64); B(String, bool) }` — tuple-payload variants.
+    #[test]
+    fn parse_wire_enum_tuple_payload_variants() {
+        let source = "\
+#[wire]
+enum Op {
+    Push(i64);
+    Pair(String, bool);
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        assert_eq!(decl.kind, TypeDeclKind::Enum);
+        let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
+        assert!(wire.field_meta.is_empty());
+        assert_eq!(decl.body.len(), 2);
+        let TypeBodyItem::Variant(push) = &decl.body[0] else {
+            panic!("expected variant Push");
+        };
+        assert!(matches!(push.kind, VariantKind::Tuple(ref ts) if ts.len() == 1));
+        let TypeBodyItem::Variant(pair) = &decl.body[1] else {
+            panic!("expected variant Pair");
+        };
+        assert!(matches!(pair.kind, VariantKind::Tuple(ref ts) if ts.len() == 2));
+    }
+
+    /// `#[wire]` is exclusive with `#[resource]` / `#[linear]` on enums (same
+    /// rule as `#[wire] struct`).
+    #[test]
+    fn parse_wire_enum_rejects_resource_marker_combo() {
+        let source = "\
+#[wire]
+#[resource]
+enum Bad {
+    A;
+}
+";
+        let result = parse(source);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("E_TYPE_MARKER_CONFLICT")),
+            "expected E_TYPE_MARKER_CONFLICT, got {:?}",
+            result.errors
+        );
+    }
+
+    /// `#[wire] #[json("camelCase")] #[yaml("kebab-case")] enum E { … }` —
+    /// type-level naming attributes flow into `WireMetadata`.
+    #[test]
+    fn parse_wire_enum_preserves_naming_cases() {
+        let source = "\
+#[wire]
+#[json(\"camelCase\")]
+#[yaml(\"kebab-case\")]
+enum Command {
+    Start;
+    Stop;
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
+        assert_eq!(wire.json_case, Some(NamingCase::CamelCase));
+        assert_eq!(wire.yaml_case, Some(NamingCase::KebabCase));
+    }
+
+    /// `pub #[wire] enum E { ... }` — the visibility-prefixed dispatch arm
+    /// (parser.rs `:1491`-area, inside the `Some(Token::Pub)` branch) must
+    /// route through `parse_wire_enum` and preserve `Visibility::Pub` on the
+    /// resulting `TypeDecl`.  Exercises the pub-prefixed arm specifically
+    /// (the existing wire-enum tests all hit the bare arm at `:1581`).
+    #[test]
+    fn parses_visibility_prefixed_wire_enum() {
+        let source = "\
+#[wire]
+pub enum Command {
+    Start;
+    Stop;
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        assert_eq!(decl.kind, TypeDeclKind::Enum);
+        assert_eq!(decl.name, "Command");
+        assert_eq!(decl.visibility, Visibility::Pub);
+        let wire = decl
+            .wire
+            .as_ref()
+            .expect("expected wire metadata on pub enum");
+        assert!(wire.field_meta.is_empty());
+        assert!(wire.reserved_numbers.is_empty());
+        assert_eq!(decl.body.len(), 2);
+        for item in &decl.body {
+            match item {
+                TypeBodyItem::Variant(v) => assert!(matches!(v.kind, VariantKind::Unit)),
+                _ => panic!("expected variant, got {item:?}"),
+            }
+        }
+    }
+
+    /// `#[wire] enum X { A; B(i64); C { x: String, y: i32 } }` — a single
+    /// enum body mixing unit, tuple, and struct variant payloads.  Verifies
+    /// each variant kind parses correctly, source order is preserved, and
+    /// type-level wire metadata is attached.
+    #[test]
+    fn parses_mixed_variant_wire_enum() {
+        let source = "\
+#[wire]
+enum Mixed {
+    A;
+    B(i64);
+    C { x: String, y: i32 };
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        assert_eq!(decl.kind, TypeDeclKind::Enum);
+        assert_eq!(decl.name, "Mixed");
+        assert!(
+            decl.wire.is_some(),
+            "expected wire metadata on mixed-variant enum"
+        );
+        assert_eq!(decl.body.len(), 3, "expected 3 variants in source order");
+
+        // Variant 0: A — unit
+        let TypeBodyItem::Variant(a) = &decl.body[0] else {
+            panic!("expected variant A at index 0");
+        };
+        assert_eq!(a.name, "A");
+        assert!(
+            matches!(a.kind, VariantKind::Unit),
+            "variant A should be unit, got {:?}",
+            a.kind
+        );
+
+        // Variant 1: B(i64) — tuple
+        let TypeBodyItem::Variant(b) = &decl.body[1] else {
+            panic!("expected variant B at index 1");
+        };
+        assert_eq!(b.name, "B");
+        assert!(
+            matches!(b.kind, VariantKind::Tuple(ref ts) if ts.len() == 1),
+            "variant B should be tuple(1), got {:?}",
+            b.kind
+        );
+
+        // Variant 2: C { x: String, y: i32 } — struct
+        let TypeBodyItem::Variant(c) = &decl.body[2] else {
+            panic!("expected variant C at index 2");
+        };
+        assert_eq!(c.name, "C");
+        match &c.kind {
+            VariantKind::Struct(fields) => {
+                assert_eq!(fields.len(), 2, "variant C should have 2 fields");
+                assert_eq!(fields[0].0, "x");
+                assert_eq!(fields[1].0, "y");
+            }
+            other => panic!("variant C should be struct, got {other:?}"),
+        }
     }
 
     #[test]

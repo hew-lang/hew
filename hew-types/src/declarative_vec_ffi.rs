@@ -112,7 +112,8 @@ pub fn vec_method_template(method: &str) -> Option<&'static str> {
 /// `runtime_symbol_exists` check so the differential paths agree
 /// byte-for-byte. Source-of-truth for the exclusions is
 /// [`hew-runtime/src/vec.rs`]; the matrix is documented at
-/// `hew-types/src/stdlib.rs:137` (no `hew_vec_contains_ptr`).
+/// `hew-types/src/stdlib.rs:137` (no `hew_vec_contains_ptr` /
+/// `hew_vec_contains_bool`).
 ///
 /// # Returns
 ///
@@ -161,12 +162,11 @@ pub fn expand_vec_method(
 /// Mirror the legacy magic-table `(method, suffix) → Option` rejections
 /// for `(method, calling-convention)` pairs the runtime does not back.
 ///
-/// Today the only excluded pair is `(contains, Pointer)` —
-/// `hew_vec_contains_ptr` is absent from `hew-runtime/src/vec.rs`
-/// (see `hew-types/src/stdlib.rs:137` for the legacy site). When
-/// W3.003 ships layout-driven element handling this list shrinks.
+/// Excluded pairs are `contains` for pointer-shaped elements and bool:
+/// neither `hew_vec_contains_ptr` nor `hew_vec_contains_bool` exists in
+/// `hew-runtime/src/vec.rs`.
 fn runtime_symbol_exists(method: &str, expanded: &str) -> bool {
-    !matches!(method, "contains" if expanded.ends_with("_ptr"))
+    !matches!(method, "contains" if expanded.ends_with("_ptr") || expanded.ends_with("_bool"))
 }
 
 #[cfg(test)]
@@ -186,6 +186,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: true,
             },
         );
@@ -215,12 +216,20 @@ mod tests {
     fn element_typed_methods_expand_per_calling_convention() {
         let cases = [
             ("push", Ty::I32, "hew_vec_push_i32"),
+            ("push", Ty::Bool, "hew_vec_push_bool"),
+            ("push", Ty::Char, "hew_vec_push_i32"),
             ("push", Ty::I64, "hew_vec_push_i64"),
             ("push", Ty::F64, "hew_vec_push_f64"),
             ("push", Ty::String, "hew_vec_push_str"),
             ("pop", Ty::I32, "hew_vec_pop_i32"),
+            ("pop", Ty::Bool, "hew_vec_pop_bool"),
+            ("pop", Ty::Char, "hew_vec_pop_i32"),
             ("get", Ty::I64, "hew_vec_get_i64"),
+            ("get", Ty::Bool, "hew_vec_get_bool"),
+            ("get", Ty::Char, "hew_vec_get_i32"),
             ("set", Ty::F64, "hew_vec_set_f64"),
+            ("set", Ty::Bool, "hew_vec_set_bool"),
+            ("set", Ty::Char, "hew_vec_set_i32"),
             ("contains", Ty::String, "hew_vec_contains_str"),
         ];
         for (method, ty, expected) in cases {

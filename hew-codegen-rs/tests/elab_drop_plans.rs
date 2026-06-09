@@ -109,6 +109,9 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
         regex_literals: vec![],
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     }
 }
 
@@ -260,6 +263,9 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         regex_literals: vec![],
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     };
     let dir = out_dir("elab-drop-unknown-fail-closed");
     let options = EmitOptions {

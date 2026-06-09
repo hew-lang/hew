@@ -1260,6 +1260,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1269,6 +1270,8 @@ mod tests {
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         }
     }
 
@@ -1337,6 +1340,7 @@ mod tests {
             name: "Point".to_string(),
             type_params: vec![],
             fields,
+            field_order: vec![],
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
@@ -1360,6 +1364,7 @@ mod tests {
             name: "Colour".to_string(),
             type_params: vec![],
             fields: HashMap::new(),
+            field_order: vec![],
             variants,
             methods: HashMap::new(),
             doc_comment: None,
@@ -1377,6 +1382,7 @@ mod tests {
             name: "Pair".to_string(),
             type_params: vec!["A".to_string(), "B".to_string()],
             fields: HashMap::new(),
+            field_order: vec![],
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
@@ -1501,6 +1507,7 @@ mod tests {
                     f.insert("y".to_string(), Ty::F64);
                     f
                 },
+                field_order: vec![],
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
@@ -1532,6 +1539,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1541,6 +1549,8 @@ mod tests {
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         };
         let offset = source.find("Point").unwrap();
         let result = hover(source, &pr, Some(&tc), offset);
@@ -1626,6 +1636,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1635,6 +1646,8 @@ mod tests {
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
         assert!(result.is_some(), "should find hover via expr_types");
@@ -1680,6 +1693,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1689,6 +1703,8 @@ mod tests {
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
@@ -1788,6 +1804,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1797,6 +1814,8 @@ mod tests {
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), use_offset).unwrap();
@@ -1946,6 +1965,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1955,6 +1975,8 @@ mod tests {
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset).unwrap();
         // Goes through ResolvedTy::from_ty(materialize_literal_defaults)

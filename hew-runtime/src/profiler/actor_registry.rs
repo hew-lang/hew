@@ -308,7 +308,7 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
 
             result.push(ActorSnapshot {
                 id: a.id,
-                pid: a.pid,
+                pid: a.id,
                 actor_type,
                 state: state_name,
                 messages_processed: a.prof_messages_processed.load(Ordering::Relaxed),
@@ -484,7 +484,6 @@ mod tests {
         // dangling pointer.
         let mut actor: Box<HewActor> = unsafe { Box::new(std::mem::zeroed()) };
         actor.id = 0xdead_beef_cafe_1234;
-        actor.pid = 0xdead_beef_cafe_1234;
         actor.dispatch = Some(fake_dispatch_e);
 
         let actor_ptr: *mut HewActor = &raw mut *actor;
@@ -555,7 +554,6 @@ mod tests {
         // field has a valid zero pattern and every pointer field is null.
         let mut actor: Box<HewActor> = unsafe { Box::new(std::mem::zeroed()) };
         actor.id = 0x1234_5678_9abc_def0;
-        actor.pid = 0x1234_5678_9abc_def0;
         actor.dispatch = Some(fake_dispatch_e);
 
         let actor_ptr: *mut HewActor = &raw mut *actor;

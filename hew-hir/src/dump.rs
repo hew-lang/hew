@@ -597,10 +597,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             ret_ty,
             body,
             captures,
+            escape_kind,
         } => {
             writeln!(
                 out,
-                "{pad}  closure params={} ret_ty={} captures={}",
+                "{pad}  closure params={} ret_ty={} captures={} escape={escape_kind:?}",
                 params.len(),
                 ret_ty.user_facing(),
                 captures.len()
@@ -609,12 +610,13 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             for capture in captures {
                 writeln!(
                     out,
-                    "{pad}    capture {} ({}) ty={} mode={:?} send={}",
+                    "{pad}    capture {} ({}) ty={} mode={:?} send={} sync={}",
                     capture.name,
                     capture.binding,
                     capture.ty.user_facing(),
                     capture.mode,
-                    capture.is_send
+                    capture.is_send,
+                    capture.is_sync
                 )
                 .expect("write to string");
             }
@@ -699,6 +701,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             slot,
             args,
             ret_ty,
+            signature: _,
         } => {
             writeln!(
                 out,

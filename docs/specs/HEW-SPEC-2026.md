@@ -1556,6 +1556,55 @@ Any new teardown surface added by a future edition (for example,
 checkpoint snapshots, hot-swap upgrades) must extend this table before
 it is admitted.
 
+##### 3.7.8.5 v0.5 `@resource` close discipline (W3.030)
+
+The long-form `@resource` semantics in §3.7.8.1–§3.7.8.4 describe the
+edition-2026 target. The v0.5 implementation lands the substrate in two
+HIR-boundary constraints that fail closed before any subsequent stage
+can silently miss a drop:
+
+1. **Inherent-impl-only `close` body** (Q-α-B). The body of `close` on a
+   `#[resource]` type must be declared in a sibling inherent `impl`
+   block:
+
+   ```hew
+   #[resource]
+   type Conn { fd: i64 }
+
+   impl Conn {
+       fn close(c: Conn) { /* release fd */ }
+   }
+   ```
+
+   Declaring `close` as an inline `TypeBodyItem::Method` body (i.e.
+   inside `type T { … fn close(consuming self) { … } }`) is rejected at
+   HIR with `ResourceCloseSourceUnsupported`. The inline form is not
+   lowered to a callable symbol in v0.5; admitting it would either
+   silently no-op the drop or trap at link time. A future edition may
+   relax this — `Item::Impl`-flattening already covers the dispatch
+   path, so the only blocker is the inline-method lowering itself.
+
+2. **Unit return required** (Q-β-C). The inherent-impl `close` body must
+   return unit. A `close` declared to return `Result<(), E>` (or any
+   non-unit type) is rejected at HIR with
+   `ResourceCloseMustReturnUnit`. The implicit drop contract dispatches
+   `close` on every scope-exit path including `Trap` and `Cancel`;
+   propagating a value off those edges has no defined semantics in v0.5.
+   Fallible cleanup composes through `defer`, where the value can be
+   inspected on the success path and surfaced via `?`.
+
+A `#[resource]` declaration with neither an inline nor an inherent-impl
+`close` is rejected at HIR with `ResourceMissingClose` — the implicit
+drop contract has no method to dispatch.
+
+These three diagnostics are the only v0.5 surface around the
+`@resource` close obligation. Once they pass, codegen's typed
+`DropDispatch::{RuntimeSymbol, UserFn}` dispatcher routes the drop
+through one of exactly two arms (runtime substrate symbol or user
+inherent-impl method); a third path is rejected by the codegen
+verifier. The `close` body itself runs on every exit path that the
+unified `ScopeExitPlan` enumerates (per §3.7.8.4 above).
+
 ---
 
 ### 3.8 Generics and Monomorphization

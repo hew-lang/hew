@@ -9,9 +9,9 @@ use hew_parser::ast::{
 };
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildKind, ChildSlot,
-    ClosureCaptureFact, ExecutionContextReader, LoweringFact, MethodCallReceiverKind,
-    MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, PatternKind, ResolvedTy,
-    SpanKey, Ty, TypeCheckOutput,
+    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, LoweringFact,
+    MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily, NumericMethodLowering,
+    PatternKind, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -304,6 +304,144 @@ struct RecordEntry {
     fields: Vec<(String, ResolvedTy)>,
 }
 
+/// Pre-collected inherent-impl `close` method signature for a `#[resource]`
+/// type. Populated before the type-decl pre-pass by walking `program.items`
+/// for inherent `impl T { fn close(...) {...} }` blocks (no trait bound,
+/// nominal target). Consulted by `lower_type_decl` to:
+///
+///   1. Broaden the `ResourceMissingClose` presence check beyond inline
+///      `TypeBodyItem::Method` (W3.030 Q-α-B): a `#[resource]` may declare
+///      `close` in a sibling inherent-impl block rather than in the type
+///      body itself.
+///   2. Enforce the `close`-must-return-unit discipline at the HIR
+///      boundary (W3.030 Q-β-C): fallible cleanup composes through
+///      `defer`, not through a non-unit `close` return.
+#[derive(Debug)]
+struct ImplCloseSignature {
+    /// Span of the declaration site (the impl-block method's `decl_span`
+    /// when available, else its `fn_span`). Used as the diagnostic anchor
+    /// for `ResourceCloseMustReturnUnit`.
+    decl_span: Span,
+    /// `true` when the declared return type is unit — either no `->`
+    /// clause or an explicit `()` tuple-of-zero.
+    return_ty_unit: bool,
+    /// User-facing rendering of the offending non-unit return type. Only
+    /// meaningful when `!return_ty_unit`.
+    return_ty_display: String,
+}
+
+/// Walk the root program's items collecting inherent-impl `close` method
+/// signatures, keyed by the self-type name. Trait impls (`impl T for U`)
+/// are deliberately skipped — the `close` ritual under the W3.030 contract
+/// is dispatched through `<T>::close` as an inherent method symbol; trait
+/// methods would land at `<T as Trait>::close` and are not the surface
+/// W3.030 owns. Multiple inherent impls declaring `close` on the same
+/// nominal would be a duplicate-symbol error caught downstream; this
+/// collector keeps the first occurrence and ignores any later ones.
+fn collect_inherent_impl_close_methods(
+    items: &[(Item, Span)],
+) -> HashMap<String, ImplCloseSignature> {
+    let mut out: HashMap<String, ImplCloseSignature> = HashMap::new();
+    for (item, _item_span) in items {
+        let Item::Impl(impl_decl) = item else {
+            continue;
+        };
+        if impl_decl.trait_bound.is_some() {
+            continue;
+        }
+        let TypeExpr::Named {
+            name: self_type_name,
+            ..
+        } = &impl_decl.target_type.0
+        else {
+            continue;
+        };
+        for method in &impl_decl.methods {
+            if method.name != "close" {
+                continue;
+            }
+            let (return_ty_unit, return_ty_display) = match &method.return_type {
+                None => (true, String::new()),
+                Some((TypeExpr::Tuple(items), _)) if items.is_empty() => (true, String::new()),
+                Some((ty_expr, _)) => (false, render_type_expr(ty_expr)),
+            };
+            let decl_span = if method.decl_span.start == method.decl_span.end {
+                method.fn_span.clone()
+            } else {
+                method.decl_span.clone()
+            };
+            out.entry(self_type_name.clone())
+                .or_insert(ImplCloseSignature {
+                    decl_span,
+                    return_ty_unit,
+                    return_ty_display,
+                });
+            // Once we found a `close` on this impl, stop scanning its
+            // methods — a single impl-block cannot declare two methods
+            // with the same name.
+            break;
+        }
+    }
+    out
+}
+
+/// Compact, user-facing rendering of a parser-side `TypeExpr` used by the
+/// `ResourceCloseMustReturnUnit` diagnostic. Best-effort; complex / deeply
+/// nested shapes degrade to a short description rather than a full pretty
+/// print — the diagnostic's purpose is to name what the user wrote enough
+/// to direct them to the fix, not to round-trip the AST.
+fn render_type_expr(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named { name, type_args } => match type_args {
+            Some(args) if !args.is_empty() => {
+                let inner: Vec<String> = args.iter().map(|a| render_type_expr(&a.0)).collect();
+                format!("{name}<{}>", inner.join(", "))
+            }
+            _ => name.clone(),
+        },
+        TypeExpr::Result { ok, err } => {
+            format!(
+                "Result<{}, {}>",
+                render_type_expr(&ok.0),
+                render_type_expr(&err.0)
+            )
+        }
+        TypeExpr::Option(inner) => format!("Option<{}>", render_type_expr(&inner.0)),
+        TypeExpr::Tuple(items) => {
+            if items.is_empty() {
+                "()".to_string()
+            } else {
+                let inner: Vec<String> = items.iter().map(|t| render_type_expr(&t.0)).collect();
+                format!("({})", inner.join(", "))
+            }
+        }
+        TypeExpr::Array { element, size } => {
+            format!("[{}; {size}]", render_type_expr(&element.0))
+        }
+        TypeExpr::Slice(inner) => format!("[{}]", render_type_expr(&inner.0)),
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
+            let ps: Vec<String> = params.iter().map(|p| render_type_expr(&p.0)).collect();
+            format!(
+                "fn({}) -> {}",
+                ps.join(", "),
+                render_type_expr(&return_type.0)
+            )
+        }
+        TypeExpr::Pointer {
+            is_mutable,
+            pointee,
+        } => {
+            let m = if *is_mutable { "mut " } else { "" };
+            format!("*{m}{}", render_type_expr(&pointee.0))
+        }
+        TypeExpr::TraitObject(_) => "dyn Trait".to_string(),
+        TypeExpr::Infer => "_".to_string(),
+    }
+}
+
 #[must_use]
 pub fn lower_program(
     program: &Program,
@@ -351,6 +489,14 @@ pub fn lower_program_with_mono_cap(
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
     ctx.seed_stdlib_fn_registry();
+
+    // Pre-pre-pass: harvest inherent-impl `close` method signatures from
+    // the root program so the type-decl pre-pass below can broaden the
+    // `ResourceMissingClose` presence check to consider inherent-impl
+    // surface and enforce the close-must-return-unit discipline. See
+    // [`collect_inherent_impl_close_methods`] for the precise contract
+    // (W3.030 Q-α-B + Q-β-C ratifications).
+    ctx.impl_close_methods = collect_inherent_impl_close_methods(&program.items);
 
     // First pass: collect all function signatures so that forward and mutual
     // references in call expressions resolve to the correct return type.
@@ -1071,6 +1217,19 @@ pub fn lower_program_with_mono_cap(
                             .iter()
                             .find(|m| m.as_str() == "close")
                             .cloned()
+                    })
+                    // W3.030 Q-α-B: a `#[resource]` whose `close` lives in a
+                    // sibling inherent-impl block must still register the
+                    // close-method symbol so the MIR elaborator's
+                    // `resource_drop_fn` emits `Some("<T>::close")` rather
+                    // than `None`. Without this fallback the type-class
+                    // table would record `(Resource, None)` for the broadened
+                    // surface and drop-elaboration would silently elide the
+                    // close call.
+                    .or_else(|| {
+                        ctx.impl_close_methods
+                            .get(&hir_decl.name)
+                            .map(|_| "close".to_string())
                     })
             } else {
                 None
@@ -2415,6 +2574,21 @@ struct LowerCtx {
     /// Also seeded with M2 substrate types (Duplex, Sink, Stream, etc.) via
     /// `builtin_type_classes::seed_builtin_type_classes` before the `TypeDecl` loop.
     type_classes: crate::value_class::TypeClassTable,
+    /// Pre-collected inherent-impl `close` method signatures, keyed by the
+    /// self-type name. Populated in `lower_program` before the type-decl
+    /// pre-pass so `lower_type_decl` can:
+    ///
+    ///   * broaden the `ResourceMissingClose` presence check to consider
+    ///     inherent-impl `<T>::close` declarations (W3.030 Q-α-B); and
+    ///   * enforce the close-must-return-unit discipline at the HIR
+    ///     boundary (W3.030 Q-β-C).
+    ///
+    /// Empty when called from non-`lower_program` entry points (the cross-
+    /// module `lower_type_decl` calls under `program.module_graph` reach
+    /// this with the root map already populated; imported enum `TypeDecls`
+    /// carry no `#[resource]` marker so the absence of their inherent
+    /// impls in this map is harmless).
+    impl_close_methods: HashMap<String, ImplCloseSignature>,
     diagnostics: Vec<HirDiagnostic>,
     /// Checker-owned method-call lowering decisions. Keyed by the method-call
     /// expression span. `Expr::MethodCall` lowering looks up each call site
@@ -2466,6 +2640,12 @@ struct LowerCtx {
     /// literal span. HIR consumes this ledger fail-closed when materialising
     /// `HirExprKind::Closure`; it does not infer capture legality from syntax.
     closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    /// Checker-authoritative escape classification keyed by closure literal
+    /// span (the checker's `closure_escape_facts`). HIR threads this fact into
+    /// `HirExprKind::Closure::escape_kind` so MIR's
+    /// `ClosureEnvLayout::allocation_strategy` can dispatch between
+    /// `Local`/`Forked`/`Escapes` storage without re-deriving classification.
+    closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
     /// Stack of checker-inferred generator Yield parameters while lowering
     /// nested `gen {}` bodies. `Expr::Yield` consumes the innermost entry.
     generator_yield_tys: Vec<ResolvedTy>,
@@ -2751,6 +2931,7 @@ impl LowerCtx {
             fn_registry: HashMap::new(),
             imported_fn_rewrites: None,
             type_classes,
+            impl_close_methods: HashMap::new(),
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
             numeric_method_lowerings: tc_output.numeric_method_lowerings.clone(),
@@ -2762,6 +2943,7 @@ impl LowerCtx {
             expr_types: tc_output.expr_types.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
+            closure_escape_facts: tc_output.closure_escape_facts.clone(),
             generator_yield_tys: Vec::new(),
             scope_depth: 0,
             current_scope_id: ScopeId(0),
@@ -4296,6 +4478,77 @@ impl LowerCtx {
         }
     }
 
+    /// W3.030 Stage 1 — three layered checks on `#[resource]` close:
+    ///
+    ///   1. Inline `TypeBodyItem::Method` named `close` is rejected
+    ///      unconditionally (Q-α-B): the inline form is a silent
+    ///      trap today (E8 — body not lowered, drop dispatcher
+    ///      emits an unresolvable symbol). Emit
+    ///      `ResourceCloseSourceUnsupported`. Short-circuit further
+    ///      checks for this type — exactly one named diagnostic
+    ///      per `close` slot (review R-4 determinism contract).
+    ///
+    ///   2. Otherwise look for an inherent-impl `<T>::close`
+    ///      (collected in `impl_close_methods` during the
+    ///      pre-pre-pass). Presence here satisfies the broadened
+    ///      `ResourceMissingClose` check (Q-α-B); a non-unit return
+    ///      type triggers `ResourceCloseMustReturnUnit` (Q-β-C).
+    ///
+    ///   3. Otherwise no `close` is reachable from any surface;
+    ///      emit `ResourceMissingClose` as before.
+    fn check_resource_close_discipline(&mut self, decl: &TypeDecl, span: &Span) {
+        let inline_close = decl
+            .body
+            .iter()
+            .any(|item| matches!(item, TypeBodyItem::Method(m) if m.name == "close"));
+        if inline_close {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ResourceCloseSourceUnsupported {
+                    name: decl.name.clone(),
+                },
+                span.clone(),
+                "`#[resource]` types must declare `close` in a sibling \
+                 inherent-impl block (`impl T { fn close(self) { ... } }`); \
+                 the inline `type T { fn close(consuming self) ... }` \
+                 surface is not lowered in v0.5 and would silently fail \
+                 link-time drop dispatch",
+            ));
+            return;
+        }
+        if let Some(sig) = self.impl_close_methods.get(&decl.name) {
+            if !sig.return_ty_unit {
+                let display = sig.return_ty_display.clone();
+                let decl_span = sig.decl_span.clone();
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::ResourceCloseMustReturnUnit {
+                        name: decl.name.clone(),
+                        return_ty: display.clone(),
+                    },
+                    decl_span,
+                    format!(
+                        "`#[resource]` type `{}` declares `close` returning \
+                         `{display}`; the implicit drop contract dispatches \
+                         `close` on every scope-exit path and only unit return \
+                         is admitted in v0.5 — compose fallible cleanup via \
+                         `defer` instead",
+                        decl.name
+                    ),
+                ));
+            }
+            return;
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::ResourceMissingClose {
+                name: decl.name.clone(),
+            },
+            span.clone(),
+            "`#[resource]` type must declare `fn close(self) { ... }` in a \
+             sibling inherent-impl block (`impl T { fn close(self) { ... } }`); \
+             the implicit drop contract dispatches to this method on every \
+             scope-exit path",
+        ));
+    }
+
     fn lower_type_decl(&mut self, decl: &TypeDecl, span: std::ops::Range<usize>) -> HirTypeDecl {
         // Generic resource/linear types are rejected — the type→class map is
         // keyed by name, not by instantiation. This rule belongs at the
@@ -4313,21 +4566,7 @@ impl LowerCtx {
 
         match decl.resource_marker {
             AstResourceMarker::Resource => {
-                // `#[resource]` must declare `close(consuming self)`.
-                let has_close = decl
-                    .consuming_methods
-                    .iter()
-                    .any(|name| name.as_str() == "close");
-                if !has_close {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::ResourceMissingClose {
-                            name: decl.name.clone(),
-                        },
-                        span.clone(),
-                        "`#[resource]` type must declare `fn close(consuming self) -> ...` \
-                         in its body; the implicit drop contract dispatches to this method",
-                    ));
-                }
+                self.check_resource_close_discipline(decl, &span);
             }
             AstResourceMarker::Linear => {
                 // `#[linear]` must declare at least one consuming method.
@@ -4964,17 +5203,99 @@ impl LowerCtx {
         self.current_machine_name = prev_machine_name;
         self.current_machine_states = prev_machine_states;
 
+        // Lower trait bounds declared on the machine's type parameters.
+        // Both the inline `<T: Trait>` form and the trailing
+        // `where T: Trait` clause are flattened into a single
+        // `Vec<HirMachineBound>` in authored order: inline bounds
+        // first (in the order their owning `TypeParam` appears, with
+        // each param's `bounds` walked in their authored order), then
+        // where-clause predicates. Per Q230-B the carrier is flat —
+        // duplicate `(param, trait)` pairs from inline+where are
+        // preserved at this layer with distinct `origin`s and dedup'd
+        // downstream by the checker's per-machine bound table. The
+        // span on `WhereOrigin::WhereClause` is the `WherePredicate.ty`
+        // span (the LHS of the predicate), used by downstream
+        // diagnostics that want to point at the predicate's source.
+        let mut type_param_bounds: Vec<crate::node::HirMachineBound> = Vec::new();
+        for tp in &decl.type_params {
+            for tb in &tp.bounds {
+                let trait_bound = self.lower_machine_trait_bound(tb);
+                type_param_bounds.push(crate::node::HirMachineBound {
+                    param: tp.name.clone(),
+                    trait_bound,
+                    origin: crate::node::WhereOrigin::Inline,
+                });
+            }
+        }
+        if let Some(where_clause) = &decl.where_clause {
+            for predicate in &where_clause.predicates {
+                // The LHS `ty` of a where predicate on a machine
+                // type-param is parsed as a `TypeExpr::Named { name, .. }`
+                // where `name` is the bare type-param symbol; this
+                // matches the checker's `validate_machine_type_param_bounds`
+                // contract that rejects anything else as `UndefinedType`.
+                // Extract the param name; fall back to the displayed
+                // form for resilience when the upstream parser admits
+                // a non-Named LHS that has slipped past the checker
+                // (defensive — should be unreachable in well-formed
+                // programs).
+                let param_name = match &predicate.ty.0 {
+                    hew_parser::ast::TypeExpr::Named { name, .. } => name.clone(),
+                    other => format!("{other:?}"),
+                };
+                let lhs_span = predicate.ty.1.clone();
+                for tb in &predicate.bounds {
+                    let trait_bound = self.lower_machine_trait_bound(tb);
+                    type_param_bounds.push(crate::node::HirMachineBound {
+                        param: param_name.clone(),
+                        trait_bound,
+                        origin: crate::node::WhereOrigin::WhereClause(lhs_span.clone()),
+                    });
+                }
+            }
+        }
+
         Some(HirMachineDecl {
             id: self.ids.item(),
             node: self.ids.node(),
             name: decl.name.clone(),
             type_params: decl.type_params.iter().map(|p| p.name.clone()).collect(),
+            type_param_bounds,
             states: hir_states,
             events: hir_events,
             transitions: hir_transitions,
             has_default: decl.has_default,
             span,
         })
+    }
+
+    /// Lower a parser `TraitBound` (used in a machine's type-param
+    /// bound list or where-clause predicate) into the cross-layer
+    /// `ResolvedTraitBound` carrier. Trait `args` and
+    /// `assoc_type_bindings` are recursively lowered via the existing
+    /// `lower_type` seam — there is no separate HIR-side trait-arg
+    /// resolver. Returning `ResolvedTraitBound` directly (rather than
+    /// a forked HIR-local shape) reuses the carrier `dyn Trait`
+    /// coercions and trait-object lowering already commit to.
+    fn lower_machine_trait_bound(
+        &mut self,
+        tb: &hew_parser::ast::TraitBound,
+    ) -> hew_types::ResolvedTraitBound {
+        let args: Vec<ResolvedTy> = tb
+            .type_args
+            .as_ref()
+            .map(|args| args.iter().map(|a| self.lower_type(a)).collect())
+            .unwrap_or_default();
+        let assoc_bindings: Vec<(String, ResolvedTy)> = tb
+            .assoc_type_bindings
+            .iter()
+            .map(|b| (b.name.clone(), self.lower_type(&b.ty)))
+            .collect();
+        hew_types::ResolvedTraitBound {
+            trait_name: tb.name.clone(),
+            args,
+            assoc_bindings,
+        }
     }
 
     /// Lower a machine transition body expression to `HirExpr` so MIR /
@@ -6953,6 +7274,7 @@ impl LowerCtx {
                                 slot: dyn_call.slot,
                                 args: vec![index_expr],
                                 ret_ty: result_ty,
+                                signature: Box::new(dyn_call.signature),
                             },
                             span: span.clone(),
                         };
@@ -7698,12 +8020,25 @@ impl LowerCtx {
         let captures =
             self.materialize_closure_captures(&lowered_body, &outer_bindings, checker_facts, span);
 
+        // Conservative escape classification: when the checker did not emit
+        // a `closure_escape_facts` entry for this literal (which would be a
+        // boundary-fail-closed violation if it ever happened in steady
+        // state), treat the closure as `Escapes` per R242=B. We do not
+        // synthesize a `CheckerBoundaryViolation` here because the
+        // boundary-pin runs in `into_result()` and the conservative
+        // fall-through keeps the MIR path well-formed.
+        let escape_kind = self
+            .closure_escape_facts
+            .get(&checker_key)
+            .map_or(ClosureEscapeKind::Escapes, |fact| fact.kind);
+
         (
             HirExprKind::Closure {
                 params: hir_params,
                 ret_ty,
                 body: Box::new(lowered_body),
                 captures,
+                escape_kind,
             },
             closure_ty,
         )
@@ -7776,6 +8111,7 @@ impl LowerCtx {
                 ty,
                 mode: fact.mode,
                 is_send: fact.is_send,
+                is_sync: fact.is_sync,
             });
         }
 
@@ -8866,6 +9202,7 @@ impl LowerCtx {
                     slot: dyn_call.slot,
                     args: lowered_args,
                     ret_ty: ret_ty.clone(),
+                    signature: Box::new(dyn_call.signature),
                 },
                 ret_ty,
             );
@@ -14985,7 +15322,9 @@ fn check_vec_index_element_type(
     } else {
         matches!(
             elem_ty,
-            ResolvedTy::I32
+            ResolvedTy::Bool
+                | ResolvedTy::Char
+                | ResolvedTy::I32
                 | ResolvedTy::U32
                 | ResolvedTy::I64
                 | ResolvedTy::U64
@@ -15022,7 +15361,7 @@ fn check_vec_index_element_type(
                 format!(
                     "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
                      Supported element types for Vec scalar indexing are: \
-                     i32, u32, i64, u64, f64, and user-defined types \
+                     bool, char, i32, u32, i64, u64, f64, and user-defined types \
                      (records, enums, Duplex, etc.). \
                      Vec<String> requires a strdup-aware getter and will be \
                      added in a follow-on slice; as a workaround, use a \
@@ -15033,10 +15372,8 @@ fn check_vec_index_element_type(
                 format!(
                     "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
                      Supported element types for Vec scalar indexing are: \
-                     i32, u32, i64, u64, f64, and user-defined types \
-                     (records, enums, Duplex, etc.). \
-                     Vec<bool> and Vec<char> will be added in a future \
-                     width-normalisation slice."
+                     bool, char, i32, u32, i64, u64, f64, and user-defined types \
+                     (records, enums, Duplex, etc.)."
                 )
             },
         )
@@ -15832,6 +16169,7 @@ mod tests {
             ret_ty: ResolvedTy::Unit,
             body: Box::new(emit_expr),
             captures: vec![],
+            escape_kind: ClosureEscapeKind::Local,
         });
         let event_names = vec!["Beep".to_string()];
 

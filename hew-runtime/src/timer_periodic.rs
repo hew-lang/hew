@@ -433,7 +433,6 @@ mod tests {
         HewActor {
             sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
             id,
-            pid: id,
             state: std::ptr::null_mut(),
             state_size: 0,
             dispatch: None,

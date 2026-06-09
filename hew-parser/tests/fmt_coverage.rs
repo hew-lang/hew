@@ -1643,6 +1643,22 @@ fn fmt_wire_declarations_roundtrip() {
 }
 
 #[test]
+fn fmt_wire_attr_enum_roundtrip() {
+    // `#[wire] enum` is the canonical (attribute) form for wire-annotated
+    // enums; verify the formatter round-trips unit, tuple, and struct
+    // variant payloads while preserving the `#[wire]` attribute.
+    exact_roundtrip(
+        "#[wire]\nenum Command {\n    Start;\n    Push(i64);\n    Move { x: i32, y: i32 };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_wire_attr_enum_with_version_roundtrip() {
+    // `#[wire(version = N, min_version = M)]` on an enum.
+    exact_roundtrip("#[wire(version = 2, min_version = 1)]\nenum Packet {\n    V1;\n    V2;\n}\n");
+}
+
+#[test]
 fn fmt_machine_decl_roundtrip() {
     exact_roundtrip(
         "machine Light {\n    state Off;\n    state On;\n\n    event Toggle;\n\n    on Toggle: Off -> On;\n    on Toggle: On -> Off;\n}\n",

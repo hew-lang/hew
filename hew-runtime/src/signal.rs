@@ -221,13 +221,12 @@ mod shared {
             // worker thread can transition it, and we haven't freed it).
             unsafe {
                 let id = (*actor).id;
-                let pid = (*actor).pid;
                 let report = crate::crash::build_crash_report(
                     actor, signal,
                     0, // signal_code - not available from siginfo_t in current handler
                     fault_addr, msg_type, worker_id,
                 );
-                (id, pid, Some(report))
+                (id, id, Some(report))
             }
         };
 

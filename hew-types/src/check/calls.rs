@@ -218,6 +218,10 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "expected-type constructor checking shares variant, Option/Result, and Vec::new context"
+    )]
     pub(super) fn check_call_against_expected_constructor(
         &mut self,
         func: &Spanned<Expr>,
@@ -242,6 +246,52 @@ impl Checker {
         };
 
         let resolved_expected = self.subst.resolve(expected);
+
+        if func_name == "Vec::new" {
+            self.check_arity(args, 0, "`Vec::new`", span);
+            let Ty::Named {
+                name,
+                args: vec_args,
+                ..
+            } = &resolved_expected
+            else {
+                return None;
+            };
+            if name != "Vec" || vec_args.len() != 1 {
+                return None;
+            }
+            let elem_ty = self.subst.resolve(&vec_args[0]);
+            if matches!(elem_ty, Ty::Var(_)) {
+                self.record_type(span, &resolved_expected);
+                return Some(resolved_expected);
+            }
+            if matches!(elem_ty, Ty::Error) {
+                self.record_type(span, &Ty::Error);
+                return Some(Ty::Error);
+            }
+            if crate::stdlib::vec_element_runtime_suffix(&elem_ty, &self.type_defs)
+                == Some("layout")
+                && matches!(elem_ty, Ty::Named { .. })
+            {
+                let is_copy = self.registry.implements_marker(&elem_ty, MarkerTrait::Copy);
+                if !is_copy {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "element type `{}` is not `Copy`; layout-managed Vec construction \
+                             requires clone/drop semantics that are not implemented \
+                             (runtime symbol `hew_vec_new_with_layout`)",
+                            elem_ty.user_facing()
+                        ),
+                    );
+                    self.record_type(span, &Ty::Error);
+                    return Some(Ty::Error);
+                }
+            }
+            self.record_type(span, &resolved_expected);
+            return Some(resolved_expected);
+        }
 
         if let Some((type_name, expected_params, type_params)) =
             self.lookup_variant_constructor(&func_name)

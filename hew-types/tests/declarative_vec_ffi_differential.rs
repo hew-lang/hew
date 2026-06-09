@@ -2,13 +2,15 @@
 //!
 //! Pins the **declarative** `#[extern_symbol]` resolution path against
 //! the **legacy** magic table (`hew_types::stdlib::resolve_vec_method`)
-//! across the full 65-cell matrix from plan §6 Stage 3:
+//! across the full 91-cell matrix from plan §6 Stage 3 plus W3.003 bool/char
+//! scalar ABI additions:
 //!
 //! ```text
-//! 13 methods × 5 element types = 65 cells.
+//! 13 methods × 7 element types = 91 cells.
 //! Methods : push pop get set contains len is_empty clear clone
 //!           append extend remove join
-//! Element : Vec<i32> Vec<i64> Vec<f64> Vec<string> Vec<Vec<i32>>
+//! Element : Vec<bool> Vec<char> Vec<i32> Vec<i64> Vec<f64>
+//!           Vec<string> Vec<Vec<i32>>
 //! ```
 //!
 //! For each cell the test computes:
@@ -46,6 +48,8 @@ use std::collections::HashMap;
 /// element-type set `{i32, i64, f64, string, Vec<i32>}`.
 fn element_types() -> Vec<(&'static str, Ty)> {
     vec![
+        ("Vec<bool>", Ty::Bool),
+        ("Vec<char>", Ty::Char),
         ("Vec<i32>", Ty::I32),
         ("Vec<i64>", Ty::I64),
         ("Vec<f64>", Ty::F64),
@@ -84,6 +88,7 @@ fn vec_handle_type_defs() -> HashMap<String, TypeDef> {
             name: "Vec".to_string(),
             type_params: vec!["T".to_string()],
             fields: HashMap::new(),
+            field_order: vec![],
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
@@ -129,7 +134,7 @@ fn classify(method: &str, elem_label: &str) -> CellExpectation {
         // Stage 4 reconciliation target. The resolution-layer
         // differential (this matrix) is byte-equal.
         ("join", _) => CellExpectation::JoinResolutionGap,
-        ("contains", "Vec<Vec<i32>>") => CellExpectation::BothNone,
+        ("contains", "Vec<bool>" | "Vec<Vec<i32>>") => CellExpectation::BothNone,
         _ => CellExpectation::Match,
     }
 }
@@ -153,7 +158,7 @@ fn vec_ffi_differential_matrix_65_cells() {
     for method in METHODS {
         for (label, elem_ty) in &columns {
             cells_checked += 1;
-            let legacy = resolve_vec_method(method, elem_ty);
+            let legacy = resolve_vec_method(method, elem_ty, &type_defs);
             let attribute = expand_vec_method(method, elem_ty, &type_defs);
 
             let expectation = classify(method, label);
@@ -268,20 +273,20 @@ fn vec_ffi_differential_matrix_65_cells() {
     }
 
     assert_eq!(
-        cells_checked, 65,
-        "differential matrix must cover 13 × 5 = 65 cells exactly",
+        cells_checked, 91,
+        "differential matrix must cover 13 × 7 = 91 cells exactly",
     );
 
     assert!(
         failures.is_empty(),
-        "differential test: {} cell(s) failed out of 65:\n  {}",
+        "differential test: {} cell(s) failed out of 91:\n  {}",
         failures.len(),
         failures.join("\n  ")
     );
 
     assert_eq!(
         cells_matched + cells_aliased_len + cells_both_none + cells_join_gap,
-        65,
+        91,
         "every cell must be accounted for: matched={cells_matched}, \
          aliased_len={cells_aliased_len}, both_none={cells_both_none}, \
          join_gap={cells_join_gap}",
@@ -309,7 +314,7 @@ fn vec_join_resolution_layer_behavior_documented() {
     // Legacy magic table: `join` is not listed → always `None`.
     for (_, elem) in element_types() {
         assert_eq!(
-            resolve_vec_method("join", &elem),
+            resolve_vec_method("join", &elem, &type_defs),
             None,
             "legacy resolve_vec_method has no `join` entry by design — \
              the typecheck-side rejection is the authority",

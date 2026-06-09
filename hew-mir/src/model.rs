@@ -114,6 +114,79 @@ pub struct IrPipeline {
     /// `extern "rt"` symbols on the stable JIT ABI, or by a sibling stdlib
     /// staticlib that the driver adds to the native link line.
     pub extern_decls: Vec<ExternDecl>,
+    /// Deduplicated, deterministically-ordered registry of `dyn Trait`
+    /// vtable instances reached by `Instr::CoerceToDynTrait` anywhere
+    /// in the module.
+    ///
+    /// One entry per unique `(trait_name, concrete_type, vtable_entries)`
+    /// triple across every function body. Codegen (W3.031 Stage 2.5 /
+    /// Stage 6) emits one LLVM private constant per entry, named
+    /// `__hew_vtable__{trait}__{concrete}__{vtable_id}` (see
+    /// [`mangle_dyn_vtable_symbol`]), and references it from the second
+    /// word of every fat pointer produced by the matching
+    /// `CoerceToDynTrait` site.
+    ///
+    /// Ordering is a stable sort by `(trait_name, format!("{concrete_type}"))`
+    /// over first-seen order in `raw_mir` traversal, so the assigned
+    /// `vtable_id`s are reproducible across builds of the same module.
+    ///
+    /// Populated by `lower_hir_module` after every function body is
+    /// lowered, by walking each `RawMirFunction.blocks` for
+    /// `Instr::CoerceToDynTrait` instructions.
+    ///
+    /// LESSONS: `checker-authority` (P0) — the trait/concrete/method
+    /// resolution lives entirely in the checker side table; this registry
+    /// only collects what producers emit. `exhaustive-traversal-and-lowering`
+    /// (P0) — every `CoerceToDynTrait` site MUST resolve to exactly one
+    /// registry entry; codegen looking up a missing key must fail closed.
+    pub dyn_vtable_registry: Vec<DynVtableInstance>,
+    /// Checker-authored `HashMap` lowering facts (W3.003).
+    ///
+    /// Cloned from `TypeCheckOutput.hashmap_layout_facts` after type
+    /// checking; values are owned by the pipeline so codegen can
+    /// transition the per-site `state` `Pending` → `Finalized` as it
+    /// emits the matching layout-backed runtime call.
+    ///
+    /// Codegen looks up the fact for a given operation site by
+    /// `(key_record_name, key_size, key_align)` against the entry's
+    /// `abi` and `key_*` fields. Reaching an already-`Finalized` fact
+    /// on a fresh op site → `CodegenError::FailClosed` (double-consume
+    /// violation). Reaching pipeline finalization with any `Pending`
+    /// `LayoutKey` fact remaining → `CodegenError::FailClosed` via
+    /// `assert_lowering_facts_consistent` (orphan checker fact).
+    ///
+    /// LESSONS: `codegen-abi-authority` (P0) — codegen does NOT
+    /// re-derive layout eligibility from `ResolvedTy`; the fact
+    /// authored at the checker boundary is the only source of truth.
+    pub hashmap_lowering_facts: Vec<hew_types::HashMapLoweringFact>,
+    /// Checker-authored `HashSet` lowering facts (W3.003).
+    ///
+    /// Cloned from `TypeCheckOutput.hashset_layout_facts`. Same
+    /// lifecycle rules as `hashmap_lowering_facts`: `Pending` on
+    /// entry, codegen transitions to `Finalized` at each operation
+    /// site by `(elem_record_name, elem_size, elem_align)` lookup,
+    /// pipeline finalization fails closed on any remaining `Pending`
+    /// element layout fact.
+    pub hashset_lowering_facts: Vec<hew_types::HashSetLoweringFact>,
+}
+
+impl IrPipeline {
+    /// Clone the checker-authored layout-backed `HashMap`/`HashSet`
+    /// lowering facts from `tco` into this pipeline (W3.003).
+    ///
+    /// Driver glue (`hew_compile` / CLI) calls this between
+    /// `check_program` and codegen.  Tests that build a pipeline by
+    /// hand without a `TypeCheckOutput` leave the fact vectors empty
+    /// and bypass the lifecycle: codegen treats an empty fact set as
+    /// "no checker-authored layout call sites in this module" and
+    /// fails closed if it then encounters one.
+    ///
+    /// LESSONS: `codegen-abi-authority` (P0) — facts → ops, never
+    /// `ResolvedTy` shortcuts at the codegen seam.
+    pub fn attach_lowering_facts(&mut self, tco: &hew_types::TypeCheckOutput) {
+        self.hashmap_lowering_facts = tco.hashmap_layout_facts.values().cloned().collect();
+        self.hashset_lowering_facts = tco.hashset_layout_facts.values().cloned().collect();
+    }
 }
 
 /// One user-declared extern fn — see [`IrPipeline::extern_decls`].
@@ -123,6 +196,196 @@ pub struct ExternDecl {
     pub abi: String,
     pub param_tys: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
+}
+
+/// One `dyn Trait` vtable instance — see [`IrPipeline::dyn_vtable_registry`].
+///
+/// Carries every piece of information codegen needs to emit the LLVM
+/// private constant backing this vtable, with no need to round-trip
+/// through the type checker or re-canonicalise the originating
+/// coercion site:
+///
+/// * `vtable_id` — 0-based stable index; identifies this entry across
+///   the pipeline. The corresponding symbol name comes from
+///   [`mangle_dyn_vtable_symbol`] and follows
+///   `__hew_vtable__{trait}__{concrete}__{vtable_id}`.
+/// * `symbol` — precomputed mangle for direct codegen reference.
+///   Always equals
+///   `mangle_dyn_vtable_symbol(vtable_id, &trait_name, &concrete_type)`.
+/// * `trait_name`, `concrete_type`, `method_table`, `vtable_entries` —
+///   copies of the matching `Instr::CoerceToDynTrait` payload fields.
+///   `vtable_entries` carries the checker-substituted method signatures
+///   (W3.031 Stage 1.6) that codegen consumes verbatim to derive the
+///   erased indirect-call type for vtable slot N.
+///
+/// Two `Instr::CoerceToDynTrait` instances map to the *same* registry
+/// entry when their `(trait_name, concrete_type, vtable_entries)` triple
+/// is structurally equal — the discriminator for associated-type
+/// projections (e.g. `dyn Iterator<Item = i64>` vs
+/// `dyn Iterator<Item = String>`) lives in the substituted signatures
+/// on `vtable_entries`, which is why all three fields participate in
+/// the dedup key.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynVtableInstance {
+    /// 0-based stable index. Codegen reads `dyn_vtable_registry[vtable_id]`
+    /// and emits one LLVM private constant per entry.
+    pub vtable_id: u32,
+    /// LLVM symbol name for the private constant. Always equals
+    /// [`mangle_dyn_vtable_symbol`]`(vtable_id)`; precomputed so the
+    /// producer (MIR registry build) and the consumer (codegen) never
+    /// drift on the naming scheme.
+    pub symbol: String,
+    /// Trait name (or `Trait1+Trait2` for multi-bound coercions).
+    /// Mirrors the field on `Instr::CoerceToDynTrait`.
+    pub trait_name: String,
+    /// Resolved concrete `Self` type wrapped by this vtable.
+    pub concrete_type: ResolvedTy,
+    /// Ordered `(method_name, impl_fn_key)` pairs naming the impl-side
+    /// resolution for each trait method, in trait declaration order.
+    /// For multi-bound coercions, method names are prefixed by
+    /// `Trait::`.
+    pub method_table: Vec<(String, String)>,
+    /// Ordered vtable entries with checker-substituted method
+    /// signatures (W3.031 Stage 1.6 — Q-β / council blocking finding
+    /// #4). Codegen (W3.031 Stage 7) consumes each entry's `signature`
+    /// verbatim to derive the erased indirect-call type for the
+    /// corresponding vtable slot. Order matches `method_table` and the
+    /// `slot = 3 + index` convention from
+    /// [`hew_types::DynMethodCall::slot`].
+    pub vtable_entries: Vec<hew_types::DynVtableEntry>,
+}
+
+/// Sanitize a free-form name (trait names like `Trait1+Trait2`,
+/// concrete-type names like `Vec<i32, String>`) into the subset that
+/// is legal everywhere a vtable / thunk / drop symbol is referenced
+/// (LLVM IR identifiers, ELF/Mach-O symbol tables, debugger maps).
+///
+/// Replaces any character outside `[A-Za-z0-9_]` with `_`. The
+/// result is deterministic per `(input)` and stable across builds
+/// of the same module.
+///
+/// **Collision avoidance.** Two distinct trait or concrete names that
+/// sanitise to the same string (e.g. `A+B` and `A_B`) would alias at
+/// the symbol layer. The `vtable_id` suffix on every symbol family
+/// (see [`mangle_dyn_vtable_symbol`], [`mangle_dyn_thunk_symbol`],
+/// [`mangle_dyn_drop_in_place_symbol`]) is what makes the final name
+/// unique — the trait/concrete substrings are diagnostic
+/// disambiguators that keep `nm` / debugger output legible, not the
+/// primary uniqueness mechanism.
+#[must_use]
+pub fn sanitize_for_symbol(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Stable LLVM symbol name for the vtable static identified by
+/// `vtable_id`. Producer (`build_dyn_vtable_registry`) and consumer
+/// (codegen, later stages) both call this helper so neither side
+/// hard-codes the format. Drift here would surface as a codegen
+/// fail-closed "vtable missing" at every coercion site.
+///
+/// **Format:** `__hew_vtable__{trait}__{concrete}__{vtable_id}`,
+/// where `{trait}` and `{concrete}` are
+/// [`sanitize_for_symbol`]-cleansed forms of the source names. The
+/// `vtable_id` suffix guarantees uniqueness across the dedup-key
+/// dimensions the registry discriminates on (e.g. distinct assoc
+/// projections that share `(trait_name, concrete_type)`); the
+/// trait/concrete substrings keep `nm`-output and debugger maps
+/// legible.
+///
+/// **Linkage.** The symbol is emitted with `Linkage::Private`:
+/// internal to the compilation unit, no ABI promise. The
+/// trait/concrete substrings keep `nm`-output and debugger maps
+/// legible while the `vtable_id` tail guarantees uniqueness across
+/// dedup-key dimensions.
+#[must_use]
+pub fn mangle_dyn_vtable_symbol(
+    vtable_id: u32,
+    trait_name: &str,
+    concrete_type: &ResolvedTy,
+) -> String {
+    let t = sanitize_for_symbol(trait_name);
+    let c = sanitize_for_symbol(&format!("{concrete_type}"));
+    format!("__hew_vtable__{t}__{c}__{vtable_id}")
+}
+
+/// Stable LLVM symbol name for the erased method thunk in vtable slot
+/// `1 + method_index` of vtable `vtable_id`.
+///
+/// Producer (codegen `emit_dyn_trait_thunks`) and consumer (vtable
+/// static emission) both call this helper so neither side
+/// hard-codes the format; drift would surface as a fail-closed
+/// "thunk missing" at the vtable static initializer.
+///
+/// Each thunk takes the erased fat-pointer data word (`ptr`) as its
+/// first argument, followed by the receiver-skipped parameter list
+/// recorded on [`DynVtableInstance::vtable_entries`]`[method_index]
+/// .signature`. The thunk forwards the erased self pointer (a
+/// `*mut Concrete` in LLVM's opaque-pointer world) directly to the
+/// concrete impl method named by
+/// [`DynVtableInstance::method_table`]`[method_index].1` and
+/// propagates the return value verbatim.
+///
+/// **Format:** `__hew_dyn_thunk__{trait}__{concrete}__{vtable_id}_{method_index}`,
+/// where `{trait}` / `{concrete}` are
+/// [`sanitize_for_symbol`]-cleansed. Uniqueness is carried by the
+/// `(vtable_id, method_index)` numeric tail — the trait/concrete
+/// substrings are diagnostic. Linkage is `Private`, mirroring
+/// [`mangle_dyn_vtable_symbol`].
+#[must_use]
+pub fn mangle_dyn_thunk_symbol(
+    vtable_id: u32,
+    method_index: u32,
+    trait_name: &str,
+    concrete_type: &ResolvedTy,
+) -> String {
+    let t = sanitize_for_symbol(trait_name);
+    let c = sanitize_for_symbol(&format!("{concrete_type}"));
+    format!("__hew_dyn_thunk__{t}__{c}__{vtable_id}_{method_index}")
+}
+
+/// Stable LLVM symbol name for the per-vtable `drop_in_place`
+/// function that releases a heap-boxed `dyn Trait` value.
+///
+/// One function per `vtable_id` (not per method): the vtable's
+/// concrete type — recorded on [`DynVtableInstance::concrete_type`]
+/// — determines the drop ritual, not the trait or any individual
+/// method. Codegen synthesises a function with signature
+/// `fn(ptr) -> void` whose body runs the concrete value's drop
+/// glue at the supplied erased pointer (today only trivially-
+/// droppable concretes are supported; a non-`BitCopy` classification
+/// fails closed pending a future registry-side drop-fn key) and
+/// then releases the heap box via `hew_dyn_box_free(ptr, size,
+/// align)`.
+///
+/// Producer (`emit_dyn_trait_drop_in_place_fns` in codegen) and
+/// consumer (vtable static initialiser) both call this helper so
+/// neither side hard-codes the format; drift would surface as a
+/// fail-closed "`drop_in_place` missing" at the vtable static
+/// initializer.
+///
+/// **Format:** `__hew_dyn_drop_in_place__{trait}__{concrete}__{vtable_id}`,
+/// where `{trait}` / `{concrete}` are
+/// [`sanitize_for_symbol`]-cleansed. The `vtable_id` suffix
+/// carries uniqueness; the trait/concrete substrings are
+/// diagnostic. Linkage is `Private`, mirroring
+/// [`mangle_dyn_vtable_symbol`].
+#[must_use]
+pub fn mangle_dyn_drop_in_place_symbol(
+    vtable_id: u32,
+    trait_name: &str,
+    concrete_type: &ResolvedTy,
+) -> String {
+    let t = sanitize_for_symbol(trait_name);
+    let c = sanitize_for_symbol(&format!("{concrete_type}"));
+    format!("__hew_dyn_drop_in_place__{t}__{c}__{vtable_id}")
 }
 
 /// A regex literal compiled at module-init time.
@@ -1866,7 +2129,7 @@ pub enum Instr {
         value: u32,
         dest: Place,
     },
-    /// `dest = ()` — a unit value with no data content.
+    /// `dest =` — a unit value with no data content.
     ///
     /// Unit is zero-sized. The MIR producer emits this variant to give the
     /// dest place a definition point in the instruction stream; codegen may
@@ -2024,6 +2287,37 @@ pub enum Instr {
         /// Argument Places in source order (the implicit receiver is
         /// `fat_pointer.data` and is NOT included here).
         args: Vec<Place>,
+        /// Caller-side method signature with trait type parameters and
+        /// associated-type bindings already substituted by the checker
+        /// (e.g. `Self::Item -> int`). **Receiver parameter is already
+        /// filtered out** — `Checker::lookup_trait_method` returns the
+        /// receiver-skipped form, and that is what flows from
+        /// [`hew_types::DynMethodCall::signature`] →
+        /// [`hew_hir::HirExprKind::CallDynMethod::signature`] → here.
+        /// [`DynVtableEntry::signature`] is constructed from the same
+        /// `lookup_trait_method` call (`hew-types/src/check/coerce.rs`
+        /// `build_vtable_entries`) so the shape is symmetric — neither
+        /// includes Self at `params[0]`.
+        ///
+        /// W3.031 Stage 1.6 (Q-β / council blocking finding #4): the
+        /// typed signature is self-contained on this instruction.
+        /// Codegen (Stage 7) consumes it **verbatim** to derive the
+        /// erased indirect-call type:
+        /// 1. prepend a single `ptr` argument (the fat-pointer data
+        ///    word, forwarded to the erased thunk in slot N);
+        /// 2. lower `params` and `return_type` normally (do NOT drop
+        ///    `params[0]` — it is the first real argument, e.g. the
+        ///    `int` index for `dyn Index::at(int)`, NOT a Self
+        ///    receiver).
+        ///
+        /// Codegen MUST NOT re-derive the signature from the impl fn,
+        /// re-walk vtable entries, or look it up from a side table —
+        /// that path would skip the checker's associated-type
+        /// projections (LESSONS: `checker-authority` P0).
+        ///
+        /// Boxed to keep the `Instr` variant under the
+        /// `clippy::large_enum_variant` threshold.
+        signature: Box<hew_types::FnSig>,
     },
     /// Typed placeholder for a machine `emit(Event { ... })` expression
     /// inside a transition body.
@@ -2537,11 +2831,61 @@ pub enum DropKind {
     LambdaActorRelease,
     /// `dyn Trait` fat-pointer drop: dispatch through vtable slot 0
     /// (`drop_in_place`) on the pointer's `data` word, then release the
-    /// fat-pointer storage. Codegen (TO-4) emits the GEP-to-slot-0 +
-    /// load + call sequence — no runtime helper, matching the inline
-    /// dispatch shape of `Instr::CallTraitMethod` (plan §D-6). The
-    /// vtable static itself has program lifetime and is never freed.
-    TraitObject,
+    /// fat-pointer storage according to `storage`. Codegen (TO-4 / Stage
+    /// 6 in plan W3.031) emits the GEP-to-slot-0 + load + call sequence,
+    /// then either does nothing (`FrameOwned` — the concrete value lives
+    /// in a caller-allocated alloca; `drop_in_place` is sufficient) or
+    /// calls `hew_dyn_box_free` on the data pointer (`HeapBoxed` — the
+    /// concrete value lives in a `hew_dyn_box_alloc`-allocated heap
+    /// buffer that must be released after `drop_in_place` returns).
+    ///
+    /// The vtable static itself has program lifetime and is never freed.
+    ///
+    /// The `storage` discriminator is populated by the MIR producer at
+    /// each `dyn Trait` binding's introducing statement (W3.031 Stage 1):
+    /// — coercion sites (`HirExprKind::CoerceToDynTrait`) and direct
+    /// parameter bindings flow through `FrameOwned`; call results that
+    /// return `dyn Trait` (the heap-box ABI from W3.031 Stage 0) flow
+    /// through `HeapBoxed`. Reaching codegen with a `TraitObject` drop
+    /// whose storage was never set is a structural fail-closed event —
+    /// the MIR builder emits a `TraitObjectStorageUndetermined` diagnostic
+    /// instead, so codegen never sees a malformed drop kind.
+    TraitObject { storage: TraitObjectStorage },
+}
+
+/// Storage discriminator for `DropKind::TraitObject`. Distinguishes the
+/// two well-defined ownership shapes a `dyn Trait` fat-pointer's data
+/// word can take in the post-W3.031 ABI:
+///
+/// - `FrameOwned`: the concrete value lives in a caller-allocated
+///   alloca; the fat pointer's `data` word is an interior pointer into
+///   that frame slot. Drop fires `drop_in_place` via vtable slot 0 and
+///   stops there — the alloca is reclaimed when the stack frame unwinds.
+///   This is the shape every `CoerceToDynTrait`-produced fat pointer
+///   takes, and the shape every `dyn Trait` parameter takes (the caller
+///   owns the alloca it pointed `data` at).
+///
+/// - `HeapBoxed`: the concrete value lives in a `hew_dyn_box_alloc`-
+///   allocated heap buffer; the fat pointer's `data` word is the owning
+///   pointer to that buffer. Drop fires `drop_in_place` via vtable slot
+///   0, then calls `hew_dyn_box_free(data, vtable)` to release the
+///   buffer. This is the shape every call result returning `dyn Trait`
+///   takes (the heap-box ABI is the only ownership transfer path across
+///   a function return boundary — frame-pointer escape would alias a
+///   reclaimed alloca).
+///
+/// Populated by the MIR builder at each `dyn Trait` binding's
+/// introducing statement (W3.031 Stage 1) and threaded into the
+/// `DropKind::TraitObject` variant in `build_lifo_drops`. Codegen
+/// (W3.031 Stage 6) reads the discriminator to select the post-
+/// `drop_in_place` release ritual.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TraitObjectStorage {
+    /// Caller-allocated alloca; no post-`drop_in_place` release.
+    FrameOwned,
+    /// `hew_dyn_box_alloc`-allocated heap buffer; release with
+    /// `hew_dyn_box_free` after `drop_in_place`.
+    HeapBoxed,
 }
 
 /// Direction selector for `DropKind::DuplexHalfClose`. Mirrors the
@@ -2763,6 +3107,49 @@ pub enum MirDiagnosticKind {
         method_symbol: String,
         mangled: String,
         site: SiteId,
+    },
+    /// W3.031 Stage 1: a `let`-binding whose resolved type is
+    /// `ResolvedTy::TraitObject` reached MIR lowering but the producer
+    /// could not classify its `TraitObjectStorage` (`FrameOwned` /
+    /// `HeapBoxed`) from the RHS expression's shape. The MIR builder
+    /// emits this diagnostic instead of fabricating a default storage
+    /// — drop elaboration would otherwise pick the wrong release
+    /// ritual (`FrameOwned` skips `hew_dyn_box_free`; `HeapBoxed` runs it).
+    /// Fail-closed per `boundary-fail-closed` / `cleanup-all-exits`.
+    ///
+    /// `reason` names the unrecognised RHS expression shape (e.g.
+    /// `"HirExprKind::Match"`) so a future stage adding the
+    /// classification can locate the gap. The binding is not added
+    /// to `owned_locals`, so no drop is elaborated for it; the
+    /// diagnostic propagates upward and the pipeline aborts at the
+    /// MIR boundary.
+    TraitObjectStorageUndetermined {
+        binding: BindingId,
+        name: String,
+        site: SiteId,
+        reason: String,
+    },
+    /// W3.031 Stage 1.6: an `HirExprKind::CallDynMethod` reached MIR
+    /// carrying a `signature` whose substitution is incomplete — i.e.
+    /// the caller-side `FnSig` still contains an unresolved
+    /// `Ty::Var`, a `Ty::Error`, or an unresolved `Ty::AssocType`
+    /// (the trait-object bound was missing an assoc binding for one
+    /// of the projected associated types). Codegen (Stage 7) consumes
+    /// `signature` verbatim to derive the erased indirect-call type;
+    /// admitting an unresolved entry would defer the failure to LLVM
+    /// type construction where the cause is lost.
+    ///
+    /// The MIR producer fails closed with this diagnostic rather than
+    /// fabricating a default signature, so the checker / HIR boundary
+    /// that produced the partial substitution is named in `reason`.
+    /// (LESSONS: `checker-output-boundary` P0, `boundary-fail-closed`
+    /// P0, copilot-instructions §3 Type Inference Boundary — no
+    /// `Ty::Var` survives unresolved into codegen.)
+    CallTraitMethodSignatureUnresolved {
+        trait_name: String,
+        method_name: String,
+        site: SiteId,
+        reason: String,
     },
 }
 

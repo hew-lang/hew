@@ -90,8 +90,16 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { .. }
         | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { .. }
         | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { .. }
-        | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { .. } => "E_MIR",
+        | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { .. }
+        | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => "E_MIR",
     }
+}
+
+pub(crate) fn render_codegen_front_diagnostic(error: &hew_codegen_rs::CodegenError) {
+    emit_plain_diagnostic_line(&format!(
+        "E_CODEGEN_FRONT: codegen-front validation failed: {error}"
+    ));
 }
 
 // ANSI colour helpers
@@ -421,6 +429,12 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { .. } => {
             "StaticDispatchMonomorphisationMissing"
         }
+        hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. } => {
+            "TraitObjectStorageUndetermined"
+        }
+        hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => {
+            "CallTraitMethodSignatureUnresolved"
+        }
     }
 }
 
@@ -465,7 +479,9 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { site, .. }
         | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { site, .. }
         | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { site, .. }
-        | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { site, .. } => {
+        | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { site, .. }
+        | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { site, .. }
+        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { site, .. } => {
             Some(*site)
         }
         hew_mir::MirDiagnosticKind::UnknownType { .. }
@@ -480,6 +496,10 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive match over all MIR diagnostic variants"
+)]
 fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
     let message = match &diagnostic.kind {
         hew_mir::MirDiagnosticKind::UseAfterConsume { name, .. } => {
@@ -575,6 +595,20 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         } => format!(
             "static dispatch target `{method_symbol}` was not monomorphized as `{mangled}`"
         ),
+        hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { name, reason, .. } => {
+            format!(
+                "cannot determine TraitObjectStorage for dyn Trait binding `{name}` ({reason})"
+            )
+        }
+        hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved {
+            trait_name,
+            method_name,
+            reason,
+            ..
+        } => format!(
+            "dyn-trait method dispatch `{trait_name}::{method_name}` reached MIR with an \
+             unresolved caller-side signature ({reason})"
+        ),
     };
     format!("{}: {message}", mir_diagnostic_prefix(&diagnostic.kind))
 }
@@ -636,7 +670,9 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
-        | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. } => {}
+        | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
+        | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => {}
     }
     if !diagnostic.note.is_empty() {
         notes.push(diagnostic.note.clone());

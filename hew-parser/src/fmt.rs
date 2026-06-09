@@ -479,7 +479,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_wire_type_decl(&mut self, decl: &TypeDecl, wire: &WireMetadata) {
-        // Emit struct-level naming attributes
+        // Emit type-level naming attributes
         self.format_naming_attr("json", wire.json_case);
         self.format_naming_attr("yaml", wire.yaml_case);
         self.write_indent();
@@ -502,45 +502,62 @@ impl<'a> Formatter<'a> {
         }
         self.write_indent();
         self.write_visibility(decl.visibility);
-        self.write("struct ");
+        match decl.kind {
+            TypeDeclKind::Struct => self.write("struct "),
+            TypeDeclKind::Enum => self.write("enum "),
+        }
         self.write(&decl.name);
         self.write(" {\n");
         self.indent += 1;
-        for (i, item) in decl.body.iter().enumerate() {
-            if let TypeBodyItem::Field { name, ty, .. } = item {
-                self.write_indent();
-                self.write(name);
-                self.write(": ");
-                self.format_type_expr(&ty.0);
-                // Emit wire field metadata
-                if let Some(meta) = wire.field_meta.get(i) {
-                    self.write(" @");
-                    self.write(&meta.field_number.to_string());
-                    self.format_wire_field_modifiers(
-                        meta.is_optional,
-                        meta.is_deprecated,
-                        meta.is_repeated,
-                        meta.since,
-                        meta.json_name.as_deref(),
-                        meta.yaml_name.as_deref(),
-                    );
+        match decl.kind {
+            TypeDeclKind::Struct => {
+                for (i, item) in decl.body.iter().enumerate() {
+                    if let TypeBodyItem::Field { name, ty, .. } = item {
+                        self.write_indent();
+                        self.write(name);
+                        self.write(": ");
+                        self.format_type_expr(&ty.0);
+                        // Emit wire field metadata
+                        if let Some(meta) = wire.field_meta.get(i) {
+                            self.write(" @");
+                            self.write(&meta.field_number.to_string());
+                            self.format_wire_field_modifiers(
+                                meta.is_optional,
+                                meta.is_deprecated,
+                                meta.is_repeated,
+                                meta.since,
+                                meta.json_name.as_deref(),
+                                meta.yaml_name.as_deref(),
+                            );
+                        }
+                        self.write(",");
+                        self.newline();
+                    }
                 }
-                self.write(",");
-                self.newline();
-            }
-        }
-        // Emit reserved field numbers
-        if !wire.reserved_numbers.is_empty() {
-            self.write_indent();
-            self.write("reserved ");
-            for (i, n) in wire.reserved_numbers.iter().enumerate() {
-                if i > 0 {
-                    self.write(", ");
+                // Emit reserved field numbers
+                if !wire.reserved_numbers.is_empty() {
+                    self.write_indent();
+                    self.write("reserved ");
+                    for (i, n) in wire.reserved_numbers.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write("@");
+                        self.write(&n.to_string());
+                    }
+                    self.write(";\n");
                 }
-                self.write("@");
-                self.write(&n.to_string());
             }
-            self.write(";\n");
+            TypeDeclKind::Enum => {
+                // Variant bodies are tagged by variant index, not by per-field
+                // `@N`; reserved tags do not apply.  Delegate to the regular
+                // variant formatter to handle unit / tuple / struct payloads.
+                for item in &decl.body {
+                    if let TypeBodyItem::Variant(v) = item {
+                        self.format_variant(v, true);
+                    }
+                }
+            }
         }
         self.indent -= 1;
         self.writeln("}");
@@ -1013,6 +1030,7 @@ impl<'a> Formatter<'a> {
             }
             self.write(">");
         }
+        self.format_opt_where_clause(decl.where_clause.as_ref());
         self.write(" {\n");
         self.indent += 1;
 

@@ -137,7 +137,6 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
     Box::new(HewActor {
         sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
         id: 1,
-        pid: 1,
         state: std::ptr::null_mut(),
         state_size: 0,
         dispatch: None,

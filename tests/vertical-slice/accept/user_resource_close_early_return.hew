@@ -1,0 +1,37 @@
+// W3.030 V2 — User resource closes on early-return exit path.
+//
+// `run(true)` takes the early-return branch (`return 42`). The implicit
+// drop contract must dispatch `Conn::close` before the function exits
+// on the early-return path, not only the tail-return path.
+//
+// Expected stdout:
+//   closing
+//   1
+//   42
+// (`closing` then `1` from the close of `c` on the early-return path;
+// then `42` from main printing the run() result. If close were skipped
+// on the early-return path the first two lines would be absent.)
+#[resource]
+type Conn {
+    fd: i64
+}
+impl Conn {
+    fn close(c: Conn) {
+        println("closing");
+        print(c.fd);
+        println("");
+    }
+}
+
+fn run(flag: bool) -> i64 {
+    let c: Conn = Conn { fd: 1 };
+    if flag { return 42; }
+    99
+}
+
+fn main() -> i64 {
+    let r = run(true);
+    print(r);
+    println("");
+    0
+}

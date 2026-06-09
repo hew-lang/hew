@@ -539,6 +539,7 @@ pub fn builtin_type_def(kind: BuiltinNamedType) -> &'static TypeDef {
                         variants: HashMap::new(),
                         methods: builtin_method_sigs(info.kind).clone(),
                         doc_comment: None,
+                        field_order: vec![],
                         is_indirect: false,
                     },
                 )

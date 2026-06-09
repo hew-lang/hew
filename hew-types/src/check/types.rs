@@ -281,6 +281,13 @@ pub struct TypeCheckOutput {
     /// HIR/MIR lowering. Downstream stages must consume this ledger rather than
     /// rediscovering capture legality from expression shape.
     pub closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    /// Checker-authoritative per-closure escape classification.
+    ///
+    /// Sibling to `closure_capture_facts` (one entry per closure literal,
+    /// not per captured binding). Missing entry for a known closure span
+    /// is treated as the conservative default (`Escapes`) by downstream
+    /// consumers — the absence is itself fail-closed metadata.
+    pub closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
     /// Per-actor protocol descriptor — the stable name → `msg_id` mapping
     /// for every `receive fn`. Keyed by actor type name.
     ///
@@ -336,15 +343,63 @@ pub struct TypeCheckOutput {
     /// for f-string `Display` dispatch instead of hard-coding `"Display"` /
     /// `"fmt"` symbols. See [`crate::LangItemRegistry`].
     pub lang_items: crate::LangItemRegistry,
+    /// Checker-authored layout-key `HashMap` lowering facts keyed by call-site span.
+    ///
+    /// Populated by `finalize_hashmap_admission` for `HashMap<CopyRecord, V>` sites
+    /// after hash-eligibility validation.  Facts begin in the `Pending` state;
+    /// codegen (C-3) transitions each to `Finalized` after emitting the key-layout
+    /// global.  Absent entry for a Named-key site means the checker rejected the key.
+    pub hashmap_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashMapLoweringFact>,
+    /// Checker-authored layout-element `HashSet` lowering facts keyed by call-site span.
+    ///
+    /// Populated by `finalize_lowering_facts` for `HashSet<CopyRecord>` sites
+    /// after hash-eligibility validation.  Facts begin in the `Pending` state;
+    /// codegen (C-3) transitions each to `Finalized` after emitting the elem-layout
+    /// global.  Absent entry for a Named-element site means the checker rejected the element.
+    pub hashset_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashSetLoweringFact>,
 }
 
-/// By-value capture mode selected for one closure environment field.
+/// Capture mode selected by the checker for one closure environment field.
+///
+/// `Copy` and `Move` are the historical v0.5 variants — `Copy` is an implicit
+/// by-value capture of a `Copy`-typed binding, and `Move` is the explicit
+/// `move |...|` form that consumes the source binding. `Borrow` and
+/// `BorrowMut` are inferred from body usage when the source binding is
+/// neither `Copy`-typed nor consumed by `move`: read-only references infer
+/// `Borrow`, mutating projections infer `BorrowMut`. There is no surface
+/// syntax for `Borrow`/`BorrowMut`; they are checker-substrate output only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClosureCaptureMode {
     /// The source value implements `Copy`, so an implicit by-value copy is legal.
     Copy,
     /// The closure was written `move |...|`; the source binding is consumed.
     Move,
+    /// The body only reads the captured binding (read-only deref / field
+    /// project); the checker classifies this capture as a shared reference
+    /// for downstream lowering.
+    Borrow,
+    /// The body mutates the captured binding (assignment, mutating method
+    /// call, or assignment through a projection); the checker classifies
+    /// this capture as an exclusive reference for downstream lowering.
+    BorrowMut,
+}
+
+/// Provenance of a [`ClosureCaptureMode`] decision.
+///
+/// Records which inference rule produced the mode so that downstream
+/// diagnostics (suspend-crossing, escape advisory, future auto-lock
+/// wrappers) can explain the choice without re-running inference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptureModeOrigin {
+    /// `Move`: the closure literal carried the `move` keyword.
+    ExplicitMove,
+    /// `Copy`: the captured binding's resolved type implements `Copy`.
+    ImplicitCopy,
+    /// `Borrow`: the body uses the binding only in read-only positions.
+    InferredBorrow,
+    /// `BorrowMut`: the body mutates the binding (assignment or mutating
+    /// method call).
+    InferredBorrowMut,
 }
 
 /// Checker-owned capture record for one binding referenced by a closure body.
@@ -358,12 +413,81 @@ pub struct ClosureCaptureFact {
     pub ty: Ty,
     /// Capture mode selected by the checker.
     pub mode: ClosureCaptureMode,
+    /// Inference-rule provenance for `mode`.
+    pub mode_origin: CaptureModeOrigin,
     /// Whether the captured type satisfies the actor/task boundary marker.
     pub is_send: bool,
+    /// Whether the captured type satisfies the `Sync` marker. Populated by
+    /// the same `TraitRegistry::is_sync` query that the rest of the checker
+    /// uses; consumed by the non-Sync-mut-capture-crosses-suspend
+    /// diagnostic and by future auto-lock injection.
+    pub is_sync: bool,
     /// Source span of this use inside the closure body.
     pub use_span: Span,
     /// Definition span of the captured binding when user-authored.
     pub def_span: Option<Span>,
+}
+
+/// Escape classification for one closure literal.
+///
+/// Conservative by default: a closure is `Escapes` unless the classifier
+/// can positively prove `Local` or `Forked`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosureEscapeKind {
+    /// All use-sites are direct calls within the closure's introducing
+    /// lexical scope; the environment never outlives that scope.
+    Local,
+    /// The closure (or its introducing binding) is returned, stored,
+    /// sent through a channel, passed to a higher-order callee whose
+    /// escape attribute is not provable, or used in a shape the
+    /// classifier cannot prove safe. Conservative default.
+    Escapes,
+    /// The closure is the body of (or referenced by) a `fork { ... }`
+    /// child task inside an enclosing `scope { ... }` block.
+    Forked,
+}
+
+/// Which inference rule fired to produce a [`ClosureEscapeKind`].
+///
+/// `Local` and `Forked` carry the positive rule that classified them;
+/// `Escapes` carries the conservative-default rule that rejected
+/// `Local`/`Forked`. The variant is consumed by the advisory diagnostic
+/// (`ClosureEscapeAdvisory`) so the user can see *why* `Local` was not
+/// admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosureEscapeRule {
+    /// Every use of the closure-bound name is a direct call `f(args)`.
+    DirectCallOnly,
+    /// Closure literal sits directly inside a `fork { ... }` body, OR
+    /// the closure-bound name is invoked inside such a body.
+    InsideForkBlock,
+    /// Closure (or its bound name) appears in a return statement / tail
+    /// position of the enclosing function body.
+    Returned,
+    /// Closure (or its bound name) is passed as an argument to a call,
+    /// method-call, struct-init, or other higher-order context whose
+    /// escape attribute is not provable.
+    PassedToHigherOrder,
+    /// Closure value is the tail expression of a block, propagating out.
+    EscapesViaBlockValue,
+    /// Closure (or its bound name) is stored in a `let`/`var` whose
+    /// binding outlives the closure's introducing scope (e.g. assigned
+    /// to a field, sent through a channel, used by a sibling closure
+    /// classified `Escapes`).
+    StoredOrSent,
+    /// Closure has no statically resolvable introducing `let f = ...`
+    /// binding (anonymous literal in a non-fork position).
+    NoStaticBinding,
+}
+
+/// Per-closure escape classification, keyed in
+/// [`TypeCheckOutput::closure_escape_facts`] by the closure literal's span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosureEscapeFact {
+    /// Conservative escape classification (see [`ClosureEscapeKind`]).
+    pub kind: ClosureEscapeKind,
+    /// Which classification rule produced `kind`.
+    pub rule: ClosureEscapeRule,
 }
 
 /// Checker-resolved metadata for a `T → dyn Trait` coercion call site.
@@ -475,6 +599,16 @@ pub struct DynMethodCall {
     /// Vtable slot index: `3 + 0-based method declaration order` within
     /// the originating trait.
     pub slot: u32,
+    /// Caller-side method signature after substituting trait type
+    /// parameters and associated-type bindings from the receiver's
+    /// `Ty::TraitObject` bound (e.g. `Self::Item -> int`). The receiver
+    /// parameter has been filtered out — this is the calling-side shape
+    /// MIR / codegen consume to derive the erased indirect-call type
+    /// (see W3.031 Stage 7: drop `params[0]` (Self), prepend a single
+    /// `ptr` data argument). Mirrors the shape stored on
+    /// [`DynVtableEntry::signature`] for the corresponding `(trait,
+    /// method)` slot at the coercion site.
+    pub signature: FnSig,
 }
 
 /// Compile-time slot descriptor for a supervisor child access.
@@ -664,10 +798,13 @@ impl Default for TypeCheckOutput {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
+            closure_escape_facts: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: crate::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         }
     }
 }
@@ -1225,6 +1362,19 @@ pub struct TypeDef {
     pub name: String,
     pub type_params: Vec<String>,
     pub fields: HashMap<String, Ty>,
+    /// Field names in **declaration order** (source order as written by the user).
+    ///
+    /// This is the canonical ordering used by codegen (MIR `RecordLayout.field_tys`,
+    /// HIR `RecordLayout.fields`) and by hash-thunk emitters (C-3+).  Layout
+    /// computations that must agree with the binary ABI — such as
+    /// `compute_copy_record_layout` — walk this Vec rather than sorting
+    /// `fields.keys()` alphabetically.
+    ///
+    /// Populated in `registration.rs` for `record`, `type`/struct, `actor`, and
+    /// `wire` declarations.  Left empty (`vec![]`) for synthetic / builtin `TypeDef`s
+    /// that have no user-visible field ordering (pure-method types, enum companions,
+    /// machine types, etc.) and for `TypeDef`s whose field set is already empty.
+    pub field_order: Vec<String>,
     pub variants: HashMap<String, VariantDef>,
     pub methods: HashMap<String, FnSig>,
     pub doc_comment: Option<String>,
@@ -1426,6 +1576,16 @@ pub struct Checker {
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same set).
     pub(super) deferred_hashset_admission: HashMap<SpanKey, DeferredHashSetAdmission>,
+    /// Layout-key `HashMap` lowering facts accumulated by `finalize_hashmap_admission`.
+    ///
+    /// Keyed by the span of the admission site (type annotation or method call).
+    /// Drained into `TypeCheckOutput::hashmap_layout_facts` at the output boundary.
+    pub(super) hashmap_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashMapLoweringFact>,
+    /// Layout-element `HashSet` lowering facts accumulated by `finalize_lowering_facts`.
+    ///
+    /// Keyed by the span of the call site that triggered the `HashSet` method.
+    /// Drained into `TypeCheckOutput::hashset_layout_facts` at the output boundary.
+    pub(super) hashset_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashSetLoweringFact>,
     /// `Vec` element admission checks deferred until after inference
     /// completes. Keyed by span to suppress duplicates from repeated traversals
     /// of the same site.
@@ -1504,6 +1664,18 @@ pub struct Checker {
     /// `check_struct_init` (struct-state brace constructor path) where no
     /// `FnSig` pipeline carries the bounds.
     pub(super) machine_type_param_bounds: HashMap<String, HashMap<String, Vec<String>>>,
+    /// Dedup set for `enforce_machine_instantiation_bounds`. Keyed by
+    /// `(machine_name, resolved_type_args, span_key)`: the same
+    /// annotation can be walked multiple times during checking — for
+    /// example once for `FnSig` registration, once for body
+    /// resolution, and the recursive walker in `resolve_type_expr`
+    /// may also re-visit shared nested positions across overlapping
+    /// resolution paths. Without dedup, every duplicate visit emits
+    /// an identical `BoundsNotSatisfied` diagnostic. The key
+    /// combines machine name, resolved args, and span: two textually
+    /// identical instantiations at different source positions are
+    /// distinct violations and must each report once.
+    pub(super) reported_machine_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
     pub(super) current_return_type: Option<Ty>,
     pub(super) in_generator: bool,
     pub(super) loop_depth: u32,
@@ -1552,6 +1724,9 @@ pub struct Checker {
     pub(super) dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
     /// Binding-accurate closure capture facts keyed by closure literal span.
     pub(super) closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    /// Per-closure escape classification keyed by closure literal span.
+    /// Moved into `TypeCheckOutput::closure_escape_facts` at `check_program` exit.
+    pub(super) closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
     /// Maps actor name to its `init()` parameter list: `(param_name, outer_type, first_type_arg)`.
     ///
     /// `outer_type` is the outermost named type (e.g. `"ActorRef"` for `ActorRef<WorkerPool>`).
@@ -1765,6 +1940,8 @@ impl Checker {
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
             deferred_hashset_admission: HashMap::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
             deferred_vec_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1794,6 +1971,7 @@ impl Checker {
             generic_ctx: Vec::new(),
             current_type_param_bounds: Vec::new(),
             machine_type_param_bounds: HashMap::new(),
+            reported_machine_bound_violations: HashSet::new(),
             current_return_type: None,
             in_generator: false,
             loop_depth: 0,
@@ -1810,6 +1988,7 @@ impl Checker {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
+            closure_escape_facts: HashMap::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),

@@ -79,7 +79,6 @@ fn trace_actor_stop_lifecycle(
 pub struct HewActor {
     pub sched_link_next: AtomicPtr<HewActor>,
     pub id: u64,
-    pub pid: u64,
     pub state: *mut c_void,
     pub state_size: usize,
     pub dispatch: Option<HewDispatchFn>,
@@ -134,7 +133,6 @@ const _: () = {
     // Every field must sit at the same offset in both structs.
     assert!(offset_of!(W, sched_link_next) == offset_of!(N, sched_link_next));
     assert!(offset_of!(W, id) == offset_of!(N, id));
-    assert!(offset_of!(W, pid) == offset_of!(N, pid));
     assert!(offset_of!(W, state) == offset_of!(N, state));
     assert!(offset_of!(W, state_size) == offset_of!(N, state_size));
     assert!(offset_of!(W, dispatch) == offset_of!(N, dispatch));
@@ -1555,7 +1553,6 @@ mod tests {
         HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 1,
-            pid: 0,
             state: ptr::null_mut(),
             state_size: 0,
             dispatch: None,
@@ -4008,7 +4005,6 @@ mod tests {
         let actor = Box::into_raw(Box::new(HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 99,
-            pid: 99,
             state: ptr::null_mut(),
             state_size: 0,
             dispatch: Some(capture_arena_ptr),

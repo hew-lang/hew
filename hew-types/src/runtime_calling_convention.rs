@@ -60,26 +60,30 @@ use std::collections::HashMap;
 /// **not** named after stdlib symbol suffixes; see the module-level
 /// comment for the substrate/contract framing.
 ///
-/// `W3.001` scope (Stage 2 substrate; Stage 3 wires the consumer):
-/// the mapping is total over [`Ty`] but the layout-descriptor path
-/// has **no runtime entry points yet** — element types that resolve
-/// to [`RuntimeCallingConvention::LayoutDescriptor`] fail closed at
-/// Stage 3 with a precise diagnostic. W3.003 wires runtime support.
+/// `W3.003` Stage 2 scope: `bool` has a dedicated one-byte runtime
+/// convention; `char` rides the existing 32-bit scalar convention.
+/// Layout-descriptor entry points remain future work for records/tuples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeCallingConvention {
     /// Pass-by-value in a single 32-bit general-purpose register.
     ///
     /// Covers (at the language level): `i8`, `i16`, `i32`, `u8`,
-    /// `u16`, `u32`. `bool` and `char` are representation-compatible
-    /// but route to [`Self::LayoutDescriptor`] in W3.001 because the
-    /// runtime has no `_bool` / `_char` Vec entry points yet (see
-    /// W3.003).
+    /// `u16`, `u32`, and `char`. `char` reuses the `i32` Vec runtime
+    /// path; no `_char` symbol suffix exists.
     ///
     /// W3.001 stdlib coverage: `i32` only (via the `i32` canonical
     /// token). Other 32-bit primitives are valid at the
     /// calling-convention layer but have no Vec monomorphization in
     /// the W3.001 stdlib slice.
     Scalar32,
+
+    /// Pass-by-value as Hew's canonical one-byte bool representation.
+    ///
+    /// Covers: [`Ty::Bool`]. Runtime Vec storage is one byte per element
+    /// (`true = 1`, `false = 0`); LLVM codegen converts between Hew's
+    /// stored `i8` bool locals and Rust/C-ABI `i1` bool extern calls at
+    /// the runtime boundary.
+    Bool,
 
     /// Pass-by-value in a single 64-bit general-purpose register.
     ///
@@ -127,8 +131,8 @@ pub enum RuntimeCallingConvention {
     /// Pass-by-pointer with an out-of-band `*const HewTypeLayout`
     /// descriptor (Hew's generic-runtime-ABI pattern).
     ///
-    /// Covers (future-state, A249): records, tuples, enums, `bool`,
-    /// `char`, fixed arrays, slices, function/closure types,
+    /// Covers (future-state, A249): records, tuples, enums,
+    /// fixed arrays, slices, function/closure types,
     /// trait objects, the never type, the unit type, type-parameter
     /// nominals, deferred associated-type projections, and the
     /// error-recovery sentinel.
@@ -158,6 +162,7 @@ impl RuntimeCallingConvention {
     pub const fn canonical_token(self) -> &'static str {
         match self {
             Self::Scalar32 => "i32",
+            Self::Bool => "bool",
             Self::Scalar64 => "i64",
             Self::Float64 => "f64",
             Self::StringSlice => "str",
@@ -200,8 +205,11 @@ impl RuntimeCallingConvention {
     #[must_use]
     pub fn for_ty(ty: &Ty) -> Self {
         match ty {
-            // Scalar32: 8/16/32-bit GPR-class integers.
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::U8 | Ty::U16 | Ty::U32 => Self::Scalar32,
+            // Scalar32: 8/16/32-bit GPR-class integers plus char.
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::Char => Self::Scalar32,
+
+            // Bool: dedicated one-byte runtime convention.
+            Ty::Bool => Self::Bool,
 
             // Scalar64: 64-bit GPR-class integers.
             Ty::I64 | Ty::U64 => Self::Scalar64,
@@ -222,8 +230,6 @@ impl RuntimeCallingConvention {
             // `for_ty_with_layout` to upgrade proven handles to
             // `Pointer`).
             Ty::Named { .. }
-            | Ty::Bool
-            | Ty::Char
             | Ty::Bytes
             | Ty::Duration
             | Ty::Unit
@@ -303,6 +309,7 @@ mod tests {
     #[test]
     fn canonical_tokens_are_the_documented_stable_surface() {
         assert_eq!(RuntimeCallingConvention::Scalar32.canonical_token(), "i32");
+        assert_eq!(RuntimeCallingConvention::Bool.canonical_token(), "bool");
         assert_eq!(RuntimeCallingConvention::Scalar64.canonical_token(), "i64");
         assert_eq!(RuntimeCallingConvention::Float64.canonical_token(), "f64");
         assert_eq!(
@@ -323,6 +330,7 @@ mod tests {
         // exactly one canonical string per shape.
         let tokens = [
             RuntimeCallingConvention::Scalar32.canonical_token(),
+            RuntimeCallingConvention::Bool.canonical_token(),
             RuntimeCallingConvention::Scalar64.canonical_token(),
             RuntimeCallingConvention::Float64.canonical_token(),
             RuntimeCallingConvention::StringSlice.canonical_token(),
@@ -342,13 +350,21 @@ mod tests {
 
     #[test]
     fn scalar32_covers_8_16_32_bit_integers() {
-        for ty in [Ty::I8, Ty::I16, Ty::I32, Ty::U8, Ty::U16, Ty::U32] {
+        for ty in [Ty::I8, Ty::I16, Ty::I32, Ty::U8, Ty::U16, Ty::U32, Ty::Char] {
             assert_eq!(
                 RuntimeCallingConvention::for_ty(&ty),
                 RuntimeCallingConvention::Scalar32,
                 "expected Scalar32 for {ty:?}",
             );
         }
+    }
+
+    #[test]
+    fn bool_routes_to_dedicated_bool_convention() {
+        assert_eq!(
+            RuntimeCallingConvention::for_ty(&Ty::Bool),
+            RuntimeCallingConvention::Bool,
+        );
     }
 
     #[test]
@@ -423,6 +439,7 @@ mod tests {
                 name: name.to_string(),
                 type_params: vec![],
                 fields: std::collections::HashMap::new(),
+                field_order: vec![],
                 variants: std::collections::HashMap::new(),
                 methods: std::collections::HashMap::new(),
                 doc_comment: None,
@@ -499,6 +516,7 @@ mod tests {
             Ty::F64,
             Ty::String,
             Ty::Bool,
+            Ty::Char,
             Ty::Pointer {
                 is_mutable: false,
                 pointee: Box::new(Ty::I32),
@@ -533,10 +551,8 @@ mod tests {
     }
 
     #[test]
-    fn layout_descriptor_covers_bool_char_and_value_shapes() {
+    fn layout_descriptor_covers_value_shapes() {
         for ty in [
-            Ty::Bool,
-            Ty::Char,
             Ty::Bytes,
             Ty::Duration,
             Ty::Unit,

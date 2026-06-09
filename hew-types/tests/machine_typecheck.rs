@@ -29,6 +29,7 @@ fn make_machine(
         visibility: Visibility::Pub,
         name: name.to_string(),
         type_params: vec![],
+        where_clause: None,
         has_default: false,
         states,
         events,
@@ -607,6 +608,7 @@ fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
                 bounds: vec![],
             })
             .collect(),
+        where_clause: None,
         has_default: false,
         states: vec![unit_state("Idle"), unit_state("Active")],
         events: vec![unit_event("Start"), unit_event("Stop")],
@@ -1207,6 +1209,7 @@ fn imported_generic_machine_type_params_survive_registration() {
             name: "T".to_string(),
             bounds: vec![],
         }],
+        where_clause: None,
         has_default: false,
         states: vec![unit_state("Idle"), unit_state("Active")],
         events: vec![unit_event("Start"), unit_event("Stop")],
@@ -1454,9 +1457,10 @@ fn main() {
         .iter()
         .filter(|e| e.kind == TypeErrorKind::BoundsNotSatisfied)
         .collect();
-    assert!(
-        !bound_errors.is_empty(),
-        "use-site violating bound must produce BoundsNotSatisfied, got: {:?}",
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "use-site violating bound must produce exactly one BoundsNotSatisfied (dedup gate); got: {:?}",
         output.errors
     );
     let msg = &bound_errors[0].message;
@@ -1857,6 +1861,584 @@ fn machine_entry_exit_errors_and_exhaustiveness_both_reported() {
             .iter()
             .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
         "exhaustiveness gap must still be reported alongside entry-block error, got: {:?}",
+        output.errors
+    );
+}
+
+// ── where-clause bound acceptance ────────────────────────────────────
+
+/// `machine M<T> where T: Resource` — checker accepts the where-clause
+/// form, populates the `machine_type_param_bounds` side table from it,
+/// and downstream bound-enforcement at struct-init treats the where
+/// bound identically to an inline `<T: Resource>`.
+#[test]
+fn machine_where_clause_bound_resolves_and_enforces() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type File { path: i64; }
+
+impl Resource for File {
+    fn close(self) {}
+}
+
+machine Holder<T> where T: Resource {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn main() {
+    let f = File { path: 7 };
+    let m = Active { handle: f };
+}
+";
+    let output = typecheck_isolated(source);
+    assert!(
+        output.errors.is_empty(),
+        "where-clause bound satisfied at use site must type-check, got: {:?}",
+        output.errors
+    );
+}
+
+/// `machine M<T> where T: Resource` with use site supplying a type
+/// that does NOT implement `Resource` must produce `BoundsNotSatisfied`.
+/// Confirms the where-clause form reaches the same enforcement path
+/// as inline bounds.
+#[test]
+fn machine_where_clause_bound_violation_errors() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type Plain { x: i64; }
+
+machine Holder<T> where T: Resource {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn main() {
+    let p = Plain { x: 1 };
+    let m = Active { handle: p };
+}
+";
+    let output = typecheck_isolated(source);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "where-clause bound violated at use site must produce exactly one BoundsNotSatisfied (dedup gate); got: {:?}",
+        output.errors
+    );
+}
+
+/// `machine M<T> where Foo: Trait` where `Foo` is not declared in the
+/// machine's type-param list is a closed user error — fail with
+/// `UndefinedType` at the where-clause site rather than silently
+/// ignoring the predicate.
+#[test]
+fn machine_where_clause_undeclared_param_errors() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+machine Bogus<T> where U: Resource {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let output = typecheck_isolated(source);
+    let undef: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::UndefinedType)
+        .collect();
+    assert!(
+        undef.iter().any(|e| e.message.contains('U')
+            && e.message.contains("not a declared type parameter")),
+        "where-clause on undeclared param must fail closed with descriptive UndefinedType, got: {:?}",
+        output.errors
+    );
+}
+
+/// `machine M<T: Resource> where T: Resource` — duplicate inline + where
+/// bound on the same trait collapses to a single bound list. No
+/// diagnostic emitted; the side table has exactly one entry for
+/// `Resource`.
+#[test]
+fn machine_duplicate_inline_and_where_bound_dedups() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type File { path: i64; }
+
+impl Resource for File {
+    fn close(self) {}
+}
+
+machine Twin<T: Resource> where T: Resource {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn main() {
+    let f = File { path: 7 };
+    let m = Active { handle: f };
+}
+";
+    let output = typecheck_isolated(source);
+    assert!(
+        output.errors.is_empty(),
+        "dedup'd inline+where bound must type-check, got: {:?}",
+        output.errors
+    );
+    // Internal bound-table dedup is not directly observable at the
+    // checker layer (the table is a private side structure). What is
+    // observable, and what this test pins, is the surface contract:
+    // the program type-checks and bound enforcement at the use site
+    // recognises the satisfied bound exactly once — no spurious
+    // double diagnostic from the duplicated inline + where predicate.
+}
+
+// ── machine-instantiation bound enforcement: type-annotation path ────
+//
+// Annotations like `var x: Holder<Plain>` resolve through
+// `resolve_type_expr`. The canonical helper fires at this seam so
+// the annotation site itself rejects unsatisfied bounds — bound
+// enforcement is no longer deferred until brace-init at the value
+// position.
+
+/// `var x: Holder<File>` with `File: Resource` accepts cleanly.
+#[test]
+fn machine_type_annotation_bound_satisfied_typechecks() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type File { path: i64; }
+
+impl Resource for File {
+    fn close(self) {}
+}
+
+machine Holder<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn use_holder(h: Holder<File>) -> Holder<File> {
+    h
+}
+";
+    let output = typecheck_isolated(source);
+    assert!(
+        output.errors.is_empty(),
+        "machine annotation `Holder<File>` with File: Resource must type-check, got: {:?}",
+        output.errors
+    );
+}
+
+/// `var x: Holder<Plain>` with `Plain` not implementing `Resource`
+/// emits `BoundsNotSatisfied` at the annotation site even when no
+/// brace-init occurs in the same function — the canonical helper
+/// fires at type-annotation resolution.
+#[test]
+fn machine_type_annotation_bound_violation_errors_at_annotation_site() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type Plain { x: i64; }
+
+machine Holder<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn use_holder(h: Holder<Plain>) {
+}
+";
+    let output = typecheck_isolated(source);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    // Exact-count assertion: one annotation site (`h: Holder<Plain>`)
+    // → exactly one BoundsNotSatisfied diagnostic. Asserting a
+    // precise count rather than "at least one" demonstrates the
+    // helper dedup gate is on (no duplicate emission from
+    // signature-registration + body-resolution sweeps over the same
+    // span).
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "annotation `Holder<Plain>` must emit exactly 1 BoundsNotSatisfied at the parameter annotation site, got: {:?}",
+        output.errors
+    );
+}
+
+/// Annotation in `let` binding form (`let h: Holder<Plain> = …`) also
+/// routes through `resolve_type_expr` — the bound violation surfaces
+/// regardless of whether the annotation occupies a parameter or local
+/// binding slot.
+#[test]
+fn machine_let_annotation_bound_violation_errors() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type Plain { x: i64; }
+
+machine Holder<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn main() {
+    let p = Plain { x: 1 };
+    let h: Holder<Plain> = Active { handle: p };
+}
+";
+    let output = typecheck_isolated(source);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "let annotation `Holder<Plain>` must emit exactly 1 BoundsNotSatisfied at the binding site, got: {:?}",
+        output.errors
+    );
+}
+
+/// A non-machine generic name (e.g. a generic record type) routed
+/// through the same `resolve_type_expr` annotation seam must NOT
+/// emit a spurious `BoundsNotSatisfied` diagnostic — the canonical
+/// helper's first action is to look up the name in the machine
+/// bounds table, which returns `None` for non-machine carriers and
+/// short-circuits cleanly.
+#[test]
+fn non_machine_annotation_does_not_trigger_machine_bound_check() {
+    let source = r"
+type Box<T> { value: T; }
+
+fn use_box(b: Box<i64>) -> Box<i64> {
+    b
+}
+";
+    let output = typecheck_isolated(source);
+    assert!(
+        output.errors.is_empty(),
+        "non-machine generic annotation must not trigger machine bound enforcement, got: {:?}",
+        output.errors
+    );
+}
+
+// ── machine-instantiation bound enforcement: ctor coercion-arm path ──
+//
+// Constructor forms where the expected type pins the machine
+// instantiation (`var m: Holder<Plain> = Holder::Active { … }`) route
+// through the enum-variant coercion arm in `check_against`. The
+// canonical helper fires alongside `record_concrete_record_init_type_args`
+// at that site so the bound is enforced from the expected-type pin,
+// not just from inferred-T at the synthesis path.
+
+/// Negative: coercion-arm ctor with expected machine type whose
+/// substitution violates the declared bound must emit
+/// `BoundsNotSatisfied`. Pins Path-3 wiring.
+#[test]
+fn machine_ctor_coercion_arm_bound_violation_errors() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type Plain { x: i64; }
+
+machine Holder<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn build() -> Holder<Plain> {
+    let p = Plain { x: 1 };
+    Active { handle: p }
+}
+";
+    let output = typecheck_isolated(source);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "ctor coercion arm with expected `Holder<Plain>` must emit exactly one BoundsNotSatisfied (dedup gate); got: {:?}",
+        output.errors
+    );
+}
+
+// =====================================================================
+// Nested-position bound enforcement (F2 fix).
+//
+// `resolve_type_expr` must enforce machine-trait bounds on every
+// nested `Ty::Named` inside an annotation, not only the outermost
+// type. The recursive walker visits Tuple, Array/Slice/Pointer/Task,
+// Function/Closure params+ret+captures, TraitObject trait-args +
+// assoc-bindings, and Named's own `args`. Dedup of identical
+// `(machine_name, type_args)` pairs within a single annotation is
+// covered by the multi-occurrence test below.
+// =====================================================================
+
+/// `Option<Holder<Plain>>` — generic-wrapper nesting. The
+/// outermost `Ty::Named` is `Option`, which is not a machine, so
+/// the original single-level check at `resolve_type_expr` missed
+/// the inner `Holder<Plain>`. The recursive walker must descend
+/// into `Option`'s type-arg and enforce on the inner
+/// instantiation.
+#[test]
+fn machine_nested_in_generic_wrapper_enforces_bound() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type Plain { x: i64; }
+
+machine Holder<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn takes(opt: Option<Holder<Plain>>) -> i64 { 0 }
+";
+    let output = typecheck_isolated(source);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "nested `Holder<Plain>` inside `Option<…>` must emit exactly 1 BoundsNotSatisfied, got: {:?}",
+        output.errors
+    );
+}
+
+/// `(Holder<Plain>, i64)` — tuple nesting. The outer resolved
+/// type is a `Ty::Tuple`, which the original single-level check
+/// never inspected. The walker must descend into each tuple
+/// element.
+#[test]
+fn machine_nested_in_tuple_enforces_bound() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type Plain { x: i64; }
+
+machine Holder<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn takes(pair: (Holder<Plain>, i64)) -> i64 { 0 }
+";
+    let output = typecheck_isolated(source);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "nested `Holder<Plain>` inside tuple must emit exactly 1 BoundsNotSatisfied, got: {:?}",
+        output.errors
+    );
+}
+
+/// `fn(Holder<Plain>) -> i64` — function-type nesting. The outer
+/// resolved type is `Ty::Function`, whose params + ret were not
+/// reachable from the original outer `Ty::Named` check.
+#[test]
+fn machine_nested_in_function_type_enforces_bound() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type Plain { x: i64; }
+
+machine Holder<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn takes_fn(f: fn(Holder<Plain>) -> i64) -> i64 { 0 }
+";
+    let output = typecheck_isolated(source);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "nested `Holder<Plain>` inside `fn(…) -> …` must emit exactly 1 BoundsNotSatisfied, got: {:?}",
+        output.errors
+    );
+}
+
+/// Multi-resolution surface — the same `Holder<Plain>` appears
+/// twice in a single tuple annotation. Both occurrences resolve
+/// to identical `(machine_name="Holder", args=[Plain])` and would
+/// otherwise emit two duplicate diagnostics keyed on the same
+/// outer annotation span. The walker's per-annotation
+/// `(name, args)` dedup must collapse them to exactly one
+/// diagnostic.
+#[test]
+fn machine_multi_resolution_in_one_annotation_dedups() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type Plain { x: i64; }
+
+machine Holder<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 { 0 }
+";
+    let output = typecheck_isolated(source);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "two occurrences of `Holder<Plain>` within one annotation must dedup to exactly 1 BoundsNotSatisfied, got: {:?}",
         output.errors
     );
 }

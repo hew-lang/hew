@@ -1,0 +1,14 @@
+// W3.030 V11 — `#[resource]` whose `close` body is declared inline via
+// `TypeBodyItem::Method` (rather than in a sibling inherent-impl
+// block) is rejected at HIR with `ResourceCloseSourceUnsupported`.
+// The inline form is not lowered in v0.5 and would silently fail
+// link-time drop dispatch — fail-closed at the HIR boundary instead.
+#[resource]
+type Sock {
+    fd: i64
+    fn close(consuming self) { }
+}
+
+fn main() -> i64 {
+    0
+}

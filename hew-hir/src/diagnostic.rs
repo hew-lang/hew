@@ -118,6 +118,33 @@ pub enum HirDiagnosticKind {
     ResourceGenericUnsupported {
         name: String,
     },
+    /// `#[resource]` type declares its `close` method inline inside the
+    /// type body (`TypeBodyItem::Method`). In v0.5 the supported surface
+    /// for user-resource `close` lowering is an **inherent impl block**
+    /// (`impl T { fn close(self) { ... } }`). The inline form is a silent
+    /// trap today — the method body is not lowered to HIR/MIR, the drop
+    /// elaborator still emits `drop_fn: Some("T::close")`, and codegen
+    /// would resolve to a missing symbol at link time. Fail-closing here
+    /// at the HIR boundary forces users onto the supported surface; the
+    /// inline form may be admitted in a future surface extension.
+    /// (W3.030 Q-α-B ratification.)
+    ResourceCloseSourceUnsupported {
+        /// Type name carrying the inline `close` method.
+        name: String,
+    },
+    /// `#[resource]` type's `close` method declares a return type other
+    /// than unit. In v0.5 the implicit-drop contract dispatches `close`
+    /// on every scope-exit path (return, early-return, branch, trap,
+    /// cancel, actor exit) — propagating an error or value from that
+    /// dispatch has no defined semantics on a non-return exit. Users
+    /// who need fallible cleanup compose it through `defer` instead.
+    /// (W3.030 Q-β-C ratification.)
+    ResourceCloseMustReturnUnit {
+        /// Type name whose `close` returns non-unit.
+        name: String,
+        /// User-facing rendering of the offending return type.
+        return_ty: String,
+    },
     /// `await` appeared outside a `scope{}` body or `select` arm. In v0.5,
     /// `await` is a statement-only form inside `scope{}` bodies. Future
     /// versions additionally permit it inside `select` arm source expressions.
@@ -616,8 +643,8 @@ pub enum HirDiagnosticKind {
     /// ABI does not (yet) implement a `hew_vec_get_T` for. Fail-closed per
     /// slepp A222 / A228: surface the unsupported case at compile time
     /// instead of letting MIR emit `NotYetImplemented` and codegen drop the
-    /// expression. Supported scalar element types are `i32`, `u32`, `i64`,
-    /// `u64`, `f64`, and any user-defined `Named` type (records, enums,
+    /// expression. Supported scalar element types are `bool`, `char`, `i32`,
+    /// `u32`, `i64`, `u64`, `f64`, and any user-defined `Named` type (records, enums,
     /// `Duplex`, `LambdaActorHandle`, etc., dispatched via
     /// `hew_vec_get_ptr`). `Vec<String>` is intentionally excluded from
     /// scalar indexing because there is no `hew_vec_get_str` strdup-aware

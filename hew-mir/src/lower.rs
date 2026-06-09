@@ -24,7 +24,7 @@ use crate::model::{
     DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath,
     FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck,
     MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm,
-    SelectArmKind, Strategy, Terminator, ThirFunction, TrapKind,
+    SelectArmKind, Strategy, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 
 type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
@@ -317,6 +317,75 @@ fn register_builtin_monomorphic_enum_layouts(
 
 fn method_name_from_id(method_id: &str) -> &str {
     method_id.rsplit("::").next().unwrap_or(method_id)
+}
+
+/// W3.031 Stage 1.6: walk a checker-substituted `FnSig` looking for
+/// types that indicate substitution did not finish (and would render
+/// the caller-side erased call type unbuildable in codegen). Returns
+/// `Some(reason)` naming the first offender in declaration order
+/// (params left-to-right, then return type), or `None` if the
+/// signature is fully resolved.
+///
+/// "Unresolved" here means:
+/// - `Ty::Var` — an inference variable that did not unify;
+/// - `Ty::Error` — a checker poison value (a prior diagnostic fired);
+/// - `Ty::AssocType` — an unprojected `Self::Foo` projection (the
+///   trait-object bound was missing the corresponding assoc binding,
+///   so [`Checker::apply_trait_object_bound_substitutions`] could not
+///   reach the projection — copilot-instructions §3 / LESSONS
+///   `checker-output-boundary`).
+fn unresolved_fn_sig_reason(sig: &hew_types::FnSig) -> Option<String> {
+    fn first_unresolved(ty: &hew_types::Ty) -> Option<String> {
+        use hew_types::Ty;
+        match ty {
+            Ty::Var(v) => Some(format!("Ty::Var({})", v.0)),
+            Ty::Error => Some("Ty::Error".to_string()),
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Some(format!(
+                "unresolved Ty::AssocType `{}::{assoc_name}` on base `{}`",
+                trait_name,
+                base.user_facing()
+            )),
+            Ty::Named { args, .. } => args.iter().find_map(first_unresolved),
+            Ty::Tuple(items) => items.iter().find_map(first_unresolved),
+            Ty::Array(inner, _) | Ty::Slice(inner) | Ty::Task(inner) => first_unresolved(inner),
+            Ty::Pointer { pointee, .. } => first_unresolved(pointee),
+            Ty::Function { params, ret, .. } => params
+                .iter()
+                .find_map(first_unresolved)
+                .or_else(|| first_unresolved(ret)),
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => params
+                .iter()
+                .chain(captures.iter())
+                .find_map(first_unresolved)
+                .or_else(|| first_unresolved(ret)),
+            Ty::TraitObject { traits } => traits.iter().find_map(|bound| {
+                bound.args.iter().find_map(first_unresolved).or_else(|| {
+                    bound
+                        .assoc_bindings
+                        .iter()
+                        .find_map(|(_, t)| first_unresolved(t))
+                })
+            }),
+            _ => None,
+        }
+    }
+    for (idx, p) in sig.params.iter().enumerate() {
+        if let Some(reason) = first_unresolved(p) {
+            return Some(format!("param #{idx}: {reason}"));
+        }
+    }
+    if let Some(reason) = first_unresolved(&sig.return_type) {
+        return Some(format!("return type: {reason}"));
+    }
+    None
 }
 
 fn is_self_expr(expr: &HirExpr) -> bool {
@@ -1222,6 +1291,17 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         })
         .collect();
 
+    // W3.031 Stage 2 — build the deduplicated `dyn Trait` vtable
+    // registry from every `Instr::CoerceToDynTrait` reached by any
+    // lowered function. This collapses the program's
+    // `(trait_name, concrete_type, vtable_entries)` triples into
+    // stable `DynVtableInstance` entries with reproducible
+    // `vtable_id`s; later codegen stages (drop-in-place synthesis,
+    // erased thunk emission, vtable static emission) consume this
+    // registry without re-walking MIR. Empty when the module has no
+    // `dyn Trait` usage.
+    let dyn_vtable_registry = crate::dyn_vtable_registry::build_dyn_vtable_registry(&raw_mir);
+
     IrPipeline {
         thir,
         raw_mir,
@@ -1236,6 +1316,16 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         regex_literals,
         gen_state_layouts,
         extern_decls,
+        dyn_vtable_registry,
+        // C-3b: checker-authored layout facts are routed through a
+        // separate seam (`attach_lowering_facts`) so `lower_hir_module`
+        // — which only consumes HIR — remains a pure structural
+        // lowering.  Driver glue (frontend / `hew_compile`) calls
+        // `pipeline.attach_lowering_facts(&tco)` between type-check
+        // and codegen.  Tests that build pipelines by hand without a
+        // TypeCheckOutput leave these empty.
+        hashmap_lowering_facts: Vec::new(),
+        hashset_lowering_facts: Vec::new(),
     }
 }
 
@@ -3925,6 +4015,24 @@ struct Builder {
     /// moved/consumed bindings are rejected by the move-checker at the
     /// materialization site.
     pending_defers: HashMap<ScopeId, Vec<HirExpr>>,
+    /// W3.031 Stage 1: per-binding `TraitObjectStorage` ledger for
+    /// `dyn Trait` locals. Populated at the binding's introducing
+    /// `HirStmtKind::Let` statement when the resolved type is
+    /// `ResolvedTy::TraitObject` — `FrameOwned` for coercion-site
+    /// RHS (`HirExprKind::CoerceToDynTrait`) and direct binding
+    /// rebinds, `HeapBoxed` for call-result RHS (`HirExprKind::Call`,
+    /// `CallTraitMethodStatic`, `CallDynMethod`) returning `dyn Trait`
+    /// — and consumed by `build_lifo_drops` to construct the
+    /// `DropKind::TraitObject { storage }` discriminator.
+    ///
+    /// Keys are the `BindingId` of the owning `let`-binding (the same
+    /// key used by `binding_locals` / `owned_locals`). A binding that
+    /// the classifier could not resolve to one of the two storage
+    /// shapes emits a `MirDiagnosticKind::TraitObjectStorageUndetermined`
+    /// diagnostic and is not added to `owned_locals` — drop elaboration
+    /// then skips the binding, and the pipeline aborts at the MIR
+    /// boundary instead of fabricating a default storage.
+    dyn_trait_storage: HashMap<BindingId, TraitObjectStorage>,
     /// Stack of active scope IDs in nesting order (outermost at index 0,
     /// innermost at the end). Pushed when entering a `Block` expression or
     /// `function_body`; popped on exit. Read by `emit_defers_for_return` to
@@ -3945,9 +4053,12 @@ fn runtime_symbol_for_call_expr(
     let HirExprKind::Call { callee, args } = &expr.kind else {
         return None;
     };
-    let HirExprKind::BindingRef { name, .. } = &callee.kind else {
+    let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
         return None;
     };
+    if matches!(resolved, ResolvedRef::Item(_)) {
+        return None;
+    }
     if crate::runtime_symbols::is_known_runtime_symbol(name) {
         return Some((name.clone(), args, expr.site));
     }
@@ -4268,7 +4379,98 @@ impl Builder {
                     site: value.site,
                     ty: binding_ty.clone(),
                 });
-                if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy
+                // W3.031 Stage 1: discriminate the dyn-trait owned-binding
+                // case structurally on `value.ty` rather than on `binding.ty`.
+                // HIR's `lower_type` does not yet lower `TypeExpr::TraitObject`
+                // for `let`-annotation positions (the annotation collapses to
+                // `ResolvedTy::Unit` upstream), but every dyn binding's
+                // initialiser carries the post-coerce
+                // `ResolvedTy::TraitObject` on `value.ty`, so probing the
+                // value's type is the reliable structural fact. The pre-
+                // existing non-dyn arm continues to gate on the binding
+                // type's value class as before.
+                let value_ty = self.subst_ty(&value.ty);
+                let dyn_owned =
+                    matches!(value_ty, ResolvedTy::TraitObject { .. }) && value_place.is_some();
+                if dyn_owned {
+                    // dyn-trait owned local: classify storage from the RHS
+                    // expression shape and push into `owned_locals` with the
+                    // actual `TraitObject` type so `build_lifo_drops` reaches
+                    // the dyn-trait arm. Fail-closed if classification
+                    // returns `Err`.
+                    match classify_dyn_trait_storage(value, &self.dyn_trait_storage) {
+                        Ok(storage) => {
+                            self.dyn_trait_storage.insert(binding.id, storage);
+                            self.owned_locals.push((
+                                binding.id,
+                                binding.name.clone(),
+                                value_ty.clone(),
+                            ));
+                            // Transitive `dyn -> dyn` rebind suppression.
+                            //
+                            // For `let d2 = d1;` (and `let d3 = { d2 };`
+                            // through transparent block-tail wrappers),
+                            // the RHS transfers ownership of an existing
+                            // `dyn Trait` binding's fat pointer into the
+                            // new binding. The vtable slot-0 ritual must
+                            // run exactly once, at the *final* binding's
+                            // scope exit; every intermediate rebind's
+                            // `owned_locals` entry would otherwise emit
+                            // an additional `DropKind::TraitObject` and
+                            // double-drop the underlying storage.
+                            //
+                            // `classify_dyn_trait_storage` already
+                            // requires the source binding to carry a
+                            // `dyn_trait_storage` entry to reach this
+                            // arm, so finding `Some(src_id)` below is
+                            // exactly the rebind case. `mark_binding_moved`
+                            // is idempotent (a no-op on bindings that
+                            // were already consumed earlier in the
+                            // expression's lowering, e.g. by the
+                            // `BindingRef`/`IntentKind::Consume` path),
+                            // so calling it unconditionally here is safe.
+                            //
+                            // Fail-closed posture: if the RHS shape is
+                            // not one the helper recognises as a
+                            // dyn-rebind source, `dyn_rebind_source_binding`
+                            // returns `None` and no suppression runs —
+                            // but `classify_dyn_trait_storage` would
+                            // have rejected the same shape with `Err`
+                            // and routed through the
+                            // `TraitObjectStorageUndetermined` diagnostic
+                            // above, so the only way to reach this arm
+                            // with `None` is via the
+                            // `CoerceToDynTrait` / `Call*` producer
+                            // shapes where there is no upstream binding
+                            // to suppress (the producer-site suppression
+                            // for those is handled at the
+                            // `lower_value` arms for those expressions).
+                            if let Some(src_id) = dyn_rebind_source_binding(value) {
+                                self.mark_binding_moved(src_id);
+                            }
+                        }
+                        Err(reason) => {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::TraitObjectStorageUndetermined {
+                                    binding: binding.id,
+                                    name: binding.name.clone(),
+                                    site: value.site,
+                                    reason,
+                                },
+                                note: format!(
+                                    "MIR drop elaboration cannot determine the \
+                                     TraitObjectStorage (FrameOwned / HeapBoxed) for \
+                                     binding `{}` from the RHS expression shape; the \
+                                     binding is not added to owned_locals so no drop \
+                                     is elaborated, and the MIR pipeline aborts at \
+                                     the boundary instead of fabricating a default \
+                                     storage (W3.031 Stage 1).",
+                                    binding.name
+                                ),
+                            });
+                        }
+                    }
+                } else if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy
                     && (pending || value_place.is_some())
                 {
                     // Only register the binding in `owned_locals` when
@@ -5113,7 +5315,8 @@ impl Builder {
                 ret_ty,
                 body,
                 captures,
-            } => self.lower_closure_literal(expr, params, ret_ty, body, captures),
+                escape_kind,
+            } => self.lower_closure_literal(expr, params, ret_ty, body, captures, *escape_kind),
             HirExprKind::TupleIndex { tuple, index } => {
                 // Walk the inner tuple expression.  If the tuple sub-expression
                 // resolves to a proxy local from a multi-output runtime call
@@ -5195,6 +5398,40 @@ impl Builder {
                     method_table: method_table.clone(),
                     vtable_entries: vtable_entries.clone(),
                 });
+                // Concrete-source drop suppression at the coerce site.
+                //
+                // The coerced concrete value is *moved* into the fat
+                // pointer: its frame slot (for FrameOwned dyn locals)
+                // or its post-memcpy heap copy (for HeapBoxed dyn
+                // locals) is now owned by the dyn binding's vtable
+                // slot-0 `drop_in_place` ritual. If the concrete also
+                // remained in the enclosing function's `owned_locals`,
+                // its independent scope-exit drop would run the same
+                // concrete close ritual a second time on the same
+                // storage — a use-after-move / double-drop pair.
+                //
+                // The HIR `IntentKind::Consume` path in `lower_value`
+                // for `HirExprKind::BindingRef` already suppresses many
+                // ordinary move cases via `mark_binding_moved`, but it
+                // is gated on `IntentKind::Consume` and on a non-BitCopy
+                // `ValueClass`. The coercion site is the structural
+                // truth — the dyn fat pointer is constructed here, and
+                // here only — so suppression rooted at the producer is
+                // both necessary and sufficient regardless of the
+                // upstream intent inference.
+                //
+                // `dyn_rebind_source_binding` walks the inner `value`
+                // expression through transparent wrappers (`Block` with
+                // a tail) and returns the source `BindingId` for
+                // `HirExprKind::BindingRef` shapes. Fresh-value shapes
+                // (`RecordCtor`, `Call*`, literals, etc.) materialise
+                // into newly-allocated locals that are never registered
+                // in `owned_locals`, so the helper correctly returns
+                // `None` and no suppression is needed. `mark_binding_moved`
+                // is idempotent on bindings that are already absent.
+                if let Some(src_id) = dyn_rebind_source_binding(value) {
+                    self.mark_binding_moved(src_id);
+                }
                 Some(dest)
             }
             HirExprKind::CallDynMethod {
@@ -5204,6 +5441,7 @@ impl Builder {
                 slot,
                 args,
                 ret_ty,
+                signature,
             } => {
                 // Lower the receiver (a `dyn Trait` fat pointer) and the
                 // ordinary args. `Instr::CallTraitMethod` GEPs into the
@@ -5217,6 +5455,34 @@ impl Builder {
                 for arg in args {
                     lowered_args.push(self.lower_value(arg)?);
                 }
+                // W3.031 Stage 1.6: validate the substituted FnSig is
+                // fully resolved BEFORE emission. The checker is
+                // authoritative for trait-type-param + assoc-binding
+                // substitution at the receiver's coercion site; if any
+                // `Ty::Var`/`Ty::Error`/unresolved `Ty::AssocType`
+                // survives into the call-site signature, fail closed
+                // here — codegen would otherwise consume a degenerate
+                // erased call type at the indirect-dispatch boundary
+                // (copilot-instructions §3 Type Inference Boundary).
+                if let Some(reason) = unresolved_fn_sig_reason(signature.as_ref()) {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::CallTraitMethodSignatureUnresolved {
+                            trait_name: trait_name.clone(),
+                            method_name: method_name.clone(),
+                            site: expr.site,
+                            reason: reason.clone(),
+                        },
+                        note: format!(
+                            "dyn-trait method call `{trait_name}::{method_name}` reached MIR with \
+                             an unresolved caller-side FnSig: {reason}. The checker's \
+                             trait-object bound substitution at the receiver's coercion site \
+                             must produce a fully resolved signature; codegen (W3.031 Stage 7) \
+                             consumes it verbatim to derive the erased indirect-call type and \
+                             cannot fabricate a default."
+                        ),
+                    });
+                    return None;
+                }
                 let dest = if matches!(ret_ty, ResolvedTy::Unit) {
                     None
                 } else {
@@ -5229,6 +5495,7 @@ impl Builder {
                     method_name: method_name.clone(),
                     slot: *slot,
                     args: lowered_args,
+                    signature: signature.clone(),
                 });
                 dest
             }
@@ -7991,7 +8258,8 @@ impl Builder {
     /// own bounds check.
     ///
     /// Element-type dispatch (`hew_vec_get_T`):
-    /// - `i32` → `hew_vec_get_i32`
+    /// - `bool` → `hew_vec_get_bool`
+    /// - `char`/`i32` → `hew_vec_get_i32`
     /// - `i64` → `hew_vec_get_i64`
     /// - `f64` → `hew_vec_get_f64`
     /// - ptr-shaped (`Duplex`, `LambdaActorHandle`, Named heap types) → `hew_vec_get_ptr`
@@ -8048,7 +8316,8 @@ impl Builder {
 
         // Dispatch to the typed runtime getter based on element type.
         let get_symbol = match elem_ty {
-            ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
+            ResolvedTy::Bool => "hew_vec_get_bool",
+            ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
             ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_get_i64",
             ResolvedTy::F64 => "hew_vec_get_f64",
             // Pointer-shaped heap handles: Duplex, LambdaActorHandle, and
@@ -8063,10 +8332,10 @@ impl Builder {
                         site,
                     },
                     note: "hew_vec_get_T dispatch: element types supported by this \
-                           slice are i32/u32, i64/u64, f64, and Named heap types. \
+                           slice are bool, char/i32/u32, i64/u64, f64, and Named heap types. \
                            String (hew_vec_get_str strdup ownership) is a follow-on \
-                           slice. bool/char and other scalars map to i32/i64 in a \
-                           future width-normalisation slice."
+                           slice. Other scalars map to i32/i64 in a future \
+                           width-normalisation slice."
                         .to_string(),
                 });
                 return None;
@@ -8690,6 +8959,7 @@ impl Builder {
             ret_ty,
             body,
             captures,
+            escape_kind: _,
         } = &callee.kind
         else {
             unreachable!("caller checked closure callee");
@@ -8945,6 +9215,23 @@ impl Builder {
             "hew_actor_link" | "hew_actor_monitor" => {
                 self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
             }
+            "hew_option_is_none"
+            | "hew_option_is_some"
+            | "hew_option_unwrap_f64"
+            | "hew_option_unwrap_i32"
+            | "hew_option_unwrap_i64"
+            | "hew_option_unwrap_or_f64"
+            | "hew_option_unwrap_or_i32"
+            | "hew_option_unwrap_or_i64"
+            | "hew_result_is_err"
+            | "hew_result_is_ok"
+            | "hew_result_unwrap_f64"
+            | "hew_result_unwrap_i32"
+            | "hew_result_unwrap_i64"
+            | "hew_result_unwrap_or_i32"
+            | "hew_result_unwrap_or_i64" => {
+                self.lower_option_result_runtime_call(symbol, hir_args, site, context)
+            }
             _ => {
                 // Known-allowlisted symbol but no producer arm yet.  Fail closed
                 // so the pipeline rejects the program before codegen runs.
@@ -8963,6 +9250,63 @@ impl Builder {
                 None
             }
         }
+    }
+
+    fn lower_option_result_runtime_call(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        let expected_arity = if symbol.contains("_unwrap_or_") { 2 } else { 1 };
+        if hir_args.len() != expected_arity {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` arity"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` expects {expected_arity} argument(s), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+
+        let mut args = Vec::with_capacity(hir_args.len());
+        for arg in hir_args {
+            let place = self.lower_value(arg)?;
+            args.push(place);
+        }
+
+        let return_ty = if symbol.ends_with("_is_none")
+            || symbol.ends_with("_is_some")
+            || symbol.ends_with("_is_err")
+            || symbol.ends_with("_is_ok")
+        {
+            ResolvedTy::Bool
+        } else if symbol.ends_with("_i32") {
+            ResolvedTy::I32
+        } else if symbol.ends_with("_i64") {
+            ResolvedTy::I64
+        } else if symbol.ends_with("_f64") {
+            ResolvedTy::F64
+        } else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` return type"),
+                    site,
+                },
+                note: format!("cannot infer return type for Option/Result runtime call `{symbol}`"),
+            });
+            return None;
+        };
+
+        let dest =
+            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(return_ty));
+        self.push_runtime_call(symbol, args, dest);
+        dest
     }
 
     /// Emit `Instr::CallRuntimeAbi` for discarded `link` / `monitor` calls.
@@ -10090,9 +10434,52 @@ impl Builder {
         ret_ty: &ResolvedTy,
         body: &HirExpr,
         captures: &[hew_hir::HirClosureCapture],
+        escape_kind: hew_types::ClosureEscapeKind,
     ) -> Option<Place> {
         let (shim_name, _env_ty, env_place) =
             self.materialize_closure_env(expr, params, ret_ty, body, captures)?;
+
+        // Build the foundation-API layout (plan §15.1). Stored on the
+        // builder so downstream consumers (generator codegen, auto-lock
+        // injection) can query `lock_slot_for()` / `has_suspend_in_body()`
+        // without re-deriving facts. Lock-slot construction is gated
+        // off here — the follow-on consumer flips the gate; the layout
+        // API is the single source of truth for the slot tail offset
+        // (plan §15.3 risk 8 mitigation).
+        let capture_fields: Vec<crate::closure_env::CaptureField> = captures
+            .iter()
+            .enumerate()
+            .map(|(idx, cap)| crate::closure_env::CaptureField {
+                id: crate::closure_env::CaptureId(
+                    u32::try_from(idx).expect("closure capture count exceeds u32::MAX"),
+                ),
+                ty: cap.ty.clone(),
+                mode: cap.mode,
+                is_sync: cap.is_sync,
+            })
+            .collect();
+        let layout = crate::closure_env::ClosureEnvLayout::build(
+            capture_fields,
+            body,
+            escape_kind,
+            /* enable_lock_slots = */ false,
+        );
+        // The layout's allocation_strategy determines whether the env
+        // record stays stack-allocated (Local), needs heap-box
+        // promotion (Escapes), or rides the scope-owned task path
+        // (Forked). Today the existing emit path is stack-allocated
+        // for every closure literal that reaches this lowering arm;
+        // forked closures take a separate path (`lower_spawned_
+        // closure_task` in this file) and never reach here. The
+        // Heap-promotion emit for `Escapes` is auto-lock-adjacent
+        // follow-on work — gated to a follow-on so this change stays
+        // small and additive (coherence I-5/I-6 write-contention on
+        // this file across the closure substrate consumers). The
+        // layout is computed and discarded here; storing it on the
+        // builder is a deliberate non-goal until at least one
+        // downstream consumer dispatches.
+        let _ = layout;
+
         let closure_place = self.alloc_local(expr.ty.clone());
         self.instructions.push(Instr::MakeClosure {
             fn_symbol: shim_name,
@@ -11076,6 +11463,7 @@ fn elaborate(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.type_classes,
+        &builder.dyn_trait_storage,
     );
     let (elab_blocks, drop_plans) = enumerate_exits(
         &checked.blocks,
@@ -11199,7 +11587,16 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
         let block = exit_block_id(exit);
         let kind_label = exit_kind_label(exit);
         for drop in &plan.drops {
-            let expected = drop_kind_for(drop.place, &drop.ty);
+            // Extract the storage discriminator from the elaborated
+            // drop kind itself so the dispatcher can re-derive the
+            // same `DropKind::TraitObject { storage }` for the
+            // expected-vs-actual comparison. Non-dyn drops pass
+            // `None` (the dispatcher ignores it).
+            let dyn_storage = match drop.kind {
+                DropKind::TraitObject { storage } => Some(storage),
+                _ => None,
+            };
+            let expected = drop_kind_for(drop.place, &drop.ty, dyn_storage);
             if drop.kind != expected {
                 findings.push(MirCheck::DropPlanUndetermined {
                     block,
@@ -11220,7 +11617,11 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
     // DropPlan.
     for block in &elab.blocks {
         for drop in &block.drops {
-            let expected = drop_kind_for(drop.place, &drop.ty);
+            let dyn_storage = match drop.kind {
+                DropKind::TraitObject { storage } => Some(storage),
+                _ => None,
+            };
+            let expected = drop_kind_for(drop.place, &drop.ty, dyn_storage);
             if drop.kind != expected {
                 findings.push(MirCheck::DropPlanUndetermined {
                     block: block.id,
@@ -11932,7 +12333,13 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
 /// weak-ref body capture (§5.9 ratification 2).
 ///
 /// `Place::Local` / `Place::ReturnSlot` fall through to
-/// `DropKind::Resource` — the pre-M2 generic `@resource` close path.
+/// `DropKind::Resource` — the generic `@resource` close path. After
+/// W3.030 Stage 2 this kind is interpreted by codegen's typed
+/// `DropDispatch::{RuntimeSymbol, UserFn}` dispatcher: runtime
+/// substrate names (`Duplex::close`, etc.) route to the wired C-ABI
+/// symbol; mangled `<T>::close` symbols route to the user inherent-impl
+/// function declared by the `#[resource]` type. A third path is
+/// rejected at module-build time by the codegen drop-plan verifier.
 ///
 /// LESSONS: cleanup-all-exits, raii-null-after-move,
 /// boundary-fail-closed (kind is selected by Place; mismatching
@@ -11942,26 +12349,57 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
 /// Lives in this module so the function-private invariants stay
 /// non-public while still being exercisable from the integration
 /// test that pins the `dyn Trait` → `DropKind::TraitObject` contract.
+///
+/// `dyn_storage` is consulted only when `(place, ty)` selects the
+/// `DropKind::TraitObject` arm; for every other arm it is ignored.
+/// Passing `None` for a `(Local, ResolvedTy::TraitObject)` pair is
+/// the fail-closed boundary (`drop_kind_for` panics) — the MIR
+/// builder side-table population is mandatory before drop
+/// elaboration reaches this dispatcher.
 #[doc(hidden)]
 #[must_use]
-pub fn drop_kind_for_test_only(place: Place, ty: &ResolvedTy) -> DropKind {
-    drop_kind_for(place, ty)
+pub fn drop_kind_for_test_only(
+    place: Place,
+    ty: &ResolvedTy,
+    dyn_storage: Option<TraitObjectStorage>,
+) -> DropKind {
+    drop_kind_for(place, ty, dyn_storage)
 }
 
 #[must_use]
-fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
+fn drop_kind_for(
+    place: Place,
+    ty: &ResolvedTy,
+    dyn_storage: Option<TraitObjectStorage>,
+) -> DropKind {
     match place {
         Place::DuplexHandle(_) => DropKind::DuplexClose,
         Place::LambdaActorHandle(_) => DropKind::LambdaActorRelease,
         Place::SendHalf(_) => DropKind::DuplexHalfClose(crate::model::Direction::Send),
         Place::RecvHalf(_) => DropKind::DuplexHalfClose(crate::model::Direction::Recv),
         // `dyn Trait` locals carry their drop ritual in the vtable's slot 0
-        // (`drop_in_place`); codegen emits the GEP-to-slot-0 dispatch.
+        // (`drop_in_place`); codegen emits the GEP-to-slot-0 dispatch plus
+        // a storage-discriminated release ritual after `drop_in_place`
+        // returns (FrameOwned → no-op; HeapBoxed → `hew_dyn_box_free`).
         // Discriminated by `ResolvedTy::TraitObject` rather than a Place
         // variant because trait objects share `Place::Local` storage with
         // every other by-value owned binding.
+        //
+        // Storage is sourced from the MIR builder's `dyn_trait_storage`
+        // side table (populated at the binding's introducing `let`
+        // statement, W3.031 Stage 1). Reaching this arm with no storage
+        // hint is a structural fail-closed event — `build_lifo_drops`
+        // refuses to emit a drop without a storage discriminator, and
+        // `validate_drop_plan` extracts the storage from the elaborated
+        // drop kind before re-running this dispatcher.
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::TraitObject { .. }) => {
-            DropKind::TraitObject
+            let storage = dyn_storage.expect(
+                "drop_kind_for invariant: ResolvedTy::TraitObject reached the dispatcher \
+                 without a TraitObjectStorage hint; the MIR builder must populate \
+                 `dyn_trait_storage` for every owned `dyn Trait` binding before \
+                 drop elaboration runs (W3.031 Stage 1)",
+            );
+            DropKind::TraitObject { storage }
         }
         // Machine tag and variant fields are sub-structure of a machine value,
         // not independent resources. Machine values are `BitCopy` by value
@@ -12018,13 +12456,157 @@ fn resource_drop_fn(ty: &ResolvedTy, type_classes: &hew_hir::TypeClassTable) -> 
 /// appear in `owned_locals` either today, so the `ReturnSlot` fallback
 /// arm is structurally unreachable; it survives only as a fail-soft for
 /// future surfaces that may extend `owned_locals` ahead of `binding_locals`.
+/// Walk the RHS of a `let` (or the inner `value` of a `CoerceToDynTrait`)
+/// to find the source `BindingId` whose ownership is being transferred
+/// into the new local. Returns `None` for "fresh" value-producing shapes
+/// (record constructors, call results, literals, etc.) that do not
+/// reference an existing binding.
+///
+/// Used by the dyn-trait drop-suppression mechanism in two places:
+///
+/// 1. At `Instr::CoerceToDynTrait` producer sites (`lower_value` arm for
+///    `HirExprKind::CoerceToDynTrait`) — when a concrete binding flows
+///    into the fat-pointer constructor, its independent scope-exit drop
+///    must be suppressed; the dyn binding's vtable slot-0 `drop_in_place`
+///    is now the sole owner of the concrete's close ritual.
+///
+/// 2. At the `HirStmtKind::Let` arm for transitive dyn-to-dyn rebinds
+///    (`let d2 = d1;`) — the source dyn binding's scope-exit drop must
+///    be suppressed so the vtable ritual runs exactly once at the final
+///    binding's scope exit, not once per intermediate rebind.
+///
+/// Transparent wrappers walked:
+/// - `HirExprKind::Block` with a `tail` expression — recurse on the tail.
+///
+/// Every other expression shape (including `CoerceToDynTrait`, `Call*`,
+/// `RecordCtor`, literals, arithmetic, etc.) materialises a fresh value
+/// in a newly-allocated local that is not registered in `owned_locals`,
+/// so returning `None` is the correct "nothing to suppress" answer.
+fn dyn_rebind_source_binding(value: &HirExpr) -> Option<BindingId> {
+    match &value.kind {
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } => Some(*id),
+        HirExprKind::Block(block) => block.tail.as_deref().and_then(dyn_rebind_source_binding),
+        _ => None,
+    }
+}
+
+/// W3.031 Stage 1: classify the `TraitObjectStorage` discriminator for a
+/// `let`-binding whose resolved type is `ResolvedTy::TraitObject`, based
+/// on the shape of the RHS expression.
+///
+/// Returns `Ok(storage)` for the two recognised shapes, or `Err(reason)`
+/// naming the unrecognised RHS form. The caller emits a
+/// `TraitObjectStorageUndetermined` diagnostic on `Err`; the binding is
+/// not added to `owned_locals`, so no drop is elaborated for it and the
+/// pipeline aborts at the MIR boundary.
+///
+/// Recognised shapes:
+/// - `HirExprKind::CoerceToDynTrait` → `FrameOwned`. The producer wraps
+///   a concrete value into a fat pointer whose `data` word aliases the
+///   concrete's frame slot; the coerced fat pointer's drop is the
+///   slot-0 `drop_in_place` only.
+/// - `HirExprKind::Call` / `CallTraitMethodStatic` / `CallDynMethod`
+///   whose return type is `dyn Trait` → `HeapBoxed`. Returning a fat
+///   pointer across a call boundary is only well-defined via the
+///   `hew_dyn_box_alloc` heap-box ABI (W3.031 Stage 0); the receiver's
+///   drop must run `drop_in_place` + `hew_dyn_box_free`.
+/// - `HirExprKind::BindingRef { resolved: ResolvedRef::Binding(id), .. }`
+///   where the referenced binding already carries a storage entry →
+///   propagate the existing storage. This covers `let d2 = d1;` chains
+///   without re-classifying the original RHS.
+/// - `HirExprKind::Block` with a tail expression → recurse on the tail.
+///
+/// Every other shape returns `Err`. Future stages may extend the
+/// classifier; until then the fail-closed boundary keeps drop
+/// elaboration honest.
+fn classify_dyn_trait_storage(
+    value: &HirExpr,
+    dyn_trait_storage: &HashMap<BindingId, TraitObjectStorage>,
+) -> Result<TraitObjectStorage, String> {
+    match &value.kind {
+        HirExprKind::CoerceToDynTrait { .. } => Ok(TraitObjectStorage::FrameOwned),
+        HirExprKind::Call { .. }
+        | HirExprKind::CallTraitMethodStatic { .. }
+        | HirExprKind::CallDynMethod { .. } => Ok(TraitObjectStorage::HeapBoxed),
+        HirExprKind::BindingRef { resolved, .. } => {
+            if let ResolvedRef::Binding(id) = resolved {
+                if let Some(storage) = dyn_trait_storage.get(id).copied() {
+                    return Ok(storage);
+                }
+            }
+            Err(format!(
+                "HirExprKind::BindingRef to dyn Trait binding without a prior \
+                 dyn_trait_storage entry (resolved: {resolved:?})"
+            ))
+        }
+        HirExprKind::Block(block) => block.tail.as_deref().map_or_else(
+            || {
+                Err(
+                    "HirExprKind::Block with no tail expression cannot produce a \
+                     dyn Trait value"
+                        .to_string(),
+                )
+            },
+            |tail| classify_dyn_trait_storage(tail, dyn_trait_storage),
+        ),
+        other => Err(format!(
+            "unrecognised RHS shape for dyn Trait binding: {:?}",
+            std::mem::discriminant(other)
+        )),
+    }
+}
+
 fn build_lifo_drops(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     type_classes: &hew_hir::TypeClassTable,
+    dyn_trait_storage: &HashMap<BindingId, TraitObjectStorage>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
+        // W3.031 Stage 1: `dyn Trait` owned locals (ValueClass::PersistentShare
+        // by `ValueClass::of_ty`) carry their drop ritual on the vtable's
+        // slot 0 (`drop_in_place`) plus a storage-discriminated release
+        // ritual. Without this arm, the PersistentShare match below skips
+        // them — the pre-Stage-1 gap that left every owned `dyn Trait`
+        // binding with no scope-exit drop elaborated.
+        //
+        // Place the dyn-trait arm BEFORE the value-class match so it
+        // intercepts regardless of `ValueClass::of_ty`'s classification.
+        // The storage discriminator is sourced from the per-binding
+        // side table populated by the introducing `let` statement; a
+        // binding that reached `owned_locals` without a side-table
+        // entry is a builder invariant violation (the `Let` arm that
+        // adds to `owned_locals` is the same arm that populates
+        // `dyn_trait_storage` for dyn-typed bindings) — fail-closed
+        // with a panic so the gap surfaces at MIR construction time.
+        if matches!(ty, ResolvedTy::TraitObject { .. }) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: dyn Trait binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            let storage = *dyn_trait_storage.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: dyn Trait binding {binding:?} is in \
+                     owned_locals but missing from dyn_trait_storage; the introducing \
+                     `HirStmtKind::Let` arm must populate the storage discriminator \
+                     before pushing the binding into owned_locals (W3.031 Stage 1)"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::TraitObject { storage },
+            });
+            continue;
+        }
         match ValueClass::of_ty(ty, type_classes) {
             ValueClass::AffineResource => {
                 // Registry-driven drop_fn dispatch. The HIR-lowering pass
@@ -12057,9 +12639,13 @@ fn build_lifo_drops(
                 // pre-M2 generic `@resource` path keeps `DropKind::Resource`;
                 // M2 Duplex / lambda-actor / half-handle Places select
                 // the specialised kinds so codegen (slice 5) and the
-                // runtime (slice 4) emit the right close protocol.
+                // runtime (slice 4) emit the right close protocol. The
+                // dyn-trait arm above intercepts `ResolvedTy::TraitObject`
+                // before reaching here, so the dispatcher never observes
+                // a dyn type from this AffineResource arm — pass `None`
+                // for the storage hint.
                 // LESSONS: cleanup-all-exits, raii-null-after-move.
-                let kind = drop_kind_for(place, ty);
+                let kind = drop_kind_for(place, ty, None);
                 drops.push(ElabDrop {
                     place,
                     ty: ty.clone(),
@@ -12463,7 +13049,7 @@ mod slice3_invariants {
     fn drop_kind_for_duplex_handle_selects_duplex_close() {
         let ty = duplex_int_int_ty();
         assert_eq!(
-            drop_kind_for(Place::DuplexHandle(0), &ty),
+            drop_kind_for(Place::DuplexHandle(0), &ty, None),
             DropKind::DuplexClose
         );
     }
@@ -12472,7 +13058,7 @@ mod slice3_invariants {
     fn drop_kind_for_lambda_actor_handle_selects_lambda_actor_release() {
         let ty = duplex_int_int_ty();
         assert_eq!(
-            drop_kind_for(Place::LambdaActorHandle(0), &ty),
+            drop_kind_for(Place::LambdaActorHandle(0), &ty, None),
             DropKind::LambdaActorRelease
         );
     }
@@ -12481,7 +13067,7 @@ mod slice3_invariants {
     fn drop_kind_for_send_half_selects_duplex_half_close_send() {
         let ty = duplex_int_int_ty();
         assert_eq!(
-            drop_kind_for(Place::SendHalf(0), &ty),
+            drop_kind_for(Place::SendHalf(0), &ty, None),
             DropKind::DuplexHalfClose(Direction::Send)
         );
     }
@@ -12490,7 +13076,7 @@ mod slice3_invariants {
     fn drop_kind_for_recv_half_selects_duplex_half_close_recv() {
         let ty = duplex_int_int_ty();
         assert_eq!(
-            drop_kind_for(Place::RecvHalf(0), &ty),
+            drop_kind_for(Place::RecvHalf(0), &ty, None),
             DropKind::DuplexHalfClose(Direction::Recv)
         );
     }
@@ -12501,7 +13087,10 @@ mod slice3_invariants {
         // is the regression guard against accidentally routing Local
         // drops through a Duplex-specific protocol.
         let ty = duplex_int_int_ty();
-        assert_eq!(drop_kind_for(Place::Local(0), &ty), DropKind::Resource);
+        assert_eq!(
+            drop_kind_for(Place::Local(0), &ty, None),
+            DropKind::Resource
+        );
     }
 
     // ---------- validate_drop_plan: structural invariants ----------
@@ -12623,7 +13212,7 @@ mod slice3_invariants {
     /// canonical `DropKind`. Used by every split-state shape below.
     fn duplex_drop(place: Place) -> ElabDrop {
         let ty = duplex_int_int_ty();
-        let kind = drop_kind_for(place, &ty);
+        let kind = drop_kind_for(place, &ty, None);
         ElabDrop {
             place,
             ty,
@@ -12785,14 +13374,16 @@ mod slice3_invariants {
             let mut s_count = 0u32;
             let mut r_count = 0u32;
             for p in &places {
-                match drop_kind_for(*p, &duplex_int_int_ty()) {
+                match drop_kind_for(*p, &duplex_int_int_ty(), None) {
                     DropKind::DuplexClose => {
                         s_count += 1;
                         r_count += 1;
                     }
                     DropKind::DuplexHalfClose(Direction::Send) => s_count += 1,
                     DropKind::DuplexHalfClose(Direction::Recv) => r_count += 1,
-                    DropKind::Resource | DropKind::LambdaActorRelease | DropKind::TraitObject => {}
+                    DropKind::Resource
+                    | DropKind::LambdaActorRelease
+                    | DropKind::TraitObject { .. } => {}
                 }
             }
             assert!(

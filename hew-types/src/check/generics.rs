@@ -211,6 +211,103 @@ impl Checker {
         );
     }
 
+    /// Canonical machine-instantiation bound-enforcement entry point.
+    /// Every checker path that builds a `Ty::Named` whose `name` is a
+    /// registered machine and whose `args` carry substituted concrete
+    /// types must route through this helper. It looks up the machine's
+    /// declared bounds from the registration-time side table (which
+    /// already merges inline `<T: Trait>` bounds and `where T: Trait`
+    /// predicates into a single per-machine map) and delegates to the
+    /// implementation.
+    ///
+    /// No-op when the named entity is not a registered machine, when
+    /// the machine has no bounds, or when `type_args` is empty (a
+    /// non-instantiated declaration-shape reference).
+    ///
+    /// Routed-through sites today:
+    ///   1. struct-state brace init (`Holder::Active { … }` typed
+    ///      against the machine self-type) — `expressions.rs`.
+    ///   2. type-annotation resolution at `resolve_type_expr` (covers
+    ///      `var x: Lifecycle<File>`, param annotations, return-type
+    ///      slots, and record field types via the single converging
+    ///      wrapper) — `resolution.rs`.
+    ///   3. constructor / call forms — every `record_concrete_record_init_type_args`
+    ///      emission site in `expressions.rs` (plain struct init,
+    ///      enum-variant coercion arm, plain struct coercion arm, enum
+    ///      struct-variant init) is paired with a helper call.
+    ///   4. supervisor-child PID synthesis (defense-in-depth: today's
+    ///      child-spec table carries bare names with no type-args, so
+    ///      the helper short-circuits on empty `args`; any future
+    ///      change admitting parameterised child specs inherits
+    ///      enforcement here).
+    ///
+    /// The invariant this helper locks in: when a machine name is
+    /// being instantiated with concrete type arguments and the checker
+    /// has the bounds to consult, there is exactly one shared way to
+    /// do the consult — not four.
+    pub(super) fn enforce_machine_instantiation_bounds(
+        &mut self,
+        machine_name: &str,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
+        if type_args.is_empty() {
+            return;
+        }
+        let Some(bounds) = self.machine_type_param_bounds.get(machine_name).cloned() else {
+            return;
+        };
+        // Dedup identical `(machine, type_args, span)` triples across
+        // repeated visits. A single annotation can be re-resolved
+        // multiple times (e.g. once during signature registration and
+        // again during body checking), and the recursive walker over
+        // a resolved `Ty` may visit the same nested instantiation via
+        // overlapping paths. Without this gate, each repeat emits an
+        // identical `BoundsNotSatisfied` diagnostic. The key includes
+        // span so two distinct annotation occurrences of the same
+        // textual instantiation (e.g. `Holder<Plain>` as both a
+        // parameter and a return type) each report once.
+        let dedup_key = (
+            machine_name.to_string(),
+            type_args.to_vec(),
+            SpanKey::from(span),
+        );
+        if !self.reported_machine_bound_violations.insert(dedup_key) {
+            return;
+        }
+        // Recover the machine's declared type-param names from the side
+        // table. The table's outer key is the machine name; its keys
+        // are the param names that have at least one bound. Params
+        // without bounds are absent — for those, no enforcement is
+        // required, so the helper builds a positional name vector from
+        // the type-args' arity and only enforces for the slots whose
+        // param has a bound entry.
+        //
+        // Because `enforce_named_type_param_bounds` reads bounds by
+        // param-name lookup, the positional alignment between the
+        // synthesised `type_params` and `type_args` only matters for
+        // the slots with bounds. Empty-slot names are placeholders
+        // (`__unbounded_<idx>`) chosen to never collide with the bound
+        // map, ensuring the helper short-circuits cleanly.
+        let mut type_params: Vec<String> = Vec::with_capacity(type_args.len());
+        for (idx, _) in type_args.iter().enumerate() {
+            // We do not have positional access to the original param
+            // names here without a second lookup. The side table
+            // preserves names but not order; instead, the canonical
+            // type-param-order source is the registered TypeDef. Fall
+            // back to scanning bounds map keys against positional
+            // arity by querying the matching TypeDef entry.
+            if let Some(td) = self.type_defs.get(machine_name) {
+                if let Some(name) = td.type_params.get(idx) {
+                    type_params.push(name.clone());
+                    continue;
+                }
+            }
+            type_params.push(format!("__unbounded_{idx}"));
+        }
+        self.enforce_named_type_param_bounds(&type_params, &bounds, type_args, span);
+    }
+
     /// Generic bound-enforcement entry point parameterised by type-param names
     /// and a bounds map.  Used by `enforce_type_param_bounds` (`FnSig` calls)
     /// and by use-site enforcement for machine generic constructors that do

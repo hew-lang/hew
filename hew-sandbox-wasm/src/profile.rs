@@ -157,7 +157,27 @@ impl<'a> ProfileChecker<'a> {
                     "this declaration requires runtime features that are reserved for a later sandbox VM milestone",
                 ),
                 Item::Const(const_decl) => self.check_expr(&const_decl.value),
-                Item::TypeDecl(_) | Item::TypeAlias(_) | Item::Record(_) => {}
+                Item::TypeDecl(type_decl) => {
+                    // W3.030 V15: `#[resource]` types carry an implicit drop
+                    // contract that dispatches `<T>::close` through the
+                    // unified `ScopeExitPlan` stream. The sandbox-WASM
+                    // bytecode export does not yet model that drop
+                    // scheduling (the W3.021 `defer_rejected` follow-up
+                    // tracks the same gap). Fail closed at the surface
+                    // boundary with a named diagnostic so the sandbox can
+                    // never silently miss a resource close — tracked in
+                    // `.tmp/deferred-v05-followups.md`.
+                    if !type_decl.resource_marker.is_none() {
+                        self.reject(
+                            span.clone(),
+                            "user_resource_close_not_yet_admitted_sandbox",
+                            "`#[resource]` and `#[linear]` types carry an \
+                             implicit drop contract that is not yet admitted \
+                             to sandbox bytecode export (W3.030 follow-up)",
+                        );
+                    }
+                }
+                Item::TypeAlias(_) | Item::Record(_) => {}
             }
         }
     }

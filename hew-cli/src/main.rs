@@ -160,7 +160,9 @@ fn lower_file_to_mir(
         return Err(());
     }
 
-    let pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    let mut pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    // Route checker-authored layout facts onto the pipeline.
+    pipeline.attach_lowering_facts(&tco);
     if !pipeline.diagnostics.is_empty() {
         for diagnostic in &pipeline.diagnostics {
             eprintln!("{} {diagnostic:?}", diagnostic_prefix(&diagnostic.kind));
@@ -215,7 +217,10 @@ fn run_check_deep_gates(
         return Err(());
     }
 
-    let pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    let mut pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    // Clone checker-authored layout-fact lifecycle into the pipeline
+    // (see the matching invocation in `check_command`).
+    pipeline.attach_lowering_facts(tco);
     if !pipeline.diagnostics.is_empty() {
         let module_source_map = diagnostic::build_module_source_map(&state.program);
         let site_spans = hew_hir::collect_site_spans(&lower_output.module);
@@ -226,6 +231,11 @@ fn run_check_deep_gates(
             &site_spans,
             &pipeline.diagnostics,
         );
+        return Err(());
+    }
+
+    if let Err(error) = hew_codegen_rs::validate_codegen_front(&pipeline) {
+        diagnostic::render_codegen_front_diagnostic(&error);
         return Err(());
     }
 
@@ -354,7 +364,9 @@ pub(crate) fn compile_native_from_program(
         return Err(());
     }
 
-    let pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    let mut pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    // Route checker-authored layout facts onto the pipeline.
+    pipeline.attach_lowering_facts(&tco);
     if !pipeline.diagnostics.is_empty() {
         for diagnostic in &pipeline.diagnostics {
             eprintln!("{} {diagnostic:?}", diagnostic_prefix(&diagnostic.kind));

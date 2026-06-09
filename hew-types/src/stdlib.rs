@@ -52,19 +52,49 @@ pub fn resolve_stream_method(
 /// Map a `Vec<T>` element type to its monomorphic runtime symbol suffix.
 ///
 /// Suffixes correspond to the `hew_vec_*_<suffix>` entry points exported by
-/// `hew-runtime/src/vec.rs`. Returns `None` for element kinds the runtime
-/// has no monomorphic shim for (literal placeholders, `Bool`/`Char`, tuples,
-/// inference variables, etc.); callers should leave the call site absent
-/// from `method_call_rewrites` in that case so HIR/codegen fail closed.
+/// `hew-runtime/src/vec.rs`. The `"layout"` suffix is the substrate
+/// signal for the layout-descriptor protocol that lowers value records and
+/// tuples (Stage 3a Step 1 — runtime/codegen support lands in Step 2 /
+/// Stage 3a Step 3). Callers must turn `"layout"` into a precise
+/// fail-closed diagnostic until those steps land.
+///
+/// Returns `None` for element kinds where no classification is yet
+/// possible (inference variables, error sentinels, unresolved nominals,
+/// types with no Vec-element shape). Callers should leave the call site
+/// absent from `method_call_rewrites` in that case so HIR/codegen fail
+/// closed.
+///
+/// Substrate routing of named (`Ty::Named`) elements follows the
+/// `TypeDef::is_indirect` classification — the same authority that
+/// `RuntimeCallingConvention::for_ty_with_layout` consults — rather than
+/// the legacy "all named types lower as `ptr`" shortcut, which silently
+/// punched value records through the pointer-shaped ABI.
 #[must_use]
-pub fn vec_element_runtime_suffix(ty: &crate::Ty) -> Option<&'static str> {
+#[allow(
+    clippy::implicit_hasher,
+    reason = "uses the checker's concrete TypeDef table shape"
+)]
+pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
+    ty: &crate::Ty,
+    type_defs: &std::collections::HashMap<String, crate::check::TypeDef, S>,
+) -> Option<&'static str> {
     match ty {
-        crate::Ty::I32 | crate::Ty::U32 => Some("i32"),
+        crate::Ty::Bool => Some("bool"),
+        crate::Ty::Char | crate::Ty::I32 | crate::Ty::U32 => Some("i32"),
         crate::Ty::I64 | crate::Ty::U64 => Some("i64"),
         crate::Ty::F64 => Some("f64"),
         crate::Ty::String => Some("str"),
-        // Heap-handle / nominal element types share the pointer-shaped ABI.
-        crate::Ty::Named { .. } => Some("ptr"),
+        // Tuples lower through the layout-descriptor protocol.
+        crate::Ty::Tuple(_) => Some("layout"),
+        // Named element types: heap-handle nominals (`is_indirect = true`)
+        // share the pointer-shaped ABI; value-record nominals
+        // (`is_indirect = false`) lower through the layout-descriptor
+        // protocol. Unknown nominal — defer; callers fail closed.
+        crate::Ty::Named { name, .. } => match type_defs.get(name) {
+            Some(td) if td.is_indirect => Some("ptr"),
+            Some(_) => Some("layout"),
+            None => None,
+        },
         _ => None,
     }
 }
@@ -86,55 +116,109 @@ pub fn vec_element_runtime_suffix(ty: &crate::Ty) -> Option<&'static str> {
 /// dependencies), and any element type the runtime has no monomorphic shim
 /// for (returns `None`).
 #[must_use]
-pub fn resolve_vec_method(method: &str, elem_ty: &crate::Ty) -> Option<&'static str> {
+#[allow(
+    clippy::implicit_hasher,
+    reason = "uses the checker's concrete TypeDef table shape"
+)]
+pub fn resolve_vec_method<S: std::hash::BuildHasher>(
+    method: &str,
+    elem_ty: &crate::Ty,
+    type_defs: &std::collections::HashMap<String, crate::check::TypeDef, S>,
+) -> Option<&'static str> {
     match method {
         "len" => Some("hew_vec_len"),
         "is_empty" => Some("hew_vec_is_empty"),
-        "clear" => Some("hew_vec_clear"),
-        "clone" => Some("hew_vec_clone"),
-        "append" | "extend" => Some("hew_vec_append"),
-        // `Vec::remove(i64)` removes by index, not by value. The runtime entry
-        // is `hew_vec_remove_at`; the by-value `hew_vec_remove_<elem>` family
-        // backs a different (currently unbound) surface and is not wired here.
-        "remove" => Some("hew_vec_remove_at"),
-        "push" => match vec_element_runtime_suffix(elem_ty)? {
+        // `clear`, `clone`, `append`/`extend`, and `remove` are monomorphic
+        // for scalar and pointer-shaped element types. Value-record and tuple
+        // elements lower through the layout-descriptor protocol; route through
+        // a `_layout`-suffixed symbol so `resolve_vec_runtime_symbol` can emit
+        // the precise fail-closed diagnostic rather than silently using the
+        // monomorphic entry on a type it cannot handle.
+        //
+        // The `_ =>` arm preserves the prior monomorphic behaviour for
+        // scalar / ptr / unresolved (inference-variable) elements, keeping
+        // the `vec_monomorphic_methods_resolve_regardless_of_element_type`
+        // property intact for non-layout types.
+        "clear" => match vec_element_runtime_suffix(elem_ty, type_defs) {
+            Some("layout") => Some("hew_vec_clear_layout"),
+            _ => Some("hew_vec_clear"),
+        },
+        "clone" => match vec_element_runtime_suffix(elem_ty, type_defs) {
+            Some("layout") => Some("hew_vec_clone_layout"),
+            _ => Some("hew_vec_clone"),
+        },
+        "append" | "extend" => match vec_element_runtime_suffix(elem_ty, type_defs) {
+            Some("layout") => Some("hew_vec_append_layout"),
+            _ => Some("hew_vec_append"),
+        },
+        // `Vec::remove(i64)` removes by index. For scalar/ptr elements the
+        // operation is monomorphic (`hew_vec_remove_at`). For value-record
+        // and tuple elements the layout-descriptor protocol is required —
+        // route through `_layout` suffix so the fail-closed diagnostic fires.
+        "remove" => match vec_element_runtime_suffix(elem_ty, type_defs) {
+            Some("layout") => Some("hew_vec_remove_at_layout"),
+            _ => Some("hew_vec_remove_at"),
+        },
+        "push" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
+            "bool" => Some("hew_vec_push_bool"),
             "i32" => Some("hew_vec_push_i32"),
             "i64" => Some("hew_vec_push_i64"),
             "f64" => Some("hew_vec_push_f64"),
             "str" => Some("hew_vec_push_str"),
             "ptr" => Some("hew_vec_push_ptr"),
+            "layout" => Some("hew_vec_push_layout"),
             _ => None,
         },
-        "pop" => match vec_element_runtime_suffix(elem_ty)? {
+        "pop" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
+            "bool" => Some("hew_vec_pop_bool"),
             "i32" => Some("hew_vec_pop_i32"),
             "i64" => Some("hew_vec_pop_i64"),
             "f64" => Some("hew_vec_pop_f64"),
             "str" => Some("hew_vec_pop_str"),
             "ptr" => Some("hew_vec_pop_ptr"),
+            "layout" => Some("hew_vec_pop_layout"),
             _ => None,
         },
-        "get" => match vec_element_runtime_suffix(elem_ty)? {
+        "get" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
+            "bool" => Some("hew_vec_get_bool"),
             "i32" => Some("hew_vec_get_i32"),
             "i64" => Some("hew_vec_get_i64"),
             "f64" => Some("hew_vec_get_f64"),
             "str" => Some("hew_vec_get_str"),
             "ptr" => Some("hew_vec_get_ptr"),
+            "layout" => Some("hew_vec_get_layout"),
             _ => None,
         },
-        "set" => match vec_element_runtime_suffix(elem_ty)? {
+        "set" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
+            "bool" => Some("hew_vec_set_bool"),
             "i32" => Some("hew_vec_set_i32"),
             "i64" => Some("hew_vec_set_i64"),
             "f64" => Some("hew_vec_set_f64"),
             "str" => Some("hew_vec_set_str"),
             "ptr" => Some("hew_vec_set_ptr"),
+            "layout" => Some("hew_vec_set_layout"),
             _ => None,
         },
-        "contains" => match vec_element_runtime_suffix(elem_ty)? {
+        "contains" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
             "i32" => Some("hew_vec_contains_i32"),
             "i64" => Some("hew_vec_contains_i64"),
             "f64" => Some("hew_vec_contains_f64"),
             "str" => Some("hew_vec_contains_str"),
-            // No `hew_vec_contains_ptr` in the runtime today — fail closed.
+            // W3.032 Slice 3e: layout (value-record/tuple) elements now route
+            // through `hew_vec_contains_thunk`.  The checker layer
+            // (`check_vec_method` `contains` arm) gates by equality
+            // eligibility + `Copy`; only equality-eligible Copy aggregates
+            // reach this point with the rewrite recorded.  Ineligible /
+            // non-Copy layouts produce a type-error before
+            // `resolve_vec_runtime_symbol` is consulted.
+            //
+            // NOTE: `hew_vec_contains_layout` (the historical abort stub for
+            // managed/non-Copy layouts) is intentionally retained in the
+            // runtime ABI for future use, but is no longer the routing target
+            // for any checker-accepted call.
+            "layout" => Some("hew_vec_contains_thunk"),
+            // Pointer-shaped heap-handle nominals (`ptr`) and `bool` have no
+            // `contains` overload in the runtime — fail closed.
             _ => None,
         },
         _ => None,
@@ -285,8 +369,17 @@ mod tests {
     #[test]
     fn vec_monomorphic_methods_resolve_regardless_of_element_type() {
         use crate::Ty;
-        // These do not depend on element type — the runtime exports a single
-        // entry point shared across every Vec<T> instantiation.
+        let type_defs = std::collections::HashMap::new();
+        // For scalar and pointer-shaped element types — and for inference
+        // variables (unresolved `Ty::Var`) — these methods resolve to their
+        // monomorphic runtime entry point.
+        //
+        // NOTE: `clear`, `clone`, `append`, `extend`, and `remove` are NOT
+        // unconditionally monomorphic: value-record and tuple (layout) elements
+        // route through `_layout`-suffixed symbols (asserted in
+        // `vec_layout_methods_route_through_layout_suffix`). Only
+        // scalar/ptr/unresolved elements use the monomorphic entry, which is
+        // what this test exercises.
         for (method, expected) in [
             ("len", "hew_vec_len"),
             ("is_empty", "hew_vec_is_empty"),
@@ -297,120 +390,313 @@ mod tests {
             ("remove", "hew_vec_remove_at"),
         ] {
             assert_eq!(
-                resolve_vec_method(method, &Ty::I64),
+                resolve_vec_method(method, &Ty::I64, &type_defs),
                 Some(expected),
-                "Vec::{method} should resolve to {expected}"
+                "Vec::{method} should resolve to {expected} for scalar element"
             );
-            // Element-agnostic methods resolve even when the element is a
-            // fresh inference variable — the runtime symbol does not depend
-            // on suffix in that case.
+            // Inference variable: suffix returns None, `_ =>` arm preserves
+            // the monomorphic symbol so HIR gets a rewrite entry.
             assert_eq!(
-                resolve_vec_method(method, &Ty::Var(crate::ty::TypeVar::fresh()),),
+                resolve_vec_method(method, &Ty::Var(crate::ty::TypeVar::fresh()), &type_defs),
                 Some(expected),
-                "Vec::{method} should still resolve for unresolved element",
+                "Vec::{method} should still resolve for unresolved element (non-layout infer)",
             );
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "exhaustive ABI matrix covering all element types and routing cases"
+    )]
     #[test]
     fn vec_element_typed_methods_resolve_per_runtime_abi() {
         use crate::Ty;
+        let type_defs = std::collections::HashMap::new();
         // push
         assert_eq!(
-            resolve_vec_method("push", &Ty::I32),
+            resolve_vec_method("push", &Ty::Bool, &type_defs),
+            Some("hew_vec_push_bool")
+        );
+        assert_eq!(
+            resolve_vec_method("push", &Ty::Char, &type_defs),
             Some("hew_vec_push_i32")
         );
         assert_eq!(
-            resolve_vec_method("push", &Ty::U32),
+            resolve_vec_method("push", &Ty::I32, &type_defs),
             Some("hew_vec_push_i32")
         );
         assert_eq!(
-            resolve_vec_method("push", &Ty::I64),
+            resolve_vec_method("push", &Ty::U32, &type_defs),
+            Some("hew_vec_push_i32")
+        );
+        assert_eq!(
+            resolve_vec_method("push", &Ty::I64, &type_defs),
             Some("hew_vec_push_i64")
         );
         assert_eq!(
-            resolve_vec_method("push", &Ty::U64),
+            resolve_vec_method("push", &Ty::U64, &type_defs),
             Some("hew_vec_push_i64")
         );
         assert_eq!(
-            resolve_vec_method("push", &Ty::F64),
+            resolve_vec_method("push", &Ty::F64, &type_defs),
             Some("hew_vec_push_f64")
         );
         assert_eq!(
-            resolve_vec_method("push", &Ty::String),
+            resolve_vec_method("push", &Ty::String, &type_defs),
             Some("hew_vec_push_str")
         );
         // pop
-        assert_eq!(resolve_vec_method("pop", &Ty::I64), Some("hew_vec_pop_i64"));
         assert_eq!(
-            resolve_vec_method("pop", &Ty::String),
+            resolve_vec_method("pop", &Ty::Bool, &type_defs),
+            Some("hew_vec_pop_bool")
+        );
+        assert_eq!(
+            resolve_vec_method("pop", &Ty::Char, &type_defs),
+            Some("hew_vec_pop_i32")
+        );
+        assert_eq!(
+            resolve_vec_method("pop", &Ty::I64, &type_defs),
+            Some("hew_vec_pop_i64")
+        );
+        assert_eq!(
+            resolve_vec_method("pop", &Ty::String, &type_defs),
             Some("hew_vec_pop_str")
         );
         // get
-        assert_eq!(resolve_vec_method("get", &Ty::I64), Some("hew_vec_get_i64"));
-        assert_eq!(resolve_vec_method("get", &Ty::F64), Some("hew_vec_get_f64"));
-        // set
-        assert_eq!(resolve_vec_method("set", &Ty::I32), Some("hew_vec_set_i32"));
         assert_eq!(
-            resolve_vec_method("set", &Ty::String),
+            resolve_vec_method("get", &Ty::Bool, &type_defs),
+            Some("hew_vec_get_bool")
+        );
+        assert_eq!(
+            resolve_vec_method("get", &Ty::Char, &type_defs),
+            Some("hew_vec_get_i32")
+        );
+        assert_eq!(
+            resolve_vec_method("get", &Ty::I64, &type_defs),
+            Some("hew_vec_get_i64")
+        );
+        assert_eq!(
+            resolve_vec_method("get", &Ty::F64, &type_defs),
+            Some("hew_vec_get_f64")
+        );
+        // set
+        assert_eq!(
+            resolve_vec_method("set", &Ty::Bool, &type_defs),
+            Some("hew_vec_set_bool")
+        );
+        assert_eq!(
+            resolve_vec_method("set", &Ty::Char, &type_defs),
+            Some("hew_vec_set_i32")
+        );
+        assert_eq!(
+            resolve_vec_method("set", &Ty::I32, &type_defs),
+            Some("hew_vec_set_i32")
+        );
+        assert_eq!(
+            resolve_vec_method("set", &Ty::String, &type_defs),
             Some("hew_vec_set_str")
         );
         // contains
         assert_eq!(
-            resolve_vec_method("contains", &Ty::I64),
+            resolve_vec_method("contains", &Ty::I64, &type_defs),
             Some("hew_vec_contains_i64")
         );
         assert_eq!(
-            resolve_vec_method("contains", &Ty::String),
+            resolve_vec_method("contains", &Ty::String, &type_defs),
             Some("hew_vec_contains_str")
         );
 
-        // Pointer-shaped (Named) elements share one runtime symbol per method,
-        // except `contains` which the runtime does not expose for ptr today.
-        let named = Ty::Named {
-            name: "Foo".into(),
+        // Heap-handle named element (`is_indirect = true`) — pointer-shaped
+        // runtime ABI; `contains` has no `_ptr` overload.
+        let vec_handle_defs = {
+            use crate::check::{TypeDef, TypeDefKind};
+            let mut m = std::collections::HashMap::new();
+            m.insert(
+                "Vec".to_string(),
+                TypeDef {
+                    kind: TypeDefKind::Struct,
+                    name: "Vec".to_string(),
+                    type_params: vec!["T".to_string()],
+                    fields: std::collections::HashMap::new(),
+                    variants: std::collections::HashMap::new(),
+                    methods: std::collections::HashMap::new(),
+                    doc_comment: None,
+                    field_order: vec![],
+                    is_indirect: true,
+                },
+            );
+            m
+        };
+        let vec_named = Ty::Named {
+            name: "Vec".into(),
+            args: vec![Ty::I32],
+            builtin: None,
+        };
+        assert_eq!(
+            resolve_vec_method("push", &vec_named, &vec_handle_defs),
+            Some("hew_vec_push_ptr")
+        );
+        assert_eq!(
+            resolve_vec_method("pop", &vec_named, &vec_handle_defs),
+            Some("hew_vec_pop_ptr")
+        );
+        assert_eq!(
+            resolve_vec_method("get", &vec_named, &vec_handle_defs),
+            Some("hew_vec_get_ptr")
+        );
+        assert_eq!(
+            resolve_vec_method("set", &vec_named, &vec_handle_defs),
+            Some("hew_vec_set_ptr")
+        );
+        assert_eq!(
+            resolve_vec_method("contains", &vec_named, &vec_handle_defs),
+            None
+        );
+
+        // Value-record named element (`is_indirect = false`) — routes
+        // through the layout-descriptor protocol. The checker turns this
+        // suffix into a precise fail-closed diagnostic until Stage 3a
+        // Step 2 lands the runtime BitCopy ops.
+        let record_defs = {
+            use crate::check::{TypeDef, TypeDefKind};
+            let mut m = std::collections::HashMap::new();
+            m.insert(
+                "Point".to_string(),
+                TypeDef {
+                    kind: TypeDefKind::Struct,
+                    name: "Point".to_string(),
+                    type_params: vec![],
+                    fields: std::collections::HashMap::new(),
+                    variants: std::collections::HashMap::new(),
+                    methods: std::collections::HashMap::new(),
+                    doc_comment: None,
+                    field_order: vec![],
+                    is_indirect: false,
+                },
+            );
+            m
+        };
+        let point = Ty::Named {
+            name: "Point".into(),
             args: vec![],
             builtin: None,
         };
-        assert_eq!(resolve_vec_method("push", &named), Some("hew_vec_push_ptr"));
-        assert_eq!(resolve_vec_method("pop", &named), Some("hew_vec_pop_ptr"));
-        assert_eq!(resolve_vec_method("get", &named), Some("hew_vec_get_ptr"));
-        assert_eq!(resolve_vec_method("set", &named), Some("hew_vec_set_ptr"));
-        assert_eq!(resolve_vec_method("contains", &named), None);
+        assert_eq!(
+            resolve_vec_method("push", &point, &record_defs),
+            Some("hew_vec_push_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("pop", &point, &record_defs),
+            Some("hew_vec_pop_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("get", &point, &record_defs),
+            Some("hew_vec_get_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("set", &point, &record_defs),
+            Some("hew_vec_set_layout")
+        );
+        // `contains` on layout-backed elements now routes through the
+        // checker-authorized `hew_vec_contains_thunk` symbol (W3.032 Slice 3e);
+        // ineligible/non-Copy layouts are blocked by the higher-layer
+        // `check_vec_method` `contains` arm before this resolver is consulted.
+        assert_eq!(
+            resolve_vec_method("contains", &point, &record_defs),
+            Some("hew_vec_contains_thunk")
+        );
+        assert_eq!(
+            resolve_vec_method("clear", &point, &record_defs),
+            Some("hew_vec_clear_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("clone", &point, &record_defs),
+            Some("hew_vec_clone_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("append", &point, &record_defs),
+            Some("hew_vec_append_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("extend", &point, &record_defs),
+            Some("hew_vec_append_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("remove", &point, &record_defs),
+            Some("hew_vec_remove_at_layout")
+        );
+
+        // Tuple element — always routes through the layout protocol,
+        // independent of any TypeDef registration.
+        let tup = Ty::Tuple(vec![Ty::I32, Ty::F64]);
+        assert_eq!(
+            resolve_vec_method("push", &tup, &type_defs),
+            Some("hew_vec_push_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("get", &tup, &type_defs),
+            Some("hew_vec_get_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("contains", &tup, &type_defs),
+            Some("hew_vec_contains_thunk")
+        );
+        assert_eq!(
+            resolve_vec_method("remove", &tup, &type_defs),
+            Some("hew_vec_remove_at_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("clear", &tup, &type_defs),
+            Some("hew_vec_clear_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("clone", &tup, &type_defs),
+            Some("hew_vec_clone_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("append", &tup, &type_defs),
+            Some("hew_vec_append_layout")
+        );
+        assert_eq!(
+            resolve_vec_method("extend", &tup, &type_defs),
+            Some("hew_vec_append_layout")
+        );
+
+        // Unknown nominal — caller cannot prove handle vs. value shape,
+        // so the substrate fails closed (no runtime symbol chosen).
+        let unknown = Ty::Named {
+            name: "NotRegistered".into(),
+            args: vec![],
+            builtin: None,
+        };
+        assert_eq!(resolve_vec_method("push", &unknown, &type_defs), None);
     }
 
     #[test]
     fn vec_element_typed_methods_fail_closed_for_unresolved_element() {
         use crate::Ty;
+        let type_defs = std::collections::HashMap::new();
         // Inference variable: no monomorphic suffix can be chosen — return
         // None so the caller leaves method_call_rewrites absent and HIR
         // fails closed.
         let var = Ty::Var(crate::ty::TypeVar::fresh());
         for method in ["push", "pop", "get", "set", "contains"] {
             assert_eq!(
-                resolve_vec_method(method, &var),
+                resolve_vec_method(method, &var, &type_defs),
                 None,
                 "Vec::{method} must not resolve when element type is a Var",
             );
         }
-        // Bool/Char are not in the runtime ABI today.
-        for elem in [Ty::Bool, Ty::Char] {
-            for method in ["push", "pop", "get", "set", "contains"] {
-                assert_eq!(
-                    resolve_vec_method(method, &elem),
-                    None,
-                    "Vec::{method} must not resolve for {elem:?}",
-                );
-            }
-        }
+        assert_eq!(resolve_vec_method("contains", &Ty::Bool, &type_defs), None);
     }
 
     #[test]
     fn vec_unsupported_methods_return_none() {
         use crate::Ty;
+        let type_defs = std::collections::HashMap::new();
         // map/filter/fold/iter are explicitly out of V0a (closure substrate).
         for method in ["map", "filter", "fold", "iter", "nonexistent"] {
-            assert_eq!(resolve_vec_method(method, &Ty::I64), None);
+            assert_eq!(resolve_vec_method(method, &Ty::I64, &type_defs), None);
         }
     }
 

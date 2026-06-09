@@ -121,14 +121,14 @@ unsafe impl Send for HewCancellationToken {}
 // token ref-counting.
 unsafe impl Sync for HewCancellationToken {}
 
-unsafe fn hew_cancel_token_retain(token: *mut HewCancellationToken) {
+unsafe fn hew_cancel_token_retain_impl(token: *mut HewCancellationToken) {
     if !token.is_null() {
         // SAFETY: caller guarantees `token` is a live token pointer.
         unsafe { (*token).refs.fetch_add(1, Ordering::Relaxed) };
     }
 }
 
-unsafe fn hew_cancel_token_release(token: *mut HewCancellationToken) {
+unsafe fn hew_cancel_token_release_impl(token: *mut HewCancellationToken) {
     if token.is_null() {
         return;
     }
@@ -143,12 +143,45 @@ unsafe fn hew_cancel_token_release(token: *mut HewCancellationToken) {
     let boxed = unsafe { Box::from_raw(token) };
     if !boxed.parent.is_null() {
         // SAFETY: child construction retained the parent for this token.
-        unsafe { hew_cancel_token_release(boxed.parent) };
+        unsafe { hew_cancel_token_release_impl(boxed.parent) };
     }
 }
 
 fn token_state(token: &HewCancellationToken) -> HewCancellationState {
     HewCancellationState::from_i32(token.state.load(Ordering::Acquire))
+}
+
+/// Increment the reference count on `token`.
+///
+/// Null is accepted and treated as a no-op.
+///
+/// # Safety
+///
+/// If non-null, `token` must be a live pointer returned by
+/// [`hew_cancel_token_new_child`] or borrowed from
+/// [`hew_task_scope_cancel_token`]. The caller must guarantee the token is not
+/// concurrently freed.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cancel_token_retain(token: *mut HewCancellationToken) {
+    // SAFETY: delegated to impl; caller upholds the same contract.
+    unsafe { hew_cancel_token_retain_impl(token) }
+}
+
+/// Decrement the reference count on `token`, freeing it when it reaches zero.
+///
+/// Null is accepted and treated as a no-op. When the last reference is dropped,
+/// the parent's reference count is decremented recursively.
+///
+/// # Safety
+///
+/// If non-null, `token` must be a live pointer returned by
+/// [`hew_cancel_token_new_child`] or borrowed from
+/// [`hew_task_scope_cancel_token`]. After this call returns the pointer must
+/// not be used (it may have been freed).
+#[no_mangle]
+pub unsafe extern "C" fn hew_cancel_token_release(token: *mut HewCancellationToken) {
+    // SAFETY: delegated to impl; caller upholds the same contract.
+    unsafe { hew_cancel_token_release_impl(token) }
 }
 
 /// Create a cancellation token derived from `parent`.
@@ -168,7 +201,7 @@ pub unsafe extern "C" fn hew_cancel_token_new_child(
     if !parent.is_null() {
         // SAFETY: caller guarantees `parent` is valid.
         unsafe {
-            hew_cancel_token_retain(parent);
+            hew_cancel_token_retain_impl(parent);
             (*parent).children_total.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -630,7 +663,7 @@ pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
         unsafe { hew_rc_drop(t.env_ptr.cast()) };
     }
     // SAFETY: cancel_token, when present, is owned by this task.
-    unsafe { hew_cancel_token_release(t.cancel_token) };
+    unsafe { hew_cancel_token_release_impl(t.cancel_token) };
 }
 
 /// Associate an environment pointer with a task.
@@ -858,7 +891,7 @@ pub unsafe extern "C" fn hew_task_set_cancel_token(
     let t = unsafe { &mut *task };
     let old = std::mem::replace(&mut t.cancel_token, token);
     // SAFETY: old, when present, was owned by this task.
-    unsafe { hew_cancel_token_release(old) };
+    unsafe { hew_cancel_token_release_impl(old) };
 }
 
 // ── Thread-spawned tasks ───────────────────────────────────────────────
@@ -1197,7 +1230,7 @@ unsafe impl Send for HewTaskScope {}
 impl Drop for HewTaskScope {
     fn drop(&mut self) {
         // SAFETY: cancel_token, when present, is owned by this scope.
-        unsafe { hew_cancel_token_release(self.cancel_token) };
+        unsafe { hew_cancel_token_release_impl(self.cancel_token) };
     }
 }
 

@@ -11,9 +11,12 @@ pub mod builtin_type;
 pub mod check;
 pub mod cycle;
 pub mod declarative_vec_ffi;
+pub(crate) mod eligibility_walker;
 pub mod env;
+pub(crate) mod eq_eligibility;
 pub mod error;
 pub mod extern_symbol;
+pub(crate) mod hash_eligibility;
 pub mod lang_items;
 pub mod lowering_facts;
 pub mod method_resolution;
@@ -34,9 +37,10 @@ pub use actor_protocol::{
 pub use builtin_type::{builtin_types, lookup_builtin_type, BuiltinType, BuiltinTypeInfo};
 pub use check::{
     builtin_function_names, ActorMethodKind, ActorSendAliasing, ActorSendCopyReason,
-    ActorStateGuard, ArmResolution, AssignTargetKind, AssignTargetShape, Checker, ChildKind,
-    ChildSlot, ClosureCaptureFact, ClosureCaptureMode, DynAssocBinding, DynCoercion, DynMethodCall,
-    DynVtableEntry, DynVtableKey, ExecutionContextReader, MachineMethodKind,
+    ActorStateGuard, ArmResolution, AssignTargetKind, AssignTargetShape, CaptureModeOrigin,
+    Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode, ClosureEscapeFact,
+    ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall,
+    DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, MachineMethodKind,
     MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily, NumericMethodLowering,
     NumericMethodOp, NumericSignedness, NumericWidth, PatternKind, SpanKey, TypeCheckOutput,
     VariantDef, VariantMatch,
@@ -48,7 +52,12 @@ pub use extern_symbol::{
 };
 pub use lang_items::{LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT};
 pub use lowering_facts::{
-    DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringFactError, LoweringKind,
+    assert_lowering_facts_consistent, hashmap_layout_key_fact,
+    hashmap_layout_key_layout_value_fact, hashset_layout_element_admissible, hashset_layout_fact,
+    DropKind, HashMapAbi, HashMapKeyType, HashMapLoweringFact, HashMapLoweringFactError,
+    HashMapLoweringFactState, HashMapValueType, HashSetAbi, HashSetElementType,
+    HashSetLoweringFact, HashSetLoweringFactError, LoweringFact, LoweringFactConsistencyError,
+    LoweringFactError, LoweringKind,
 };
 pub use resolved_ty::{BoundaryError, ResolvedTraitBound, ResolvedTy};
 pub use runtime_calling_convention::RuntimeCallingConvention;

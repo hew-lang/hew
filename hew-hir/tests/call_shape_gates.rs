@@ -461,6 +461,7 @@ fn call_shape_in_machine_transition_guard_rejected() {
         node: HirNodeId(0),
         name: "Gate".to_string(),
         type_params: Vec::new(),
+        type_param_bounds: Vec::new(),
         states: vec![HirMachineState {
             name: "Locked".to_string(),
             fields: Vec::new(),

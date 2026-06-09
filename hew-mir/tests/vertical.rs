@@ -202,11 +202,54 @@ fn resource_missing_close_method_fires_hir_diagnostic() {
 
 #[test]
 fn resource_with_close_method_emits_no_diagnostic() {
-    // A `#[resource]` type that declares `close(consuming self)` satisfies
-    // the implicit-drop contract; HIR must not emit `ResourceMissingClose`.
+    // A `#[resource]` type that declares `close` in a sibling inherent-impl
+    // block (the v0.5 ratified surface — W3.030 Q-α-B) satisfies the
+    // implicit-drop contract; HIR must not emit `ResourceMissingClose`,
+    // `ResourceCloseSourceUnsupported`, or `ResourceCloseMustReturnUnit`.
     let src = r"
         #[resource]
         type File {
+            fd: i64
+        }
+        impl File {
+            fn close(self) { }
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        !output.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            HirDiagnosticKind::ResourceMissingClose { .. }
+                | HirDiagnosticKind::ResourceCloseSourceUnsupported { .. }
+                | HirDiagnosticKind::ResourceCloseMustReturnUnit { .. }
+        )),
+        "valid @resource type with inherent-impl close must not produce \
+         resource diagnostics: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn resource_inline_close_method_fires_source_unsupported() {
+    // W3.030 Q-α-B: a `#[resource]` whose `close` body is declared inline
+    // via `TypeBodyItem::Method` is rejected at the HIR boundary. The
+    // inline form is the silent-trap path (E8) — body not lowered, drop
+    // dispatcher emits an unresolvable symbol, fail-closed at link time.
+    // Surface here as a named compile-time diagnostic.
+    let src = r"
+        #[resource]
+        type Sock {
             fd: i64
             fn close(consuming self) -> i64 { 0 }
         }
@@ -223,12 +266,171 @@ fn resource_with_close_method_emits_no_diagnostic() {
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
+    let count = output
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(d.kind, HirDiagnosticKind::ResourceCloseSourceUnsupported { ref name } if name == "Sock")
+        })
+        .count();
+    assert_eq!(
+        count, 1,
+        "ResourceCloseSourceUnsupported should fire exactly once for `Sock`; \
+         diagnostics: {:?}",
+        output.diagnostics
+    );
+    // R-4 determinism: exactly one named diagnostic on the `close` slot —
+    // no parallel `ResourceMissingClose` even though `consuming_methods`
+    // technically contains "close".
     assert!(
         !output
             .diagnostics
             .iter()
             .any(|d| matches!(d.kind, HirDiagnosticKind::ResourceMissingClose { .. })),
-        "valid @resource type must not produce ResourceMissingClose: {:?}",
+        "inline-close rejection must short-circuit `ResourceMissingClose`: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn resource_inline_and_inherent_impl_close_single_diagnostic() {
+    // R-4 determinism contract — when both the inline `TypeBodyItem::Method`
+    // form AND the inherent-impl form are declared, the inline rejection
+    // short-circuits further checks and exactly one named diagnostic fires.
+    let src = r"
+        #[resource]
+        type Conn {
+            fd: i64
+            fn close(consuming self) -> i64 { 0 }
+        }
+        impl Conn {
+            fn close(self) { }
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let resource_diags: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                HirDiagnosticKind::ResourceMissingClose { .. }
+                    | HirDiagnosticKind::ResourceCloseSourceUnsupported { .. }
+                    | HirDiagnosticKind::ResourceCloseMustReturnUnit { .. }
+            )
+        })
+        .collect();
+    assert_eq!(
+        resource_diags.len(),
+        1,
+        "expected exactly one resource-close diagnostic, got: {resource_diags:?}"
+    );
+    assert!(
+        matches!(
+            resource_diags[0].kind,
+            HirDiagnosticKind::ResourceCloseSourceUnsupported { ref name } if name == "Conn"
+        ),
+        "expected `ResourceCloseSourceUnsupported`, got: {:?}",
+        resource_diags[0].kind
+    );
+}
+
+#[test]
+fn resource_close_non_unit_return_rejected() {
+    // W3.030 Q-β-C: a `#[resource]` whose inherent-impl `close` returns
+    // anything other than unit is rejected at the HIR boundary. Fallible
+    // cleanup composes through `defer`, not through a non-unit `close`
+    // return — the implicit-drop contract dispatches on every exit path
+    // and propagating a value off, say, `Trap` or `Cancel` has no defined
+    // semantics in v0.5.
+    let src = r"
+        #[resource]
+        type Conn {
+            fd: i64
+        }
+        impl Conn {
+            fn close(self) -> i64 { 0 }
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let diag = output.diagnostics.iter().find(|d| {
+        matches!(
+            d.kind,
+            HirDiagnosticKind::ResourceCloseMustReturnUnit { ref name, ref return_ty }
+                if name == "Conn" && return_ty == "i64"
+        )
+    });
+    assert!(
+        diag.is_some(),
+        "ResourceCloseMustReturnUnit should fire for `Conn` returning `i64`; \
+         diagnostics: {:?}",
+        output.diagnostics
+    );
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::ResourceMissingClose { .. })),
+        "non-unit return must not also fire ResourceMissingClose: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn resource_close_explicit_unit_return_accepted() {
+    // Explicit `-> ()` return type is unit; same outcome as no return
+    // type. Confirms the unit detector handles the `Tuple([])` shape.
+    let src = r"
+        #[resource]
+        type Conn {
+            fd: i64
+        }
+        impl Conn {
+            fn close(self) -> () { }
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        !output.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            HirDiagnosticKind::ResourceMissingClose { .. }
+                | HirDiagnosticKind::ResourceCloseSourceUnsupported { .. }
+                | HirDiagnosticKind::ResourceCloseMustReturnUnit { .. }
+        )),
+        "`-> ()` should be treated as unit: {:?}",
         output.diagnostics
     );
 }

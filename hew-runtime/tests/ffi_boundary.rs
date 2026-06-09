@@ -64,14 +64,16 @@ use hew_runtime::string::{
 };
 use hew_runtime::vec::{
     hew_vec_clear, hew_vec_clone, hew_vec_contains_f64, hew_vec_contains_i32, hew_vec_contains_i64,
-    hew_vec_contains_str, hew_vec_free, hew_vec_get_f64, hew_vec_get_generic, hew_vec_get_i32,
-    hew_vec_get_i64, hew_vec_get_str, hew_vec_is_empty, hew_vec_len, hew_vec_new, hew_vec_new_f64,
-    hew_vec_new_generic, hew_vec_new_i64, hew_vec_new_str, hew_vec_new_with_layout,
-    hew_vec_pop_f64, hew_vec_pop_generic, hew_vec_pop_i32, hew_vec_pop_i64, hew_vec_push_f64,
-    hew_vec_push_generic, hew_vec_push_i32, hew_vec_push_i64, hew_vec_push_str,
-    hew_vec_reverse_i32, hew_vec_set_f64, hew_vec_set_generic, hew_vec_set_i32, hew_vec_set_i64,
-    hew_vec_set_str, hew_vec_sort_f64, hew_vec_sort_i32, hew_vec_sort_i64, hew_vec_swap,
-    hew_vec_truncate, HewTypeLayout, HewTypeOwnershipKind,
+    hew_vec_contains_str, hew_vec_contains_thunk, hew_vec_free, hew_vec_get_f64,
+    hew_vec_get_generic, hew_vec_get_i32, hew_vec_get_i64, hew_vec_get_layout, hew_vec_get_str,
+    hew_vec_is_empty, hew_vec_len, hew_vec_new, hew_vec_new_f64, hew_vec_new_generic,
+    hew_vec_new_i64, hew_vec_new_str, hew_vec_new_with_layout, hew_vec_pop_f64,
+    hew_vec_pop_generic, hew_vec_pop_i32, hew_vec_pop_i64, hew_vec_pop_layout, hew_vec_push_f64,
+    hew_vec_push_generic, hew_vec_push_i32, hew_vec_push_i64, hew_vec_push_layout,
+    hew_vec_push_str, hew_vec_reverse_i32, hew_vec_set_f64, hew_vec_set_generic, hew_vec_set_i32,
+    hew_vec_set_i64, hew_vec_set_layout, hew_vec_set_str, hew_vec_sort_f64, hew_vec_sort_i32,
+    hew_vec_sort_i64, hew_vec_swap, hew_vec_truncate, ElemKind, HewTypeLayout,
+    HewTypeOwnershipKind,
 };
 use hew_runtime::{hew_clear_error, hew_last_error};
 
@@ -2108,6 +2110,16 @@ mod generic_vec_tests {
         z: i32,
     }
 
+    unsafe extern "C" fn point_eq(a: *const c_void, b: *const c_void) -> i32 {
+        let lhs = unsafe { &*a.cast::<Point>() };
+        let rhs = unsafe { &*b.cast::<Point>() };
+        i32::from(lhs == rhs)
+    }
+
+    unsafe extern "C" fn point_eq_must_not_be_called(_a: *const c_void, _b: *const c_void) -> i32 {
+        panic!("empty layout Vec contains must not invoke equality thunk");
+    }
+
     #[test]
     fn push_get_struct() {
         unsafe {
@@ -2145,6 +2157,313 @@ mod generic_vec_tests {
             assert_eq!((*v).elem_size, core::mem::size_of::<Point>());
             assert_eq!(hew_vec_len(v), 0);
             hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn layout_bitcopy_record_push_get_set_pop_copies_values() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let first = Point { x: 1, y: 2, z: 3 };
+            let second = Point { x: 4, y: 5, z: 6 };
+            hew_vec_push_layout(v, (&raw const first).cast(), &raw const layout);
+            hew_vec_push_layout(v, (&raw const second).cast(), &raw const layout);
+            assert_eq!(hew_vec_len(v), 2);
+
+            let got_first = &*hew_vec_get_layout(v, 0, &raw const layout).cast::<Point>();
+            assert_eq!(*got_first, first);
+
+            let replacement = Point {
+                x: 10,
+                y: 20,
+                z: 30,
+            };
+            hew_vec_set_layout(v, 0, (&raw const replacement).cast(), &raw const layout);
+            let got_replacement = &*hew_vec_get_layout(v, 0, &raw const layout).cast::<Point>();
+            assert_eq!(*got_replacement, replacement);
+
+            let mut out = core::mem::MaybeUninit::<Point>::uninit();
+            assert_eq!(
+                hew_vec_pop_layout(v, out.as_mut_ptr().cast(), &raw const layout),
+                1
+            );
+            assert_eq!(out.assume_init(), second);
+            assert_eq!(
+                hew_vec_pop_layout(v, out.as_mut_ptr().cast(), &raw const layout),
+                1
+            );
+            assert_eq!(out.assume_init(), replacement);
+            assert_eq!(
+                hew_vec_pop_layout(v, out.as_mut_ptr().cast(), &raw const layout),
+                0
+            );
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn contains_thunk_layout_bitcopy_record_found_and_missing() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let first = Point { x: 1, y: 2, z: 3 };
+            let second = Point { x: 4, y: 5, z: 6 };
+            let missing = Point { x: 1, y: 99, z: 3 };
+            hew_vec_push_layout(v, (&raw const first).cast(), &raw const layout);
+            hew_vec_push_layout(v, (&raw const second).cast(), &raw const layout);
+
+            assert_eq!(
+                hew_vec_contains_thunk(v, (&raw const second).cast(), Some(point_eq)),
+                1
+            );
+            assert_eq!(
+                hew_vec_contains_thunk(v, (&raw const missing).cast(), Some(point_eq)),
+                0
+            );
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn contains_thunk_empty_vec_does_not_call_thunk() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let needle = Point { x: 1, y: 2, z: 3 };
+            assert_eq!(
+                hew_vec_contains_thunk(
+                    v,
+                    (&raw const needle).cast(),
+                    Some(point_eq_must_not_be_called),
+                ),
+                0
+            );
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn contains_thunk_null_vec_or_value_returns_zero() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let needle = Point { x: 1, y: 2, z: 3 };
+            assert_eq!(
+                hew_vec_contains_thunk(ptr::null(), (&raw const needle).cast(), Some(point_eq)),
+                0
+            );
+            let v = hew_vec_new_with_layout(&raw const layout);
+            assert_eq!(hew_vec_contains_thunk(v, ptr::null(), Some(point_eq)), 0);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_thunk_null_eq_fn_fails_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generic_vec_tests::helper_contains_thunk_null_eq_fn_fails_closed",
+                "--include-ignored",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "null equality thunk must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("PANIC: Vec layout contains equality thunk is null"),
+            "null equality thunk must report the fail-closed diagnostic"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[ignore = "helper for contains_thunk_null_eq_fn_fails_closed — must abort"]
+    fn helper_contains_thunk_null_eq_fn_fails_closed() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let needle = Point { x: 1, y: 2, z: 3 };
+            let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), None);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_thunk_layout_managed_fails_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generic_vec_tests::helper_contains_thunk_layout_managed_fails_closed",
+                "--include-ignored",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "layout-managed contains must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("PANIC: Vec layout-aware operation is not implemented"),
+            "layout-managed contains must report the staged fail-closed diagnostic"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[ignore = "helper for contains_thunk_layout_managed_fails_closed — must abort"]
+    fn helper_contains_thunk_layout_managed_fails_closed() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let needle = Point { x: 1, y: 2, z: 3 };
+            let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), Some(point_eq));
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_thunk_elem_kind_mismatch_fails_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generic_vec_tests::helper_contains_thunk_elem_kind_mismatch_fails_closed",
+                "--include-ignored",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "element-kind mismatch must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("PANIC: Vec layout-aware operation is not implemented"),
+            "element-kind mismatch must report the staged fail-closed diagnostic"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[ignore = "helper for contains_thunk_elem_kind_mismatch_fails_closed — must abort"]
+    fn helper_contains_thunk_elem_kind_mismatch_fails_closed() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            (*v).elem_kind = ElemKind::String;
+            let needle = Point { x: 1, y: 2, z: 3 };
+            let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), Some(point_eq));
+        }
+    }
+
+    #[test]
+    fn layout_bitcopy_tuple_payload_preserves_byte_shape() {
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        struct TuplePayload(i32, f64);
+
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<TuplePayload>(),
+            align: core::mem::align_of::<TuplePayload>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let payload = TuplePayload(7, 8.5);
+            hew_vec_push_layout(v, (&raw const payload).cast(), &raw const layout);
+            let raw = hew_vec_get_layout(v, 0, &raw const layout);
+
+            let expected = core::slice::from_raw_parts(
+                (&raw const payload).cast::<u8>(),
+                core::mem::size_of::<TuplePayload>(),
+            );
+            let got = core::slice::from_raw_parts(raw.cast::<u8>(), layout.size);
+            assert_eq!(got, expected);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn layout_managed_push_remains_fail_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generic_vec_tests::helper_layout_managed_push_remains_fail_closed",
+                "--include-ignored",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "layout-managed push must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("PANIC: Vec layout-aware operation is not implemented"),
+            "layout-managed push must report the staged fail-closed diagnostic"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[ignore = "helper for layout_managed_push_remains_fail_closed — must abort"]
+    fn helper_layout_managed_push_remains_fail_closed() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let point = Point { x: 1, y: 2, z: 3 };
+            hew_vec_push_layout(v, (&raw const point).cast(), &raw const layout);
         }
     }
 

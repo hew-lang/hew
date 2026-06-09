@@ -80,6 +80,15 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_actor_monitor",
     "hew_actor_send_by_id",
     "hew_actor_spawn",
+    // --- Cancellation-token retain/release (ABI pin) -------------
+    // `hew_cancel_token_release(token: *mut HewCancellationToken) -> void`
+    // (`hew-runtime/src/task_scope.rs`). Decrements the token's refcount;
+    // frees when it reaches zero, releasing the parent reference recursively.
+    "hew_cancel_token_release",
+    // `hew_cancel_token_retain(token: *mut HewCancellationToken) -> void`
+    // (`hew-runtime/src/task_scope.rs`). Increments the token's refcount.
+    // Null-safe.
+    "hew_cancel_token_retain",
     // --- Duplex<S, R> dual-queue substrate ----------------------
     "hew_duplex_clone",
     "hew_duplex_close",
@@ -101,6 +110,46 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_duration_mins",
     "hew_duration_nanos",
     "hew_duration_secs",
+    // --- Trait-object heap-box storage ABI (W3.031 Stage 0) -----
+    // `hew_dyn_box_alloc(size: usize, align: usize) -> *mut u8`
+    // `hew_dyn_box_free(ptr: *mut u8, size: usize, align: usize)`
+    // (`hew-runtime/src/trait_object.rs`). Heap storage for
+    // return-by-value `dyn Trait` values: the callee allocates,
+    // memcpy's the concrete value in, and returns the fat pointer;
+    // the receiving `DropKind::TraitObject { storage: HeapBoxed }`
+    // ritual runs vtable slot 0 then frees the buffer (size/align
+    // sourced from vtable prefix slots 1 and 2). Both entries fail
+    // closed on align==0 / null ptr / invalid Layout — see the
+    // module doc in trait_object.rs for the convention. Companion
+    // dispatch diagnostic `hew_vtable_dispatch_panic_on_oob` lives
+    // further down this list under its own `hew_v*` block; the
+    // surfaces share a lane plan (W3.031 §1.7.3) but the allowlist
+    // is sorted lex for binary-search correctness.
+    "hew_dyn_box_alloc",
+    "hew_dyn_box_free",
+    // --- Layout-backed HashMap surface (W3.003 C-1b) ------------
+    // Variable-stride open-addressing map keyed by opaque blobs whose
+    // identity is delegated to caller-supplied hash/eq thunks. Sibling
+    // of the string-keyed `hew_hashmap_*_impl` entries in
+    // `scripts/jit-symbol-classification.toml`; codegen for the layout
+    // path lands in C-3 and will reach `Instr::CallRuntimeAbi` then.
+    "hew_hashmap_contains_key_layout",
+    "hew_hashmap_free_layout",
+    "hew_hashmap_get_layout",
+    "hew_hashmap_insert_layout",
+    "hew_hashmap_len_layout",
+    "hew_hashmap_new_with_layout",
+    "hew_hashmap_remove_layout",
+    // --- Layout-backed HashSet surface (W3.003 C-1c) -------------
+    // Thin wrapper over the layout HashMap that fixes val_layout to the
+    // ZST (size=0, align=1) marker. All probe/hash/eq work is delegated
+    // to the C-1b ABI above; codegen for the layout path lands in C-3.
+    "hew_hashset_contains_layout",
+    "hew_hashset_free_layout",
+    "hew_hashset_insert_layout",
+    "hew_hashset_len_layout",
+    "hew_hashset_new_with_layout",
+    "hew_hashset_remove_layout",
     "hew_instant_duration_since",
     "hew_instant_elapsed",
     "hew_instant_now",
@@ -114,6 +163,15 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_lambda_actor_weak_clone",
     "hew_lambda_actor_weak_drop",
     "hew_lambda_actor_weak_send",
+    // --- Option<T> runtime helpers ------------------------------------------
+    "hew_option_is_none",
+    "hew_option_is_some",
+    "hew_option_unwrap_f64",
+    "hew_option_unwrap_i32",
+    "hew_option_unwrap_i64",
+    "hew_option_unwrap_or_f64",
+    "hew_option_unwrap_or_i32",
+    "hew_option_unwrap_or_i64",
     // --- Rc allocation for task-owned closure environments --------------------
     "hew_rc_new",
     // --- RecvHalf<T> ---------------------------------------------
@@ -189,6 +247,14 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // arrives; returns the reply pointer (caller frees with libc::free)
     // or null on orphaned-ask. Does NOT consume the channel ref.
     "hew_reply_wait",
+    // --- Result<T, E> runtime helpers ---------------------------------------
+    "hew_result_is_err",
+    "hew_result_is_ok",
+    "hew_result_unwrap_f64",
+    "hew_result_unwrap_i32",
+    "hew_result_unwrap_i64",
+    "hew_result_unwrap_or_i32",
+    "hew_result_unwrap_or_i64",
     // --- Select winner-picker -----------------------------------
     // `hew_select_first(channels, count, timeout_ms) -> i32`
     // (`hew-runtime/src/reply_channel.rs:484`). Polls multiple reply
@@ -264,11 +330,12 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_task_spawn_thread",
     // --- Vec<T> indexing (C-2) ----------------------------------
     // hew_vec_get_T(v: *mut HewVec, index: i64) -> T — one per element type.
-    // Element types supported: i32, i64, f64, ptr (handle/opaque), str (returns
+    // Element types supported: bool, i32, i64, f64, ptr (handle/opaque), str (returns
     // strdup copy — caller owns; deferred to a follow-on slice for managed drop).
     // String (hew_vec_get_str) is allowlisted but not emitted by this slice's
     // MIR producer; the caller would need to manage the strdup return.
     // Lexicographic note: hew_vec_get_* < hew_vec_len (g < l).
+    "hew_vec_get_bool",
     "hew_vec_get_f64",
     "hew_vec_get_i32",
     "hew_vec_get_i64",

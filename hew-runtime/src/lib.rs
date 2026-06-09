@@ -415,6 +415,8 @@ pub mod crash;
 pub mod deque;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mailbox;
+/// Mailbox envelope payload classification and cross-node send guards.
+pub mod mailbox_envelope;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod mailbox_wasm;
 #[cfg(not(target_arch = "wasm32"))]

@@ -29,6 +29,8 @@ pub struct CrashReport {
     /// Unique ID of the crashed actor.
     pub actor_id: u64,
     /// Process identifier (PID) of the crashed actor.
+    ///
+    /// Always equals `actor_id`; kept for C-ABI layout compatibility.
     pub actor_pid: u64,
     /// Signal number that caused the crash (SIGSEGV=11, SIGBUS=7, etc.).
     pub signal: i32,
@@ -165,7 +167,7 @@ fn push_crash_report_to(log: &PoisonSafe<VecDeque<CrashReport>>, report: CrashRe
 pub(crate) fn record_injected_crash(actor_id: u64) {
     let report = CrashReport {
         actor_id,
-        actor_pid: 0,
+        actor_pid: actor_id,
         signal: -1, // Indicates injected fault, not a real signal.
         signal_code: 0,
         fault_addr: 0,
@@ -389,16 +391,16 @@ pub(crate) unsafe fn build_crash_report(
 
     // SAFETY: Caller guarantees actor is valid.
     {
-        let (id, pid) = if actor.is_null() {
-            (0, 0)
+        let id = if actor.is_null() {
+            0
         } else {
             // SAFETY: Caller guarantees actor pointer is valid.
-            unsafe { ((*actor).id, (*actor).pid) }
+            unsafe { (*actor).id }
         };
 
         CrashReport {
             actor_id: id,
-            actor_pid: pid,
+            actor_pid: id,
             signal,
             signal_code,
             fault_addr,

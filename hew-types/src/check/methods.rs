@@ -4,7 +4,13 @@
 )]
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
+use crate::check::admissibility::compute_copy_record_layout;
 use crate::check::calls::SignatureArgApplication;
+use crate::hash_eligibility::{ty_is_hash_eligible, HashEligibility};
+use crate::lowering_facts::{
+    hashmap_layout_key_fact, hashmap_layout_key_layout_value_fact, hashset_layout_fact,
+    HashMapValueType,
+};
 use crate::method_resolution::{
     collect_method_sigs_for_receiver, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
@@ -51,6 +57,11 @@ impl Checker {
     /// checker error and is **not** inserted into the returned map.  Downstream
     /// codegen (`requireLoweringFactOf`) will detect the missing entry and fail
     /// closed rather than guessing.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "branching over HashSet element types including the new C-2c Named path is \
+                  inherently wide; factoring into sub-functions would obscure the single-pass flow"
+    )]
     pub(super) fn finalize_lowering_facts(&mut self) -> HashMap<SpanKey, LoweringFact> {
         let pending = std::mem::take(&mut self.pending_lowering_facts);
         let mut result = HashMap::with_capacity(pending.len());
@@ -109,9 +120,134 @@ impl Checker {
                     // Fact NOT inserted — downstream will fail closed.
                 }
                 Err(LoweringFactError::UnsupportedHashSetElementType { .. }) => {
-                    // The checker already rejected unsupported element types via
-                    // validate_hashset_element_type / validate_hashset_owned_element_type.
-                    // Skip silently to avoid a duplicate diagnostic.
+                    // For Named (record) element types: run hash-eligibility (C-2c).
+                    // The inline `validate_hashset_element_type` pass already admitted Named
+                    // types optimistically; here we either produce a HashSetLoweringFact
+                    // (Eligible) or a diagnostic (ineligible).
+                    if let Ty::Named { name, .. } = &resolved_ty {
+                        let type_defs_snapshot = self.type_defs.clone();
+                        match ty_is_hash_eligible(&resolved_ty, &type_defs_snapshot) {
+                            HashEligibility::Eligible => {
+                                if let Some(ref td) = self.lookup_type_def(name) {
+                                    if let Some((elem_size, elem_align)) =
+                                        compute_copy_record_layout(td, &type_defs_snapshot)
+                                    {
+                                        let fact = hashset_layout_fact(
+                                            name.clone(),
+                                            elem_size,
+                                            elem_align,
+                                        );
+                                        self.hashset_layout_facts.insert(span_key, fact);
+                                        // Fact inserted into hashset_layout_facts;
+                                        // NOT inserted into lowering_facts result.
+                                    } else {
+                                        let span = span_key.start..span_key.end;
+                                        let mut err = crate::error::TypeError::new(
+                                            TypeErrorKind::InvalidOperation,
+                                            span,
+                                            format!(
+                                                "HashSet element type `{name}` has zero size \
+                                                 or contains a type whose layout cannot be \
+                                                 determined; layout element types must have \
+                                                 non-zero size",
+                                            ),
+                                        );
+                                        if let Some(module) = &pending_fact.source_module {
+                                            err = err.with_source_module(module.clone());
+                                        }
+                                        new_errors.push(err);
+                                    }
+                                }
+                                // TypeDef not found — silently drop; lookup failure
+                                // is a pre-existing error from the type-resolution pass.
+                            }
+                            HashEligibility::IneligibleFloat(bad_ty) => {
+                                let span = span_key.start..span_key.end;
+                                let mut err = crate::error::TypeError::new(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "HashSet element type `{name}` contains a floating-point \
+                                         field (`{}`); floats are not hash-eligible because \
+                                         NaN != NaN would corrupt element lookup semantics",
+                                        bad_ty.user_facing(),
+                                    ),
+                                );
+                                if let Some(module) = &pending_fact.source_module {
+                                    err = err.with_source_module(module.clone());
+                                }
+                                new_errors.push(err);
+                            }
+                            HashEligibility::IneligibleManaged(bad_ty) => {
+                                let span = span_key.start..span_key.end;
+                                let msg = if bad_ty == resolved_ty {
+                                    format!(
+                                        "layout-managed HashSet elements require Copy; \
+                                         `{name}` is an indirect (managed) record and is not yet \
+                                         supported as a layout HashSet element"
+                                    )
+                                } else {
+                                    format!(
+                                        "HashSet element type `{name}` contains a managed field \
+                                         (`{}`); layout-element hashing requires fixed-size Copy \
+                                         fields — use a type without heap-managed fields",
+                                        bad_ty.user_facing(),
+                                    )
+                                };
+                                let mut err = crate::error::TypeError::new(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    msg,
+                                );
+                                if let Some(module) = &pending_fact.source_module {
+                                    err = err.with_source_module(module.clone());
+                                }
+                                new_errors.push(err);
+                            }
+                            HashEligibility::IneligibleOwned(bad_ty)
+                            | HashEligibility::IneligibleTuple(bad_ty) => {
+                                let span = span_key.start..span_key.end;
+                                let mut err = crate::error::TypeError::new(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "HashSet element type `{name}` contains a field of type \
+                                         `{}` which is not a fixed-size Copy type; layout element \
+                                         types require all fields to be fixed-width primitives or \
+                                         nested Copy records",
+                                        bad_ty.user_facing(),
+                                    ),
+                                );
+                                if let Some(module) = &pending_fact.source_module {
+                                    err = err.with_source_module(module.clone());
+                                }
+                                new_errors.push(err);
+                            }
+                            HashEligibility::IneligibleNamedNonRecord(bad_ty) => {
+                                let span = span_key.start..span_key.end;
+                                let mut err = crate::error::TypeError::new(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "HashSet element type `{}` must be a `record`-keyword type \
+                                         to use the layout element ABI; non-record named types are \
+                                         not guaranteed to be Copy value-semantic",
+                                        bad_ty.user_facing(),
+                                    ),
+                                );
+                                if let Some(module) = &pending_fact.source_module {
+                                    err = err.with_source_module(module.clone());
+                                }
+                                new_errors.push(err);
+                            }
+                            HashEligibility::IneligibleVar | HashEligibility::IneligibleError => {
+                                // Ty::Var / Ty::Error already guarded above; silently drop.
+                            }
+                        }
+                    }
+                    // For non-Named types that are unsupported: the checker already
+                    // rejected them via validate_hashset_element_type; skip silently
+                    // to avoid a duplicate diagnostic.
                 }
             }
         }
@@ -126,11 +262,21 @@ impl Checker {
     ///
     /// * `Ty::Var` → `InferenceFailed`: inference did not resolve the type.
     /// * `Ty::Error` → silent drop: upstream already emitted a diagnostic.
-    /// * Fully-resolved unsupported pairs → already caught inline; silently
-    ///   skipped here to avoid duplicate diagnostics.
+    /// * `Ty::Named` key → hash-eligibility check via C-2a predicate; produces a
+    ///   `HashMapLoweringFact` on success or a diagnostic on failure.
+    /// * Fully-resolved scalar (String) unsupported pairs → already caught inline;
+    ///   silently skipped here to avoid duplicate diagnostics.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::single_match_else,
+        reason = "branching over HashEligibility + key/value layout paths is inherently wide; \
+                  factoring into sub-functions would obscure the flow more than help"
+    )]
     pub(super) fn finalize_hashmap_admission(&mut self) {
         let checks = std::mem::take(&mut self.deferred_hashmap_admission);
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+        let mut new_layout_facts: Vec<(SpanKey, crate::lowering_facts::HashMapLoweringFact)> =
+            Vec::new();
         // Track which (key_var, val_var) pairs have already produced a
         // diagnostic so that repeated method calls on the same unresolved
         // HashMap (e.g. `m.len(); m.is_empty()`) emit exactly one
@@ -138,7 +284,7 @@ impl Checker {
         let mut reported_var_pairs: std::collections::HashSet<(Option<TypeVar>, Option<TypeVar>)> =
             std::collections::HashSet::new();
 
-        for (_span_key, check) in checks {
+        for (span_key, check) in checks {
             let resolved_key = self
                 .subst
                 .resolve(&check.key_ty)
@@ -194,13 +340,277 @@ impl Checker {
                     err = err.with_source_module(module);
                 }
                 new_errors.push(err);
+                continue;
             }
 
-            // Fully resolved but unsupported pair: the inline check should have
-            // already emitted a diagnostic. Skip to avoid duplicates.
+            // Named record key: run hash-eligibility check and produce a
+            // HashMapLoweringFact (C-2c). Fail closed with a diagnostic on
+            // any ineligibility reason.
+            if let Ty::Named { name: key_name, .. } = &resolved_key {
+                // Collect the type_defs snapshot before borrowing self mutably below.
+                let type_defs_snapshot = self.type_defs.clone();
+
+                match ty_is_hash_eligible(&resolved_key, &type_defs_snapshot) {
+                    HashEligibility::Eligible => {
+                        // Key is eligible. Look up the TypeDef for layout computation.
+                        let key_type_def = self.lookup_type_def(key_name);
+                        match key_type_def {
+                            Some(ref td) => {
+                                match compute_copy_record_layout(td, &type_defs_snapshot) {
+                                    Some((key_size, key_align)) => {
+                                        // Determine value type routing.
+                                        match HashMapValueType::from_ty(&resolved_val) {
+                                            Ok(HashMapValueType::Layout) => {
+                                                // Value is also a Named record.
+                                                if let Ty::Named { name: val_name, .. } =
+                                                    &resolved_val
+                                                {
+                                                    let val_type_def =
+                                                        self.lookup_type_def(val_name);
+                                                    match val_type_def {
+                                                        Some(ref vtd) => {
+                                                            match compute_copy_record_layout(
+                                                                vtd,
+                                                                &type_defs_snapshot,
+                                                            ) {
+                                                                Some((val_size, val_align)) => {
+                                                                    let fact =
+                                                                        hashmap_layout_key_layout_value_fact(
+                                                                            key_name.clone(),
+                                                                            key_size,
+                                                                            key_align,
+                                                                            val_name,
+                                                                            val_size,
+                                                                            val_align,
+                                                                        );
+                                                                    new_layout_facts
+                                                                        .push((span_key, fact));
+                                                                }
+                                                                None => {
+                                                                    let mut err = crate::error::TypeError::new(
+                                                                        TypeErrorKind::InvalidOperation,
+                                                                        check.span.clone(),
+                                                                        format!(
+                                                                            "HashMap value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
+                                                                        ),
+                                                                    );
+                                                                    if let Some(module) =
+                                                                        check.source_module
+                                                                    {
+                                                                        err = err
+                                                                            .with_source_module(
+                                                                                module,
+                                                                            );
+                                                                    }
+                                                                    new_errors.push(err);
+                                                                }
+                                                            }
+                                                        }
+                                                        None => {
+                                                            let mut err = crate::error::TypeError::new(
+                                                                TypeErrorKind::InvalidOperation,
+                                                                check.span.clone(),
+                                                                format!(
+                                                                    "HashMap value type `{val_name}` is not defined; cannot compute layout for layout-key HashMap",
+                                                                ),
+                                                            );
+                                                            if let Some(module) =
+                                                                check.source_module
+                                                            {
+                                                                err =
+                                                                    err.with_source_module(module);
+                                                            }
+                                                            new_errors.push(err);
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Should not happen: HashMapValueType::Layout implies Named.
+                                                    unreachable!(
+                                                        "HashMapValueType::Layout produced for non-Named value type"
+                                                    );
+                                                }
+                                            }
+                                            Ok(val_type) => {
+                                                // Scalar value path.
+                                                let fact = hashmap_layout_key_fact(
+                                                    key_name.clone(),
+                                                    key_size,
+                                                    key_align,
+                                                    val_type,
+                                                );
+                                                new_layout_facts.push((span_key, fact));
+                                            }
+                                            Err(e) => {
+                                                let mut err = crate::error::TypeError::new(
+                                                    TypeErrorKind::InvalidOperation,
+                                                    check.span.clone(),
+                                                    format!(
+                                                        "HashMap<{key_name}, {}> value type is not supported for layout-key HashMap: {:?}",
+                                                        resolved_val.user_facing(),
+                                                        e,
+                                                    ),
+                                                );
+                                                if let Some(module) = check.source_module {
+                                                    err = err.with_source_module(module);
+                                                }
+                                                new_errors.push(err);
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        // Zero-size record or layout cannot be computed.
+                                        let mut err = crate::error::TypeError::new(
+                                            TypeErrorKind::InvalidOperation,
+                                            check.span.clone(),
+                                            format!(
+                                                "HashMap key type `{key_name}` has zero size or contains a type \
+                                                 whose layout cannot be determined; layout keys must have non-zero size",
+                                            ),
+                                        );
+                                        if let Some(module) = check.source_module {
+                                            err = err.with_source_module(module);
+                                        }
+                                        new_errors.push(err);
+                                    }
+                                }
+                            }
+                            None => {
+                                // TypeDef not found — the Named type is not a user-defined record in scope.
+                                let mut err = crate::error::TypeError::new(
+                                    TypeErrorKind::InvalidOperation,
+                                    check.span.clone(),
+                                    format!(
+                                        "HashMap key type `{key_name}` is not defined; \
+                                         cannot verify hash eligibility for layout-key HashMap",
+                                    ),
+                                );
+                                if let Some(module) = check.source_module {
+                                    err = err.with_source_module(module);
+                                }
+                                new_errors.push(err);
+                            }
+                        }
+                    }
+
+                    HashEligibility::IneligibleFloat(bad_ty) => {
+                        let mut err = crate::error::TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            check.span.clone(),
+                            format!(
+                                "HashMap key type `{key_name}` contains a floating-point field \
+                                 (`{}`); floats are not hash-eligible because NaN != NaN would \
+                                 corrupt key lookup semantics",
+                                bad_ty.user_facing(),
+                            ),
+                        );
+                        if let Some(module) = check.source_module {
+                            err = err.with_source_module(module);
+                        }
+                        new_errors.push(err);
+                    }
+
+                    HashEligibility::IneligibleManaged(bad_ty) => {
+                        // Distinguish: is the key itself a managed (indirect) record,
+                        // or does it contain a managed field?
+                        let msg = if bad_ty == resolved_key {
+                            format!(
+                                "layout-managed HashMap keys require Copy; \
+                                 `{key_name}` is an indirect (managed) record and is not yet supported \
+                                 as a layout HashMap key"
+                            )
+                        } else {
+                            format!(
+                                "HashMap key type `{key_name}` contains a managed field \
+                                 (`{}`); layout-key hashing requires fixed-size Copy fields — \
+                                 use a type without heap-managed fields as the key",
+                                bad_ty.user_facing(),
+                            )
+                        };
+                        let mut err = crate::error::TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            check.span.clone(),
+                            msg,
+                        );
+                        if let Some(module) = check.source_module {
+                            err = err.with_source_module(module);
+                        }
+                        new_errors.push(err);
+                    }
+
+                    HashEligibility::IneligibleOwned(bad_ty) => {
+                        let mut err = crate::error::TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            check.span.clone(),
+                            format!(
+                                "HashMap key type `{key_name}` contains a field of type `{}` \
+                                 which is not a fixed-size Copy type; layout keys require all fields \
+                                 to be fixed-width primitives or nested Copy records",
+                                bad_ty.user_facing(),
+                            ),
+                        );
+                        if let Some(module) = check.source_module {
+                            err = err.with_source_module(module);
+                        }
+                        new_errors.push(err);
+                    }
+
+                    HashEligibility::IneligibleTuple(_) => {
+                        let mut err = crate::error::TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            check.span.clone(),
+                            format!(
+                                "HashMap key type `{key_name}` is or contains a tuple; \
+                                 tuple keys are not supported for the layout key ABI",
+                            ),
+                        );
+                        if let Some(module) = check.source_module {
+                            err = err.with_source_module(module);
+                        }
+                        new_errors.push(err);
+                    }
+
+                    HashEligibility::IneligibleNamedNonRecord(bad_ty) => {
+                        let kind_name = self.lookup_type_def(key_name).map_or(
+                            "a non-record type",
+                            |td| match td.kind {
+                                TypeDefKind::Enum => "an enum",
+                                TypeDefKind::Struct => "a struct",
+                                TypeDefKind::Actor => "an actor",
+                                TypeDefKind::Machine => "a machine",
+                                TypeDefKind::Record => "a record",
+                            },
+                        );
+                        let mut err = crate::error::TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            check.span.clone(),
+                            format!(
+                                "HashMap key type `{}` must be a `record`-keyword type to use the \
+                                 layout key ABI; found {kind_name} which is not guaranteed Copy \
+                                 value-semantic",
+                                bad_ty.user_facing(),
+                            ),
+                        );
+                        if let Some(module) = check.source_module {
+                            err = err.with_source_module(module);
+                        }
+                        new_errors.push(err);
+                    }
+
+                    HashEligibility::IneligibleVar | HashEligibility::IneligibleError => {
+                        // Ty::Var / Ty::Error already handled above; should not reach here
+                        // for a Named key. Fail closed silently.
+                    }
+                }
+            }
+
+            // Fully resolved scalar (String/i64/u64) unsupported pair: the inline
+            // check should have already emitted a diagnostic. Skip to avoid duplicates.
         }
 
         self.errors.extend(new_errors);
+        for (span_key, fact) in new_layout_facts {
+            self.hashmap_layout_facts.insert(span_key, fact);
+        }
     }
 
     /// Drain `deferred_hashset_admission`, resolve element types through the
@@ -539,6 +949,134 @@ impl Checker {
             return false;
         }
         self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+        true
+    }
+
+    fn option_result_runtime_symbol_exists(
+        receiver_type_name: &str,
+        method: &str,
+        symbol: &str,
+    ) -> bool {
+        match receiver_type_name {
+            "Option" => matches!(
+                (method, symbol),
+                ("is_some", "hew_option_is_some")
+                    | ("is_none", "hew_option_is_none")
+                    | (
+                        "unwrap",
+                        "hew_option_unwrap_i32" | "hew_option_unwrap_i64" | "hew_option_unwrap_f64",
+                    )
+                    | (
+                        "unwrap_or",
+                        "hew_option_unwrap_or_i32"
+                            | "hew_option_unwrap_or_i64"
+                            | "hew_option_unwrap_or_f64",
+                    )
+            ),
+            "Result" => matches!(
+                (method, symbol),
+                ("is_ok", "hew_result_is_ok")
+                    | ("is_err", "hew_result_is_err")
+                    | (
+                        "unwrap",
+                        "hew_result_unwrap_i32" | "hew_result_unwrap_i64" | "hew_result_unwrap_f64",
+                    )
+                    | (
+                        "unwrap_or",
+                        "hew_result_unwrap_or_i32" | "hew_result_unwrap_or_i64"
+                    )
+            ),
+            _ => true,
+        }
+    }
+
+    fn record_named_extern_symbol_rewrite_if_any(
+        &mut self,
+        receiver_type_name: &str,
+        type_args: &[Ty],
+        method: &str,
+        sig: &FnSig,
+        span: &Span,
+    ) -> bool {
+        let Some(spec) = &sig.extern_symbol else {
+            return false;
+        };
+        if spec.template.is_monomorphic() {
+            if !Self::option_result_runtime_symbol_exists(
+                receiver_type_name,
+                method,
+                &spec.template.raw,
+            ) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "cannot lower {receiver_type_name}::{method}: runtime symbol `{}` \
+                         is not supported for this receiver",
+                        spec.template.raw
+                    ),
+                );
+                return false;
+            }
+            self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+            return true;
+        }
+        if !matches!(receiver_type_name, "Option" | "Result") {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "extern-symbol template `{}` is not monomorphic; this receiver dispatch \
+                     path only supports monomorphic FFI symbols",
+                    spec.template.raw
+                ),
+            );
+            return false;
+        }
+        let Some(type_arg) = type_args.first() else {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "extern-symbol template `{}` requires receiver type argument `T`, \
+                     but `{receiver_type_name}` has no type argument",
+                    spec.template.raw
+                ),
+            );
+            return false;
+        };
+        let resolved_type_arg = self.subst.resolve(type_arg).materialize_literal_defaults();
+        let expanded = match spec.template.expand(&resolved_type_arg, &self.type_defs) {
+            Ok(symbol) => symbol,
+            Err(crate::extern_symbol::TemplateExpansionError::UnsupportedCallingConvention {
+                expected_symbol,
+                convention,
+            }) => {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "cannot lower {receiver_type_name}::{method}: extern-symbol template \
+                         `{}` expands to unsupported runtime calling convention {:?} \
+                         (would require `{expected_symbol}`)",
+                        spec.template.raw, convention
+                    ),
+                );
+                return false;
+            }
+        };
+        if !Self::option_result_runtime_symbol_exists(receiver_type_name, method, &expanded) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "cannot lower {receiver_type_name}::{method}: runtime symbol `{expanded}` \
+                     is not supported for this receiver"
+                ),
+            );
+            return false;
+        }
+        self.record_runtime_method_call_rewrite(span, expanded);
         true
     }
 
@@ -1859,6 +2397,117 @@ impl Checker {
         }
     }
 
+    fn report_vec_contains_layout_equality_gate(
+        &mut self,
+        elem_ty: &Ty,
+        eligibility: crate::eq_eligibility::EqEligibility,
+        span: &Span,
+    ) {
+        use crate::eq_eligibility::EqEligibility;
+
+        let reason = match eligibility {
+            EqEligibility::Eligible => format!(
+                "`Vec::contains` on layout-backed element type `{}` is equality-eligible, \
+                 but layout contains is not yet supported for this element type",
+                elem_ty.user_facing()
+            ),
+            EqEligibility::IneligibleFloat(float_ty) => format!(
+                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
+                 equality, but `{}` is or contains floating-point data",
+                elem_ty.user_facing(),
+                float_ty.user_facing()
+            ),
+            EqEligibility::IneligibleManaged(managed_ty) => format!(
+                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
+                 equality, but `{}` is layout-managed/non-Copy data",
+                elem_ty.user_facing(),
+                managed_ty.user_facing()
+            ),
+            EqEligibility::IneligibleOwned(owned_ty) => format!(
+                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
+                 equality, but `{}` is owned or heap-backed data",
+                elem_ty.user_facing(),
+                owned_ty.user_facing()
+            ),
+            EqEligibility::IneligibleUnknown => format!(
+                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
+                 equality, but equality eligibility is unknown",
+                elem_ty.user_facing()
+            ),
+        };
+
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "{reason}; no runtime method rewrite was recorded, and layout Vec contains \
+                 remains fail-closed"
+            ),
+        );
+    }
+
+    /// Resolve a `Vec<T>` method to its runtime C-ABI symbol and emit a
+    /// precise fail-closed diagnostic when the element type would require
+    /// layout-descriptor support that is outside the current runtime/codegen
+    /// surface.
+    ///
+    /// Returns `None` in two distinct fail-closed conditions:
+    ///   1. The element type's runtime suffix cannot be determined
+    ///      (e.g. inference variable, unresolved nominal) — caller
+    ///      leaves `method_call_rewrites` absent, downstream layers
+    ///      fail closed without a user-facing error here.
+    ///   2. The element type is record/tuple (`_layout` suffix) but the
+    ///      method is not one of the `BitCopy` Plain operations currently
+    ///      backed by runtime + codegen (`push`, `get`, `set`, `pop`) or
+    ///      the element is not `Copy` — a precise
+    ///      `TypeErrorKind::InvalidOperation` is reported at `span` naming
+    ///      the would-be runtime symbol, and the rewrite is NOT recorded.
+    fn resolve_vec_runtime_symbol(
+        &mut self,
+        method: &str,
+        elem_ty: &Ty,
+        span: &Span,
+    ) -> Option<&'static str> {
+        let sym = crate::stdlib::resolve_vec_method(method, elem_ty, &self.type_defs)?;
+        if sym.ends_with("_layout") {
+            let supported_bitcopy_method =
+                matches!(method, "push" | "get" | "set" | "pop" | "remove" | "clone");
+            let is_copy = self.registry.implements_marker(elem_ty, MarkerTrait::Copy);
+            if supported_bitcopy_method && is_copy {
+                return Some(sym);
+            }
+
+            // Stage 3a fail-closed boundary: layout-backed Vec operations are
+            // only lifted when type routing, runtime support, and codegen
+            // pseudo-FFI operand synthesis all exist.  Keep LayoutManaged
+            // records/tuples and unsupported layout methods out of the rewrite
+            // side table so downstream layers never fabricate a value.
+            let reason = if supported_bitcopy_method {
+                format!(
+                    "element type `{}` is not `Copy`; layout-managed Vec elements \
+                     require clone/drop semantics that are not implemented",
+                    elem_ty.user_facing()
+                )
+            } else {
+                format!(
+                    "`Vec::{method}` on layout-backed element type `{}` is not \
+                     runtime-backed yet",
+                    elem_ty.user_facing()
+                )
+            };
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "{reason} (runtime symbol `{sym}`); supported layout Vec \
+                     methods are push/get/set/pop/remove/clone for Copy record/tuple elements"
+                ),
+            );
+            return None;
+        }
+        Some(sym)
+    }
+
     #[allow(clippy::too_many_lines, reason = "Vec has many methods to type-check")]
     pub(super) fn check_vec_method(
         &mut self,
@@ -1887,7 +2536,9 @@ impl Checker {
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("push", &resolved_elem) {
+                if let Some(c_symbol) =
+                    self.resolve_vec_runtime_symbol("push", &resolved_elem, span)
+                {
                     self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 Ty::Unit
@@ -1896,7 +2547,8 @@ impl Checker {
                 self.check_arity(args, 0, "`Vec::pop`", span);
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("pop", &resolved_elem) {
+                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("pop", &resolved_elem, span)
+                {
                     self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 elem_ty.clone()
@@ -1905,18 +2557,39 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "len_vec");
                 Ty::I64
             }
-            "get" | "remove" => {
-                self.check_arity(args, 1, &format!("`Vec::{method}`"), span);
+            "get" => {
+                self.check_arity(args, 1, "`Vec::get`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::I64);
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                if let Some(c_symbol) = crate::stdlib::resolve_vec_method(method, &resolved_elem) {
+                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("get", &resolved_elem, span)
+                {
                     self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 elem_ty.clone()
+            }
+            "remove" => {
+                // `Vec::remove(index)` is index-based; it removes the element at
+                // the given position and returns nothing.  Both the generic
+                // `hew_vec_remove_at` and the layout-backed
+                // `hew_vec_remove_at_layout` have `void` C-ABI return types, so
+                // the checker-side return is `Unit`.
+                self.check_arity(args, 1, "`Vec::remove`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::I64);
+                }
+                self.reject_rc_collection_element("Vec", &elem_ty, span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Some(c_symbol) =
+                    self.resolve_vec_runtime_symbol("remove", &resolved_elem, span)
+                {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                }
+                Ty::Unit
             }
             "contains" => {
                 if let Some(arg) = args.first() {
@@ -1924,29 +2597,77 @@ impl Checker {
                     self.check_against(expr, sp, &elem_ty);
                 }
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                if let Some(c_symbol) =
-                    crate::stdlib::resolve_vec_method("contains", &resolved_elem)
+                if crate::stdlib::vec_element_runtime_suffix(&resolved_elem, &self.type_defs)
+                    == Some("layout")
+                {
+                    // W3.032 Slice 3e: lift the layout gate for equality-
+                    // eligible Copy records/tuples.  Authority chain: the
+                    // checker is the sole arbiter; HIR/MIR/codegen treat the
+                    // recorded `"hew_vec_contains_thunk"` symbol string as an
+                    // opaque eligibility certificate and do NOT re-derive
+                    // eligibility (see W3.032 plan §"Checker authority
+                    // carry").
+                    let eligibility =
+                        crate::eq_eligibility::ty_is_eq_eligible(&resolved_elem, &self.type_defs);
+                    let is_copy = self
+                        .registry
+                        .implements_marker(&resolved_elem, MarkerTrait::Copy);
+                    if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
+                        && is_copy
+                    {
+                        if let Some(c_symbol) =
+                            self.resolve_vec_runtime_symbol("contains", &resolved_elem, span)
+                        {
+                            self.record_runtime_method_call_rewrite(span, c_symbol);
+                        }
+                    } else if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
+                    {
+                        // Eligible but not Copy: layout-managed semantics
+                        // (clone/drop) are out of scope for this lane.  The
+                        // historical `_layout` fail-closed diagnostic is the
+                        // closest substitute and names the would-be symbol.
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "`Vec::contains` on layout-backed element type `{}` requires \
+                                 the element to be `Copy`; layout-managed records require \
+                                 clone/drop semantics that are not implemented for \
+                                 equality-based contains",
+                                resolved_elem.user_facing()
+                            ),
+                        );
+                    } else {
+                        self.report_vec_contains_layout_equality_gate(
+                            &resolved_elem,
+                            eligibility,
+                            span,
+                        );
+                    }
+                } else if let Some(c_symbol) =
+                    self.resolve_vec_runtime_symbol("contains", &resolved_elem, span)
                 {
                     self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 Ty::Bool
             }
             "is_empty" => {
-                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("is_empty", &elem_ty) {
+                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("is_empty", &elem_ty, span)
+                {
                     self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 Ty::Bool
             }
             "clear" => {
                 self.check_arity(args, 0, "`Vec::clear`", span);
-                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("clear", &elem_ty) {
+                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("clear", &elem_ty, span) {
                     self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 Ty::Unit
             }
             "clone" => {
                 self.check_arity(args, 0, "`Vec::clone`", span);
-                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("clone", &elem_ty) {
+                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("clone", &elem_ty, span) {
                     self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 resolved.clone()
@@ -1962,7 +2683,8 @@ impl Checker {
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                if let Some(c_symbol) = crate::stdlib::resolve_vec_method("set", &resolved_elem) {
+                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("set", &resolved_elem, span)
+                {
                     self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 Ty::Unit
@@ -1973,7 +2695,7 @@ impl Checker {
                     self.check_against(expr, sp, receiver_ty);
                 }
                 self.reject_rc_collection_element("Vec", &elem_ty, span);
-                if let Some(c_symbol) = crate::stdlib::resolve_vec_method(method, &elem_ty) {
+                if let Some(c_symbol) = self.resolve_vec_runtime_symbol(method, &elem_ty, span) {
                     self.record_runtime_method_call_rewrite(span, c_symbol);
                 }
                 Ty::Unit
@@ -3624,7 +4346,9 @@ impl Checker {
                         self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
                     }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, span);
+                    self.record_named_extern_symbol_rewrite_if_any(
+                        name, type_args, method, &sig, span,
+                    );
                     return applied_sig.return_type;
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.
@@ -3771,6 +4495,15 @@ impl Checker {
                                 trait_name: bound.trait_name.clone(),
                             },
                         );
+                        // Apply trait-type-param and associated-type
+                        // substitution UP FRONT so the substituted
+                        // `FnSig` can be recorded on `DynMethodCall`
+                        // alongside the slot. W3.031 Stage 1.6 makes
+                        // the typed signature self-contained on
+                        // `Instr::CallTraitMethod`; codegen never
+                        // re-derives it from the impl fn or by
+                        // walking vtable entries (per Q-β resolution).
+                        self.apply_trait_object_bound_substitutions(&mut sig, bound);
                         // Record the per-call-site vtable-slot resolution that
                         // HIR/MIR lowering will consume to emit
                         // `Instr::CallTraitMethod`. Slot convention follows
@@ -3795,6 +4528,7 @@ impl Checker {
                                         trait_name: bound.trait_name.clone(),
                                         method_name: method.to_string(),
                                         slot,
+                                        signature: sig.clone(),
                                     },
                                 );
                             }
@@ -3806,9 +4540,6 @@ impl Checker {
                             &receiver_ty,
                             span,
                         );
-                    }
-                    if let Some(bound) = found_bound {
-                        self.apply_trait_object_bound_substitutions(&mut sig, bound);
                     }
                     self.apply_instantiated_call_signature(
                         &sig,

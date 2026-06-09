@@ -535,3 +535,225 @@ machine Lifecycle<T: Resource> {
         "AST structural inequality after round-trip\n--- formatted ---\n{formatted}"
     );
 }
+
+#[test]
+fn parse_machine_where_clause_simple() {
+    // `machine M<T> where T: Trait` parses. The `where` clause is captured
+    // separately from inline bounds on `TypeParam`.
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+machine Container<T> where T: Resource {
+    state Idle;
+    state Active { item: T; }
+
+    event Start { item: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { item: event.item } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "expected clean parse, got: {:?}",
+        result.errors
+    );
+
+    let machine = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            hew_parser::ast::Item::Machine(m) if m.name == "Container" => Some(m),
+            _ => None,
+        })
+        .expect("Container machine should parse");
+
+    // Inline bounds remain empty.
+    assert_eq!(machine.type_params.len(), 1);
+    assert!(machine.type_params[0].bounds.is_empty());
+
+    // Where clause carries the predicate.
+    let where_clause = machine
+        .where_clause
+        .as_ref()
+        .expect("expected where clause to be parsed");
+    assert_eq!(where_clause.predicates.len(), 1);
+    assert_eq!(where_clause.predicates[0].bounds.len(), 1);
+    assert_eq!(where_clause.predicates[0].bounds[0].name, "Resource");
+}
+
+#[test]
+fn parse_machine_where_clause_combines_with_inline_bound() {
+    // `machine M<T: A> where T: B` parses with both the inline bound
+    // and the where-clause predicate populated on the same param; the
+    // type checker is responsible for folding them into a single
+    // per-(machine, param) bound set.
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+trait Display {
+    fn show(self) -> String;
+}
+
+machine Combined<T: Resource> where T: Display {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "expected clean parse, got: {:?}",
+        result.errors
+    );
+
+    let machine = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            hew_parser::ast::Item::Machine(m) if m.name == "Combined" => Some(m),
+            _ => None,
+        })
+        .expect("Combined machine should parse");
+
+    // Inline bound on T.
+    assert_eq!(machine.type_params.len(), 1);
+    assert_eq!(machine.type_params[0].bounds.len(), 1);
+    assert_eq!(machine.type_params[0].bounds[0].name, "Resource");
+
+    // Plus where-clause bound on T.
+    let where_clause = machine
+        .where_clause
+        .as_ref()
+        .expect("expected where clause to be parsed");
+    assert_eq!(where_clause.predicates.len(), 1);
+    assert_eq!(where_clause.predicates[0].bounds.len(), 1);
+    assert_eq!(where_clause.predicates[0].bounds[0].name, "Display");
+}
+
+#[test]
+fn parse_machine_where_clause_multi_predicate() {
+    // Multi-predicate where clause: `where T: A, U: B + C`.
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+trait Display {
+    fn show(self) -> String;
+}
+
+trait Send {
+    fn send(self);
+}
+
+machine Multi<T, U> where T: Resource, U: Display + Send {
+    state Idle;
+    state Active { left: T; right: U; }
+
+    event Start { left: T; right: U; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { left: event.left, right: event.right } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "expected clean parse, got: {:?}",
+        result.errors
+    );
+
+    let machine = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            hew_parser::ast::Item::Machine(m) if m.name == "Multi" => Some(m),
+            _ => None,
+        })
+        .expect("Multi machine should parse");
+
+    let where_clause = machine
+        .where_clause
+        .as_ref()
+        .expect("expected where clause to be parsed");
+    assert_eq!(where_clause.predicates.len(), 2);
+    assert_eq!(where_clause.predicates[0].bounds.len(), 1);
+    assert_eq!(where_clause.predicates[0].bounds[0].name, "Resource");
+    assert_eq!(where_clause.predicates[1].bounds.len(), 2);
+    assert_eq!(where_clause.predicates[1].bounds[0].name, "Display");
+    assert_eq!(where_clause.predicates[1].bounds[1].name, "Send");
+}
+
+#[test]
+fn machine_where_clause_round_trips_through_formatter() {
+    // Combined inline + where → format → reparse: where clause survives.
+    let source = r"trait Resource {
+    fn close(self);
+}
+
+trait Display {
+    fn show(self) -> String;
+}
+
+machine Combined<T: Resource> where T: Display {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "initial parse errors: {:?}",
+        parsed.errors
+    );
+
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    assert!(
+        formatted.contains("where T: Display"),
+        "formatted output should preserve `where` clause; got:\n{formatted}"
+    );
+
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "reparse of formatted source failed: {:?}\n\n--- formatted ---\n{}",
+        reparsed.errors,
+        formatted
+    );
+
+    assert!(
+        hew_parser::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+        "AST structural inequality after round-trip\n--- formatted ---\n{formatted}"
+    );
+}

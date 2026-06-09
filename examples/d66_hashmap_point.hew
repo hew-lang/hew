@@ -1,0 +1,79 @@
+// D66 — self-hosted layout-HashMap / layout-HashSet example
+// W3.003-C: HashMap<Point, i64> and HashSet<Point> via alignment-aware layout ABI.
+//
+// All HashMap/HashSet operations are currently commented because the stdlib
+// method-rewrite surface is in flux in v05-integration: HashMap::new resolves
+// to UnresolvedSymbol and HashMap method calls produce MethodCallNoRewrite at
+// the checker rewrite layer. Active code here only demonstrates the record type
+// that will eventually serve as a layout key.
+//
+// Uncomment the scalar-keyed sections after the HashMap/HashSet stdlib catalog
+// rewrites land. Uncomment the layout-keyed sections after C-3 codegen thunks
+// land (hew_hashmap_new_with_layout ABI + field-typed hash/eq thunks,
+// W3.003-C C-3c + adjacent stdlib catalog work).
+//
+// What this example exercises today (hew check passes):
+//   - type Point declaration (Copy Plain named record, hash-eligible i64 fields)
+//   - record construction to confirm the type is usable
+//
+// Target surface (scalar path — uncomment when stdlib catalog rewrites land):
+//   - HashMap<string, i64>:       new / insert / get / contains_key / remove / len
+//   - HashMap<string, bool/char/duration>: admitted on the same scalar ABI path
+//   - HashSet<i64>:               new / insert / contains / remove
+//
+// Target surface (layout path — uncomment after W3.003-C C-3 lands):
+//   - HashMap<Point, i64>:  new / insert / get / contains_key / remove / len
+//   - HashSet<Point>:       new / insert / contains / remove
+
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn main() {
+    // Record construction is currently admitted — demonstrates Point is a valid
+    // Copy Plain named record with hash-eligible integer fields.
+    let _p = Point { x: 0, y: 0 };
+
+    // ── Scalar path (commented — stdlib method-rewrite surface in flux) ────────
+    //
+    // let scores: HashMap<string, i64> = HashMap::new();
+    // scores.insert("origin", 0);
+    // scores.insert("a", 10);
+    // scores.insert("b", 20);
+    // let _has_origin = scores.contains_key("origin");
+    // let _score_a    = scores.get("a");
+    // scores.remove("b");
+    // let _n = scores.len();
+    //
+    // // bool, char, duration are admitted on the same scalar ABI path:
+    // let flags: HashMap<string, bool>     = HashMap::new();
+    // let chars: HashMap<string, char>     = HashMap::new();
+    // let times: HashMap<string, duration> = HashMap::new();
+    // flags.insert("enabled", true);
+    // chars.insert("sep", ',');
+    // times.insert("delay", 500ms);
+    //
+    // let ids: HashSet<i64> = HashSet::new();
+    // ids.insert(1);
+    // ids.insert(2);
+    // let _present = ids.contains(1);
+    // ids.remove(2);
+
+    // ── Layout-keyed path (commented — requires C-3 codegen thunks) ──────────
+    //
+    // let point_scores: HashMap<Point, i64> = HashMap::new();
+    // let p1 = Point { x: 0, y: 0 };
+    // let p2 = Point { x: 1, y: 2 };
+    // point_scores.insert(p1, 42);
+    // point_scores.insert(p2, 99);
+    // let _v  = point_scores.get(p1);          // Option<i64>
+    // let _ok = point_scores.contains_key(p2); // bool
+    // point_scores.remove(p1);
+    // let _len = point_scores.len();            // i64
+    //
+    // let point_set: HashSet<Point> = HashSet::new();
+    // point_set.insert(Point { x: 3, y: 4 });
+    // let _has_p = point_set.contains(Point { x: 3, y: 4 }); // bool
+    // point_set.remove(Point { x: 3, y: 4 });
+}

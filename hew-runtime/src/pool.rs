@@ -93,7 +93,7 @@ pub unsafe extern "C" fn hew_pool_new(name: *const c_char, strategy: c_int) -> *
 ///
 /// `pool` must be a valid pointer returned by [`hew_pool_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_pid: u64) -> c_int {
+pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_id: u64) -> c_int {
     if pool.is_null() {
         return -1;
     }
@@ -105,7 +105,7 @@ pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_pid: u64) -
     let Some(mut state) = lock_state(pool) else {
         return -1;
     };
-    state.members.push(actor_pid);
+    state.members.push(actor_id);
     0
 }
 
@@ -117,7 +117,7 @@ pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_pid: u64) -
 ///
 /// `pool` must be a valid pointer returned by [`hew_pool_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_pid: u64) -> c_int {
+pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_id: u64) -> c_int {
     if pool.is_null() {
         return -1;
     }
@@ -129,7 +129,7 @@ pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_pid: u64
     let Some(mut state) = lock_state(pool) else {
         return -1;
     };
-    if let Some(idx) = state.members.iter().position(|&pid| pid == actor_pid) {
+    if let Some(idx) = state.members.iter().position(|&pid| pid == actor_id) {
         state.members.swap_remove(idx);
         return 0;
     }

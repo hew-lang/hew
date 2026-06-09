@@ -235,6 +235,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         )
@@ -251,6 +252,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         )
@@ -490,6 +492,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -550,6 +553,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );

@@ -26,3 +26,5 @@ hew-parser = { path = "../hew-parser" }
 # Required by jit_trap_bridge.rs: libc::c_int for the sigsetjmp/siglongjmp FFI
 # declarations used in the trap recorder (same pattern as hew-runtime/src/signal.rs).
 libc.workspace = true
+# RAII-cleaned temp directories for tests that drive `emit_module` end-to-end.
+tempfile.workspace = true

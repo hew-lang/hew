@@ -672,6 +672,7 @@ mod tests {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -681,6 +682,8 @@ mod tests {
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
         }
     }
 

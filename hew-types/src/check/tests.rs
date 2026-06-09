@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::eq_eligibility::{ty_is_eq_eligible, EqEligibility};
 use crate::module_registry::ModuleRegistry;
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{ImportName, TraitMethod, TypeExpr, Visibility};
@@ -85,6 +86,446 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
 
     assert_ne!(*fresh, original);
     assert_eq!(mapping.get(&original.0), Some(&Ty::Var(*fresh)));
+}
+
+#[test]
+fn vec_copy_record_layout_methods_record_runtime_rewrites() {
+    let output = check_source(
+        r"
+        type Point { x: i64, y: i64 }
+
+        fn main() {
+            var points: Vec<Point> = [];
+            let p = Point { x: 1, y: 2 };
+            points.push(p);
+            let q = points.get(0);
+            points.set(0, q);
+            let _ = points.pop();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "Copy record layout Vec push/get/set/pop should type-check: {:#?}",
+        output.errors
+    );
+    let symbols: Vec<_> = output
+        .method_call_rewrites
+        .values()
+        .filter_map(|rewrite| match rewrite {
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. } => Some(c_symbol.as_str()),
+            _ => None,
+        })
+        .collect();
+    for expected in [
+        "hew_vec_push_layout",
+        "hew_vec_get_layout",
+        "hew_vec_set_layout",
+        "hew_vec_pop_layout",
+    ] {
+        assert!(
+            symbols.contains(&expected),
+            "missing layout rewrite {expected}; got {symbols:?}"
+        );
+    }
+}
+
+#[test]
+fn vec_copy_record_new_constructor_typechecks() {
+    let output = check_source(
+        r"
+        type Point { x: i64, y: i64 }
+
+        fn main() {
+            let points: Vec<Point> = Vec::new();
+            let _ = points.len();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "Copy record layout Vec::new should type-check: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_tuple_string_new_constructor_preserves_existing_typecheck_behavior() {
+    let output = check_source(
+        r"
+        fn main() {
+            let headers: Vec<(string, string)> = Vec::new();
+            let _ = headers.len();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "Vec<(string, string)> constructor should keep existing typecheck behavior: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_new_with_error_element_remains_error_typed() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let span = 0..8;
+    let func = (
+        Expr::FieldAccess {
+            object: Box::new((Expr::Identifier("Vec".to_string()), 0..3)),
+            field: "new".to_string(),
+        },
+        span.clone(),
+    );
+    let expected = Ty::Named {
+        name: "Vec".to_string(),
+        args: vec![Ty::Error],
+        builtin: None,
+    };
+
+    let result = checker
+        .check_call_against_expected_constructor(&func, None, &[], &expected, &span)
+        .expect("Vec::new should be recognized as a constructor");
+
+    assert_eq!(result, Ty::Error);
+    assert_eq!(
+        checker.expr_types.get(&SpanKey::from(&span)),
+        Some(&Ty::Error),
+        "Ty::Error element should record the call as error-typed"
+    );
+    assert!(
+        checker.errors.iter().all(|error| {
+            !error.message.contains("layout-managed Vec construction")
+                && !error.message.contains("hew_vec_new_with_layout")
+        }),
+        "Ty::Error element must not be classified as a valid layout Vec element: {:#?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn vec_layout_managed_record_new_remains_fail_closed() {
+    let output = check_source(
+        r"
+        type Person { name: string }
+
+        fn main() {
+            let people: Vec<Person> = Vec::new();
+            let _ = people.len();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.message.contains("hew_vec_new_with_layout")
+                && error.message.contains("not `Copy`")
+                && error.message.contains("layout-managed Vec construction")
+        }),
+        "LayoutManaged record Vec::new must fail closed, got {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_layout_remove_copy_record_records_rewrite() {
+    // W3.003: `Vec::remove(idx)` on a Copy record is now runtime-backed via
+    // `hew_vec_remove_at_layout`.  The checker must lift the gate and record
+    // the rewrite with no error; downstream codegen synthesizes the hidden
+    // layout-descriptor operand.
+    let output = check_source(
+        r"
+        type Point { x: i64, y: i64 }
+
+        fn main() {
+            var points: Vec<Point> = [];
+            points.push(Point { x: 1, y: 2 });
+            points.remove(0);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "Vec::remove on Copy layout-backed record must produce no error, got {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| {
+            matches!(rewrite, MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_vec_remove_at_layout")
+        }),
+        "Vec::remove on Copy layout-backed record must record \
+         hew_vec_remove_at_layout rewrite: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn vec_layout_unsupported_method_remains_fail_closed() {
+    // `Vec::clear` on layout-backed records has no runtime backing and
+    // must continue to fail closed.  (`Vec::remove`, `Vec::contains`,
+    // `Vec::push`, `Vec::get`, `Vec::set`, and `Vec::pop` are all lifted for
+    // Copy record/tuple elements as of W3.003 / W3.032.)
+    let output = check_source(
+        r"
+        type Point { x: i64, y: i64 }
+
+        fn main() {
+            var points: Vec<Point> = [];
+            points.push(Point { x: 1, y: 2 });
+            points.clear();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.message.contains("`Vec::clear`")
+                && error.message.contains("not")
+                && error.message.contains("runtime-backed yet")
+        }),
+        "Vec::clear on layout-backed records must fail closed, got {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().all(|rewrite| {
+            !matches!(rewrite, MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "hew_vec_clear_layout")
+        }),
+        "layout-backed Vec::clear must not record a runtime rewrite: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn vec_layout_contains_eligible_record_records_thunk_rewrite() {
+    // W3.032 Slice 3e: a Copy record with all-integer fields is
+    // equality-eligible; `Vec::contains` must record the
+    // `hew_vec_contains_thunk` rewrite and emit NO diagnostic.
+    let output = check_source(
+        r"
+        type Point { x: i64, y: i64 }
+
+        fn main() {
+            var points: Vec<Point> = [];
+            points.push(Point { x: 1, y: 2 });
+            let _ = points.contains(Point { x: 1, y: 2 });
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "equality-eligible Copy record Vec::contains must not error: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_vec_contains_thunk"
+        )),
+        "equality-eligible Copy record Vec::contains must record hew_vec_contains_thunk rewrite: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn vec_contains_eq_eligibility_classifies_layout_elements() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.type_defs.insert(
+        "Point".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Point".to_string(),
+            type_params: vec![],
+            fields: HashMap::from([("x".to_string(), Ty::I64), ("y".to_string(), Ty::I64)]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec![],
+            is_indirect: false,
+        },
+    );
+    checker.type_defs.insert(
+        "WithFloat".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "WithFloat".to_string(),
+            type_params: vec![],
+            fields: HashMap::from([("x".to_string(), Ty::F32)]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec![],
+            is_indirect: false,
+        },
+    );
+    checker.type_defs.insert(
+        "Handle".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Handle".to_string(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec![],
+            is_indirect: true,
+        },
+    );
+
+    let point = Ty::Named {
+        name: "Point".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    let with_float = Ty::Named {
+        name: "WithFloat".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    let handle = Ty::Named {
+        name: "Handle".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    let unknown = Ty::Named {
+        name: "Unknown".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+
+    assert_eq!(
+        ty_is_eq_eligible(&point, &checker.type_defs),
+        EqEligibility::Eligible
+    );
+    assert_eq!(
+        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::F64]), &checker.type_defs),
+        EqEligibility::IneligibleFloat(Ty::F64)
+    );
+    assert_eq!(
+        ty_is_eq_eligible(&with_float, &checker.type_defs),
+        EqEligibility::IneligibleFloat(Ty::F32)
+    );
+    assert_eq!(
+        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::String]), &checker.type_defs),
+        EqEligibility::IneligibleManaged(Ty::String)
+    );
+    assert_eq!(
+        ty_is_eq_eligible(&handle, &checker.type_defs),
+        EqEligibility::IneligibleOwned(handle)
+    );
+    assert_eq!(
+        ty_is_eq_eligible(&unknown, &checker.type_defs),
+        EqEligibility::IneligibleUnknown
+    );
+}
+
+#[test]
+fn vec_contains_f64_scalar_still_accepted() {
+    let output = check_source(
+        r"
+        fn main() {
+            let values: Vec<f64> = Vec::new();
+            let _ = values.contains(1.5);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "scalar Vec<f64>::contains should remain accepted: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_vec_contains_f64"
+        )),
+        "scalar Vec<f64>::contains must still route to hew_vec_contains_f64: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn vec_contains_float_record_rejected_with_eq_eligibility_diagnostic() {
+    let output = check_source(
+        r"
+        type Measurement { value: f32 }
+
+        fn main() {
+            let values: Vec<Measurement> = Vec::new();
+            let needle = Measurement { value: 1.0 };
+            let _ = values.contains(needle);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.message.contains("`Vec::contains`")
+                && error.message.contains("floating-point")
+                && error.message.contains("f32")
+        }),
+        "float-field layout Vec::contains should cite float ineligibility: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_contains_layout_managed_record_rejected_with_eq_eligibility_diagnostic() {
+    let output = check_source(
+        r#"
+        type Person { name: string }
+
+        fn main() {
+            var people: Vec<Person> = [];
+            let needle = Person { name: "ada" };
+            let _ = people.contains(needle);
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.message.contains("`Vec::contains`")
+                && error.message.contains("layout-managed/non-Copy")
+                && error.message.contains("string")
+        }),
+        "layout-managed Vec::contains should cite managed ineligibility: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_layout_managed_record_remains_fail_closed() {
+    let output = check_source(
+        r#"
+        type Person { name: string }
+
+        fn main() {
+            var people: Vec<Person> = [];
+            let p = Person { name: "ada" };
+            people.push(p);
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.message.contains("hew_vec_push_layout")
+                && error.message.contains("not `Copy`")
+                && error.message.contains("layout-managed Vec elements")
+        }),
+        "LayoutManaged record Vec::push must fail closed, got {:#?}",
+        output.errors
+    );
 }
 
 #[test]
@@ -399,6 +840,7 @@ fn centralized_hashset_admissibility_rejects_nested_rc_elements() {
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
+            field_order: vec![],
             is_indirect: false,
         },
     );
@@ -442,6 +884,7 @@ fn centralized_hashset_admissibility_rejects_named_enum_with_rc_payload() {
             )]),
             methods: HashMap::new(),
             doc_comment: None,
+            field_order: vec![],
             is_indirect: false,
         },
     );
@@ -793,6 +1236,7 @@ fn checker_output_contract_retains_valid_method_call_metadata() {
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
+            field_order: vec![],
             is_indirect: false,
         },
     )]);
@@ -915,6 +1359,7 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
+            field_order: vec![],
             is_indirect: false,
         },
     )]);
@@ -8234,6 +8679,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
+            field_order: vec![],
             is_indirect: false,
         },
     );
@@ -8360,6 +8806,7 @@ fn register_generic_wrapper(checker: &mut Checker) {
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
+            field_order: vec![],
             is_indirect: false,
         },
     );
@@ -8631,6 +9078,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
             variants: variant_fields,
             methods: HashMap::new(),
             doc_comment: None,
+            field_order: vec![],
             is_indirect: false,
         },
     );
@@ -8691,6 +9139,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
             variants: variant_fields_map,
             methods: HashMap::new(),
             doc_comment: None,
+            field_order: vec![],
             is_indirect: false,
         },
     );
@@ -9462,6 +9911,7 @@ fn make_test_type_def(
         variants: HashMap::new(),
         methods,
         doc_comment: None,
+        field_order: vec![],
         is_indirect: false,
     }
 }
@@ -10703,6 +11153,7 @@ fn structural_hardening_qualified_trait_name_matches() {
             m
         },
         doc_comment: None,
+        field_order: vec![],
         is_indirect: false,
     };
     checker.type_defs.insert("Speaker".to_string(), type_def);
@@ -10737,6 +11188,7 @@ fn structural_hardening_qualified_type_name_matches() {
             m
         },
         doc_comment: None,
+        field_order: vec![],
         is_indirect: false,
     };
     checker.type_defs.insert("Speaker".to_string(), type_def);
@@ -10771,6 +11223,7 @@ fn structural_hardening_unknown_module_qualifier_is_rejected() {
             m
         },
         doc_comment: None,
+        field_order: vec![],
         is_indirect: false,
     };
     checker.type_defs.insert("Speaker".to_string(), type_def);
@@ -15959,26 +16412,40 @@ mod for_loop_iterable_fail_closed {
         );
         assert_eq!(facts[0].ty, Ty::I32);
         assert_eq!(facts[0].mode, ClosureCaptureMode::Copy);
+        assert_eq!(facts[0].mode_origin, CaptureModeOrigin::ImplicitCopy);
     }
 
     #[test]
-    fn closure_non_copy_capture_without_move_is_rejected() {
+    fn closure_non_copy_capture_inferred_as_borrow_accepted() {
+        // A non-Copy, read-only capture without `move` type-checks
+        // cleanly and records `Borrow` / `InferredBorrow` on the
+        // capture fact.
         let output = check_source(
             r#"
             fn main() {
                 let s: string = "hew";
                 let f = || s;
+                let _ = f;
             }
             "#,
         );
         assert!(
-            output
-                .errors
-                .iter()
-                .any(|err| matches!(err.kind, TypeErrorKind::ClosureExplicitMoveRequired { .. })),
-            "non-Copy capture without move should require explicit move: {:?}",
+            output.errors.is_empty(),
+            "non-Copy read-only capture should type-check via inferred Borrow: {:?}",
             output.errors
         );
+        let s_fact = output
+            .closure_capture_facts
+            .values()
+            .flat_map(|facts| facts.iter())
+            .find(|fact| fact.name == "s")
+            .expect("capture fact for `s` must exist");
+        assert_eq!(
+            s_fact.mode,
+            ClosureCaptureMode::Borrow,
+            "read-only non-Copy capture should infer Borrow",
+        );
+        assert_eq!(s_fact.mode_origin, CaptureModeOrigin::InferredBorrow);
     }
 
     #[test]
@@ -15999,6 +16466,513 @@ mod for_loop_iterable_fail_closed {
                 .any(|err| err.kind == TypeErrorKind::UseAfterMove),
             "use after move capture should be rejected: {:?}",
             output.errors
+        );
+    }
+
+    // ── inferred Borrow / BorrowMut capture modes ────────────────────────
+
+    #[test]
+    fn closure_capture_inferred_borrow_for_println_use() {
+        // Acceptance witness: `let s = "hello"; let f = |x| s; f(0)`.
+        // The capture is non-Copy, read-only, no `move` keyword. The
+        // checker must record `Borrow` / `InferredBorrow` AND accept
+        // the program.
+        let output = check_source(
+            r#"
+            fn main() {
+                let s: string = "hello";
+                let f = |x: i32| {
+                    let _ = s;
+                    x
+                };
+                let _ = f;
+            }
+            "#,
+        );
+        assert!(
+            output.errors.is_empty(),
+            "inferred-borrow capture must be accepted: {:?}",
+            output.errors
+        );
+        let s_fact = output
+            .closure_capture_facts
+            .values()
+            .flat_map(|facts| facts.iter())
+            .find(|fact| fact.name == "s")
+            .expect("expected a capture fact for `s`");
+        assert_eq!(s_fact.mode, ClosureCaptureMode::Borrow);
+        assert_eq!(s_fact.mode_origin, CaptureModeOrigin::InferredBorrow);
+    }
+
+    #[test]
+    fn closure_capture_inferred_borrowmut_via_mutating_method_call() {
+        // Mutating method (`push`) on a captured binding promotes the
+        // inferred mode to `BorrowMut` / `InferredBorrowMut`. The
+        // assertion REQUIRES the fact to exist — a missing fact fails
+        // the test (previous version used `if let Some(..)` which
+        // passed silently when the fact was absent).
+        let output = check_source(
+            r"
+            fn main() {
+                var xs: Vec<i32> = Vec::new();
+                let f = || xs.push(1);
+                let _ = f;
+            }
+            ",
+        );
+        let xs_fact = output
+            .closure_capture_facts
+            .values()
+            .flat_map(|facts| facts.iter())
+            .find(|fact| fact.name == "xs")
+            .expect("capture fact for `xs` must exist (mutating method call)");
+        assert_eq!(
+            xs_fact.mode,
+            ClosureCaptureMode::BorrowMut,
+            "mutating method call should infer BorrowMut: {xs_fact:?}",
+        );
+        assert_eq!(xs_fact.mode_origin, CaptureModeOrigin::InferredBorrowMut);
+    }
+
+    #[test]
+    fn closure_capture_inferred_borrowmut_via_assignment_projection() {
+        // Assignment-projection path: `xs[0] = 1` mutates the
+        // root binding `xs`, so the capture promotes to BorrowMut.
+        let output = check_source(
+            r"
+            fn main() {
+                var xs: Vec<i32> = Vec::new();
+                let f = || { xs[0] = 1; };
+                let _ = f;
+            }
+            ",
+        );
+        let xs_fact = output
+            .closure_capture_facts
+            .values()
+            .flat_map(|facts| facts.iter())
+            .find(|fact| fact.name == "xs")
+            .expect("capture fact for `xs` must exist (assignment projection)");
+        assert_eq!(xs_fact.mode, ClosureCaptureMode::BorrowMut);
+        assert_eq!(xs_fact.mode_origin, CaptureModeOrigin::InferredBorrowMut);
+    }
+
+    #[test]
+    fn closure_capture_explicit_move_records_move_origin() {
+        let output = check_source(
+            r#"
+            fn main() {
+                let s: string = "hew";
+                let f = move || s;
+                let _ = f;
+            }
+            "#,
+        );
+        let s_fact = output
+            .closure_capture_facts
+            .values()
+            .flat_map(|facts| facts.iter())
+            .find(|fact| fact.name == "s")
+            .expect("capture fact for `s` must exist (explicit move)");
+        assert_eq!(s_fact.mode, ClosureCaptureMode::Move);
+        assert_eq!(s_fact.mode_origin, CaptureModeOrigin::ExplicitMove);
+    }
+
+    // ── NonSyncMutCaptureCrossesSuspend gate — direct body-scanner tests ─
+    //
+    // The end-to-end diagnostic depends on three independent conditions:
+    //   1. The capture mode resolves to `BorrowMut` (already covered by
+    //      the borrow/borrow-mut tests above).
+    //   2. The capture's resolved type is non-`Sync` (a separate
+    //      `TraitRegistry::is_sync` query — covered by the marker-trait
+    //      tests in `crate::traits`).
+    //   3. The closure body contains a suspend point (`await`, channel
+    //      `recv`, `yield`), as observed by `scan_lambda_body`.
+    //
+    // The three tests below are focused tests of condition (3) for each
+    // suspend source, including the new `Yield = suspend` classification.
+    // They build synthetic lambda bodies directly so the body-scanner
+    // is exercised without depending on user-constructible non-`Sync`
+    // types.
+    //
+    // The end-to-end diagnostic emission path (conditions 1+2+3 plus
+    // the BorrowMut mode-origin message threading) is covered by
+    // `non_sync_mut_capture_crosses_suspend_end_to_end` below.
+
+    fn lit(value: i64) -> Spanned<Expr> {
+        (
+            Expr::Literal(Literal::Integer {
+                value,
+                radix: IntRadix::Decimal,
+            }),
+            0..0,
+        )
+    }
+
+    #[test]
+    fn scan_lambda_body_marks_await_as_suspend() {
+        let body: Spanned<Expr> = (Expr::Await(Box::new(lit(0))), 0..0);
+        let facts = super::closure_inference::scan_lambda_body(&body);
+        assert!(facts.has_suspend, "await must mark has_suspend=true");
+        assert_eq!(facts.suspend_kind, "await");
+    }
+
+    #[test]
+    fn scan_lambda_body_marks_channel_recv_as_suspend() {
+        use hew_parser::ast::SelectArm;
+        let arm = SelectArm {
+            binding: (hew_parser::ast::Pattern::Identifier("v".to_string()), 0..0),
+            source: lit(0),
+            body: lit(0),
+        };
+        let body: Spanned<Expr> = (
+            Expr::Select {
+                arms: vec![arm],
+                timeout: None,
+            },
+            0..0,
+        );
+        let facts = super::closure_inference::scan_lambda_body(&body);
+        assert!(facts.has_suspend, "select recv must mark has_suspend=true");
+        assert_eq!(facts.suspend_kind, "channel recv");
+    }
+
+    #[test]
+    fn scan_lambda_body_marks_yield_as_suspend() {
+        let body: Spanned<Expr> = (Expr::Yield(Some(Box::new(lit(1)))), 0..0);
+        let facts = super::closure_inference::scan_lambda_body(&body);
+        assert!(facts.has_suspend, "yield must mark has_suspend=true");
+        assert_eq!(facts.suspend_kind, "yield");
+    }
+
+    #[test]
+    fn non_sync_mut_capture_crosses_suspend_end_to_end() {
+        // End-to-end witness: a closure that mutates a captured
+        // non-`Sync` non-`Copy` binding across a suspend point must
+        // emit `NonSyncMutCaptureCrossesSuspend` and surface the
+        // BorrowMut mode-origin label in the human-readable message.
+        //
+        // The capture type is a user-defined struct wrapping a raw
+        // pointer: raw pointers are the canonical non-Sync primitive,
+        // and a struct wrapping one is non-Copy (default for user
+        // records) and non-Sync (inherits from its non-Send field).
+        // The suspend point is `yield`, which the body scanner
+        // accepts uniformly with `await` and channel `recv`.
+        let output = check_source(
+            r#"
+            extern "C" { fn make_ptr() -> *const i64; }
+            type Wrap { p: *const i64, xs: Vec<i64> }
+            fn host() {
+                var w: Wrap = Wrap { p: unsafe { make_ptr() }, xs: Vec::new() };
+                let f = || { w = w; let _g = gen { yield 0; }; };
+                let _ = f;
+            }
+            "#,
+        );
+        let found = output.errors.iter().any(|err| {
+            matches!(
+                &err.kind,
+                TypeErrorKind::NonSyncMutCaptureCrossesSuspend { capture_name, .. }
+                    if capture_name == "w"
+            ) && err.message.contains("inferred from a mutating use")
+        });
+        assert!(
+            found,
+            "expected NonSyncMutCaptureCrossesSuspend(w) with mode-origin label in message; got: {:#?}",
+            output.errors
+        );
+    }
+
+    // ── escape classification facts populated for every closure ──────────
+
+    #[test]
+    fn closure_escape_facts_populated_for_local_call() {
+        let output = check_source(
+            r"
+            fn main() {
+                let k: i32 = 1;
+                let f = || k + 1;
+                let _ = f();
+            }
+            ",
+        );
+        assert!(
+            !output.closure_escape_facts.is_empty(),
+            "every closure literal should produce one escape fact"
+        );
+        let any_local = output
+            .closure_escape_facts
+            .values()
+            .any(|f| matches!(f.kind, ClosureEscapeKind::Local));
+        assert!(
+            any_local,
+            "direct-call-only closure must classify as Local: {:?}",
+            output.closure_escape_facts
+        );
+    }
+
+    #[test]
+    fn closure_escape_facts_default_to_escapes_for_returned_lambda() {
+        let output = check_source(
+            r"
+            fn make() -> fn(i32) -> i32 {
+                |n: i32| n + 1
+            }
+            ",
+        );
+        let any_escapes = output
+            .closure_escape_facts
+            .values()
+            .any(|f| matches!(f.kind, ClosureEscapeKind::Escapes));
+        assert!(
+            any_escapes,
+            "returned anonymous lambda should classify as Escapes: {:?}",
+            output.closure_escape_facts
+        );
+    }
+
+    // ── escape classification matrix — the six additional cases ──────────
+
+    fn assert_escape_kind(output: &TypeCheckOutput, expected: ClosureEscapeKind, label: &str) {
+        let found = output
+            .closure_escape_facts
+            .values()
+            .any(|f| f.kind == expected);
+        assert!(
+            found,
+            "{label}: expected at least one closure classified {expected:?}; got: {:?}",
+            output.closure_escape_facts
+        );
+    }
+
+    #[test]
+    fn closure_escape_anonymous_fork_body_is_forked() {
+        // Case: `scope { fork { || compute() }; }`.
+        let output = check_source(
+            r"
+            fn compute() -> i32 { 1 }
+            fn main() {
+                scope {
+                    fork {
+                        || compute()
+                    };
+                };
+            }
+            ",
+        );
+        assert_escape_kind(
+            &output,
+            ClosureEscapeKind::Forked,
+            "anonymous fork-body lambda",
+        );
+    }
+
+    #[test]
+    fn closure_escape_named_then_forked_is_forked() {
+        // Case: `scope { let f = ...; fork { f() } }`.
+        let output = check_source(
+            r"
+            fn main() {
+                scope {
+                    let f = || 1;
+                    fork {
+                        f();
+                    };
+                };
+            }
+            ",
+        );
+        assert_escape_kind(
+            &output,
+            ClosureEscapeKind::Forked,
+            "named-then-forked lambda",
+        );
+    }
+
+    #[test]
+    fn closure_escape_channel_send_is_escapes() {
+        // Case: closure stored-in / sent through a channel.
+        let output = check_source(
+            r"
+            fn main() {
+                let (tx, _rx) = channel::<fn() -> i32>();
+                let f = || 1;
+                tx.send(f);
+            }
+            ",
+        );
+        assert_escape_kind(&output, ClosureEscapeKind::Escapes, "channel-send escape");
+    }
+
+    #[test]
+    fn closure_escape_higher_order_arg_is_escapes() {
+        // Case: `g(|| captured)` — anonymous lambda as
+        // argument to a free function.
+        let output = check_source(
+            r"
+            fn run(g: fn() -> i32) -> i32 { g() }
+            fn main() {
+                let _ = run(|| 1);
+            }
+            ",
+        );
+        assert_escape_kind(
+            &output,
+            ClosureEscapeKind::Escapes,
+            "higher-order-arg lambda",
+        );
+    }
+
+    #[test]
+    fn closure_escape_block_tail_value_is_escapes() {
+        // Case: `{ let f = ...; f }` — block-tail value.
+        let output = check_source(
+            r"
+            fn make() -> fn() -> i32 {
+                let f = || 1;
+                f
+            }
+            ",
+        );
+        assert_escape_kind(
+            &output,
+            ClosureEscapeKind::Escapes,
+            "block-tail value closure",
+        );
+    }
+
+    #[test]
+    fn closure_escape_nested_inner_escapes_via_send() {
+        // Case: inner closure escapes inside an outer
+        // closure's body (the inner is sent through a channel).
+        // Both inner and outer must classify Escapes — inner because
+        // the channel send is a non-local use, outer because it has
+        // no enumerable local-only use-site set.
+        let output = check_source(
+            r"
+            fn main() {
+                let (tx, _rx) = channel::<fn() -> i32>();
+                let outer = || {
+                    let inner = || 1;
+                    tx.send(inner);
+                };
+                let _ = outer;
+            }
+            ",
+        );
+        // At least two closure literals → two facts; ensure both
+        // resolve to Escapes (no Local survives).
+        assert!(
+            output.closure_escape_facts.len() >= 2,
+            "expected facts for both outer and inner closures: {:?}",
+            output.closure_escape_facts
+        );
+        let any_local = output
+            .closure_escape_facts
+            .values()
+            .any(|f| matches!(f.kind, ClosureEscapeKind::Local));
+        assert!(
+            !any_local,
+            "nested transitive escape: no closure should classify Local; got: {:?}",
+            output.closure_escape_facts
+        );
+    }
+
+    // ── Fail-closed defenses for missing facts ───────────────────────────
+    //
+    // These tests drive `emit_unresolved_closure_diagnostics` directly
+    // with synthetic span lists and (deliberately empty) fact maps so
+    // that the contract enforcer's emission paths are exercised even
+    // when the checker proper always populates both maps.
+
+    #[test]
+    fn unresolved_closure_capture_mode_diagnostic_fires_on_missing_fact() {
+        let span: Span = 10..20;
+        let sites = vec![(span.clone(), Some("f".to_string()))];
+        let capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>> = HashMap::new();
+        let mut escape_facts: HashMap<SpanKey, ClosureEscapeFact> = HashMap::new();
+        // Populate escape so ONLY the capture-mode diagnostic fires.
+        escape_facts.insert(
+            SpanKey::from(&span),
+            ClosureEscapeFact {
+                kind: ClosureEscapeKind::Local,
+                rule: ClosureEscapeRule::DirectCallOnly,
+            },
+        );
+        let mut diagnostics = Vec::new();
+        super::emit_unresolved_closure_diagnostics(
+            &sites,
+            &capture_facts,
+            &escape_facts,
+            &mut diagnostics,
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|err| matches!(err.kind, TypeErrorKind::ClosureCaptureModeUnresolved { .. })),
+            "expected ClosureCaptureModeUnresolved; got: {diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|err| err.kind == TypeErrorKind::ClosureEscapeKindUnresolved),
+            "ClosureEscapeKindUnresolved must NOT fire when escape fact is present",
+        );
+    }
+
+    #[test]
+    fn unresolved_closure_escape_kind_diagnostic_fires_on_missing_fact() {
+        let span: Span = 30..40;
+        let sites = vec![(span.clone(), None)];
+        let mut capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>> = HashMap::new();
+        // Populate capture so ONLY the escape diagnostic fires.
+        capture_facts.insert(SpanKey::from(&span), Vec::new());
+        let escape_facts: HashMap<SpanKey, ClosureEscapeFact> = HashMap::new();
+        let mut diagnostics = Vec::new();
+        super::emit_unresolved_closure_diagnostics(
+            &sites,
+            &capture_facts,
+            &escape_facts,
+            &mut diagnostics,
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|err| err.kind == TypeErrorKind::ClosureEscapeKindUnresolved),
+            "expected ClosureEscapeKindUnresolved; got: {diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|err| matches!(err.kind, TypeErrorKind::ClosureCaptureModeUnresolved { .. })),
+            "ClosureCaptureModeUnresolved must NOT fire when capture fact is present",
+        );
+    }
+
+    #[test]
+    fn unresolved_closure_diagnostics_silent_when_contract_holds() {
+        let span: Span = 50..60;
+        let sites = vec![(span.clone(), Some("f".to_string()))];
+        let mut capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>> = HashMap::new();
+        capture_facts.insert(SpanKey::from(&span), Vec::new());
+        let mut escape_facts: HashMap<SpanKey, ClosureEscapeFact> = HashMap::new();
+        escape_facts.insert(
+            SpanKey::from(&span),
+            ClosureEscapeFact {
+                kind: ClosureEscapeKind::Local,
+                rule: ClosureEscapeRule::DirectCallOnly,
+            },
+        );
+        let mut diagnostics = Vec::new();
+        super::emit_unresolved_closure_diagnostics(
+            &sites,
+            &capture_facts,
+            &escape_facts,
+            &mut diagnostics,
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostic expected when both facts are present; got: {diagnostics:?}"
         );
     }
 
@@ -17984,6 +18958,34 @@ mod assoc_types_slice2 {
              extern \"rt\"; got: {:?}",
             output.errors
         );
+    }
+
+    /// The dyn-trait heap-box storage ABI (`hew_dyn_box_alloc` /
+    /// `hew_dyn_box_free`) is compiler-emission only. Exposing it as
+    /// user-callable would let user code call the free path with a wrong
+    /// `(size, align)` pair or with a foreign pointer, producing double-free
+    /// / wrong-layout UB. Both symbols must live in `codegen-stable` and the
+    /// checker must reject any `extern "rt"` declaration that names them.
+    #[test]
+    fn extern_rt_dyn_box_symbols_rejected() {
+        for sym in ["hew_dyn_box_alloc", "hew_dyn_box_free"] {
+            let extern_item = make_extern_rt_block(&[sym]);
+            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+            let output = checker.check_program(&Program {
+                items: vec![(extern_item, 0..40)],
+                module_doc: None,
+                module_graph: None,
+            });
+            assert!(
+                output.errors.iter().any(|e| matches!(&e.kind,
+                    TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                    if symbol_name == sym
+                )),
+                "codegen-stable symbol {sym} must be rejected in extern \"rt\"; \
+                 got: {:?}",
+                output.errors
+            );
+        }
     }
 
     /// `extern "C"` blocks with any symbol name must NOT be validated against

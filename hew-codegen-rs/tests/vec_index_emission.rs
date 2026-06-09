@@ -182,6 +182,293 @@ fn vec_index_i64_pipeline() -> IrPipeline {
         regex_literals: vec![],
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
+    }
+}
+
+fn vec_index_bool_pipeline() -> IrPipeline {
+    let vec_ty = ResolvedTy::Named {
+        name: "Vec".to_string(),
+        args: vec![ResolvedTy::Bool],
+        builtin: None,
+    };
+
+    let vec_place = Place::Local(0);
+    let index_place = Place::Local(1);
+    let len_place = Place::Local(2);
+    let oob_flag = Place::Local(3);
+    let result_place = Place::Local(4);
+
+    let entry_bb = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::ConstI64 {
+                dest: index_place,
+                value: 0,
+            },
+            Instr::CallRuntimeAbi(
+                RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
+                    .expect("hew_vec_len is allowlisted"),
+            ),
+            Instr::IntCmp {
+                dest: oob_flag,
+                pred: CmpPred::UnsignedGreaterEq,
+                lhs: index_place,
+                rhs: len_place,
+            },
+        ],
+        terminator: Terminator::Branch {
+            cond: oob_flag,
+            then_target: 1,
+            else_target: 2,
+        },
+    };
+
+    let trap_bb = BasicBlock {
+        id: 1,
+        statements: vec![],
+        instructions: vec![],
+        terminator: Terminator::Trap {
+            kind: TrapKind::IndexOutOfBounds,
+        },
+    };
+
+    let cont_bb = BasicBlock {
+        id: 2,
+        statements: vec![],
+        instructions: vec![
+            Instr::CallRuntimeAbi(
+                RuntimeCall::new(
+                    "hew_vec_get_bool",
+                    vec![vec_place, index_place],
+                    Some(result_place),
+                )
+                .expect("hew_vec_get_bool is allowlisted"),
+            ),
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: result_place,
+            },
+        ],
+        terminator: Terminator::Return,
+    };
+
+    let raw_blocks = vec![entry_bb.clone(), trap_bb.clone(), cont_bb.clone()];
+
+    IrPipeline {
+        thir: vec![],
+        raw_mir: vec![RawMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::Bool,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![
+                vec_ty,
+                ResolvedTy::I64,
+                ResolvedTy::I64,
+                ResolvedTy::Bool,
+                ResolvedTy::Bool,
+            ],
+            blocks: raw_blocks.clone(),
+            decisions: vec![],
+        }],
+        checked_mir: vec![CheckedMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::Bool,
+            blocks: raw_blocks.clone(),
+            decisions: vec![],
+            checks: vec![],
+            cooperate_sites: vec![],
+        }],
+        elaborated_mir: vec![ElaboratedMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::Bool,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![
+                ElabBlock {
+                    id: 0,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+                ElabBlock {
+                    id: 1,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+                ElabBlock {
+                    id: 2,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+            ],
+            drop_plans: vec![
+                (ExitPath::Return { block: 2 }, DropPlan::default()),
+                (ExitPath::Panic { block: 1 }, DropPlan::default()),
+            ],
+            coroutine: None,
+            lambda_captures: vec![],
+        }],
+        diagnostics: vec![],
+        record_layouts: vec![],
+        actor_layouts: vec![],
+        supervisor_layouts: vec![],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
+    }
+}
+
+fn vec_index_char_pipeline() -> IrPipeline {
+    let vec_ty = ResolvedTy::Named {
+        name: "Vec".to_string(),
+        args: vec![ResolvedTy::Char],
+        builtin: None,
+    };
+
+    let vec_place = Place::Local(0);
+    let index_place = Place::Local(1);
+    let len_place = Place::Local(2);
+    let oob_flag = Place::Local(3);
+    let result_place = Place::Local(4);
+
+    let entry_bb = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::ConstI64 {
+                dest: index_place,
+                value: 0,
+            },
+            Instr::CallRuntimeAbi(
+                RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
+                    .expect("hew_vec_len is allowlisted"),
+            ),
+            Instr::IntCmp {
+                dest: oob_flag,
+                pred: CmpPred::UnsignedGreaterEq,
+                lhs: index_place,
+                rhs: len_place,
+            },
+        ],
+        terminator: Terminator::Branch {
+            cond: oob_flag,
+            then_target: 1,
+            else_target: 2,
+        },
+    };
+
+    let trap_bb = BasicBlock {
+        id: 1,
+        statements: vec![],
+        instructions: vec![],
+        terminator: Terminator::Trap {
+            kind: TrapKind::IndexOutOfBounds,
+        },
+    };
+
+    let cont_bb = BasicBlock {
+        id: 2,
+        statements: vec![],
+        instructions: vec![
+            Instr::CallRuntimeAbi(
+                RuntimeCall::new(
+                    "hew_vec_get_i32",
+                    vec![vec_place, index_place],
+                    Some(result_place),
+                )
+                .expect("hew_vec_get_i32 is allowlisted"),
+            ),
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: result_place,
+            },
+        ],
+        terminator: Terminator::Return,
+    };
+
+    let raw_blocks = vec![entry_bb.clone(), trap_bb.clone(), cont_bb.clone()];
+
+    IrPipeline {
+        thir: vec![],
+        raw_mir: vec![RawMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::Char,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![
+                vec_ty,
+                ResolvedTy::I64,
+                ResolvedTy::I64,
+                ResolvedTy::Bool,
+                ResolvedTy::Char,
+            ],
+            blocks: raw_blocks.clone(),
+            decisions: vec![],
+        }],
+        checked_mir: vec![CheckedMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::Char,
+            blocks: raw_blocks.clone(),
+            decisions: vec![],
+            checks: vec![],
+            cooperate_sites: vec![],
+        }],
+        elaborated_mir: vec![ElaboratedMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::Char,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![
+                ElabBlock {
+                    id: 0,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+                ElabBlock {
+                    id: 1,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+                ElabBlock {
+                    id: 2,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+            ],
+            drop_plans: vec![
+                (ExitPath::Return { block: 2 }, DropPlan::default()),
+                (ExitPath::Panic { block: 1 }, DropPlan::default()),
+            ],
+            coroutine: None,
+            lambda_captures: vec![],
+        }],
+        diagnostics: vec![],
+        record_layouts: vec![],
+        actor_layouts: vec![],
+        supervisor_layouts: vec![],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     }
 }
 
@@ -197,6 +484,42 @@ fn emit_ll(module_name: &str) -> String {
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("C-2 Vec-index pipeline must emit successfully");
+    let ll_path = artefacts
+        .ll_path
+        .expect("emit_module must populate ll_path");
+    std::fs::read_to_string(&ll_path).expect("read emitted .ll")
+}
+
+fn emit_bool_ll(module_name: &str) -> String {
+    let pipeline = vec_index_bool_pipeline();
+    let tmp = std::env::temp_dir().join(format!("hew-c2-{module_name}"));
+    std::fs::create_dir_all(&tmp).expect("create out_dir");
+    let options = EmitOptions {
+        module_name,
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+    };
+    let artefacts = emit_module(&pipeline, &options)
+        .expect("C-2 Vec<bool>-index pipeline must emit successfully");
+    let ll_path = artefacts
+        .ll_path
+        .expect("emit_module must populate ll_path");
+    std::fs::read_to_string(&ll_path).expect("read emitted .ll")
+}
+
+fn emit_char_ll(module_name: &str) -> String {
+    let pipeline = vec_index_char_pipeline();
+    let tmp = std::env::temp_dir().join(format!("hew-c2-{module_name}"));
+    std::fs::create_dir_all(&tmp).expect("create out_dir");
+    let options = EmitOptions {
+        module_name,
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+    };
+    let artefacts = emit_module(&pipeline, &options)
+        .expect("C-2 Vec<char>-index pipeline must emit successfully");
     let ll_path = artefacts
         .ll_path
         .expect("emit_module must populate ll_path");
@@ -227,6 +550,36 @@ fn vec_get_i64_declare_has_correct_signature() {
     assert!(
         ll.contains("declare i64 @hew_vec_get_i64(ptr, i64)"),
         "hew_vec_get_i64 must be declared as `i64(ptr, i64)`; got:\n{ll}"
+    );
+}
+
+#[test]
+fn vec_get_bool_declare_uses_i1_abi_and_zexts_to_i8_local() {
+    let ll = emit_bool_ll("vec_get_bool_declare");
+    assert!(
+        ll.contains("declare i1 @hew_vec_get_bool(ptr, i64)"),
+        "hew_vec_get_bool must use the Rust/C bool i1 ABI; got:\n{ll}"
+    );
+    assert!(
+        ll.contains("zext i1"),
+        "hew_vec_get_bool result must be zero-extended into Hew's i8 bool local; got:\n{ll}"
+    );
+}
+
+#[test]
+fn vec_get_char_uses_i32_vec_getter() {
+    let ll = emit_char_ll("vec_get_char_declare");
+    assert!(
+        ll.contains("declare i32 @hew_vec_get_i32(ptr, i64)"),
+        "Vec<char> scalar index must use the i32 Vec getter declaration; got:\n{ll}"
+    );
+    assert!(
+        ll.contains("call i32 @hew_vec_get_i32("),
+        "Vec<char> scalar index continuation must call hew_vec_get_i32; got:\n{ll}"
+    );
+    assert!(
+        !ll.contains("hew_vec_get_char"),
+        "Vec<char> scalar index must not introduce a char-specific Vec getter; got:\n{ll}"
     );
 }
 

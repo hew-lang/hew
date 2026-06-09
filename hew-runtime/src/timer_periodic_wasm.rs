@@ -338,7 +338,6 @@ mod tests {
             let actor = Box::into_raw(Box::new(HewActor {
                 sched_link_next: AtomicPtr::new(ptr::null_mut()),
                 id,
-                pid: id,
                 state: counter.cast(),
                 state_size: size_of::<AtomicU32>(),
                 dispatch: Some(count_dispatch),

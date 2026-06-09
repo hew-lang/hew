@@ -699,10 +699,10 @@ pub struct HewActor {
     pub sched_link_next: AtomicPtr<HewActor>,
 
     /// Unique, monotonically increasing actor ID.
+    ///
+    /// This is the location-transparent PID: `(node_id << 48) | serial`.
+    /// All runtime APIs that take or return a "pid" operate on this value.
     pub id: u64,
-
-    /// Unique process identifier (PID) for this actor.
-    pub pid: u64,
 
     /// Actor-owned mutable state.
     pub state: *mut c_void,
@@ -855,7 +855,6 @@ impl std::fmt::Debug for HewActor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewActor")
             .field("id", &self.id)
-            .field("pid", &self.pid)
             .field("actor_state", &self.actor_state)
             .field("budget", &self.budget.load(Ordering::Relaxed))
             .field("arena", &self.arena)
@@ -1655,17 +1654,15 @@ unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_voi
     }
 }
 
-fn next_spawn_actor_identity() -> (u64, u64) {
+fn next_spawn_actor_identity() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
-        (actor_id, actor_id)
+        crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed))
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
-        (serial, serial)
+        NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed)
     }
 }
 
@@ -1676,14 +1673,12 @@ fn next_spawn_actor_identity() -> (u64, u64) {
 fn build_spawned_actor(
     config: ActorSpawnConfig,
     actor_id: u64,
-    pid: u64,
     init_state: *mut c_void,
     arena: *mut crate::arena::ActorArena,
 ) -> Box<HewActor> {
     Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: actor_id,
-        pid,
         state: config.state,
         state_size: config.state_size,
         dispatch: config.dispatch,
@@ -1763,13 +1758,13 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         return ptr::null_mut();
     }
 
-    let (actor_id, pid) = next_spawn_actor_identity();
+    let actor_id = next_spawn_actor_identity();
     let arena = if config.cap_bytes > 0 {
         crate::arena::hew_arena_new_with_cap(config.cap_bytes)
     } else {
         crate::arena::hew_arena_new()
     };
-    let actor = build_spawned_actor(config, actor_id, pid, init_state, arena);
+    let actor = build_spawned_actor(config, actor_id, init_state, arena);
     let raw = Box::into_raw(actor);
     register_actor_state_lock(raw);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
@@ -1817,8 +1812,8 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         return ptr::null_mut();
     }
 
-    let (actor_id, pid) = next_spawn_actor_identity();
-    let actor = build_spawned_actor(config, actor_id, pid, init_state, arena);
+    let actor_id = next_spawn_actor_identity();
+    let actor = build_spawned_actor(config, actor_id, init_state, arena);
     let raw = Box::into_raw(actor);
     register_actor_state_lock(raw);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
@@ -3906,7 +3901,7 @@ pub unsafe extern "C" fn hew_panic_msg(msg: *const std::ffi::c_char) {
 pub unsafe extern "C" fn hew_actor_pid(actor: *mut HewActor) -> u64 {
     cabi_guard!(actor.is_null(), 0);
     // SAFETY: Caller guarantees `actor` is valid.
-    unsafe { &*actor }.pid
+    unsafe { &*actor }.id
 }
 
 /// Return the PID of the actor currently installed in the canonical execution
@@ -3920,7 +3915,7 @@ pub extern "C" fn hew_actor_self_pid() -> u64 {
         return 0;
     }
     // SAFETY: The canonical context only installs valid actor pointers during dispatch.
-    unsafe { &*actor }.pid
+    unsafe { &*actor }.id
 }
 
 /// Self-stop: the currently running actor requests its own shutdown.
@@ -4937,7 +4932,6 @@ mod tests {
             let actor = Box::into_raw(Box::new(HewActor {
                 sched_link_next: AtomicPtr::new(ptr::null_mut()),
                 id: 1,
-                pid: 0,
                 state: ptr::null_mut(),
                 state_size: 0,
                 dispatch: Some(noop_dispatch),
@@ -4973,7 +4967,6 @@ mod tests {
         let actor = Box::into_raw(Box::new(HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: actor_id,
-            pid: actor_id,
             state: ptr::null_mut(),
             state_size: 0,
             dispatch: Some(noop_dispatch),
@@ -7167,7 +7160,6 @@ mod tests {
         let actor = Box::into_raw(Box::new(HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: actor_id,
-            pid: actor_id,
             state: ptr::null_mut(),
             state_size: 0,
             dispatch: Some(noop_dispatch),

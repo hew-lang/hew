@@ -20,6 +20,9 @@ fn empty_pipeline(machine_layouts: Vec<MachineLayout>) -> IrPipeline {
         regex_literals: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     }
 }
 

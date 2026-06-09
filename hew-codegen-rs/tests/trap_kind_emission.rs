@@ -120,6 +120,9 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
         regex_literals: vec![],
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     };
     let tmp = std::env::temp_dir().join(format!("hew-trap-kind-{module_name}"));
     std::fs::create_dir_all(&tmp).expect("create out_dir");

@@ -924,7 +924,126 @@ impl Checker {
 
     pub(super) fn resolve_type_expr(&mut self, te: &Spanned<TypeExpr>) -> Ty {
         let mut ignored_hole_vars = Vec::new();
-        self.resolve_type_expr_tracking_holes(te, &mut ignored_hole_vars)
+        let ty = self.resolve_type_expr_tracking_holes(te, &mut ignored_hole_vars);
+        // Type-annotation-position bound enforcement, applied to the
+        // resolved type tree as a whole — not just the outermost
+        // `Ty::Named`. A user-written annotation like
+        // `Box<Holder<Plain>>`, `Option<Holder<Plain>>`,
+        // `(Holder<Plain>, i64)`, `[Holder<Plain>; 4]`, or
+        // `fn(Holder<Plain>) -> i64` carries a machine instantiation
+        // at a nested position; the bound on `Holder<T: Resource>`
+        // must reject `T = Plain` regardless of how deeply nested the
+        // `Holder<Plain>` slot is. Walk the resolved tree and route
+        // every nested `Ty::Named { name ∈ machine, args: non-empty }`
+        // through the canonical helper. Duplicate emission across
+        // overlapping resolution sweeps (signature registration vs.
+        // body checking) and within a multi-occurrence annotation
+        // (e.g. `(Holder<Plain>, Holder<Plain>)`) is suppressed at
+        // the helper itself via `reported_machine_bound_violations`,
+        // keyed on `(machine, resolved_args, span)`. The helper
+        // short-circuits cleanly for non-machine names and empty
+        // `args`, so the walk's no-op cost on bound-free annotations
+        // is one hashmap lookup per `Named` node.
+        self.enforce_machine_bounds_recursive(&ty, &te.1);
+        ty
+    }
+
+    /// Recursively walk a resolved `Ty` and call
+    /// `enforce_machine_instantiation_bounds` on every nested
+    /// machine-named generic instantiation.
+    ///
+    /// The walker covers every composite `Ty` variant: tuples,
+    /// arrays, slices, pointers, function/closure signatures,
+    /// trait-object bounds (both their type-args and assoc-type
+    /// bindings), associated-type carriers, and the `Task<T>`
+    /// compiler-internal wrapper. Non-composite leaves return
+    /// without work.
+    ///
+    /// Dedup of identical `(machine, args, span)` triples lives in
+    /// the helper itself (Checker-level
+    /// `reported_machine_bound_violations` set) so it survives
+    /// re-walks across the registration / body-check sweeps; the
+    /// walker therefore visits every nested position unconditionally
+    /// and relies on the helper to drop duplicates.
+    fn enforce_machine_bounds_recursive(&mut self, ty: &Ty, span: &Span) {
+        match ty {
+            Ty::Named { name, args, .. } => {
+                if !args.is_empty() {
+                    self.enforce_machine_instantiation_bounds(name, args, span);
+                    for arg in args {
+                        self.enforce_machine_bounds_recursive(arg, span);
+                    }
+                }
+            }
+            Ty::Tuple(elems) => {
+                for elem in elems {
+                    self.enforce_machine_bounds_recursive(elem, span);
+                }
+            }
+            Ty::Array(inner, _) | Ty::Slice(inner) | Ty::Task(inner) => {
+                self.enforce_machine_bounds_recursive(inner, span);
+            }
+            Ty::Pointer { pointee, .. } => {
+                self.enforce_machine_bounds_recursive(pointee, span);
+            }
+            Ty::Function { params, ret } => {
+                for param in params {
+                    self.enforce_machine_bounds_recursive(param, span);
+                }
+                self.enforce_machine_bounds_recursive(ret, span);
+            }
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                for param in params {
+                    self.enforce_machine_bounds_recursive(param, span);
+                }
+                self.enforce_machine_bounds_recursive(ret, span);
+                for capture in captures {
+                    self.enforce_machine_bounds_recursive(capture, span);
+                }
+            }
+            Ty::TraitObject { traits } => {
+                for bound in traits {
+                    for arg in &bound.args {
+                        self.enforce_machine_bounds_recursive(arg, span);
+                    }
+                    for (_, bound_ty) in &bound.assoc_bindings {
+                        self.enforce_machine_bounds_recursive(bound_ty, span);
+                    }
+                }
+            }
+            Ty::AssocType { base, .. } => {
+                self.enforce_machine_bounds_recursive(base, span);
+            }
+            // Leaf / non-composite variants carry no nested type
+            // structure that could embed a machine instantiation.
+            Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::IntLiteral
+            | Ty::FloatLiteral
+            | Ty::Bool
+            | Ty::Char
+            | Ty::String
+            | Ty::Bytes
+            | Ty::Duration
+            | Ty::Unit
+            | Ty::Never
+            | Ty::Var(_)
+            | Ty::Error => {}
+        }
     }
 
     #[expect(

@@ -982,3 +982,195 @@ machine StmtElseIf {
         output.diagnostics
     );
 }
+
+// ── type-param bound carry-through (HirMachineBound) ──────────────────
+//
+// Inline `<T: Trait>` and `where T: Trait` predicates lower to a
+// flat `Vec<HirMachineBound>` on `HirMachineDecl.type_param_bounds`.
+// One entry per `(param, trait_bound)` pair in authored order;
+// `WhereOrigin` preserves which form each entry came from.
+
+fn first_machine(output: &hew_hir::LowerOutput) -> &hew_hir::HirMachineDecl {
+    output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Machine(m) => Some(m),
+            _ => None,
+        })
+        .expect("expected exactly one machine in lowered output")
+}
+
+#[test]
+fn machine_inline_bound_lowers_with_inline_origin() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type File { path: i64; }
+
+impl Resource for File {
+    fn close(self) {}
+}
+
+machine Holder<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let output = lower(source);
+    let machine = first_machine(&output);
+    assert_eq!(machine.type_params, vec!["T".to_string()]);
+    assert_eq!(
+        machine.type_param_bounds.len(),
+        1,
+        "expected one bound entry from inline `<T: Resource>`, got: {:?}",
+        machine.type_param_bounds
+    );
+    let bound = &machine.type_param_bounds[0];
+    assert_eq!(bound.param, "T");
+    assert_eq!(bound.trait_bound.trait_name, "Resource");
+    assert!(
+        matches!(bound.origin, hew_hir::WhereOrigin::Inline),
+        "expected inline origin, got: {:?}",
+        bound.origin
+    );
+}
+
+#[test]
+fn machine_where_clause_bound_lowers_with_predicate_span_origin() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type File { path: i64; }
+
+impl Resource for File {
+    fn close(self) {}
+}
+
+machine Holder<T> where T: Resource {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let output = lower(source);
+    let machine = first_machine(&output);
+    assert_eq!(machine.type_params, vec!["T".to_string()]);
+    assert_eq!(machine.type_param_bounds.len(), 1);
+    let bound = &machine.type_param_bounds[0];
+    assert_eq!(bound.param, "T");
+    assert_eq!(bound.trait_bound.trait_name, "Resource");
+    match &bound.origin {
+        hew_hir::WhereOrigin::WhereClause(span) => {
+            assert!(
+                !span.is_empty(),
+                "where-clause origin must carry a non-empty predicate-LHS span"
+            );
+        }
+        hew_hir::WhereOrigin::Inline => {
+            panic!("expected WhereClause origin, got Inline");
+        }
+    }
+}
+
+#[test]
+fn machine_inline_plus_where_bound_lowers_both_with_distinct_origin() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+trait Display {
+    fn show(self);
+}
+
+type File { path: i64; }
+
+impl Resource for File {
+    fn close(self) {}
+}
+
+impl Display for File {
+    fn show(self) {}
+}
+
+machine Holder<T: Resource> where T: Display {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let output = lower(source);
+    let machine = first_machine(&output);
+    assert_eq!(
+        machine.type_param_bounds.len(),
+        2,
+        "expected two bound entries (one inline, one where), got: {:?}",
+        machine.type_param_bounds
+    );
+    // Inline-first ordering per the lowering contract.
+    let inline = &machine.type_param_bounds[0];
+    assert_eq!(inline.param, "T");
+    assert_eq!(inline.trait_bound.trait_name, "Resource");
+    assert!(matches!(inline.origin, hew_hir::WhereOrigin::Inline));
+    let where_bound = &machine.type_param_bounds[1];
+    assert_eq!(where_bound.param, "T");
+    assert_eq!(where_bound.trait_bound.trait_name, "Display");
+    assert!(matches!(
+        where_bound.origin,
+        hew_hir::WhereOrigin::WhereClause(_)
+    ));
+}
+
+#[test]
+fn machine_without_bounds_lowers_empty_type_param_bounds() {
+    let source = r"
+machine Counter<T> {
+    state Idle;
+    state Running;
+
+    event Start;
+    event Stop;
+
+    on Start: Idle -> Running { Running }
+    on Stop: Running -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let output = lower(source);
+    let machine = first_machine(&output);
+    assert_eq!(machine.type_params, vec!["T".to_string()]);
+    assert!(
+        machine.type_param_bounds.is_empty(),
+        "unbounded machine must lower to empty type_param_bounds, got: {:?}",
+        machine.type_param_bounds
+    );
+}

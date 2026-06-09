@@ -25,7 +25,8 @@ use std::mem;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use hew_runtime::trait_object::{
-    hew_vtable_dispatch_panic_on_oob, vtable_dispatch_oob_message, HewTraitObject, HewVtable,
+    hew_dyn_box_alloc, hew_dyn_box_free, hew_vtable_dispatch_panic_on_oob,
+    vtable_dispatch_oob_message, HewTraitObject, HewVtable,
 };
 
 // ---------------------------------------------------------------------------
@@ -235,5 +236,188 @@ fn null_vtable_is_observable_before_dispatch() {
     assert!(
         obj.vtable.is_null(),
         "null vtable must be observable as null — codegen branches on this."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Heap-box ABI (W3.031 Stage 0): hew_dyn_box_alloc / hew_dyn_box_free
+// ---------------------------------------------------------------------------
+//
+// These tests model the codegen call sequence for a `dyn Trait` returned
+// by value: callee allocates a buffer sized from the vtable's
+// `(size_of, align_of)` prefix slots, memcpy's the concrete value in,
+// and returns the fat pointer. The receiving `DropKind::TraitObject
+// { storage: HeapBoxed }` ritual then runs slot-0 (drop_in_place) and
+// frees the buffer with the same `(size, align)` triple.
+//
+// The matrix below covers:
+//   - representative scalar layouts (i32, i64, large struct)
+//   - pointer-width-sized layouts on both native (8) and wasm32 (4),
+//     so the test pins the substrate's correctness for both ABIs
+//   - ZST convention (size == 0)
+//   - alignment overlarge relative to size (vtable for a `repr(align(64))`
+//     struct holding a single i32)
+
+#[test]
+fn dyn_box_alloc_and_free_round_trip_for_scalar_layouts() {
+    // (size, align) pairs that cover the layouts codegen will emit for
+    // typical concrete impls: 4/4 (i32), 8/8 (i64 / native pointer),
+    // 16/8 (two-pointer struct), 4/4 (wasm32 pointer-width).
+    for &(size, align) in &[(4_usize, 4_usize), (8, 8), (16, 8), (4, 4), (1, 1), (2, 2)] {
+        let ptr = unsafe { hew_dyn_box_alloc(size, align) };
+        assert!(
+            !ptr.is_null(),
+            "alloc must return non-null for size={size}, align={align}"
+        );
+        assert_eq!(
+            ptr as usize % align,
+            0,
+            "alloc must return a buffer aligned to {align}; got ptr={ptr:p}"
+        );
+        // The buffer is uninitialised; codegen would memcpy the
+        // concrete value in here. We model that by writing the entire
+        // buffer to a known pattern and reading it back — the
+        // round-trip pins that the alloc honoured `size`.
+        unsafe {
+            std::ptr::write_bytes(ptr, 0xA5, size);
+            for off in 0..size {
+                assert_eq!(
+                    *ptr.add(off),
+                    0xA5,
+                    "byte {off} of {size}-byte buffer must round-trip 0xA5"
+                );
+            }
+            hew_dyn_box_free(ptr, size, align);
+        }
+    }
+}
+
+#[test]
+fn dyn_box_alloc_honors_overaligned_layout() {
+    // Models a concrete impl declared `#[repr(align(64))]` — the
+    // vtable's align_of slot would be 64, size_of would be the
+    // padded struct size (here 64 for a single-field struct).
+    let size = 64_usize;
+    let align = 64_usize;
+    let ptr = unsafe { hew_dyn_box_alloc(size, align) };
+    assert!(!ptr.is_null(), "alloc must return non-null");
+    assert_eq!(
+        ptr as usize % align,
+        0,
+        "alloc must honour the over-large alignment ({align}); got ptr={ptr:p}"
+    );
+    unsafe { hew_dyn_box_free(ptr, size, align) };
+}
+
+#[test]
+fn dyn_box_alloc_zero_size_returns_dangling_non_null() {
+    // ZST convention: `Layout::from_size_align(0, align)` is well-
+    // formed; codegen for a `dyn Trait` whose concrete type is a
+    // unit struct would still construct a fat pointer. The alloc
+    // entry skips the allocator and returns `align as *mut u8` —
+    // a non-null but dangling pointer matching `NonNull::dangling`.
+    // The matching free is a no-op.
+    for &align in &[1_usize, 4, 8, 16] {
+        let ptr = unsafe { hew_dyn_box_alloc(0, align) };
+        assert!(
+            !ptr.is_null(),
+            "ZST alloc must return non-null sentinel for align={align}"
+        );
+        assert_eq!(
+            ptr as usize, align,
+            "ZST sentinel must equal the alignment per NonNull::dangling convention"
+        );
+        // The matching free must be a no-op (does not call into the
+        // allocator with a null pointer or a zero-sized layout).
+        unsafe { hew_dyn_box_free(ptr, 0, align) };
+    }
+}
+
+#[test]
+fn dyn_box_free_zero_size_with_null_ptr_is_noop() {
+    // The codegen drop ritual sources `(ptr, size, align)` from the
+    // fat pointer and the vtable. For a ZST concrete type, `size==0`,
+    // and the matching free must be a no-op regardless of `ptr` —
+    // including the `null_mut()` carrier the codegen-emitted null-out
+    // pattern (Stage 7) would leave behind after a consuming dispatch.
+    // We accept either a null or a dangling sentinel here because the
+    // ZST branch never touches the pointer.
+    unsafe {
+        hew_dyn_box_free(std::ptr::null_mut(), 0, 8);
+    }
+}
+
+#[test]
+fn dyn_box_alloc_function_pointer_is_addressable() {
+    // The cast pins the extern-C signature codegen will declare. If
+    // either entry's ABI drifted, this would fail to compile.
+    let alloc_fn: unsafe extern "C" fn(usize, usize) -> *mut u8 = hew_dyn_box_alloc;
+    let free_fn: unsafe extern "C" fn(*mut u8, usize, usize) = hew_dyn_box_free;
+    let _ = alloc_fn;
+    let _ = free_fn;
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end: alloc, vtable construction, slot-0 drop, free
+// ---------------------------------------------------------------------------
+
+static HEAP_BOX_DROP_OBSERVED: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "C" fn heap_box_drop(data: *mut u8) {
+    // Same shape as `synthetic_drop` above but writes to a separate
+    // observation cell so the two test families do not interleave.
+    let token = unsafe { *data.cast::<u32>() };
+    HEAP_BOX_DROP_OBSERVED.store(token, Ordering::SeqCst);
+}
+
+#[test]
+fn heap_boxed_dyn_trait_drop_ritual_round_trip() {
+    // Model the full Stage 0 surface a Stage 5/6 codegen emission
+    // would compose:
+    //   1. callee: alloc(size, align)            -> data_ptr
+    //              memcpy(value, data_ptr, size)
+    //              return HewTraitObject { data, vtable }
+    //   2. caller: at scope exit
+    //              vt.drop_in_place(data_ptr)    -- slot 0
+    //              hew_dyn_box_free(data_ptr, size, align)
+    //
+    // This pins all three of (alloc honours layout), (drop slot fires
+    // on heap storage), (free releases the same buffer).
+    let vt = HewVtable {
+        drop_in_place: heap_box_drop,
+        size_of: mem::size_of::<u32>(),
+        align_of: mem::align_of::<u32>(),
+    };
+
+    let size = vt.size_of;
+    let align = vt.align_of;
+    let data = unsafe { hew_dyn_box_alloc(size, align) };
+    assert!(!data.is_null());
+
+    // memcpy the concrete value into the heap buffer.
+    let concrete: u32 = 0xCAFE_F00D;
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            (&raw const concrete).cast::<u8>(),
+            data,
+            mem::size_of::<u32>(),
+        );
+    }
+    let obj = HewTraitObject {
+        data,
+        vtable: &raw const vt,
+    };
+
+    HEAP_BOX_DROP_OBSERVED.store(0, Ordering::SeqCst);
+    unsafe {
+        // Slot-0 drop dispatch on heap-backed data.
+        ((*obj.vtable).drop_in_place)(obj.data);
+        // Free the heap buffer using the vtable's (size, align) prefix.
+        hew_dyn_box_free(obj.data, (*obj.vtable).size_of, (*obj.vtable).align_of);
+    }
+    assert_eq!(
+        HEAP_BOX_DROP_OBSERVED.load(Ordering::SeqCst),
+        0xCAFE_F00D,
+        "slot-0 drop must observe the heap-boxed concrete value before free."
     );
 }

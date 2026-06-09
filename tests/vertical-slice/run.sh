@@ -138,6 +138,66 @@ run_accept_expect_status "defer_secures_block_result" 5
 # explicit `return` must seal the basic block; post-return code must not run
 run_accept_expect_status "return_terminates_early" 7
 
+# ---------------------------------------------------------------------------
+# W3.030 Stage 4 — User-resource `close` end-to-end coverage.
+#
+# `#[resource]` types declare `close` in a sibling inherent-impl block
+# (Q-α-B ratified surface). The implicit drop contract dispatches
+# `<T>::close` on every scope-exit path through the unified W3.021
+# `ScopeExitPlan` stream. Stage 1 added HIR diagnostics for the surface;
+# Stage 2 wired the codegen typed `DropDispatch::{RuntimeSymbol, UserFn}`
+# dispatcher plus the no-third-arm verifier. Stage 4 ships e2e proof.
+# ---------------------------------------------------------------------------
+
+# V1 — close fires on normal tail return (`work` then close prints `7`).
+run_accept_expect_stdout "user_resource_close_normal_return"
+
+# V2 — close fires on the early-return exit path (run(true) -> 42 via
+# `return`, close runs before the function exits).
+run_accept_expect_stdout "user_resource_close_early_return"
+
+# V8 — multiple distinct `#[resource]` types close in LIFO declaration
+# order (`l` declared after `c`; `Lock::close` then `Conn::close`).
+run_accept_expect_stdout "user_resource_close_multiple_types"
+
+# V14 — WASI/WASM parity: V1 must compile under wasm32-unknown-unknown
+# through the shared codegen pipeline. Behavioural parity is inherited
+# from the shared MIR->LLVM lower; this gate pins that the wasm target
+# does not regress on the user-resource drop path.
+"${HEW}" compile --target wasm32-unknown-unknown \
+  "${ROOT}/tests/vertical-slice/accept/user_resource_close_normal_return.hew" \
+  >"${accept_output}" 2>&1
+test -s "${ROOT}/.tmp/compile-out/user_resource_close_normal_return.wasm"
+
+# V10 — `#[resource]` without any `close` body -> ResourceMissingClose.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/user_resource_missing_close.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "W3.030 V10: expected user_resource_missing_close to fail" >&2
+  exit 1
+fi
+grep -q 'ResourceMissingClose' "${reject_output}"
+
+# V11 — inline `TypeBodyItem::Method` close on a `#[resource]` ->
+# ResourceCloseSourceUnsupported (Q-α-B).
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/user_resource_inline_close_source.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "W3.030 V11: expected user_resource_inline_close_source to fail" >&2
+  exit 1
+fi
+grep -q 'ResourceCloseSourceUnsupported' "${reject_output}"
+
+# V12 — inherent-impl `close` returning non-unit -> ResourceCloseMustReturnUnit
+# (Q-β-C). Fallible cleanup composes via `defer`, not a non-unit close.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/user_resource_close_non_unit_return.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "W3.030 V12: expected user_resource_close_non_unit_return to fail" >&2
+  exit 1
+fi
+grep -q 'ResourceCloseMustReturnUnit' "${reject_output}"
+
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
 
@@ -613,6 +673,16 @@ run_accept_expect_status "user_record_bitcopy" 42
 
 # Accept: concrete generic user aggregate whose substituted fields are BitCopy.
 run_accept_expect_status "generic_user_record_bitcopy" 42
+
+# ---------------------------------------------------------------------------
+# W3.032 Slice 3 — `Vec<Record>::contains` via codegen equality thunks
+# ---------------------------------------------------------------------------
+
+# Accept: layout-backed Vec<Point>::contains routes through the
+# checker-authorized `hew_vec_contains_thunk` substrate.  The fixture
+# asserts both true and false outcomes; exit 0 proves the thunk-driven
+# equality kernel reports the correct membership.
+run_accept_expect_status "vec_aggregate_contains" 0
 
 # Reject: concrete generic user aggregate with a heap-owning string field.
 if "${HEW}" compile \

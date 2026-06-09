@@ -493,6 +493,36 @@ pub enum TypeErrorKind {
         /// User-facing type of the captured binding.
         ty: String,
     },
+    /// A closure capture's body-usage inference produced no resolved
+    /// `ClosureCaptureMode`. This is a structural bug, not a user-code
+    /// shape — the checker→MIR contract requires every fact's `mode` to
+    /// be one of `Copy`/`Move`/`Borrow`/`BorrowMut` before lowering.
+    /// Fail-closed defense.
+    ClosureCaptureModeUnresolved {
+        /// Captured binding name whose mode the checker could not classify.
+        name: String,
+    },
+    /// A closure captures a non-`Sync` binding by mutable reference, and
+    /// the closure body contains a suspend point (`await`, channel recv,
+    /// fork-handle await). Hard error until a future auto-lock pass
+    /// subscribes to this kind and rewrites the closure.
+    NonSyncMutCaptureCrossesSuspend {
+        /// Captured binding name being mutated across the suspend point.
+        capture_name: String,
+        /// Surface-facing label for the suspend point form ("await", "for await", …).
+        suspend_kind: String,
+    },
+    /// The escape classifier produced no `ClosureEscapeKind` at all
+    /// (distinct from returning `Escapes` conservatively). Structural
+    /// bug in the classifier, not user-code shape.
+    ClosureEscapeKindUnresolved,
+    /// Advisory (non-blocking): a closure was conservatively classified
+    /// `Escapes` and could be restructured to admit `Local`. Names the
+    /// inference rule that fired so the user can see why.
+    ClosureEscapeAdvisory {
+        /// Surface-facing label for the rule that rejected `Local`.
+        rule: String,
+    },
     /// A closure attempted to capture the binding being defined by the same
     /// closure literal. Recursive closures require a fixed-point surface that
     /// v0.5 intentionally does not expose.
@@ -726,6 +756,10 @@ impl TypeErrorKind {
             Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",
             Self::MissingAssocTypeBinding { .. } => "MissingAssocTypeBinding",
             Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",
+            Self::ClosureCaptureModeUnresolved { .. } => "ClosureCaptureModeUnresolved",
+            Self::NonSyncMutCaptureCrossesSuspend { .. } => "NonSyncMutCaptureCrossesSuspend",
+            Self::ClosureEscapeKindUnresolved => "ClosureEscapeKindUnresolved",
+            Self::ClosureEscapeAdvisory { .. } => "ClosureEscapeAdvisory",
             Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
             Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",

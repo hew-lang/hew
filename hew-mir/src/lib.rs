@@ -5,7 +5,9 @@
 //! with full CFG, borrow, and drop implementations without changing the
 //! stage boundaries.
 
+pub mod closure_env;
 pub mod dataflow;
+pub mod dyn_vtable_registry;
 pub mod gen_state;
 pub mod lower;
 pub mod model;
@@ -19,20 +21,33 @@ pub use lower::{bracket_actor_handler_blocks, lower_hir_module};
 /// (e.g. `dyn Trait` locals → `DropKind::TraitObject`) without round-
 /// tripping through a full pipeline. Not part of the public API; the
 /// re-export sits in the crate root so tests in `tests/` can reach it.
+///
+/// `dyn_storage` is consulted only when `(place, ty)` selects the
+/// `DropKind::TraitObject` arm; for every other arm it is ignored.
+/// Passing `None` for a `(Local, ResolvedTy::TraitObject)` pair is a
+/// fail-closed boundary — the dispatcher panics so the test surfaces
+/// the missing side-table population instead of silently picking a
+/// default storage.
 #[doc(hidden)]
 #[must_use]
-pub fn drop_kind_for_test(place: Place, ty: &hew_types::ResolvedTy) -> DropKind {
-    lower::drop_kind_for_test_only(place, ty)
+pub fn drop_kind_for_test(
+    place: Place,
+    ty: &hew_types::ResolvedTy,
+    dyn_storage: Option<TraitObjectStorage>,
+) -> DropKind {
+    lower::drop_kind_for_test_only(place, ty, dyn_storage)
 }
 pub use model::{
-    validate_context_markers, ActorLayout, BasicBlock, BlockKind, BorrowKind, CaptureKind,
-    CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, CoroutineSchema, DecisionFact,
-    Direction, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout,
-    ExitPath, FieldOffset, FloatWidth, FunctionCallConv, GenStateDropTable, GenStateLayout,
-    GenStateLiveLocal, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MachineLayout,
-    MachineVariantLayout, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, Strategy,
-    SupervisorChildLayout, SupervisorLayout, Terminator, ThirFunction, TrapKind,
+    mangle_dyn_drop_in_place_symbol, mangle_dyn_thunk_symbol, mangle_dyn_vtable_symbol,
+    sanitize_for_symbol, validate_context_markers, ActorLayout, BasicBlock, BlockKind, BorrowKind,
+    CaptureKind, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, CoroutineSchema,
+    DecisionFact, Direction, DropKind, DropPlan, DynVtableInstance, ElabBlock, ElabDrop,
+    ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth, FunctionCallConv,
+    GenStateDropTable, GenStateLayout, GenStateLiveLocal, Instr, IntArithOp, IntSignedness,
+    IrPipeline, LambdaCapture, MachineLayout, MachineVariantLayout, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, RecordLayout, RegexLiteral,
+    RuntimeCall, SelectArm, SelectArmKind, Strategy, SupervisorChildLayout, SupervisorLayout,
+    Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{

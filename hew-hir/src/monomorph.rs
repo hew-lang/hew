@@ -27,7 +27,6 @@
 //! LESSONS: `producer-bridge-before-codegen` (P1), `checker-authority` (P0).
 
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::ops::Range;
 
 use hew_types::ResolvedTy;
@@ -99,20 +98,17 @@ pub struct MonomorphizedFn {
 /// unambiguously parseable.
 #[must_use]
 pub fn mangle(origin_name: &str, type_args: &[ResolvedTy]) -> String {
-    debug_assert!(
-        !origin_name.contains('$'),
-        "Hew identifiers cannot contain `$` (lexer rule); origin name `{origin_name}` is malformed"
-    );
-    let mut out = String::with_capacity(origin_name.len() + 8 * type_args.len());
-    out.push_str(origin_name);
-    out.push_str("$$");
-    for (i, ty) in type_args.iter().enumerate() {
-        if i > 0 {
-            out.push('$');
-        }
-        let _ = write!(out, "{}", mangle_resolved_ty(ty));
-    }
-    out
+    // Thin wrapper over the parametric `mangle_instantiation` helper.
+    // The `SymbolClass::Function` case emits no class prefix and no
+    // const-args segment, so output is byte-identical to the prior
+    // hand-written body for every input — verified by the snapshot
+    // test in `tests/mono_foundation_byte_compat.rs`.
+    crate::mono::mangle_instantiation(
+        crate::mono::SymbolClass::Function,
+        origin_name,
+        type_args,
+        &[],
+    )
 }
 
 /// Render a single `ResolvedTy` as a mangled fragment.
@@ -121,7 +117,7 @@ pub fn mangle(origin_name: &str, type_args: &[ResolvedTy]) -> String {
 /// can recover individual args by splitting on `$` alone. Returns names
 /// that are stable across runs (no hash, no monotonic counter).
 #[must_use]
-fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
+pub(crate) fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
     match ty {
         ResolvedTy::I8 => "i8".to_string(),
         ResolvedTy::I16 => "i16".to_string(),

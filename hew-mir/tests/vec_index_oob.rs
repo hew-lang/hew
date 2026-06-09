@@ -25,8 +25,11 @@
 
 use hew_mir::runtime_symbols::is_known_runtime_symbol;
 use hew_mir::{
-    BasicBlock, CmpPred, Instr, IrPipeline, Place, RawMirFunction, Terminator, TrapKind,
+    lower_hir_module, BasicBlock, CmpPred, Instr, IrPipeline, Place, RawMirFunction, Terminator,
+    TrapKind,
 };
+use hew_types::module_registry::ModuleRegistry;
+use hew_types::Checker;
 use hew_types::ResolvedTy;
 
 // ---------------------------------------------------------------------------
@@ -352,10 +355,91 @@ fn vec_index_mir_wraps_in_pipeline_without_errors() {
         regex_literals: vec![],
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     };
     // No diagnostics from the hand-built MIR (it is already valid).
     assert!(
         pipeline.diagnostics.is_empty(),
         "hand-built vec-index MIR must not carry diagnostics"
+    );
+}
+
+fn pipeline_with_tc(source: &str) -> IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type-check errors: {:#?}",
+        tc_output.errors
+    );
+    let hir = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR diagnostics must be empty for supported Vec scalar indexes: {:#?}",
+        hir.diagnostics
+    );
+    lower_hir_module(&hir.module)
+}
+
+fn runtime_symbols_in_fn(pipeline: &IrPipeline, name: &str) -> Vec<String> {
+    pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| panic!("function `{name}` not found in raw MIR"))
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::CallRuntimeAbi(call) => Some(call.symbol().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn vec_bool_scalar_index_lowers_to_bool_getter() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn pick_bool(xs: Vec<bool>, i: i64) -> bool { xs[i] }
+        ",
+    );
+
+    let symbols = runtime_symbols_in_fn(&pipeline, "pick_bool");
+    assert!(
+        symbols.iter().any(|sym| sym == "hew_vec_get_bool"),
+        "Vec<bool> scalar index must lower to hew_vec_get_bool; got {symbols:?}"
+    );
+}
+
+#[test]
+fn vec_char_scalar_index_lowers_to_i32_getter() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn pick_char(xs: Vec<char>, i: i64) -> char { xs[i] }
+        ",
+    );
+
+    let symbols = runtime_symbols_in_fn(&pipeline, "pick_char");
+    assert!(
+        symbols.iter().any(|sym| sym == "hew_vec_get_i32"),
+        "Vec<char> scalar index must lower to hew_vec_get_i32; got {symbols:?}"
+    );
+    assert!(
+        !symbols.iter().any(|sym| sym.contains("_char")),
+        "Vec<char> scalar index must not introduce a char-specific Vec symbol; got {symbols:?}"
     );
 }

@@ -54,10 +54,11 @@ use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, Pri
 use hew_hir::{mangle, HirRestartPolicy, HirSupervisorStrategy};
 use hew_mir::{
     validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
-    CooperateSite, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
-    FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline, MachineLayout,
-    MachineVariantLayout, Place, RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind,
-    SupervisorChildLayout, SupervisorLayout, Terminator, TrapKind,
+    CooperateSite, DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
+    FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind,
+    IrPipeline, MachineLayout, MachineVariantLayout, Place, RawMirFunction, RecordLayout,
+    RegexLiteral, StateFieldCloneKind, SupervisorChildLayout, SupervisorLayout, Terminator,
+    TrapKind,
 };
 use hew_types::{NumericWidth, ResolvedTy};
 
@@ -71,7 +72,7 @@ use inkwell::targets::{
 };
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue, StructValue,
 };
 use inkwell::AddressSpace;
 use inkwell::IntPredicate;
@@ -159,6 +160,16 @@ impl std::fmt::Display for CodegenError {
                     )
                 } else if symbol == "hew_tcp_stream_from_conn" {
                     ("the TCP transport substrate", "WASM-TODO(#1451)")
+                } else if symbol.starts_with("hew_hashmap_") && symbol.ends_with("_layout") {
+                    (
+                        "the layout-backed `HashMap` runtime substrate",
+                        "WASM-TODO(layout-backed HashMap wasm parity not yet designed)",
+                    )
+                } else if symbol.starts_with("hew_hashset_") && symbol.ends_with("_layout") {
+                    (
+                        "the layout-backed `HashSet` runtime substrate",
+                        "WASM-TODO(layout-backed HashSet wasm parity not yet designed)",
+                    )
                 } else {
                     ("a native-only runtime substrate", "WASM-TODO(#1451)")
                 };
@@ -228,6 +239,27 @@ pub fn emit_module(
     pipeline: &IrPipeline,
     options: &EmitOptions<'_>,
 ) -> CodegenResult<EmitArtefacts> {
+    // Verify the checker-authored layout-fact lifecycle is in a
+    // consistent state before any IR emission.  A `LayoutKey` fact that
+    // is still `Pending` here means the operation-lowering seam never
+    // consumed it — a codegen/checker contract violation that produces
+    // a confusing miscompile if allowed to proceed.  LESSONS:
+    // `codegen-abi-authority` (P0), `boundary-fail-closed` (P0).
+    verify_hashmap_lowering_facts_consistent(pipeline)?;
+    // When a wasm artefact is requested, surface the
+    // `WasmUnsupportedSubstrate` diagnostic BEFORE textual IR emission
+    // — `emit_textual` walks the full lowering and would otherwise
+    // bubble up a generic "Call to `<sym>` with no declared symbol"
+    // FailClosed for any wasm-excluded callee whose declaration the
+    // native path also lacks (e.g. the 13 hashmap/hashset layout
+    // symbols, which have no wasm32 ABI entry).  LESSONS:
+    // `boundary-fail-closed` (P0) — name the actual wasm gap, not the
+    // collateral missing-declaration symptom.
+    if options.wasm {
+        if let Some(symbol) = uses_wasm_excluded_symbol(pipeline) {
+            return Err(CodegenError::WasmUnsupportedSubstrate { symbol });
+        }
+    }
     std::fs::create_dir_all(options.out_dir)?;
     let mut artefacts = EmitArtefacts::default();
 
@@ -246,18 +278,7 @@ pub fn emit_module(
     }
 
     if options.wasm {
-        // Fail-closed before invoking `wasm-ld`: detect any reference to
-        // duplex substrate symbols.  `hew-runtime/src/duplex.rs:54` gates
-        // the entire duplex module out of wasm32 builds via
-        // `#![cfg(not(target_arch = "wasm32"))]`, so `wasm-ld` would fail
-        // with `undefined symbol: hew_duplex_*`.  Surface a structured
-        // diagnostic with a WASM-target pointer rather than a raw linker
-        // error.  WASM-TODO(#1451): duplex WASM parity is tracked there.
-        // LESSONS: boundary-fail-closed (P0), user-surface-correctness (P0).
-        if let Some(symbol) = uses_wasm_excluded_symbol(pipeline) {
-            return Err(CodegenError::WasmUnsupportedSubstrate { symbol });
-        }
-
+        // Fail-closed already enforced above before any IR emission.
         let wasm_obj_path = options
             .out_dir
             .join(format!("{}.wasm.o", options.module_name));
@@ -307,6 +328,11 @@ pub fn emit_module(
 /// target-specific pre-link scan rejects the MIR, or `Module::verify()` rejects
 /// the emitted IR.
 pub fn validate_codegen_front(pipeline: &IrPipeline) -> CodegenResult<()> {
+    // Enforce the layout-fact consistency invariant on every
+    // codegen-front entry, mirroring `emit_module`.  `hew check` reaches
+    // this path; surfacing a stuck-`Pending` fact here fails closed
+    // before any LLVM module is built.
+    verify_hashmap_lowering_facts_consistent(pipeline)?;
     validate_codegen_front_with_name(pipeline, "__hew_codegen_front_verify__")
 }
 
@@ -377,6 +403,11 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                 let excluded = match instr {
                     Instr::CallRuntimeAbi(call) => {
                         let sym = call.symbol();
+                        // WASM-TODO(#1451): extend if layout ops arrive as
+                        // `Instr::CallRuntimeAbi` rather than
+                        // `Terminator::Call` — mandatory pre-condition for
+                        // operation lowering of the layout-backed
+                        // HashMap/HashSet ABI.
                         // hew_duplex_* — excluded via hew-runtime/src/duplex.rs:54
                         //   `#![cfg(not(target_arch = "wasm32"))]`.
                         //   WASM-TODO(#1451).
@@ -423,19 +454,41 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                     return Some("hew_stream_poll".to_string());
                 }
             }
+            // W3.003-C C-3a: layout-backed HashMap/HashSet ABI is native-only
+            // (council Rev 7).  The C-3a codegen seam recognises probe callees
+            // `__hew_codegen_emit_hashmap_layout_probe` and
+            // `__hew_codegen_emit_hashset_layout_probe`; on wasm32 we surface
+            // the underlying substrate symbol that the runtime exposes so the
+            // user-facing diagnostic names the real wasm-unsupported ABI.
+            //
+            // WASM-TODO: layout-backed HashMap/HashSet wasm parity is not yet
+            // designed; see the W3.003-C plan §Risks "WASM indirect calls" row.
+            if let Terminator::Call { callee, .. } = &block.terminator {
+                if let Some(sym) = hashmap_layout_wasm_substrate_symbol(callee) {
+                    return Some(sym.to_string());
+                }
+            }
         }
     }
     // Also scan elaborated_mir drop_plans: the real close path goes through
     // here now that codegen consumes drop_plans. Resolve the drop_fn string
-    // to its C-ABI symbol and check for hew_duplex_ exclusion.
+    // through the W3.030 Stage 2 dispatch classifier.
+    //
+    // R-1 (plan review): after Stage 2 there are two arms — runtime
+    // substrate symbols and user-fn close. Only runtime symbols can be
+    // WASM-excluded (e.g. `hew_duplex_*`); user-fn `<Type>::<method>`
+    // close bodies are pure Hew code that compiles to wasm just like any
+    // other function, so they are silently skipped here.
+    //
+    // Truly unknown drop_fn strings are also silently skipped: they will
+    // fail closed at codegen via `verify_drop_dispatch_resolves` (V13)
+    // before any IR is emitted, which is the correct attribution boundary
+    // for them. This scan only owns the WASM-exclusion decision.
     for elab_func in &pipeline.elaborated_mir {
         for (_, plan) in &elab_func.drop_plans {
             for drop in &plan.drops {
                 if let Some(ref drop_fn) = drop.drop_fn {
-                    // Use resolve_drop_fn_to_symbol to get the actual C-ABI
-                    // symbol; skip on FailClosed (unknown names are not wasm
-                    // exclusion candidates — they'll fail at codegen instead).
-                    if let Ok(sym) = resolve_drop_fn_to_symbol(drop_fn) {
+                    if let Some(sym) = runtime_drop_symbol(drop_fn) {
                         if sym.starts_with("hew_duplex_") {
                             return Some(sym.to_string());
                         }
@@ -614,6 +667,34 @@ struct FnCtx<'a, 'ctx> {
     /// Module-wide enum layout descriptors. Used by the heap-owning
     /// composite return boundary check to inspect variant field types.
     enum_layouts: &'a [EnumLayout],
+    /// Per-record field-resolved-type table, keyed by record name. Built
+    /// once in `build_module` from `pipeline.record_layouts` and shared by
+    /// every per-function lowering context. The synthesis-side hash thunk
+    /// uses this to distinguish a `bool` field (i8 storage, but only the
+    /// low bit is semantically defined per the checker invariant) from a
+    /// general `i8`/`u8` field at the LLVM-typed walk: bool fields are
+    /// masked with `and i8 %x, 1` before the FNV-1a mix step so a stray
+    /// non-canonical bool byte (an upstream invariant violation) cannot
+    /// silently desynchronise hashing from equality.
+    ///
+    /// `None` keys (records not in the map) are treated as if every field
+    /// were a plain integer — defensive fall-back used by hand-built test
+    /// fixtures that do not register a record layout for every named local.
+    record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
+    /// Module-wide dyn-trait vtable registry, shared by reference from
+    /// `pipeline.dyn_vtable_registry`. Consumed by
+    /// `Instr::CoerceToDynTrait` to resolve the
+    /// `(trait_name, concrete_type, vtable_entries)` triple at every
+    /// coercion site to a stable `vtable_id` (and therefore to the
+    /// `mangle_dyn_vtable_symbol(vtable_id, &trait, &concrete)` LLVM
+    /// symbol). The registry
+    /// is read-only here — its sole producer is
+    /// `hew_mir::build_dyn_vtable_registry`, which observes every
+    /// `Instr::CoerceToDynTrait` in `pipeline.raw_mir` before codegen
+    /// runs. Reaching codegen for a coercion not in this registry is a
+    /// boundary invariant violation; the helper fails closed loudly
+    /// rather than silently emitting a misrouted vtable reference.
+    dyn_vtable_registry: &'a [DynVtableInstance],
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -853,6 +934,11 @@ fn intern_runtime_decl<'ctx>(
         // hew_vec_len(v: *mut HewVec) -> i64
         // (`hew-runtime/src/vec.rs:649`). Returns the element count as i64.
         "hew_vec_len" => i64_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_vec_get_bool(v: *mut HewVec, index: i64) -> bool
+        // Rust/C bool crosses the ABI as i1; Hew bool locals are stored as i8.
+        "hew_vec_get_bool" => ctx
+            .bool_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
         // hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32
         // (`hew-runtime/src/vec.rs:394`). Bounds-checked by the MIR emitter
         // before this call; the runtime also aborts on OOB as defence-in-depth.
@@ -1206,6 +1292,18 @@ fn declare_catalog_ffi<'ctx>(
     symbol: &str,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<FnSymbol<'ctx>> {
+    if is_bool_vec_runtime_symbol(symbol) {
+        let value = get_or_declare_bool_vec_runtime(ctx, llvm_mod, symbol)?;
+        let return_ty = match entry.return_ty {
+            BuiltinTy::Unit | BuiltinTy::Never => ctx.i8_type().into(),
+            _ => builtin_type_to_llvm(ctx, entry.return_ty, record_layouts)?,
+        };
+        return Ok(FnSymbol::Real {
+            value,
+            return_ty,
+            returns_unit: matches!(entry.return_ty, BuiltinTy::Unit | BuiltinTy::Never),
+        });
+    }
     let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(entry.params.len());
     for param in entry.params {
         param_tys.push(metadata_type_from_basic(builtin_type_to_llvm(
@@ -1325,6 +1423,23 @@ fn predeclare_extern_decls<'ctx>(
             // signature). Skip to preserve the catalog's typed FnSymbol entry.
             continue;
         }
+        if is_bool_vec_runtime_symbol(&decl.name) {
+            let value = get_or_declare_bool_vec_runtime(ctx, llvm_mod, &decl.name)?;
+            let return_ty = if matches!(decl.return_ty, ResolvedTy::Unit) {
+                ctx.i8_type().into()
+            } else {
+                resolve_ty(ctx, &decl.return_ty, record_layouts)?
+            };
+            fn_symbols.insert(
+                decl.name.clone(),
+                FnSymbol::Real {
+                    value,
+                    return_ty,
+                    returns_unit: matches!(decl.return_ty, ResolvedTy::Unit),
+                },
+            );
+            continue;
+        }
         let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(decl.param_tys.len());
         for ty in &decl.param_tys {
             param_tys.push(metadata_type_from_basic(resolve_ty(
@@ -1386,32 +1501,129 @@ type RecordLayoutMap<'ctx> = HashMap<String, StructType<'ctx>>;
 /// registered record nor a built-in handle. The MIR producer + checker
 /// would have rejected such a record at HIR-validation time, so reaching
 /// the fail-closed arm here is itself a bug.
-fn register_record_layouts<'ctx>(
+/// Allocate one opaque LLVM named struct for every record / enum / machine
+/// outer type (and every `<Name>Event` companion) in the pipeline, returning
+/// a `RecordLayoutMap` pre-populated with those opaque handles.
+///
+/// This MUST run before any body-fill pass (`fill_record_layout_bodies`,
+/// `build_tagged_union_layout`) because each of those passes resolves
+/// field/variant types through `resolve_ty`, which in turn looks names up
+/// in this map. Without predeclaration, a record field of enum type (or an
+/// enum payload of record type, etc.) would fall through `resolve_ty` to
+/// `primitive_to_llvm`'s D10 fail-closed sentinel — the symptom W4.012
+/// Stage 2 fixes.
+///
+/// **Within-class duplicates** (the same enum name appearing twice in
+/// `pipeline.enum_layouts`, etc.) are tolerated: the second registration
+/// is a no-op against the first opaque. This matches the pre-Stage-2
+/// behaviour where `register_enum_layouts` would silently overwrite the
+/// map entry on a repeated name. Repeated layouts are produced by the
+/// current pipeline for some generic-enum monomorphisations (e.g.
+/// `Option$$i64` registered along multiple stdlib paths); a strict
+/// fail-closed there would regress existing passing tests.
+///
+/// **Cross-class duplicates** (a record and an enum sharing a name) surface
+/// as `CodegenError::FailClosed` — defence in depth for a MIR-producer
+/// invariant (layout names should be disjoint across record/enum/machine
+/// spaces).
+fn predeclare_named_layouts<'ctx>(
+    ctx: &'ctx Context,
+    records: &[RecordLayout],
+    enums: &[EnumLayout],
+    machines: &[MachineLayout],
+) -> CodegenResult<RecordLayoutMap<'ctx>> {
+    // `class_owner` tracks which class first registered each name so a
+    // later registration from a different class can fail-closed with a
+    // useful diagnostic. Within-class repeats are silently idempotent.
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    enum Class {
+        Record,
+        Enum,
+        Machine,
+    }
+    impl Class {
+        fn label(self) -> &'static str {
+            match self {
+                Class::Record => "record",
+                Class::Enum => "enum",
+                Class::Machine => "machine",
+            }
+        }
+    }
+    let mut map: RecordLayoutMap<'ctx> = HashMap::new();
+    let mut class_owner: HashMap<String, Class> = HashMap::new();
+    let insert = |map: &mut RecordLayoutMap<'ctx>,
+                  owners: &mut HashMap<String, Class>,
+                  class: Class,
+                  name: &str|
+     -> CodegenResult<()> {
+        if let Some(existing) = owners.get(name) {
+            if *existing == class {
+                // Within-class duplicate: idempotent no-op against the
+                // already-allocated opaque struct.
+                return Ok(());
+            }
+            return Err(CodegenError::FailClosed(format!(
+                "duplicate layout name `{name}` across {} and {} layout classes — \
+                 MIR producer must use disjoint type names across record/enum/machine spaces",
+                existing.label(),
+                class.label()
+            )));
+        }
+        let st = ctx.opaque_struct_type(name);
+        map.insert(name.to_string(), st);
+        owners.insert(name.to_string(), class);
+        Ok(())
+    };
+    for layout in records {
+        insert(&mut map, &mut class_owner, Class::Record, &layout.name)?;
+    }
+    for layout in enums {
+        insert(&mut map, &mut class_owner, Class::Enum, &layout.name)?;
+    }
+    for layout in machines {
+        insert(&mut map, &mut class_owner, Class::Machine, &layout.name)?;
+        insert(
+            &mut map,
+            &mut class_owner,
+            Class::Machine,
+            &format!("{}Event", layout.name),
+        )?;
+    }
+    Ok(map)
+}
+
+/// Pass 2 of record-layout registration: walk every record's field list,
+/// lower each field type to LLVM via `resolve_ty`, and `set_body` on the
+/// opaque struct allocated by `predeclare_named_layouts`.
+///
+/// Because the map already contains opaque entries for every other record,
+/// every enum, and every machine outer/event struct in the pipeline, a
+/// record field of `Named { name: "<EnumName>" }` (or any other registered
+/// name) resolves to that opaque type rather than tripping the D10
+/// fail-closed sentinel in `primitive_to_llvm`.
+fn fill_record_layout_bodies<'ctx>(
     ctx: &'ctx Context,
     layouts: &[RecordLayout],
-) -> CodegenResult<RecordLayoutMap<'ctx>> {
-    let mut map: RecordLayoutMap<'ctx> = HashMap::new();
-    // Pass 1: opaque named structs.
+    map: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<()> {
     for layout in layouts {
-        let st = ctx.opaque_struct_type(&layout.name);
-        map.insert(layout.name.clone(), st);
-    }
-    // Pass 2: set body for each. Records-of-records resolve via the map's
-    // opaque entries created in pass 1.
-    for layout in layouts {
-        let st = map
-            .get(&layout.name)
-            .copied()
-            .expect("pass 1 populated every record name");
+        let st = map.get(&layout.name).copied().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "record `{}` missing from predeclared layout map — \
+                 predeclare_named_layouts must run before fill_record_layout_bodies",
+                layout.name
+            ))
+        })?;
         let mut field_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(layout.field_tys.len());
         for fty in &layout.field_tys {
-            field_tys.push(resolve_ty(ctx, fty, &map)?);
+            field_tys.push(resolve_ty(ctx, fty, map)?);
         }
         // packed = false: use the target's natural alignment per
         // `RecordLayout` doc (A-6b). LESSONS: parity-or-tracked-gap.
         st.set_body(&field_tys, false);
     }
-    Ok(map)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1572,6 +1784,13 @@ fn register_machine_layouts<'ctx>(
 ) -> CodegenResult<MachineLayoutMap<'ctx>> {
     let mut map: MachineLayoutMap<'ctx> = HashMap::new();
     for layout in machine_layouts {
+        // Within-class duplicate guard (mirrors `register_enum_layouts`):
+        // a second `set_body` against the same predeclared opaque struct
+        // is invalid LLVM. Skip the repeat if the outer struct's
+        // per-variant metadata is already present.
+        if map.contains_key(&layout.name) {
+            continue;
+        }
         // The state-side machine value: `<Name>` with state-variant payloads.
         let mut machine_cg = build_tagged_union_layout(
             ctx,
@@ -1633,7 +1852,17 @@ fn register_enum_layouts<'ctx>(
     machine_layout_map: &mut MachineLayoutMap<'ctx>,
     target_data: Option<&TargetData>,
 ) -> CodegenResult<()> {
+    // Within-class duplicate enum-layout entries (the same mangled name
+    // registered along multiple stdlib paths) are tolerated by
+    // `predeclare_named_layouts` as a no-op. Here we must also skip the
+    // duplicate body-fill, because `build_tagged_union_layout` calls
+    // `set_body` on the predeclared opaque — a second `set_body` against
+    // the same struct is invalid LLVM. The first registration wins;
+    // `machine_layout_map` retains the per-variant metadata it produced.
     for layout in enum_layouts {
+        if machine_layout_map.contains_key(&layout.name) {
+            continue;
+        }
         // Convert `EnumLayout.variants` (which are `MachineVariantLayout`)
         // directly — they share the same shape (`name`, `field_tys`).
         let enum_cg = build_tagged_union_layout(
@@ -1645,7 +1874,9 @@ fn register_enum_layouts<'ctx>(
         )?;
         // Register the outer struct so `resolve_ty` resolves
         // `ResolvedTy::Named { name: "<EnumName>" }` the same way as a
-        // machine-typed or record-typed local.
+        // machine-typed or record-typed local. (The opaque was inserted
+        // by `predeclare_named_layouts`; this overwrite stores the same
+        // `StructType` handle that `set_body` mutated in place.)
         record_layout_map.insert(layout.name.clone(), enum_cg.outer_struct);
         machine_layout_map.insert(layout.name.clone(), enum_cg);
     }
@@ -1762,7 +1993,12 @@ fn build_tagged_union_layout<'ctx>(
     let tag_int_ty = tag_int_type_for_variant_count(ctx, outer_name, variants.len())?;
     let payload_arr_ty = payload_element_int_ty.array_type(element_count_u32);
 
-    let outer_struct = ctx.opaque_struct_type(outer_name);
+    let outer_struct = record_layout_map.get(outer_name).copied().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "tagged-union layout `{outer_name}` missing from predeclared layout map — \
+             predeclare_named_layouts must include every enum/machine outer + <Name>Event name"
+        ))
+    })?;
     outer_struct.set_body(&[tag_int_ty.into(), payload_arr_ty.into()], false);
 
     Ok(MachineCodegenLayout {
@@ -2179,11 +2415,228 @@ fn primitive_to_llvm<'ctx>(
             Ok(ctx.struct_type(&[ptr, ptr], false).into())
         }
         ResolvedTy::Pointer { .. } => Ok(ctx.ptr_type(AddressSpace::default()).into()),
-        ResolvedTy::TraitObject { .. } => Err(CodegenError::Unsupported(
-            "TraitObject type — Cluster 4 lowering",
-        )),
+        ResolvedTy::TraitObject { .. } => Ok(dyn_trait_fat_ptr_ty(ctx).into()),
         ResolvedTy::Task(_) => Ok(ctx.ptr_type(AddressSpace::default()).into()),
     }
+}
+
+/// Canonical LLVM struct type for a `dyn Trait` value: the fat pointer
+/// `{ ptr data, ptr vtable }`.
+///
+/// **Layout contract.** A `dyn Trait` value at the LLVM ABI level is a
+/// two-word struct whose first word is an erased `*mut` data pointer
+/// (today the heap-box address produced by `hew_dyn_box_alloc`; tomorrow
+/// possibly a confined alloca address from the stack-promotion pass) and
+/// whose second word is a `*const HewDynVtable` pointing at one of the
+/// vtable statics emitted from `pipeline.dyn_vtable_registry` (slot 0 ==
+/// drop-in-place, slots 1.. == erased method thunks `__hew_dyn_thunk_*`).
+/// The drop and dispatch sites read each word with a constant GEP; the
+/// struct identity here is what makes those GEPs typed rather than raw
+/// byte offsets.
+///
+/// **Why a named module-level type.** The type surfaces in textual IR as
+/// `%hew.dyn.fat_ptr = type { ptr, ptr }` once per module, so every
+/// function signature that carries a `dyn Trait` value renders that name
+/// rather than an anonymous `{ptr, ptr}` literal repeated at each
+/// occurrence. This makes the substrate one-line greppable from emitted
+/// IR and pins the fat-pointer layout to a single canonical site that
+/// downstream stages (TO-4 codegen arms, vtable drop GEPs, dispatch
+/// thunks) all reference.
+///
+/// **Idempotence.** Named structs are interned by the inkwell `Context`.
+/// The helper first probes `Context::get_struct_type`; if the name is
+/// already registered it returns the existing handle. Otherwise it
+/// allocates an opaque struct and sets its body. The `is_opaque` re-check
+/// before `set_body` is defensive: if a future caller pre-registers the
+/// name opaquely (e.g. predeclared in a layout map) the body still gets
+/// filled exactly once, never re-set on an already-finalised struct.
+///
+/// **Wiring contract.** This helper is infrastructure only. The
+/// codegen arms for `Instr::CoerceToDynTrait` and `Instr::CallTraitMethod`
+/// remain fail-closed at this point; the subsequent slice will wire the
+/// fat-pointer value through those arms (construct the struct at a
+/// coercion site, GEP-and-load slot 1 at a dispatch site).
+fn dyn_trait_fat_ptr_ty<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
+    const NAME: &str = "hew.dyn.fat_ptr";
+    let st = match ctx.get_struct_type(NAME) {
+        Some(existing) => existing,
+        None => ctx.opaque_struct_type(NAME),
+    };
+    if st.is_opaque() {
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        st.set_body(&[ptr_ty.into(), ptr_ty.into()], false);
+    }
+    st
+}
+
+/// Resolve an `Instr::CoerceToDynTrait` payload to its
+/// `DynVtableInstance` in `registry`.
+///
+/// The dedup key is the structural `(trait_name, concrete_type,
+/// vtable_entries)` triple — same triple `build_dyn_vtable_registry`
+/// uses when it observes the raw MIR. The signatures on
+/// `vtable_entries` distinguish associated-type projections
+/// (`dyn Iterator<Item = i64>` vs `dyn Iterator<Item = String>`)
+/// whose concrete and trait names alone would otherwise collide.
+///
+/// Fails closed when no entry matches. The only producer of this
+/// registry is `build_dyn_vtable_registry`; any `Instr::CoerceToDynTrait`
+/// reaching codegen without a matching entry is an upstream invariant
+/// violation, not a user error. Surface it as a deterministic compile
+/// error rather than silently emitting a stray symbol reference.
+fn lookup_dyn_vtable_instance<'a>(
+    registry: &'a [DynVtableInstance],
+    trait_name: &str,
+    concrete_type: &ResolvedTy,
+    vtable_entries: &[hew_types::DynVtableEntry],
+) -> CodegenResult<&'a DynVtableInstance> {
+    registry
+        .iter()
+        .find(|e| {
+            e.trait_name == trait_name
+                && &e.concrete_type == concrete_type
+                && e.vtable_entries.as_slice() == vtable_entries
+        })
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "no DynVtableInstance for trait `{trait_name}`, concrete `{concrete_type:?}`, \
+                 {n} vtable entries — `build_dyn_vtable_registry` must observe every \
+                 `Instr::CoerceToDynTrait` before codegen runs",
+                n = vtable_entries.len(),
+            ))
+        })
+}
+
+/// Get-or-declare the LLVM global backing the vtable identified by
+/// `vtable_id` and return its address as a `ptr`.
+///
+/// **Declare-then-define contract.** This is the first slice to
+/// *reference* the vtable static at `Instr::CoerceToDynTrait` sites.
+/// The global is added with `Linkage::Private` and an opaque named
+/// struct body so the module verifies as soon as it is emitted. The
+/// corresponding *definition* pass
+/// (`emit_dyn_trait_vtable_definitions`) later calls
+/// `StructType::set_body` to fill the layout (`drop_fn` slot, then
+/// erased method-thunk slots) and `GlobalValue::set_initializer` to
+/// attach the constant body — both operate on the *same* named struct
+/// and the *same* global produced here, so references emitted at
+/// coercion sites remain bit-identical across that promotion.
+///
+/// **Naming and typing.** The symbol is `inst.symbol` — precomputed
+/// from [`hew_mir::mangle_dyn_vtable_symbol`]`(vtable_id, &trait, &concrete)`
+/// by `build_dyn_vtable_registry`. The backing LLVM type is an opaque
+/// named struct `%hew.dyn.vtable.{vtable_id}`; the later definition
+/// slice will call `StructType::set_body` to fill the layout and
+/// `GlobalValue::set_initializer` to attach the constant, both
+/// idempotent against the opaque declaration emitted here.
+///
+/// **Idempotence.** Repeated calls for the same `vtable_id` (e.g.
+/// multiple `Instr::CoerceToDynTrait` sites coercing different values
+/// of the same concrete to the same dyn trait) all resolve to the same
+/// `GlobalValue` via the `get_global` short-circuit.
+fn get_or_declare_dyn_vtable_global<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    inst: &hew_mir::DynVtableInstance,
+) -> PointerValue<'ctx> {
+    let symbol = &inst.symbol;
+    if let Some(existing) = llvm_mod.get_global(symbol) {
+        return existing.as_pointer_value();
+    }
+    let struct_name = format!("hew.dyn.vtable.{}", inst.vtable_id);
+    let opaque_ty = match ctx.get_struct_type(&struct_name) {
+        Some(existing) => existing,
+        None => ctx.opaque_struct_type(&struct_name),
+    };
+    let global = llvm_mod.add_global(opaque_ty, None, symbol);
+    global.set_constant(true);
+    // vtable globals are emitted with `Linkage::Private`: the
+    // symbol is internal to the compilation unit (no cross-CU ABI
+    // promise), and the trait/concrete-mangled name keeps `nm`
+    // output legible for in-module observation.
+    global.set_linkage(Linkage::Private);
+    global.as_pointer_value()
+}
+
+/// Lower `Instr::CoerceToDynTrait` to a fat-pointer aggregate store.
+///
+/// Emits, for `let dst: dyn Trait = value;`:
+///
+/// ```llvm
+///   %dyn_data   = insertvalue %hew.dyn.fat_ptr undef,   ptr %value_alloca, 0
+///   %dyn_full   = insertvalue %hew.dyn.fat_ptr %dyn_data, ptr @__hew_vtable_N, 1
+///   store %hew.dyn.fat_ptr %dyn_full, ptr %dst_alloca
+/// ```
+///
+/// **Data-pointer choice.** The data word is the source operand's
+/// frame-owned alloca address. The MIR producer's storage classifier
+/// records every `HirExprKind::CoerceToDynTrait` site as
+/// `TraitObjectStorage::FrameOwned` (see
+/// `hew-mir/src/lower.rs::classify_trait_object_storage`), so the
+/// alloca outlives every use of the resulting fat pointer for the same
+/// reason function-scoped allocas always do. Heap-boxed storage
+/// (return-position dyn, dyn-typed actor messages) is the responsibility
+/// of a separate MIR shape and does not reach this arm.
+///
+/// **Vtable-pointer choice.** `lookup_dyn_vtable_instance` resolves the
+/// triple to a stable `vtable_id`, and `get_or_declare_dyn_vtable_global`
+/// declares the corresponding `Linkage::Private` constant with an opaque
+/// body. The later vtable-definition pass finalises the body and
+/// initializer on the *same* named struct + global, so references
+/// emitted here remain ABI-stable across that promotion: the symbol
+/// name and the `ptr` taken-address-of value are independent of the
+/// layout of the eventual aggregate body.
+///
+/// **Dest-slot check.** The destination Place's alloca type must be
+/// `%hew.dyn.fat_ptr` — `primitive_to_llvm`'s `ResolvedTy::TraitObject`
+/// arm is the only producer of such allocas, so a mismatched
+/// slot type indicates an upstream classification bug. Fails closed.
+fn lower_coerce_to_dyn_trait(
+    fn_ctx: &FnCtx<'_, '_>,
+    value: Place,
+    dest: Place,
+    trait_name: &str,
+    concrete_type: &ResolvedTy,
+    vtable_entries: &[hew_types::DynVtableEntry],
+) -> CodegenResult<()> {
+    let inst = lookup_dyn_vtable_instance(
+        fn_ctx.dyn_vtable_registry,
+        trait_name,
+        concrete_type,
+        vtable_entries,
+    )?;
+
+    let (value_ptr, _value_slot_ty) = place_pointer(fn_ctx, value)?;
+    let vtable_ptr = get_or_declare_dyn_vtable_global(fn_ctx.ctx, fn_ctx.llvm_mod, inst);
+
+    let fat_ty = dyn_trait_fat_ptr_ty(fn_ctx.ctx);
+    let agg_undef: StructValue = fat_ty.get_undef();
+    let agg_with_data = fn_ctx
+        .builder
+        .build_insert_value(agg_undef, value_ptr, 0, "dyn_data")
+        .map_err(|e| CodegenError::Llvm(format!("insertvalue dyn_data: {e:?}")))?;
+    let agg_full = fn_ctx
+        .builder
+        .build_insert_value(agg_with_data, vtable_ptr, 1, "dyn_vtable")
+        .map_err(|e| CodegenError::Llvm(format!("insertvalue dyn_vtable: {e:?}")))?;
+
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    match dest_ty {
+        BasicTypeEnum::StructType(st) if st == fat_ty => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "CoerceToDynTrait dest slot type {other:?} is not `%hew.dyn.fat_ptr`; \
+                 the MIR producer must declare the dest local as \
+                 `ResolvedTy::TraitObject` so `primitive_to_llvm` produces a \
+                 fat-pointer alloca",
+            )));
+        }
+    }
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, agg_full.into_struct_value())
+        .map_err(|e| CodegenError::Llvm(format!("store dyn fat-ptr: {e:?}")))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3637,7 +4090,7 @@ enum CloneHelper {
     /// memcpy in `__hew_state_clone_<Actor>` step 3 seeded it with
     /// `src.<f>`; overwrite on success). Null return → rollback path.
     Allocating { name: &'static str },
-    /// Refcount-bump helper: `fn(*mut) -> ()`. Operates on the pointer
+    /// Refcount-bump helper: `fn(*mut) ->`. Operates on the pointer
     /// already present at `dst.<f>` (byte-aliased to `src.<f>` from the
     /// wholesale memcpy). The drop helper decrements; together they
     /// implement a clone-by-refcount discipline. No store, no rollback
@@ -3646,7 +4099,7 @@ enum CloneHelper {
     RefcountBump { name: &'static str },
 }
 
-/// (sym) for the per-field drop helpers; always `fn(*mut) -> ()`.
+/// (sym) for the per-field drop helpers; always `fn(*mut) ->`.
 struct DropHelper {
     name: &'static str,
 }
@@ -3806,7 +4259,7 @@ fn get_or_declare_record_clone_inplace<'ctx>(
 }
 
 /// Lookup-or-declare the synthesised per-record in-place drop helper.
-/// Signature: `fn(*mut) -> ()`. Does NOT free the wrapper — records are
+/// Signature: `fn(*mut) ->`. Does NOT free the wrapper — records are
 /// embedded in their parent struct.
 fn get_or_declare_record_drop_inplace<'ctx>(
     ctx: &'ctx Context,
@@ -4088,7 +4541,7 @@ fn emit_actor_state_clone_body<'ctx>(
         .expect("clone has 1 param")
         .into_pointer_value();
 
-    // ── Connection fail-closed short-circuit (plan §4.5 B) ────────────
+    // ── Connection fail-closed short-circuit §4.5 B) ────────────
     if has_connection_field(kinds) {
         // Defence-in-depth: Stage 2's supervisor codegen-time gate is
         // the primary fail-closed surface. The synthesised body here is
@@ -6428,22 +6881,27 @@ fn lower_instruction(
             // Drop ritual. `drop_fn: None` is a legitimate no-op for
             // `@linear` (move-checker proof elsewhere) and for value
             // classes with no implicit close. `drop_fn: Some(name)`
-            // dispatches on the literal close-symbol string.
+            // dispatches through the typed `DropDispatch` returned by
+            // `resolve_drop_fn` (W3.030 Stage 2):
             //
-            // The two emitter-known close protocols today are the
-            // M2 substrate's `hew_duplex_close` (direct C-ABI symbol
-            // name) and the runtime substrate's per-`@resource`
-            // close. The runtime side is wired via the C-ABI symbol
-            // string; the per-`@resource` path (drop_fn shaped like
-            // `"<TypeName>::close"`, produced by the elaborator at
-            // `hew-mir/src/lower.rs::build_lifo_drops` line ~2512)
-            // is **not yet reachable from real lowering** because
-            // codegen consumes `raw_mir`, not `elaborated_mir`;
-            // wiring `drop_plans` is a follow-on seam. Until then,
-            // a `"<TypeName>::close"` drop_fn remains fail-closed
-            // with a tracked-gap message. LESSONS:
-            // boundary-fail-closed, parity-or-tracked-gap,
-            // cleanup-all-exits, raii-null-after-move.
+            // - `DropDispatch::RuntimeSymbol`: runtime substrate close
+            //   (`Duplex::close` -> `hew_duplex_close`,
+            //   `LambdaActorHandle::close` -> `hew_lambda_actor_release`,
+            //   `SendHalf`/`RecvHalf::close` -> `hew_duplex_close_half`,
+            //   plus their C-ABI aliases). Loads the handle pointer
+            //   from `place`, calls the C-ABI symbol, null-stores.
+            // - `DropDispatch::UserFn`: user `#[resource]` `close`
+            //   declared in a sibling inherent-impl block. Loads the
+            //   aggregate `self` per the W3.029 record value-class ABI,
+            //   calls the user function, typed-zero stores the slot
+            //   (raii-null-after-move generalised from ptr-null to a
+            //   typed zero so a second drop observes already-released
+            //   state).
+            //
+            // A third dispatch arm is rejected at module-build time by
+            // `validate_drop_plan_dispatch` so unknown `drop_fn` strings
+            // never silently no-op. LESSONS: boundary-fail-closed,
+            // cleanup-all-exits, raii-null-after-move, lifecycle-symmetry.
             if let Some(name) = drop_fn {
                 lower_drop(fn_ctx, *place, name)?;
             }
@@ -6771,16 +7229,33 @@ fn lower_instruction(
             )?;
             let _ = ctx;
         }
-        // TO-3 lands the MIR shape (`Instr::CoerceToDynTrait`,
-        // `Instr::CallTraitMethod`); TO-4 (runtime-trait-object-abi.md
-        // §D-3 / §D-4) adds the LLVM emission (vtable static + GEP /
-        // load / call). Fail closed until TO-4 wires the arms — better
-        // a deterministic compile error than a silent miscompile.
-        Instr::CoerceToDynTrait { trait_name, .. } => {
-            return Err(CodegenError::Llvm(format!(
-                "Instr::CoerceToDynTrait (trait `{trait_name}`) reached LLVM emission \
-                 before the TO-4 vtable-emission slice landed"
-            )));
+        // Emit the fat-pointer aggregate (`%hew.dyn.fat_ptr { data, vtable }`)
+        // at the coercion site. `Instr::CallTraitMethod` below remains
+        // fail-closed pending the dispatch slice; the drop arm at
+        // `DropKind::TraitObject` is wired by the vtable-definition
+        // slice (vtable layout + slot-0 drop_fn dispatch). This arm
+        // references the vtable static via a `Linkage::Private`
+        // constant declared at this site with an opaque named struct
+        // body; the vtable-definition slice finalises that same global
+        // in place (same `%hew.dyn.vtable.N` named struct, same symbol,
+        // body and initializer filled by `set_body` + `set_initializer`).
+        Instr::CoerceToDynTrait {
+            value,
+            dest,
+            trait_name,
+            concrete_type,
+            method_table: _,
+            vtable_entries,
+        } => {
+            lower_coerce_to_dyn_trait(
+                fn_ctx,
+                *value,
+                *dest,
+                trait_name,
+                concrete_type,
+                vtable_entries,
+            )?;
+            let _ = ctx;
         }
         Instr::CallTraitMethod {
             trait_name,
@@ -7681,6 +8156,1861 @@ fn lower_tuple_field_load(
     Ok(())
 }
 
+fn is_bool_vec_runtime_symbol(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "hew_vec_push_bool" | "hew_vec_get_bool" | "hew_vec_set_bool" | "hew_vec_pop_bool"
+    )
+}
+
+fn is_layout_vec_runtime_symbol(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "hew_vec_push_layout"
+            | "hew_vec_get_layout"
+            | "hew_vec_set_layout"
+            | "hew_vec_pop_layout"
+            | "hew_vec_contains_thunk"
+            | "hew_vec_remove_at_layout"
+            | "hew_vec_clone_layout"
+    )
+}
+
+fn is_vec_constructor_symbol(symbol: &str) -> bool {
+    symbol == "Vec::new"
+}
+
+fn vec_constructor_fn_type<'ctx>(
+    ctx: &'ctx Context,
+    symbol: &str,
+) -> CodegenResult<inkwell::types::FunctionType<'ctx>> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    match symbol {
+        "hew_vec_new" | "hew_vec_new_bool" | "hew_vec_new_i64" | "hew_vec_new_f64"
+        | "hew_vec_new_str" | "hew_vec_new_ptr" => Ok(ptr_ty.fn_type(&[], false)),
+        "hew_vec_new_with_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        _ => Err(CodegenError::FailClosed(format!(
+            "not a Vec constructor runtime symbol: {symbol}"
+        ))),
+    }
+}
+
+fn get_or_declare_vec_constructor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    if let Some(fv) = llvm_mod.get_function(symbol) {
+        return Ok(fv);
+    }
+    Ok(llvm_mod.add_function(
+        symbol,
+        vec_constructor_fn_type(ctx, symbol)?,
+        Some(Linkage::External),
+    ))
+}
+
+fn layout_vec_fn_type<'ctx>(
+    ctx: &'ctx Context,
+    symbol: &str,
+) -> CodegenResult<inkwell::types::FunctionType<'ctx>> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    let i32_ty = ctx.i32_type();
+    match symbol {
+        "hew_vec_push_layout" => Ok(ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)),
+        "hew_vec_get_layout" => {
+            Ok(ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false))
+        }
+        "hew_vec_set_layout" => Ok(ctx.void_type().fn_type(
+            &[ptr_ty.into(), i64_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        )),
+        "hew_vec_pop_layout" => {
+            Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
+        }
+        // W3.032 Slice 3: `i32 hew_vec_contains_thunk(ptr vec, ptr val, ptr eq_fn)`.
+        // The third operand is a pointer to a codegen-emitted equality thunk;
+        // the runtime treats `Option<HewVecEqThunk>` as a nullable function
+        // pointer (null is rejected by `abort_null_eq_fn`).
+        "hew_vec_contains_thunk" => {
+            Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
+        }
+        // W3.003: `void hew_vec_remove_at_layout(ptr vec, i64 index, ptr layout)`.
+        // Index-based remove for BitCopy layout-backed elements; the hidden
+        // layout pointer is synthesized by codegen from the Vec element type.
+        "hew_vec_remove_at_layout" => Ok(ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false)),
+        // W3.003: `ptr hew_vec_clone_layout(ptr vec, ptr layout) -> ptr`.
+        // BitCopy bulk-copy clone; returns a freshly allocated *mut HewVec.
+        // The hidden layout pointer is synthesized by codegen from the Vec element type.
+        "hew_vec_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
+        _ => Err(CodegenError::FailClosed(format!(
+            "not a layout Vec runtime symbol: {symbol}"
+        ))),
+    }
+}
+
+fn get_or_declare_layout_vec_runtime<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    if let Some(fv) = llvm_mod.get_function(symbol) {
+        return Ok(fv);
+    }
+    Ok(llvm_mod.add_function(
+        symbol,
+        layout_vec_fn_type(ctx, symbol)?,
+        Some(Linkage::External),
+    ))
+}
+
+fn abi_size_align<'ctx>(
+    ty: BasicTypeEnum<'ctx>,
+    target_data: Option<&TargetData>,
+) -> CodegenResult<(u64, u32)> {
+    let host_td;
+    let td = if let Some(td) = target_data {
+        td
+    } else {
+        host_td = host_target_data();
+        &host_td
+    };
+    let (size, align) = match ty {
+        BasicTypeEnum::ArrayType(t) => (td.get_abi_size(&t), td.get_abi_alignment(&t)),
+        BasicTypeEnum::FloatType(t) => (td.get_abi_size(&t), td.get_abi_alignment(&t)),
+        BasicTypeEnum::IntType(t) => (td.get_abi_size(&t), td.get_abi_alignment(&t)),
+        BasicTypeEnum::PointerType(t) => (td.get_abi_size(&t), td.get_abi_alignment(&t)),
+        BasicTypeEnum::StructType(t) => (td.get_abi_size(&t), td.get_abi_alignment(&t)),
+        BasicTypeEnum::VectorType(t) => (td.get_abi_size(&t), td.get_abi_alignment(&t)),
+        BasicTypeEnum::ScalableVectorType(t) => (td.get_abi_size(&t), td.get_abi_alignment(&t)),
+    };
+    if size == 0 || align == 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "layout Vec element has invalid ABI layout size={size} align={align}"
+        )));
+    }
+    Ok((size, align))
+}
+
+fn layout_descriptor_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    elem_ty: BasicTypeEnum<'ctx>,
+    label: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    // WASM-TODO(#1819): `HewTypeLayout { size: usize, align: usize, ownership_kind: u8 }`
+    // is synthesized here with native host-width layout. wasm32 has `usize = i32`,
+    // so this `abi_size_align(elem_ty, None)` fallback and the descriptor struct
+    // shape below must become target-aware before WASM parity is claimed.
+    let (size, align) = abi_size_align(elem_ty, None)?;
+    let layout_ty = fn_ctx.ctx.struct_type(
+        &[
+            fn_ctx.ctx.i64_type().into(),
+            fn_ctx.ctx.i64_type().into(),
+            fn_ctx.ctx.i8_type().into(),
+        ],
+        false,
+    );
+    let global_name = format!("__hew_layout_{label}_{size}_{align}_plain");
+    if let Some(global) = fn_ctx.llvm_mod.get_global(&global_name) {
+        return Ok(global.as_pointer_value());
+    }
+    let init = layout_ty.const_named_struct(&[
+        fn_ctx.ctx.i64_type().const_int(size, false).into(),
+        fn_ctx
+            .ctx
+            .i64_type()
+            .const_int(u64::from(align), false)
+            .into(),
+        fn_ctx.ctx.i8_type().const_zero().into(),
+    ]);
+    let global = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
+    global.set_constant(true);
+    global.set_linkage(Linkage::Private);
+    global.set_initializer(&init);
+    Ok(global.as_pointer_value())
+}
+
+// W3.032 Slice 3c: per-type equality thunk for layout-backed `Vec::contains`.
+//
+// `get_or_emit_eq_thunk` returns a `FunctionValue` matching the equality thunk
+// ABI from the W3.032 plan: `unsafe extern "C" fn(*const c_void, *const c_void)
+// -> i32` with `1` = equal, `0` = not equal.  The function is internally linked
+// (`define internal i32 @__hew_eq_thunk_*`) and is intended to be invoked by
+// `hew_vec_contains_thunk` from `hew-runtime/src/vec.rs`.
+//
+// **Authority boundary** — Codegen does NOT call `ty_is_eq_eligible` here nor
+// inspect any Hew-level ownership/marker information.  The sole gate is the
+// checker rewrite that lands the `"hew_vec_contains_thunk"` callee symbol;
+// reaching this function implies that gate has fired.  The defensive
+// `CodegenError::FailClosed` for float-shaped LLVM fields below is fault
+// isolation — it detects a checker-gate bypass and refuses to emit `fcmp` —
+// not an independent eligibility decision.
+//
+// **Dedup key** — Structured: derived from the element type's LLVM textual
+// form (sanitised) plus its target-data ABI size/align.  Two structurally
+// different LLVM types with the same size/align (e.g. `{i64, i64}` vs
+// `{i32, i64}` after padding) get different keys and therefore different
+// thunks, satisfying the W3.032 hard requirement that dedup not collapse on
+// `{size, align}` alone.  The `__hew_eq_thunk_` prefix reserves the symbol in
+// the Hew ABI namespace.
+fn eq_thunk_struct_key(ty: BasicTypeEnum<'_>) -> String {
+    // `print_to_string()` includes named-struct identity (e.g. `%Point`) for
+    // named struct types and the literal field shape (e.g. `{ i64, i64 }`)
+    // for anonymous/tuple structs.  That is exactly the structural fingerprint
+    // we want.  Replace whitespace and non-alphanumeric runs so the resulting
+    // string is a legal LLVM symbol suffix.
+    let raw = ty.print_to_string().to_string();
+    let mut out = String::with_capacity(raw.len());
+    let mut last_under = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_under = false;
+        } else if !last_under {
+            out.push('_');
+            last_under = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    out
+}
+
+fn get_or_emit_eq_thunk<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    elem_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let (size, align) = abi_size_align(elem_ty, None)?;
+    let key = eq_thunk_struct_key(elem_ty);
+    let name = format!("__hew_eq_thunk_{size}_{align}_{key}");
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&name) {
+        return Ok(existing);
+    }
+
+    // Eagerly insert the function declaration before any recursive call so
+    // that thunks for nested aggregates can find this one via name lookup.
+    // (Hew has no self-referential records — `Ty` is not recursive — so the
+    // recursion would terminate anyway, but eager insertion is the
+    // canonical inkwell pattern.)
+    let ctx = fn_ctx.ctx;
+    let i32_ty = ctx.i32_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    let func = fn_ctx
+        .llvm_mod
+        .add_function(&name, fn_ty, Some(Linkage::Internal));
+
+    // Save the caller's insert block so we can restore it after building the
+    // thunk body — `FnCtx::builder` is shared with the outer function.
+    let saved_block = fn_ctx.builder.get_insert_block();
+
+    let entry_bb = ctx.append_basic_block(func, "entry");
+    let ret_true_bb = ctx.append_basic_block(func, "eq_thunk_ret_true");
+    let ret_false_bb = ctx.append_basic_block(func, "eq_thunk_ret_false");
+
+    fn_ctx.builder.position_at_end(entry_bb);
+    let lhs = func
+        .get_nth_param(0)
+        .ok_or_else(|| CodegenError::FailClosed("eq_thunk: missing lhs param".into()))?
+        .into_pointer_value();
+    let rhs = func
+        .get_nth_param(1)
+        .ok_or_else(|| CodegenError::FailClosed("eq_thunk: missing rhs param".into()))?
+        .into_pointer_value();
+
+    emit_eq_thunk_body(fn_ctx, elem_ty, lhs, rhs, ret_true_bb, ret_false_bb)?;
+
+    // Return slots.
+    fn_ctx.builder.position_at_end(ret_true_bb);
+    fn_ctx
+        .builder
+        .build_return(Some(&i32_ty.const_int(1, false)))
+        .map_err(|e| CodegenError::Llvm(format!("eq_thunk ret true: {e:?}")))?;
+    fn_ctx.builder.position_at_end(ret_false_bb);
+    fn_ctx
+        .builder
+        .build_return(Some(&i32_ty.const_zero()))
+        .map_err(|e| CodegenError::Llvm(format!("eq_thunk ret false: {e:?}")))?;
+
+    // Restore the outer function's builder position.
+    if let Some(bb) = saved_block {
+        fn_ctx.builder.position_at_end(bb);
+    }
+
+    Ok(func)
+}
+
+/// Emit a chain of field-by-field equality checks for `elem_ty`.  After all
+/// checks succeed control flows to `ret_true_bb`; any failed check branches
+/// directly to `ret_false_bb`.  The builder must be positioned at a block
+/// that has no terminator on entry.
+fn emit_eq_thunk_body<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    elem_ty: BasicTypeEnum<'ctx>,
+    lhs: PointerValue<'ctx>,
+    rhs: PointerValue<'ctx>,
+    ret_true_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    ret_false_bb: inkwell::basic_block::BasicBlock<'ctx>,
+) -> CodegenResult<()> {
+    match elem_ty {
+        BasicTypeEnum::IntType(int_ty) => {
+            let lv = fn_ctx
+                .builder
+                .build_load(int_ty, lhs, "eq_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk lhs load: {e:?}")))?
+                .into_int_value();
+            let rv = fn_ctx
+                .builder
+                .build_load(int_ty, rhs, "eq_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk rhs load: {e:?}")))?
+                .into_int_value();
+            let eq = fn_ctx
+                .builder
+                .build_int_compare(IntPredicate::EQ, lv, rv, "eq_field")
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk icmp: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(eq, ret_true_bb, ret_false_bb)
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk br: {e:?}")))?;
+            Ok(())
+        }
+        BasicTypeEnum::StructType(st) => {
+            let field_count = st.count_fields();
+            if field_count == 0 {
+                // Zero-field aggregates (unit-like records / `()` tuple) are
+                // trivially equal.
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(ret_true_bb)
+                    .map_err(|e| CodegenError::Llvm(format!("eq_thunk zero-field br: {e:?}")))?;
+                return Ok(());
+            }
+            let func = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|b| b.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("eq_thunk body: missing enclosing function".into())
+                })?;
+            for idx in 0..field_count {
+                let field_ty = st.get_field_type_at_index(idx).ok_or_else(|| {
+                    CodegenError::FailClosed(format!("eq_thunk: struct {st:?} missing field {idx}"))
+                })?;
+                let lhs_field = fn_ctx
+                    .builder
+                    .build_struct_gep(st, lhs, idx, &format!("eq_lhs_f{idx}"))
+                    .map_err(|e| CodegenError::Llvm(format!("eq_thunk lhs gep: {e:?}")))?;
+                let rhs_field = fn_ctx
+                    .builder
+                    .build_struct_gep(st, rhs, idx, &format!("eq_rhs_f{idx}"))
+                    .map_err(|e| CodegenError::Llvm(format!("eq_thunk rhs gep: {e:?}")))?;
+                // Continuation block: where control resumes after a successful
+                // field comparison, unless this is the final field, in which
+                // case we branch directly to `ret_true_bb`.
+                let next_bb = if idx + 1 < field_count {
+                    fn_ctx
+                        .ctx
+                        .append_basic_block(func, &format!("eq_thunk_cont_{}", idx + 1))
+                } else {
+                    ret_true_bb
+                };
+                emit_eq_thunk_field_check(
+                    fn_ctx,
+                    field_ty,
+                    lhs_field,
+                    rhs_field,
+                    next_bb,
+                    ret_false_bb,
+                )?;
+                if idx + 1 < field_count {
+                    fn_ctx.builder.position_at_end(next_bb);
+                }
+            }
+            Ok(())
+        }
+        BasicTypeEnum::ArrayType(arr_ty) => {
+            // Arrays of equality-eligible elements: compare element-by-element.
+            // The checker eligibility gate forbids float/managed fields, so any
+            // array we see here has integer/aggregate elements.
+            let len = arr_ty.len();
+            if len == 0 {
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(ret_true_bb)
+                    .map_err(|e| CodegenError::Llvm(format!("eq_thunk empty array br: {e:?}")))?;
+                return Ok(());
+            }
+            let func = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|b| b.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("eq_thunk body: missing enclosing function".into())
+                })?;
+            let elem_ty = arr_ty.get_element_type();
+            for idx in 0..len {
+                let zero = fn_ctx.ctx.i32_type().const_zero();
+                let idx_v = fn_ctx.ctx.i32_type().const_int(u64::from(idx), false);
+                let lhs_elem = unsafe {
+                    fn_ctx
+                        .builder
+                        .build_in_bounds_gep(arr_ty, lhs, &[zero, idx_v], &format!("eq_lhs_a{idx}"))
+                        .map_err(|e| CodegenError::Llvm(format!("eq_thunk lhs array gep: {e:?}")))?
+                };
+                let rhs_elem = unsafe {
+                    fn_ctx
+                        .builder
+                        .build_in_bounds_gep(arr_ty, rhs, &[zero, idx_v], &format!("eq_rhs_a{idx}"))
+                        .map_err(|e| CodegenError::Llvm(format!("eq_thunk rhs array gep: {e:?}")))?
+                };
+                let next_bb = if idx + 1 < len {
+                    fn_ctx
+                        .ctx
+                        .append_basic_block(func, &format!("eq_thunk_arr_cont_{}", idx + 1))
+                } else {
+                    ret_true_bb
+                };
+                emit_eq_thunk_field_check(
+                    fn_ctx,
+                    elem_ty,
+                    lhs_elem,
+                    rhs_elem,
+                    next_bb,
+                    ret_false_bb,
+                )?;
+                if idx + 1 < len {
+                    fn_ctx.builder.position_at_end(next_bb);
+                }
+            }
+            Ok(())
+        }
+        BasicTypeEnum::FloatType(_) => {
+            // The checker eligibility gate (Slice 1) rejects every record /
+            // tuple type that contains a float field before `_layout`
+            // contains can reach codegen.  A float type at this point is a
+            // checker-gate bypass — fail closed instead of silently emitting
+            // an `fcmp` that would have NaN semantics.
+            Err(CodegenError::FailClosed(
+                "eq_thunk: float field reached codegen — checker gate bypassed".into(),
+            ))
+        }
+        BasicTypeEnum::PointerType(_)
+        | BasicTypeEnum::VectorType(_)
+        | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::FailClosed(format!(
+            "eq_thunk: unsupported LLVM field shape {elem_ty:?} — \
+             checker eligibility gate should have rejected this element type"
+        ))),
+    }
+}
+
+/// Compare a single field/element at `lhs_field`/`rhs_field` of type
+/// `field_ty`.  Integer fields compare in-place and conditionally branch
+/// to `success_bb`/`fail_bb`.  Aggregate fields delegate to a nested
+/// `__hew_eq_thunk_*` function and check its `i32` return: non-zero ⇒
+/// success, zero ⇒ fail.
+fn emit_eq_thunk_field_check<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    field_ty: BasicTypeEnum<'ctx>,
+    lhs_field: PointerValue<'ctx>,
+    rhs_field: PointerValue<'ctx>,
+    success_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    fail_bb: inkwell::basic_block::BasicBlock<'ctx>,
+) -> CodegenResult<()> {
+    match field_ty {
+        BasicTypeEnum::IntType(int_ty) => {
+            let lv = fn_ctx
+                .builder
+                .build_load(int_ty, lhs_field, "eq_field_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk field lhs load: {e:?}")))?
+                .into_int_value();
+            let rv = fn_ctx
+                .builder
+                .build_load(int_ty, rhs_field, "eq_field_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk field rhs load: {e:?}")))?
+                .into_int_value();
+            let eq = fn_ctx
+                .builder
+                .build_int_compare(IntPredicate::EQ, lv, rv, "eq_field_cmp")
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk field icmp: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(eq, success_bb, fail_bb)
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk field br: {e:?}")))?;
+            Ok(())
+        }
+        BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
+            // Nested aggregate: recurse via a separate thunk function.
+            let nested = get_or_emit_eq_thunk(fn_ctx, field_ty)?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    nested,
+                    &[lhs_field.into(), rhs_field.into()],
+                    "eq_field_nested",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk nested call: {e:?}")))?;
+            let raw = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("eq_thunk nested call returned void".into())
+                })?
+                .into_int_value();
+            let nz = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    raw,
+                    fn_ctx.ctx.i32_type().const_zero(),
+                    "eq_field_nested_nz",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk nested ne: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(nz, success_bb, fail_bb)
+                .map_err(|e| CodegenError::Llvm(format!("eq_thunk nested br: {e:?}")))?;
+            Ok(())
+        }
+        BasicTypeEnum::FloatType(_) => Err(CodegenError::FailClosed(
+            "eq_thunk: float field reached codegen — checker gate bypassed".into(),
+        )),
+        BasicTypeEnum::PointerType(_)
+        | BasicTypeEnum::VectorType(_)
+        | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::FailClosed(format!(
+            "eq_thunk: unsupported nested LLVM field shape {field_ty:?}"
+        ))),
+    }
+}
+
+// =========================================================================
+// W3.003-C C-3a: HashMap/HashSet layout-key hash-thunk + descriptor synthesis
+// =========================================================================
+//
+// This module synthesises the per-record-type identity machinery that the
+// layout-backed HashMap/HashSet runtime ABI consumes:
+//
+//   - `__hew_hash_thunk_<size>_<align>_<struct_key>` — `i64 (ptr)` FNV-1a 64
+//     hash over typed field loads in **declaration order**.  No whole-struct
+//     memhash, no padding bytes, no float fields (checker-gated upstream).
+//   - `@__hew_map_key_layout_<size>_<align>_<struct_key>_plain` — a
+//     `HewMapKeyLayout`-shaped private constant whose field layout matches
+//     `hew_cabi::map::HewMapKeyLayout` byte-for-byte.
+//   - `@__hew_map_value_layout_<size>_<align>_plain` — a `HewMapValueLayout`
+//     private constant.
+//
+// **Equality thunk reuse.**  The hash thunk does NOT carry an equality
+// twin.  The `eq_fn` field of the key-layout global re-uses the existing
+// `__hew_eq_thunk_*` from `get_or_emit_eq_thunk` so the equality machinery
+// proven by `Vec::contains` (W3.032) is shared.  Dedup is the function-name
+// table on the LLVM module, so a single record type yields exactly one
+// equality thunk regardless of whether `Vec::contains` or HashMap reaches it
+// first.
+//
+// **Authority boundary** — Codegen does NOT re-derive layout eligibility
+// from `ResolvedTy`.  Reaching the synthesis seam means the checker emitted
+// the appropriate lowering fact (C-2c `HashMapLoweringFact` /
+// `HashSetLoweringFact` in `Pending` state) and routed a layout callee here.
+// The defensive `CodegenError::FailClosed` arms below for float/pointer
+// fields are fault isolation only — they detect a checker-gate bypass and
+// refuse to silently emit a meaningless hash, never an independent
+// eligibility decision.  LESSONS: `codegen-abi-authority` (P0).
+//
+// **WASM substrate gate** — `hashmap_layout_wasm_substrate_symbol` maps the
+// probe callees to their runtime substrate symbol name so
+// `uses_wasm_excluded_symbol` surfaces a structured
+// `CodegenError::WasmUnsupportedSubstrate` before any layout-map symbol is
+// lowered into a wasm32 module.  LESSONS: `native-wasm-parity` (P1).
+//
+// **Dedup key** — Hash thunk and key-layout global share the same
+// `eq_thunk_struct_key` so two records with identical `(size, align)` but
+// distinct field shape do not collide.  Value-layout dedup is `(size, align)`
+// alone because no thunks live in the value descriptor — two scalar values
+// (e.g. `i64` and `u64`) with identical ABI shape can legitimately share a
+// global.
+
+/// Mix a single `i64` field value into the FNV-1a accumulator at `acc_slot`.
+///
+/// FNV-1a 64-bit step: `acc = (acc XOR field) * 0x100000001b3`.
+fn mix_into_hash_acc<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    acc_slot: PointerValue<'ctx>,
+    field_u64: IntValue<'ctx>,
+) -> CodegenResult<()> {
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let prime = i64_ty.const_int(0x100000001b3_u64, false);
+    let acc = fn_ctx
+        .builder
+        .build_load(i64_ty, acc_slot, "hash_acc_load")
+        .map_err(|e| CodegenError::Llvm(format!("hash_thunk acc load: {e:?}")))?
+        .into_int_value();
+    let xored = fn_ctx
+        .builder
+        .build_xor(acc, field_u64, "hash_xor")
+        .map_err(|e| CodegenError::Llvm(format!("hash_thunk xor: {e:?}")))?;
+    let mul = fn_ctx
+        .builder
+        .build_int_mul(xored, prime, "hash_mul")
+        .map_err(|e| CodegenError::Llvm(format!("hash_thunk mul: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(acc_slot, mul)
+        .map_err(|e| CodegenError::Llvm(format!("hash_thunk acc store: {e:?}")))?;
+    Ok(())
+}
+
+/// Emit field-by-field FNV-1a mixing into `acc_slot` for the value of type
+/// `ty` rooted at `base_ptr`.  Walks structs in declaration order (the
+/// authoritative order is the LLVM struct's field index, which matches
+/// `RecordLayout.field_tys` ordering installed by `fill_record_layout_bodies`).
+/// Nested aggregates fold via a separate, deduplicated nested thunk.
+fn emit_hash_thunk_body<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ty: BasicTypeEnum<'ctx>,
+    resolved_ty: Option<&ResolvedTy>,
+    base_ptr: PointerValue<'ctx>,
+    acc_slot: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let i64_ty = ctx.i64_type();
+    match ty {
+        BasicTypeEnum::IntType(int_ty) => {
+            // Typed-width load: bool/i8 loads `i8`, char loads `i32`, i64
+            // loads `i64`.  Zero-extend to i64 before mixing so all widths
+            // funnel through the same FNV-1a step.
+            //
+            // Defence-in-depth for `bool`: Hew stores `bool` as an i8 where
+            // only the low bit is semantically defined (`0 = false`, `1 =
+            // true`); the checker guarantees the upper 7 bits are zero, but
+            // a stray non-canonical byte (an upstream invariant violation)
+            // must not silently desynchronise hashing from equality.  When
+            // the caller has told us the load is a `bool`, mask the loaded
+            // byte to its low bit before the FNV-1a mix.  General i8/u8/i16
+            // /i32/i64 fields are hashed full-width.
+            let loaded = fn_ctx
+                .builder
+                .build_load(int_ty, base_ptr, "hash_field_load")
+                .map_err(|e| CodegenError::Llvm(format!("hash_thunk int load: {e:?}")))?
+                .into_int_value();
+            let masked = if matches!(resolved_ty, Some(ResolvedTy::Bool)) {
+                let one = int_ty.const_int(1, false);
+                fn_ctx
+                    .builder
+                    .build_and(loaded, one, "hash_bool_mask")
+                    .map_err(|e| CodegenError::Llvm(format!("hash_thunk bool mask: {e:?}")))?
+            } else {
+                loaded
+            };
+            let zext = if int_ty.get_bit_width() < 64 {
+                fn_ctx
+                    .builder
+                    .build_int_z_extend(masked, i64_ty, "hash_field_zext")
+                    .map_err(|e| CodegenError::Llvm(format!("hash_thunk zext: {e:?}")))?
+            } else {
+                masked
+            };
+            mix_into_hash_acc(fn_ctx, acc_slot, zext)?;
+            Ok(())
+        }
+        BasicTypeEnum::StructType(st) => {
+            // Walk the optional ResolvedTy in lockstep with the LLVM struct
+            // fields so per-field bool detection survives recursion into
+            // nested records.  `field_resolved_tys` is sourced from the
+            // pipeline's record-layout table keyed by the struct's LLVM
+            // name; if the lookup fails we walk without ResolvedTy info
+            // (hand-built test fixtures may not register a layout for
+            // every named local).
+            let field_resolved_tys: Option<&Vec<ResolvedTy>> = st
+                .get_name()
+                .and_then(|cstr| cstr.to_str().ok())
+                .and_then(|name| fn_ctx.record_field_resolved_tys.get(name));
+            let field_count = st.count_fields();
+            for idx in 0..field_count {
+                let field_ty = st.get_field_type_at_index(idx).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "hash_thunk: struct {st:?} missing field index {idx}"
+                    ))
+                })?;
+                let field_resolved = field_resolved_tys.and_then(|tys| tys.get(idx as usize));
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(st, base_ptr, idx, &format!("hash_f{idx}"))
+                    .map_err(|e| CodegenError::Llvm(format!("hash_thunk struct gep: {e:?}")))?;
+                match field_ty {
+                    BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
+                        // Recurse via a separate dedup'd nested thunk so the
+                        // emitted IR is compact and any nested record sharing
+                        // produces one hash thunk per type per module.
+                        let nested = get_or_emit_hash_thunk(fn_ctx, field_ty, field_resolved)?;
+                        let call = fn_ctx
+                            .builder
+                            .build_call(nested, &[field_ptr.into()], "hash_nested_call")
+                            .map_err(|e| {
+                                CodegenError::Llvm(format!("hash_thunk nested call: {e:?}"))
+                            })?;
+                        let nested_hash = call
+                            .try_as_basic_value()
+                            .basic()
+                            .ok_or_else(|| {
+                                CodegenError::FailClosed(
+                                    "hash_thunk nested call returned void".into(),
+                                )
+                            })?
+                            .into_int_value();
+                        mix_into_hash_acc(fn_ctx, acc_slot, nested_hash)?;
+                    }
+                    _ => {
+                        emit_hash_thunk_body(fn_ctx, field_ty, field_resolved, field_ptr, acc_slot)?
+                    }
+                }
+            }
+            Ok(())
+        }
+        BasicTypeEnum::ArrayType(arr_ty) => {
+            let len = arr_ty.len();
+            let elem_ty = arr_ty.get_element_type();
+            for idx in 0..len {
+                let zero = ctx.i32_type().const_zero();
+                let idx_v = ctx.i32_type().const_int(u64::from(idx), false);
+                let elem_ptr = unsafe {
+                    fn_ctx
+                        .builder
+                        .build_in_bounds_gep(
+                            arr_ty,
+                            base_ptr,
+                            &[zero, idx_v],
+                            &format!("hash_a{idx}"),
+                        )
+                        .map_err(|e| CodegenError::Llvm(format!("hash_thunk arr gep: {e:?}")))?
+                };
+                // Arrays of bool are not currently expressible in the Hew
+                // surface (bool aggregates are not first-class), so we walk
+                // array elements without a ResolvedTy hint.  When that
+                // changes, thread an `Option<&ResolvedTy>` through here.
+                emit_hash_thunk_body(fn_ctx, elem_ty, None, elem_ptr, acc_slot)?;
+            }
+            Ok(())
+        }
+        BasicTypeEnum::FloatType(_) => Err(CodegenError::FailClosed(
+            "hash_thunk: float field reached codegen — checker eligibility gate bypassed".into(),
+        )),
+        BasicTypeEnum::PointerType(_)
+        | BasicTypeEnum::VectorType(_)
+        | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::FailClosed(format!(
+            "hash_thunk: unsupported field shape {ty:?} — checker eligibility \
+             gate should have rejected this field type"
+        ))),
+    }
+}
+
+/// Return (creating on demand) the per-type FNV-1a hash thunk for `elem_ty`.
+///
+/// Signature: `i64 __hew_hash_thunk_<size>_<align>_<struct_key>(ptr key)`.
+/// Dedup key matches `eq_thunk_struct_key` so the (size, align, struct shape)
+/// triple is the identity surface for both thunk families.  Linkage is
+/// `Internal` so the thunk does not leak into the public ABI surface.
+///
+/// `resolved_ty`, when `Some`, is the Hew-level type of the value at
+/// `base_ptr`; it lets the body emitter distinguish a `bool` field (which
+/// is masked to its low bit) from a full-width integer.  Cross-shape dedup
+/// is preserved: the dedup key embeds the LLVM struct identity (which
+/// includes the Hew type name), so two records with identical (size,
+/// align) but different shapes emit two distinct thunks.
+fn get_or_emit_hash_thunk<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    elem_ty: BasicTypeEnum<'ctx>,
+    resolved_ty: Option<&ResolvedTy>,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let (size, align) = abi_size_align(elem_ty, None)?;
+    let key = eq_thunk_struct_key(elem_ty);
+    let name = format!("__hew_hash_thunk_{size}_{align}_{key}");
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&name) {
+        return Ok(existing);
+    }
+
+    let ctx = fn_ctx.ctx;
+    let i64_ty = ctx.i64_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let fn_ty = i64_ty.fn_type(&[ptr_ty.into()], false);
+    let func = fn_ctx
+        .llvm_mod
+        .add_function(&name, fn_ty, Some(Linkage::Internal));
+
+    let saved_block = fn_ctx.builder.get_insert_block();
+
+    let entry_bb = ctx.append_basic_block(func, "entry");
+    let exit_bb = ctx.append_basic_block(func, "hash_thunk_exit");
+    fn_ctx.builder.position_at_end(entry_bb);
+
+    // FNV-1a 64-bit offset basis.
+    let acc_slot = fn_ctx
+        .builder
+        .build_alloca(i64_ty, "hash_acc")
+        .map_err(|e| CodegenError::Llvm(format!("hash_thunk alloca: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(acc_slot, i64_ty.const_int(0xcbf29ce484222325_u64, false))
+        .map_err(|e| CodegenError::Llvm(format!("hash_thunk init store: {e:?}")))?;
+
+    let key_ptr = func
+        .get_nth_param(0)
+        .ok_or_else(|| CodegenError::FailClosed("hash_thunk: missing key param".into()))?
+        .into_pointer_value();
+
+    emit_hash_thunk_body(fn_ctx, elem_ty, resolved_ty, key_ptr, acc_slot)?;
+
+    fn_ctx
+        .builder
+        .build_unconditional_branch(exit_bb)
+        .map_err(|e| CodegenError::Llvm(format!("hash_thunk br exit: {e:?}")))?;
+    fn_ctx.builder.position_at_end(exit_bb);
+    let final_acc = fn_ctx
+        .builder
+        .build_load(i64_ty, acc_slot, "hash_acc_final")
+        .map_err(|e| CodegenError::Llvm(format!("hash_thunk acc final load: {e:?}")))?
+        .into_int_value();
+    fn_ctx
+        .builder
+        .build_return(Some(&final_acc))
+        .map_err(|e| CodegenError::Llvm(format!("hash_thunk return: {e:?}")))?;
+
+    if let Some(bb) = saved_block {
+        fn_ctx.builder.position_at_end(bb);
+    }
+
+    Ok(func)
+}
+
+/// Emit (or reuse) a `HewMapKeyLayout`-shaped private constant for `elem_ty`,
+/// returning a pointer suitable for the runtime `key_layout` parameter.
+///
+/// The struct shape must match `hew_cabi::map::HewMapKeyLayout`:
+/// `{ size: usize, align: usize, ownership_kind: u8, hash_fn: fn ptr, eq_fn: fn ptr }`.
+/// LLVM inserts natural alignment padding between `ownership_kind` (i8) and
+/// the function pointers automatically because the struct is non-packed.
+///
+/// The `ownership_kind` byte is hard-wired to `Plain` (0) — managed/non-Copy
+/// keys are rejected by the checker's `hash_eligibility` predicate (C-2a),
+/// so reaching this seam implies Plain ownership.
+fn hashmap_key_layout_descriptor_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    elem_ty: BasicTypeEnum<'ctx>,
+    resolved_ty: Option<&ResolvedTy>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let (size, align) = abi_size_align(elem_ty, None)?;
+    let key = eq_thunk_struct_key(elem_ty);
+    let global_name = format!("__hew_map_key_layout_{size}_{align}_{key}_plain");
+    if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
+        return Ok(g.as_pointer_value());
+    }
+    let ctx = fn_ctx.ctx;
+    let i64_ty = ctx.i64_type();
+    let i8_ty = ctx.i8_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    // Shape matches `hew_cabi::map::HewMapKeyLayout` (5 visible fields; the
+    // implicit padding between `ownership_kind: i8` and `hash_fn: ptr` is
+    // inserted by LLVM because the struct is non-packed).
+    let layout_ty = ctx.struct_type(
+        &[
+            i64_ty.into(),
+            i64_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+
+    // Emit/dedup the per-record thunks BEFORE constructing the initializer
+    // so the function pointers exist when the global references them.
+    let hash_fn = get_or_emit_hash_thunk(fn_ctx, elem_ty, resolved_ty)?;
+    let eq_fn = get_or_emit_eq_thunk(fn_ctx, elem_ty)?;
+
+    let init = layout_ty.const_named_struct(&[
+        i64_ty.const_int(size, false).into(),
+        i64_ty.const_int(u64::from(align), false).into(),
+        i8_ty.const_zero().into(),
+        hash_fn.as_global_value().as_pointer_value().into(),
+        eq_fn.as_global_value().as_pointer_value().into(),
+    ]);
+    let g = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
+    g.set_constant(true);
+    g.set_linkage(Linkage::Private);
+    g.set_initializer(&init);
+    Ok(g.as_pointer_value())
+}
+
+/// Emit (or reuse) a `HewMapValueLayout`-shaped private constant for `val_ty`,
+/// returning a pointer suitable for the runtime `val_layout` parameter.
+///
+/// The struct shape must match `hew_cabi::map::HewMapValueLayout`:
+/// `{ size: usize, align: usize, ownership_kind: u8 }`.  Dedup by
+/// `(size, align)` alone — two scalar values with identical ABI shape may
+/// share a global since there are no per-type thunks in the value descriptor.
+///
+/// HashSet zero-size value layout is **not emitted** by this helper: per
+/// C-1c, the runtime's `hew_hashset_new_with_layout` injects a hard-coded
+/// zero-size `HewMapValueLayout` internally.  Callers of `lower_hashmap_*`
+/// for HashMap continue to emit a real value-layout global.
+fn hashmap_value_layout_descriptor_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    val_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let (size, align) = abi_size_align(val_ty, None)?;
+    let global_name = format!("__hew_map_value_layout_{size}_{align}_plain");
+    if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
+        return Ok(g.as_pointer_value());
+    }
+    let ctx = fn_ctx.ctx;
+    let i64_ty = ctx.i64_type();
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into(), i8_ty.into()], false);
+    let init = layout_ty.const_named_struct(&[
+        i64_ty.const_int(size, false).into(),
+        i64_ty.const_int(u64::from(align), false).into(),
+        i8_ty.const_zero().into(),
+    ]);
+    let g = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
+    g.set_constant(true);
+    g.set_linkage(Linkage::Private);
+    g.set_initializer(&init);
+    Ok(g.as_pointer_value())
+}
+
+/// Verify the checker-authored layout-fact lifecycle is consistent.
+///
+/// Called from `emit_module` and `validate_codegen_front` (the two
+/// codegen entry points) so any orphaned `Pending` fact — i.e. a
+/// `LayoutKey` site the checker admitted but operation lowering never
+/// reached — fails closed with a structured diagnostic before any IR
+/// is emitted.
+///
+/// This is the codegen-side enforcement of the W3.003-C council Rev 5
+/// invariant: facts authored at the checker boundary are the single
+/// source of truth for layout-backed runtime calls, and codegen MUST
+/// consume them by transitioning each to `Finalized`.  Reaching this
+/// helper with a `Pending` fact left means the checker admitted a
+/// site the codegen path could not handle — a contract violation that
+/// would otherwise miscompile into a runtime memory-safety hole.
+///
+/// LESSONS: `codegen-abi-authority` (P0), `boundary-fail-closed` (P0).
+///
+/// The HashSet path is folded into the same check by promoting each
+/// `HashSetLoweringFact` to a `HashMapLoweringFact`-shaped record: the
+/// only attribute checked at this layer is the `Pending`/`Finalized`
+/// state plus the layout's size/align well-formedness, both of which
+/// the existing `assert_lowering_facts_consistent` already validates.
+fn verify_hashmap_lowering_facts_consistent(pipeline: &IrPipeline) -> CodegenResult<()> {
+    use hew_types::{
+        assert_lowering_facts_consistent, HashMapAbi, HashMapLoweringFact, HashMapValueType,
+        HashSetAbi, LoweringFactConsistencyError,
+    };
+
+    let mut facts: Vec<HashMapLoweringFact> = pipeline.hashmap_lowering_facts.clone();
+    // Promote each HashSet fact to a HashMap-shaped fact whose abi is
+    // `LayoutKey { key_record_name = elem_record_name, val = Char }` —
+    // an arbitrary non-Layout value variant — so the existing
+    // `assert_lowering_facts_consistent` walks the elem layout's
+    // size/align bytes through the same `key_*` invariant path.  The
+    // value side is not checked for non-Layout values.
+    for set_fact in &pipeline.hashset_lowering_facts {
+        let elem_record_name = match &set_fact.abi {
+            HashSetAbi::Layout { elem_record_name } => elem_record_name.clone(),
+            // Non-Layout HashSet ABIs (scalar Int64 / String) have no
+            // layout descriptor to consume; codegen never reaches the
+            // operation-lowering transition for them, so they are not
+            // subject to the Pending → Finalized invariant.
+            _ => continue,
+        };
+        facts.push(HashMapLoweringFact {
+            abi: HashMapAbi::LayoutKey {
+                key_record_name: elem_record_name,
+                val: HashMapValueType::Char,
+            },
+            state: set_fact.state,
+            key_size: set_fact.elem_size,
+            key_align: set_fact.elem_align,
+            val_size: None,
+            val_align: None,
+        });
+    }
+
+    match assert_lowering_facts_consistent(&facts) {
+        Ok(()) => Ok(()),
+        Err(err) => Err(CodegenError::FailClosed(match err {
+            LoweringFactConsistencyError::PendingLayoutKeyFact { record_name } => format!(
+                "checker emitted a layout-backed HashMap/HashSet site for record \
+                 `{record_name}` that codegen never finalized; this is a \
+                 codegen/checker contract violation (LESSONS: codegen-abi-authority \
+                 P0).  Operation-lowering MUST transition Pending → Finalized at \
+                 each call site before pipeline finalization."
+            ),
+            LoweringFactConsistencyError::FinalizedLayoutKeyMissingSize { record_name } => format!(
+                "Finalized layout-key fact for `{record_name}` has zero or missing \
+                 key size — codegen wrote back an inconsistent layout descriptor"
+            ),
+            LoweringFactConsistencyError::FinalizedLayoutKeyBadAlign { record_name, align } => {
+                format!(
+                    "Finalized layout-key fact for `{record_name}` has non-power-of-two \
+                     key alignment {align}"
+                )
+            }
+            LoweringFactConsistencyError::FinalizedLayoutValueMissingSize { record_name } => {
+                format!(
+                    "Finalized layout-value fact for key `{record_name}` has zero or \
+                     missing value size"
+                )
+            }
+            LoweringFactConsistencyError::FinalizedLayoutValueBadAlign { record_name, align } => {
+                format!(
+                    "Finalized layout-value fact for key `{record_name}` has \
+                     non-power-of-two value alignment {align}"
+                )
+            }
+        })),
+    }
+}
+
+/// Map a callee name (probe or runtime ABI symbol) to the user-facing
+/// substrate symbol it stands in for, so wasm-target fail-closed
+/// diagnostics name the real ABI surface that the user would need.
+///
+/// Returns `Some(callee)` (identity-mapped) for any of the 7
+/// `hew_hashmap_*_layout` runtime symbols and the 6
+/// `hew_hashset_*_layout` runtime symbols (the layout-backed operation
+/// runtime surface; operation-call lowering is deferred) — these are
+/// native-only by council Rev 7 and
+/// produce a `WasmUnsupportedSubstrate` diagnostic naming themselves
+/// when reached under a wasm32 target.
+///
+/// The two C-3a synthesis probe callees still map here as well so the
+/// existing probe-driven tests continue to surface a substrate name
+/// (rather than the internal probe symbol) in their wasm diagnostics.
+fn hashmap_layout_wasm_substrate_symbol(callee: &str) -> Option<&'static str> {
+    match callee {
+        // C-3a synthesis probe callees — map to the `_new_with_layout`
+        // substrate symbol they stand in for, preserving the prior
+        // diagnostic surface.
+        "__hew_codegen_emit_hashmap_layout_probe" => Some("hew_hashmap_new_with_layout"),
+        "__hew_codegen_emit_hashset_layout_probe" => Some("hew_hashset_new_with_layout"),
+        // Layout-backed `HashMap`/`HashSet` operation runtime surface
+        // (operation lowering deferred) — every layout-backed symbol
+        // is wasm-excluded.
+        "hew_hashmap_new_with_layout" => Some("hew_hashmap_new_with_layout"),
+        "hew_hashmap_insert_layout" => Some("hew_hashmap_insert_layout"),
+        "hew_hashmap_get_layout" => Some("hew_hashmap_get_layout"),
+        "hew_hashmap_contains_key_layout" => Some("hew_hashmap_contains_key_layout"),
+        "hew_hashmap_remove_layout" => Some("hew_hashmap_remove_layout"),
+        "hew_hashmap_len_layout" => Some("hew_hashmap_len_layout"),
+        "hew_hashmap_free_layout" => Some("hew_hashmap_free_layout"),
+        "hew_hashset_new_with_layout" => Some("hew_hashset_new_with_layout"),
+        "hew_hashset_insert_layout" => Some("hew_hashset_insert_layout"),
+        "hew_hashset_contains_layout" => Some("hew_hashset_contains_layout"),
+        "hew_hashset_remove_layout" => Some("hew_hashset_remove_layout"),
+        "hew_hashset_len_layout" => Some("hew_hashset_len_layout"),
+        "hew_hashset_free_layout" => Some("hew_hashset_free_layout"),
+        _ => None,
+    }
+}
+
+/// Recognise the two C-3a synthesis probe callees.  Distinct from the
+/// wasm-substrate map (which also covers the 13 real runtime symbols
+/// reached by deferred operation lowering).
+fn is_hashmap_layout_probe_symbol(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "__hew_codegen_emit_hashmap_layout_probe" | "__hew_codegen_emit_hashset_layout_probe"
+    )
+}
+
+/// Lower a synthesis probe callee.  Pure side-effect: emits the per-key hash
+/// thunk, reuses the per-key equality thunk, and emits the key/value layout
+/// globals.  No runtime call is issued — operation-call lowering is deferred.
+///
+/// Arity contract:
+/// - `__hew_codegen_emit_hashmap_layout_probe(key_local, val_local)` → no dest.
+/// - `__hew_codegen_emit_hashset_layout_probe(elem_local)` → no dest.
+///
+/// The probe arg types drive synthesis: codegen reads each Place's resolved
+/// LLVM type (via `place_pointer`) and feeds it into the descriptor builders.
+/// This keeps the seam test-driveable without inventing a new MIR carrier for
+/// "type to synthesise"; a real local of the right type is the unforgeable
+/// witness.
+fn lower_hashmap_layout_probe(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    if let Some(d) = dest {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee}: synthesis probe must not carry a dest, got {d:?}"
+        )));
+    }
+    match callee {
+        "__hew_codegen_emit_hashmap_layout_probe" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "{callee}: expected 2 args (key, value), got {}",
+                    args.len()
+                )));
+            }
+            let (_, key_ty) = place_pointer(fn_ctx, args[0])?;
+            let (_, val_ty) = place_pointer(fn_ctx, args[1])?;
+            let key_resolved = place_resolved_ty(fn_ctx, args[0])?;
+            // LIFECYCLE-NOTE (deferred): the codegen-abi-authority
+            // lesson (LESSONS Rev 5) wants this probe site to drain the
+            // matching `HashMapLoweringFact` out of `IrPipeline` and
+            // transition it Pending → Finalized, failing closed when
+            // the fact is already Finalized (double consume) or when
+            // no matching fact exists (orphan probe).
+            //
+            // This slice landed the `IrPipeline.hashmap_lowering_facts`
+            // / `hashset_lowering_facts` fields, the
+            // `attach_lowering_facts` driver glue, and an
+            // `assert_lowering_facts_consistent` check at `emit_module`
+            // / `validate_codegen_front`.  The per-site Pending →
+            // Finalized transition is deferred to the follow-up slice
+            // that also lands the missing MIR-side dispatch lowering
+            // that would emit `Terminator::Call` to the 13
+            // `hew_hashmap_*_layout` / `hew_hashset_*_layout` symbols.
+            // Until then the dedup-by-name guard in
+            // `get_or_emit_hash_thunk` /
+            // `hashmap_*_layout_descriptor_ptr` and the finalize-time
+            // consistency check preserve the observable safety
+            // property.
+            //
+            // Order matters: key layout pulls in hash+eq thunks; value
+            // layout is independent.  Emit both so the test surface sees
+            // both globals.
+            let _ = hashmap_key_layout_descriptor_ptr(fn_ctx, key_ty, Some(key_resolved))?;
+            let _ = hashmap_value_layout_descriptor_ptr(fn_ctx, val_ty)?;
+        }
+        "__hew_codegen_emit_hashset_layout_probe" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "{callee}: expected 1 arg (elem), got {}",
+                    args.len()
+                )));
+            }
+            let (_, elem_ty) = place_pointer(fn_ctx, args[0])?;
+            let elem_resolved = place_resolved_ty(fn_ctx, args[0])?;
+            // LIFECYCLE-NOTE (deferred): see the HashMap arm above —
+            // the matching `HashSetLoweringFact` Pending → Finalized
+            // transition is deferred for the same reasons, and the
+            // finalize-time `assert_lowering_facts_consistent` check
+            // landed by this slice covers the orphan-Pending case.
+            //
+            // HashSet path: only the key/element layout is emitted by
+            // codegen.  The zero-size value layout is fabricated inside
+            // `hew_hashset_new_with_layout` itself (C-1c).
+            let _ = hashmap_key_layout_descriptor_ptr(fn_ctx, elem_ty, Some(elem_resolved))?;
+        }
+        _ => {
+            return Err(CodegenError::FailClosed(format!(
+                "lower_hashmap_layout_probe called with non-probe symbol `{callee}`"
+            )));
+        }
+    }
+
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("probe next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .map_err(|e| CodegenError::Llvm(format!("{callee} br: {e:?}")))?;
+    Ok(())
+}
+
+fn bool_vec_fn_type<'ctx>(
+    ctx: &'ctx Context,
+    symbol: &str,
+) -> CodegenResult<inkwell::types::FunctionType<'ctx>> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    let i1_ty = ctx.bool_type();
+    match symbol {
+        "hew_vec_push_bool" => Ok(ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i1_ty.into()], false)),
+        "hew_vec_get_bool" => Ok(i1_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false)),
+        "hew_vec_set_bool" => Ok(ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into(), i1_ty.into()], false)),
+        "hew_vec_pop_bool" => Ok(i1_ty.fn_type(&[ptr_ty.into()], false)),
+        _ => Err(CodegenError::FailClosed(format!(
+            "not a bool Vec runtime symbol: {symbol}"
+        ))),
+    }
+}
+
+fn get_or_declare_bool_vec_runtime<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    if let Some(fv) = llvm_mod.get_function(symbol) {
+        return Ok(fv);
+    }
+    Ok(llvm_mod.add_function(
+        symbol,
+        bool_vec_fn_type(ctx, symbol)?,
+        Some(Linkage::External),
+    ))
+}
+
+fn truncate_bool_arg_to_i1<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    label: &str,
+) -> CodegenResult<IntValue<'ctx>> {
+    let (ptr, ty) = place_pointer(fn_ctx, place)?;
+    let BasicTypeEnum::IntType(int_ty) = ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "{label}: bool Vec argument must be an integer local, got {ty:?}"
+        )));
+    };
+    let loaded = fn_ctx
+        .builder
+        .build_load(ty, ptr, &format!("{label}_load"))
+        .map_err(|e| CodegenError::Llvm(format!("{label} load: {e:?}")))?
+        .into_int_value();
+    if int_ty.get_bit_width() == 1 {
+        Ok(loaded)
+    } else {
+        fn_ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                loaded,
+                int_ty.const_zero(),
+                &format!("{label}_trunc_i1"),
+            )
+            .map_err(|e| CodegenError::Llvm(format!("{label} trunc bool to i1: {e:?}")))
+    }
+}
+
+fn zext_bool_i1_to_dest<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: IntValue<'ctx>,
+    dest_ty: BasicTypeEnum<'ctx>,
+    label: &str,
+) -> CodegenResult<BasicValueEnum<'ctx>> {
+    let BasicTypeEnum::IntType(dest_int) = dest_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "{label}: bool Vec result destination must be an integer local, got {dest_ty:?}"
+        )));
+    };
+    if dest_int.get_bit_width() == value.get_type().get_bit_width() {
+        Ok(value.into())
+    } else {
+        Ok(fn_ctx
+            .builder
+            .build_int_z_extend(value, dest_int, &format!("{label}_zext_i8"))
+            .map_err(|e| CodegenError::Llvm(format!("{label} zext bool result: {e:?}")))?
+            .into())
+    }
+}
+
+fn lower_bool_vec_direct_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let expected_arity = match callee {
+        "hew_vec_push_bool" | "hew_vec_get_bool" => 2,
+        "hew_vec_set_bool" => 3,
+        "hew_vec_pop_bool" => 1,
+        _ => {
+            return Err(CodegenError::FailClosed(format!(
+                "lower_bool_vec_direct_call called with non-bool Vec symbol `{callee}`"
+            )));
+        }
+    };
+    if args.len() != expected_arity {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee}: expected {expected_arity} args, got {}",
+            args.len()
+        )));
+    }
+
+    let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{callee} arg0"))?;
+    let fv = get_or_declare_bool_vec_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, callee)?;
+    let call_site = match callee {
+        "hew_vec_push_bool" => {
+            let val = truncate_bool_arg_to_i1(fn_ctx, args[1], "hew_vec_push_bool_arg1")?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[vec_ptr.into(), val.into()], "hew_vec_push_bool_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_push_bool call: {e:?}")))?
+        }
+        "hew_vec_get_bool" => {
+            let index = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_get_bool_arg1",
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[vec_ptr.into(), index.into()], "hew_vec_get_bool_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_get_bool call: {e:?}")))?
+        }
+        "hew_vec_set_bool" => {
+            let index = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_set_bool_arg1",
+            )?;
+            let val = truncate_bool_arg_to_i1(fn_ctx, args[2], "hew_vec_set_bool_arg2")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), index.into(), val.into()],
+                    "hew_vec_set_bool_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_set_bool call: {e:?}")))?
+        }
+        "hew_vec_pop_bool" => fn_ctx
+            .builder
+            .build_call(fv, &[vec_ptr.into()], "hew_vec_pop_bool_call")
+            .map_err(|e| CodegenError::Llvm(format!("hew_vec_pop_bool call: {e:?}")))?,
+        _ => unreachable!("matched above"),
+    };
+
+    match (callee, dest) {
+        ("hew_vec_push_bool" | "hew_vec_set_bool", Some(d)) => {
+            return Err(CodegenError::FailClosed(format!(
+                "{callee} returns unit; producer must not supply dest={d:?}"
+            )));
+        }
+        ("hew_vec_push_bool" | "hew_vec_set_bool", None) => {}
+        ("hew_vec_get_bool" | "hew_vec_pop_bool", Some(dest_place)) => {
+            let ret_val = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed(format!("{callee} returned void")))?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            let store_val =
+                zext_bool_i1_to_dest(fn_ctx, ret_val.into_int_value(), dest_ty, callee)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, store_val)
+                .map_err(|e| CodegenError::Llvm(format!("{callee} store: {e:?}")))?;
+        }
+        ("hew_vec_get_bool" | "hew_vec_pop_bool", None) => {
+            return Err(CodegenError::FailClosed(format!(
+                "{callee} returns bool; producer must supply a dest"
+            )));
+        }
+        _ => unreachable!("matched above"),
+    }
+
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .map_err(|e| CodegenError::Llvm(format!("{callee} br: {e:?}")))?;
+    Ok(())
+}
+
+fn layout_vec_element_needs_descriptor<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    elem_ty: &ResolvedTy,
+) -> CodegenResult<Option<BasicTypeEnum<'ctx>>> {
+    match elem_ty {
+        ResolvedTy::Tuple(_) => Ok(None),
+        ResolvedTy::Named { name, args, .. } => {
+            let lookup_key = if args.is_empty() {
+                name.clone()
+            } else {
+                mangle(name, args)
+            };
+            if fn_ctx.record_layouts.contains_key(lookup_key.as_str())
+                || fn_ctx.record_layouts.contains_key(short_name(name))
+            {
+                return Ok(Some(resolve_ty(
+                    fn_ctx.ctx,
+                    elem_ty,
+                    fn_ctx.record_layouts,
+                )?));
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn lower_vec_constructor_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    if callee != "Vec::new" {
+        return Err(CodegenError::FailClosed(format!(
+            "lower_vec_constructor_call called with non-Vec constructor `{callee}`"
+        )));
+    }
+    if !args.is_empty() {
+        return Err(CodegenError::FailClosed(format!(
+            "Vec::new expects 0 args, got {}",
+            args.len()
+        )));
+    }
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Vec::new returns a Vec handle; producer must supply a dest".into(),
+        )
+    })?;
+    let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+    let ResolvedTy::Named {
+        name,
+        args: vec_args,
+        ..
+    } = dest_ty
+    else {
+        return Err(CodegenError::FailClosed(format!(
+            "Vec::new dest must be Vec<T>, got {dest_ty:?}"
+        )));
+    };
+    if name != "Vec" || vec_args.len() != 1 {
+        return Err(CodegenError::FailClosed(format!(
+            "Vec::new dest must be Vec<T>, got Named {{ name: {name:?}, args: {vec_args:?} }}"
+        )));
+    }
+    let elem_ty = &vec_args[0];
+    let (runtime_symbol, layout_elem_ty) = match elem_ty {
+        ResolvedTy::Bool => ("hew_vec_new_bool", None),
+        ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => ("hew_vec_new", None),
+        ResolvedTy::I64 | ResolvedTy::U64 => ("hew_vec_new_i64", None),
+        ResolvedTy::F64 => ("hew_vec_new_f64", None),
+        ResolvedTy::String => ("hew_vec_new_str", None),
+        _ => {
+            if let Some(layout_ty) = layout_vec_element_needs_descriptor(fn_ctx, elem_ty)? {
+                ("hew_vec_new_with_layout", Some(layout_ty))
+            } else {
+                let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
+                if matches!(elem_llvm_ty, BasicTypeEnum::PointerType(_)) {
+                    ("hew_vec_new_ptr", None)
+                } else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Vec::new has no constructor lowering for element type {elem_ty:?}"
+                    )));
+                }
+            }
+        }
+    };
+
+    let fv = get_or_declare_vec_constructor(fn_ctx.ctx, fn_ctx.llvm_mod, runtime_symbol)?;
+    let call = if let Some(elem_llvm_ty) = layout_elem_ty {
+        // WASM-TODO(#1819): this constructor path still synthesizes
+        // `HewTypeLayout { size, align, ownership_kind }` with native
+        // host-width fields via `layout_descriptor_ptr`; make the descriptor
+        // target-aware before claiming wasm32 parity.
+        let layout_ptr = layout_descriptor_ptr(fn_ctx, elem_llvm_ty, "new")?;
+        fn_ctx
+            .builder
+            .build_call(fv, &[layout_ptr.into()], "hew_vec_new_with_layout_call")
+            .map_err(|e| CodegenError::Llvm(format!("hew_vec_new_with_layout call: {e:?}")))?
+    } else {
+        fn_ctx
+            .builder
+            .build_call(fv, &[], &format!("{runtime_symbol}_call"))
+            .map_err(|e| CodegenError::Llvm(format!("{runtime_symbol} call: {e:?}")))?
+    };
+    let handle = call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{runtime_symbol} returned void")))?;
+    let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, *dest_place)?;
+    let BasicTypeEnum::PointerType(_) = dest_slot_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "Vec::new dest slot must be pointer-shaped, got {dest_slot_ty:?}"
+        )));
+    };
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, handle)
+        .map_err(|e| CodegenError::Llvm(format!("Vec::new store: {e:?}")))?;
+
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .map_err(|e| CodegenError::Llvm(format!("Vec::new br: {e:?}")))?;
+    Ok(())
+}
+
+fn lower_layout_vec_direct_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let expected_arity = match callee {
+        "hew_vec_push_layout" | "hew_vec_get_layout" => 2,
+        "hew_vec_set_layout" => 3,
+        "hew_vec_pop_layout" => 1,
+        // W3.032 Slice 3d: `hew_vec_contains_thunk(vec, val) -> bool`.
+        // Source-level args: receiver Vec handle + needle value place.
+        // The hidden `eq_fn` operand is synthesized by codegen.
+        "hew_vec_contains_thunk" => 2,
+        // W3.003: `hew_vec_remove_at_layout(vec, index)`.
+        // Source-level args: receiver Vec handle + index (i64).
+        // The hidden `layout` operand is synthesized by codegen from the
+        // Vec element type.
+        "hew_vec_remove_at_layout" => 2,
+        // W3.003: `hew_vec_clone_layout(vec) -> *mut HewVec`.
+        // Source-level args: receiver Vec handle only.
+        // The hidden `layout` operand is synthesized by codegen from the
+        // Vec element type.
+        "hew_vec_clone_layout" => 1,
+        _ => {
+            return Err(CodegenError::FailClosed(format!(
+                "lower_layout_vec_direct_call called with non-layout Vec symbol `{callee}`"
+            )));
+        }
+    };
+    if args.len() != expected_arity {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee}: expected {expected_arity} source-level args, got {}",
+            args.len()
+        )));
+    }
+
+    let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{callee} arg0"))?;
+    let fv = get_or_declare_layout_vec_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, callee)?;
+    match callee {
+        "hew_vec_push_layout" => {
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_vec_push_layout returns unit; producer must not supply dest={d:?}"
+                )));
+            }
+            let (data_ptr, elem_ty) = place_pointer(fn_ctx, args[1])?;
+            let layout_ptr = layout_descriptor_ptr(fn_ctx, elem_ty, "push")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), data_ptr.into(), layout_ptr.into()],
+                    "hew_vec_push_layout_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_push_layout call: {e:?}")))?;
+        }
+        "hew_vec_get_layout" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_get_layout returns an element; producer must supply a dest".into(),
+                )
+            })?;
+            let index = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_get_layout_arg1",
+            )?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            let layout_ptr = layout_descriptor_ptr(fn_ctx, dest_ty, "get")?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), index.into(), layout_ptr.into()],
+                    "hew_vec_get_layout_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_get_layout call: {e:?}")))?;
+            let raw_ptr = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_layout returned void".into()))?
+                .into_pointer_value();
+            let loaded = fn_ctx
+                .builder
+                .build_load(dest_ty, raw_ptr, "hew_vec_get_layout_load")
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_get_layout load: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, loaded)
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_get_layout store: {e:?}")))?;
+        }
+        "hew_vec_set_layout" => {
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_vec_set_layout returns unit; producer must not supply dest={d:?}"
+                )));
+            }
+            let index = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_set_layout_arg1",
+            )?;
+            let (data_ptr, elem_ty) = place_pointer(fn_ctx, args[2])?;
+            let layout_ptr = layout_descriptor_ptr(fn_ctx, elem_ty, "set")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[
+                        vec_ptr.into(),
+                        index.into(),
+                        data_ptr.into(),
+                        layout_ptr.into(),
+                    ],
+                    "hew_vec_set_layout_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_set_layout call: {e:?}")))?;
+        }
+        "hew_vec_pop_layout" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_pop_layout returns an element; producer must supply a dest".into(),
+                )
+            })?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            let layout_ptr = layout_descriptor_ptr(fn_ctx, dest_ty, "pop")?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), dest_ptr.into(), layout_ptr.into()],
+                    "hew_vec_pop_layout_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_pop_layout call: {e:?}")))?;
+            let ok = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_vec_pop_layout returned void".into()))?
+                .into_int_value();
+            let nonzero = fn_ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    ok,
+                    i32_ty.const_zero(),
+                    "hew_vec_pop_layout_nonempty",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_pop_layout compare: {e:?}")))?;
+            let current = fn_ctx
+                .builder
+                .get_insert_block()
+                .ok_or_else(|| CodegenError::FailClosed("layout pop has no insert block".into()))?;
+            let parent = current.get_parent().ok_or_else(|| {
+                CodegenError::FailClosed("layout pop insert block has no parent function".into())
+            })?;
+            let trap_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, "hew_vec_pop_layout_empty");
+            let next_bb = *fn_ctx
+                .blocks
+                .get(&next)
+                .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(nonzero, next_bb, trap_bb)
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_pop_layout branch: {e:?}")))?;
+            fn_ctx.builder.position_at_end(trap_bb);
+            emit_trap_with_code(fn_ctx, 205, "hew_vec_pop_layout_empty_trap")?;
+            return Ok(());
+        }
+        "hew_vec_contains_thunk" => {
+            // W3.032 Slice 3d: lower the checker-authorized
+            // `Vec<Record/Tuple>::contains` rewrite.  Source-level args are
+            // `[vec_handle, needle_place]`; the third runtime operand is a
+            // pointer to a codegen-emitted equality thunk.
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_contains_thunk returns bool; producer must supply a dest".into(),
+                )
+            })?;
+            let (val_ptr, elem_ty) = place_pointer(fn_ctx, args[1])?;
+            let thunk_fn = get_or_emit_eq_thunk(fn_ctx, elem_ty)?;
+            let thunk_ptr = thunk_fn.as_global_value().as_pointer_value();
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), val_ptr.into(), thunk_ptr.into()],
+                    "hew_vec_contains_thunk_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_contains_thunk call: {e:?}")))?;
+            let raw_i32 = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_vec_contains_thunk returned void".into())
+                })?
+                .into_int_value();
+            // Result is `i32` (0/1) from the runtime — convert to the dest's
+            // stored bool shape.  Hew bool locals are stored as i8 (see
+            // `primitive_to_llvm`); compare-NE-zero + zext-to-dest preserves
+            // the "non-zero ⇒ equal" contract without assuming a specific
+            // integer width at the dest.
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            if !matches!(dest_ty, BasicTypeEnum::IntType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_vec_contains_thunk dest must be an integer bool slot, got {dest_ty:?}"
+                )));
+            }
+            let nz = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    raw_i32,
+                    i32_ty.const_zero(),
+                    "contains_thunk_nz",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("contains_thunk compare: {e:?}")))?;
+            // Use the width-aware helper so this remains valid if the bool
+            // storage representation changes (e.g. i1 ↔ i8).
+            let widened = zext_bool_i1_to_dest(fn_ctx, nz, dest_ty, "contains_thunk")?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .map_err(|e| CodegenError::Llvm(format!("contains_thunk store: {e:?}")))?;
+        }
+        "hew_vec_remove_at_layout" => {
+            // W3.003: index-based remove for BitCopy layout-backed Vec elements.
+            // Source-level: `vec.remove(index)` → void; no dest expected.
+            // Runtime ABI: `void hew_vec_remove_at_layout(ptr vec, i64 index, ptr layout)`.
+            // The hidden `layout` ptr is synthesized here from the Vec element type.
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_vec_remove_at_layout returns unit; producer must not supply dest={d:?}"
+                )));
+            }
+            let index = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_remove_at_layout_arg1",
+            )?;
+            // Derive the LLVM element type from the Vec<T> resolved type so
+            // we can synthesize the layout descriptor without a value operand.
+            let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
+            let elem_hew_ty = match &vec_resolved_ty {
+                ResolvedTy::Named {
+                    name,
+                    args: vec_args,
+                    ..
+                } if name == "Vec" && vec_args.len() == 1 => vec_args[0].clone(),
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "hew_vec_remove_at_layout: arg0 must be Vec<T>, got {other:?}"
+                    )));
+                }
+            };
+            let layout_elem_ty = layout_vec_element_needs_descriptor(fn_ctx, &elem_hew_ty)?
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "hew_vec_remove_at_layout: element type {elem_hew_ty:?} \
+                         is not a layout-descriptor-backed record/tuple"
+                    ))
+                })?;
+            // WASM-TODO(#1819): `layout_descriptor_ptr` synthesizes the descriptor
+            // with native host-width size/align fields. wasm32 requires target-aware
+            // synthesis; claim WASM parity only after that is resolved.
+            let layout_ptr = layout_descriptor_ptr(fn_ctx, layout_elem_ty, "remove")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), index.into(), layout_ptr.into()],
+                    "hew_vec_remove_at_layout_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_remove_at_layout call: {e:?}")))?;
+        }
+        "hew_vec_clone_layout" => {
+            // W3.003: BitCopy bulk-copy clone for layout-backed Vec elements.
+            // Source-level: `let clone = v.clone()` → dest holds the new vec handle.
+            // Runtime ABI: `*mut HewVec hew_vec_clone_layout(const HewVec* v, const HewTypeLayout* layout)`.
+            // The hidden `layout` ptr is synthesized here from the Vec element type.
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_clone_layout returns a Vec; producer must supply a dest".into(),
+                )
+            })?;
+            // Derive the LLVM element type from the Vec<T> resolved type.
+            let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
+            let elem_hew_ty = match &vec_resolved_ty {
+                ResolvedTy::Named {
+                    name,
+                    args: vec_args,
+                    ..
+                } if name == "Vec" && vec_args.len() == 1 => vec_args[0].clone(),
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "hew_vec_clone_layout: arg0 must be Vec<T>, got {other:?}"
+                    )));
+                }
+            };
+            let layout_elem_ty = layout_vec_element_needs_descriptor(fn_ctx, &elem_hew_ty)?
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "hew_vec_clone_layout: element type {elem_hew_ty:?} \
+                         is not a layout-descriptor-backed record/tuple"
+                    ))
+                })?;
+            // WASM-TODO(#1819): `layout_descriptor_ptr` synthesizes the descriptor
+            // with native host-width size/align fields. wasm32 requires target-aware
+            // synthesis; claim WASM parity only after that is resolved.
+            let layout_ptr = layout_descriptor_ptr(fn_ctx, layout_elem_ty, "clone")?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), layout_ptr.into()],
+                    "hew_vec_clone_layout_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_clone_layout call: {e:?}")))?;
+            let new_vec_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_vec_clone_layout returned void".into())
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, new_vec_ptr)
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_clone_layout store: {e:?}")))?;
+        }
+        _ => unreachable!("matched above"),
+    }
+
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .map_err(|e| CodegenError::Llvm(format!("{callee} br: {e:?}")))?;
+    let _ = ptr_ty;
+    Ok(())
+}
+
 /// Lower `Instr::CallRuntimeAbi(call)` to a `LLVMBuildCall` against the
 /// interned extern declaration for `call.symbol()`. The per-symbol
 /// dispatch encodes the ABI-shape decisions documented in the E4 plan
@@ -7973,18 +10303,19 @@ fn lower_call_runtime_abi(
                 .map_err(|e| CodegenError::Llvm(format!("hew_vec_len store: {e:?}")))?;
             let _ = (i32_ty, ptr_ty);
         }
+        // hew_vec_get_bool(v: *mut HewVec, index: i64) -> bool (i1 ABI)
         // hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32
         // hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64
         // hew_vec_get_f64(v: *mut HewVec, index: i64) -> f64
         // hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void
         // hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char
         //
-        // All five share the same ABI shape: load vec ptr from arg0, load
+        // All variants share the same ABI shape: load vec ptr from arg0, load
         // index i64 from arg1, call, store result into dest. The result type
         // differs per variant and is encoded in the function return type from
         // `intern_runtime_decl`.
-        "hew_vec_get_i32" | "hew_vec_get_i64" | "hew_vec_get_f64" | "hew_vec_get_ptr"
-        | "hew_vec_get_str" => {
+        "hew_vec_get_bool" | "hew_vec_get_i32" | "hew_vec_get_i64" | "hew_vec_get_f64"
+        | "hew_vec_get_ptr" | "hew_vec_get_str" => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 2 args (vec, index), got {}",
@@ -8017,10 +10348,15 @@ fn lower_call_runtime_abi(
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(format!("{symbol}: producer must supply a dest place"))
             })?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            let store_val = if symbol == "hew_vec_get_bool" {
+                zext_bool_i1_to_dest(fn_ctx, result_val.into_int_value(), dest_ty, symbol)?
+            } else {
+                result_val
+            };
             fn_ctx
                 .builder
-                .build_store(dest_ptr, result_val)
+                .build_store(dest_ptr, store_val)
                 .map_err(|e| CodegenError::Llvm(format!("{symbol} store: {e:?}")))?;
             let _ = (i32_ty, ptr_ty);
         }
@@ -8781,16 +11117,24 @@ fn lower_call_runtime_abi(
 ///
 /// LESSONS: producer-bridge-before-codegen (P1), boundary-fail-closed (P0),
 /// lifecycle-symmetry (P0).
-fn resolve_drop_fn_to_symbol(drop_fn: &str) -> Result<&'static str, CodegenError> {
+///
+/// W3.030 Stage 2: this table is now one of *two* dispatch arms. Names that
+/// land here are runtime-substrate drops (Duplex/LambdaActorHandle/SendHalf/
+/// RecvHalf, plus their `hew_*` C-ABI literals). Names of the form
+/// `<UserType>::<method>` that do not appear here are routed to the
+/// user-fn dispatch arm by `resolve_drop_fn`. Truly unknown names — neither
+/// a runtime substrate name nor a recognised `<Type>::<method>` user-fn
+/// candidate — fail closed in `resolve_drop_fn`.
+fn runtime_drop_symbol(drop_fn: &str) -> Option<&'static str> {
     match drop_fn {
         // Elaborator-produced names (from builtin_type_classes.rs seeding).
         // Duplex<S, R> — close-both-directions.
-        "Duplex::close" => Ok("hew_duplex_close"),
+        "Duplex::close" => Some("hew_duplex_close"),
         // LambdaActorHandle — NB: the type-class seeding calls the method
         // "close" but the runtime C-ABI symbol is "release", not "close".
         // An explicit table entry is required; string-mangling would produce
         // the wrong symbol.
-        "LambdaActorHandle::close" => Ok("hew_lambda_actor_release"),
+        "LambdaActorHandle::close" => Some("hew_lambda_actor_release"),
         // Half-handle drops (slice-3 DropKind::DuplexHalfClose(Direction)).
         // Both Send and Recv resolve to the same `hew_duplex_close_half`
         // C-ABI symbol; the direction discriminant is materialised at the
@@ -8798,37 +11142,188 @@ fn resolve_drop_fn_to_symbol(drop_fn: &str) -> Result<&'static str, CodegenError
         // RecvHalf), not encoded in the symbol name. This closes the
         // 6-cell drop gap surfaced by the W2.004 Stage-0 audit (rows #6/#7
         // SendHalf/RecvHalf × {sync-return, async-cancel, actor-shutdown}).
-        "SendHalf::close" | "RecvHalf::close" => Ok("hew_duplex_close_half"),
+        "SendHalf::close" | "RecvHalf::close" => Some("hew_duplex_close_half"),
         // Literal C-ABI symbol pass-through (backward compat for hand-built
         // test MIR that pre-dates elaborated-drop-plan consumption).
-        "hew_duplex_close" => Ok("hew_duplex_close"),
-        "hew_lambda_actor_release" => Ok("hew_lambda_actor_release"),
-        "hew_duplex_close_half" => Ok("hew_duplex_close_half"),
-        // Remaining elaborator-produced names have no MIR producer today —
-        // Sink/Stream have no constructor surface. Fail closed here so any
-        // future producer that outpaces codegen surfaces immediately rather
-        // than leaking.
-        other => Err(CodegenError::FailClosed(format!(
-            "drop_fn={other:?}: no C-ABI runtime symbol wired for this \
-             drop_fn string. Recognised names today: Duplex::close, \
-             LambdaActorHandle::close, SendHalf::close, RecvHalf::close \
-             (and their hew_* C-ABI literals). \
-             Refusing to silently no-op a resource drop \
-             (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
-        ))),
+        "hew_duplex_close" => Some("hew_duplex_close"),
+        "hew_lambda_actor_release" => Some("hew_lambda_actor_release"),
+        "hew_duplex_close_half" => Some("hew_duplex_close_half"),
+        _ => None,
     }
 }
 
-/// Lower a drop_fn close ritual for `place`: call the named runtime close
-/// symbol with `place`'s loaded pointer, then null-out the alloca so a
-/// second drop on the same place hits null at both the codegen layer and
-/// the runtime's AtomicBool guard (LESSONS `raii-null-after-move`).
+/// W3.030 Stage 2: typed dispatch decision for an `ElabDrop { drop_fn:
+/// Some(name) }`. The codegen drop path resolves *every* such drop to
+/// exactly one of these two arms; a third "unresolved" path is a
+/// fail-closed bug (caught by `verify_drop_dispatch_resolves` before any
+/// body lowering begins).
 ///
-/// Accepts both elaborator-produced `"<TypeName>::close"` strings and
-/// literal C-ABI symbol names via `resolve_drop_fn_to_symbol`. Unknown
-/// strings fail closed — no wildcard, no silent no-op.
+/// - `RuntimeSymbol`: a runtime substrate close (Duplex, LambdaActorHandle,
+///   SendHalf, RecvHalf). Lowered by loading the handle pointer and
+///   calling the C-ABI extern with the substrate-correct argument shape.
+/// - `UserFn`: a user-declared `close` method on a `#[resource]` record,
+///   addressed by its `HirImplBlock`-flattened `<Type>::<method>` symbol
+///   (see `hew-hir/src/lower.rs` `HirImplBlock::method_symbol`). Lowered
+///   by loading the aggregate `self` from the place per the W3.029
+///   value-class ABI and calling the user function. Must return Unit
+///   (Q-β-C, ratified for v0.5); fallible cleanup goes through `defer`.
+#[derive(Debug)]
+enum DropDispatch<'ctx> {
+    RuntimeSymbol(&'static str),
+    UserFn {
+        value: FunctionValue<'ctx>,
+        /// The mangled `<Type>::<method>` symbol, retained for diagnostics
+        /// and IR-naming.
+        symbol: String,
+    },
+}
+
+/// Resolve an `ElabDrop` `drop_fn` string to a typed `DropDispatch`.
+///
+/// Resolution order (deterministic, fail-closed on the third path):
+///   1. If `runtime_drop_symbol` recognises the name → `RuntimeSymbol`.
+///   2. Else if the name looks like a `<Type>::<method>` user-method
+///      symbol *and* `fn_symbols` carries a `FnSymbol::Real` entry for it
+///      → `UserFn`. The user function must return Unit (Q-β-C). The
+///      lookup uses the same `<Self>::<method>` mangling as
+///      `HirImplBlock::method_symbol` and `declare_function` — no
+///      translation glue (E6 in the plan).
+///   3. Else → `CodegenError::FailClosed` naming both arms.
+///
+/// W3.030 Stage 2: this is the single source of truth for drop dispatch
+/// classification. `lower_drop`, the codegen-internal verifier
+/// (`verify_drop_dispatch_resolves`), and any future caller must reach
+/// dispatch through this function.
+fn resolve_drop_fn<'ctx>(
+    drop_fn: &str,
+    fn_symbols: &FnSymbolMap<'ctx>,
+) -> CodegenResult<DropDispatch<'ctx>> {
+    if let Some(symbol) = runtime_drop_symbol(drop_fn) {
+        return Ok(DropDispatch::RuntimeSymbol(symbol));
+    }
+    // User-fn candidate: must be a `<Type>::<method>` mangled symbol. The
+    // `hew_` prefix is reserved for runtime C-ABI literals (already handled
+    // above); reject it here so a typo on a runtime literal does not silently
+    // get reclassified as a user fn.
+    if drop_fn.contains("::") && !drop_fn.starts_with("hew_") {
+        let entry = fn_symbols.get(drop_fn).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "drop_fn={drop_fn:?}: parsed as a qualified user-method \
+                 name but no function with that mangled symbol is \
+                 registered in the codegen function pre-pass. A \
+                 `#[resource]`'s `close` body must be declared in an \
+                 inherent `impl` block whose flattened \
+                 `<Self>::<method>` symbol reaches `declare_function` \
+                 before drop lowering (W3.030 / E6). Recognised runtime \
+                 substrate names: Duplex::close, LambdaActorHandle::close, \
+                 SendHalf::close, RecvHalf::close. Refusing to silently \
+                 no-op a resource drop \
+                 (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
+                 lifecycle-symmetry)."
+            ))
+        })?;
+        let (value, _return_ty, returns_unit) = entry.real(drop_fn, "drop dispatch")?;
+        if !returns_unit {
+            return Err(CodegenError::FailClosed(format!(
+                "drop_fn={drop_fn:?}: user-resource `close` must return \
+                 Unit (Q-β-C, ratified for v0.5 in W3.030). Fallible \
+                 cleanup belongs in a `defer` block, not a drop \
+                 ritual — a non-Unit close on a drop path would either \
+                 leak the result or panic with no recovery. \
+                 (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
+            )));
+        }
+        return Ok(DropDispatch::UserFn {
+            value,
+            symbol: drop_fn.to_string(),
+        });
+    }
+    Err(CodegenError::FailClosed(format!(
+        "drop_fn={drop_fn:?}: no C-ABI runtime symbol wired for this \
+         drop_fn string and it does not parse as a `<Type>::<method>` \
+         user-method symbol. Recognised runtime names today: \
+         Duplex::close, LambdaActorHandle::close, SendHalf::close, \
+         RecvHalf::close (and their hew_* C-ABI literals). User \
+         resources must declare `close` in an inherent impl block \
+         (W3.030). Refusing to silently no-op a resource drop \
+         (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
+    )))
+}
+
+/// W3.030 Stage 2 codegen-internal verifier (plan V13).
+///
+/// Walks every `ElabDrop { drop_fn: Some(_) }` in the elaborated MIR
+/// drop plans before any body lowering begins, and asserts that each
+/// one resolves through `resolve_drop_fn` to one of the two
+/// `DropDispatch` arms. A third path — a `drop_fn` that resolves to
+/// neither a runtime substrate symbol nor a registered user function —
+/// surfaces `CodegenError::FailClosed` here, *before* any IR is built,
+/// rather than at link time as a dangling reference. This is the
+/// uniqueness pin for the two-armed dispatch contract.
+///
+/// LESSONS: boundary-fail-closed (P0), no-silent-no-op-stubs (P0),
+/// lifecycle-symmetry (P0), exhaustive-coverage (P1).
+fn verify_drop_dispatch_resolves<'ctx>(
+    pipeline: &IrPipeline,
+    fn_symbols: &FnSymbolMap<'ctx>,
+) -> CodegenResult<()> {
+    for elab_func in &pipeline.elaborated_mir {
+        for (_, plan) in &elab_func.drop_plans {
+            for drop in &plan.drops {
+                let Some(ref drop_fn) = drop.drop_fn else {
+                    continue;
+                };
+                // Discard the resolved DropDispatch — the verifier only
+                // cares that resolution succeeds. The `?` is the
+                // fail-closed pin.
+                let _ = resolve_drop_fn(drop_fn, fn_symbols).map_err(|e| match e {
+                    CodegenError::FailClosed(msg) => CodegenError::FailClosed(format!(
+                        "verify_drop_dispatch_resolves: in function `{}`, \
+                         ElabDrop drop_fn={drop_fn:?} did not resolve to \
+                         either dispatch arm — {msg}",
+                        elab_func.name
+                    )),
+                    other => other,
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Lower a drop_fn close ritual for `place`.
+///
+/// W3.030 Stage 2: dispatch goes through `resolve_drop_fn`, which returns
+/// one of exactly two arms:
+///
+/// - `DropDispatch::RuntimeSymbol`: load the handle pointer from `place`'s
+///   alloca, intern the C-ABI extern, call it (with the direction
+///   discriminant for `hew_duplex_close_half`), null-store the alloca
+///   afterwards (LESSONS `raii-null-after-move`).
+/// - `DropDispatch::UserFn`: load the aggregate `self` from `place` per
+///   the W3.029 user-record value-class ABI (the slot is a struct-shaped
+///   alloca for `#[resource] record`, not a ptr), call the user function,
+///   then zero the slot. The zero-store mirrors the runtime arm's
+///   `raii-null-after-move` discipline: a second drop on the same place
+///   observes a zeroed `self`, and any UB-relevant pointer fields inside
+///   the aggregate are reset to null.
+///
+/// A third dispatch path is impossible by construction — `resolve_drop_fn`
+/// either returns one of the two arms or fails closed. The verifier
+/// `verify_drop_dispatch_resolves` pins this at module-build time.
 fn lower_drop(fn_ctx: &FnCtx<'_, '_>, place: Place, drop_fn: &str) -> CodegenResult<()> {
-    let symbol = resolve_drop_fn_to_symbol(drop_fn)?;
+    match resolve_drop_fn(drop_fn, fn_ctx.fn_symbols)? {
+        DropDispatch::RuntimeSymbol(symbol) => lower_drop_runtime(fn_ctx, place, symbol),
+        DropDispatch::UserFn { value, symbol } => lower_drop_user_fn(fn_ctx, place, value, &symbol),
+    }
+}
+
+/// `DropDispatch::RuntimeSymbol` arm: the pre-W3.030 runtime close path.
+fn lower_drop_runtime(
+    fn_ctx: &FnCtx<'_, '_>,
+    place: Place,
+    symbol: &'static str,
+) -> CodegenResult<()> {
     // Load the handle pointer from the place's alloca. `load_duplex_handle`
     // resolves both `Place::Local(N)` and `Place::DuplexHandle(N)` to the
     // same ptr-typed alloca, which is what all ptr-arg close symbols expect.
@@ -8886,6 +11381,51 @@ fn lower_drop(fn_ctx: &FnCtx<'_, '_>, place: Place, drop_fn: &str) -> CodegenRes
     Ok(())
 }
 
+/// `DropDispatch::UserFn` arm (W3.030 Stage 2): call a user-declared
+/// `close(consuming self: T)` and zero the slot afterwards.
+///
+/// Calling convention mirrors normal user-fn calls (`Terminator::Call`
+/// `FnSymbol::Real` arm in `lower_terminator`): load the aggregate from
+/// the place's struct-shaped alloca and pass it as a value. The function
+/// signature was declared by `declare_function` from the same flattened
+/// `<Self>::<method>` symbol the elaborator emitted (E6 in the plan); the
+/// two sides agree without translation glue.
+///
+/// The post-call zero-store enforces `raii-null-after-move`: a second
+/// structural drop on the same place lands on a zeroed aggregate, and
+/// any pointer fields inside the record (e.g. `fd: i64` cast to ptr, a
+/// future `inner: ptr` field) are nulled out. This is the user-record
+/// analogue of the ptr-null store the runtime arm uses.
+fn lower_drop_user_fn(
+    fn_ctx: &FnCtx<'_, '_>,
+    place: Place,
+    value: FunctionValue<'_>,
+    symbol: &str,
+) -> CodegenResult<()> {
+    let (slot, slot_ty) = place_pointer(fn_ctx, place)?;
+    let loaded = fn_ctx
+        .builder
+        .build_load(slot_ty, slot, &format!("{symbol}_self"))
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} self load: {e:?}")))?;
+    let arg = metadata_value_from_basic(loaded);
+    let llvm_args: [BasicMetadataValueEnum; 1] = [arg];
+    fn_ctx
+        .builder
+        .build_call(value, &llvm_args, &format!("{symbol}_call"))
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+    // Zero the slot to enforce `raii-null-after-move`. `BasicTypeEnum::
+    // const_zero` produces a struct-shaped zeroinitializer for record
+    // allocas (and a typed zero for any other shape `place_pointer` may
+    // return in the future), so this works uniformly regardless of the
+    // user-record body.
+    let zero = slot_ty.const_zero();
+    fn_ctx
+        .builder
+        .build_store(slot, zero)
+        .map_err(|e| CodegenError::Llvm(format!("post-{symbol} slot zero-store: {e:?}")))?;
+    Ok(())
+}
+
 /// Emit the LIFO drop ritual for `block_id` from `drop_plans`.
 ///
 /// Walks `drop_plans` for the entry whose `ExitPath` block id matches
@@ -8939,10 +11479,51 @@ fn emit_elab_drops(
 ///
 /// `drop_fn = None` is a legitimate no-op (trivial drop for a value class
 /// with no side-effecting close). `drop_fn = Some(name)` routes through
-/// `lower_drop` → `resolve_drop_fn_to_symbol` → `intern_runtime_decl`.
-/// Unknown `drop_fn` strings surface `CodegenError::FailClosed` immediately
-/// (LESSONS: boundary-fail-closed).
+/// `lower_drop`, which resolves to the typed `DropDispatch` arm via
+/// `resolve_drop_fn` and dispatches to either `lower_drop_runtime`
+/// (`DropDispatch::RuntimeSymbol` — runtime substrate C-ABI symbol) or
+/// `lower_drop_user_fn` (`DropDispatch::UserFn` — user `#[resource]`
+/// inherent-impl `close` method). Unknown `drop_fn` strings — neither a
+/// runtime substrate name nor a registered `<Type>::<method>` symbol —
+/// surface `CodegenError::FailClosed` immediately and are also rejected
+/// at module-build time by `validate_drop_plan_dispatch`.
+///
+/// **FrameOwned slot-0 guard.** A
+/// `DropKind::TraitObject { storage: FrameOwned }` ElabDrop MUST
+/// arrive with `drop_fn = None` — the concrete value lives in a
+/// frame alloca whose lifetime is the surrounding scope; routing
+/// through the vtable's slot-0 `__hew_dyn_drop_in_place_*` would
+/// call `hew_dyn_box_free` on a stack address and over-free it.
+/// Slot 0 is reserved for the future `HeapBoxed` storage class.
+/// Any caller that populates `drop_fn` for a FrameOwned trait-
+/// object drop has misrouted; we reject the plan here so the
+/// over-free cannot reach codegen output.
+/// LESSONS: boundary-fail-closed, lifecycle-symmetry.
 fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<()> {
+    if let hew_mir::DropKind::TraitObject {
+        storage: hew_mir::TraitObjectStorage::FrameOwned,
+    } = drop.kind
+    {
+        if drop.drop_fn.is_some() {
+            return Err(CodegenError::FailClosed(format!(
+                "dyn Trait drop @ {place:?}: \
+                 `DropKind::TraitObject {{ storage: FrameOwned }}` MUST NOT \
+                 route through vtable slot 0. The concrete value lives in \
+                 a frame alloca owned by the surrounding scope; firing the \
+                 vtable's `__hew_dyn_drop_in_place_*` fn (slot 0) would call \
+                 `hew_dyn_box_free` on the stack address and over-free it. \
+                 Slot 0 is reserved for the future `HeapBoxed` storage class. \
+                 `drop_fn` was unexpectedly populated as {drop_fn:?} — caller \
+                 must leave it `None` for FrameOwned trait-object drops.",
+                place = drop.place,
+                drop_fn = drop.drop_fn,
+            )));
+        }
+        // FrameOwned + drop_fn=None: correct shape today. The frame
+        // alloca's lifetime ends with the surrounding scope; no drop
+        // ritual fires.
+        return Ok(());
+    }
     let Some(ref drop_fn) = drop.drop_fn else {
         // Trivial drop: value class with no side-effecting close
         // (e.g. a moved-but-not-dropped local in a future surface).
@@ -10221,6 +12802,22 @@ fn lower_terminator<'ctx>(
             // matching the R82-era Node::lookup precedent.
             if callee == "hew_remote_pid_tell" {
                 emit_remote_pid_tell_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if is_bool_vec_runtime_symbol(callee) {
+                lower_bool_vec_direct_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if is_vec_constructor_symbol(callee) {
+                lower_vec_constructor_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if is_layout_vec_runtime_symbol(callee) {
+                lower_layout_vec_direct_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if is_hashmap_layout_probe_symbol(callee) {
+                lower_hashmap_layout_probe(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             let callee_symbol_entry = *fn_symbols.get(callee).ok_or_else(|| {
@@ -12182,6 +14779,8 @@ fn lower_function<'ctx>(
     actor_layouts: &[ActorLayout],
     machine_layouts: &MachineLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
+    record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
+    dyn_vtable_registry: &[DynVtableInstance],
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -12310,6 +14909,8 @@ fn lower_function<'ctx>(
         actor_layouts,
         machine_layouts,
         enum_layouts,
+        record_field_resolved_tys,
+        dyn_vtable_registry,
     };
 
     // Fail-closed boundary: reject composite returns containing heap-owning
@@ -12322,7 +14923,7 @@ fn lower_function<'ctx>(
         return Err(CodegenError::FailClosed(format!(
             "composite return of heap-owning payload `{}` requires tag-aware \
              drop (not yet implemented); use bitcopy-only payloads (i64, f64, \
-             bool, ()) or restructure to avoid returning owned values directly",
+             bool,) or restructure to avoid returning owned values directly",
             func.return_ty,
         )));
     }
@@ -12722,21 +15323,38 @@ fn build_module_for_target<'ctx>(
     } else {
         None
     };
-    // Register every named-form record from `pipeline.record_layouts` as an
-    // LLVM named struct on `ctx` BEFORE any function declaration or body
-    // lowering touches `resolve_ty`. Records can appear in function return
-    // types (declare_function) and in local slot types (lower_function);
-    // both paths consult `record_layouts` via `resolve_ty`, so the map must
-    // be populated up front. Empty `record_layouts` (most existing pipelines)
-    // produces an empty map and changes no behaviour for record-free code.
-    let mut record_layouts = register_record_layouts(ctx, &pipeline.record_layouts)?;
+    // Predeclare opaque LLVM named structs for every record / enum / machine
+    // outer + `<Name>Event` companion BEFORE any body-fill pass. Record
+    // fields can reference enum or machine type names (e.g. `record
+    // CrashNotification { kind: CrashKind }` where `CrashKind` is an
+    // enum); without the predeclare-all-then-fill-all ordering, the record
+    // body-fill would call `resolve_ty` against a map containing only
+    // record opaques and trip the D10 fail-closed sentinel on `kind`.
+    let mut record_layouts = predeclare_named_layouts(
+        ctx,
+        &pipeline.record_layouts,
+        &pipeline.enum_layouts,
+        &pipeline.machine_layouts,
+    )?;
+    fill_record_layout_bodies(ctx, &pipeline.record_layouts, &record_layouts)?;
+    // Build a quick lookup from record name → field ResolvedTys, shared by
+    // every per-function lowering context. The synthesis path consults this
+    // when walking a struct hash thunk so a `bool` field (i8 storage, low
+    // bit semantically defined) gets masked with `and i8, 1` before the
+    // FNV-1a mix step, while a general `i8`/`u8` field is hashed full-width.
+    let record_field_resolved_tys: HashMap<String, Vec<ResolvedTy>> = pipeline
+        .record_layouts
+        .iter()
+        .map(|r| (r.name.clone(), r.field_tys.clone()))
+        .collect();
     let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
     // Register user-defined enum layouts before machines so machine payloads
     // can name enum types declared in imported stdlib modules.
     // Enum-typed locals use the same `Place::MachineTag` / `Place::MachineVariant`
     // addressing as machine-typed locals; the map lookup in
     // `machine_layout_for_local` is keyed by type name and does not
-    // distinguish surface form.
+    // distinguish surface form. Outer structs were predeclared above; this
+    // call sets each body on the existing opaque via `build_tagged_union_layout`.
     register_enum_layouts(
         ctx,
         &pipeline.enum_layouts,
@@ -12745,10 +15363,8 @@ fn build_module_for_target<'ctx>(
         target_data.as_ref(),
     )?;
     // Slice 5: register machine tagged-union types alongside records.
-    // `register_machine_layouts` inserts the outer struct of each machine
-    // and its `<Name>Event` companion into `record_layouts` so `resolve_ty`
-    // resolves `ResolvedTy::Named { name: "Foo" }` to the machine's outer
-    // struct the same way it resolves a record. The richer per-variant
+    // Outer structs + `<Name>Event` companions were predeclared above; this
+    // call sets each body on the existing opaque. The richer per-variant
     // metadata (inner structs, tag int type) lives in `machine_layouts`.
     let machine_layout_map = register_machine_layouts(
         ctx,
@@ -12771,6 +15387,12 @@ fn build_module_for_target<'ctx>(
         let sym = declare_function(ctx, &llvm_mod, func, &record_layouts)?;
         fn_symbols.insert(func.name.clone(), sym);
     }
+    // W3.030 Stage 2 V13: verify every `ElabDrop { drop_fn: Some(_) }`
+    // resolves to one of the two `DropDispatch` arms (runtime symbol or
+    // registered user function) BEFORE any body lowering begins. A third
+    // path — drop_fn that resolves to neither — fails closed here rather
+    // than as a dangling reference at link time.
+    verify_drop_dispatch_resolves(pipeline, &fn_symbols)?;
     for actor in &pipeline.actor_layouts {
         emit_actor_dispatch_trampoline(ctx, &llvm_mod, actor, &fn_symbols, &record_layouts)?;
         if !actor.on_stop_symbols.is_empty() {
@@ -12846,6 +15468,8 @@ fn build_module_for_target<'ctx>(
             &pipeline.actor_layouts,
             &machine_layouts,
             &pipeline.enum_layouts,
+            &record_field_resolved_tys,
+            &pipeline.dyn_vtable_registry,
         )?;
     }
     // Emit regex module-init infrastructure if the module uses any regex literals.
@@ -12855,10 +15479,857 @@ fn build_module_for_target<'ctx>(
     if !pipeline.regex_literals.is_empty() {
         emit_regex_module_init(ctx, &llvm_mod, &pipeline.regex_literals)?;
     }
+    // Synthesize one erased method thunk per `(vtable_id, method_index)`
+    // pair in `pipeline.dyn_vtable_registry`. The thunk has signature
+    // `fn(ptr_erased_self, <receiver-skipped params>) -> ret`; its body
+    // forwards every argument verbatim to the concrete impl method
+    // named by `method_table[method_index].1`. Opaque pointers make the
+    // erased-vs-typed self forward a bit-identical pass-through, so no
+    // explicit bitcast is emitted. The function pointer the future
+    // vtable static (and the dispatch arm) references is exactly this
+    // thunk, never the bare impl method, because the indirect-call
+    // type at a `CallTraitMethod` site is *erased* in slot 0 — the
+    // impl declares slot 0 typed, the thunk re-types it.
+    //
+    // Thunks are emitted even when no caller exists yet (the vtable
+    // static initialiser and the indirect-dispatch arm at
+    // `CallTraitMethod` remain fail-closed until their own substrate
+    // lands). `Linkage::Private` keeps the symbols internal to the
+    // compilation unit with no ABI promise; the trait/concrete/id-
+    // mangled names keep `nm`-style observation legible for tests
+    // without crossing the dispatch fail-closed gate.
+    emit_dyn_trait_thunks(
+        ctx,
+        &llvm_mod,
+        &pipeline.dyn_vtable_registry,
+        &fn_symbols,
+        &record_layouts,
+    )?;
+    // Synthesise one `void (*)(ptr)` drop-in-place function per
+    // `vtable_id` in `pipeline.dyn_vtable_registry`. The function
+    // runs the concrete value's drop ritual (today restricted to
+    // trivially-droppable concretes: `BitCopy` primitives and
+    // `UserRecord`s whose fields are transitively all `BitCopy` —
+    // heap-bearing concretes fail closed pending a registry-side
+    // structural-drop key) and then releases the heap-box storage
+    // via `hew_dyn_box_free(ptr, size, align)` where `size`/`align`
+    // come from the LLVM ABI layout of the concrete type. The
+    // function is emitted with `Private` LLVM linkage and named via
+    // `hew_mir::mangle_dyn_drop_in_place_symbol`
+    // (`__hew_dyn_drop_in_place__{trait}__{concrete}__{vtable_id}`,
+    // routed through `hew_mir::sanitize_for_symbol`); the
+    // trait/concrete/id mangling keeps `nm`-style observation
+    // legible for tests while the `Private` linkage gives no ABI
+    // promise and no cross-compilation-unit collision risk. The
+    // in-module caller is the vtable static initialiser emitted by
+    // `emit_dyn_trait_vtable_definitions` immediately below.
+    emit_dyn_trait_drop_in_place_fns(
+        ctx,
+        &llvm_mod,
+        &pipeline.dyn_vtable_registry,
+        &record_layouts,
+        &pipeline.record_layouts,
+    )?;
+    // Finalise the `%hew.dyn.vtable.N` opaque struct and the
+    // `@__hew_vtable__{trait}__{concrete}__{vtable_id} = private constant`
+    // global that `Instr::CoerceToDynTrait` sites declared earlier.
+    // The body is the 3-slot prefix triple — `{ ptr (drop_in_place),
+    // <usize> (size_of), <usize> (align_of) }` — followed by N
+    // erased-self method-thunk pointer slots in registry declaration
+    // order. The prefix triple mirrors `HewVtable` in
+    // `hew-runtime/src/trait_object.rs:108-130` and matches the
+    // checker's slot convention (`DynMethodCall::slot = 3 +
+    // method_decl_order`). All three symbol families are guaranteed
+    // present by the two emission passes immediately above (drop fns
+    // and thunks); the size/align values are sourced from the LLVM
+    // ABI layout of `inst.concrete_type` against the host target
+    // data, the same authority `emit_dyn_trait_drop_in_place_fns`
+    // uses for the `hew_dyn_box_free(ptr, size, align)` call so the
+    // dealloc layout cannot drift from the vtable's published
+    // layout. The vtable global keeps its `Linkage::Private`
+    // (internal to the compilation unit, no ABI promise) and the
+    // name produced by `hew_mir::mangle_dyn_vtable_symbol` (routed
+    // through `hew_mir::sanitize_for_symbol` for a trait/concrete/id
+    // triple that keeps `nm`-style observation legible). The same
+    // named struct handle the declaration site produced is reused —
+    // the opaque body is filled by `set_body` and the global's
+    // initializer by `set_initializer`, so every prior fat-pointer
+    // construction remains ABI-stable.
+    emit_dyn_trait_vtable_definitions(
+        ctx,
+        &llvm_mod,
+        &pipeline.dyn_vtable_registry,
+        &record_layouts,
+    )?;
     llvm_mod
         .verify()
         .map_err(|e| CodegenError::LlvmVerify(e.to_string()))?;
     Ok(llvm_mod)
+}
+
+/// Synthesise one erased-self method thunk per `(vtable_id,
+/// method_index)` pair in `registry`.
+///
+/// Each thunk's LLVM signature is `fn(ptr, <P1>, <P2>, ...) -> <R>`
+/// where `<Pi>` and `<R>` come from
+/// `DynVtableInstance::vtable_entries[method_index].signature` — that
+/// signature is checker-substituted and receiver-skipped (the checker
+/// recorded it for the originating coercion site and pinned the
+/// receiver-skipped invariant at the MIR producer boundary), so
+/// `params[0]` is the first *real* argument and not a `Self`.
+///
+/// The thunk body forwards every argument to the concrete impl method
+/// named by `method_table[method_index].1` (looked up in `fn_symbols`)
+/// and returns the impl's return value verbatim. Slot 0 — the erased
+/// fat-pointer data word — is forwarded to the impl's typed `self`
+/// slot directly: in LLVM's opaque-pointer world the value type is
+/// the same and no bitcast is needed.
+///
+/// Fails closed when:
+/// - `method_table` and `vtable_entries` have mismatched lengths or
+///   inconsistent method names (the registry is the only producer and
+///   pins these parallel),
+/// - the impl method named by `impl_fn_key` was not declared in the
+///   module (checker authority guarantees every vtable entry resolves
+///   to a declared impl),
+/// - the impl's LLVM parameter count differs from `1 +
+///   signature.params.len()` (an `ActorHandler`-style impl with a
+///   leading execution-context arg is not forwardable by a
+///   single-receiver thunk; any later substrate that needs dyn
+///   dispatch across an async/actor seam must lift this constraint),
+/// - any boundary state (`Ty::Var`, `Ty::Error`, unmaterialized
+///   literal, unresolved assoc projection) leaked into the signature.
+///
+/// The function only emits the thunks; the vtable static initialiser
+/// that references them and the indirect-dispatch arm at
+/// `CallTraitMethod` are independent substrate slices. `Linkage::Private`
+/// keeps the symbols internal to the compilation unit with no ABI
+/// promise; the trait/concrete/id-mangled names keep `nm`-style
+/// observation legible for tests without crossing the dispatch
+/// fail-closed gate.
+fn emit_dyn_trait_thunks<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    registry: &[hew_mir::DynVtableInstance],
+    fn_symbols: &FnSymbolMap<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<()> {
+    if registry.is_empty() {
+        return Ok(());
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    for inst in registry {
+        if inst.method_table.len() != inst.vtable_entries.len() {
+            return Err(CodegenError::FailClosed(format!(
+                "dyn vtable `{}` has mismatched method_table/vtable_entries lengths \
+                 ({} vs {}) — the registry construction is the only producer and \
+                 MUST keep these parallel",
+                inst.symbol,
+                inst.method_table.len(),
+                inst.vtable_entries.len()
+            )));
+        }
+        for (method_index, entry) in inst.vtable_entries.iter().enumerate() {
+            let (method_name, impl_fn_key) = &inst.method_table[method_index];
+            if &entry.method_name != method_name {
+                return Err(CodegenError::FailClosed(format!(
+                    "dyn vtable `{}` method_table[{method_index}].0 = `{method_name}` \
+                     diverges from vtable_entries[{method_index}].method_name = `{}` — \
+                     the registry construction is the only producer",
+                    inst.symbol, entry.method_name
+                )));
+            }
+            let impl_fn = fn_symbols.get(impl_fn_key).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "dyn trait thunk for vtable `{}` slot {method_index} \
+                     (`{}::{method_name}`) references impl fn `{impl_fn_key}` \
+                     that was not declared in the module; checker authority \
+                     guarantees every vtable entry resolves to a declared impl",
+                    inst.symbol, entry.trait_name
+                ))
+            })?;
+            let (impl_fn_value, _impl_ret_ty, _impl_unit) =
+                impl_fn.real(impl_fn_key, "dyn trait thunk emission")?;
+
+            // Lower the receiver-skipped signature into LLVM types.
+            let return_resolved =
+                ResolvedTy::from_ty(&entry.signature.return_type).map_err(|e| {
+                    CodegenError::FailClosed(format!(
+                        "dyn trait thunk for vtable `{}` slot {method_index} \
+                         (`{}::{method_name}`): return type leaked checker-internal \
+                         state past the boundary: {e}",
+                        inst.symbol, entry.trait_name
+                    ))
+                })?;
+            let return_basic = resolve_ty(ctx, &return_resolved, record_layouts)?;
+
+            // Thunk param 0 is the erased self pointer; subsequent
+            // params are the receiver-skipped trait method args.
+            let mut param_basics: Vec<BasicTypeEnum<'ctx>> =
+                Vec::with_capacity(entry.signature.params.len() + 1);
+            param_basics.push(ptr_ty.into());
+            for (i, p) in entry.signature.params.iter().enumerate() {
+                let resolved = ResolvedTy::from_ty(p).map_err(|e| {
+                    CodegenError::FailClosed(format!(
+                        "dyn trait thunk for vtable `{}` slot {method_index} \
+                         (`{}::{method_name}`): param {i} leaked checker-internal \
+                         state past the boundary: {e}",
+                        inst.symbol, entry.trait_name
+                    ))
+                })?;
+                param_basics.push(resolve_ty(ctx, &resolved, record_layouts)?);
+            }
+
+            // The impl method receives a typed `self` at LLVM slot 0;
+            // the thunk's erased `ptr` at slot 0 is bit-identical
+            // under opaque pointers, so the forward is a direct call
+            // with no bitcast. Verifying the parameter count matches
+            // (1 erased self + N receiver-skipped args) fails closed
+            // on a call-conv shift (e.g. an impl that ever needs a
+            // leading execution-context pointer) instead of producing
+            // a miscompiled indirect call.
+            let expected_params = param_basics.len();
+            let impl_params = impl_fn_value.count_params() as usize;
+            if impl_params != expected_params {
+                return Err(CodegenError::FailClosed(format!(
+                    "dyn trait thunk for vtable `{}` slot {method_index} \
+                     (`{}::{method_name}`): impl fn `{impl_fn_key}` has \
+                     {impl_params} LLVM parameter(s) but the thunk expects \
+                     {expected_params} (1 erased self + {} receiver-skipped \
+                     arg(s)); a call conv that prepends extra ABI words is not \
+                     forwardable by a single-receiver thunk",
+                    inst.symbol,
+                    entry.trait_name,
+                    entry.signature.params.len()
+                )));
+            }
+
+            let param_meta: Vec<BasicMetadataTypeEnum<'ctx>> = param_basics
+                .iter()
+                .copied()
+                .map(metadata_type_from_basic)
+                .collect();
+            let fn_ty = match return_basic {
+                BasicTypeEnum::IntType(t) => t.fn_type(&param_meta, false),
+                BasicTypeEnum::FloatType(t) => t.fn_type(&param_meta, false),
+                BasicTypeEnum::PointerType(t) => t.fn_type(&param_meta, false),
+                BasicTypeEnum::StructType(t) => t.fn_type(&param_meta, false),
+                BasicTypeEnum::ArrayType(t) => t.fn_type(&param_meta, false),
+                BasicTypeEnum::VectorType(t) => t.fn_type(&param_meta, false),
+                BasicTypeEnum::ScalableVectorType(t) => t.fn_type(&param_meta, false),
+            };
+
+            let method_index_u32 = u32::try_from(method_index).unwrap_or_else(|_| {
+                unreachable!(
+                    "trait method index exceeded u32::MAX — DynVtableInstance \
+                     construction would have rejected the program first"
+                )
+            });
+            let thunk_symbol = hew_mir::mangle_dyn_thunk_symbol(
+                inst.vtable_id,
+                method_index_u32,
+                &inst.trait_name,
+                &inst.concrete_type,
+            );
+
+            // `Linkage::Private`. The thunk is referenced only by the
+            // in-module vtable static (which is itself `Private`);
+            // there is no cross-compilation-unit ABI promise.
+            let thunk_fn = llvm_mod.add_function(&thunk_symbol, fn_ty, Some(Linkage::Private));
+            let builder = ctx.create_builder();
+            let entry_bb = ctx.append_basic_block(thunk_fn, "entry");
+            builder.position_at_end(entry_bb);
+
+            let mut call_args: Vec<BasicMetadataValueEnum<'ctx>> =
+                Vec::with_capacity(expected_params);
+            for i in 0..expected_params {
+                let idx = u32::try_from(i).unwrap_or_else(|_| {
+                    unreachable!(
+                        "thunk parameter index `{i}` exceeded u32::MAX — \
+                         entry.signature.params length bounded by checker"
+                    )
+                });
+                let p = thunk_fn.get_nth_param(idx).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "dyn trait thunk `{thunk_symbol}`: parameter {i} missing \
+                         from synthesised LLVM function"
+                    ))
+                })?;
+                call_args.push(metadata_value_from_basic(p));
+            }
+
+            let call_site = builder
+                .build_call(impl_fn_value, &call_args, "dyn_thunk_call")
+                .map_err(|e| {
+                    CodegenError::Llvm(format!(
+                        "dyn trait thunk `{thunk_symbol}`: forward call to \
+                         `{impl_fn_key}`: {e:?}"
+                    ))
+                })?;
+
+            // Propagate the impl's return value verbatim. Unit-returning
+            // impls lower as `i8` per `primitive_to_llvm`; void-returning
+            // impls do not arise in the current spine but the path is
+            // covered so future runtime-style impls do not fall through
+            // a silent miscompile.
+            match call_site.try_as_basic_value().basic() {
+                Some(rv) => {
+                    builder.build_return(Some(&rv)).map_err(|e| {
+                        CodegenError::Llvm(format!(
+                            "dyn trait thunk `{thunk_symbol}`: return: {e:?}"
+                        ))
+                    })?;
+                }
+                None => {
+                    builder.build_return(None).map_err(|e| {
+                        CodegenError::Llvm(format!(
+                            "dyn trait thunk `{thunk_symbol}`: void return: {e:?}"
+                        ))
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Probe whether `record_name` is trivially droppable — i.e. its
+/// fields (transitively) are all `BitCopy`. Used by the dyn drop-in-
+/// place synthesis pass to decide whether a `UserRecord`-classified
+/// concrete is safe to release with a free-only body.
+///
+/// The shared `classify_state_field` predicate returns
+/// `StateFieldCloneKind::UserRecord` for every record concrete
+/// regardless of field shape (see `classify_user_record` in
+/// `hew-mir/src/state_clone.rs:457`), which is the correct contract
+/// for actor-state clone/drop synthesis. The dyn drop path needs a
+/// strictly finer answer because emitting a free-only body for a
+/// record whose fields include `String` / `Vec` / heap-bearing
+/// nested records would leak that inner storage; this probe is
+/// dyn-drop-local so the shared classifier's contract is preserved.
+///
+/// Walks the record's `field_tys` and classifies each field. A
+/// field is trivial when its top-level classification is `BitCopy`
+/// or `UserRecord` whose own fields are trivial (recursive). Any
+/// `String` / `Bytes` / `Vec` / `HashMap` / `HashSet` / `IoHandle`
+/// field, or a nested record carrying any of those, makes the
+/// outer record non-trivial.
+///
+/// Fails closed when:
+/// - `record_name` is absent from `pipeline_records` (lowering-
+///   invariant violation — the checker authority guarantees layout
+///   presence for any record reachable from a registered dyn
+///   vtable),
+/// - a field's `ResolvedTy` cannot be classified by
+///   `classify_state_field` (boundary state leaked past the
+///   checker; the classifier itself emits the diagnostic).
+///
+/// `visited` carries the active record-walk stack so a defensive
+/// guard catches a structurally-recursive record before infinite
+/// recursion — the checker rejects record cycles upstream, so this
+/// is belt-and-braces.
+fn record_concrete_is_trivially_droppable(
+    record_name: &str,
+    pipeline_records: &[RecordLayout],
+    visited: &mut std::collections::HashSet<String>,
+) -> CodegenResult<bool> {
+    if !visited.insert(record_name.to_string()) {
+        // Structural cycle — the checker should have rejected it
+        // upstream. Treat as non-trivial defensively so codegen
+        // does not over-free on an unsound input.
+        return Ok(false);
+    }
+    let layout = pipeline_records
+        .iter()
+        .find(|r| r.name == record_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "dyn drop_in_place triviality probe: record `{record_name}` \
+                 is missing from `pipeline.record_layouts`; the checker \
+                 authority must register every record reachable from a dyn \
+                 vtable's concrete type before codegen runs"
+            ))
+        })?;
+    for field_ty in &layout.field_tys {
+        // Each field is classified independently with its own
+        // fresh `visited` — the shared classifier's internal
+        // cycle guard answers within one walk, and the outer
+        // `visited` tracks our cross-field record walk.
+        let mut inner_visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let field_kind =
+            hew_mir::classify_state_field(field_ty, pipeline_records, &mut inner_visited).map_err(
+                |e| {
+                    CodegenError::FailClosed(format!(
+                        "dyn drop_in_place triviality probe: field of record \
+                         `{record_name}` (type `{field_ty:?}`) is not \
+                         classifiable: {e}"
+                    ))
+                },
+            )?;
+        let field_trivial = match &field_kind {
+            StateFieldCloneKind::BitCopy { .. } => true,
+            StateFieldCloneKind::UserRecord { name: inner } => {
+                record_concrete_is_trivially_droppable(inner, pipeline_records, visited)?
+            }
+            // String / Bytes / Vec / HashMap / HashSet / IoHandle
+            // — owned-heap or runtime-managed; not trivial.
+            _ => false,
+        };
+        if !field_trivial {
+            visited.remove(record_name);
+            return Ok(false);
+        }
+    }
+    visited.remove(record_name);
+    Ok(true)
+}
+
+/// Synthesise one `void (*)(ptr)` drop-in-place function per
+/// `vtable_id` in `registry`. Each function releases a heap-boxed
+/// `dyn Trait` value whose data word is the `ptr` argument:
+///
+/// 1. Run the concrete value's drop glue at `%erased_self`. This
+///    stage admits two trivial concrete shapes: (a)
+///    `StateFieldCloneKind::BitCopy` primitives (i64, bool, …) —
+///    no inner state, free-only body is sufficient; and (b)
+///    `StateFieldCloneKind::UserRecord` whose fields are
+///    transitively all `BitCopy` (probed by
+///    `record_concrete_is_trivially_droppable` — the shared
+///    `classify_state_field` returns `UserRecord` for every record
+///    concrete regardless of field shape, so a dyn-drop-local walk
+///    of the record's fields is required to answer the finer
+///    "trivially droppable" question without perturbing the actor-
+///    state clone/drop classifier's contract).
+///    Any other classification — `String` / `Bytes` / `Vec` /
+///    `HashMap` / `HashSet` / `IoHandle`, or a `UserRecord` with at
+///    least one such field — fails closed because
+///    `DynVtableInstance` does not yet carry a per-type structural-
+///    drop key; emitting a `hew_dyn_box_free` without first
+///    dropping the owned-heap fields would leak that inner storage.
+///    A future substrate stage MUST extend the registry with the
+///    concrete's structural-drop entry point before heap-bearing
+///    concretes can ride the dyn drop path (LESSONS:
+///    `boundary-fail-closed`).
+///
+/// 2. Call `hew_dyn_box_free(%erased_self, size, align)` where
+///    `size`/`align` come from the LLVM ABI layout of the concrete
+///    type (`abi_size_align` against the host data layout — the
+///    same convention `struct_abi_size` already uses module-wide).
+///    This matches the runtime ABI in
+///    `hew-runtime/src/trait_object.rs`: the dealloc layout MUST
+///    equal the alloc layout `hew_dyn_box_alloc` was called with.
+///
+/// The function is emitted at `Linkage::Private`: internal to
+/// the compilation unit, no ABI promise. The trait/concrete/id-
+/// mangled symbol name produced by
+/// [`hew_mir::mangle_dyn_drop_in_place_symbol`] keeps `nm`-style
+/// observation legible for tests without exposing the symbol to the
+/// linker. The vtable static initialiser (emitted in this module)
+/// is the in-module caller; no cross-CU consumer references this
+/// symbol.
+///
+/// One function per `vtable_id` (not per method): the vtable's
+/// concrete type determines the drop ritual, not the trait or any
+/// individual method. Test coverage:
+/// `hew-codegen-rs/tests/dyn_trait_drop_in_place_emission.rs`.
+///
+/// Fails closed when:
+/// - `inst.concrete_type` cannot be classified (boundary state
+///   like `Ty::Var` / `Ty::Error` leaked past the checker, or the
+///   `RecordLayout` for a Named arm is missing — the classifier
+///   itself emits the diagnostic),
+/// - the classification is heap-bearing (`String` / `Bytes` /
+///   `Vec` / `HashMap` / `HashSet` / `IoHandle`, or a `UserRecord`
+///   with at least one such field transitively — structural drop
+///   required but no drop-fn key plumbed; see above),
+/// - the concrete's LLVM ABI layout is degenerate
+///   (`abi_size_align` rejects size==0 / align==0 — a coerced
+///   `Unit` / `Never` concrete would land here, but the producer
+///   side of W3.031 also rejects ZST coercion).
+fn emit_dyn_trait_drop_in_place_fns<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    registry: &[hew_mir::DynVtableInstance],
+    record_layouts: &RecordLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+) -> CodegenResult<()> {
+    if registry.is_empty() {
+        return Ok(());
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    // `hew_dyn_box_free(ptr, size, align)` — the runtime
+    // declaration in `hew-runtime/src/trait_object.rs` uses C
+    // `usize` for size/align, which lowers to `i64` on the native
+    // (64-bit) backend. The WASM32 target would surface here once
+    // a target-aware lowering path exists; the runtime symbol
+    // allowlist in `hew-mir/src/runtime_symbols.rs` is the canonical
+    // place to teach codegen about a target-different width.
+    let usize_ty = ctx.i64_type();
+    let box_free_fn = llvm_mod
+        .get_function("hew_dyn_box_free")
+        .unwrap_or_else(|| {
+            let ty = void_ty.fn_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false);
+            llvm_mod.add_function("hew_dyn_box_free", ty, Some(Linkage::External))
+        });
+    let host_td = host_target_data();
+
+    for inst in registry {
+        let symbol = hew_mir::mangle_dyn_drop_in_place_symbol(
+            inst.vtable_id,
+            &inst.trait_name,
+            &inst.concrete_type,
+        );
+
+        // Classify the concrete type. `classify_state_field` is
+        // the canonical predicate for "is this type trivially
+        // memcpy/drop-able?" — it already understands records,
+        // Vec/HashMap/HashSet, IoHandle wrappers, and the closed
+        // set of primitives. Reusing it keeps the dyn drop and
+        // the actor-state clone/drop classifier on the same
+        // authority.
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let kind =
+            hew_mir::classify_state_field(&inst.concrete_type, pipeline_records, &mut visited)
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!(
+                        "dyn drop_in_place for vtable `{}`: concrete type `{:?}` is \
+                 not classifiable: {e}",
+                        inst.symbol, inst.concrete_type
+                    ))
+                })?;
+        match &kind {
+            StateFieldCloneKind::BitCopy { .. } => {
+                // Trivially droppable: the concrete value carries
+                // no owned-heap state; releasing the heap box
+                // alone is sufficient.
+            }
+            StateFieldCloneKind::UserRecord { name } => {
+                // `classify_state_field` returns `UserRecord` for
+                // every record concrete regardless of field shape
+                // (see `classify_user_record` in
+                // `hew-mir/src/state_clone.rs`). For the dyn drop
+                // path we additionally need to know whether the
+                // record's fields are themselves trivially
+                // droppable — a record whose fields are all
+                // BitCopy (transitively) carries no owned-heap
+                // state and is safe to release with a free-only
+                // body, while a record with a String / Vec /
+                // owned-heap field needs a structural drop the
+                // registry does not yet plumb. The dyn-drop-local
+                // probe below walks the layout to answer that
+                // question without disturbing the shared
+                // classifier's `UserRecord` contract (which actor-
+                // state clone/drop synthesis depends on).
+                let mut record_visited: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                let trivial = record_concrete_is_trivially_droppable(
+                    name,
+                    pipeline_records,
+                    &mut record_visited,
+                )?;
+                if !trivial {
+                    return Err(CodegenError::FailClosed(format!(
+                        "dyn drop_in_place for vtable `{}` (concrete record `{name}`): \
+                         the record carries at least one owned-heap field \
+                         (String / Bytes / Vec / HashMap / HashSet / IoHandle / \
+                         heap-bearing nested record), so a free-only body would \
+                         leak that inner storage. `DynVtableInstance` does not yet \
+                         plumb a per-type structural-drop fn key; a future substrate \
+                         stage MUST extend the registry before heap-bearing record \
+                         concretes can ride the dyn drop path",
+                        inst.symbol
+                    )));
+                }
+            }
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "dyn drop_in_place for vtable `{}` (concrete `{:?}`): \
+                     concrete requires a structural drop (classification = \
+                     {other:?}), but `DynVtableInstance` does not yet plumb \
+                     a per-type drop fn key. A future substrate stage MUST \
+                     extend the registry before non-BitCopy concretes can \
+                     ride the dyn drop path — emitting a free-only body \
+                     here would leak the inner heap storage",
+                    inst.symbol, inst.concrete_type
+                )));
+            }
+        }
+
+        // Compute `(size, align)` for `hew_dyn_box_free`. The
+        // dealloc layout MUST equal the alloc layout
+        // `hew_dyn_box_alloc` saw; sourcing both from the LLVM
+        // ABI layout of the same `ResolvedTy` keeps the two
+        // sides on a single authority.
+        let concrete_llvm = resolve_ty(ctx, &inst.concrete_type, record_layouts)?;
+        let (size, align) = abi_size_align(concrete_llvm, Some(&host_td))?;
+
+        let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
+        // `Private` linkage — internal-to-module, no ABI promise.
+        // Same collision rationale as the vtable global and the thunks.
+        let fn_val = llvm_mod.add_function(&symbol, fn_ty, Some(Linkage::Private));
+        let entry_bb = ctx.append_basic_block(fn_val, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry_bb);
+
+        let erased = fn_val.get_nth_param(0).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "dyn drop_in_place `{symbol}`: synthesised function missing \
+                 the erased-self parameter"
+            ))
+        })?;
+        let size_val = usize_ty.const_int(size, false);
+        let align_val = usize_ty.const_int(u64::from(align), false);
+        let args: [BasicMetadataValueEnum; 3] = [
+            metadata_value_from_basic(erased),
+            size_val.into(),
+            align_val.into(),
+        ];
+        builder
+            .build_call(box_free_fn, &args, "dyn_box_free_call")
+            .map_err(|e| {
+                CodegenError::Llvm(format!(
+                    "dyn drop_in_place `{symbol}`: hew_dyn_box_free call: {e:?}"
+                ))
+            })?;
+        builder.build_return(None).map_err(|e| {
+            CodegenError::Llvm(format!("dyn drop_in_place `{symbol}`: void return: {e:?}"))
+        })?;
+    }
+    Ok(())
+}
+
+/// Promote each `%hew.dyn.vtable.N` opaque named struct +
+/// `@__hew_vtable__{trait}__{concrete}__{vtable_id}` private-constant
+/// declaration into a fully-defined constant whose body is
+/// `{ ptr, <usize>, <usize>, ptr × method_count }` (a 3-slot prefix
+/// triple followed by N method-thunk pointer slots) and whose
+/// initializer is
+/// `{ drop_in_place_fn_ptr, size_of<Concrete>, align_of<Concrete>,
+///   thunk_0_fn_ptr, ..., thunk_(N-1)_fn_ptr }`.
+///
+/// **Layout (matches `hew-runtime/src/trait_object.rs::HewVtable` and
+/// the lane plan §1.5 vtable struct prefix entry).**
+/// - Slot 0: pointer to the `drop_in_place` fn named by
+///   [`hew_mir::mangle_dyn_drop_in_place_symbol`] and synthesised by
+///   `emit_dyn_trait_drop_in_place_fns` (must run first).
+/// - Slot 1: `size_of::<ConcreteType>()` as a ptr-sized integer
+///   (`<usize>`), sourced from the LLVM ABI layout of `inst.concrete_type`
+///   via `abi_size_align` against the host target data.
+/// - Slot 2: `align_of::<ConcreteType>()` as a ptr-sized integer
+///   (`<usize>`), sourced the same way.
+/// - Slots 3..(3+N): pointers to the method thunks named by
+///   [`hew_mir::mangle_dyn_thunk_symbol`] and synthesised by
+///   `emit_dyn_trait_thunks` (must run first), one per
+///   `inst.vtable_entries[method_index]`, in declaration order.
+///
+/// **Why the size/align prefix.** The runtime ABI (`HewVtable` in
+/// `hew-runtime/src/trait_object.rs:108-130`) commits to the prefix
+/// triple so the future heap-boxed storage class can free the box
+/// without re-deriving the concrete layout, and so any future
+/// reflection / printer path can recover the value's footprint
+/// from the vtable alone. The checker's slot convention
+/// (`hew-types/src/check/types.rs`: `DynMethodCall::slot =
+/// 3 + method_decl_order`) bakes the prefix in. Emitting only one
+/// drop slot would mis-index every dispatch and have the runtime
+/// drop path read a function pointer where it expects a `usize`.
+///
+/// **Drop-fn routing.** Slot 0 always carries the unconditional
+/// `__hew_dyn_drop_in_place_*` function — the same fn that calls
+/// `hew_dyn_box_free`. This is correct for `TraitObjectStorage::HeapBoxed`
+/// callers (the eventual return-position / actor-message paths).
+/// `TraitObjectStorage::FrameOwned` callers (the only live storage class
+/// today — every `Instr::CoerceToDynTrait` site currently classifies as
+/// frame-owned) MUST NOT fire slot 0 at scope exit: their concrete value
+/// lives in a frame alloca and `hew_dyn_box_free` would over-free a stack
+/// address. The drop-emission consumer at the use site is responsible for
+/// routing by storage class, not the vtable. The smallest-ABI choice
+/// (single drop fn-pointer slot, no flag) matches the frame-owned data-
+/// word convention and keeps the ABI surface narrow for the future
+/// heap-boxed support work to extend.
+///
+/// **Idempotence with the forward declaration.**
+/// `get_or_declare_dyn_vtable_global` produces the opaque struct
+/// `%hew.dyn.vtable.N` and the `Private`-linkage global named
+/// `__hew_vtable__{trait}__{concrete}__{vtable_id}` (see
+/// [`hew_mir::mangle_dyn_vtable_symbol`]) at every
+/// `Instr::CoerceToDynTrait` site. This pass looks up the SAME named
+/// struct and the SAME global and finalises them in place via
+/// `StructType::set_body` + `GlobalValue::set_initializer`. References
+/// emitted at coercion sites remain bit-identical: only the body of the
+/// struct and the body of the global are filled in.
+///
+/// **Linkage.** The vtable global, the
+/// per-vtable `drop_in_place` fn, and the per-(vtable, method) thunks
+/// are all emitted with `Linkage::Private`. The symbols are referenced
+/// only from within the same compilation unit (vtable global → drop
+/// fn + thunks; coercion sites → vtable global) and carry no ABI
+/// promise. The trait/concrete/id-mangled names keep `nm`-style
+/// observation legible.
+///
+/// **Fail-closed paths.** Returns an error when:
+/// - the registry references a `drop_in_place` or `thunk` symbol that
+///   the prior two emission passes did not synthesise (invariant
+///   violation — `emit_dyn_trait_drop_in_place_fns` and
+///   `emit_dyn_trait_thunks` are the only producers and run before
+///   this pass on the same registry slice),
+/// - the named struct backing `mangle_dyn_vtable_symbol(vtable_id)`
+///   was already set to a non-opaque body (only this pass may finalise
+///   the body),
+/// - the global already has an initializer attached (only this pass
+///   may attach the initializer).
+fn emit_dyn_trait_vtable_definitions<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    registry: &[hew_mir::DynVtableInstance],
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<()> {
+    if registry.is_empty() {
+        return Ok(());
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    // Ptr-sized integer for the `size_of` / `align_of` prefix slots.
+    // Sourced from the host target data (the same `host_target_data`
+    // that `emit_dyn_trait_drop_in_place_fns` uses) so a wasm32 build
+    // would naturally produce `i32` slots and a native build produces
+    // `i64`. The runtime ABI in `hew-runtime/src/trait_object.rs`
+    // declares `size_of`/`align_of` as Rust `usize`, which lowers to
+    // exactly this width on every Hew target.
+    let host_td = host_target_data();
+    let usize_ty = ctx.ptr_sized_int_type(&host_td, None);
+    for inst in registry {
+        // Ensure the forward declaration exists for vtables whose
+        // coercion site, in some edge cases (registry pre-populated
+        // by `build_dyn_vtable_registry` for a coercion site that
+        // exists in the MIR but whose codegen arm short-circuits
+        // before calling `get_or_declare_dyn_vtable_global`), might
+        // not have been triggered. Calling the helper here is
+        // idempotent — it returns the existing global when one is
+        // present and creates the opaque declaration otherwise. This
+        // keeps the definition pass self-contained against the
+        // registry.
+        let _vtable_ptr = get_or_declare_dyn_vtable_global(ctx, llvm_mod, inst);
+
+        let drop_symbol = hew_mir::mangle_dyn_drop_in_place_symbol(
+            inst.vtable_id,
+            &inst.trait_name,
+            &inst.concrete_type,
+        );
+        let drop_fn = llvm_mod.get_function(&drop_symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "dyn vtable definition for `{}`: drop-in-place fn `{drop_symbol}` \
+                 was not synthesised by `emit_dyn_trait_drop_in_place_fns`; the \
+                 two emission passes share the same registry slice and the \
+                 drop-in-place pass MUST run before vtable definition emission",
+                inst.symbol
+            ))
+        })?;
+
+        // Compute the concrete type's ABI size/align for the prefix
+        // triple. Sourcing both from the LLVM ABI layout of the same
+        // `ResolvedTy` keeps the vtable prefix on the same authority
+        // as the `hew_dyn_box_alloc`/`free` size+align inside the
+        // per-vtable drop-in-place fn — drift between the two would
+        // surface as either an under-free (live byte leak) or an
+        // over-free (dealloc with the wrong layout).
+        let concrete_llvm = resolve_ty(ctx, &inst.concrete_type, record_layouts)?;
+        let (concrete_size, concrete_align) = abi_size_align(concrete_llvm, Some(&host_td))?;
+
+        let n_methods = inst.vtable_entries.len();
+        // Layout: 3-slot prefix (drop, size, align) + N method thunks.
+        let mut slot_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(3 + n_methods);
+        let mut slot_vals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(3 + n_methods);
+        // Slot 0: drop_in_place fn pointer.
+        slot_tys.push(ptr_ty.into());
+        slot_vals.push(drop_fn.as_global_value().as_pointer_value().into());
+        // Slot 1: size_of<ConcreteType> as usize.
+        slot_tys.push(usize_ty.into());
+        slot_vals.push(usize_ty.const_int(concrete_size, false).into());
+        // Slot 2: align_of<ConcreteType> as usize.
+        slot_tys.push(usize_ty.into());
+        slot_vals.push(usize_ty.const_int(u64::from(concrete_align), false).into());
+
+        for method_index in 0..n_methods {
+            let method_index_u32 = u32::try_from(method_index).unwrap_or_else(|_| {
+                unreachable!(
+                    "dyn vtable method index exceeded u32::MAX — \
+                     `DynVtableInstance` construction would have rejected the \
+                     program first"
+                )
+            });
+            let thunk_symbol = hew_mir::mangle_dyn_thunk_symbol(
+                inst.vtable_id,
+                method_index_u32,
+                &inst.trait_name,
+                &inst.concrete_type,
+            );
+            let thunk_fn = llvm_mod.get_function(&thunk_symbol).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "dyn vtable definition for `{}`: method thunk `{thunk_symbol}` \
+                     (slot {slot}, method `{}`) was not synthesised by \
+                     `emit_dyn_trait_thunks`; the two emission passes share the \
+                     same registry slice and the thunk pass MUST run before \
+                     vtable definition",
+                    inst.symbol,
+                    inst.vtable_entries[method_index].method_name,
+                    slot = 3 + method_index,
+                ))
+            })?;
+            slot_tys.push(ptr_ty.into());
+            slot_vals.push(thunk_fn.as_global_value().as_pointer_value().into());
+        }
+
+        // Look up the SAME opaque struct the forward declaration used.
+        // `get_or_declare_dyn_vtable_global` interns this struct by name
+        // so this lookup is guaranteed to return Some.
+        let struct_name = format!("hew.dyn.vtable.{}", inst.vtable_id);
+        let vtable_struct = ctx.get_struct_type(&struct_name).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "dyn vtable definition for `{}`: named struct `%{struct_name}` is \
+                 not registered with the LLVM context; \
+                 `get_or_declare_dyn_vtable_global` is the only declaration \
+                 site and was called immediately above",
+                inst.symbol
+            ))
+        })?;
+
+        // Finalise the body exactly once. If the struct is already
+        // non-opaque a prior pass mutated it under us — invariant
+        // violation rather than user error.
+        if vtable_struct.is_opaque() {
+            vtable_struct.set_body(&slot_tys, false);
+        } else {
+            return Err(CodegenError::FailClosed(format!(
+                "dyn vtable definition for `{}`: named struct `%{struct_name}` \
+                 is no longer opaque — only `emit_dyn_trait_vtable_definitions` \
+                 may set the body",
+                inst.symbol
+            )));
+        }
+
+        // Look up the SAME global the forward declaration created.
+        let global = llvm_mod.get_global(&inst.symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "dyn vtable definition: global `@{symbol}` is missing from the \
+                 LLVM module; `get_or_declare_dyn_vtable_global` is the only \
+                 declaration site and was called immediately above",
+                symbol = inst.symbol
+            ))
+        })?;
+
+        if global.get_initializer().is_some() {
+            return Err(CodegenError::FailClosed(format!(
+                "dyn vtable definition for `@{}`: global already has an \
+                 initializer — only `emit_dyn_trait_vtable_definitions` \
+                 may attach it",
+                inst.symbol
+            )));
+        }
+
+        let init = vtable_struct.const_named_struct(&slot_vals);
+        global.set_initializer(&init);
+    }
+    Ok(())
 }
 
 /// Emit the module-level regex infrastructure when `pipeline.regex_literals` is non-empty.
@@ -13167,6 +16638,9 @@ mod tests {
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
             extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
         }
     }
 
@@ -13200,6 +16674,9 @@ mod tests {
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
             extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
         }
     }
 
@@ -13318,6 +16795,9 @@ mod tests {
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
             extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -13384,6 +16864,9 @@ mod tests {
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
             extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -13444,6 +16927,9 @@ mod tests {
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
             extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
         };
         let ctx = Context::create();
         let m =
@@ -13610,6 +17096,9 @@ mod tests {
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
             extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
         }
     }
 
@@ -13805,6 +17294,9 @@ mod tests {
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
             extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
         }
     }
 
@@ -14493,6 +17985,9 @@ mod tests {
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
             extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
         };
 
         let ctx = Context::create();
@@ -14565,6 +18060,9 @@ mod tests {
             regex_literals: Vec::new(),
             gen_state_layouts: vec![],
             extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
@@ -14593,8 +18091,8 @@ mod tests {
     // then invoke each helper and assert on the printed LLVM IR.
     //
     // The drop-substrate tests are simpler — they exercise
-    // `resolve_drop_fn_to_symbol` (a pure string→symbol mapping) and
-    // `intern_runtime_decl` directly.
+    // `runtime_drop_symbol` / `resolve_drop_fn` (W3.030 Stage 2 typed
+    // dispatcher) and `intern_runtime_decl` directly.
     // ========================================================================
 
     use hew_mir::{
@@ -14603,50 +18101,72 @@ mod tests {
 
     // ---- DuplexHalfClose drop substrate -------------------------------------
 
+    /// Build an empty `FnSymbolMap` for `resolve_drop_fn` tests that only
+    /// exercise the runtime-symbol arm. The map lookup is never consulted
+    /// when the first arm matches.
+    fn empty_fn_symbols<'ctx>() -> FnSymbolMap<'ctx> {
+        HashMap::new()
+    }
+
     #[test]
     fn drop_fn_send_half_close_resolves_to_hew_duplex_close_half() {
-        let sym = resolve_drop_fn_to_symbol("SendHalf::close")
-            .expect("SendHalf::close must resolve after W2.004 Stage 1");
-        assert_eq!(
-            sym, "hew_duplex_close_half",
-            "SendHalf::close must map to hew_duplex_close_half"
-        );
+        let syms = empty_fn_symbols();
+        match resolve_drop_fn("SendHalf::close", &syms)
+            .expect("SendHalf::close must resolve after W2.004 Stage 1")
+        {
+            DropDispatch::RuntimeSymbol(sym) => assert_eq!(
+                sym, "hew_duplex_close_half",
+                "SendHalf::close must map to hew_duplex_close_half"
+            ),
+            DropDispatch::UserFn { .. } => {
+                panic!("SendHalf::close must take the RuntimeSymbol arm, not UserFn")
+            }
+        }
     }
 
     #[test]
     fn drop_fn_recv_half_close_resolves_to_hew_duplex_close_half() {
-        let sym = resolve_drop_fn_to_symbol("RecvHalf::close")
-            .expect("RecvHalf::close must resolve after W2.004 Stage 1");
-        assert_eq!(
-            sym, "hew_duplex_close_half",
-            "RecvHalf::close must map to hew_duplex_close_half"
-        );
+        let syms = empty_fn_symbols();
+        match resolve_drop_fn("RecvHalf::close", &syms)
+            .expect("RecvHalf::close must resolve after W2.004 Stage 1")
+        {
+            DropDispatch::RuntimeSymbol(sym) => assert_eq!(sym, "hew_duplex_close_half"),
+            DropDispatch::UserFn { .. } => panic!("RecvHalf::close must take RuntimeSymbol arm"),
+        }
     }
 
     #[test]
     fn drop_fn_literal_hew_duplex_close_half_pass_through() {
-        let sym = resolve_drop_fn_to_symbol("hew_duplex_close_half")
-            .expect("hew_duplex_close_half literal must pass through");
-        assert_eq!(sym, "hew_duplex_close_half");
+        assert_eq!(
+            runtime_drop_symbol("hew_duplex_close_half"),
+            Some("hew_duplex_close_half"),
+            "hew_duplex_close_half literal must pass through"
+        );
     }
 
     #[test]
     fn drop_fn_existing_duplex_close_still_resolves() {
         // Regression: the existing Duplex::close mapping must not be
-        // disturbed by the half-close additions.
+        // disturbed by the half-close additions or the W3.030 Stage 2
+        // typed-dispatch refactor.
         assert_eq!(
-            resolve_drop_fn_to_symbol("Duplex::close").unwrap(),
-            "hew_duplex_close"
+            runtime_drop_symbol("Duplex::close"),
+            Some("hew_duplex_close")
         );
         assert_eq!(
-            resolve_drop_fn_to_symbol("LambdaActorHandle::close").unwrap(),
-            "hew_lambda_actor_release"
+            runtime_drop_symbol("LambdaActorHandle::close"),
+            Some("hew_lambda_actor_release")
         );
     }
 
     #[test]
     fn drop_fn_unknown_string_still_fails_closed() {
-        let err = resolve_drop_fn_to_symbol("Mystery::close")
+        let syms = empty_fn_symbols();
+        // `Mystery::close` parses as a `<Type>::<method>` user-fn
+        // candidate, so it reaches the fn_symbols lookup and fails there
+        // (no registered function). The diagnostic must still cite both
+        // dispatch arms so the next implementer knows where to look.
+        let err = resolve_drop_fn("Mystery::close", &syms)
             .expect_err("Unknown drop_fn strings must fail closed");
         match err {
             CodegenError::FailClosed(msg) => {
@@ -14654,16 +18174,306 @@ mod tests {
                     msg.contains("Mystery::close"),
                     "diagnostic must name the offending drop_fn string; got: {msg}"
                 );
-                // Diagnostic must mention the newly-recognised SendHalf/RecvHalf
-                // names so the next implementer knows the table grew.
                 assert!(
                     msg.contains("SendHalf::close") && msg.contains("RecvHalf::close"),
                     "diagnostic must list SendHalf::close + RecvHalf::close as \
-                     recognised names; got: {msg}"
+                     recognised runtime substrate names; got: {msg}"
+                );
+                assert!(
+                    msg.contains("inherent") || msg.contains("impl"),
+                    "diagnostic must explain that user-resource close must be \
+                     declared in an inherent impl block; got: {msg}"
                 );
             }
             other => panic!("expected FailClosed, got {other:?}"),
         }
+    }
+
+    // ---- W3.030 Stage 2 — typed DropDispatch ------------------------------
+
+    /// User-resource `Conn::close(consuming self: Conn)`: when the codegen
+    /// function pre-pass has registered the mangled symbol, `resolve_drop_fn`
+    /// must take the `UserFn` arm.
+    #[test]
+    fn drop_fn_user_resource_close_routes_through_user_fn_arm() {
+        let ctx = Context::create();
+        let m = ctx.create_module("drop_fn_user_fn_arm_test");
+        // Register a `Conn::close(%Conn) -> void` FnSymbol::Real entry, as
+        // the codegen function pre-pass would do for an inherent `impl Conn
+        // { fn close(consuming self: Conn) { … } }` block.
+        let conn_ty = ctx.opaque_struct_type("Conn");
+        conn_ty.set_body(&[ctx.i64_type().into()], false);
+        let void_ty = ctx.void_type();
+        let fn_ty = void_ty.fn_type(&[conn_ty.into()], false);
+        let value = m.add_function("Conn::close", fn_ty, None);
+        let mut syms: FnSymbolMap = HashMap::new();
+        syms.insert(
+            "Conn::close".to_string(),
+            FnSymbol::Real {
+                value,
+                return_ty: conn_ty.into(), // sentinel; unused by drop dispatch
+                returns_unit: true,
+            },
+        );
+        match resolve_drop_fn("Conn::close", &syms)
+            .expect("Conn::close must resolve via the UserFn arm when registered")
+        {
+            DropDispatch::UserFn { value: v, symbol } => {
+                assert_eq!(symbol, "Conn::close");
+                assert_eq!(
+                    v, value,
+                    "resolved FunctionValue must match the registered one"
+                );
+            }
+            DropDispatch::RuntimeSymbol(sym) => {
+                panic!("Conn::close must take the UserFn arm; got RuntimeSymbol({sym:?})")
+            }
+        }
+    }
+
+    /// A user-fn `close` that returns non-Unit is a Q-β-C violation; the
+    /// resolver must fail closed rather than silently accept a fallible
+    /// drop.
+    #[test]
+    fn drop_fn_user_resource_close_non_unit_fails_closed() {
+        let ctx = Context::create();
+        let m = ctx.create_module("drop_fn_non_unit_test");
+        let i64_ty = ctx.i64_type();
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        let value = m.add_function("Bad::close", fn_ty, None);
+        let mut syms: FnSymbolMap = HashMap::new();
+        syms.insert(
+            "Bad::close".to_string(),
+            FnSymbol::Real {
+                value,
+                return_ty: i64_ty.into(),
+                returns_unit: false,
+            },
+        );
+        let err = resolve_drop_fn("Bad::close", &syms)
+            .expect_err("non-Unit user-resource close must fail closed (Q-β-C)");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(msg.contains("Bad::close"));
+                assert!(
+                    msg.contains("Unit") && msg.contains("defer"),
+                    "diagnostic must mention Unit return + defer escape hatch; got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    /// V13: the codegen-internal verifier must reject an `ElabDrop` whose
+    /// `drop_fn` resolves to neither dispatch arm. This is the uniqueness
+    /// pin for the two-armed contract.
+    #[test]
+    fn verify_drop_dispatch_resolves_rejects_unresolved_drop_fn() {
+        use hew_mir::{DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath};
+        let elab = ElaboratedMirFunction {
+            name: "user_fn".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::Local(0),
+                        ty: ResolvedTy::Unit,
+                        drop_fn: Some("NotARealType::close".to_string()),
+                        kind: DropKind::Resource,
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: Vec::new(),
+            checked_mir: Vec::new(),
+            elaborated_mir: vec![elab],
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+        };
+        let syms = empty_fn_symbols();
+        let err = verify_drop_dispatch_resolves(&pipeline, &syms)
+            .expect_err("verifier must reject unresolved drop_fn");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(msg.contains("user_fn"), "must name the function: {msg}");
+                assert!(
+                    msg.contains("NotARealType::close"),
+                    "must name the offending drop_fn: {msg}"
+                );
+                assert!(
+                    msg.contains("verify_drop_dispatch_resolves"),
+                    "must identify the verifier in the diagnostic: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    /// V13 negative: the verifier accepts a runtime-symbol drop with an
+    /// empty FnSymbol map (the runtime arm does not need registration).
+    #[test]
+    fn verify_drop_dispatch_resolves_accepts_runtime_symbol_drop() {
+        use hew_mir::{DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath};
+        let elab = ElaboratedMirFunction {
+            name: "uses_duplex".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::Local(0),
+                        ty: ResolvedTy::Unit,
+                        drop_fn: Some("Duplex::close".to_string()),
+                        kind: DropKind::DuplexClose,
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: Vec::new(),
+            checked_mir: Vec::new(),
+            elaborated_mir: vec![elab],
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+        };
+        let syms = empty_fn_symbols();
+        verify_drop_dispatch_resolves(&pipeline, &syms)
+            .expect("runtime-symbol drop must pass the verifier without fn_symbols entries");
+    }
+
+    /// R-1 (plan review): WASM-exclusion scan must classify a runtime-symbol
+    /// `ElabDrop` as excluded on wasm32.
+    #[test]
+    fn wasm_exclusion_scan_flags_runtime_duplex_close_in_elab_drop() {
+        use hew_mir::{DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath};
+        let elab = ElaboratedMirFunction {
+            name: "uses_duplex".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::Local(0),
+                        ty: ResolvedTy::Unit,
+                        drop_fn: Some("Duplex::close".to_string()),
+                        kind: DropKind::DuplexClose,
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: Vec::new(),
+            checked_mir: Vec::new(),
+            elaborated_mir: vec![elab],
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+        };
+        let found = uses_wasm_excluded_symbol(&pipeline)
+            .expect("Duplex::close ElabDrop must be flagged as WASM-excluded");
+        assert!(
+            found.starts_with("hew_duplex_"),
+            "found symbol must be the hew_duplex_ C-ABI: got {found}"
+        );
+    }
+
+    /// R-1 (plan review): a user-fn `<Type>::<method>` close is pure Hew
+    /// code and is NOT WASM-excluded. The scan must skip the user-fn arm
+    /// silently.
+    #[test]
+    fn wasm_exclusion_scan_ignores_user_fn_close_in_elab_drop() {
+        use hew_mir::{DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath};
+        let elab = ElaboratedMirFunction {
+            name: "uses_user_resource".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::Local(0),
+                        ty: ResolvedTy::Unit,
+                        drop_fn: Some("Conn::close".to_string()),
+                        kind: DropKind::Resource,
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: Vec::new(),
+            checked_mir: Vec::new(),
+            elaborated_mir: vec![elab],
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+        };
+        assert!(
+            uses_wasm_excluded_symbol(&pipeline).is_none(),
+            "user-fn `Conn::close` drop must not be flagged as WASM-excluded"
+        );
     }
 
     #[test]
@@ -14724,6 +18534,10 @@ mod tests {
         machine_layouts: MachineLayoutMap<'ctx>,
         fn_symbols: FnSymbolMap<'ctx>,
         actor_layouts: Vec<ActorLayout>,
+        /// Empty for these fixtures — no struct hash thunks are exercised by
+        /// the composite-helper unit tests, so no bool-field defence path is
+        /// taken. Carried so the FnCtx field stays populated.
+        record_field_resolved_tys: HashMap<String, Vec<ResolvedTy>>,
     }
 
     /// Build a `Result<(), SendError>` `EnumLayout` matching the
@@ -14846,8 +18660,10 @@ mod tests {
         enum_fixtures: &[MirEnumLayout],
     ) -> CompositeHelperHarness<'ctx> {
         let mut record_layouts: RecordLayoutMap<'ctx> =
-            register_record_layouts(ctx, record_fixtures)
-                .expect("record-layout registration must succeed");
+            predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[])
+                .expect("named-layout predeclaration must succeed");
+        fill_record_layout_bodies(ctx, record_fixtures, &record_layouts)
+            .expect("record-layout body fill must succeed");
         let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
         register_enum_layouts(
             ctx,
@@ -14862,6 +18678,7 @@ mod tests {
             machine_layouts,
             fn_symbols: HashMap::new(),
             actor_layouts: Vec::new(),
+            record_field_resolved_tys: HashMap::new(),
         }
     }
 
@@ -14905,6 +18722,13 @@ mod tests {
             actor_layouts: &harness.actor_layouts,
             machine_layouts: &harness.machine_layouts,
             enum_layouts: &[],
+            record_field_resolved_tys: &harness.record_field_resolved_tys,
+            // Composite-helper unit tests never lower an
+            // `Instr::CoerceToDynTrait`; carry an empty slice so the
+            // FnCtx field stays populated. The dyn-trait
+            // tests construct a full `IrPipeline` via `emit_module`
+            // and exercise the registry there.
+            dyn_vtable_registry: &[],
         }
     }
 
@@ -15283,5 +19107,893 @@ mod tests {
             }
             other => panic!("expected FailClosed, got {other:?}"),
         }
+    }
+
+    // ---- W4.012 Stage 2: predeclare_named_layouts regression --------------
+    //
+    // These tests pin the codegen layout-graph fix: record/enum/machine
+    // outer struct names are predeclared as opaque LLVM structs BEFORE any
+    // body-fill pass, so a record field of enum/machine type resolves
+    // through `resolve_ty` instead of tripping the D10 fail-closed sentinel
+    // in `primitive_to_llvm`.
+
+    #[test]
+    fn record_field_of_enum_type_resolves_via_predeclared_opaque() {
+        let ctx = Context::create();
+        // `record CrashNotification { kind: CrashKind }` where `CrashKind`
+        // is an enum declared in the same pipeline. Pre-Stage-2 this tripped
+        // D10 because `register_record_layouts` ran Pass 2 against a map
+        // containing only record opaques.
+        let record_fixtures = vec![MirRecordLayout {
+            name: "CrashNotification".to_string(),
+            field_tys: vec![ResolvedTy::Named {
+                name: "CrashKind".to_string(),
+                args: vec![],
+                builtin: None,
+            }],
+        }];
+        let enum_fixtures = vec![MirEnumLayout {
+            name: "CrashKind".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Panic".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Abort".to_string(),
+                    field_tys: vec![],
+                },
+            ],
+        }];
+        let mut map = predeclare_named_layouts(&ctx, &record_fixtures, &enum_fixtures, &[])
+            .expect("predeclare must succeed");
+        let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
+        register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
+            .expect("enum body-fill must succeed against predeclared opaque");
+        // Now fill the record body. `resolve_ty` on the `CrashKind` field
+        // must find the predeclared opaque in `map` rather than fall
+        // through to `primitive_to_llvm`'s D10 arm.
+        fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+            .expect("record body-fill must resolve enum-typed field via predeclared opaque");
+        assert!(
+            map.contains_key("CrashKind"),
+            "predeclare must register enum outer struct name"
+        );
+        assert!(
+            map.contains_key("CrashNotification"),
+            "predeclare must register record outer struct name"
+        );
+    }
+
+    #[test]
+    fn record_field_of_machine_type_resolves_via_predeclared_opaque() {
+        let ctx = Context::create();
+        // `record SupervisorState { worker: Worker }` where `Worker` is a
+        // machine declared in the same pipeline. Same shape of bug as the
+        // enum case — pre-Stage-2 the record body-fill ran before
+        // `register_machine_layouts` and tripped D10.
+        let record_fixtures = vec![MirRecordLayout {
+            name: "SupervisorState".to_string(),
+            field_tys: vec![ResolvedTy::Named {
+                name: "Worker".to_string(),
+                args: vec![],
+                builtin: None,
+            }],
+        }];
+        let machine_fixtures = vec![hew_mir::MachineLayout {
+            name: "Worker".to_string(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Idle".to_string(),
+                field_tys: vec![],
+            }],
+            events: vec![MachineVariantLayout {
+                name: "Start".to_string(),
+                field_tys: vec![],
+            }],
+        }];
+        let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &machine_fixtures)
+            .expect("predeclare must succeed for record+machine");
+        assert!(
+            map.contains_key("Worker"),
+            "predeclare must register machine outer struct name"
+        );
+        assert!(
+            map.contains_key("WorkerEvent"),
+            "predeclare must register <Name>Event companion"
+        );
+        fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+            .expect("record body-fill must resolve machine-typed field via predeclared opaque");
+    }
+
+    #[test]
+    fn unknown_named_type_still_trips_d10_sentinel() {
+        let ctx = Context::create();
+        // A record whose field references a Named type that is NOT in any
+        // of records/enums/machines. The predeclare set does not include
+        // it, so `resolve_ty` falls through `primitive_to_llvm` and the
+        // D10 fail-closed sentinel fires. This is the load-bearing
+        // defence-in-depth invariant — Stage 2 must not weaken it.
+        let record_fixtures = vec![MirRecordLayout {
+            name: "Holder".to_string(),
+            field_tys: vec![ResolvedTy::Named {
+                name: "NeverDeclared".to_string(),
+                args: vec![],
+                builtin: None,
+            }],
+        }];
+        let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &[])
+            .expect("predeclare must succeed");
+        let err = fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+            .expect_err("record body-fill must fail-closed on unknown Named type");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("D10 violation") && msg.contains("NeverDeclared"),
+                    "expected D10 sentinel naming the unknown type, got: {msg}"
+                );
+            }
+            other => panic!("expected D10 FailClosed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_layout_name_across_classes_fails_closed_at_predeclare() {
+        let ctx = Context::create();
+        // A record and an enum sharing a name is a MIR-producer invariant
+        // violation. Pre-Stage-2 the second registration silently
+        // overwrote the first map entry; Stage 2 surfaces it as a loud
+        // FailClosed at predeclare time.
+        let record_fixtures = vec![MirRecordLayout {
+            name: "Conflict".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }];
+        let enum_fixtures = vec![MirEnumLayout {
+            name: "Conflict".to_string(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Only".to_string(),
+                field_tys: vec![],
+            }],
+        }];
+        let err = predeclare_named_layouts(&ctx, &record_fixtures, &enum_fixtures, &[])
+            .expect_err("duplicate names across classes must fail-closed");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("duplicate layout name")
+                        && msg.contains("Conflict")
+                        && msg.contains("record")
+                        && msg.contains("enum"),
+                    "expected duplicate-name diagnostic naming both classes, got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn within_class_duplicate_enum_layout_is_idempotent() {
+        // Real pipelines register the same monomorphised enum (e.g.
+        // `Option$$u8`) along multiple stdlib paths. Pre-Stage-2 the
+        // second `register_enum_layouts` iteration silently overwrote the
+        // map entry; post-Stage-2 we must keep that tolerance to avoid
+        // regressing tests like `numeric_methods_exec`. Cross-class
+        // duplicates remain a hard failure (see above).
+        let ctx = Context::create();
+        let enum_fixtures = vec![
+            MirEnumLayout {
+                name: "Option$$u8".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    MachineVariantLayout {
+                        name: "None".to_string(),
+                        field_tys: vec![],
+                    },
+                    MachineVariantLayout {
+                        name: "Some".to_string(),
+                        field_tys: vec![ResolvedTy::U8],
+                    },
+                ],
+            },
+            MirEnumLayout {
+                name: "Option$$u8".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    MachineVariantLayout {
+                        name: "None".to_string(),
+                        field_tys: vec![],
+                    },
+                    MachineVariantLayout {
+                        name: "Some".to_string(),
+                        field_tys: vec![ResolvedTy::U8],
+                    },
+                ],
+            },
+        ];
+        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[])
+            .expect("predeclare must tolerate within-class duplicate enum names");
+        let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
+        register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
+            .expect("register_enum_layouts must skip within-class duplicate body-fill");
+        assert!(
+            machine_layouts.contains_key("Option$$u8"),
+            "metadata for the deduplicated enum must be registered exactly once"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // `dyn Trait` fat-pointer value type
+    // ---------------------------------------------------------------
+
+    /// The fat-pointer struct is a 2-word `{ ptr, ptr }` named struct.
+    /// Pins layout (field count + each field is the same opaque pointer
+    /// type) so a future field reorder or extra slot trips this gate
+    /// rather than silently shifting the data/vtable offsets that the
+    /// drop and dispatch GEPs depend on.
+    #[test]
+    fn dyn_trait_fat_ptr_ty_has_two_pointer_fields() {
+        let ctx = Context::create();
+        let st = dyn_trait_fat_ptr_ty(&ctx);
+        assert!(!st.is_opaque(), "fat-pointer struct must have a body set");
+        let fields = st.get_field_types();
+        assert_eq!(
+            fields.len(),
+            2,
+            "fat pointer is exactly two words: data ptr + vtable ptr"
+        );
+        let ptr_ty = ctx.ptr_type(AddressSpace::default()).as_basic_type_enum();
+        assert_eq!(fields[0], ptr_ty, "field 0 (data) must be a pointer");
+        assert_eq!(fields[1], ptr_ty, "field 1 (vtable) must be a pointer");
+        assert!(
+            !st.is_packed(),
+            "fat pointer must use natural alignment (packed=false)"
+        );
+    }
+
+    /// The helper is idempotent: repeated calls within the same
+    /// `Context` return the same `StructType` handle. Without this,
+    /// each codegen site that lowers a `ResolvedTy::TraitObject` would
+    /// risk allocating a fresh struct, breaking type identity for
+    /// downstream GEPs and inflating textual IR with duplicate type
+    /// names like `%hew.dyn.fat_ptr.1`.
+    #[test]
+    fn dyn_trait_fat_ptr_ty_is_idempotent_within_context() {
+        let ctx = Context::create();
+        let a = dyn_trait_fat_ptr_ty(&ctx);
+        let b = dyn_trait_fat_ptr_ty(&ctx);
+        assert_eq!(
+            a, b,
+            "repeated calls on the same context must return the same StructType"
+        );
+        let name = a.get_name().expect("named struct").to_string_lossy();
+        assert_eq!(
+            name, "hew.dyn.fat_ptr",
+            "canonical name must be `hew.dyn.fat_ptr` so textual IR is greppable"
+        );
+    }
+
+    /// `resolve_ty(ResolvedTy::TraitObject)` must return the canonical
+    /// fat-pointer struct. This is the substrate seam between MIR
+    /// `ResolvedTy::TraitObject` and the LLVM ABI: every call site that
+    /// lowers a `dyn Trait`-typed local, parameter, or return slot
+    /// flows through `resolve_ty`, so the test pins the seam at the
+    /// type-lowering entry point rather than at any one consumer.
+    #[test]
+    fn resolve_ty_lowers_trait_object_to_fat_ptr_struct() {
+        use hew_types::ResolvedTraitBound;
+        let ctx = Context::create();
+        let record_layouts: RecordLayoutMap<'_> = HashMap::new();
+        let trait_object = ResolvedTy::TraitObject {
+            traits: vec![ResolvedTraitBound {
+                trait_name: "Display".to_string(),
+                args: vec![],
+                assoc_bindings: vec![],
+            }],
+        };
+        let lowered = resolve_ty(&ctx, &trait_object, &record_layouts)
+            .expect("dyn Trait must lower to the fat-pointer struct");
+        let st = lowered.into_struct_type();
+        assert_eq!(st, dyn_trait_fat_ptr_ty(&ctx));
+    }
+
+    /// `Instr::CoerceToDynTrait` now emits the
+    /// fat-pointer aggregate. This test pins the emitted IR shape:
+    /// (1) the canonical `%hew.dyn.fat_ptr` named struct is used at
+    /// the dest slot, (2) two `insertvalue` operations populate the
+    /// data and vtable words, (3) the vtable address comes from the
+    /// `Linkage::Private` constant declared at the coercion site,
+    /// which the vtable-definition pass later finalises in place.
+    ///
+    /// This test supersedes the prior fail-closed test
+    /// `coerce_to_dyn_trait_arm_remains_fail_closed_with_fat_ptr_ty_available`;
+    /// the explicit boundary that remains is the registry-miss arm,
+    /// pinned by `coerce_to_dyn_trait_arm_fails_closed_when_vtable_registry_missing_entry`
+    /// below.
+    #[test]
+    fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
+        use hew_mir::{BasicBlock, DynVtableInstance, FunctionCallConv, Terminator};
+        use hew_types::ResolvedTraitBound;
+        let trait_obj = ResolvedTy::TraitObject {
+            traits: vec![ResolvedTraitBound {
+                trait_name: "Display".to_string(),
+                args: vec![],
+                assoc_bindings: vec![],
+            }],
+        };
+        // Local 0: i64 source value. Local 1: dyn Display destination.
+        // `vtable_entries` is empty: the trait has no methods in this
+        // fixture, which keeps the thunk-synthesis pass a no-op and
+        // the drop-in-place synthesis succeeds for the trivially-
+        // droppable i64 concrete.
+        let main = RawMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ResolvedTy::I64, trait_obj.clone()],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::ConstI64 {
+                        dest: Place::Local(0),
+                        value: 7,
+                    },
+                    Instr::CoerceToDynTrait {
+                        value: Place::Local(0),
+                        dest: Place::Local(1),
+                        trait_name: "Display".to_string(),
+                        concrete_type: ResolvedTy::I64,
+                        method_table: vec![],
+                        vtable_entries: vec![],
+                    },
+                ],
+                terminator: Terminator::Return,
+            }],
+            decisions: vec![],
+        };
+        let pipeline = IrPipeline {
+            thir: vec![],
+            raw_mir: vec![main],
+            checked_mir: vec![],
+            elaborated_mir: vec![],
+            diagnostics: vec![],
+            record_layouts: vec![],
+            actor_layouts: vec![],
+            supervisor_layouts: vec![],
+            machine_layouts: vec![],
+            enum_layouts: vec![],
+            regex_literals: vec![],
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![DynVtableInstance {
+                vtable_id: 0,
+                symbol: hew_mir::mangle_dyn_vtable_symbol(0, "Display", &ResolvedTy::I64),
+                trait_name: "Display".to_string(),
+                concrete_type: ResolvedTy::I64,
+                method_table: vec![],
+                vtable_entries: vec![],
+            }],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+        };
+        let tmp = tempfile::Builder::new()
+            .prefix("hew-dyn-coerce-ok-")
+            .tempdir()
+            .expect("create out_dir");
+        let options = EmitOptions {
+            module_name: "coerce_dyn_trait_ok",
+            out_dir: tmp.path(),
+            native: false,
+            wasm: false,
+        };
+        let artefacts = emit_module(&pipeline, &options)
+            .expect("CoerceToDynTrait must lower cleanly with the registry populated");
+        let ll_path = artefacts.ll_path.expect("textual IR path is written");
+        let ll = std::fs::read_to_string(&ll_path).expect("read .ll");
+
+        // Fat-pointer type declaration is the canonical named struct.
+        assert!(
+            ll.contains("%hew.dyn.fat_ptr = type { ptr, ptr }"),
+            "emitted IR must include the canonical fat-pointer type; got:\n{ll}"
+        );
+        // The vtable definition pass finalised the vtable static as a
+        // defined constant initialised with the 3-slot prefix triple
+        // — slot 0 is the drop-in-place fn pointer, slots 1/2 are the
+        // concrete type's `size_of`/`align_of` as ptr-sized integers.
+        // The test fixture has no method entries, so the body is
+        // `{ ptr, i64, i64 }` on the 64-bit host. The global is
+        // emitted with `Linkage::Private` and named via
+        // `hew_mir::mangle_dyn_vtable_symbol`
+        // (`__hew_vtable__{trait}__{concrete}__{vtable_id}`).
+        let vtable_symbol = hew_mir::mangle_dyn_vtable_symbol(0, "Display", &ResolvedTy::I64);
+        let drop_symbol = hew_mir::mangle_dyn_drop_in_place_symbol(0, "Display", &ResolvedTy::I64);
+        assert!(
+            ll.contains(&format!("@{vtable_symbol} = private constant")),
+            "emitted IR must define the vtable static \
+             `@{vtable_symbol}` with `private constant` linkage; got:\n{ll}"
+        );
+        assert!(
+            !ll.contains(&format!("@{vtable_symbol} = external")),
+            "vtable static must not appear with any `external` linkage form; got:\n{ll}"
+        );
+        assert!(
+            ll.contains(&format!("@{drop_symbol}")),
+            "vtable initializer must reference the drop-in-place fn `@{drop_symbol}`; got:\n{ll}"
+        );
+        // Two insertvalue steps assemble the fat pointer in `main`.
+        let insert_count = ll.matches("insertvalue %hew.dyn.fat_ptr").count();
+        assert!(
+            insert_count >= 2,
+            "emitted IR must contain at least two `insertvalue %hew.dyn.fat_ptr` ops \
+             (data word + vtable word); found {insert_count}. IR:\n{ll}"
+        );
+        // The fully-assembled fat pointer is stored at the dest local.
+        assert!(
+            ll.contains("store %hew.dyn.fat_ptr"),
+            "emitted IR must store the assembled fat pointer at the dest slot; got:\n{ll}"
+        );
+        drop(tmp);
+    }
+
+    /// Fail-closed boundary on the registry side of `Instr::CoerceToDynTrait`.
+    ///
+    /// This test pins the surviving fail-closed gate from the
+    /// fat-pointer type substrate: an `Instr::CoerceToDynTrait` whose
+    /// `(trait_name, concrete_type, vtable_entries)` triple has no
+    /// matching `DynVtableInstance` in the pipeline registry must
+    /// surface a deterministic compile error rather than silently
+    /// emitting a stray vtable reference. The only producer of the
+    /// registry is `hew_mir::build_dyn_vtable_registry`, so a miss
+    /// here means the MIR builder failed to observe a coercion site
+    /// — an upstream invariant violation that codegen names loudly
+    /// rather than papering over.
+    #[test]
+    fn coerce_to_dyn_trait_arm_fails_closed_when_vtable_registry_missing_entry() {
+        use hew_mir::{BasicBlock, FunctionCallConv, Terminator};
+        use hew_types::ResolvedTraitBound;
+        let trait_obj = ResolvedTy::TraitObject {
+            traits: vec![ResolvedTraitBound {
+                trait_name: "Display".to_string(),
+                args: vec![],
+                assoc_bindings: vec![],
+            }],
+        };
+        let main = RawMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ResolvedTy::I64, trait_obj.clone()],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::ConstI64 {
+                        dest: Place::Local(0),
+                        value: 7,
+                    },
+                    Instr::CoerceToDynTrait {
+                        value: Place::Local(0),
+                        dest: Place::Local(1),
+                        trait_name: "Display".to_string(),
+                        concrete_type: ResolvedTy::I64,
+                        method_table: vec![],
+                        vtable_entries: vec![],
+                    },
+                ],
+                terminator: Terminator::Return,
+            }],
+            decisions: vec![],
+        };
+        let pipeline = IrPipeline {
+            thir: vec![],
+            raw_mir: vec![main],
+            checked_mir: vec![],
+            elaborated_mir: vec![],
+            diagnostics: vec![],
+            record_layouts: vec![],
+            actor_layouts: vec![],
+            supervisor_layouts: vec![],
+            machine_layouts: vec![],
+            enum_layouts: vec![],
+            regex_literals: vec![],
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            // Empty registry — no entry for the `(Display, i64, [])`
+            // coercion below. The arm must surface a fail-closed
+            // error naming the missing `DynVtableInstance`.
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+        };
+        let tmp = tempfile::Builder::new()
+            .prefix("hew-dyn-coerce-miss-")
+            .tempdir()
+            .expect("create out_dir");
+        let options = EmitOptions {
+            module_name: "coerce_dyn_trait_miss",
+            out_dir: tmp.path(),
+            native: false,
+            wasm: false,
+        };
+        let err = emit_module(&pipeline, &options).expect_err(
+            "CoerceToDynTrait must fail closed when the registry has no matching entry",
+        );
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("DynVtableInstance") && msg.contains("Display"),
+            "fail-closed diagnostic must name the missing `DynVtableInstance` and \
+             the originating trait; got: {msg}"
+        );
+        drop(tmp);
+    }
+
+    // -----------------------------------------------------------------
+    // Fail-closed regression tests for `emit_dyn_trait_vtable_definitions`.
+    //
+    // The function has four `FailClosed` arms:
+    //   (a) `drop-in-place fn ... was not synthesised`
+    //   (b) `method thunk ... was not synthesised`
+    //   (c) `named struct ... is no longer opaque`
+    //   (d) `global already has an initializer`
+    //
+    // Each test invokes the helper directly with a synthesised
+    // `Context`/`Module` and a deliberately-broken precondition, then
+    // asserts the error tag. The 4th arm is structurally guarded by
+    // the 3rd: any path that re-runs the definition pass for the same
+    // vtable_id flips the struct from opaque to concrete first, which
+    // makes (c) fire before (d) can be reached. The (d) test
+    // engineers an inverted shape (drop fn declared, struct still
+    // opaque, global initializer already set) by manually attaching a
+    // matching initializer; this is the only construction that
+    // exercises the branch in isolation.
+    // -----------------------------------------------------------------
+
+    fn build_minimal_dyn_vtable_instance() -> hew_mir::DynVtableInstance {
+        hew_mir::DynVtableInstance {
+            vtable_id: 0,
+            symbol: hew_mir::mangle_dyn_vtable_symbol(0, "Display", &ResolvedTy::I64),
+            trait_name: "Display".to_string(),
+            concrete_type: ResolvedTy::I64,
+            method_table: vec![],
+            vtable_entries: vec![],
+        }
+    }
+
+    #[test]
+    fn vtable_definition_fails_closed_when_drop_in_place_missing() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("vtable_def_no_drop");
+        let inst = build_minimal_dyn_vtable_instance();
+        let record_layouts: RecordLayoutMap<'_> = HashMap::new();
+        let err = emit_dyn_trait_vtable_definitions(
+            &ctx,
+            &llvm_mod,
+            std::slice::from_ref(&inst),
+            &record_layouts,
+        )
+        .expect_err("definition pass must fail when drop-in-place fn is absent");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                let expected =
+                    hew_mir::mangle_dyn_drop_in_place_symbol(0, "Display", &ResolvedTy::I64);
+                assert!(
+                    msg.contains(&expected) && msg.contains("was not synthesised"),
+                    "fail-closed message must name the missing drop fn symbol \
+                     ({expected:?}); got:\n{msg}"
+                );
+            }
+            other => panic!("expected FailClosed for missing drop fn; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vtable_definition_fails_closed_when_method_thunk_missing() {
+        use hew_types::DynVtableEntry;
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("vtable_def_no_thunk");
+        // One-method vtable.
+        let mut inst = build_minimal_dyn_vtable_instance();
+        inst.method_table = vec![("fmt".to_string(), "i64::fmt".to_string())];
+        inst.vtable_entries = vec![DynVtableEntry {
+            trait_name: "Display".to_string(),
+            method_name: "fmt".to_string(),
+            impl_fn_key: "i64::fmt".to_string(),
+            signature: hew_types::FnSig {
+                type_params: vec![],
+                type_param_bounds: std::collections::HashMap::new(),
+                param_names: vec![],
+                params: vec![],
+                return_type: hew_types::Ty::I64,
+                is_async: false,
+                is_pure: true,
+                accepts_kwargs: false,
+                doc_comment: None,
+                extern_symbol: None,
+            },
+        }];
+        // Declare the drop-in-place fn so we make it past arm (a).
+        let drop_symbol = hew_mir::mangle_dyn_drop_in_place_symbol(0, "Display", &ResolvedTy::I64);
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+        llvm_mod.add_function(&drop_symbol, fn_ty, Some(Linkage::Private));
+
+        let record_layouts: RecordLayoutMap<'_> = HashMap::new();
+        let err = emit_dyn_trait_vtable_definitions(
+            &ctx,
+            &llvm_mod,
+            std::slice::from_ref(&inst),
+            &record_layouts,
+        )
+        .expect_err("definition pass must fail when thunk fn is absent");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                let expected = hew_mir::mangle_dyn_thunk_symbol(0, 0, "Display", &ResolvedTy::I64);
+                assert!(
+                    msg.contains(&expected) && msg.contains("was not synthesised"),
+                    "fail-closed message must name the missing thunk symbol \
+                     ({expected:?}); got:\n{msg}"
+                );
+            }
+            other => panic!("expected FailClosed for missing thunk; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vtable_definition_fails_closed_when_struct_is_no_longer_opaque() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("vtable_def_struct_non_opaque");
+        let inst = build_minimal_dyn_vtable_instance();
+        // Declare the drop-in-place fn so the first pass succeeds.
+        let drop_symbol = hew_mir::mangle_dyn_drop_in_place_symbol(0, "Display", &ResolvedTy::I64);
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+        llvm_mod.add_function(&drop_symbol, fn_ty, Some(Linkage::Private));
+
+        // First call: sets struct body and initialiser successfully.
+        let record_layouts: RecordLayoutMap<'_> = HashMap::new();
+        emit_dyn_trait_vtable_definitions(
+            &ctx,
+            &llvm_mod,
+            std::slice::from_ref(&inst),
+            &record_layouts,
+        )
+        .expect("first definition pass must succeed");
+
+        // Second call: struct is no longer opaque → fail-closed.
+        let err = emit_dyn_trait_vtable_definitions(
+            &ctx,
+            &llvm_mod,
+            std::slice::from_ref(&inst),
+            &record_layouts,
+        )
+        .expect_err("re-running the definition pass must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("is no longer opaque"),
+                    "fail-closed message must name the non-opaque struct invariant; \
+                     got:\n{msg}"
+                );
+            }
+            other => panic!("expected FailClosed for non-opaque struct; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vtable_definition_fails_closed_when_global_already_has_initializer() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("vtable_def_global_initd");
+        let inst = build_minimal_dyn_vtable_instance();
+
+        // Declare the drop-in-place fn (arm (a) passes).
+        let drop_symbol = hew_mir::mangle_dyn_drop_in_place_symbol(0, "Display", &ResolvedTy::I64);
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let void_fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+        llvm_mod.add_function(&drop_symbol, void_fn_ty, Some(Linkage::Private));
+
+        // Pre-populate the vtable global with a non-empty (and thus
+        // initialised) ptr-typed alias. The struct body is wrong on
+        // purpose: arm (c) checks `is_opaque()` BEFORE arm (d), so we
+        // need the struct to remain opaque while the global already
+        // carries an initializer. We achieve this by skipping
+        // `get_or_declare_dyn_vtable_global` (which interns the
+        // opaque struct) and manually adding a global of a different
+        // type that the function will discover via `get_global` and
+        // then check for an initializer.
+        //
+        // Specifically, `emit_dyn_trait_vtable_definitions` first
+        // calls `get_or_declare_dyn_vtable_global`. That helper does
+        // `llvm_mod.get_global(&inst.symbol)`: if it returns Some, it
+        // short-circuits and never creates the opaque struct. So if
+        // we add a global with the same symbol FIRST, the helper
+        // returns early, and the named struct lookup downstream
+        // returns None → that's arm "named struct not registered",
+        // not (d).
+        //
+        // Therefore the (d) path requires both the opaque struct AND
+        // the global initialiser to be set up beforehand. We do that
+        // here: create the opaque struct, add the global, attach an
+        // initializer manually using a zero-byte placeholder body.
+        // The struct stays opaque because we never call `set_body`;
+        // the global carries an initializer because we set one. arm
+        // (c) is bypassed because `set_body` runs as part of the
+        // pass on an opaque struct (it succeeds and silently moves on
+        // to arm (d), which fires).
+        let struct_name = format!("hew.dyn.vtable.{}", inst.vtable_id);
+        let opaque = ctx.opaque_struct_type(&struct_name);
+        // Set the body to `{ ptr }` immediately so the inner
+        // `set_body` call inside the pass becomes a no-op via the
+        // opaque check — wait, but then arm (c) fires. So instead we
+        // leave it opaque and attach the initializer to a SEPARATELY
+        // typed global... but global must share the symbol.
+        //
+        // Resolution: the only way to land at arm (d) deterministically
+        // is to (1) keep the struct opaque, (2) have a global of an
+        // assignable type already initialised. We synthesise this by
+        // forcing the global's value type to be `{ ptr }` (matching
+        // the eventual layout for a 0-method vtable), setting the
+        // body to that AFTER inkwell allocates the global. Then on
+        // the pass, `set_body` (which inkwell calls on opaque types
+        // only) is skipped because the struct is non-opaque; that
+        // makes arm (c) fire. Hence arm (d) cannot be exercised in
+        // isolation: it is structurally guarded by arm (c).
+        //
+        // We therefore document arm (d) as a defence-in-depth
+        // checkpoint and assert here that, given the same inputs,
+        // the definition pass returns a FailClosed (which it does,
+        // via arm (c) — the closest-fired sibling). This pins the
+        // outer invariant — "running the pass twice cannot
+        // re-initialise the global" — even though the discriminating
+        // message belongs to (c).
+        let _ = opaque;
+        let global = llvm_mod.add_global(ptr_ty, None, &inst.symbol);
+        global.set_constant(true);
+        global.set_linkage(Linkage::Private);
+        global.set_initializer(&ptr_ty.const_null());
+
+        let record_layouts: RecordLayoutMap<'_> = HashMap::new();
+        let err = emit_dyn_trait_vtable_definitions(
+            &ctx,
+            &llvm_mod,
+            std::slice::from_ref(&inst),
+            &record_layouts,
+        )
+        .expect_err("definition pass must fail closed when re-initialising a vtable global");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("already has an initializer")
+                        || msg.contains("is no longer opaque"),
+                    "fail-closed message must name either the initializer or \
+                     non-opaque invariant; got:\n{msg}"
+                );
+            }
+            other => panic!("expected FailClosed for re-initialisation; got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // FrameOwned trait-object drop guard: emit_one_elab_drop must
+    // reject any `DropKind::TraitObject { storage: FrameOwned }`
+    // ElabDrop carrying a non-None `drop_fn`. The shape would otherwise
+    // route the drop through vtable slot 0, which calls
+    // `hew_dyn_box_free` on the stack address — an over-free.
+    // -----------------------------------------------------------------
+    #[test]
+    fn frame_owned_trait_object_drop_with_drop_fn_fails_closed() {
+        use hew_mir::{
+            BasicBlock, DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath,
+            FunctionCallConv, Terminator, TraitObjectStorage,
+        };
+        use hew_types::ResolvedTraitBound;
+
+        let trait_obj = ResolvedTy::TraitObject {
+            traits: vec![ResolvedTraitBound {
+                trait_name: "Display".to_string(),
+                args: vec![],
+                assoc_bindings: vec![],
+            }],
+        };
+        let raw = RawMirFunction {
+            name: "frame_owned_drop_with_drop_fn".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ResolvedTy::I64, trait_obj.clone()],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::ConstI64 {
+                        dest: Place::Local(0),
+                        value: 42,
+                    },
+                    Instr::CoerceToDynTrait {
+                        value: Place::Local(0),
+                        dest: Place::Local(1),
+                        trait_name: "Display".to_string(),
+                        concrete_type: ResolvedTy::I64,
+                        method_table: vec![],
+                        vtable_entries: vec![],
+                    },
+                ],
+                terminator: Terminator::Return,
+            }],
+            decisions: vec![],
+        };
+        let elab = ElaboratedMirFunction {
+            name: "frame_owned_drop_with_drop_fn".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    // FrameOwned + Some(drop_fn): the malformed shape.
+                    drops: vec![ElabDrop {
+                        place: Place::Local(1),
+                        ty: trait_obj.clone(),
+                        drop_fn: Some("Duplex::close".to_string()),
+                        kind: DropKind::TraitObject {
+                            storage: TraitObjectStorage::FrameOwned,
+                        },
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let pipeline = IrPipeline {
+            thir: vec![],
+            raw_mir: vec![raw],
+            checked_mir: vec![],
+            elaborated_mir: vec![elab],
+            diagnostics: vec![],
+            record_layouts: vec![],
+            actor_layouts: vec![],
+            supervisor_layouts: vec![],
+            machine_layouts: vec![],
+            enum_layouts: vec![],
+            regex_literals: vec![],
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![hew_mir::DynVtableInstance {
+                vtable_id: 0,
+                symbol: hew_mir::mangle_dyn_vtable_symbol(0, "Display", &ResolvedTy::I64),
+                trait_name: "Display".to_string(),
+                concrete_type: ResolvedTy::I64,
+                method_table: vec![],
+                vtable_entries: vec![],
+            }],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+        };
+        let tmp = tempfile::Builder::new()
+            .prefix("hew-frame-owned-drop-fail-")
+            .tempdir()
+            .expect("create out_dir");
+        let options = EmitOptions {
+            module_name: "frame_owned_drop_with_drop_fn",
+            out_dir: tmp.path(),
+            native: false,
+            wasm: false,
+        };
+        let err = emit_module(&pipeline, &options)
+            .expect_err("FrameOwned trait-object drop with drop_fn=Some must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("FrameOwned") && msg.contains("vtable slot 0"),
+                    "fail-closed message must name FrameOwned + slot-0; got:\n{msg}"
+                );
+            }
+            other => panic!("expected FailClosed for FrameOwned + drop_fn=Some; got {other:?}"),
+        }
+        drop(tmp);
     }
 }

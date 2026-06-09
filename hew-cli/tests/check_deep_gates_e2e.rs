@@ -3,7 +3,7 @@ mod support;
 use std::fs;
 use std::process::Command;
 
-use support::{describe_output, hew_binary, strip_ansi};
+use support::{describe_output, hew_binary, require_codegen, strip_ansi};
 
 fn write_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = support::tempdir();
@@ -15,6 +15,39 @@ fn write_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 fn run_check(args: &[&str]) -> std::process::Output {
     Command::new(hew_binary())
         .args(args)
+        .output()
+        .expect("hew binary must run")
+}
+
+fn sorted_dir_entries(dir: &std::path::Path) -> Vec<String> {
+    let mut entries = fs::read_dir(dir)
+        .expect("read temp dir")
+        .map(|entry| {
+            entry
+                .expect("read temp dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries
+}
+
+fn assert_only_source_artifact(dir: &std::path::Path) {
+    assert_eq!(
+        sorted_dir_entries(dir),
+        vec!["main.hew".to_string()],
+        "hew check must not write codegen artifacts"
+    );
+}
+
+const CODEGEN_FRONT_ACCEPTED_FIXTURE: &str = "fn main() {\n    println(1 + 2);\n}\n";
+
+fn run_check_in_fixture_dir(dir: &std::path::Path) -> std::process::Output {
+    Command::new(hew_binary())
+        .args(["check", "main.hew"])
+        .current_dir(dir)
         .output()
         .expect("hew binary must run")
 }
@@ -88,6 +121,73 @@ fn check_fails_on_mir_gate_before_ok() {
         !stderr.contains(": OK"),
         "hew check must not print OK after a MIR gate failure; got:\n{stderr}",
     );
+}
+
+#[test]
+fn check_runs_codegen_front_on_success_without_artifacts() {
+    let (dir, _path) = write_fixture(CODEGEN_FRONT_ACCEPTED_FIXTURE);
+
+    let output = run_check_in_fixture_dir(dir.path());
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(
+        output.status.success(),
+        "accepted fixture should pass through frontend, HIR, MIR, and codegen-front gates\n{}",
+        describe_output(&output),
+    );
+    assert!(
+        stderr.contains(": OK"),
+        "successful check should print OK after codegen-front validation; got:\n{stderr}",
+    );
+    assert_only_source_artifact(dir.path());
+}
+
+#[test]
+fn check_fails_on_codegen_front_gate_before_ok_without_artifacts() {
+    let (dir, _path) = write_fixture("fn main() -> f64 {\n    return 1.0;\n}\n");
+
+    let output = run_check_in_fixture_dir(dir.path());
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(
+        !output.status.success(),
+        "hew check must fail when codegen-front validation rejects the MIR\n{}",
+        describe_output(&output),
+    );
+    assert!(
+        stderr.contains("E_CODEGEN_FRONT"),
+        "codegen-front failure should use a stable diagnostic family; got:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("unsupported construct"),
+        "codegen-front failure should render CodegenError Display, not Debug; got:\n{stderr}",
+    );
+    assert!(
+        !stderr.contains("CodegenError")
+            && !stderr.contains("Unsupported(")
+            && !stderr.contains(": OK"),
+        "hew check must not emit raw CodegenError debug payloads or OK after failure; got:\n{stderr}",
+    );
+    assert_only_source_artifact(dir.path());
+}
+
+#[test]
+fn run_behavior_is_unchanged_for_codegen_front_accepted_fixture() {
+    require_codegen();
+    let (_dir, path) = write_fixture(CODEGEN_FRONT_ACCEPTED_FIXTURE);
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&path)
+        .output()
+        .expect("hew run must run");
+
+    assert!(
+        output.status.success(),
+        "hew run should still compile, link, and execute the accepted fixture\n{}",
+        describe_output(&output),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
 }
 
 #[test]

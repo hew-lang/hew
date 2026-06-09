@@ -6,12 +6,14 @@
 //! diagnostic instead of letting MIR emit `NotYetImplemented` deep in
 //! lowering.
 //!
-//! Scalar-index allowlist: i32, u32, i64, u64, f64, and `Named { .. }`
-//! (user-defined types dispatched via `hew_vec_get_ptr`).
-//! Range-slice allowlist: the scalar set plus `String`
-//! (`hew_vec_slice_range_str` strdups each element). Note the asymmetry:
-//! `String` is allowed for range-slice but not scalar index because the
-//! runtime ABI lacks `hew_vec_get_str`.
+//! Scalar-index allowlist: bool, char, i32, u32, i64, u64, f64, and
+//! `Named { .. }` (user-defined types dispatched via `hew_vec_get_ptr`).
+//! Range-slice allowlist: i32, u32, i64, u64, f64, `String`, and
+//! `Named { .. }` (`hew_vec_slice_range_str` strdups each element). Note the
+//! asymmetry: `String` is allowed for range-slice but not scalar index because
+//! the runtime ABI lacks `hew_vec_get_str`, while bool/char scalar indexing is
+//! supported but range slicing is still fail-closed pending width
+//! normalisation.
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx, TargetArch};
 use hew_types::{module_registry::ModuleRegistry, Checker};
@@ -66,12 +68,10 @@ fn slice_diagnostics(out: &hew_hir::LowerOutput) -> Vec<String> {
 
 #[test]
 fn vec_index_unsupported_element_types_rejected() {
-    // Scalar index on Vec<bool>, Vec<char>, Vec<String> — each must emit
-    // a VecIndexElementTypeUnsupported diagnostic.
+    // Scalar index on Vec<String> must emit a VecIndexElementTypeUnsupported
+    // diagnostic. Bool and char are accepted by the Stage 2 ABI below.
     let out = lower(
         r"
-        fn pick_bool(xs: Vec<bool>, i: i64) -> bool { xs[i] }
-        fn pick_char(xs: Vec<char>, i: i64) -> char { xs[i] }
         fn pick_string(xs: Vec<string>, i: i64) -> string { xs[i] }
         ",
     );
@@ -79,17 +79,9 @@ fn vec_index_unsupported_element_types_rejected() {
     let diags = index_diagnostics(&out);
     assert_eq!(
         diags.len(),
-        3,
-        "expected exactly 3 VecIndexElementTypeUnsupported diagnostics, got: {:#?}",
+        1,
+        "expected exactly 1 VecIndexElementTypeUnsupported diagnostic, got: {:#?}",
         out.diagnostics
-    );
-    assert!(
-        diags.contains(&"bool".to_string()),
-        "missing bool: {diags:?}"
-    );
-    assert!(
-        diags.contains(&"char".to_string()),
-        "missing char: {diags:?}"
     );
     assert!(
         diags.contains(&"String".to_string()),
@@ -185,11 +177,14 @@ fn vec_slice_unsupported_element_types_rejected() {
 
 #[test]
 fn vec_index_supported_element_types_accepted() {
-    // Scalar index on i32 / i64 / f64 / user-defined Named type — gate
-    // must NOT fire.
+    // Scalar index on bool / char / i32 / i64 / f64 / user-defined Named type
+    // must NOT fire. Bool dispatches to hew_vec_get_bool; char reuses
+    // hew_vec_get_i32.
     let out = lower(
         r"
         record UserRecord { x: i32 }
+        fn pick_bool(xs: Vec<bool>, i: i64) -> bool { xs[i] }
+        fn pick_char(xs: Vec<char>, i: i64) -> char { xs[i] }
         fn pick_i32(xs: Vec<i32>, i: i64) -> i32 { xs[i] }
         fn pick_i64(xs: Vec<i64>, i: i64) -> i64 { xs[i] }
         fn pick_f64(xs: Vec<f64>, i: i64) -> f64 { xs[i] }
@@ -263,12 +258,12 @@ fn vec_index_diag_for_elem(out: &hew_hir::LowerOutput, elem: &str) -> bool {
 
 #[test]
 fn vec_index_in_machine_transition_body_rejected() {
-    // Vec<bool> scalar-indexed inside a transition body must trip the gate.
+    // Vec<String> scalar-indexed inside a transition body must trip the gate.
     // Transition bodies are type-checked (registration.rs ~ check_against),
     // so `tc.expr_types` carries the container type at the indexing site.
     let out = lower(
         r"
-        fn make_bools() -> Vec<bool> { [] }
+        fn make_strings() -> Vec<string> { [] }
 
         machine M {
             state Idle;
@@ -276,8 +271,8 @@ fn vec_index_in_machine_transition_body_rejected() {
             event Go;
             event Reset;
             on Go: Idle -> Done {
-                let xs: Vec<bool> = make_bools();
-                let _: bool = xs[0];
+                let xs: Vec<string> = make_strings();
+                let _: string = xs[0];
                 Done
             }
             on Go: Done -> Done;
@@ -288,8 +283,8 @@ fn vec_index_in_machine_transition_body_rejected() {
     );
 
     assert!(
-        vec_index_diag_for_elem(&out, "bool"),
-        "expected VecIndexElementTypeUnsupported(bool) inside transition body; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "String"),
+        "expected VecIndexElementTypeUnsupported(String) inside transition body; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(
@@ -300,30 +295,30 @@ fn vec_index_in_machine_transition_body_rejected() {
 
 #[test]
 fn vec_index_in_machine_transition_guard_rejected() {
-    // Vec<bool> scalar-indexed inside a transition `when` guard must trip
+    // Vec<String> scalar-indexed inside a transition `when` guard must trip
     // the gate. Guards are type-checked against `Ty::Bool`
     // (registration.rs:2663 check_against), so `tc.expr_types` carries
     // the container type at the indexing site.
     let out = lower(
-        r"
-        fn make_bools() -> Vec<bool> { [] }
+        r#"
+        fn make_strings() -> Vec<string> { [] }
 
         machine M {
             state Idle;
             state Done;
             event Go;
             event Reset;
-            on Go: Idle -> Done when make_bools()[0] { Done }
+            on Go: Idle -> Done when make_strings()[0] == "" { Done }
             on Go: Done -> Done;
             on Reset: Done -> Idle;
             on Reset: Idle -> Idle;
         }
-        ",
+        "#,
     );
 
     assert!(
-        vec_index_diag_for_elem(&out, "bool"),
-        "expected VecIndexElementTypeUnsupported(bool) inside transition guard; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "String"),
+        "expected VecIndexElementTypeUnsupported(String) inside transition guard; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(
@@ -343,8 +338,8 @@ fn machine_state_entry_exit_blocks_are_walked_by_vec_index_gate() {
     // not panic when entry/exit contain user expressions — exercising the
     // walker arm without depending on `tc.expr_types` being populated.
     // When the parallel checker-side traversal lands, this same fixture
-    // will start emitting `VecIndexElementTypeUnsupported` for the entry
-    // and exit indexings without any further walker change.
+    // will start accepting the bool entry and exit indexings without any
+    // further walker change.
     let out = lower(
         r"
         fn make_bools() -> Vec<bool> { [] }

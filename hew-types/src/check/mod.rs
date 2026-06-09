@@ -19,6 +19,7 @@ use std::sync::OnceLock;
 
 pub(crate) mod admissibility;
 mod calls;
+mod closure_inference;
 mod coerce;
 mod diagnostics;
 mod expressions;
@@ -36,12 +37,13 @@ mod util;
 
 pub use self::types::{
     ActorMethodKind, ActorSendAliasing, ActorSendCopyReason, ActorStateGuard, AllocationClass,
-    ArmResolution, AssignTargetKind, AssignTargetShape, Checker, ChildKind, ChildSlot,
-    ClosureCaptureFact, ClosureCaptureMode, DynAssocBinding, DynCoercion, DynMethodCall,
-    DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, MachineMethodKind,
-    MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily, NumericMethodLowering,
-    NumericMethodOp, NumericSignedness, NumericWidth, PatternKind, PayloadBinding, SpanKey,
-    StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
+    ArmResolution, AssignTargetKind, AssignTargetShape, CaptureModeOrigin, Checker, ChildKind,
+    ChildSlot, ClosureCaptureFact, ClosureCaptureMode, ClosureEscapeFact, ClosureEscapeKind,
+    ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
+    ExecutionContextReader, FnSig, MachineMethodKind, MethodCallReceiverKind, MethodCallRewrite,
+    NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
+    PatternKind, PayloadBinding, SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind,
+    VariantDef, VariantMatch,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
@@ -232,6 +234,23 @@ impl Checker {
             self.check_item(item, span);
         }
 
+        // Closure escape classification — runs after all bodies have
+        // been type-checked. Walks each fn body (root + modules) looking
+        // for closure literal sites and computes per-closure
+        // `ClosureEscapeFact`. Conservative default: `Escapes` unless
+        // positively proven `Local` or `Forked`.
+        self.classify_closure_escapes(program);
+
+        // Fail-closed defense: every closure literal in the program
+        // must have BOTH a `ClosureCaptureFact` ledger AND a
+        // `ClosureEscapeFact` by the time the checker hands off to
+        // MIR-lowering. A missing entry is a structural bug in this
+        // checker (the lambda site was never visited by `check_lambda`
+        // or `classify_closure_escapes`) — not a user-code shape — so
+        // we emit a hard diagnostic rather than letting MIR observe a
+        // silently-defaulted closure.
+        self.validate_closure_facts_complete(program);
+
         // Apply final substitutions to all recorded types
         let mut expr_types: HashMap<SpanKey, Ty> = self
             .expr_types
@@ -379,6 +398,14 @@ impl Checker {
         self.finalize_vec_admission();
         self.finalize_channel_rewrites();
 
+        // Prune any layout facts whose span is not in the validated expr_types map.
+        // This prevents orphaned layout facts (from expressions that were pruned
+        // by validate_checker_output_contract) from reaching codegen.
+        self.hashmap_layout_facts
+            .retain(|key, _| resolved_expr_types.contains_key(key));
+        self.hashset_layout_facts
+            .retain(|key, _| resolved_expr_types.contains_key(key));
+
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();
 
@@ -445,6 +472,7 @@ impl Checker {
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
             closure_capture_facts: resolved_closure_capture_facts,
+            closure_escape_facts: std::mem::take(&mut self.closure_escape_facts),
             actor_protocol_descriptors,
             intrinsic_declarations: std::mem::take(&mut self.intrinsic_declarations),
             pattern_resolutions: std::mem::take(&mut self.pending_pattern_resolutions)
@@ -458,6 +486,8 @@ impl Checker {
                 })
                 .collect(),
             lang_items: std::mem::take(&mut self.lang_items),
+            hashmap_layout_facts: std::mem::take(&mut self.hashmap_layout_facts),
+            hashset_layout_facts: std::mem::take(&mut self.hashset_layout_facts),
         };
 
         // Detect actor reference cycles and emit warnings.
@@ -477,6 +507,984 @@ impl Checker {
 
         output
     }
+
+    /// Escape classifier. Walks the program AST after type-checking,
+    /// identifies every closure literal, and records a
+    /// `ClosureEscapeFact` keyed by the literal's span in
+    /// `self.closure_escape_facts`. Conservative default: closures
+    /// default to `Escapes` unless positively proven `Local` or
+    /// `Forked`.
+    fn classify_closure_escapes(&mut self, program: &Program) {
+        for (item, _) in &program.items {
+            self.classify_escapes_in_item(item);
+        }
+        if let Some(mg) = &program.module_graph {
+            // Snapshot the module names so we don't borrow `program`
+            // while mutating `self`.
+            let module_ids: Vec<_> = mg.modules.keys().cloned().collect();
+            for mod_id in module_ids {
+                if let Some(module) = program
+                    .module_graph
+                    .as_ref()
+                    .and_then(|mg| mg.modules.get(&mod_id))
+                {
+                    for (item, _) in &module.items {
+                        self.classify_escapes_in_item(item);
+                    }
+                }
+            }
+        }
+    }
+
+    fn classify_escapes_in_item(&mut self, item: &Item) {
+        match item {
+            Item::Function(fn_decl) => {
+                self.classify_escapes_in_block(&fn_decl.body, false);
+            }
+            Item::Impl(impl_decl) => {
+                for method in &impl_decl.methods {
+                    self.classify_escapes_in_block(&method.body, false);
+                }
+            }
+            Item::Actor(actor) => {
+                for method in &actor.methods {
+                    self.classify_escapes_in_block(&method.body, false);
+                }
+                for rec in &actor.receive_fns {
+                    self.classify_escapes_in_block(&rec.body, false);
+                }
+            }
+            Item::Machine(machine) => {
+                let _ = machine; // machine bodies traversed via transitions/entry/exit elsewhere
+            }
+            Item::Trait(trait_decl) => {
+                for trait_item in &trait_decl.items {
+                    if let TraitItem::Method(trait_method) = trait_item {
+                        if let Some(body) = &trait_method.body {
+                            self.classify_escapes_in_block(body, false);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn classify_escapes_in_block(&mut self, block: &Block, in_fork: bool) {
+        // For every let-statement whose value is a closure literal
+        // (lambda or lambda-actor), classify using the rest of the
+        // block as the context.
+        for (i, (stmt, _)) in block.stmts.iter().enumerate() {
+            if let Stmt::Let {
+                pattern,
+                value: Some((value_expr, lambda_span)),
+                ..
+            } = stmt
+            {
+                if let Pattern::Identifier(binding_name) = &pattern.0 {
+                    if matches!(
+                        value_expr,
+                        Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. }
+                    ) {
+                        let fact = closure_inference::classify_closure_escape_in_block(
+                            &block.stmts,
+                            block.trailing_expr.as_deref(),
+                            i,
+                            binding_name,
+                            in_fork,
+                        );
+                        self.closure_escape_facts
+                            .insert(SpanKey::from(lambda_span), fact);
+                        self.maybe_emit_escape_advisory(lambda_span, fact);
+                    }
+                }
+            }
+        }
+        // Recurse into every statement for nested blocks / nested
+        // closures (anonymous lambdas, lambdas inside expressions).
+        for (stmt, _) in &block.stmts {
+            self.classify_escapes_in_stmt(stmt, in_fork);
+        }
+        if let Some(tail) = &block.trailing_expr {
+            self.classify_escapes_in_expr(&tail.0, &tail.1, in_fork, AnonContext::Tail);
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Statement visitor traverses all stmt shapes; splitting \
+                  by category would scatter related logic"
+    )]
+    fn classify_escapes_in_stmt(&mut self, stmt: &Stmt, in_fork: bool) {
+        match stmt {
+            Stmt::Let { value, .. } | Stmt::Var { value, .. } => {
+                if let Some((e, span)) = value {
+                    // `let f = || ...` was handled at the block level.
+                    // Other shapes (block expr, struct init, …) descend
+                    // here. The expression-position context says "value
+                    // flows into a binding" — anonymous lambdas bound
+                    // to a name get `Escapes` since the binding stores
+                    // the closure for later use.
+                    self.classify_escapes_in_expr(e, span, in_fork, AnonContext::StoredInBinding);
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                self.classify_escapes_in_expr(&target.0, &target.1, in_fork, AnonContext::Other);
+                self.classify_escapes_in_expr(
+                    &value.0,
+                    &value.1,
+                    in_fork,
+                    AnonContext::StoredInBinding,
+                );
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.classify_escapes_in_expr(
+                    &condition.0,
+                    &condition.1,
+                    in_fork,
+                    AnonContext::Other,
+                );
+                self.classify_escapes_in_block(then_block, in_fork);
+                if let Some(eb) = else_block {
+                    if let Some(b) = &eb.block {
+                        self.classify_escapes_in_block(b, in_fork);
+                    }
+                    if let Some(if_stmt) = &eb.if_stmt {
+                        self.classify_escapes_in_stmt(&if_stmt.0, in_fork);
+                    }
+                }
+            }
+            Stmt::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                self.classify_escapes_in_block(body, in_fork);
+                if let Some(b) = else_body {
+                    self.classify_escapes_in_block(b, in_fork);
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                self.classify_escapes_in_expr(
+                    &scrutinee.0,
+                    &scrutinee.1,
+                    in_fork,
+                    AnonContext::Other,
+                );
+                for arm in arms {
+                    if let Some((g, gs)) = &arm.guard {
+                        self.classify_escapes_in_expr(g, gs, in_fork, AnonContext::Other);
+                    }
+                    self.classify_escapes_in_expr(
+                        &arm.body.0,
+                        &arm.body.1,
+                        in_fork,
+                        AnonContext::Other,
+                    );
+                }
+            }
+            Stmt::Loop { body, .. } => self.classify_escapes_in_block(body, in_fork),
+            Stmt::For { iterable, body, .. } => {
+                self.classify_escapes_in_expr(
+                    &iterable.0,
+                    &iterable.1,
+                    in_fork,
+                    AnonContext::Other,
+                );
+                self.classify_escapes_in_block(body, in_fork);
+            }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                self.classify_escapes_in_expr(
+                    &condition.0,
+                    &condition.1,
+                    in_fork,
+                    AnonContext::Other,
+                );
+                self.classify_escapes_in_block(body, in_fork);
+            }
+            Stmt::WhileLet { expr, body, .. } => {
+                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                self.classify_escapes_in_block(body, in_fork);
+            }
+            Stmt::Break { value, .. } => {
+                if let Some((e, s)) = value {
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::Tail);
+                }
+            }
+            Stmt::Continue { .. } => {}
+            Stmt::Return(opt) => {
+                if let Some((e, s)) = opt {
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::Returned);
+                }
+            }
+            Stmt::Defer(boxed) => {
+                self.classify_escapes_in_expr(&boxed.0, &boxed.1, in_fork, AnonContext::Other);
+            }
+            Stmt::Expression((e, s)) => {
+                self.classify_escapes_in_expr(e, s, in_fork, AnonContext::Other);
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Expression visitor traverses the full Expr surface; \
+                  arm-per-variant is the clearest form"
+    )]
+    fn classify_escapes_in_expr(
+        &mut self,
+        expr: &Expr,
+        expr_span: &hew_parser::ast::Span,
+        in_fork: bool,
+        ctx: AnonContext,
+    ) {
+        match expr {
+            Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+                // Anonymous closure literal — classify by parent ctx.
+                // When the literal is constructed *inside* a `fork { ... }`
+                // body the closure's identity is tied to the forked task's
+                // lifetime; this dominates the tail/stored/other contexts
+                // the block walker would otherwise apply.
+                let fact = if in_fork {
+                    ClosureEscapeFact {
+                        kind: ClosureEscapeKind::Forked,
+                        rule: ClosureEscapeRule::InsideForkBlock,
+                    }
+                } else {
+                    match ctx {
+                        AnonContext::InForkBody => ClosureEscapeFact {
+                            kind: ClosureEscapeKind::Forked,
+                            rule: ClosureEscapeRule::InsideForkBlock,
+                        },
+                        AnonContext::Returned => ClosureEscapeFact {
+                            kind: ClosureEscapeKind::Escapes,
+                            rule: ClosureEscapeRule::Returned,
+                        },
+                        AnonContext::Tail => ClosureEscapeFact {
+                            kind: ClosureEscapeKind::Escapes,
+                            rule: ClosureEscapeRule::EscapesViaBlockValue,
+                        },
+                        AnonContext::PassedToHigherOrder => ClosureEscapeFact {
+                            kind: ClosureEscapeKind::Escapes,
+                            rule: ClosureEscapeRule::PassedToHigherOrder,
+                        },
+                        AnonContext::StoredInBinding => ClosureEscapeFact {
+                            kind: ClosureEscapeKind::Escapes,
+                            rule: ClosureEscapeRule::StoredOrSent,
+                        },
+                        AnonContext::Other => ClosureEscapeFact {
+                            kind: ClosureEscapeKind::Escapes,
+                            rule: ClosureEscapeRule::NoStaticBinding,
+                        },
+                    }
+                };
+                // Only insert if not already inserted by the let-bound
+                // path (in which case the let-bound fact wins).
+                self.closure_escape_facts
+                    .entry(SpanKey::from(expr_span))
+                    .or_insert(fact);
+                self.maybe_emit_escape_advisory(expr_span, fact);
+                // Recurse into the body so nested closures inside this
+                // lambda get classified too.
+                self.classify_escapes_in_expr(
+                    &body.0,
+                    &body.1,
+                    /* in_fork = */ false,
+                    AnonContext::Other,
+                );
+            }
+            Expr::ForkBlock { body } => {
+                self.classify_escapes_in_block(body, /* in_fork = */ true);
+            }
+            Expr::ForkChild { expr, .. } => {
+                self.classify_escapes_in_expr(
+                    &expr.0,
+                    &expr.1,
+                    /* in_fork = */ true,
+                    AnonContext::InForkBody,
+                );
+            }
+            Expr::Scope { body } => {
+                self.classify_escapes_in_block(body, /* in_fork = */ false);
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                self.classify_escapes_in_expr(
+                    &duration.0,
+                    &duration.1,
+                    in_fork,
+                    AnonContext::Other,
+                );
+                self.classify_escapes_in_block(body, in_fork);
+            }
+            Expr::Block(block) => self.classify_escapes_in_block(block, in_fork),
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.classify_escapes_in_expr(
+                    &condition.0,
+                    &condition.1,
+                    in_fork,
+                    AnonContext::Other,
+                );
+                self.classify_escapes_in_expr(&then_block.0, &then_block.1, in_fork, ctx);
+                if let Some(eb) = else_block {
+                    self.classify_escapes_in_expr(&eb.0, &eb.1, in_fork, ctx);
+                }
+            }
+            Expr::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                self.classify_escapes_in_block(body, in_fork);
+                if let Some(b) = else_body {
+                    self.classify_escapes_in_block(b, in_fork);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.classify_escapes_in_expr(
+                    &scrutinee.0,
+                    &scrutinee.1,
+                    in_fork,
+                    AnonContext::Other,
+                );
+                for arm in arms {
+                    if let Some((g, gs)) = &arm.guard {
+                        self.classify_escapes_in_expr(g, gs, in_fork, AnonContext::Other);
+                    }
+                    self.classify_escapes_in_expr(&arm.body.0, &arm.body.1, in_fork, ctx);
+                }
+            }
+            Expr::Call { function, args, .. } => {
+                self.classify_escapes_in_expr(
+                    &function.0,
+                    &function.1,
+                    in_fork,
+                    AnonContext::Other,
+                );
+                for arg in args {
+                    let (e, s) = arg.expr();
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::PassedToHigherOrder);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                self.classify_escapes_in_expr(
+                    &receiver.0,
+                    &receiver.1,
+                    in_fork,
+                    AnonContext::Other,
+                );
+                for arg in args {
+                    let (e, s) = arg.expr();
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::PassedToHigherOrder);
+                }
+            }
+            Expr::Spawn { target, args } => {
+                self.classify_escapes_in_expr(&target.0, &target.1, in_fork, AnonContext::Other);
+                for (_, (e, s)) in args {
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::PassedToHigherOrder);
+                }
+            }
+            Expr::StructInit { fields, base, .. } => {
+                for (_, (e, s)) in fields {
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::StoredInBinding);
+                }
+                if let Some(b) = base {
+                    self.classify_escapes_in_expr(&b.0, &b.1, in_fork, AnonContext::Other);
+                }
+            }
+            Expr::Tuple(items) | Expr::Array(items) => {
+                for (e, s) in items {
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::StoredInBinding);
+                }
+            }
+            Expr::ArrayRepeat { value, count } => {
+                self.classify_escapes_in_expr(
+                    &value.0,
+                    &value.1,
+                    in_fork,
+                    AnonContext::StoredInBinding,
+                );
+                self.classify_escapes_in_expr(&count.0, &count.1, in_fork, AnonContext::Other);
+            }
+            Expr::MapLiteral { entries } => {
+                for ((k, ks), (v, vs)) in entries {
+                    self.classify_escapes_in_expr(k, ks, in_fork, AnonContext::StoredInBinding);
+                    self.classify_escapes_in_expr(v, vs, in_fork, AnonContext::StoredInBinding);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                self.classify_escapes_in_expr(&left.0, &left.1, in_fork, AnonContext::Other);
+                self.classify_escapes_in_expr(&right.0, &right.1, in_fork, AnonContext::Other);
+            }
+            Expr::Unary { operand, .. } => {
+                self.classify_escapes_in_expr(&operand.0, &operand.1, in_fork, AnonContext::Other);
+            }
+            Expr::FieldAccess { object, .. } => {
+                self.classify_escapes_in_expr(&object.0, &object.1, in_fork, AnonContext::Other);
+            }
+            Expr::Index { object, index } => {
+                self.classify_escapes_in_expr(&object.0, &object.1, in_fork, AnonContext::Other);
+                self.classify_escapes_in_expr(&index.0, &index.1, in_fork, AnonContext::Other);
+            }
+            Expr::Cast { expr, .. } => {
+                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+            }
+            Expr::PostfixTry(inner) => {
+                self.classify_escapes_in_expr(&inner.0, &inner.1, in_fork, ctx);
+            }
+            Expr::Range { start, end, .. } => {
+                if let Some(s) = start {
+                    self.classify_escapes_in_expr(&s.0, &s.1, in_fork, AnonContext::Other);
+                }
+                if let Some(e) = end {
+                    self.classify_escapes_in_expr(&e.0, &e.1, in_fork, AnonContext::Other);
+                }
+            }
+            Expr::Is { lhs, rhs } => {
+                self.classify_escapes_in_expr(&lhs.0, &lhs.1, in_fork, AnonContext::Other);
+                self.classify_escapes_in_expr(&rhs.0, &rhs.1, in_fork, AnonContext::Other);
+            }
+            Expr::Select { arms, timeout } => {
+                for arm in arms {
+                    self.classify_escapes_in_expr(
+                        &arm.source.0,
+                        &arm.source.1,
+                        in_fork,
+                        AnonContext::Other,
+                    );
+                    self.classify_escapes_in_expr(
+                        &arm.body.0,
+                        &arm.body.1,
+                        in_fork,
+                        AnonContext::Other,
+                    );
+                }
+                if let Some(t) = timeout {
+                    self.classify_escapes_in_expr(
+                        &t.duration.0,
+                        &t.duration.1,
+                        in_fork,
+                        AnonContext::Other,
+                    );
+                    self.classify_escapes_in_expr(
+                        &t.body.0,
+                        &t.body.1,
+                        in_fork,
+                        AnonContext::Other,
+                    );
+                }
+            }
+            Expr::Join(items) => {
+                for (e, s) in items {
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::PassedToHigherOrder);
+                }
+            }
+            Expr::Timeout { expr, duration } => {
+                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, ctx);
+                self.classify_escapes_in_expr(
+                    &duration.0,
+                    &duration.1,
+                    in_fork,
+                    AnonContext::Other,
+                );
+            }
+            Expr::UnsafeBlock(block) => self.classify_escapes_in_block(block, in_fork),
+            Expr::Yield(opt) => {
+                if let Some(boxed) = opt {
+                    self.classify_escapes_in_expr(
+                        &boxed.0,
+                        &boxed.1,
+                        in_fork,
+                        AnonContext::PassedToHigherOrder,
+                    );
+                }
+            }
+            Expr::Await(inner) => {
+                self.classify_escapes_in_expr(&inner.0, &inner.1, in_fork, AnonContext::Other);
+            }
+            Expr::InterpolatedString(parts) => {
+                for part in parts {
+                    if let StringPart::Expr((e, s)) = part {
+                        self.classify_escapes_in_expr(e, s, in_fork, AnonContext::Other);
+                    }
+                }
+            }
+            Expr::MachineEmit { fields, .. } => {
+                for (_, (e, s)) in fields {
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::PassedToHigherOrder);
+                }
+            }
+            Expr::GenBlock { body } => self.classify_escapes_in_block(body, in_fork),
+            Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::This
+            | Expr::Cooperate
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_) => {}
+        }
+    }
+
+    fn maybe_emit_escape_advisory(
+        &mut self,
+        lambda_span: &hew_parser::ast::Span,
+        fact: ClosureEscapeFact,
+    ) {
+        // Advisory diagnostic when conservatively classified `Escapes`
+        // AND the rule indicates restructuring could admit `Local`.
+        // Emitted at warning severity (the diagnostic surface has no
+        // Info level).
+        if !matches!(fact.kind, ClosureEscapeKind::Escapes) {
+            return;
+        }
+        let admit_local = matches!(
+            fact.rule,
+            ClosureEscapeRule::PassedToHigherOrder
+                | ClosureEscapeRule::EscapesViaBlockValue
+                | ClosureEscapeRule::NoStaticBinding
+        );
+        if !admit_local {
+            return;
+        }
+        self.warnings.push(crate::error::TypeError {
+            severity: crate::error::Severity::Warning,
+            kind: TypeErrorKind::ClosureEscapeAdvisory {
+                rule: format!("{:?}", fact.rule),
+            },
+            span: lambda_span.clone(),
+            message: format!(
+                "closure conservatively classified as escaping ({:?}); \
+                 inlining the closure at its call site would admit `Local`",
+                fact.rule
+            ),
+            notes: vec![],
+            suggestions: vec![],
+            source_module: None,
+        });
+    }
+
+    /// Post-pass: walk the program once collecting every closure
+    /// literal span, then verify `closure_capture_facts` and
+    /// `closure_escape_facts` each carry an entry for that span. A
+    /// missing entry trips the corresponding fail-closed diagnostic
+    /// (`ClosureCaptureModeUnresolved` / `ClosureEscapeKindUnresolved`).
+    ///
+    /// The pass is a defensive contract enforcer for the
+    /// checker→MIR-lowering boundary: it is intentionally noisy when
+    /// the checker has a structural gap and silent when the contract
+    /// holds. It does NOT classify or default; it only reports gaps.
+    fn validate_closure_facts_complete(&mut self, program: &Program) {
+        let mut sites: Vec<(Span, Option<String>)> = Vec::new();
+        collect_closure_literal_spans(program, &mut sites);
+        let mut diagnostics = Vec::new();
+        emit_unresolved_closure_diagnostics(
+            &sites,
+            &self.closure_capture_facts,
+            &self.closure_escape_facts,
+            &mut diagnostics,
+        );
+        for err in diagnostics {
+            self.errors.push(err);
+        }
+    }
+}
+
+/// Walk a program's AST and append every closure literal span
+/// (`Expr::Lambda` / `Expr::SpawnLambdaActor`) it finds, paired with
+/// the capture-name when the literal is the value of a top-level
+/// `let <name> = |...| ...` binding (None otherwise — for diagnostic
+/// hint only).
+fn collect_closure_literal_spans(program: &Program, out: &mut Vec<(Span, Option<String>)>) {
+    for (item, _) in &program.items {
+        collect_lambda_spans_in_item(item, out);
+    }
+    if let Some(mg) = &program.module_graph {
+        for module in mg.modules.values() {
+            for (item, _) in &module.items {
+                collect_lambda_spans_in_item(item, out);
+            }
+        }
+    }
+}
+
+fn collect_lambda_spans_in_item(item: &Item, out: &mut Vec<(Span, Option<String>)>) {
+    match item {
+        Item::Function(fn_decl) => collect_lambda_spans_in_block(&fn_decl.body, out),
+        Item::Impl(impl_decl) => {
+            for method in &impl_decl.methods {
+                collect_lambda_spans_in_block(&method.body, out);
+            }
+        }
+        Item::Actor(actor) => {
+            for method in &actor.methods {
+                collect_lambda_spans_in_block(&method.body, out);
+            }
+            for rec in &actor.receive_fns {
+                collect_lambda_spans_in_block(&rec.body, out);
+            }
+        }
+        Item::Trait(trait_decl) => {
+            for trait_item in &trait_decl.items {
+                if let TraitItem::Method(trait_method) = trait_item {
+                    if let Some(body) = &trait_method.body {
+                        collect_lambda_spans_in_block(body, out);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_lambda_spans_in_block(block: &Block, out: &mut Vec<(Span, Option<String>)>) {
+    for (stmt, _) in &block.stmts {
+        collect_lambda_spans_in_stmt(stmt, out);
+    }
+    if let Some(tail) = &block.trailing_expr {
+        collect_lambda_spans_in_expr(&tail.0, &tail.1, out);
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    reason = "Statement visitor over the full Stmt surface; arm-per-variant \
+              is the clearest form"
+)]
+fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>)>) {
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::Var { value, .. } => {
+            if let Some((e, s)) = value {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Stmt::Assign { target, value, .. } => {
+            collect_lambda_spans_in_expr(&target.0, &target.1, out);
+            collect_lambda_spans_in_expr(&value.0, &value.1, out);
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_lambda_spans_in_expr(&condition.0, &condition.1, out);
+            collect_lambda_spans_in_block(then_block, out);
+            if let Some(eb) = else_block {
+                if let Some(b) = &eb.block {
+                    collect_lambda_spans_in_block(b, out);
+                }
+                if let Some(if_stmt) = &eb.if_stmt {
+                    collect_lambda_spans_in_stmt(&if_stmt.0, out);
+                }
+            }
+        }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            collect_lambda_spans_in_block(body, out);
+            if let Some(b) = else_body {
+                collect_lambda_spans_in_block(b, out);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            collect_lambda_spans_in_expr(&scrutinee.0, &scrutinee.1, out);
+            for arm in arms {
+                if let Some((g, gs)) = &arm.guard {
+                    collect_lambda_spans_in_expr(g, gs, out);
+                }
+                collect_lambda_spans_in_expr(&arm.body.0, &arm.body.1, out);
+            }
+        }
+        Stmt::Loop { body, .. } => collect_lambda_spans_in_block(body, out),
+        Stmt::For { iterable, body, .. } => {
+            collect_lambda_spans_in_expr(&iterable.0, &iterable.1, out);
+            collect_lambda_spans_in_block(body, out);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            collect_lambda_spans_in_expr(&condition.0, &condition.1, out);
+            collect_lambda_spans_in_block(body, out);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            collect_lambda_spans_in_block(body, out);
+        }
+        Stmt::Break { value, .. } => {
+            if let Some((e, s)) = value {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Stmt::Continue { .. } => {}
+        Stmt::Return(opt) => {
+            if let Some((e, s)) = opt {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Stmt::Defer(boxed) => {
+            collect_lambda_spans_in_expr(&boxed.0, &boxed.1, out);
+        }
+        Stmt::Expression((e, s)) => collect_lambda_spans_in_expr(e, s, out),
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    reason = "Expression visitor over the full Expr surface; arm-per-variant \
+              is the clearest form"
+)]
+fn collect_lambda_spans_in_expr(
+    expr: &Expr,
+    expr_span: &Span,
+    out: &mut Vec<(Span, Option<String>)>,
+) {
+    match expr {
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            out.push((expr_span.clone(), None));
+            collect_lambda_spans_in_expr(&body.0, &body.1, out);
+        }
+        Expr::Block(block) => collect_lambda_spans_in_block(block, out),
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_lambda_spans_in_expr(&condition.0, &condition.1, out);
+            collect_lambda_spans_in_expr(&then_block.0, &then_block.1, out);
+            if let Some(eb) = else_block {
+                collect_lambda_spans_in_expr(&eb.0, &eb.1, out);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            collect_lambda_spans_in_block(body, out);
+            if let Some(b) = else_body {
+                collect_lambda_spans_in_block(b, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_lambda_spans_in_expr(&scrutinee.0, &scrutinee.1, out);
+            for arm in arms {
+                if let Some((g, gs)) = &arm.guard {
+                    collect_lambda_spans_in_expr(g, gs, out);
+                }
+                collect_lambda_spans_in_expr(&arm.body.0, &arm.body.1, out);
+            }
+        }
+        Expr::Call { function, args, .. } => {
+            collect_lambda_spans_in_expr(&function.0, &function.1, out);
+            for arg in args {
+                let (e, s) = arg.expr();
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_lambda_spans_in_expr(&receiver.0, &receiver.1, out);
+            for arg in args {
+                let (e, s) = arg.expr();
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Expr::Spawn { target, args } => {
+            collect_lambda_spans_in_expr(&target.0, &target.1, out);
+            for (_, (e, s)) in args {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Expr::StructInit { fields, base, .. } => {
+            for (_, (e, s)) in fields {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+            if let Some(b) = base {
+                collect_lambda_spans_in_expr(&b.0, &b.1, out);
+            }
+        }
+        Expr::Tuple(items) | Expr::Array(items) => {
+            for (e, s) in items {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            collect_lambda_spans_in_expr(&value.0, &value.1, out);
+            collect_lambda_spans_in_expr(&count.0, &count.1, out);
+        }
+        Expr::MapLiteral { entries } => {
+            for ((k, ks), (v, vs)) in entries {
+                collect_lambda_spans_in_expr(k, ks, out);
+                collect_lambda_spans_in_expr(v, vs, out);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_lambda_spans_in_expr(&left.0, &left.1, out);
+            collect_lambda_spans_in_expr(&right.0, &right.1, out);
+        }
+        Expr::Unary { operand, .. } => {
+            collect_lambda_spans_in_expr(&operand.0, &operand.1, out);
+        }
+        Expr::FieldAccess { object, .. } => {
+            collect_lambda_spans_in_expr(&object.0, &object.1, out);
+        }
+        Expr::Index { object, index } => {
+            collect_lambda_spans_in_expr(&object.0, &object.1, out);
+            collect_lambda_spans_in_expr(&index.0, &index.1, out);
+        }
+        Expr::Cast { expr, .. } => collect_lambda_spans_in_expr(&expr.0, &expr.1, out),
+        Expr::PostfixTry(inner) => collect_lambda_spans_in_expr(&inner.0, &inner.1, out),
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                collect_lambda_spans_in_expr(&s.0, &s.1, out);
+            }
+            if let Some(e) = end {
+                collect_lambda_spans_in_expr(&e.0, &e.1, out);
+            }
+        }
+        Expr::Is { lhs, rhs } => {
+            collect_lambda_spans_in_expr(&lhs.0, &lhs.1, out);
+            collect_lambda_spans_in_expr(&rhs.0, &rhs.1, out);
+        }
+        Expr::Scope { body } => collect_lambda_spans_in_block(body, out),
+        Expr::ForkChild { expr, .. } => {
+            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+        }
+        Expr::ForkBlock { body } => collect_lambda_spans_in_block(body, out),
+        Expr::ScopeDeadline { duration, body } => {
+            collect_lambda_spans_in_expr(&duration.0, &duration.1, out);
+            collect_lambda_spans_in_block(body, out);
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                collect_lambda_spans_in_expr(&arm.source.0, &arm.source.1, out);
+                collect_lambda_spans_in_expr(&arm.body.0, &arm.body.1, out);
+            }
+            if let Some(t) = timeout {
+                collect_lambda_spans_in_expr(&t.duration.0, &t.duration.1, out);
+                collect_lambda_spans_in_expr(&t.body.0, &t.body.1, out);
+            }
+        }
+        Expr::Join(items) => {
+            for (e, s) in items {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Expr::Timeout { expr, duration } => {
+            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            collect_lambda_spans_in_expr(&duration.0, &duration.1, out);
+        }
+        Expr::UnsafeBlock(block) => collect_lambda_spans_in_block(block, out),
+        Expr::Yield(opt) => {
+            if let Some(boxed) = opt {
+                collect_lambda_spans_in_expr(&boxed.0, &boxed.1, out);
+            }
+        }
+        Expr::Await(inner) => collect_lambda_spans_in_expr(&inner.0, &inner.1, out),
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Expr((e, s)) = part {
+                    collect_lambda_spans_in_expr(e, s, out);
+                }
+            }
+        }
+        Expr::MachineEmit { fields, .. } => {
+            for (_, (e, s)) in fields {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Expr::GenBlock { body } => collect_lambda_spans_in_block(body, out),
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::This
+        | Expr::Cooperate
+        | Expr::RegexLiteral(_)
+        | Expr::ByteStringLiteral(_)
+        | Expr::ByteArrayLiteral(_) => {}
+    }
+}
+
+/// Fail-closed defense: for every collected closure literal span,
+/// emit the corresponding `Unresolved` diagnostic if a fact is missing.
+/// Pure function so unit tests can drive it with synthetic maps.
+pub(crate) fn emit_unresolved_closure_diagnostics(
+    sites: &[(Span, Option<String>)],
+    capture_facts: &HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    escape_facts: &HashMap<SpanKey, ClosureEscapeFact>,
+    out: &mut Vec<TypeError>,
+) {
+    for (span, hint_name) in sites {
+        let key = SpanKey::from(span);
+        if !capture_facts.contains_key(&key) {
+            let name = hint_name.clone().unwrap_or_else(|| "<closure>".to_string());
+            out.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::ClosureCaptureModeUnresolved { name: name.clone() },
+                span: span.clone(),
+                message: format!(
+                    "internal: closure literal `{name}` reached checker output \
+                     without a resolved capture-mode ledger; the \
+                     checker→MIR contract requires every closure to \
+                     have a `ClosureCaptureFact` set"
+                ),
+                notes: vec![],
+                suggestions: vec![],
+                source_module: None,
+            });
+        }
+        if !escape_facts.contains_key(&key) {
+            out.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::ClosureEscapeKindUnresolved,
+                span: span.clone(),
+                message: "internal: closure literal reached checker output without \
+                     a resolved `ClosureEscapeKind`; the checker→MIR contract \
+                     requires every closure literal to be classified"
+                    .to_string(),
+                notes: vec![],
+                suggestions: vec![],
+                source_module: None,
+            });
+        }
+    }
+}
+
+/// Context label propagated to anonymous closure literals so they pick
+/// up the right `ClosureEscapeFact` when no `let f = ...` binding
+/// gives them a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnonContext {
+    /// Inside a `fork { ... }` body or `fork name = ...` child binding.
+    InForkBody,
+    /// In a `return expr` position.
+    Returned,
+    /// Tail expression of a block — escapes via block value.
+    Tail,
+    /// Argument to a call / method-call / spawn / yield / join.
+    PassedToHigherOrder,
+    /// RHS of a let/var/assign — stored in another binding.
+    StoredInBinding,
+    /// Anything else.
+    Other,
 }
 
 /// Collect every `actor` declaration in the program (root items + each

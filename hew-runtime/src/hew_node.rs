@@ -700,7 +700,7 @@ where
     let mut map = registry.remote_names.lock_or_recover();
     let names: Vec<String> = map
         .iter()
-        .filter(|(_, actor_pid)| predicate(**actor_pid))
+        .filter(|(_, actor_id)| predicate(**actor_id))
         .map(|(name, _)| name.clone())
         .collect();
     for name in &names {
@@ -730,8 +730,8 @@ unsafe fn unregister_local_names_for_node(node: &HewNode) {
     }
     // SAFETY: registry belongs to `node` for the node lifetime.
     let registry = unsafe { &*node.registry };
-    let names = take_registry_names_if(registry, |actor_pid| {
-        crate::pid::hew_pid_node(actor_pid) == node.node_id
+    let names = take_registry_names_if(registry, |actor_id| {
+        crate::pid::hew_pid_node(actor_id) == node.node_id
     });
     // Node shutdown is the decommission path; remote peers prune their cached
     // names when they observe the corresponding left/dead membership event.
@@ -1123,7 +1123,7 @@ fn send_reply_envelope(
 /// from a remote peer. Updates the node's `remote_names` map.
 extern "C" fn node_registry_gossip_callback(
     name: *const c_char,
-    actor_pid: u64,
+    actor_id: u64,
     is_add: bool,
     user_data: *mut c_void,
 ) {
@@ -1139,7 +1139,7 @@ extern "C" fn node_registry_gossip_callback(
         .into_owned();
     let mut map = registry.remote_names.lock_or_recover();
     if is_add {
-        map.insert(key, actor_pid);
+        map.insert(key, actor_id);
     } else {
         map.remove(&key);
     }
@@ -1271,8 +1271,8 @@ extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut 
 
     // SAFETY: user_data is a *mut HewRegistry installed during hew_node_start.
     let registry = unsafe { &*(user_data.cast::<HewRegistry>()) };
-    let _ = take_registry_names_if(registry, |actor_pid| {
-        crate::pid::hew_pid_node(actor_pid) == node_id
+    let _ = take_registry_names_if(registry, |actor_id| {
+        crate::pid::hew_pid_node(actor_id) == node_id
     });
 }
 
@@ -2023,7 +2023,7 @@ pub unsafe extern "C" fn hew_node_api_register(
         return -1;
     }
     // SAFETY: actor was null-checked above and is a valid HewActor pointer.
-    let actor_id = unsafe { (*actor).pid };
+    let actor_id = unsafe { (*actor).id };
     CURRENT_NODE.read_access(|guard| {
         let node = *guard as *mut HewNode;
         if node.is_null() {
@@ -2538,18 +2538,18 @@ mod tests {
 
         let actor_name = CString::new("hew-node-local-registry").expect("valid actor name");
         let missing_name = CString::new("hew-node-missing-registry").expect("valid actor name");
-        let actor_pid = (u64::from(102u16) << 48) | 0x1234;
+        let actor_id = (u64::from(102u16) << 48) | 0x1234;
 
         // SAFETY: node and C string pointers are valid for each call.
         unsafe {
             assert_eq!(hew_node_start(node.as_ptr()), 0);
             assert_eq!(
-                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_pid),
+                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_id),
                 0
             );
             assert_eq!(
                 hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
-                actor_pid
+                actor_id
             );
             assert_eq!(hew_node_lookup(node.as_ptr(), missing_name.as_ptr()), 0);
             assert_eq!(
@@ -2581,16 +2581,16 @@ mod tests {
 
             let actor = crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
             assert!(!actor.is_null());
-            let actor_pid = (*actor).pid;
-            assert_eq!(crate::pid::hew_pid_node(actor_pid), 103);
+            let actor_id = (*actor).id;
+            assert_eq!(crate::pid::hew_pid_node(actor_id), 103);
 
             assert_eq!(
-                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_pid),
+                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_id),
                 0
             );
             assert_eq!(
                 hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
-                actor_pid
+                actor_id
             );
 
             let n = &*node.as_ptr();
@@ -2632,16 +2632,16 @@ mod tests {
 
             let actor = crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
             assert!(!actor.is_null());
-            let actor_pid = (*actor).pid;
-            assert_eq!(crate::pid::hew_pid_node(actor_pid), 104);
+            let actor_id = (*actor).id;
+            assert_eq!(crate::pid::hew_pid_node(actor_id), 104);
 
             assert_eq!(
-                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_pid),
+                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_id),
                 0
             );
             assert_eq!(
                 hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
-                actor_pid
+                actor_id
             );
             assert!(!crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
@@ -2681,16 +2681,16 @@ mod tests {
         unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
 
         let actor_name = CString::new("hew-node-remote-actor").expect("valid actor name");
-        let actor_pid = (u64::from(202u16) << 48) | 0x63;
+        let actor_id = (u64::from(202u16) << 48) | 0x63;
         // SAFETY: pointers are valid in this scope.
         unsafe {
             assert_eq!(
-                hew_node_register(node2.as_ptr(), actor_name.as_ptr(), actor_pid),
+                hew_node_register(node2.as_ptr(), actor_name.as_ptr(), actor_id),
                 0
             );
             assert_eq!(
                 hew_node_lookup(node2.as_ptr(), actor_name.as_ptr()),
-                actor_pid
+                actor_id
             );
         }
 
@@ -3420,9 +3420,9 @@ mod tests {
         crate::pid::hew_pid_set_local_node(301);
         assert!(!probe_actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid.
-        let actor_pid = unsafe { (*probe_actor).id };
+        let actor_id = unsafe { (*probe_actor).id };
         assert_eq!(
-            crate::pid::hew_pid_node(actor_pid),
+            crate::pid::hew_pid_node(actor_id),
             302,
             "actor PID must encode node2's ID"
         );
@@ -3436,7 +3436,7 @@ mod tests {
         // Fire-and-forget from node1 to the actor on node2.
         let msg_type_sent: i32 = 77;
         // SAFETY: null payload / size 0 is valid for a bare signal message.
-        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_pid, msg_type_sent, ptr::null(), 0) };
+        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_id, msg_type_sent, ptr::null(), 0) };
         assert_eq!(rc, 0, "hew_node_send should succeed");
 
         let delivered = (0..100).any(|_| {
@@ -3551,9 +3551,9 @@ mod tests {
         crate::pid::hew_pid_set_local_node(401);
         assert!(!probe_actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid.
-        let actor_pid = unsafe { (*probe_actor).id };
+        let actor_id = unsafe { (*probe_actor).id };
         assert_eq!(
-            crate::pid::hew_pid_node(actor_pid),
+            crate::pid::hew_pid_node(actor_id),
             402,
             "actor PID must encode node2's ID"
         );
@@ -3569,7 +3569,7 @@ mod tests {
         // mesh transport — not just process startup.
         let msg_type_sent: i32 = 91;
         // SAFETY: null payload / size 0 is valid for a bare signal message.
-        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_pid, msg_type_sent, ptr::null(), 0) };
+        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_id, msg_type_sent, ptr::null(), 0) };
         assert_eq!(rc, 0, "hew_node_send should succeed");
 
         let delivered = (0..200).any(|_| {
@@ -3770,8 +3770,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(313);
         assert!(!void_actor.is_null(), "actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*void_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 314);
+        let actor_id = unsafe { (*void_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 314);
 
         let connect_addr = CString::new(format!("314@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -3780,7 +3780,7 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid and no reply buffer is expected.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
         assert_eq!(reply_ptr, remote_void_reply_sentinel());
         assert_eq!(
             hew_node_ask_take_last_error(),
@@ -3833,9 +3833,9 @@ mod tests {
         crate::pid::hew_pid_set_local_node(311);
         assert!(!echo_actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid.
-        let actor_pid = unsafe { (*echo_actor).id };
+        let actor_id = unsafe { (*echo_actor).id };
         assert_eq!(
-            crate::pid::hew_pid_node(actor_pid),
+            crate::pid::hew_pid_node(actor_id),
             312,
             "actor PID must encode node2's ID"
         );
@@ -3857,7 +3857,7 @@ mod tests {
         // SAFETY: send_value is a valid u32 on the stack; reply is malloc'd, freed below.
         let reply_ptr = unsafe {
             hew_node_api_ask(
-                actor_pid,
+                actor_id,
                 1,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
                 std::mem::size_of::<u32>(),
@@ -3919,8 +3919,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(315);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 316);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 316);
 
         let connect_addr = CString::new(format!("316@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this connection attempt.
@@ -3929,7 +3929,7 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
         let err = hew_node_ask_take_last_error();
 
         assert!(
@@ -3981,8 +3981,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(317);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 318);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 318);
 
         let connect_addr = CString::new(format!("318@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this connection attempt.
@@ -3994,7 +3994,7 @@ mod tests {
         unsafe { crate::actor::hew_actor_stop(actor) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
         let err = hew_node_ask_take_last_error();
 
         assert!(
@@ -4057,8 +4057,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(326);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 327);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 327);
 
         // SAFETY: actor is valid; mailbox pointer is valid for the actor lifetime.
         let mailbox = unsafe { (*actor).mailbox.cast::<crate::mailbox::HewMailbox>() };
@@ -4076,7 +4076,7 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
         let err = hew_node_ask_take_last_error();
 
         assert!(
@@ -4129,8 +4129,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(319);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 320);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 320);
 
         let connect_addr = CString::new(format!("320@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this connection attempt.
@@ -4140,7 +4140,7 @@ mod tests {
 
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
         let err = hew_node_ask_take_last_error();
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
 
@@ -4193,8 +4193,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(330);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 331);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 331);
 
         let connect_addr = CString::new(format!("331@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this connection attempt.
@@ -4230,7 +4230,7 @@ mod tests {
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
         let ask_start = std::time::Instant::now();
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
         let err = hew_node_ask_take_last_error();
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
 
@@ -4289,8 +4289,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(317);
         assert!(!empty_reply_actor.is_null(), "actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*empty_reply_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 318);
+        let actor_id = unsafe { (*empty_reply_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 318);
 
         let connect_addr = CString::new(format!("318@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -4300,7 +4300,7 @@ mod tests {
 
         // SAFETY: non-void remote ask expects a u32-sized reply; an empty success must fail closed.
         let reply_ptr = unsafe {
-            hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>())
+            hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>())
         };
         assert!(
             reply_ptr.is_null(),
@@ -4353,8 +4353,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(328);
         assert!(!silent_actor.is_null(), "silent actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*silent_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 329);
+        let actor_id = unsafe { (*silent_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 329);
 
         let connect_addr = CString::new(format!("329@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -4365,7 +4365,7 @@ mod tests {
         let ask_start = std::time::Instant::now();
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let reply_ptr = unsafe {
-            hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>())
+            hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>())
         };
         let err = hew_node_ask_take_last_error();
 
@@ -4422,8 +4422,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(315);
         assert!(!blocked_actor.is_null(), "actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*blocked_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 316);
+        let actor_id = unsafe { (*blocked_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 316);
 
         let connect_addr = CString::new(format!("316@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -4433,8 +4433,7 @@ mod tests {
 
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr =
-                hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>());
+            let ptr = hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>());
             let err = hew_node_ask_take_last_error();
             (ptr as usize, err)
         });
@@ -4517,8 +4516,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(320);
         assert!(!blocked_actor.is_null(), "actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*blocked_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 321);
+        let actor_id = unsafe { (*blocked_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 321);
 
         let connect_addr = CString::new(format!("321@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -4548,8 +4547,7 @@ mod tests {
 
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr =
-                hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>());
+            let ptr = hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>());
             let err = hew_node_ask_take_last_error();
             (ptr as usize, err)
         });
@@ -4847,8 +4845,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(320);
         assert!(!echo_actor.is_null(), "actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*echo_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 321);
+        let actor_id = unsafe { (*echo_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 321);
 
         let connect_addr = CString::new(format!("321@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -4863,7 +4861,7 @@ mod tests {
         // SAFETY: payload is a valid u32 on the stack; its address is valid for this call.
         let reply_ptr = unsafe {
             hew_node_api_ask(
-                actor_pid,
+                actor_id,
                 1,
                 std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
                 std::mem::size_of::<u32>(),
@@ -4948,8 +4946,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(322);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 323);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 323);
 
         let connect_addr = CString::new(format!("323@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this call.
@@ -4965,7 +4963,7 @@ mod tests {
         // the void-success sentinel because the rejection sent an empty payload
         // which remote_reply_data_to_ptr mistook for a void success.
         // SAFETY: null payload / size-0 are valid; this is a void ask.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe { hew_node_api_ask(actor_id, 1, ptr::null_mut(), 0, 0) };
         let err = hew_node_ask_take_last_error();
 
         // Restore before any assertions so the teardown path is clean.
@@ -5020,8 +5018,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(324);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 325);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 325);
 
         let connect_addr = CString::new(format!("325@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this call.
@@ -5036,7 +5034,7 @@ mod tests {
         // SAFETY: payload is a valid u32; its address is valid for this call.
         let reply_ptr = unsafe {
             hew_node_api_ask(
-                actor_pid,
+                actor_id,
                 1,
                 std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
                 std::mem::size_of::<u32>(),
@@ -5247,8 +5245,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(353);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 354);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 354);
 
         let connect_addr = CString::new(format!("354@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this connection attempt.
@@ -5267,7 +5265,7 @@ mod tests {
         // SAFETY: conn_mgr is live and source_node_id identifies the connected peer.
         unsafe {
             node_inbound_router(
-                actor_pid,
+                actor_id,
                 1,
                 ptr::null_mut(),
                 0,

@@ -984,7 +984,9 @@ impl Checker {
                         name: name.to_string(),
                         ty: ty.clone(),
                         mode: ClosureCaptureMode::Copy,
+                        mode_origin: CaptureModeOrigin::ImplicitCopy,
                         is_send: false,
+                        is_sync: false,
                         use_span: span.clone(),
                         def_span,
                     });
@@ -1207,7 +1209,7 @@ impl Checker {
                     .iter()
                     .find(|(name, _)| name == "Output")
                 {
-                    self.record_dyn_index_method_call(&bound.trait_name, span);
+                    self.record_dyn_index_method_call(bound, span);
                     return output_ty.clone();
                 }
                 self.report_error(
@@ -1302,8 +1304,9 @@ impl Checker {
         }
     }
 
-    fn record_dyn_index_method_call(&mut self, trait_name: &str, span: &Span) {
-        let Some(trait_info) = self.trait_defs.get(trait_name) else {
+    fn record_dyn_index_method_call(&mut self, bound: &crate::ty::TraitObjectBound, span: &Span) {
+        let trait_name = bound.trait_name.as_str();
+        let Some(trait_info) = self.trait_defs.get(trait_name).cloned() else {
             return;
         };
         let Some(method_idx) = trait_info
@@ -1313,6 +1316,14 @@ impl Checker {
         else {
             return;
         };
+        // Compute the substituted `at` signature for the originating
+        // bound (the bound's assoc bindings carry e.g. `Output = T`).
+        // W3.031 Stage 1.6: the typed `FnSig` is self-contained on
+        // the call-site side table; no codegen-time re-derivation.
+        let Some(mut sig) = self.lookup_trait_method(trait_name, "at") else {
+            return;
+        };
+        self.apply_trait_object_bound_substitutions(&mut sig, bound);
         let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
         self.dyn_trait_method_calls.insert(
             SpanKey::from(span),
@@ -1320,6 +1331,7 @@ impl Checker {
                 trait_name: trait_name.to_string(),
                 method_name: "at".to_string(),
                 slot,
+                signature: sig,
             },
         );
         self.record_method_call_receiver_kind(
@@ -2188,6 +2200,14 @@ impl Checker {
                             })
                             .collect();
                         self.record_concrete_record_init_type_args(span, &resolved_args);
+                        // Machine bound enforcement on coercion-arm ctor:
+                        // when the expected type pins a machine instantiation
+                        // (e.g. `var m: Holder<File> = Active { … }`), the
+                        // arg vector built from the coercion is the
+                        // substitution the user is committing to. Route
+                        // through the canonical helper; non-machine names
+                        // short-circuit at the table lookup.
+                        self.enforce_machine_instantiation_bounds(name, &resolved_args, span);
                         self.record_type(span, expected);
                         return expected.clone();
                     }
@@ -2331,6 +2351,17 @@ impl Checker {
                                     })
                                     .collect();
                                 self.record_concrete_record_init_type_args(span, &resolved_args);
+                                // Machine bound enforcement on enum-variant
+                                // ctor with expected enum: identical motivation
+                                // to the plain-struct coercion arm above; the
+                                // enum name carrier IS the machine name when
+                                // the expected type is a machine instantiation
+                                // (`var m: Holder<File> = Holder::Active { … }`).
+                                self.enforce_machine_instantiation_bounds(
+                                    expected_enum_name,
+                                    &resolved_args,
+                                    span,
+                                );
                                 self.record_type(span, expected);
                             }
                         }
@@ -3742,6 +3773,20 @@ impl Checker {
                         if let Some((slot, child_type)) = resolved_slot {
                             self.supervisor_child_slots
                                 .insert(SpanKey::from(span), slot);
+                            // Path-4 defense-in-depth bound enforcement on
+                            // supervisor-child PID synthesis. The
+                            // `SupervisorChildren` table stores child types
+                            // as bare `String` names (see
+                            // `check::types::SupervisorChildren`); the
+                            // synthesised PID payload is `Ty::Named { args:
+                            // vec![] }`, so the helper short-circuits today
+                            // on empty args. Wiring the call here means any
+                            // future change that admits type-parameterised
+                            // children (e.g. `child h: Holder<File>`)
+                            // inherits enforcement at the canonical seam
+                            // rather than re-litigating bound checking at a
+                            // sibling site.
+                            self.enforce_machine_instantiation_bounds(&child_type, &[], span);
                             return Ty::local_pid(Ty::Named {
                                 builtin: None,
                                 name: child_type,
@@ -4111,6 +4156,11 @@ impl Checker {
 
         // Collect binding-accurate captures, preserving first-use order.
         let raw_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
+        // Scan the lambda body once syntactically to determine which
+        // capture names are mutated (`BorrowMut` over `Borrow`) and
+        // whether the body contains a suspend point
+        // (`NonSyncMutCaptureCrossesSuspend` gate).
+        let body_facts = super::closure_inference::scan_lambda_body(body);
         let mut seen_capture_bindings = HashSet::new();
         let mut capture_facts = Vec::new();
         for mut fact in raw_capture_facts {
@@ -4124,22 +4174,71 @@ impl Checker {
             fact.is_send = self
                 .registry
                 .implements_marker(&resolved_ty, MarkerTrait::Send);
-            fact.mode = if is_move {
-                ClosureCaptureMode::Move
+            fact.is_sync = self.registry.is_sync(&resolved_ty);
+            let mutates = body_facts.mutated_names.contains(&fact.name);
+            // Capture-mode inference rule:
+            //   `move`     → Move  / ExplicitMove
+            //   Copy type  → Copy  / ImplicitCopy
+            //   mut use    → BorrowMut / InferredBorrowMut
+            //   read-only  → Borrow    / InferredBorrow
+            let (selected_mode, selected_origin) = if is_move {
+                (ClosureCaptureMode::Move, CaptureModeOrigin::ExplicitMove)
+            } else if is_copy {
+                (ClosureCaptureMode::Copy, CaptureModeOrigin::ImplicitCopy)
+            } else if mutates {
+                (
+                    ClosureCaptureMode::BorrowMut,
+                    CaptureModeOrigin::InferredBorrowMut,
+                )
             } else {
-                ClosureCaptureMode::Copy
+                (
+                    ClosureCaptureMode::Borrow,
+                    CaptureModeOrigin::InferredBorrow,
+                )
             };
+            fact.mode = selected_mode;
+            fact.mode_origin = selected_origin;
             fact.ty = resolved_ty.clone();
-            if !is_move && !is_copy && !matches!(resolved_ty, Ty::Error | Ty::Var(_)) {
+            // Substrate gain: inferred `Borrow` / `BorrowMut`
+            // captures are ACCEPTED. Previously, non-Copy non-`move`
+            // captures emitted `ClosureExplicitMoveRequired`; the
+            // checker now records the inferred mode and lets the
+            // lowerer materialise the reference. The legacy diagnostic
+            // is dead for this site (still declared for the source
+            // span on `move` keyword misuse, if a future caller needs
+            // it).
+            // An inferred `BorrowMut` capture of a non-`Sync` binding
+            // crossing a suspend point is rejected until a future
+            // auto-lock pass subscribes to this kind and rewrites the
+            // closure. Diagnostic kind name is the public seam; do not
+            // rename.
+            if matches!(fact.mode, ClosureCaptureMode::BorrowMut)
+                && !fact.is_sync
+                && body_facts.has_suspend
+                && !matches!(resolved_ty, Ty::Error | Ty::Var(_))
+            {
+                let suspend_label = if body_facts.suspend_kind.is_empty() {
+                    "await".to_string()
+                } else {
+                    body_facts.suspend_kind.clone()
+                };
+                let origin_label = match fact.mode_origin {
+                    CaptureModeOrigin::InferredBorrowMut => "inferred from a mutating use",
+                    CaptureModeOrigin::InferredBorrow => "inferred read-only borrow",
+                    CaptureModeOrigin::ExplicitMove => "explicit `move`",
+                    CaptureModeOrigin::ImplicitCopy => "implicit copy",
+                };
                 self.report_error(
-                    TypeErrorKind::ClosureExplicitMoveRequired {
-                        name: fact.name.clone(),
-                        ty: resolved_ty.user_facing().to_string(),
+                    TypeErrorKind::NonSyncMutCaptureCrossesSuspend {
+                        capture_name: fact.name.clone(),
+                        suspend_kind: suspend_label.clone(),
                     },
                     &fact.use_span,
                     format!(
-                        "closure captures non-Copy binding `{}` by value; use `move |...|` to consume `{}` explicitly",
-                        fact.name, fact.name
+                        "non-Sync capture `{}` is mutated across a `{}` point \
+                         (mode = BorrowMut, {}); this is unsound until \
+                         automatic locking lands",
+                        fact.name, suspend_label, origin_label
                     ),
                 );
             }
@@ -4494,6 +4593,14 @@ impl Checker {
             // is enforced at the output boundary by
             // `validate_record_init_type_args_output_contract` in `admissibility.rs`.
             self.record_concrete_record_init_type_args(span, &type_args);
+            // Defense-in-depth bound enforcement on the plain
+            // struct-init path. Machines never lower to this branch
+            // (their ctors are enum-variant initialisations handled
+            // below), but the helper short-circuits cleanly for
+            // non-machine names and forwards-compats any future
+            // language change that admits direct machine-name
+            // initialisation.
+            self.enforce_machine_instantiation_bounds(name, &type_args, span);
             Ty::Named {
                 builtin: None,
                 name: name.to_string(),
@@ -4617,14 +4724,14 @@ impl Checker {
             // Emit unconditionally; see the struct-init branch above for the
             // boundary-prune rationale and validator location.
             self.record_concrete_record_init_type_args(span, &type_args);
-            // Enforce trait bounds declared on the machine's generic type
-            // parameters. Other variant carriers (enum/struct/record) do not
-            // currently route bounds through the brace-init path; the bounds
-            // side table is keyed by machine name, so this is a no-op for
-            // non-machine carriers.
-            if let Some(bounds) = self.machine_type_param_bounds.get(&enum_name).cloned() {
-                self.enforce_named_type_param_bounds(&enum_type_params, &bounds, &type_args, span);
-            }
+            // Enforce trait bounds declared on the machine's generic
+            // type parameters via the canonical helper. Non-machine
+            // carriers (enum / struct / record) are absent from
+            // `machine_type_param_bounds`, so the helper short-circuits
+            // for them; this keeps brace-init the single bound-check
+            // entry point for machine-state initialisation rather than
+            // forking the table lookup at each call site.
+            self.enforce_machine_instantiation_bounds(&enum_name, &type_args, span);
             Ty::Named {
                 builtin: None,
                 name: enum_name,

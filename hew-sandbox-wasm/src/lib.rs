@@ -680,6 +680,30 @@ fn main() {
     }
 
     #[test]
+    fn user_resource_type_is_profile_rejected_w3030() {
+        // W3.030 V15 — `#[resource]` types carry an implicit drop contract
+        // that dispatches `<T>::close` on every scope-exit path through the
+        // unified W3.021 `ScopeExitPlan` stream. The sandbox-WASM bytecode
+        // export does not yet model that drop scheduling (the W3.021
+        // `defer_rejected` follow-up tracks the same gap). The profile
+        // checker must emit a named `user_resource_close_not_yet_admitted_sandbox`
+        // diagnostic at the `#[resource]` declaration so the sandbox never
+        // silently misses a resource close.
+        assert_profile_rejection(
+            r#"
+#[resource]
+type Conn {
+    fd: i64
+}
+fn main() {
+    println("done");
+}
+"#,
+            "user_resource_close_not_yet_admitted_sandbox",
+        );
+    }
+
+    #[test]
     fn while_let_is_admitted_by_profile() {
         // while-let is no longer reserved; the profile checker walks the body
         // and the emitter lowers Constructor patterns.

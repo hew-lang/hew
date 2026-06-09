@@ -1,0 +1,24 @@
+// W3.032 Slice 3 vertical slice: `Vec<Record>::contains` on an
+// equality-eligible Copy record routes through the codegen-emitted
+// `__hew_eq_thunk_*` and `hew_vec_contains_thunk` runtime.  Exit code 0
+// confirms every assertion held.
+type Point { x: i64, y: i64 }
+
+fn main() -> i64 {
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 1, y: 2 });
+    points.push(Point { x: 3, y: 4 });
+    points.push(Point { x: 5, y: 6 });
+
+    // Positive cases: structural equality must succeed for each pushed value.
+    assert(points.contains(Point { x: 1, y: 2 }));
+    assert(points.contains(Point { x: 3, y: 4 }));
+    assert(points.contains(Point { x: 5, y: 6 }));
+
+    // Negative cases: differs in either field, or both.
+    assert(!points.contains(Point { x: 0, y: 0 }));
+    assert(!points.contains(Point { x: 1, y: 99 }));
+    assert(!points.contains(Point { x: 99, y: 2 }));
+
+    0
+}

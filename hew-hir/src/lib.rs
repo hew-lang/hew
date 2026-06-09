@@ -9,6 +9,7 @@ pub mod dump;
 pub mod ids;
 pub mod intent;
 pub mod lower;
+pub mod mono;
 pub mod monomorph;
 pub mod node;
 pub mod stdlib_catalog;
@@ -32,11 +33,11 @@ pub use monomorph::{
 pub use node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
-    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding,
-    HirMatchArmPredicate, HirModule, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm,
-    HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl, HirVariant, HirVariantKind,
+    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineBound,
+    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
+    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirRegexLiteral, HirRestartPolicy,
+    HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVariant, HirVariantKind, WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,

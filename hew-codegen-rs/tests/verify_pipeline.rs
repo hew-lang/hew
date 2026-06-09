@@ -59,6 +59,9 @@ fn pipeline_const_42() -> IrPipeline {
         regex_literals: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     }
 }
 
@@ -95,6 +98,9 @@ fn pipeline_unsupported_f64_return() -> IrPipeline {
         regex_literals: Vec::new(),
         gen_state_layouts: vec![],
         extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
     }
 }
 

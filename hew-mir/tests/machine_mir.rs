@@ -197,6 +197,7 @@ fn traffic_light_machine() -> HirMachineDecl {
         node: hew_hir::HirNodeId(0),
         name: "TrafficLight".to_string(),
         type_params: Vec::new(),
+        type_param_bounds: Vec::new(),
         states: vec![make_state("Red"), make_state("Green")],
         events: vec![make_event("Tick")],
         transitions: vec![
@@ -214,6 +215,7 @@ fn traffic_light_with_wildcard_machine() -> HirMachineDecl {
         node: hew_hir::HirNodeId(0),
         name: "TrafficLight".to_string(),
         type_params: Vec::new(),
+        type_param_bounds: Vec::new(),
         states: vec![make_state("Red"), make_state("Green")],
         events: vec![make_event("Tick"), make_event("Timeout")],
         transitions: vec![
@@ -231,6 +233,7 @@ fn generic_lifecycle_machine() -> HirMachineDecl {
         node: hew_hir::HirNodeId(0),
         name: "Lifecycle".to_string(),
         type_params: vec!["T".to_string()],
+        type_param_bounds: Vec::new(),
         states: vec![make_state("Idle"), make_state("Running")],
         events: vec![make_event("Start")],
         transitions: vec![make_transition("Lifecycle", "Start", "Idle", "Running", 1)],
@@ -309,6 +312,7 @@ fn transition_bodies_entry_exit_reenter() {
         node: hew_hir::HirNodeId(0),
         name: "Lifecycle".to_string(),
         type_params: Vec::new(),
+        type_param_bounds: Vec::new(),
         states: vec![idle, active],
         events: vec![
             make_event("Start"),
@@ -498,6 +502,7 @@ fn resource_field_transition_out_drops() {
         node: hew_hir::HirNodeId(0),
         name: "ResourceMachine".to_string(),
         type_params: Vec::new(),
+        type_param_bounds: Vec::new(),
         states: vec![holding.clone(), idle, done],
         events: vec![
             make_event("ToIdle"),

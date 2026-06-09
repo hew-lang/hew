@@ -50,6 +50,7 @@ use crate::envelope::{
     encode_envelope_frame_from_raw_parts, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, WIRE_VERSION,
 };
 use crate::lifetime::poison_safe::PoisonSafe;
+use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
@@ -858,7 +859,12 @@ unsafe fn encode_envelope(
     msg_type: i32,
     payload: *mut u8,
     payload_len: usize,
+    payload_class: u8,
+    cancel_token_handle: u64,
 ) -> Option<Vec<u8>> {
+    // Cross-node send gates (Gate 1 before Gate 2; fail-closed in all build
+    // profiles via set_last_error + return None, not debug_assert).
+    validate_cross_node_send_params(payload_class, cancel_token_handle)?;
     // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
     match unsafe {
         encode_envelope_frame_from_raw_parts(
@@ -1725,7 +1731,7 @@ pub unsafe extern "C" fn hew_connmgr_send(
     // Verify connection exists, is active, and targets the correct peer node.
     // The peer_node_id check prevents sends to recycled conn_ids that now
     // belong to a different node (conn_id reuse safety).
-    let target_node_id = (target_actor_id >> 48) as u16;
+    let target_node_id = crate::pid::hew_pid_node(target_actor_id);
     #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
@@ -1759,8 +1765,16 @@ pub unsafe extern "C" fn hew_connmgr_send(
     #[cfg(feature = "encryption")]
     if let Some(noise_transport) = maybe_noise {
         // SAFETY: data is valid for size bytes per caller contract of hew_connmgr_send.
-        let Some(encoded) = (unsafe { encode_envelope(target_actor_id, msg_type, data, size) })
-        else {
+        let Some(encoded) = (unsafe {
+            encode_envelope(
+                target_actor_id,
+                msg_type,
+                data,
+                size,
+                MailboxPayloadClass::SerializedCrossNode as u8,
+                0,
+            )
+        }) else {
             return -1;
         };
         let mut maybe_ciphertext = None;

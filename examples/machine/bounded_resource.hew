@@ -1,0 +1,50 @@
+// Surface fixture demonstrating trait-bound generic machines.
+//
+// `machine Bounded<T: Resource>` declares an inline trait bound on
+// the machine's generic type parameter. Use-site annotations such as
+// `var holder: Bounded<File>` route through the canonical
+// `enforce_machine_instantiation_bounds` helper at the checker's
+// type-annotation seam (resolve_type_expr), rejecting any concrete
+// substitution whose type does not implement the named trait.
+//
+// The fixture exercises:
+//   * inline `<T: Resource>` bound on a machine declaration
+//   * use-site type annotation `Bounded<File>` (Path 2 — annotation
+//     resolution)
+//   * struct-state brace-init at `Holding { handle: f }` typed
+//     against the machine self-type (Path 1 — struct-state init)
+//
+// Per-substitution machine layout (per-monomorphisation `MachineLayout`
+// entries under mangled names) is future work; this fixture is the
+// compile-time surface companion exercising the bound-enforcement
+// pipeline that those later substrate changes will sit underneath.
+
+trait Resource {
+    fn close(self);
+}
+
+type File {
+    raw: i64;
+}
+
+impl Resource for File {
+    fn close(self) {}
+}
+
+machine Bounded<T: Resource> {
+    state Idle;
+    state Holding { handle: T; }
+
+    event Start { handle: T; }
+    event Finish;
+
+    on Start: Idle -> Holding { Holding { handle: event.handle } }
+    on Finish: Holding -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Finish: _ -> _ { state }
+}
+
+fn main() {
+    let f = File { raw: 7 };
+    let holder: Bounded<File> = Holding { handle: f };
+}

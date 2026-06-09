@@ -321,32 +321,31 @@ pub unsafe extern "C" fn hew_wasm_send(
     // HewActor layout (64-bit):
     //   0: sched_link_next (8 bytes, AtomicPtr)
     //   8: id (8 bytes, u64)
-    //  16: pid (8 bytes, u64)
-    //  24: state (8 bytes, *mut c_void)
-    //  32: state_size (8 bytes, usize)
-    //  40: dispatch (8 bytes, Option<fn>)
-    //  48: mailbox (8 bytes, *mut c_void)
+    //  16: state (8 bytes, *mut c_void)
+    //  24: state_size (8 bytes, usize)
+    //  32: dispatch (8 bytes, Option<fn>)
+    //  40: mailbox (8 bytes, *mut c_void)
     const MAILBOX_OFFSET: usize = std::mem::offset_of!(HewActor, mailbox);
 
     // Verify offsets match expectations (checked at compile time).
     #[cfg(target_pointer_width = "64")]
-    const _: () = assert!(MAILBOX_OFFSET == 48);
+    const _: () = assert!(MAILBOX_OFFSET == 40);
     #[cfg(target_pointer_width = "32")]
-    const _: () = assert!(MAILBOX_OFFSET == 36);
+    const _: () = assert!(MAILBOX_OFFSET == 28);
 
     // After sending, wake the actor: transition IDLE → RUNNABLE and enqueue.
     // This mirrors what the native scheduler does in hew_actor_send.
     //
-    // actor_state is at offset 56 (after mailbox at 48):
-    //  48: mailbox (8 bytes)
-    //  56: actor_state (4 bytes, AtomicI32)
+    // actor_state is at offset 48 (after mailbox at 40):
+    //  40: mailbox (8 bytes)
+    //  48: actor_state (4 bytes, AtomicI32)
     const ACTOR_STATE_OFFSET: usize = std::mem::offset_of!(HewActor, actor_state);
 
     // Verify offsets match expectations (checked at compile time).
     #[cfg(target_pointer_width = "64")]
-    const _: () = assert!(ACTOR_STATE_OFFSET == 56);
+    const _: () = assert!(ACTOR_STATE_OFFSET == 48);
     #[cfg(target_pointer_width = "32")]
-    const _: () = assert!(ACTOR_STATE_OFFSET == 40);
+    const _: () = assert!(ACTOR_STATE_OFFSET == 32);
 
     const IDLE: i32 = 0; // HewActorState::Idle
     const RUNNABLE: i32 = 1; // HewActorState::Runnable

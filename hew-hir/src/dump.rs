@@ -620,7 +620,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             .expect("write to string");
             dump_expr(out, conn, indent + 2);
         }
-        HirExprKind::ListenerAwaitAccept { listener } => {
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
             writeln!(out, "{pad}  listener-await-accept").expect("write to string");
             dump_expr(out, listener, indent + 2);
         }

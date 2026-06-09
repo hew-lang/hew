@@ -2190,10 +2190,22 @@ pub enum Terminator {
         /// `result_dest` remains the raw bytes payload slot; codegen binds
         /// `Ok(result_dest)` or `Err(error_dest)` into this outer Result slot on
         /// the resume edge after resolving the await-cancel arbiter.
+        ///
+        /// When `to_string` is also `true`, codegen converts the raw bytes to a
+        /// string via `hew_bytes_to_string` before wrapping in `Ok(_)`, so the
+        /// outer Result carries `Result<string, IoError>`.
         deadline_result_dest: Option<Place>,
         /// `IoError` payload slot for the deadline Err arm. Present exactly when
         /// `deadline_result_dest` is present.
         error_dest: Option<Place>,
+        /// `true` when the source was `await conn.read_string() | after d`:
+        /// codegen converts the raw `bytes` payload (`result_dest`) to a `string`
+        /// via `hew_bytes_to_string` before wrapping it in `Ok(_)` into
+        /// `deadline_result_dest`. `false` for the raw `conn.read()` form where
+        /// `bytes` is the Ok payload directly.
+        ///
+        /// Meaningless (and always `false`) when `deadline_result_dest` is `None`.
+        to_string: bool,
         /// Block reached on the coro switch resume edge (case 0) — the body
         /// continues here after `enqueue_resume` woke the parked continuation and
         /// the bytes are bound. This is the `next` block of the original read.
@@ -2235,6 +2247,14 @@ pub enum Terminator {
         /// deposits the accepted connection handle. Identical role to
         /// [`Terminator::SuspendingRead::result_dest`].
         result_dest: Place,
+        /// When present, this accept is the source of `await ln.accept() | after d`.
+        /// `result_dest` remains the raw `Connection` slot; codegen binds
+        /// `Ok(result_dest)` or `Err(error_dest)` into this outer Result slot on
+        /// the resume edge after resolving the await-cancel arbiter.
+        deadline_result_dest: Option<Place>,
+        /// `IoError` payload slot for the deadline Err arm. Present exactly when
+        /// `deadline_result_dest` is present.
+        error_dest: Option<Place>,
         /// Block reached on the coro switch resume edge (case 0) — the body
         /// continues here after `enqueue_resume` woke the parked continuation and
         /// the connection is bound. This is the `next` block of the original

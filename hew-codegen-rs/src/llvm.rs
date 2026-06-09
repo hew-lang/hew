@@ -22414,6 +22414,11 @@ struct SuspendingReadEmit {
     result_dest: Place,
     deadline_result_dest: Option<Place>,
     error_dest: Option<Place>,
+    /// `true` when the source was `await conn.read_string() | after d`: codegen
+    /// converts `result_dest` (bytes) to a string via `hew_bytes_to_string`
+    /// before wrapping in `Ok(_)` into `deadline_result_dest`. Ignored (treated
+    /// as `false`) when `deadline_result_dest` is `None`.
+    to_string: bool,
     resume: u32,
     cleanup: u32,
     /// NEW-6c `await conn.read() | after d` deadline (nanoseconds). `Some(ns)`
@@ -22427,6 +22432,18 @@ struct SuspendingReadEmit {
 struct SuspendingAcceptEmit {
     listener: Place,
     result_dest: Place,
+    /// When present, this accept is the source of `await ln.accept() | after d`.
+    /// `result_dest` remains the raw `Connection` slot; codegen binds
+    /// `Ok(result_dest)` or `Err(IoError::TimedOut)` into this outer Result slot
+    /// after resolving the await-cancel arbiter.
+    deadline_result_dest: Option<Place>,
+    /// `IoError` payload slot for the deadline Err arm. Present exactly when
+    /// `deadline_result_dest` is present.
+    error_dest: Option<Place>,
+    /// NEW-6d `await ln.accept() | after d` deadline (nanoseconds). `Some(ns)`
+    /// schedules the common await-cancel arbiter against the read slot; timeout
+    /// binds `Err(IoError::TimedOut(0))`. `None` is a plain suspending accept.
+    deadline_ns: Option<i64>,
     resume: u32,
     cleanup: u32,
 }
@@ -23065,7 +23082,56 @@ fn emit_suspending_read_terminator<'ctx>(
         )
         .llvm_ctx("hew_read_slot_take_raw call")?;
     if let Some(result_dest) = term.deadline_result_dest {
-        emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
+        if term.to_string {
+            // `await conn.read_string() | after d` success path: convert the raw
+            // bytes (`result_dest`) to a string before wrapping in `Ok(_)`.
+            // `hew_bytes_to_string` takes a `*bytes` (by-pointer consumer convention)
+            // and returns a header-pointer-shaped string (ptr).
+            let bytes_to_string = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_bytes_to_string",
+            )?;
+            let (bytes_ptr, _) = place_pointer(fn_ctx, term.result_dest)?;
+            let string_val = fn_ctx
+                .builder
+                .build_call(
+                    bytes_to_string,
+                    &[bytes_ptr.into()],
+                    "suspending_read_bytes_to_string",
+                )
+                .llvm_ctx("hew_bytes_to_string call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_bytes_to_string returned void".into())
+                })?;
+            // result_dest is Result<string, IoError>; tag=0, Ok variant field 0 = ptr.
+            // Write the string pointer directly into the Ok variant field — no
+            // intermediate alloca needed since `string_val` is already a ptr value.
+            let dest_local = composite_dest_local(result_dest, "SuspendingRead read_string ok")?;
+            store_composite_tag(fn_ctx, dest_local, 0, "SuspendingRead read_string ok")?;
+            let (ok_field_ptr, ok_field_ty) = place_pointer(
+                fn_ctx,
+                Place::MachineVariant {
+                    local: dest_local,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+            )?;
+            if !matches!(ok_field_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "SuspendingRead read_string Ok field must be ptr-typed, got {ok_field_ty:?}"
+                )));
+            }
+            fn_ctx
+                .builder
+                .build_store(ok_field_ptr, string_val)
+                .llvm_ctx("SuspendingRead read_string Ok field store")?;
+        } else {
+            emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
+        }
     }
     fn_ctx
         .builder
@@ -23154,6 +23220,13 @@ fn emit_suspending_accept_terminator<'ctx>(
             term.cleanup
         )));
     }
+    if term.deadline_ns.is_some()
+        && (term.deadline_result_dest.is_none() || term.error_dest.is_none())
+    {
+        return Err(CodegenError::FailClosed(
+            "SuspendingAccept deadline reached codegen without Result/IoError destinations".into(),
+        ));
+    }
 
     // self = the current actor — the parked-continuation waiter the reactor wake
     // re-enqueues. From `hew_actor_self()` (the live thread-local context), the
@@ -23188,6 +23261,58 @@ fn emit_suspending_accept_terminator<'ctx>(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
         .into_pointer_value();
+
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
+
+    // ── Deadline cancel registration (when `| after d` is present). ────────────
+    // Wire before `hew_listener_await_accept` so the registration is in place
+    // before the reactor can fire. Mirrors the SuspendingRead cancel-registration
+    // sequence (hew_await_cancel_new → hew_read_slot_set_await_cancel).
+    let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
+        let cancel_new = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_new",
+        )?;
+        let cleanup_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_read_slot_cancel_cleanup",
+        )?;
+        let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
+        let reg = fn_ctx
+            .builder
+            .build_call(
+                cancel_new,
+                &[self_actor.into(), cleanup_ptr.into(), slot.into()],
+                "suspending_accept_deadline_reg",
+            )
+            .llvm_ctx("hew_await_cancel_new call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
+            .into_pointer_value();
+        let set_await_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_read_slot_set_await_cancel",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                set_await_cancel,
+                &[slot.into(), reg.into()],
+                "suspending_accept_set_await_cancel",
+            )
+            .llvm_ctx("hew_read_slot_set_await_cancel call")?;
+        Some(reg)
+    } else {
+        None
+    };
 
     let await_accept = intern_runtime_decl(
         fn_ctx.ctx,
@@ -23249,9 +23374,8 @@ fn emit_suspending_accept_terminator<'ctx>(
     )?;
 
     // ── register_err: the registration failed; no accept will ever arrive.
-    // Cancel + free the slot and bind an INVALID `Connection` without suspending
-    // (no worker to free — we never parked). The invalid handle (`-1`
-    // reinterpreted as a pointer) is rejected by `hew_connection_is_valid`. ─────
+    // Cancel + free the slot. On a deadline path, emit IoError::TimedOut into the
+    // Result destination. On the plain path, bind an INVALID `Connection`. ──────
     fn_ctx.builder.position_at_end(register_err_bb);
     fn_ctx
         .builder
@@ -23261,7 +23385,23 @@ fn emit_suspending_accept_terminator<'ctx>(
         .builder
         .build_call(slot_free, &[slot.into()], "suspending_accept_err_free")
         .llvm_ctx("hew_read_slot_free (register err) call")?;
-    store_invalid_connection(fn_ctx, term.result_dest)?;
+    if let Some(reg) = reg {
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_accept_err_reg_free")
+            .llvm_ctx("hew_await_cancel_free (register err) call")?;
+    }
+    if let (Some(result_dest), Some(error_dest)) = (term.deadline_result_dest, term.error_dest) {
+        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
+    } else {
+        store_invalid_connection(fn_ctx, term.result_dest)?;
+    }
     fn_ctx
         .builder
         .build_unconditional_branch(resume_bb)
@@ -23269,6 +23409,168 @@ fn emit_suspending_accept_terminator<'ctx>(
 
     // ── do_suspend: park the continuation (non-final suspend). ─────────────────
     fn_ctx.builder.position_at_end(do_suspend_bb);
+    if let (Some(reg), Some(ns)) = (reg, term.deadline_ns) {
+        let delay_ms = (ns / 1_000_000).max(1) as u64;
+        let tw_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_global_timer_wheel",
+        )?;
+        let tw = fn_ctx
+            .builder
+            .build_call(tw_fn, &[], "suspending_accept_deadline_tw")
+            .llvm_ctx("hew_global_timer_wheel call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
+            .into_pointer_value();
+        let schedule = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_schedule_deadline_ms",
+        )?;
+        let delay_val = i64_ty.const_int(delay_ms, false);
+        let sched_rc = fn_ctx
+            .builder
+            .build_call(
+                schedule,
+                &[reg.into(), tw.into(), delay_val.into()],
+                "suspending_accept_schedule_deadline",
+            )
+            .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_await_cancel_schedule_deadline_ms returned void".into(),
+                )
+            })?
+            .into_int_value();
+        let armed = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                sched_rc,
+                sched_rc.get_type().const_zero(),
+                "suspending_accept_deadline_armed",
+            )
+            .llvm_ctx("suspending accept schedule-armed compare")?;
+        let deadline_proceed_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_accept_deadline_proceed");
+        let deadline_check_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_accept_deadline_check");
+        fn_ctx
+            .builder
+            .build_conditional_branch(armed, deadline_proceed_bb, deadline_check_bb)
+            .llvm_ctx("suspending accept schedule-armed branch")?;
+
+        fn_ctx.builder.position_at_end(deadline_check_bb);
+        let status_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_status",
+        )?;
+        let sched_status = fn_ctx
+            .builder
+            .build_call(
+                status_fn,
+                &[reg.into()],
+                "suspending_accept_schedule_status",
+            )
+            .llvm_ctx("hew_await_cancel_status (schedule) call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
+            })?
+            .into_int_value();
+        let accept_completed = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                sched_status,
+                i32_ty.const_int(1, false),
+                "suspending_accept_schedule_accept_completed",
+            )
+            .llvm_ctx("suspending accept schedule accept-completed compare")?;
+        let deadline_failclosed_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_accept_deadline_failclosed");
+        fn_ctx
+            .builder
+            .build_conditional_branch(
+                accept_completed,
+                deadline_proceed_bb,
+                deadline_failclosed_bb,
+            )
+            .llvm_ctx("suspending accept schedule accept-completed branch")?;
+
+        fn_ctx.builder.position_at_end(deadline_failclosed_bb);
+        let reg_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_cancel",
+        )?;
+        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
+        let no_wake = i32_ty.const_zero();
+        fn_ctx
+            .builder
+            .build_call(
+                reg_cancel,
+                &[reg.into(), cancelled_status.into(), no_wake.into()],
+                "suspending_accept_failclosed_reg_cancel",
+            )
+            .llvm_ctx("hew_await_cancel_cancel (accept fail-closed) call")?;
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                reg_free,
+                &[reg.into()],
+                "suspending_accept_failclosed_reg_free",
+            )
+            .llvm_ctx("hew_await_cancel_free (accept fail-closed) call")?;
+        fn_ctx
+            .builder
+            .build_call(
+                slot_cancel,
+                &[slot.into()],
+                "suspending_accept_failclosed_slot_cancel",
+            )
+            .llvm_ctx("hew_read_slot_cancel (fail-closed) call")?;
+        fn_ctx
+            .builder
+            .build_call(
+                slot_free,
+                &[slot.into()],
+                "suspending_accept_failclosed_free",
+            )
+            .llvm_ctx("hew_read_slot_free (fail-closed) call")?;
+        let result_dest = term.deadline_result_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingAccept fail-closed missing Result dest".into())
+        })?;
+        let error_dest = term.error_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingAccept fail-closed missing IoError dest".into())
+        })?;
+        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending accept deadline fail-closed br")?;
+
+        fn_ctx.builder.position_at_end(deadline_proceed_bb);
+    }
     let accept_bind_bb = fn_ctx
         .ctx
         .append_basic_block(parent, "suspending_accept_bind");
@@ -23298,6 +23600,38 @@ fn emit_suspending_accept_terminator<'ctx>(
     // ── abandon_cleanup: cancel + free the read slot, then join the shared coro
     // cleanup (frame-free + coro.end). ─────────────────────────────────────────
     fn_ctx.builder.position_at_end(abandon_cleanup_bb);
+    if let Some(reg) = reg {
+        let reg_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_cancel",
+        )?;
+        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
+        let no_wake = i32_ty.const_zero();
+        fn_ctx
+            .builder
+            .build_call(
+                reg_cancel,
+                &[reg.into(), cancelled_status.into(), no_wake.into()],
+                "suspending_accept_abandon_reg_cancel",
+            )
+            .llvm_ctx("hew_await_cancel_cancel (accept abandon) call")?;
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                reg_free,
+                &[reg.into()],
+                "suspending_accept_abandon_reg_free",
+            )
+            .llvm_ctx("hew_await_cancel_free (accept abandon) call")?;
+    }
     fn_ctx
         .builder
         .build_call(
@@ -23319,8 +23653,97 @@ fn emit_suspending_accept_terminator<'ctx>(
     // connection handle is already deposited in `slot`; `hew_read_slot_take_handle`
     // returns it (as the pointer-shaped `Connection`) on the fast path. Store it
     // into `result_dest`, release the creator ref, and branch to the MIR resume
-    // block. ───────────────────────────────────────────────────────────────────
+    // block. When a deadline is active, first resolve the arbiter (complete vs
+    // timed-out) before binding. ───────────────────────────────────────────────
     fn_ctx.builder.position_at_end(accept_bind_bb);
+    if let Some(reg) = reg {
+        let complete = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_complete",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                complete,
+                &[reg.into()],
+                "suspending_accept_deadline_complete",
+            )
+            .llvm_ctx("hew_await_cancel_complete call")?;
+        let status_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_status",
+        )?;
+        let status = fn_ctx
+            .builder
+            .build_call(
+                status_fn,
+                &[reg.into()],
+                "suspending_accept_deadline_status",
+            )
+            .llvm_ctx("hew_await_cancel_status call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
+            })?
+            .into_int_value();
+        let timed_out = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                i32_ty.const_int(3, false),
+                "suspending_accept_timed_out",
+            )
+            .llvm_ctx("suspending accept timed-out compare")?;
+        let timeout_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_accept_timeout");
+        let accept_proceed_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_accept_proceed");
+        fn_ctx
+            .builder
+            .build_conditional_branch(timed_out, timeout_bb, accept_proceed_bb)
+            .llvm_ctx("suspending accept deadline branch")?;
+
+        fn_ctx.builder.position_at_end(timeout_bb);
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                reg_free,
+                &[reg.into()],
+                "suspending_accept_timeout_reg_free",
+            )
+            .llvm_ctx("hew_await_cancel_free (accept timeout) call")?;
+        fn_ctx
+            .builder
+            .build_call(slot_free, &[slot.into()], "suspending_accept_timeout_free")
+            .llvm_ctx("hew_read_slot_free (timeout) call")?;
+        let result_dest = term.deadline_result_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingAccept timeout missing Result dest".into())
+        })?;
+        let error_dest = term.error_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingAccept timeout missing IoError dest".into())
+        })?;
+        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending accept timeout br")?;
+
+        fn_ctx.builder.position_at_end(accept_proceed_bb);
+    }
     let slot_take_handle = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -23346,10 +23769,27 @@ fn emit_suspending_accept_terminator<'ctx>(
         .builder
         .build_store(dest_ptr, conn)
         .llvm_ctx("suspending accept connection store")?;
+    if let Some(result_dest) = term.deadline_result_dest {
+        // `await ln.accept() | after d` success path: wrap the accepted Connection
+        // in `Ok(_)` into the Result<Connection, IoError> destination.
+        emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
+    }
     fn_ctx
         .builder
         .build_call(slot_free, &[slot.into()], "suspending_accept_ok_free")
         .llvm_ctx("hew_read_slot_free (ok) call")?;
+    if let Some(reg) = reg {
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_accept_ok_reg_free")
+            .llvm_ctx("hew_await_cancel_free (accept ok) call")?;
+    }
     fn_ctx
         .builder
         .build_unconditional_branch(resume_bb)
@@ -28488,6 +28928,7 @@ fn lower_terminator<'ctx>(
             result_dest,
             deadline_result_dest,
             error_dest,
+            to_string,
             resume,
             cleanup,
         } => emit_suspending_read_terminator(
@@ -28497,6 +28938,7 @@ fn lower_terminator<'ctx>(
                 result_dest: *result_dest,
                 deadline_result_dest: *deadline_result_dest,
                 error_dest: *error_dest,
+                to_string: *to_string,
                 resume: *resume,
                 cleanup: *cleanup,
                 deadline_ns: await_deadlines.get(&block_id).copied(),
@@ -28551,6 +28993,8 @@ fn lower_terminator<'ctx>(
         Terminator::SuspendingAccept {
             listener,
             result_dest,
+            deadline_result_dest,
+            error_dest,
             resume,
             cleanup,
         } => emit_suspending_accept_terminator(
@@ -28558,6 +29002,9 @@ fn lower_terminator<'ctx>(
             SuspendingAcceptEmit {
                 listener: *listener,
                 result_dest: *result_dest,
+                deadline_result_dest: *deadline_result_dest,
+                error_dest: *error_dest,
+                deadline_ns: await_deadlines.get(&block_id).copied(),
                 resume: *resume,
                 cleanup: *cleanup,
             },

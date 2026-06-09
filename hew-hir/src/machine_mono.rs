@@ -1095,7 +1095,7 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
-        HirExprKind::ListenerAwaitAccept { listener } => {
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
             walk_expr(
                 listener,
                 subst,

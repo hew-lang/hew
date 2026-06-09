@@ -1169,6 +1169,11 @@ pub enum HirExprKind {
     ListenerAwaitAccept {
         /// The listener receiver expression (`listener`).
         listener: Box<HirExpr>,
+        /// NEW-6d `await ln.accept() | after d` deadline, in nanoseconds. `None`
+        /// preserves the plain-accept `Connection` result and unconditional read-slot
+        /// wake. `Some(ns)` produces `Result<Connection, IoError>` with
+        /// `IoError::TimedOut` on the deadline arm — parallel to `ConnAwaitRead`.
+        deadline_ns: Option<i64>,
     },
     /// Sealed `select{}` expression.
     ///

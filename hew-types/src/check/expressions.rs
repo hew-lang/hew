@@ -1775,9 +1775,23 @@ impl Checker {
                         self.actor_method_dispatch.get(&inner_key).cloned()
                     {
                         Ty::result(reply_ty, Ty::ask_error())
-                    } else if matches!(self.conn_await_reads.get(&inner_key), Some(false)) {
+                    } else if let Some(&to_string) = self.conn_await_reads.get(&inner_key) {
+                        // `await conn.read() | after d` → `Result<bytes, IoError>`
+                        // `await conn.read_string() | after d` → `Result<string, IoError>`
+                        let ok_ty = if to_string { Ty::String } else { Ty::Bytes };
                         Ty::result(
-                            Ty::Bytes,
+                            ok_ty,
+                            Ty::Named {
+                                name: "IoError".to_string(),
+                                args: Vec::new(),
+                                builtin: None,
+                            },
+                        )
+                    } else if self.listener_await_accepts.contains(&inner_key) {
+                        // `await ln.accept() | after d` → `Result<Connection, IoError>`
+                        // The Ok type mirrors the plain await's inner type (Connection).
+                        Ty::result(
+                            inner_ty,
                             Ty::Named {
                                 name: "IoError".to_string(),
                                 args: Vec::new(),

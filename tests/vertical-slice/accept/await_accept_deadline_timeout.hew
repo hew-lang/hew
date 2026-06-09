@@ -1,0 +1,35 @@
+// Accept fixture (NEW-6d): `await ln.accept() | after d` — deadline elapses
+// before any client connects, so the suspending accept resolves to
+// `Err(IoError::TimedOut(_))`.
+//
+// Run under HEW_WORKERS=1: Server creates a fresh listener on port 0 and
+// parks worker-free on the accept slot. No client connects. The deadline
+// timer fires and resumes the actor with Err(IoError::TimedOut) -> exit 7.
+// A blocking accept would strand the lone worker and hang.
+//
+// Exit-code contract: timeout Err(TimedOut) -> 7; unexpected Ok -> 42;
+// wrong IoError variant -> 8; no actor exit -> main fallback 99.
+import std::net;
+
+actor Server {
+    receive fn go() {
+        let ln = net.listen("127.0.0.1:0");
+        let code = match await ln.accept() | after 60ms {
+            Ok(_conn) => 42,
+            Err(e) => {
+                match e {
+                    IoError::TimedOut(_code) => 7,
+                    _ => 8,
+                }
+            },
+        };
+        exit(code);
+    }
+}
+
+fn main() {
+    let s = spawn Server;
+    s.go();
+    sleep_ms(500);
+    exit(99);
+}

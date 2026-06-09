@@ -1684,12 +1684,68 @@ if [[ "${read_ok_status}" -ne 42 ]]; then
   exit 1
 fi
 
+# Accept (read_string worker-free timeout oracle): `await conn.read_string() | after 60ms`
+# where the peer stays silent. Under HEW_WORKERS=1 the read parks worker-free and
+# the deadline timer resumes the actor with Err(IoError::TimedOut) -> exit 7.
+# Proves the to_string deadline path does NOT apply bytes-to-string on the timeout edge.
+compile_accept "await_read_string_deadline_timeout"
+read_str_timeout_bin="${ROOT}/.tmp/compile-out/await_read_string_deadline_timeout"
+read_str_timeout_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${read_str_timeout_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  read_str_timeout_status=0
+else
+  read_str_timeout_status=$?
+fi
+if [[ "${read_str_timeout_status}" -ne 7 ]]; then
+  echo "expected await_read_string_deadline_timeout (HEW_WORKERS=1) to exit 7, got ${read_str_timeout_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
+# Accept (read_string-before-deadline race): peer writes immediately; the read
+# completes first, cancels the long deadline, and binds Ok(string) -> exit 42.
+compile_accept "await_read_string_deadline_ok"
+read_str_ok_bin="${ROOT}/.tmp/compile-out/await_read_string_deadline_ok"
+read_str_ok_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${read_str_ok_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  read_str_ok_status=0
+else
+  read_str_ok_status=$?
+fi
+if [[ "${read_str_ok_status}" -ne 42 ]]; then
+  echo "expected await_read_string_deadline_ok (HEW_WORKERS=1) to exit 42, got ${read_str_ok_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
 # Reject (fail-closed): read deadlines require a suspendable context. A default
 # `main` has no parkable continuation to resume on timeout.
 if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/await_read_deadline_default_context.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected await_read_deadline_default_context fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-suspendable context' "${reject_output}"
+
+# Reject (fail-closed, non-suspendable): `await conn.read_string() | after d` in a
+# plain function — same guard as the raw-read form above.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_read_string_deadline_non_suspendable.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_read_string_deadline_non_suspendable fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-suspendable context' "${reject_output}"
+
+# Reject (fail-closed, non-suspendable): `await ln.accept() | after d` in a
+# plain function — no parkable continuation for the timer to resume.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_accept_deadline_non_suspendable.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_accept_deadline_non_suspendable fixture to fail" >&2
   exit 1
 fi
 grep -q 'non-suspendable context' "${reject_output}"
@@ -1725,15 +1781,42 @@ if "${HEW}" compile \
 fi
 grep -q 'only supported for actor-ask awaits' "${reject_output}"
 
-# Reject (fail-closed, deferred to v0.6): a deadline on a suspendable listener
-# ACCEPT await.
-if "${HEW}" compile \
-    "${ROOT}/tests/vertical-slice/reject/await_accept_deadline_deferred.hew" \
-    >"${reject_output}" 2>&1; then
-  echo "expected await_accept_deadline_deferred fixture to fail" >&2
+# Accept (accept-deadline worker-free timeout oracle): `await ln.accept() | after 60ms`
+# where no client connects. Under HEW_WORKERS=1 the accept parks worker-free and
+# the deadline timer resumes the actor with Err(IoError::TimedOut) -> exit 7.
+compile_accept "await_accept_deadline_timeout"
+accept_timeout_bin="${ROOT}/.tmp/compile-out/await_accept_deadline_timeout"
+accept_timeout_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${accept_timeout_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  accept_timeout_status=0
+else
+  accept_timeout_status=$?
+fi
+if [[ "${accept_timeout_status}" -ne 7 ]]; then
+  echo "expected await_accept_deadline_timeout (HEW_WORKERS=1) to exit 7, got ${accept_timeout_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
   exit 1
 fi
-grep -q 'only supported for actor-ask awaits' "${reject_output}"
+
+# Accept (accept-before-deadline race): Acceptor creates a fresh listener,
+# fires Connector to connect after 100 ms, then parks on the accept slot with a
+# 5 s deadline. The connection arrives first, the accept completes with Ok(conn)
+# -> Acceptor returns 42 -> main exits 42.
+compile_accept "await_accept_deadline_ok"
+accept_ok_bin="${ROOT}/.tmp/compile-out/await_accept_deadline_ok"
+accept_ok_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${accept_ok_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  accept_ok_status=0
+else
+  accept_ok_status=$?
+fi
+if [[ "${accept_ok_status}" -ne 42 ]]; then
+  echo "expected await_accept_deadline_ok (HEW_WORKERS=1) to exit 42, got ${accept_ok_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
 
 # Reject (fail-closed, deferred to v0.6): a deadline on a suspendable typed-STREAM
 # next (`Stream<bytes>.recv()`).

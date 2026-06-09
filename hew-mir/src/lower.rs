@@ -3966,7 +3966,7 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_unknown_self_fields_in_expr(conn, state_fields, seen, unknown);
         }
-        HirExprKind::ListenerAwaitAccept { listener } => {
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_unknown_self_fields_in_expr(listener, state_fields, seen, unknown);
         }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
@@ -7833,9 +7833,10 @@ impl Builder {
                 to_string,
                 deadline_ns,
             } => self.lower_conn_await_read(conn, *to_string, *deadline_ns, expr),
-            HirExprKind::ListenerAwaitAccept { listener } => {
-                self.lower_listener_await_accept(listener, expr)
-            }
+            HirExprKind::ListenerAwaitAccept {
+                listener,
+                deadline_ns,
+            } => self.lower_listener_await_accept(listener, *deadline_ns, expr),
             HirExprKind::RemoteActorAsk {
                 receiver,
                 msg,
@@ -16427,11 +16428,20 @@ impl Builder {
                 result_dest: bytes_dest,
                 deadline_result_dest,
                 error_dest,
+                to_string: to_string && deadline_result_dest.is_some(),
                 resume: next,
                 cleanup: next,
             });
             self.start_block(next);
             if let Some(result_dest) = deadline_result_dest {
+                if to_string {
+                    // `read_string | after d` success path: codegen already
+                    // converted bytes → string and packed Ok(string) into
+                    // `result_dest` (via the `to_string` flag on the terminator).
+                    // MIR skips the bytes-to-string call here — the conversion
+                    // is codegen-side on the resume edge.
+                    return Some(result_dest);
+                }
                 return Some(result_dest);
             }
         } else {
@@ -16489,25 +16499,79 @@ impl Builder {
     ///   foreign/main thread with no parkable continuation, so it keeps the
     ///   blocking `hew_tcp_accept` FFI call (the caller-conv flip mirrors
     ///   `lower_conn_await_read`).
-    fn lower_listener_await_accept(&mut self, listener: &HirExpr, expr: &HirExpr) -> Option<Place> {
+    fn lower_listener_await_accept(
+        &mut self,
+        listener: &HirExpr,
+        deadline_ns: Option<i64>,
+        expr: &HirExpr,
+    ) -> Option<Place> {
         let listener_place = self.lower_value(listener)?;
+
+        // When a deadline is active, `expr.ty` is `Result<Connection, IoError>` (set
+        // by HIR). The raw `Connection` slot is the `result_dest`; codegen wraps it
+        // into `Ok(_)` or binds `Err(IoError::TimedOut)` into `deadline_result_dest`.
+        // Without a deadline, `expr.ty` is `Connection` directly.
+        let conn_ty = if deadline_ns.is_some() {
+            // Extract the Ok arm type (Connection) from Result<Connection, IoError>.
+            match &expr.ty {
+                hew_types::ResolvedTy::Named { args, .. } if !args.is_empty() => {
+                    self.subst_ty(&args[0])
+                }
+                other => self.subst_ty(other),
+            }
+        } else {
+            self.subst_ty(&expr.ty)
+        };
+
         // The `Connection` slot the accept binds (the SuspendingAccept
         // `result_dest` / the blocking `hew_tcp_accept` return).
-        let conn_dest = self.alloc_local(self.subst_ty(&expr.ty));
+        let conn_dest = self.alloc_local(conn_ty);
 
         if self.current_function_call_conv.carries_execution_context() {
+            let deadline_result_dest =
+                deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
+            let error_dest = deadline_ns.map(|_| {
+                self.alloc_local(hew_types::ResolvedTy::Named {
+                    name: "IoError".to_string(),
+                    args: Vec::new(),
+                    builtin: None,
+                    is_opaque: false,
+                })
+            });
             let next = self.alloc_block();
+            if let Some(ns) = deadline_ns {
+                self.await_deadline_ns.insert(self.current_block_id, ns);
+            }
             // `SuspendingAccept` carries no separate MIR cleanup block — it rides
             // the multi-suspend epilogue, so `cleanup` reuses `next` (exactly as
             // `SuspendingRead` does).
             self.finish_current_block(Terminator::SuspendingAccept {
                 listener: listener_place,
                 result_dest: conn_dest,
+                deadline_result_dest,
+                error_dest,
                 resume: next,
                 cleanup: next,
             });
             self.start_block(next);
+            if let Some(result_dest) = deadline_result_dest {
+                return Some(result_dest);
+            }
         } else {
+            if deadline_ns.is_some() {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "`await ln.accept() | after d` in a non-suspendable context"
+                            .to_string(),
+                        site: expr.site,
+                    },
+                    note: "accept deadlines require a suspendable actor/closure/task context; \
+                           default-call-convention functions have no parkable continuation to \
+                           resume on timeout"
+                        .to_string(),
+                });
+                return None;
+            }
             // Default callers use the blocking accept FFI: they run on a
             // foreign/main thread with no parkable continuation.
             let next = self.alloc_block();
@@ -28200,6 +28264,7 @@ mod f1_suspending_escape_poison {
             result_dest: Place::Local(2),
             deadline_result_dest: None,
             error_dest: None,
+            to_string: false,
             resume: 1,
             cleanup: 2,
         };

@@ -3297,7 +3297,7 @@ fn collect_call_sites_in_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_call_sites_in_expr(conn, out, trait_out);
         }
-        HirExprKind::ListenerAwaitAccept { listener } => {
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_call_sites_in_expr(listener, out, trait_out);
         }
         HirExprKind::RemoteActorAsk {
@@ -5933,7 +5933,7 @@ impl LowerCtx {
             | HirExprKind::ConnAwaitRead { conn: object, .. } => {
                 self.wrap_var_self_explicit_expr_returns(object, receiver, abi_return_ty);
             }
-            HirExprKind::ListenerAwaitAccept { listener } => {
+            HirExprKind::ListenerAwaitAccept { listener, .. } => {
                 self.wrap_var_self_explicit_expr_returns(listener, receiver, abi_return_ty);
             }
             HirExprKind::Index { container, index } => {
@@ -10251,6 +10251,7 @@ impl LowerCtx {
                             intent,
                             kind: HirExprKind::ListenerAwaitAccept {
                                 listener: Box::new(listener),
+                                deadline_ns: None,
                             },
                             span: span.clone(),
                         };
@@ -16065,6 +16066,12 @@ impl LowerCtx {
     /// `Err(AskError::Timeout)`). Every other form fails closed at CHECK time with
     /// a precise, deferred diagnostic — never a runtime `NotYetImplemented`, never
     /// a hang, never a fabricated value.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "three recognized deadline forms (actor-ask, conn-read, listener-accept) \
+                  each with their own HIR rewrite branch — splitting would scatter the \
+                  fail-closed fallthrough logic that must be co-located with all three guards"
+    )]
     fn lower_await_deadline(
         &mut self,
         inner: &Spanned<Expr>,
@@ -16123,14 +16130,15 @@ impl LowerCtx {
             );
             return self.unsupported_expr(span.clone(), "unsupported actor-ask deadline form");
         }
-        if matches!(self.conn_await_reads.get(&inner_key), Some(false)) {
+        if self.conn_await_reads.contains_key(&inner_key) {
             let mut read_expr = self.lower_expr(inner, intent);
             if let HirExprKind::ConnAwaitRead {
                 deadline_ns: slot,
-                to_string: false,
+                to_string,
                 ..
             } = &mut read_expr.kind
             {
+                let is_to_string = *to_string;
                 *slot = Some(deadline_ns);
                 let io_error_ty = ResolvedTy::Named {
                     name: "IoError".to_string(),
@@ -16138,9 +16146,16 @@ impl LowerCtx {
                     builtin: None,
                     is_opaque: false,
                 };
+                // `read_string | after d` yields `Result<string, IoError>`;
+                // raw `read | after d` yields `Result<bytes, IoError>`.
+                let ok_ty = if is_to_string {
+                    ResolvedTy::String
+                } else {
+                    ResolvedTy::Bytes
+                };
                 read_expr.ty = ResolvedTy::Named {
                     name: "Result".to_string(),
-                    args: vec![ResolvedTy::Bytes, io_error_ty],
+                    args: vec![ok_ty, io_error_ty],
                     builtin: Some(BuiltinType::Result),
                     is_opaque: false,
                 };
@@ -16156,13 +16171,47 @@ impl LowerCtx {
             );
             return self.unsupported_expr(span.clone(), "unsupported read deadline form");
         }
-        // Out-of-scope await sources: task-await, read_string/accept, channel recv,
-        // stream next, suspending closure. Fail closed at CHECK time naming the form.
+        if self.listener_await_accepts.contains(&inner_key) {
+            let mut accept_expr = self.lower_expr(inner, intent);
+            if let HirExprKind::ListenerAwaitAccept {
+                deadline_ns: slot, ..
+            } = &mut accept_expr.kind
+            {
+                *slot = Some(deadline_ns);
+                let io_error_ty = ResolvedTy::Named {
+                    name: "IoError".to_string(),
+                    args: Vec::new(),
+                    builtin: None,
+                    is_opaque: false,
+                };
+                // `await ln.accept() | after d` yields `Result<Connection, IoError>`;
+                // the Ok arm carries the accepted connection type from the plain accept.
+                let ok_ty = accept_expr.ty.clone();
+                accept_expr.ty = ResolvedTy::Named {
+                    name: "Result".to_string(),
+                    args: vec![ok_ty, io_error_ty],
+                    builtin: Some(BuiltinType::Result),
+                    is_opaque: false,
+                };
+                accept_expr.value_class = ValueClass::of_ty(&accept_expr.ty, &self.type_classes);
+                self.try_register_enum_instantiation(span);
+                return accept_expr;
+            }
+            self.unsupported(
+                span.clone(),
+                "`await ln.accept() | after d` is only supported for a listener accept in a \
+                 suspendable context",
+                "new6d-accept-deadline",
+            );
+            return self.unsupported_expr(span.clone(), "unsupported accept deadline form");
+        }
+        // Out-of-scope await sources: task-await, channel recv, stream next,
+        // suspending closure. Fail closed at CHECK time naming the form.
         self.unsupported(
             span.clone(),
-            "`await <…> | after d` deadline is only supported for actor-ask awaits and \
-             raw connection reads; task-await, read_string/accept/recv/next, and \
-             suspending-closure deadlines are deferred to v0.6",
+            "`await <…> | after d` deadline is only supported for actor-ask awaits, \
+             connection reads (read/read_string), and listener accepts; task-await, \
+             recv/next, and suspending-closure deadlines are deferred to v0.6",
             "new6c-read-deadline",
         );
         self.unsupported_expr(span.clone(), "unsupported await-deadline source")
@@ -17151,7 +17200,7 @@ fn collect_captures_walk(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_captures_walk(conn, param_ids, seen, captures, self_id);
         }
-        HirExprKind::ListenerAwaitAccept { listener } => {
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_captures_walk(listener, param_ids, seen, captures, self_id);
         }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
@@ -17441,7 +17490,7 @@ fn collect_general_closure_captures_walk(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_general_closure_captures_walk(conn, outer_bindings, seen, captures);
         }
-        HirExprKind::ListenerAwaitAccept { listener } => {
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_general_closure_captures_walk(listener, outer_bindings, seen, captures);
         }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
@@ -18135,7 +18184,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_hir_emitted_events_walk(conn, event_names, out);
         }
-        HirExprKind::ListenerAwaitAccept { listener } => {
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_hir_emitted_events_walk(listener, event_names, out);
         }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
@@ -21100,7 +21149,7 @@ fn scan_expr_for_call_shape(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             scan_expr_for_call_shape(conn, callable, diagnostics);
         }
-        HirExprKind::ListenerAwaitAccept { listener } => {
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
             scan_expr_for_call_shape(listener, callable, diagnostics);
         }
         HirExprKind::NumericCast { value, .. } => {

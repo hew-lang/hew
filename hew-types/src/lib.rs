@@ -22,6 +22,7 @@ pub mod lowering_facts;
 pub mod method_resolution;
 pub mod module_registry;
 pub mod resolved_ty;
+pub mod runtime_call;
 pub mod runtime_calling_convention;
 pub mod stdlib;
 pub mod stdlib_loader;
@@ -40,11 +41,12 @@ pub use check::{
     ActorStateGuard, ArmResolution, AssignTargetKind, AssignTargetShape, Bound, CallAbiHint,
     CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode,
     ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
-    DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, ImplDef, ImplId,
-    ImplRegistry, LookupError, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
-    MethodCallRewrite, MethodTarget, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
-    NumericSignedness, NumericWidth, PatternKind, ResolvedCall, RuntimeAbi, SpanKey, TyPattern,
-    TypeCheckOutput, VariantDef, VariantMatch,
+    DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, HashMapMethod,
+    HashSetMethod, ImplDef, ImplId, ImplRegistry, LookupError, MachineMethodKind, MathGenericOp,
+    MethodCallReceiverKind, MethodCallRewrite, MethodTarget, MethodTargetFamily,
+    NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
+    PatternKind, ResolvedCall, RuntimeAbi, SpanKey, TyPattern, TypeCheckOutput, VariantDef,
+    VariantMatch, VecMethod,
 };
 pub use error::TypeError;
 pub use extern_symbol::{
@@ -61,6 +63,11 @@ pub use lowering_facts::{
     LoweringFactError, LoweringKind,
 };
 pub use resolved_ty::{BoundaryError, ResolvedTraitBound, ResolvedTy};
+pub use runtime_call::{
+    AsyncSuspendKind, ChannelElementKind, DescriptorError, IntegerElem, MathIntrinsic, NumericElem,
+    RuntimeCallDescriptor, RuntimeCallFamily, RuntimeDropDescriptor, StreamElementKind, VecGetElem,
+    VecSliceElem,
+};
 pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;

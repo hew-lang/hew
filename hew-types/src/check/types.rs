@@ -1118,6 +1118,24 @@ pub enum MethodCallRewrite {
     /// to a single generic symbol (`hew_vec_get_generic`) and route the
     /// element type through this field instead.
     ///
+    /// `descriptor` is the typed cross-layer identity for closed
+    /// runtime/builtin calls the checker resolves with first-class family
+    /// knowledge — populated by the closed-set builtin rewrite recorder (and a
+    /// few explicit-construction sites) for the symbols the
+    /// [`crate::runtime_call::RuntimeCallFamily`] catalog enumerates. It is
+    /// `None` for every open-set string: user-trait method keys like `i64::fmt`
+    /// AND every `#[extern_symbol]` FFI method — including stdlib `duration` /
+    /// `Instant` / `LambdaActorHandle` bindings — *even when that method's raw
+    /// symbol collides with a catalog name* (e.g. `hew_duration_hours`). An
+    /// `#[extern_symbol]` method is open-set by mechanism: its family is only
+    /// recoverable by reverse-parsing the symbol string, which the
+    /// `checker-output-boundary` forbids, so it never carries a typed
+    /// descriptor. When `Some`, consumers should dispatch on
+    /// `descriptor.family()` rather than re-matching `c_symbol`; the `c_symbol`
+    /// field is retained as the concrete linker-edge identifier for now and
+    /// will be retired once every downstream consumer has migrated onto the
+    /// descriptor.
+    ///
     /// `consumes_receiver` is `true` when the rewritten runtime call takes
     /// ownership of (consumes) its receiver — the `.close()`-family handle
     /// release builtins plus the lambda-actor handle release. The single
@@ -1136,11 +1154,19 @@ pub enum MethodCallRewrite {
     /// (LESSONS: drop-allowset-from-value-flow, raii-null-after-move).
     RewriteToFunction {
         c_symbol: String,
+        descriptor: Option<crate::runtime_call::RuntimeCallDescriptor>,
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
         consumes_receiver: bool,
     },
     /// Rewrite a module-qualified stdlib call directly to a runtime function
     /// without injecting the receiver/module identifier as an argument.
+    ///
+    /// `c_symbol` here remains an honest open-set string: module-qualified
+    /// rewrites can reach user-module pass-throughs whose symbols are not
+    /// (and cannot be) enumerated by the typed runtime-call catalog. This
+    /// is the sole legitimate open-set checker-side symbol after the
+    /// typed-descriptor migration (Q182=(b)) and is intentionally NOT
+    /// fronted by a typed descriptor — do not attempt to type it away.
     ///
     /// See `RewriteToFunction::elem_ty` for the semantics of `elem_ty`.
     RewriteModuleQualifiedToFunction {

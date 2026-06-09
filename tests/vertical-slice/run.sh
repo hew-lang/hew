@@ -653,16 +653,22 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_arrow_operator.hew
 fi
 grep -q 'E_OPERATOR_REMOVED' "${reject_output}"
 
-# Typechecker-accept: .send() on a lambda-actor handle is allowed by the
-# frontend, then rejected by the native lowering gate until the lambda-actor
-# C-ABI place path is wired.
-# Lambda-actor handles are Duplex<Msg, Reply> underneath; `.send()` routes to
-# hew_duplex_send, the same symbol as call-syntax.  The old reject/lambda_method_send.hew
-# file is kept for reference.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/accept/lambda_method_send.hew" \
-  "M2 SendHalf / RecvHalf / LambdaActorHandle Place lowering is not yet wired" \
-  "lambda_method_send"
+# Accept + run: `.send()` on a lambda-actor handle delivers the message.
+# Lambda-actor handles are `Duplex<Msg, Reply>` underneath; `.send(msg)` on a
+# `LambdaActorHandle` Place routes to the lambda-actor ABI
+# (`hew_lambda_actor_send`), not the raw-duplex `hew_duplex_send` (which would
+# type-pun the handle and silently drop the message). Statement-context send is
+# fire-and-forget: the actor receives 42 and prints it.
+run_accept_expect_stdout "lambda_method_send"
+
+# Accept + run: value-context `.send()` on a lambda-actor handle materializes
+# `Result<(), SendError>` AND still delivers the message. The checker types the
+# tell-shaped send as `Result<(), SendError>`; MIR sizes the dest from that
+# recorded type and codegen constructs the Result in place from the runtime's
+# i32 status (D1 mapping). Exit 7 proves the Ok arm; stdout `99` proves the
+# message was delivered (not dropped). Together with the statement-context
+# fixture above this covers both send contexts.
+run_accept_expect_status_and_stdout "lambda_send_result_ok" 7
 
 # Reject: ask-shaped actor body return type mismatch (E_LAMBDA_RETURN_TYPE_MISMATCH).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_return_mismatch.hew" >"${reject_output}" 2>&1; then

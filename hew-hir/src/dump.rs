@@ -855,13 +855,14 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             impl_id,
             method_name,
             target_symbol,
+            target_family,
             type_args,
             args,
             ret_ty,
         } => {
             writeln!(
                 out,
-                "{pad}  resolved-impl-call impl_id={} {method_name} -> {target_symbol} [type_args={}] -> {}",
+                "{pad}  resolved-impl-call impl_id={} {method_name} -> {target_symbol} (family={target_family:?}) [type_args={}] -> {}",
                 impl_id.0,
                 type_args
                     .iter()

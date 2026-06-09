@@ -4,11 +4,20 @@
 //!   `ConstI64 { dest: len, value: 8 }` followed by
 //!   `CallRuntimeAbi { symbol: "hew_duplex_send", args: [recv, msg, len], dest: None }`.
 //!
-//! These tests exercise the full pipeline: `duplex_pair<i64,i64>(16)` binds
-//! two `DuplexHandle` locals, and `a.send(msg)` produces the correct
-//! `CallRuntimeAbi` instruction sequence.  Handle-typed bindings must never
-//! appear as `Move` sources — the `stmt()` handler stores them directly into
-//! `binding_locals` to preserve the `DuplexHandle` kind for `drop_kind_for`.
+//! These tests exercise the full pipeline: `duplex_pair<i64, ()>(16)` binds
+//! two `DuplexHandle` locals, and the tell-shaped `a.send(msg)` (reply `()`)
+//! produces the correct `CallRuntimeAbi` instruction sequence.  Handle-typed
+//! bindings must never appear as `Move` sources — the `stmt()` handler stores
+//! them directly into `binding_locals` to preserve the `DuplexHandle` kind for
+//! `drop_kind_for`.
+//!
+//! The structural tests use the tell-shaped `Duplex<i64, ()>` because only the
+//! tell-shaped `.send` (yielding `Result<(), SendError>`) lowers to a runtime
+//! call.  An ask-shaped `.send` (a non-unit `Duplex` reply yielding `Result<R,
+//! AskError>`) is a separate lowering this lane does not own; it fails closed
+//! with a stable `NotYetImplemented` diagnostic in BOTH statement and value
+//! context (see `*_ask_shaped_send_fails_closed`), never lowering as a
+//! fire-and-forget tell that would silently drop the reply.
 //!
 //! ## Retired hand-built HIR test
 //!
@@ -31,7 +40,7 @@
 //! hand-built test was approximating.  The hand-built scaffolding is retired.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, DropKind, ExitPath, Instr, IrPipeline, Place};
+use hew_mir::{lower_hir_module, DropKind, ExitPath, Instr, IrPipeline, MirDiagnosticKind, Place};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -88,7 +97,7 @@ fn all_drops(p: &IrPipeline, fn_name: &str) -> Vec<hew_mir::ElabDrop> {
 fn duplex_pair_plus_send_no_move_of_duplex_handle() {
     let source = r"
         fn main() -> i64 {
-            let (a, b) = duplex_pair<i64, i64>(16);
+            let (a, b) = duplex_pair<i64, ()>(16);
             a.send(42);
             return 0;
         }
@@ -123,7 +132,7 @@ fn duplex_pair_plus_send_no_move_of_duplex_handle() {
 fn one_send_emits_call_runtime_abi_with_three_args() {
     let source = r"
         fn main() -> i64 {
-            let (a, b) = duplex_pair<i64, i64>(16);
+            let (a, b) = duplex_pair<i64, ()>(16);
             a.send(42);
             return 0;
         }
@@ -177,7 +186,7 @@ fn one_send_emits_call_runtime_abi_with_three_args() {
 fn two_sends_emit_two_call_runtime_abi_instructions() {
     let source = r"
         fn main() -> i64 {
-            let (a, b) = duplex_pair<i64, i64>(16);
+            let (a, b) = duplex_pair<i64, ()>(16);
             a.send(42);
             a.send(43);
             return 0;
@@ -213,7 +222,7 @@ fn two_sends_emit_two_call_runtime_abi_instructions() {
 fn two_sends_do_not_move_duplex_handle_full_pipeline() {
     let source = r"
         fn main() -> i64 {
-            let (a, b) = duplex_pair<i64, i64>(16);
+            let (a, b) = duplex_pair<i64, ()>(16);
             a.send(42);
             a.send(43);
             return 0;
@@ -242,7 +251,7 @@ fn two_sends_do_not_move_duplex_handle_full_pipeline() {
 fn sender_handle_remains_in_drop_plan_after_two_sends() {
     let source = r"
         fn main() -> i64 {
-            let (a, b) = duplex_pair<i64, i64>(16);
+            let (a, b) = duplex_pair<i64, ()>(16);
             a.send(42);
             a.send(43);
             return 0;
@@ -262,14 +271,19 @@ fn sender_handle_remains_in_drop_plan_after_two_sends() {
     }
 }
 
-/// Sends on `a` and `b` reference distinct `DuplexHandle` locals.
+/// Sends on two distinct tell-shaped handles reference distinct `DuplexHandle`
+/// locals. Two separate `Duplex<i64, ()>` pairs are used (rather than the two
+/// ends of one pair) because `duplex_pair<S, R>` mirrors the ends to
+/// `(Duplex<S, R>, Duplex<R, S>)`: the second end of a `<i64, ()>` pair is
+/// `Duplex<(), i64>`, whose `.send` is ask-shaped and fails closed.
 #[test]
 fn two_sends_on_different_handles_use_distinct_receiver_places() {
     let source = r"
         fn main() -> i64 {
-            let (a, b) = duplex_pair<i64, i64>(16);
+            let (a, _) = duplex_pair<i64, ()>(16);
+            let (c, _) = duplex_pair<i64, ()>(16);
             a.send(1);
-            b.send(2);
+            c.send(2);
             return 0;
         }
     ";
@@ -294,5 +308,214 @@ fn two_sends_on_different_handles_use_distinct_receiver_places() {
     assert_ne!(
         receivers[0], receivers[1],
         "sends on a and b must use distinct handles"
+    );
+}
+
+/// Value-context tell-shaped `.send` (`Duplex<i64, ()>`, reply `()`) must
+/// materialize the result: the `CallRuntimeAbi` carries a `dest:
+/// Some(Place::Local(_))` sized from the checker-recorded `Result<(),
+/// SendError>`. This is the MIR half of the value-context lowering; codegen
+/// constructs the Result into that slot. Contrast the statement-context tests
+/// above, where `dest` is `None` (fire-and-forget).
+#[test]
+fn value_context_send_materializes_result_dest() {
+    let source = r"
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, ()>(16);
+            let r: Result<(), SendError> = a.send(42);
+            match r {
+                Result::Ok(_) => 0,
+                Result::Err(_) => 1,
+            }
+        }
+    ";
+    let pipeline = pipeline_with_tc(source);
+    let instrs = all_instrs(&pipeline, "main");
+
+    let call = instrs
+        .iter()
+        .find_map(|i| match i {
+            Instr::CallRuntimeAbi(call) if call.symbol() == "hew_duplex_send" => Some(call),
+            _ => None,
+        })
+        .expect("must find CallRuntimeAbi for hew_duplex_send");
+
+    assert_eq!(call.args().len(), 3, "3 args: recv, msg, len");
+    let dest = call.dest();
+    assert!(
+        matches!(dest, Some(Place::Local(_))),
+        "value-context send must materialize a Result dest local; got {dest:?}"
+    );
+}
+
+/// Statement-context `.send` discards the status: `dest` is `None`. Paired with
+/// `value_context_send_materializes_result_dest`, this pins the
+/// context-sensitivity of the producer (the same `.send` surface lowers
+/// differently by use-context, never a fail-open both-ways).
+#[test]
+fn statement_context_send_has_no_dest() {
+    let source = r"
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, ()>(16);
+            a.send(42);
+            return 0;
+        }
+    ";
+    let pipeline = pipeline_with_tc(source);
+    let instrs = all_instrs(&pipeline, "main");
+
+    let call = instrs
+        .iter()
+        .find_map(|i| match i {
+            Instr::CallRuntimeAbi(call) if call.symbol() == "hew_duplex_send" => Some(call),
+            _ => None,
+        })
+        .expect("must find CallRuntimeAbi for hew_duplex_send");
+
+    assert!(
+        call.dest().is_none(),
+        "statement-context send is fire-and-forget; dest must be None"
+    );
+}
+
+/// Value-context send must NOT consume the receiver handle: no `Move { src:
+/// DuplexHandle(_) }` appears, and the handle survives into the drop plan.
+/// `.send` is non-consuming in every context (`raii-null-after-move`).
+#[test]
+fn value_context_send_does_not_move_or_drop_receiver_early() {
+    let source = r"
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, ()>(16);
+            let r: Result<(), SendError> = a.send(42);
+            match r {
+                Result::Ok(_) => 0,
+                Result::Err(_) => 1,
+            }
+        }
+    ";
+    let pipeline = pipeline_with_tc(source);
+    let instrs = all_instrs(&pipeline, "main");
+
+    let bad_moves: Vec<_> = instrs
+        .iter()
+        .filter(|i| {
+            matches!(
+                i,
+                Instr::Move {
+                    src: Place::DuplexHandle(_),
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert!(
+        bad_moves.is_empty(),
+        "value-context send must not move the DuplexHandle receiver; found: {bad_moves:?}"
+    );
+
+    let duplex_close: Vec<_> = all_drops(&pipeline, "main")
+        .into_iter()
+        .filter(|d| d.kind == DropKind::DuplexClose)
+        .collect();
+    assert_eq!(
+        duplex_close.len(),
+        2,
+        "both duplex handles must remain in the drop plan after a value-context send"
+    );
+}
+
+/// True iff the pipeline recorded the stable fail-closed diagnostic for an
+/// unsupported `.send` result shape. Both the statement- and value-context
+/// paths emit the same `construct` string, so this is the single stable hook
+/// the regression tests below match on.
+fn has_unsupported_send_diagnostic(pipeline: &IrPipeline) -> bool {
+    pipeline.diagnostics.iter().any(|diag| {
+        matches!(
+            &diag.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("`.send` whose result is not Result<(), SendError>")
+        )
+    })
+}
+
+/// Number of `CallRuntimeAbi` instructions targeting either send ABI symbol
+/// (`hew_duplex_send` for raw duplex handles, `hew_lambda_actor_send` for
+/// lambda-actor handles). A fail-closed `.send` must emit zero of these.
+fn send_call_count(instrs: &[Instr]) -> usize {
+    instrs
+        .iter()
+        .filter(|i| {
+            matches!(
+                i,
+                Instr::CallRuntimeAbi(call)
+                    if call.symbol() == "hew_duplex_send"
+                        || call.symbol() == "hew_lambda_actor_send"
+            )
+        })
+        .count()
+}
+
+/// Statement-context ask-shaped `.send` (a non-unit `Duplex` reply →
+/// `Result<R, AskError>`) must fail closed: no send `CallRuntimeAbi` is emitted
+/// and the stable `NotYetImplemented` diagnostic fires. This is the regression
+/// guard for the statement/discarded path — discarding the result must NOT let
+/// an ask-shaped `.send` slip through as a fire-and-forget tell that silently
+/// drops the reply the user's type says they receive. The checker still types
+/// the expression as `Result<i64, AskError>` (covered in
+/// `hew-types/tests/methods_duplex.rs`); the fail-closed boundary lives in the
+/// MIR producer.
+#[test]
+fn statement_context_ask_shaped_send_fails_closed() {
+    let source = r"
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
+            a.send(42);
+            return 0;
+        }
+    ";
+    let pipeline = pipeline_with_tc(source);
+    let instrs = all_instrs(&pipeline, "main");
+
+    assert_eq!(
+        send_call_count(&instrs),
+        0,
+        "ask-shaped statement `.send` must not lower to a send CallRuntimeAbi; \
+         instrs: {instrs:?}"
+    );
+    assert!(
+        has_unsupported_send_diagnostic(&pipeline),
+        "ask-shaped statement `.send` must record the fail-closed diagnostic; \
+         diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Value-context ask-shaped `.send` (`Result<R, AskError>`, R ≠ ()) must fail
+/// closed the same way: no send `CallRuntimeAbi`, stable diagnostic. Pairs with
+/// `statement_context_ask_shaped_send_fails_closed` so neither use-context can
+/// fail open — the producer decides on the result SHAPE, not the call context.
+#[test]
+fn value_context_ask_shaped_send_fails_closed() {
+    let source = r"
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
+            let _r: Result<i64, AskError> = a.send(42);
+            return 0;
+        }
+    ";
+    let pipeline = pipeline_with_tc(source);
+    let instrs = all_instrs(&pipeline, "main");
+
+    assert_eq!(
+        send_call_count(&instrs),
+        0,
+        "ask-shaped value-context `.send` must not lower to a send CallRuntimeAbi; \
+         instrs: {instrs:?}"
+    );
+    assert!(
+        has_unsupported_send_diagnostic(&pipeline),
+        "ask-shaped value-context `.send` must record the fail-closed diagnostic; \
+         diagnostics: {:#?}",
+        pipeline.diagnostics
     );
 }

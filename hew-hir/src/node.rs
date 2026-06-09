@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
-use hew_types::{ChildSlot, ExecutionContextReader, ImplId, ResolvedTy, TyPattern, VariantMatch};
+use hew_types::{
+    ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, ResolvedTy, TyPattern,
+    VariantMatch,
+};
 use hew_types::{NumericMethodFamily, NumericMethodOp, NumericSignedness, NumericWidth};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
@@ -1439,17 +1442,26 @@ pub enum HirExprKind {
         /// Opaque identity of the satisfying impl in the checker's
         /// `ImplRegistry`. Carried for downstream attribution (diagnostics,
         /// drop-plan keying when Stage E lands); not consumed by today's
-        /// MIR lowering, which dispatches on `target_symbol` directly.
+        /// MIR lowering, which dispatches on `target_family` directly.
         impl_id: ImplId,
         /// Method name within `ImplDef::methods` (e.g. `"insert"`).
         method_name: String,
         /// Runtime symbol name from `MethodTarget.symbol_name` (e.g.
         /// `"hew_hashmap_insert_layout"`). Stashed verbatim from the
-        /// resolver's verdict so MIR/codegen does not re-traverse the
-        /// `ImplRegistry` to recover it (LESSONS `checker-authority`,
-        /// `codegen-abi-authority`). Resolves at link time to the
+        /// resolver's verdict and used as the **linker-edge** identifier
+        /// in `Terminator::Call`. Routing decisions (`HashMap` vs
+        /// `HashSet` vs Vec, push vs other Vec method) read
+        /// [`target_family`] instead — the string is no longer a
+        /// dispatch authority. Resolves at link time to the
         /// `#[no_mangle] pub extern "C"` export in `hew-runtime`.
         target_symbol: String,
+        /// Typed cross-layer dispatch identity, copied from
+        /// `MethodTarget.family`. MIR `lower_resolved_impl_call` uses
+        /// this to choose the right arity gate and the right runtime
+        /// rewrite without re-parsing `target_symbol`. A future commit
+        /// retires `target_symbol` from the variant entirely once
+        /// codegen consumes the family directly.
+        target_family: MethodTargetFamily,
         /// Concrete type-arguments resolved at the call site, in
         /// first-occurrence order of `TyPattern::Var`s in
         /// `ImplDef::self_pattern`. Mirrors

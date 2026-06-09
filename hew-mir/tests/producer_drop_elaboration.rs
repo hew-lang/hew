@@ -249,7 +249,10 @@ fn two_duplex_pairs_emit_four_drops_in_full_lifo_order() {
 // ---------------------------------------------------------------------------
 
 /// `a.send(N)` does not consume `a`; the drop for `a` must still appear
-/// on Return exactly once regardless of the number of sends.
+/// on Return exactly once regardless of the number of sends. Uses the
+/// tell-shaped `Duplex<i64, ()>` so each `.send` actually lowers to a runtime
+/// call (an ask-shaped `.send` fails closed and would not exercise the
+/// non-consuming path at all).
 ///
 /// LESSONS: `raii-null-after-move` — a non-consuming use does NOT mark
 /// the binding as moved; the drop fires at scope exit.
@@ -257,7 +260,7 @@ fn two_duplex_pairs_emit_four_drops_in_full_lifo_order() {
 fn send_is_non_consuming_drop_fires_once_per_handle() {
     let source = r"
         fn main() -> i64 {
-            let (a, b) = duplex_pair<i64, i64>(16);
+            let (a, b) = duplex_pair<i64, ()>(16);
             a.send(42);
             a.send(43);
             a.send(44);

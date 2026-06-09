@@ -10411,6 +10411,7 @@ impl LowerCtx {
                                     impl_id: resolved.impl_id,
                                     method_name: resolved.method_name,
                                     target_symbol: resolved.target.symbol_name,
+                                    target_family: resolved.target.family,
                                     type_args: resolved.type_args,
                                     args: vec![index_expr],
                                     ret_ty: result_ty.clone(),
@@ -12267,6 +12268,10 @@ impl LowerCtx {
                 impl_id: ImplId(u32::MAX),
                 method_name: "push".to_string(),
                 target_symbol: target_symbol.to_string(),
+                // Array-literal desugar synthesises a Vec push call site
+                // bypassing the resolver; the family is unambiguously a
+                // Vec push (we just resolved a `hew_vec_push_*` symbol).
+                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push),
                 type_args: vec![Self::resolved_ty_pattern(elem_ty)],
                 args: vec![elem],
                 ret_ty: ResolvedTy::Unit,
@@ -13058,6 +13063,9 @@ impl LowerCtx {
                 impl_id: ImplId(u32::MAX),
                 method_name: "len".to_string(),
                 target_symbol: "hew_vec_len".to_string(),
+                // Synthesised Vec::len call (HIR-internal helper); the
+                // family is unambiguously a Vec len dispatch.
+                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Len),
                 type_args: vec![Self::resolved_ty_pattern(elem_ty)],
                 args: Vec::new(),
                 ret_ty: ResolvedTy::I64,
@@ -14348,6 +14356,7 @@ impl LowerCtx {
                             impl_id: resolved.impl_id,
                             method_name: resolved.method_name,
                             target_symbol: resolved.target.symbol_name,
+                            target_family: resolved.target.family,
                             type_args: resolved.type_args,
                             args: lowered_args,
                             ret_ty: ret_ty.clone(),

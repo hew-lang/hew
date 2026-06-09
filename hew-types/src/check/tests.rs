@@ -1673,6 +1673,7 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
         SpanKey { start: 30, end: 40 },
         MethodCallRewrite::RewriteToFunction {
             c_symbol: "hew_bar_method".to_string(),
+            descriptor: None,
             elem_ty: None,
             consumes_receiver: false,
         },

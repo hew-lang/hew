@@ -16968,7 +16968,9 @@ fn lower_bytes_constructor_call(
 ///   — spill its value into a fresh i64 stack slot and pass the slot's
 ///   address as `*const u8`. args[2] is the length `Place::Local(L)`
 ///   carrying `ConstI64 { value: 8 }` from the producer; load as i64.
-///   Return discarded.
+///   The i32 status is discarded when the producer supplies no `dest`
+///   (statement context) and materialized into `Result<(), SendError>`
+///   via `emit_send_result_from_rc` when it does (value context).
 ///
 /// Symbols on the M2 allowlist but not yet wired (e.g.
 /// `hew_lambda_actor_release`) fall through to a fail-closed arm so
@@ -17122,15 +17124,24 @@ fn lower_call_runtime_abi(
             )?;
             let llvm_args: [BasicMetadataValueEnum; 3] =
                 [handle.into(), msg_ptr.into(), len.into()];
-            fn_ctx
+            let call_site = fn_ctx
                 .builder
                 .build_call(fv, &llvm_args, "hew_duplex_send_call")
                 .llvm_ctx("hew_duplex_send call")?;
+            // Statement context (dest=None) discards the rc — fire-and-forget
+            // delivery. Value context materializes `Result<(), SendError>` from
+            // the i32 status through the single D1 mapping authority.
             if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_duplex_send returns i32 (discarded by the runtime contract); \
-                     producer must not supply dest={d:?}"
-                )));
+                let status = call_site
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_duplex_send returned void — expected i32 status".into(),
+                        )
+                    })?
+                    .into_int_value();
+                emit_send_result_from_rc(fn_ctx, status, d, "hew_duplex_send")?;
             }
             let _ = (i32_ty, ptr_ty);
         }
@@ -17142,10 +17153,11 @@ fn lower_call_runtime_abi(
         // hew_duplex_send: load the actor handle pointer from
         // `Place::LambdaActorHandle(N)`'s alloca, spill the message
         // value into a fresh i64 stack slot and pass its address,
-        // load the constant 8-byte length. Result discarded (return
-        // value is a SendError discriminant). MVP single-vertebra
-        // (8-byte spill); multi-byte/variable-length marshalling is
-        // a follow-on slice.
+        // load the constant 8-byte length. The i32 status is discarded
+        // in statement context and materialized into `Result<(),
+        // SendError>` in value context (see the `dest` branch below).
+        // MVP single-vertebra (8-byte spill); multi-byte/variable-length
+        // marshalling is a follow-on slice.
         "hew_lambda_actor_send" => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
@@ -17165,16 +17177,25 @@ fn lower_call_runtime_abi(
             )?;
             let llvm_args: [BasicMetadataValueEnum; 3] =
                 [handle.into(), msg_ptr.into(), len.into()];
-            fn_ctx
+            let call_site = fn_ctx
                 .builder
                 .build_call(fv, &llvm_args, "hew_lambda_actor_send_call")
                 .llvm_ctx("hew_lambda_actor_send call")?;
+            // Statement context (dest=None) discards the rc — fire-and-forget
+            // delivery. Value context materializes `Result<(), SendError>` from
+            // the i32 status through the single D1 mapping authority (shared
+            // with `hew_duplex_send`: identical runtime status space).
             if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_lambda_actor_send returns i32 (discarded — the SendError \
-                     discriminant is consumed at the runtime/result boundary by a \
-                     follow-on slice); producer must not supply dest={d:?}"
-                )));
+                let status = call_site
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_lambda_actor_send returned void — expected i32 status".into(),
+                        )
+                    })?
+                    .into_int_value();
+                emit_send_result_from_rc(fn_ctx, status, d, "hew_lambda_actor_send")?;
             }
             let _ = (i32_ty, ptr_ty);
         }
@@ -21461,6 +21482,166 @@ fn emit_trap_with_code(fn_ctx: &FnCtx<'_, '_>, code: u64, label: &str) -> Codege
         .build_call(trap_fn, &[], &format!("{label}_llvm_trap"))
         .llvm_ctx("llvm.trap call")?;
     fn_ctx.builder.build_unreachable().llvm_ctx("unreachable")?;
+    Ok(())
+}
+
+/// Materialize the runtime `i32` send status into a user-visible
+/// `Result<(), SendError>` stored at `dest`.
+///
+/// This is the single authority for the rc → `SendError` discriminant mapping
+/// (plan decision D1). It runs for both `hew_lambda_actor_send` and
+/// `hew_duplex_send`, whose status space is identical: `{0=Ok, 1=Closed,
+/// 2=Full, 3=ActorStopped, 4=DoubleClose, 5=OrphanedAsk}`
+/// (`hew-runtime/src/duplex.rs`, `hew-runtime/src/lambda_actor.rs`). The
+/// user-visible `SendError` enum is `{Full=0, Closed=1, NodeRoutingNotWired=2}`
+/// (`hew-types/src/builtin_enums.rs`). The mapping is:
+///
+/// * `rc == 0` → `Result::Ok(())`
+/// * `rc == 2` (runtime Full) → `Result::Err(SendError::Full)`
+/// * every other nonzero rc → `Result::Err(SendError::Closed)` — once a send
+///   fails for any reason other than backpressure, no consumer can observe the
+///   message, so `Closed` is the conservative in-process verdict.
+///
+/// `NodeRoutingNotWired` is never produced here: it is a *remote* routing
+/// condition, not reachable for an in-process actor / duplex send.
+///
+/// Security invariant: the raw rc is NEVER stored as the discriminant. rc values
+/// `3/4/5` are out of range for the 3-variant `SendError` enum and would be
+/// undefined behaviour at the user's `match` (an out-of-range discriminant is a
+/// security defect, not a cosmetic one). The `select` collapses the entire
+/// nonzero rc space onto the two in-range variants `Full` / `Closed`, so no
+/// out-of-range value can ever reach the tag slot.
+///
+/// Runs as an `Instr` (not a terminator), so it appends its own merge block and
+/// leaves the builder positioned there for the instructions that follow.
+fn emit_send_result_from_rc<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    status: IntValue<'ctx>,
+    dest: Place,
+    helper: &str,
+) -> CodegenResult<()> {
+    let dest_local = composite_dest_local(dest, helper)?;
+
+    // The runtime decl returns i32 for both send symbols. Refuse to operate on
+    // any other width rather than silently zext/trunc a security-sensitive
+    // status (fail-closed: a width surprise means the decl drifted).
+    let i32_ty = fn_ctx.ctx.i32_type();
+    if status.get_type().get_bit_width() != 32 {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper}: send status must be i32 (runtime ABI contract), got {}-bit",
+            status.get_type().get_bit_width()
+        )));
+    }
+
+    let zero_i32 = i32_ty.const_zero();
+    let is_ok = fn_ctx
+        .builder
+        .build_int_compare(IntPredicate::EQ, status, zero_i32, "send_status_is_ok")
+        .llvm_ctx_with(|| format!("{helper} status is_ok icmp"))?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed(format!("{helper}: no parent function")))?;
+    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "send_result_ok");
+    let err_bb = fn_ctx.ctx.append_basic_block(parent, "send_result_err");
+    let merge_bb = fn_ctx.ctx.append_basic_block(parent, "send_result_merge");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_ok, ok_bb, err_bb)
+        .llvm_ctx_with(|| format!("{helper} status cond br"))?;
+
+    // ── Ok branch: Result tag = 0, payload = `()` (no field store). ──
+    fn_ctx.builder.position_at_end(ok_bb);
+    store_composite_tag(fn_ctx, dest_local, 0, helper)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx_with(|| format!("{helper} ok br merge"))?;
+
+    // ── Err branch: Result tag = 1, payload = SendError::<mapped variant>. ──
+    fn_ctx.builder.position_at_end(err_bb);
+    store_composite_tag(fn_ctx, dest_local, 1, helper)?;
+
+    // D1 mapping authority. We are on the Err branch, so rc != 0. `Full` is the
+    // single backpressure variant (runtime rc == 2); everything else collapses
+    // to `Closed`. The comparison is performed once, in i32; the per-slot
+    // constants below only differ in width.
+    let two_i32 = i32_ty.const_int(2, false);
+    let is_full = fn_ctx
+        .builder
+        .build_int_compare(IntPredicate::EQ, status, two_i32, "send_status_is_full")
+        .llvm_ctx_with(|| format!("{helper} status is_full icmp"))?;
+
+    // Project the SendError payload slot: Result variant 1 (Err), field 0.
+    let (send_err_ptr, send_err_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
+    )?;
+    match send_err_ty {
+        // Single-int representation: the SendError discriminant IS the slot.
+        BasicTypeEnum::IntType(int_ty) => {
+            let full_tag = int_ty.const_int(0, false); // SendError::Full
+            let closed_tag = int_ty.const_int(1, false); // SendError::Closed
+            let tag = fn_ctx
+                .builder
+                .build_select(is_full, full_tag, closed_tag, "send_err_tag")
+                .llvm_ctx_with(|| format!("{helper} SendError tag select"))?
+                .into_int_value();
+            fn_ctx
+                .builder
+                .build_store(send_err_ptr, tag)
+                .llvm_ctx_with(|| format!("{helper} store SendError discriminant"))?;
+        }
+        // Struct representation: zero-init the outer struct (defines any
+        // payload padding), then patch field 0 (the discriminant tag).
+        BasicTypeEnum::StructType(st) => {
+            fn_ctx
+                .builder
+                .build_store(send_err_ptr, st.const_zero())
+                .llvm_ctx_with(|| format!("{helper} zero SendError struct"))?;
+            let tag_field_ptr = fn_ctx
+                .builder
+                .build_struct_gep(st, send_err_ptr, 0, "send_err_tag_ptr")
+                .llvm_ctx_with(|| format!("{helper} SendError tag gep"))?;
+            let tag_field_ty = st.get_field_type_at_index(0).ok_or_else(|| {
+                CodegenError::FailClosed(format!("{helper}: SendError struct has no field 0 (tag)"))
+            })?;
+            let BasicTypeEnum::IntType(tag_int_ty) = tag_field_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "{helper}: SendError tag field must be an integer, got {tag_field_ty:?}"
+                )));
+            };
+            let full_tag = tag_int_ty.const_int(0, false); // SendError::Full
+            let closed_tag = tag_int_ty.const_int(1, false); // SendError::Closed
+            let tag = fn_ctx
+                .builder
+                .build_select(is_full, full_tag, closed_tag, "send_err_tag")
+                .llvm_ctx_with(|| format!("{helper} SendError tag select"))?
+                .into_int_value();
+            fn_ctx
+                .builder
+                .build_store(tag_field_ptr, tag)
+                .llvm_ctx_with(|| format!("{helper} store SendError tag"))?;
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{helper}: Err payload (SendError) must be a struct or int, got {other:?}"
+            )));
+        }
+    }
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx_with(|| format!("{helper} err br merge"))?;
+
+    // ── Merge: subsequent instructions resume here. ──
+    fn_ctx.builder.position_at_end(merge_bb);
     Ok(())
 }
 
@@ -39434,6 +39615,181 @@ mod tests {
                 assert!(
                     msg.contains("emit_result_err") && msg.contains("type mismatch"),
                     "diagnostic must name the helper and the mismatch; got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    // ---- emit_send_result_from_rc (lambda/duplex `.send` D1 mapping) --------
+
+    /// The value-context `.send` materialization builds the Ok/Err/merge
+    /// diamond, maps the runtime rc onto the user `SendError` discriminant per
+    /// D1 (rc==2 → Full=0, every other nonzero rc → Closed=1), and never lets a
+    /// raw rc reach the discriminant slot. Driven with a non-constant i32 status
+    /// (alloca+load) so the comparisons and select survive as real IR rather
+    /// than constant-folding away.
+    #[test]
+    fn emit_send_result_from_rc_builds_diamond_and_maps_discriminant() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_send_result_from_rc_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Result$$unit$$SendError".to_string(),
+                args: vec![],
+                builtin: None,
+                is_opaque: false,
+            },
+        );
+        // Non-constant i32 status: store-then-load through an alloca keeps the
+        // value opaque to the builder's constant folder.
+        let i32_ty = ctx.i32_type();
+        let status_slot = fn_ctx
+            .builder
+            .build_alloca(i32_ty, "status_slot")
+            .expect("status alloca");
+        let status = fn_ctx
+            .builder
+            .build_load(i32_ty, status_slot, "status")
+            .expect("status load")
+            .into_int_value();
+        emit_send_result_from_rc(&fn_ctx, status, Place::Local(0), "test_send")
+            .expect("emit_send_result_from_rc must materialize Result<(), SendError>");
+        finish_test_fn(&fn_ctx);
+
+        assert!(
+            m.verify().is_ok(),
+            "module must verify after emit_send_result_from_rc:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+
+        // The Ok/Err/merge diamond exists.
+        for block in ["send_result_ok", "send_result_err", "send_result_merge"] {
+            assert!(
+                ir.contains(block),
+                "expected `{block}` block; got IR:\n{ir}"
+            );
+        }
+        // codegen-abi-authority: the dest is projected purely through the
+        // registered machine layout for the local's ResolvedTy
+        // (`Result$$unit$$SendError`) via MachineTag / MachineVariant — there is
+        // no `expr_types` lookup anywhere on this path (the helper's signature
+        // has no access to one). The GEP into the named layout type proves the
+        // shape came from the layout authority, not a re-inferred expr type.
+        assert!(
+            ir.contains("getelementptr inbounds nuw %\"Result$$unit$$SendError\""),
+            "expected dest projection through the registered Result layout; got IR:\n{ir}"
+        );
+        // The status is tested against 0 (Ok) and 2 (Full) — the only two
+        // comparisons the D1 mapping needs.
+        assert!(
+            ir.contains("send_status_is_ok"),
+            "expected `rc == 0` Ok test; got IR:\n{ir}"
+        );
+        assert!(
+            ir.contains("send_status_is_full"),
+            "expected `rc == 2` Full test; got IR:\n{ir}"
+        );
+        // The Result tag is i8 (tag_width 1): Ok stores 0, Err stores 1.
+        assert!(
+            ir.contains("store i8 0") && ir.contains("store i8 1"),
+            "expected Result Ok tag `store i8 0` and Err tag `store i8 1`; got IR:\n{ir}"
+        );
+        // SECURITY: the SendError discriminant is chosen by a `select` between
+        // the two in-range constants 0 (Full) and 1 (Closed). The raw rc is
+        // NEVER the stored discriminant — rc values 3/4/5 would be out of range
+        // for the 3-variant SendError enum (UB at the user's `match`). The
+        // SendError tag lowers to i8 (≤256 variants round up to one byte).
+        assert!(
+            ir.contains("send_err_tag = select i1 %send_status_is_full, i8 0, i8 1"),
+            "expected the discriminant select to map Full->0 / else->1 over the \
+             in-range constants only (no raw rc reaches the slot); got IR:\n{ir}"
+        );
+        // The stored discriminant is the select result, never the raw status.
+        assert!(
+            ir.contains("store i8 %send_err_tag,"),
+            "expected the SendError slot to be stored from the mapped select \
+             result; got IR:\n{ir}"
+        );
+    }
+
+    /// Composites materialize into a named local's alloca; a non-`Local` dest
+    /// is rejected fail-closed (mirrors `composite_dest_local`).
+    #[test]
+    fn emit_send_result_from_rc_rejects_non_local_dest() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_send_result_reject_dest_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        let i32_ty = ctx.i32_type();
+        let status = i32_ty.const_zero();
+        let err = emit_send_result_from_rc(&fn_ctx, status, Place::ReturnSlot, "test_send")
+            .expect_err("dest must be Place::Local(_); ReturnSlot is rejected");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("test_send") && msg.contains("ReturnSlot"),
+                    "diagnostic must name the helper and the bad dest; got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    /// The runtime ABI returns i32. A status of any other width is a decl drift
+    /// and must fail closed rather than silently zext/trunc a security-sensitive
+    /// discriminant source.
+    #[test]
+    fn emit_send_result_from_rc_rejects_non_i32_status() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_send_result_reject_width_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Result$$unit$$SendError".to_string(),
+                args: vec![],
+                builtin: None,
+                is_opaque: false,
+            },
+        );
+        // i64 status — wrong width.
+        let status = ctx.i64_type().const_zero();
+        let err = emit_send_result_from_rc(&fn_ctx, status, Place::Local(0), "test_send")
+            .expect_err("non-i32 status must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("test_send") && msg.contains("i32"),
+                    "diagnostic must name the helper and the width contract; got: {msg}"
                 );
             }
             other => panic!("expected FailClosed, got {other:?}"),

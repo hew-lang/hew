@@ -1,6 +1,7 @@
 use hew_types::check::dispatch::{
-    bound_diagnostic_strings, resolve_method_call, Bound, CallAbiHint, ImplDef, ImplId,
-    ImplRegistry, LookupError, MethodTarget, RuntimeAbi, TyPattern,
+    bound_diagnostic_strings, resolve_method_call, Bound, CallAbiHint, HashMapMethod,
+    HashSetMethod, ImplDef, ImplId, ImplRegistry, LookupError, MethodTarget, MethodTargetFamily,
+    RuntimeAbi, TyPattern,
 };
 use hew_types::traits::MarkerTrait;
 
@@ -38,6 +39,7 @@ fn seed_registry() -> (ImplRegistry, ImplId, ImplId) {
             "insert".to_string(),
             MethodTarget {
                 symbol_name: "hew_hashmap_insert".to_string(),
+                family: MethodTargetFamily::HashMap(HashMapMethod::Insert),
                 abi: RuntimeAbi::ByRefMut,
                 call_hint: CallAbiHint::RuntimeShim,
                 consumes_receiver: false,
@@ -61,6 +63,7 @@ fn seed_registry() -> (ImplRegistry, ImplId, ImplId) {
             "insert".to_string(),
             MethodTarget {
                 symbol_name: "hew_hashset_insert".to_string(),
+                family: MethodTargetFamily::HashSet(HashSetMethod::Insert),
                 abi: RuntimeAbi::ByRefMut,
                 call_hint: CallAbiHint::RuntimeShim,
                 consumes_receiver: false,

@@ -1018,10 +1018,22 @@ impl Checker {
                 // `Sender`/`Receiver` `close` are consuming releases).
                 let consumes_receiver =
                     crate::builtin_names::runtime_symbol_consumes_receiver(c_symbol);
+                // Lift the resolved symbol into the typed runtime-call
+                // descriptor when the substrate enumerates it (closed set:
+                // channel close peers in this branch). User-defined open-set
+                // FFI strings cannot reach this site; from_c_symbol asserts
+                // None below would only fire if the channel registry grew
+                // a symbol the substrate doesn't know about.
+                let descriptor = crate::runtime_call::RuntimeCallFamily::from_c_symbol(c_symbol)
+                    .map(|family| {
+                        crate::runtime_call::RuntimeCallDescriptor::new(family, None)
+                            .expect("channel close family rejects elem; substrate invariant")
+                    });
                 self.method_call_rewrites.insert(
                     span_key,
                     MethodCallRewrite::RewriteToFunction {
                         c_symbol: c_symbol.to_string(),
+                        descriptor,
                         elem_ty: None,
                         consumes_receiver,
                     },
@@ -1140,6 +1152,18 @@ impl Checker {
         );
     }
 
+    /// Record a rewrite for a **closed-set builtin** runtime-ABI method call.
+    ///
+    /// Every `c_symbol` reaching this helper is one the checker resolved from
+    /// its own builtin tables — stdlib method resolution
+    /// (`require_builtin_runtime_symbol` / `resolve_*_method`), the literal
+    /// close-family handle releases, and handle-method auto-derivation. Open-set
+    /// `#[extern_symbol]` FFI strings do NOT come here: they route through
+    /// [`Self::record_extern_symbol_method_call_rewrite`], which records
+    /// `descriptor: None`. Keeping the two producers split is the
+    /// `checker-output-boundary` guarantee — a user FFI symbol that happens to
+    /// collide with a catalog name must never be reclassified into a typed
+    /// runtime descriptor.
     fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
         let c_symbol = c_symbol.into();
         // The consume verdict is derived once, here, from the resolved runtime
@@ -1149,10 +1173,60 @@ impl Checker {
         // receiver type name keeps `.send()`/`.recv()` borrowing and only the
         // `.close()`-family consuming (LESSONS: drop-allowset-from-value-flow).
         let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
+        // Recover the typed family for this closed builtin symbol. Because the
+        // helper only ever sees checker-emitted catalog symbols (the extern
+        // split routes every open-set `#[extern_symbol]` string elsewhere), this
+        // is a bijection-guarded catalog round-trip of the checker's OWN output
+        // — not a reverse-parse of arbitrary input. `from_c_symbol` returns
+        // `None` only for the few builtin symbols the substrate does not yet
+        // enumerate (pre-staged families); those keep `descriptor: None` and
+        // consumers fall back to `c_symbol`.
+        let descriptor =
+            crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).map(|family| {
+                crate::runtime_call::RuntimeCallDescriptor::new(family, None)
+                    .expect("substrate variant rejects elem; runtime symbols never carry elem here")
+            });
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
                 c_symbol,
+                descriptor,
+                elem_ty: None,
+                consumes_receiver,
+            },
+        );
+    }
+
+    /// Record a rewrite for an **open-set** `#[extern_symbol]` FFI method call.
+    ///
+    /// Unlike [`Self::record_runtime_method_call_rewrite`], the typed
+    /// `descriptor` is unconditionally `None`. An `#[extern_symbol]` method —
+    /// stdlib `duration` / `Instant` / `LambdaActorHandle` bindings as well as
+    /// user-authored FFI on inherent impls — is open-set *by mechanism*: the
+    /// checker has no first-class runtime-call-family knowledge for it. The
+    /// family would only be recoverable by reverse-parsing the symbol string,
+    /// which is exactly the `checker-output-boundary` violation this split
+    /// closes. So even when the raw/expanded symbol collides with a catalog
+    /// name (e.g. `hew_duration_hours` == `RuntimeCallFamily::DurationHours`,
+    /// or a user binding that string-matches `hew_vec_push_layout`), no typed
+    /// descriptor is produced.
+    ///
+    /// `consumes_receiver` IS still derived from the resolved symbol via the
+    /// single consume authority. This is NOT string reclassification but a
+    /// load-bearing ownership fact with no other source: stdlib declares
+    /// `#[extern_symbol(hew_lambda_actor_release)]`, a genuine consuming handle
+    /// release, and dropping its consume mark would let the handle's scope-exit
+    /// drop fire on already-freed memory (double-free). The verdict stays
+    /// fail-closed (LESSONS: drop-allowset-from-value-flow): any symbol the
+    /// allow-set does not name is borrowing, so an FFI binding that merely
+    /// collides with a non-release name at worst leaks — it never double-frees.
+    fn record_extern_symbol_method_call_rewrite(&mut self, span: &Span, c_symbol: String) {
+        let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteToFunction {
+                c_symbol,
+                descriptor: None,
                 elem_ty: None,
                 consumes_receiver,
             },
@@ -1179,7 +1253,7 @@ impl Checker {
             );
             return false;
         }
-        self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+        self.record_extern_symbol_method_call_rewrite(span, spec.template.raw.clone());
         true
     }
 
@@ -1249,7 +1323,7 @@ impl Checker {
                 );
                 return false;
             }
-            self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+            self.record_extern_symbol_method_call_rewrite(span, spec.template.raw.clone());
             return true;
         }
         if !matches!(receiver_type_name, "Option" | "Result") {
@@ -1307,7 +1381,7 @@ impl Checker {
             );
             return false;
         }
-        self.record_runtime_method_call_rewrite(span, expanded);
+        self.record_extern_symbol_method_call_rewrite(span, expanded);
         true
     }
 
@@ -3834,6 +3908,10 @@ impl Checker {
                 span,
                 MethodCallRewrite::RewriteToFunction {
                     c_symbol: method_key,
+                    // User-fn dispatch into a primitive trait impl
+                    // (`i64::fmt` etc.) is open-set; the typed runtime-call
+                    // catalog does not enumerate user-defined method keys.
+                    descriptor: None,
                     elem_ty: None,
                     // Primitive trait-impl dispatch is a user-fn call; it never
                     // consumes the receiver as a handle release.
@@ -4767,6 +4845,16 @@ impl Checker {
                                 SpanKey::from(span),
                                 MethodCallRewrite::RewriteToFunction {
                                     c_symbol: "hew_remote_pid_tell".to_string(),
+                                    // Closed runtime call dispatched by callee-
+                                    // name intercept in codegen; the substrate
+                                    // enumerates this family.
+                                    descriptor: Some(
+                                        crate::runtime_call::RuntimeCallDescriptor::new(
+                                            crate::runtime_call::RuntimeCallFamily::RemotePidTell,
+                                            None,
+                                        )
+                                        .expect("RemotePidTell rejects elem"),
+                                    ),
                                     elem_ty: None,
                                     // Fire-and-forget send; borrows the pid
                                     // handle, does not release it.
@@ -5560,6 +5648,10 @@ impl Checker {
                                 span,
                                 MethodCallRewrite::RewriteToFunction {
                                     c_symbol: method_key,
+                                    // User-defined `Type::method` dispatch is
+                                    // open-set; the typed runtime-call catalog
+                                    // does not enumerate user method keys.
+                                    descriptor: None,
                                     elem_ty: None,
                                     // User inherent-impl / trait-method dispatch;
                                     // not a handle-release consume.
@@ -5971,6 +6063,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "insert".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_insert_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Insert),
                     abi: RuntimeAbi::ByRefMut,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -5980,6 +6073,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "get".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_get_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Get),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -5989,6 +6083,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "contains_key".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_contains_key_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::ContainsKey),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -5998,6 +6093,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "remove".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_remove_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Remove),
                     abi: RuntimeAbi::ByRefMut,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -6007,6 +6103,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "len".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_len_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Len),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -6016,6 +6113,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "keys".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_keys_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Keys),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -6025,6 +6123,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "values".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_values_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Values),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -6053,6 +6152,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "insert".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashset_insert_layout".to_string(),
+                    family: MethodTargetFamily::HashSet(HashSetMethod::Insert),
                     abi: RuntimeAbi::ByRefMut,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -6062,6 +6162,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "contains".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashset_contains_layout".to_string(),
+                    family: MethodTargetFamily::HashSet(HashSetMethod::Contains),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -6071,6 +6172,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "remove".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashset_remove_layout".to_string(),
+                    family: MethodTargetFamily::HashSet(HashSetMethod::Remove),
                     abi: RuntimeAbi::ByRefMut,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -6080,6 +6182,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "len".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashset_len_layout".to_string(),
+                    family: MethodTargetFamily::HashSet(HashSetMethod::Len),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -6089,6 +6192,7 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 "is_empty".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashset_is_empty_layout".to_string(),
+                    family: MethodTargetFamily::HashSet(HashSetMethod::IsEmpty),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -6104,29 +6208,34 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
         },
         where_bounds: vec![],
         methods: vec![
-            vec_method_target("push", RuntimeAbi::ByRefMut),
-            vec_method_target("pop", RuntimeAbi::ByRefMut),
-            vec_method_target("len", RuntimeAbi::ByRef),
-            vec_method_target("get", RuntimeAbi::ByRef),
-            vec_method_target("set", RuntimeAbi::ByRefMut),
-            vec_method_target("remove", RuntimeAbi::ByRefMut),
-            vec_method_target("contains", RuntimeAbi::ByRef),
-            vec_method_target("is_empty", RuntimeAbi::ByRef),
-            vec_method_target("clear", RuntimeAbi::ByRefMut),
-            vec_method_target("clone", RuntimeAbi::ByRef),
-            vec_method_target("append", RuntimeAbi::ByRefMut),
-            vec_method_target("extend", RuntimeAbi::ByRefMut),
-            vec_method_target("join", RuntimeAbi::ByRef),
+            vec_method_target("push", VecMethod::Push, RuntimeAbi::ByRefMut),
+            vec_method_target("pop", VecMethod::Pop, RuntimeAbi::ByRefMut),
+            vec_method_target("len", VecMethod::Len, RuntimeAbi::ByRef),
+            vec_method_target("get", VecMethod::Get, RuntimeAbi::ByRef),
+            vec_method_target("set", VecMethod::Set, RuntimeAbi::ByRefMut),
+            vec_method_target("remove", VecMethod::Remove, RuntimeAbi::ByRefMut),
+            vec_method_target("contains", VecMethod::Contains, RuntimeAbi::ByRef),
+            vec_method_target("is_empty", VecMethod::IsEmpty, RuntimeAbi::ByRef),
+            vec_method_target("clear", VecMethod::Clear, RuntimeAbi::ByRefMut),
+            vec_method_target("clone", VecMethod::Clone, RuntimeAbi::ByRef),
+            vec_method_target("append", VecMethod::Append, RuntimeAbi::ByRefMut),
+            vec_method_target("extend", VecMethod::Extend, RuntimeAbi::ByRefMut),
+            vec_method_target("join", VecMethod::Join, RuntimeAbi::ByRef),
         ],
     });
     registry
 }
 
-fn vec_method_target(method: &str, abi: RuntimeAbi) -> (String, MethodTarget) {
+fn vec_method_target(
+    method: &str,
+    vec_method: VecMethod,
+    abi: RuntimeAbi,
+) -> (String, MethodTarget) {
     (
         method.to_string(),
         MethodTarget {
             symbol_name: format!("hew_vec_{method}_FAMILY"),
+            family: MethodTargetFamily::Vec(vec_method),
             abi,
             call_hint: CallAbiHint::RuntimeShim,
             consumes_receiver: false,

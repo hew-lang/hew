@@ -32,8 +32,9 @@
 
 use hew_types::check::collection_dispatch_registry_for_tests;
 use hew_types::check::dispatch::{
-    match_pattern, resolve_method_call, Bound, CallAbiHint, ImplDef, ImplId, ImplRegistry,
-    LookupError, MethodTarget, RuntimeAbi, TyPattern,
+    match_pattern, resolve_method_call, Bound, CallAbiHint, HashMapMethod, HashSetMethod, ImplDef,
+    ImplId, ImplRegistry, LookupError, MethodTarget, MethodTargetFamily, RuntimeAbi, TyPattern,
+    VecMethod,
 };
 use hew_types::traits::MarkerTrait;
 use std::collections::BTreeSet;
@@ -108,6 +109,7 @@ fn seed_registry() -> (ImplRegistry, ImplId, ImplId, ImplId) {
                 "insert".into(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_insert".into(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Insert),
                     abi: RuntimeAbi::ByRefMut,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -117,6 +119,7 @@ fn seed_registry() -> (ImplRegistry, ImplId, ImplId, ImplId) {
                 "get".into(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_get".into(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Get),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,
@@ -142,6 +145,7 @@ fn seed_registry() -> (ImplRegistry, ImplId, ImplId, ImplId) {
             "insert".into(),
             MethodTarget {
                 symbol_name: "hew_hashset_insert".into(),
+                family: MethodTargetFamily::HashSet(HashSetMethod::Insert),
                 abi: RuntimeAbi::ByRefMut,
                 call_hint: CallAbiHint::RuntimeShim,
                 consumes_receiver: false,
@@ -157,6 +161,7 @@ fn seed_registry() -> (ImplRegistry, ImplId, ImplId, ImplId) {
             "push".into(),
             MethodTarget {
                 symbol_name: "hew_vec_push".into(),
+                family: MethodTargetFamily::Vec(VecMethod::Push),
                 abi: RuntimeAbi::ByRefMut,
                 call_hint: CallAbiHint::Direct,
                 consumes_receiver: false,

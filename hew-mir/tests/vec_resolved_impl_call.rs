@@ -5,7 +5,7 @@ use hew_hir::{
     HirStmtKind, IntentKind, ScopeId, ValueClass,
 };
 use hew_mir::lower_hir_module;
-use hew_types::{BuiltinType, ImplId, ResolvedTy};
+use hew_types::{BuiltinType, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
@@ -50,6 +50,7 @@ fn vec_resolved_impl_call_wrong_arity_panics_fail_closed() {
             impl_id: ImplId(2),
             method_name: "len".to_string(),
             target_symbol: "hew_vec_len".to_string(),
+            target_family: MethodTargetFamily::Vec(VecMethod::Len),
             type_args: vec![],
             args: vec![],
             ret_ty: ResolvedTy::Unit,

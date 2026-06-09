@@ -26,8 +26,8 @@ pub mod const_eval;
 mod diagnostics;
 pub mod dispatch;
 pub use self::dispatch::{
-    Bound, CallAbiHint, ImplDef, ImplId, ImplRegistry, LookupError, MethodTarget, ResolvedCall,
-    RuntimeAbi, TyPattern,
+    Bound, CallAbiHint, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry, LookupError,
+    MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
 };
 mod expressions;
 mod generics;

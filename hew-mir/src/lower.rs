@@ -5290,6 +5290,28 @@ enum RuntimeCallContext {
     ValueNeeded,
 }
 
+/// Returns `true` iff `ty` is the tell-shaped `Result<(), SendError>` that a
+/// `.send` on an actor / `Duplex` handle yields when the reply type is unit.
+///
+/// The value-context materialization path constructs only this shape; ask-shaped
+/// `Result<R, AskError>` (a non-unit `Duplex` reply) and any other result type
+/// fail closed at the MIR producer (D2) rather than being mis-sized or bound to
+/// nothing. The match is structural on the resolved type so a user alias that
+/// merely *looks* like `Result<(), SendError>` by name still has to carry the
+/// real `SendError` payload variant.
+fn is_unit_send_error_result(ty: &ResolvedTy) -> bool {
+    let ResolvedTy::Named { name, args, .. } = ty else {
+        return false;
+    };
+    if name != "Result" {
+        return false;
+    }
+    matches!(
+        args.as_slice(),
+        [ResolvedTy::Unit, ResolvedTy::Named { name: err, .. }] if err == "SendError"
+    )
+}
+
 fn runtime_symbol_for_call_expr(
     expr: &HirExpr,
 ) -> Option<(String, &[hew_hir::HirExpr], hew_hir::SiteId)> {
@@ -6691,7 +6713,19 @@ impl Builder {
 
     fn lower_expr_statement(&mut self, expr: &HirExpr) {
         if let Some((symbol, args, site)) = runtime_symbol_for_call_expr(expr) {
-            let _ = self.lower_runtime_call(&symbol, args, site, RuntimeCallContext::Discarded);
+            // Thread the checker-recorded result type even in statement
+            // (discarded) context. Only `hew_duplex_send` consumes it, and it
+            // needs the type to decide the result SHAPE: a tell-shaped `.send`
+            // is fire-and-forget here, but an ask-shaped `.send` must fail
+            // closed in statement position too rather than lower as a tell that
+            // silently drops the reply (`no-fail-open-fallback-after-authority`).
+            let _ = self.lower_runtime_call(
+                &symbol,
+                args,
+                site,
+                RuntimeCallContext::Discarded,
+                Some(&expr.ty),
+            );
         } else {
             let _ = self.lower_value(expr);
         }
@@ -7174,6 +7208,12 @@ impl Builder {
                         args,
                         site,
                         RuntimeCallContext::ValueNeeded,
+                        // The call's checker-recorded result type sizes any
+                        // value-context dest local (`checker-authority`: the
+                        // producer consumes the recorded type, never re-infers
+                        // it). `.send` uses it to allocate the
+                        // `Result<(), SendError>` slot.
+                        Some(&expr.ty),
                     );
                 }
                 // M2 lambda-actor call-syntax dispatch.
@@ -7988,6 +8028,7 @@ impl Builder {
                 receiver,
                 method_name,
                 target_symbol,
+                target_family,
                 type_args,
                 args,
                 ret_ty,
@@ -7996,22 +8037,25 @@ impl Builder {
                 // Builtin-generic trait dispatch (HashMap/HashSet/Vec today;
                 // Option/Result migrate later). The checker's resolver
                 // has already chosen the satisfying impl and recorded the
-                // kernel symbol verbatim in `MethodTarget.symbol_name`
-                // (now `target_symbol`). HIR copied it onto the variant;
-                // MIR emits a direct `Terminator::Call` against it.
+                // typed [`MethodTargetFamily`] verdict; HIR copied it
+                // onto the variant. MIR routes on the typed family and
+                // emits a direct `Terminator::Call` against `target_symbol`,
+                // which remains the concrete linker-edge identifier.
                 //
-                // No re-derivation of the symbol from `method_name` /
-                // `type_args` here — that would re-implement the resolver's
-                // authority at the MIR boundary (LESSONS `checker-authority`,
-                // `codegen-abi-authority`). The symbol IS the verdict.
+                // No re-derivation of the family from `method_name` /
+                // `type_args` / `target_symbol` here — that would
+                // re-implement the resolver's authority at the MIR
+                // boundary (LESSONS `checker-authority`,
+                // `codegen-abi-authority`). The family IS the verdict;
+                // the symbol IS the callee name.
                 //
-                // Fail-closed arity gate: every kernel symbol family this
-                // arm dispatches to was registered by the C0b populator at
-                // `methods.rs:4938+`/`:5002+` with an explicit type-arg
-                // arity (HashMap impls take 2, HashSet and Vec impls take
-                // 1). An arity mismatch here means the resolver/populator and
-                // this consumer have drifted — the right place to fix is
-                // the populator, not silently coerce here. LESSONS:
+                // Fail-closed arity gate: every kernel family this arm
+                // dispatches to was registered by
+                // `collection_dispatch_registry_impl` with an explicit
+                // type-arg arity (HashMap takes 2, HashSet and Vec take
+                // 1). An arity mismatch here means the populator and
+                // this consumer have drifted — the right place to fix
+                // is the populator, not silently coerce here. LESSONS:
                 // `exhaustive-coverage`, `boundary-fail-closed`.
                 //
                 // Catalog descriptor materialisation is deliberately NOT
@@ -8028,53 +8072,44 @@ impl Builder {
                 // constructor lowering (C-1c). Coverage of the primitive
                 // set is asserted by the
                 // `stdlib_catalog_layout_descriptor_coverage` gate.
-                if target_symbol.starts_with("hew_hashmap_") {
-                    if type_args.len() != 2 {
-                        unreachable!(
-                            "Stage C: hashmap `.{method_name}` resolved to \
-                             {target_symbol} with {} type_args; populator at \
-                             hew-types/src/check/methods.rs registers HashMap \
-                             impls with 2 type-args (K, V) — populator and MIR \
-                             consumer have drifted",
-                            type_args.len()
-                        );
+                match target_family {
+                    hew_types::MethodTargetFamily::HashMap(_) => {
+                        if type_args.len() != 2 {
+                            unreachable!(
+                                "Stage C: hashmap `.{method_name}` resolved to \
+                                 family {target_family:?} with {} type_args; \
+                                 populator at hew-types/src/check/methods.rs \
+                                 registers HashMap impls with 2 type-args (K, V) — \
+                                 populator and MIR consumer have drifted",
+                                type_args.len()
+                            );
+                        }
                     }
-                } else if target_symbol.starts_with("hew_hashset_") {
-                    if type_args.len() != 1 {
-                        unreachable!(
-                            "Stage C: hashset `.{method_name}` resolved to \
-                             {target_symbol} with {} type_args; populator at \
-                             hew-types/src/check/methods.rs registers HashSet \
-                             impls with 1 type-arg (T) — populator and MIR \
-                             consumer have drifted",
-                            type_args.len()
-                        );
+                    hew_types::MethodTargetFamily::HashSet(_) => {
+                        if type_args.len() != 1 {
+                            unreachable!(
+                                "Stage C: hashset `.{method_name}` resolved to \
+                                 family {target_family:?} with {} type_args; \
+                                 populator at hew-types/src/check/methods.rs \
+                                 registers HashSet impls with 1 type-arg (T) — \
+                                 populator and MIR consumer have drifted",
+                                type_args.len()
+                            );
+                        }
                     }
-                } else if target_symbol.starts_with("hew_vec_") {
-                    if type_args.len() != 1 {
-                        unreachable!(
-                            "Stage C: vec `.{method_name}` resolved to \
-                             {target_symbol} with {} type_args; populator at \
-                             hew-types/src/check/methods.rs registers Vec \
-                             impls with 1 type-arg (T) — populator and MIR \
-                             consumer have drifted",
-                            type_args.len()
-                        );
+                    hew_types::MethodTargetFamily::Vec(_) => {
+                        if type_args.len() != 1 {
+                            unreachable!(
+                                "Stage C: vec `.{method_name}` resolved to \
+                                 family {target_family:?} with {} type_args; \
+                                 populator at hew-types/src/check/methods.rs \
+                                 registers Vec impls with 1 type-arg (T) — \
+                                 populator and MIR consumer have drifted",
+                                type_args.len()
+                            );
+                        }
                     }
-                } else {
-                    unreachable!(
-                        "Stage C: ResolvedImplCall `.{method_name}` carries \
-                         target_symbol `{target_symbol}` that is neither a \
-                         `hew_hashmap_*`, `hew_hashset_*`, nor `hew_vec_*` \
-                         kernel symbol; the populator and MIR consumer have \
-                         drifted. New resolved-call families must extend this \
-                         dispatch arm before their populator emits a \
-                         ResolvedCall row."
-                    );
                 }
-                // Silence unused-var lint on `type_args` while the catalog
-                // presence check stays out (rationale above).
-                let _ = type_args;
 
                 // W5.016: finalize the owned-vs-BitCopy Vec element ABI through
                 // the SINGLE consumer-side authority (`is_owned_vec_element`, the
@@ -8092,7 +8127,19 @@ impl Builder {
                 // false here, so this only ever corrects the synthesized guess —
                 // it never re-derives the checker's impl-resolution verdict
                 // (`dedup-semantic-boundary`).
-                let callee = if target_symbol == "hew_vec_push_layout"
+                //
+                // The owned-rewrite predicate is *family-gated* (must be a Vec
+                // push) AND *symbol-keyed* (must be the `_layout` variant the
+                // HIR desugar emits). The family gate ensures we never
+                // accidentally consult `vec_receiver_has_owned_element` for a
+                // non-Vec call; the symbol check distinguishes the synthetic
+                // `_layout` from a real per-element-type symbol the checker
+                // resolved directly. Once the substrate enumerates the
+                // per-element Vec push variants, the second arm collapses.
+                let callee = if matches!(
+                    target_family,
+                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push)
+                ) && target_symbol == "hew_vec_push_layout"
                     && self.vec_receiver_has_owned_element(&receiver.ty)
                 {
                     "hew_vec_push_owned".to_string()
@@ -8103,13 +8150,16 @@ impl Builder {
                 // Array literals are HIR-desugared to pushes into a synthetic
                 // Vec temp. Treat each pushed element as aggregate ingress so
                 // `[s, "x"]; s` is rejected without changing ordinary
-                // user-authored method/function argument semantics.
-                let is_array_literal_push = method_name == "push"
-                    && target_symbol.starts_with("hew_vec_push_")
-                    && matches!(
-                        &receiver.kind,
-                        HirExprKind::BindingRef { name, .. } if name.starts_with("__hew_array_")
-                    );
+                // user-authored method/function argument semantics. The Vec
+                // push family identifies the call genuinely; we no longer
+                // re-parse the symbol prefix to recognise it.
+                let is_array_literal_push = matches!(
+                    target_family,
+                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push)
+                ) && matches!(
+                    &receiver.kind,
+                    HirExprKind::BindingRef { name, .. } if name.starts_with("__hew_array_")
+                );
 
                 // Lower receiver as arg[0], then explicit args.
                 let receiver_place = self.lower_value(receiver)?;
@@ -14850,6 +14900,7 @@ impl Builder {
         hir_args: &[hew_hir::HirExpr],
         site: hew_hir::SiteId,
         context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
     ) -> Option<Place> {
         // Construction-time contract: the symbol must be in the allowlist.
         // This is the HIR-string-boundary gate: the caller dispatched this
@@ -14865,7 +14916,7 @@ impl Builder {
 
         match symbol {
             "hew_duplex_pair" => self.lower_duplex_pair(hir_args, site),
-            "hew_duplex_send" => self.lower_duplex_send(hir_args, site),
+            "hew_duplex_send" => self.lower_duplex_send(hir_args, site, context, result_ty),
             "hew_supervisor_stop" => self.lower_supervisor_stop(hir_args, site),
             "hew_actor_link" | "hew_actor_monitor" => {
                 self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
@@ -15530,26 +15581,38 @@ impl Builder {
         Some(handle_place)
     }
 
-    /// Emit `Instr::CallRuntimeAbi` for `hew_duplex_send`.
+    /// Emit `Instr::CallRuntimeAbi` for a `.send` on an actor/duplex handle.
     ///
     /// HIR shape (from E1 bridge): `Call { callee: BindingRef("hew_duplex_send"),
-    /// args: [receiver_expr, msg_expr] }` — receiver prepended by E1.
+    /// args: [receiver_expr, msg_expr] }` — receiver prepended by E1. The
+    /// checker records the `hew_duplex_send` rewrite for `.send` on every
+    /// `Duplex<S, R>` receiver, including lambda-actor handles (which type as
+    /// `Duplex<Msg, Reply>`).
     ///
     /// MIR emission:
-    ///   1. Lower `receiver_expr` → `recv_place` (expected `DuplexHandle(N)`).
+    ///   1. Lower `receiver_expr` → `recv_place`. A lambda-actor binding
+    ///      lowers to `Place::LambdaActorHandle(N)`; a raw `Duplex::pair()`
+    ///      handle lowers to `Place::DuplexHandle(N)`.
     ///   2. Lower `msg_expr` → `msg_place` (the integer value's `Local(K)`).
     ///   3. Emit `ConstI64 { dest: len_place, value: 8 }` — the byte-length.
-    ///   4. Emit `CallRuntimeAbi { symbol: "hew_duplex_send",
-    ///         args: [recv_place, msg_place, len_place], dest: None }`.
-    ///   5. Return `None` — send discards its i32 result.
+    ///   4. Select the runtime symbol by the receiver `Place` variant
+    ///      (`codegen-abi-authority`): `LambdaActorHandle` → the
+    ///      lambda-actor ABI `hew_lambda_actor_send`; anything else → the
+    ///      raw-duplex ABI `hew_duplex_send`. Routing each `Place` to exactly
+    ///      one correct symbol is load-bearing: passing a `LambdaActorHandle`
+    ///      to `hew_duplex_send` type-puns the handle and silently mis-delivers
+    ///      (`no-fail-open-fallback-after-authority`).
+    ///   5. Emit `CallRuntimeAbi { symbol, args: [recv, msg, len], dest }`.
     ///
     /// The receiver is NOT consumed (non-move send semantics); `owned_locals`
-    /// for the receiver `DuplexHandle` must persist across multiple sends
-    /// (LESSONS `raii-null-after-move`).
+    /// for the receiver handle must persist across multiple sends and the
+    /// scope-exit drop (LESSONS `raii-null-after-move`).
     fn lower_duplex_send(
         &mut self,
         hir_args: &[hew_hir::HirExpr],
         site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
     ) -> Option<Place> {
         if hir_args.len() < 2 {
             self.diagnostics.push(MirDiagnostic {
@@ -15571,6 +15634,72 @@ impl Builder {
             return None;
         };
 
+        // Route by receiver Place variant. A lambda-actor handle must use the
+        // lambda-actor ABI; a raw `Duplex` handle uses the duplex ABI. The two
+        // runtime symbols are distinct authorities for one `.send` surface, and
+        // a `LambdaActorHandle` routed through `hew_duplex_send` type-puns the
+        // handle and silently drops the message (Evidence #2). The `Place`
+        // variant is the canonical "which handle is this" signal — selecting on
+        // it (not on the receiver's type, which is `Duplex<Msg, Reply>` for
+        // both) keeps ABI selection on an explicit authority
+        // (`codegen-abi-authority`, `no-fail-open-fallback-after-authority`).
+        let symbol = match recv_place {
+            Place::LambdaActorHandle(_) => "hew_lambda_actor_send",
+            _ => "hew_duplex_send",
+        };
+
+        // Materialize the runtime's i32 send status into a user-visible
+        // `Result<(), SendError>`, or fail closed. The decision is on the result
+        // SHAPE, not the call context, so an ask-shaped `.send` fails closed in
+        // BOTH statement and value position — it must never lower as a
+        // fire-and-forget tell that silently drops the reply the user's type
+        // says they receive.
+        //
+        // Shape is the checker-recorded result type (`checker-authority`: the
+        // producer consumes the recorded type, it does not re-infer it):
+        //   - tell-shaped `Result<(), SendError>` -> supported. Value context
+        //     binds a dest local that codegen fills from the rc (the D1
+        //     discriminant mapping lives in codegen, the single authority);
+        //     statement context discards the status (`dest: None`,
+        //     fire-and-forget delivery).
+        //   - ask-shaped `Result<R, AskError>` (a non-unit `Duplex` reply) or
+        //     any other type -> a separate lowering this lane does not own. Fail
+        //     closed with a stable NYI diagnostic BEFORE emitting any send
+        //     instruction (`no-fail-open-fallback-after-authority`), rather than
+        //     bind nothing (the misleading `UnresolvedPlace`, Evidence #1),
+        //     mis-size the slot, or — in statement context — drop the reply
+        //     silently. The check runs before the length const below so the
+        //     rejected path emits neither the const nor the call.
+        let resolved_result = result_ty.map(|ty| self.subst_ty(ty));
+        if !resolved_result
+            .as_ref()
+            .is_some_and(is_unit_send_error_result)
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "`.send` whose result is not Result<(), SendError>".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`.send` materializes only the tell-shaped `Result<(), \
+                     SendError>`; got {resolved_result:?}. Ask-shaped `.send` (a \
+                     non-unit `Duplex` reply yielding `Result<R, AskError>`) is a \
+                     separate lowering and fails closed in both statement and \
+                     value context rather than lower as a fire-and-forget tell \
+                     that drops the reply."
+                ),
+            });
+            return None;
+        }
+        // Tell-shaped: bind the Result in value context; discard the status in
+        // statement context (fire-and-forget delivery).
+        let dest = match context {
+            RuntimeCallContext::ValueNeeded => Some(self.alloc_local(
+                resolved_result.expect("tell-shaped result is Some after the guard above"),
+            )),
+            RuntimeCallContext::Discarded => None,
+        };
+
         // Emit the byte-length constant.  The runtime ABI takes `*const u8 + usize`;
         // E4 codegen stores `msg_place`'s value to a stack alloca and passes its
         // address.  The length constant here encodes the fixed 8-byte integer size.
@@ -15590,16 +15719,14 @@ impl Builder {
         // Emit the runtime call.  `recv_place` is used as a borrow (not consumed);
         // the receiver's `owned_locals` entry survives for subsequent sends and the
         // scope-exit drop (LESSONS `raii-null-after-move`, `cleanup-all-exits`).
+        // `dest` is `Some` only in value context; codegen materializes the Result
+        // there and leaves the rc unobserved when it is `None`.
         self.instructions.push(Instr::CallRuntimeAbi(
-            crate::model::RuntimeCall::new(
-                "hew_duplex_send",
-                vec![recv_place, msg_place, len_place],
-                None,
-            )
-            .expect("hew_duplex_send is an allowlisted runtime symbol"),
+            crate::model::RuntimeCall::new(symbol, vec![recv_place, msg_place, len_place], dest)
+                .expect("send symbol is an allowlisted runtime symbol"),
         ));
 
-        None // send result (i32 error code) is discarded
+        dest
     }
 
     fn lower_actor_payload(

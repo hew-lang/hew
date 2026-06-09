@@ -165,7 +165,24 @@ pub struct Bound {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MethodTarget {
     /// Runtime symbol name (e.g. `"hew_hashmap_insert_layout"`).
+    ///
+    /// Retained as the concrete linker-edge identifier even after the
+    /// typed [`MethodTargetFamily`] sibling lands: codegen ultimately
+    /// resolves a callee by C-symbol string. Consumers performing
+    /// *dispatch decisions* (which collection? which method?) must read
+    /// [`MethodTarget::family`] instead — the string is then only used
+    /// as the literal callee name for `Terminator::Call`. A later slice
+    /// retires the string for fully-typed runtime calls.
     pub symbol_name: String,
+    /// Typed dispatch family — the *closed-set* identity of this method
+    /// target. Consumers that need to ask "is this a `HashMap` insert?"
+    /// or "is this any Vec push?" must read this field; do NOT match on
+    /// `symbol_name.starts_with("hew_hashmap_")` or peer prefix shapes.
+    /// The family is the dispatch authority; the string is the linker
+    /// authority. They are siblings and must not drift — populator and
+    /// MIR consumer share enum coverage so a new collection method
+    /// fails to compile in the consumer until both sides are updated.
+    pub family: MethodTargetFamily,
     /// Receiver-side calling convention.
     pub abi: RuntimeAbi,
     /// How the call is lowered (direct vs runtime shim).
@@ -175,6 +192,76 @@ pub struct MethodTarget {
     /// `method_call_consumes_receiver` side table onto [`ResolvedCall`]
     /// without semantic drift.
     pub consumes_receiver: bool,
+}
+
+/// Typed dispatch family for [`MethodTarget`].
+///
+/// This is the *dispatch* authority — consumers (HIR/MIR/codegen) that
+/// need to discriminate between collection kinds or specific methods
+/// must read this enum rather than re-parsing the `symbol_name` string.
+///
+/// The substrate covers the closed set the checker's
+/// `collection_dispatch_registry_impl` populates today: `HashMap`,
+/// `HashSet`, and Vec. Adding a new collection family requires extending
+/// this enum AND every consumer match — `match`'s exhaustiveness check
+/// is the invariant. New Vec methods extend [`VecMethod`] the same way.
+///
+/// User-impl / open-set collection calls are not handled here: those flow
+/// through `MethodCallRewrite::RewriteToFunction` (where `descriptor`
+/// is `None` and the user trait `Type::method` key is the only
+/// identifier). This enum is for the runtime-known builtin generics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MethodTargetFamily {
+    /// `HashMap` method dispatch. Arity invariant: 2 type-args (K, V).
+    HashMap(HashMapMethod),
+    /// `HashSet` method dispatch. Arity invariant: 1 type-arg (T).
+    HashSet(HashSetMethod),
+    /// Vec method dispatch. Arity invariant: 1 type-arg (T).
+    Vec(VecMethod),
+}
+
+/// `HashMap` dispatch methods. Mirrors the methods registered for the
+/// `Map for HashMap<K, V>` impl in
+/// `collection_dispatch_registry_impl`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HashMapMethod {
+    Insert,
+    Get,
+    ContainsKey,
+    Remove,
+    Len,
+    Keys,
+    Values,
+}
+
+/// `HashSet` dispatch methods. Mirrors the methods registered for the
+/// `Set for HashSet<T>` impl in `collection_dispatch_registry_impl`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HashSetMethod {
+    Insert,
+    Contains,
+    Remove,
+    Len,
+    IsEmpty,
+}
+
+/// Vec dispatch methods. Mirrors the methods registered for the
+/// `Seq for Vec<T>` impl in `collection_dispatch_registry_impl`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum VecMethod {
+    Push,
+    Pop,
+    Len,
+    Get,
+    Set,
+    Remove,
+    Contains,
+    IsEmpty,
+    Clear,
+    Clone,
+    Append,
+    Extend,
+    Join,
 }
 
 /// One impl declaration in the registry, e.g.

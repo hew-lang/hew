@@ -1039,12 +1039,12 @@ impl Checker {
     }
 
     fn instantiate_type_def_member(ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
-        type_params
+        let map: HashMap<String, Ty> = type_params
             .iter()
             .zip(type_args.iter())
-            .fold(ty.clone(), |instantiated, (param, arg)| {
-                instantiated.substitute_named_param(param, arg)
-            })
+            .map(|(p, a)| (p.clone(), a.clone()))
+            .collect();
+        ty.substitute_named_params_parallel(&map)
     }
 
     pub(super) fn vec_element_contains_structural_array(

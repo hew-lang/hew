@@ -2308,11 +2308,8 @@ impl Checker {
 
                         for (field_name, (fexpr, fs)) in fields {
                             if let Some(declared_ty) = td.fields.get(field_name) {
-                                let mut field_expected = declared_ty.clone();
-                                for (tp, concrete) in &type_arg_map {
-                                    field_expected =
-                                        field_expected.substitute_named_param(tp, concrete);
-                                }
+                                let field_expected =
+                                    declared_ty.substitute_named_params_parallel(&type_arg_map);
                                 let actual = self.check_against(fexpr, fs, &field_expected);
 
                                 // Still infer any remaining unbound type params
@@ -2469,11 +2466,8 @@ impl Checker {
                                         variant_fields.iter().find(|(n, _)| n == field_name)
                                     {
                                         let declared_ty = declared_ty.clone();
-                                        let mut field_expected = declared_ty.clone();
-                                        for (tp, concrete) in &type_arg_map {
-                                            field_expected =
-                                                field_expected.substitute_named_param(tp, concrete);
-                                        }
+                                        let field_expected = declared_ty
+                                            .substitute_named_params_parallel(&type_arg_map);
                                         let actual = self.check_against(fexpr, fs, &field_expected);
                                         // Bind any remaining unbound type params
                                         for tp in &type_params {
@@ -4229,12 +4223,16 @@ impl Checker {
                 }
                 if let Some(td) = self.lookup_type_def(name) {
                     if let Some(field_ty) = td.fields.get(field) {
-                        // Substitute generic type params with concrete args
-                        let mut result_ty = field_ty.clone();
-                        for (param, arg) in td.type_params.iter().zip(args.iter()) {
-                            result_ty = result_ty.substitute_named_param(param, arg);
-                        }
-                        result_ty
+                        // Substitute generic type params with concrete args in
+                        // parallel so a swap instantiation like `Pair<B, A>` does
+                        // not alias: sequential A→B then B→A would produce A again.
+                        let subst_map: HashMap<String, Ty> = td
+                            .type_params
+                            .iter()
+                            .zip(args.iter())
+                            .map(|(p, a)| (p.clone(), a.clone()))
+                            .collect();
+                        field_ty.substitute_named_params_parallel(&subst_map)
                     } else if let Some((ref mn, ref src_state, ref evt_name)) =
                         self.current_machine_transition
                     {
@@ -4819,15 +4817,15 @@ impl Checker {
                     .iter()
                     .map(|_| Ty::Var(TypeVar::fresh()))
                     .collect();
+                let ctor_subst_map: HashMap<String, Ty> = td
+                    .type_params
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .collect();
                 let subst_params: Vec<Ty> = params
                     .iter()
-                    .map(|p| {
-                        let mut substituted = p.clone();
-                        for (tp, replacement) in td.type_params.iter().zip(args.iter()) {
-                            substituted = substituted.substitute_named_param(tp, replacement);
-                        }
-                        substituted
-                    })
+                    .map(|p| p.substitute_named_params_parallel(&ctor_subst_map))
                     .collect();
                 let ret = Ty::normalize_named(qualified_type, args);
                 Ty::Function {
@@ -4953,11 +4951,10 @@ impl Checker {
 
             for (field_name, (expr, es)) in fields {
                 if let Some(declared_ty) = td.fields.get(field_name) {
-                    // Substitute already-inferred type params into the expected type
-                    let mut expected = declared_ty.clone();
-                    for (tp, concrete) in &type_arg_map {
-                        expected = expected.substitute_named_param(tp, concrete);
-                    }
+                    // Substitute already-inferred type params into the expected type.
+                    // Use parallel substitution so a swap map {"A": B, "B": A} does not
+                    // alias both params: each Named leaf is replaced in one structural pass.
+                    let expected = declared_ty.substitute_named_params_parallel(&type_arg_map);
 
                     // If the expected type is still an unbound type parameter,
                     // synthesize so the field value determines the type (rather
@@ -5119,10 +5116,7 @@ impl Checker {
                 if let Some((_, declared_ty)) = variant_fields.iter().find(|(n, _)| n == field_name)
                 {
                     // Substitute already-inferred type params into the expected type
-                    let mut expected = declared_ty.clone();
-                    for (tp, concrete) in &type_arg_map {
-                        expected = expected.substitute_named_param(tp, concrete);
-                    }
+                    let expected = declared_ty.substitute_named_params_parallel(&type_arg_map);
 
                     // If the expected type is still an unbound type parameter, synthesize
                     // so the field value determines the concrete type.

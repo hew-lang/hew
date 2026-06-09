@@ -1103,7 +1103,21 @@ fn main() {
 }
 ```
 
-Use generic records as lightweight bitcopy containers over scalar types (`i64`, `f64`, `bool`). Every substituted field must be bitcopy — for owned-field containers (string/Vec) write a concrete (non-generic) record instead.
+Use generic records as lightweight bitcopy containers over scalar types (`i64`, `f64`, `bool`). The fields may also be owned — see the next example.
+
+### Generic record type with an owned field
+
+```hew
+type Pair<A, B> { first: A; second: B; }
+fn make() -> Pair<i64, string> { Pair { first: 1, second: "owned" } }
+fn main() {
+    let p = make();
+    println(p.first);
+    println(p.second);
+}
+```
+
+A generic record instantiation may carry owned fields (`string`, `Vec<T>`, nested records). Each instantiation (`Pair<i64, string>`, `Pair<string, Vec<i64>>`) drops and clones its owned fields per concrete instantiation — pass it by value, return it, store it. A field whose substituted type has no clone helper (an `#[opaque]` handle) fails closed at compile time, so write a concrete record for those.
 
 ### Generic function over Vec<T>
 

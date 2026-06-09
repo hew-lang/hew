@@ -950,16 +950,24 @@ impl Checker {
                         // available) zipped with `args`. The fallback when
                         // `type_params` is absent is to return the binding
                         // unchanged — sound when the impl is non-generic.
-                        let mut bound = binding.clone();
-                        if let Some(td) = self.type_defs.get(name) {
-                            for (tp, ta) in td.type_params.iter().zip(args.iter()) {
-                                bound = bound.substitute_named_param(tp, ta);
-                            }
+                        let bound = if let Some(td) = self.type_defs.get(name) {
+                            let map: HashMap<String, Ty> = td
+                                .type_params
+                                .iter()
+                                .zip(args.iter())
+                                .map(|(p, a)| (p.clone(), a.clone()))
+                                .collect();
+                            binding.substitute_named_params_parallel(&map)
                         } else if let Some(type_params) = builtin_generic_type_params(name) {
-                            for (tp, ta) in type_params.iter().zip(args.iter()) {
-                                bound = bound.substitute_named_param(tp, ta);
-                            }
-                        }
+                            let map: HashMap<String, Ty> = type_params
+                                .iter()
+                                .zip(args.iter())
+                                .map(|(p, a)| ((*p).to_string(), a.clone()))
+                                .collect();
+                            binding.substitute_named_params_parallel(&map)
+                        } else {
+                            binding.clone()
+                        };
                         // Recurse: the projected binding may itself contain
                         // further `Ty::AssocType` carriers.
                         return self.project_assoc_types(&bound);

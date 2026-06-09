@@ -3365,14 +3365,17 @@ fn is_heap_owning_tuple_composite_return(ty: &ResolvedTy, enum_layouts: &[EnumLa
 /// the `RecordInPlace` machinery already exists, this predicate lifts the gate
 /// for it).
 ///
-/// Restricted to a monomorphic user record (a `ResolvedTy::Named` with no
-/// generic args and no builtin discriminator) carrying heap, matching the
-/// `record_inplace_drop_name` consumer's key resolution. A generic record
-/// instantiation, an opaque/builtin handle, or an enum is excluded here — enums
-/// route through `is_heap_owning_enum_composite_return`, and a generic record
-/// return is a follow-on (it would need the mangled-key drop path). Fails
-/// closed for everything else (LESSONS: boundary-fail-closed,
-/// dedup-semantic-boundary).
+/// Admits a monomorphic user record (a `ResolvedTy::Named` with no generic args
+/// and no builtin discriminator) AND a generic record INSTANTIATION
+/// (`Pair<i64, string>`, args present) carrying heap, matching the
+/// `record_inplace_drop_name` consumer's key resolution. For the generic case
+/// the registered layout key is the `hew_hir::mangle`d name (`Pair$$i64$string`)
+/// — the SAME key the MIR `is_owned_aggregate_record_ty` admit authority and the
+/// `RecordInPlace` synthesis seed resolve, so MIR and codegen admit the
+/// identical set of returns (no admit-disagreement, R3). An opaque/builtin
+/// handle or an enum is excluded — enums route through
+/// `is_heap_owning_enum_composite_return`. Fails closed for everything else
+/// (LESSONS: boundary-fail-closed, dedup-semantic-boundary).
 fn is_heap_owning_record_composite_return(
     ty: &ResolvedTy,
     record_layouts: &RecordLayoutMap<'_>,
@@ -3387,12 +3390,10 @@ fn is_heap_owning_record_composite_return(
     else {
         return false;
     };
-    if !args.is_empty() {
-        return false;
-    }
     // Must resolve to a registered user record layout (not an enum). The
-    // `record_inplace_drop_name` consumer keys on the bare monomorphic name, so
-    // confirm that key exists in the codegen record map.
+    // `record_inplace_drop_name` consumer keys on the (prefix-stripped) name for
+    // a monomorphic record and the mangled name for a generic instantiation, so
+    // confirm THAT key exists in the codegen record map.
     //
     // Record-layout-first (collision-safety): check the struct map BEFORE the
     // opaque set. A user type that shares a short name with a stdlib opaque
@@ -3401,11 +3402,19 @@ fn is_heap_owning_record_composite_return(
     // struct map fall through to the opaque exclusion. Mirrors the
     // `record_layouts`-first invariant in `resolve_ty` and the MIR classifier.
     let short = short_name(name);
-    let is_record = record_layouts.contains_key(name.as_str())
-        || record_layouts.contains_key(short)
-        || record_layouts
-            .keys()
-            .any(|k| short_name(k) == short || k == name);
+    let is_record = if args.is_empty() {
+        record_layouts.contains_key(name.as_str())
+            || record_layouts.contains_key(short)
+            || record_layouts
+                .keys()
+                .any(|k| short_name(k) == short || k == name)
+    } else {
+        // Generic instantiation: resolve by the mangled registry key.
+        let full_mangled = mangle(name, args);
+        let short_mangled = mangle(short, args);
+        record_layouts.contains_key(full_mangled.as_str())
+            || record_layouts.contains_key(short_mangled.as_str())
+    };
     if !is_record {
         // Exclude opaque pointer-backed handles (Stream/Sink/Connection/etc.):
         // they carry no record struct layout, so they have no per-field
@@ -7610,11 +7619,14 @@ fn collect_record_inplace_drop_seeds(
                 if drop.kind != hew_mir::DropKind::RecordInPlace {
                     continue;
                 }
-                // RecordInPlace only ever carries a monomorphic user record
-                // (args empty); `record_inplace_drop_name` is the authority. A
-                // non-record ty here is a producer invariant violation the
-                // consumer already rejects, so skip it (the consumer's
-                // fail-closed arm is the diagnostic surface, not this seed).
+                // RecordInPlace carries a user record — bare-name monomorphic
+                // OR a generic INSTANTIATION (`Pair<i64, string>`, args present).
+                // `record_inplace_drop_name` is the consumer authority for the
+                // helper name; this seed must register the SAME key so the body
+                // is synthesised before the drop call resolves it. A non-record
+                // ty here is a producer invariant violation the consumer already
+                // rejects, so skip it (the consumer's fail-closed arm is the
+                // diagnostic surface, not this seed).
                 let ResolvedTy::Named {
                     name,
                     args,
@@ -7624,17 +7636,31 @@ fn collect_record_inplace_drop_seeds(
                 else {
                     continue;
                 };
-                if !args.is_empty() {
-                    continue;
-                }
                 // Confirm the record actually has a registered layout before
                 // seeding — a seed for an unregistered key would itself fail
-                // closed in the synthesis pass with a less specific message.
+                // closed in the synthesis pass with a less specific message. For
+                // a generic instantiation the registered key is the mangled name
+                // (`Pair$$i64$string`); for a bare record it is the (short) name.
+                // Resolve against `record_layouts` trying the full name, the
+                // short name, and — for generics — both full- and short-mangled
+                // forms, mirroring `lookup_record_layout` (state_clone) and
+                // `enum_layout_key_for_ty`. The resolved registry key is what
+                // both this seed and `record_inplace_drop_name` use, so they can
+                // never drift.
                 let short = short_name(name);
-                let key = record_layouts
-                    .iter()
-                    .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                    .map(|rl| rl.name.clone());
+                let key = if args.is_empty() {
+                    record_layouts
+                        .iter()
+                        .find(|rl| rl.name == *name || short_name(&rl.name) == short)
+                        .map(|rl| rl.name.clone())
+                } else {
+                    let full_mangled = mangle(name, args);
+                    let short_mangled = mangle(short, args);
+                    record_layouts
+                        .iter()
+                        .find(|rl| rl.name == full_mangled || rl.name == short_mangled)
+                        .map(|rl| rl.name.clone())
+                };
                 if let Some(key) = key {
                     if seen.insert(key.clone()) {
                         seeds.push(key);
@@ -18721,7 +18747,7 @@ fn emit_borrow_gated_elab_drop<'ctx>(
     Ok(())
 }
 
-fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<&str> {
+fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
     match ty {
         ResolvedTy::Named {
             name,
@@ -18734,10 +18760,31 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<&str> {
             // keyed by the bare type name (`"CommandOutput"`), so strip the prefix.
             Ok(name
                 .rsplit_once('.')
-                .map_or(name.as_str(), |(_, bare)| bare))
+                .map_or(name.as_str(), |(_, bare)| bare)
+                .to_string())
+        }
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: None,
+            ..
+        } => {
+            // Generic record INSTANTIATION (`Pair<i64, string>`). The
+            // per-instantiation drop/clone thunk is synthesised under the
+            // `hew_hir::mangle`d name (`Pair$$i64$string`) — the same key the MIR
+            // `user_record_layout_key` admit authority and the `state_clone`
+            // `lookup_record_layout` resolver produce, and the same key the
+            // synthesis seed (`collect_record_inplace_drop_seeds`) registers — so
+            // the drop call resolves the body that was emitted. Strip the module
+            // prefix from the origin name first (the mangler keys on the short
+            // name) so an imported generic record matches its registered layout.
+            let short = name
+                .rsplit_once('.')
+                .map_or(name.as_str(), |(_, bare)| bare);
+            Ok(mangle(short, args))
         }
         other => Err(CodegenError::FailClosed(format!(
-            "RecordInPlace drop requires a monomorphic user record type; got {other:?}"
+            "RecordInPlace drop requires a user record type; got {other:?}"
         ))),
     }
 }
@@ -35923,6 +35970,102 @@ fn main() {
     // `net.Connection` (the in-crate `ModuleRegistry::new(vec![])` harness has no
     // stdlib), so the producer↔codegen-carrier contract is pinned by the example
     // programs rather than an in-crate unit fixture.
+
+    /// Slice 4 — `is_heap_owning_record_composite_return` admits a generic
+    /// record INSTANTIATION carrying heap, keyed on the same mangled registry
+    /// key the MIR admit authority uses, so MIR and codegen admit the identical
+    /// set of composite returns (R3 — no admit disagreement). A generic
+    /// instantiation NOT registered, or one carrying no heap, is excluded.
+    #[test]
+    fn heap_owning_record_composite_return_admits_generic_instantiation() {
+        let ctx = Context::create();
+        let mut record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+        // Register the per-instantiation struct under its mangled key, mirroring
+        // `register_record_layouts` for a generic record.
+        let key = mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
+        let st = ctx.opaque_struct_type(&key);
+        st.set_body(
+            &[
+                ctx.i64_type().into(),
+                ctx.ptr_type(AddressSpace::default()).into(),
+            ],
+            false,
+        );
+        record_layouts.structs.insert(key.clone(), st);
+
+        // Heap-owning generic instantiation (owns the `string` arg) is admitted.
+        assert!(
+            is_heap_owning_record_composite_return(
+                &ResolvedTy::named_user("Pair", vec![ResolvedTy::I64, ResolvedTy::String]),
+                &record_layouts,
+                &[],
+            ),
+            "a registered heap-owning generic record instantiation must be \
+             admitted as a composite return"
+        );
+
+        // A generic instantiation that owns no heap (all-BitCopy args) is not a
+        // heap-owning composite return.
+        let bc_key = mangle("Pair", &[ResolvedTy::I64, ResolvedTy::I64]);
+        let bc_st = ctx.opaque_struct_type(&bc_key);
+        bc_st.set_body(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
+        record_layouts.structs.insert(bc_key, bc_st);
+        assert!(
+            !is_heap_owning_record_composite_return(
+                &ResolvedTy::named_user("Pair", vec![ResolvedTy::I64, ResolvedTy::I64]),
+                &record_layouts,
+                &[],
+            ),
+            "an all-BitCopy generic instantiation owns no heap and must not be \
+             a heap-owning composite return"
+        );
+
+        // An UNregistered generic instantiation is excluded (fail-closed).
+        assert!(
+            !is_heap_owning_record_composite_return(
+                &ResolvedTy::named_user("Pair", vec![ResolvedTy::String, ResolvedTy::Bytes]),
+                &record_layouts,
+                &[],
+            ),
+            "an unregistered generic instantiation must not be admitted"
+        );
+    }
+
+    /// Slice 3 — `record_inplace_drop_name` resolves the per-instantiation
+    /// helper name. A bare-name monomorphic record keeps its (prefix-stripped)
+    /// name; a generic INSTANTIATION mangles to the same `hew_hir::mangle`d key
+    /// the MIR admit authority and the synthesis seed use (`Pair$$i64$string`),
+    /// so the `__hew_record_drop_inplace_<key>` call resolves the synthesised
+    /// body. A non-record type fails closed.
+    #[test]
+    fn record_inplace_drop_name_mangles_generic_instantiation() {
+        // Bare-name monomorphic: unchanged.
+        assert_eq!(
+            record_inplace_drop_name(&ResolvedTy::named_user("PairIS", vec![])).unwrap(),
+            "PairIS",
+        );
+        // Imported bare name: module prefix stripped.
+        assert_eq!(
+            record_inplace_drop_name(&ResolvedTy::named_user("process.CommandOutput", vec![]))
+                .unwrap(),
+            "CommandOutput",
+        );
+        // Generic instantiation: mangled to the registered layout key.
+        let expected = mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
+        assert_eq!(
+            record_inplace_drop_name(&ResolvedTy::named_user(
+                "Pair",
+                vec![ResolvedTy::I64, ResolvedTy::String]
+            ))
+            .unwrap(),
+            expected,
+        );
+        // A non-record type fails closed (never a dangling helper name).
+        assert!(matches!(
+            record_inplace_drop_name(&ResolvedTy::I64),
+            Err(CodegenError::FailClosed(_))
+        ));
+    }
 }
 
 // Make `StubErr` `Clone` so we can re-use the same error in multiple

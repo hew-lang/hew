@@ -482,14 +482,13 @@ fn tuple_of_bytes_return_admits_with_spine() {
 
 /// Build a pipeline with `fn make() -> Pair<string>` where `Pair<T>` is a
 /// GENERIC user record carrying a heap-owning `string` field. The record drop
-/// spine (`is_heap_owning_record_composite_return` + `record_inplace_drop_name`)
-/// covers only a MONOMORPHIC user record (the consumer keys on the bare name); a
-/// generic instantiation needs the mangled-key drop path that is a follow-on, so
-/// the boundary must STILL fail closed. This is the residual fail-closed witness
-/// that keeps the composite-return gate non-tautological after the W5.021
-/// tuple/record lift: the type reaches the `StructType` arm (a registered struct
-/// layout) and `ty_contains_heap_owning` is true, but neither admit predicate
-/// matches it.
+/// spine now covers a generic INSTANTIATION:
+/// `is_heap_owning_record_composite_return` resolves the mangled registry key
+/// (`Pair$$string`) and `record_inplace_drop_name` synthesises the matching
+/// `__hew_record_drop_inplace_Pair$$string` helper. The boundary therefore
+/// admits this shape (it lowers to an aggregate struct return) rather than
+/// failing closed — the residual generic-record witness the drop spine now
+/// closes.
 fn generic_record_of_string_return_pipeline() -> IrPipeline {
     let pair_ty = ResolvedTy::Named {
         name: "Pair".to_string(),
@@ -544,28 +543,22 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
 }
 
 /// A generic record instantiation (`Pair<string>`) carrying owned heap reaches
-/// the `StructType` boundary arm but is NOT covered by either admit predicate
-/// (the record predicate is monomorphic-only), so it must STILL fail closed —
-/// the residual fail-closed witness after the W5.021 tuple/record lift. Keeps
-/// the composite-return boundary non-tautological (`boundary-fail-closed`).
+/// the `StructType` boundary arm and is now ADMITTED by
+/// `is_heap_owning_record_composite_return` (it resolves the mangled registry
+/// key `Pair$$string`), so it lowers to an aggregate struct return through the
+/// per-instantiation `RecordInPlace` drop spine rather than failing closed.
+/// Migrated forward from `generic_record_of_string_return_still_fails_closed`,
+/// which pinned the now-closed residual witness.
 #[test]
-fn generic_record_of_string_return_still_fails_closed() {
-    let pipeline = generic_record_of_string_return_pipeline();
-    let tmp = std::env::temp_dir().join("hew-composite-return-generic-record");
-    std::fs::create_dir_all(&tmp).expect("create scratch dir");
-    let options = EmitOptions {
-        module_name: "generic_record_ret",
-        out_dir: &tmp,
-        native: false,
-        wasm: false,
-        target_triple: None,
-    };
-    let err = emit_module(&pipeline, &options)
-        .expect_err("a generic record instantiation carrying owned heap must still fail closed");
-    let msg = format!("{err}");
+fn generic_record_of_string_return_admits_with_spine() {
+    let ll = emit_ll(
+        &generic_record_of_string_return_pipeline(),
+        "generic_record_ret",
+    );
     assert!(
-        msg.contains("requires tag-aware") && msg.contains("drop"),
-        "generic-record return must fail closed with the tag-aware-drop \
-         diagnostic; got: {msg}"
+        ll.contains("ret %\"Pair$$string\""),
+        "a `Pair<string>` (two string fields) generic-record return must admit \
+         and lower to a by-value struct return of the mangled record type \
+         (not fail closed); got:\n{ll}"
     );
 }

@@ -231,6 +231,77 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::Enum { .. } => false,
         }
     }
+
+    /// True when a field of this kind is admissible to the owned-aggregate
+    /// record value-class (the `__hew_record_{clone,drop}_inplace_<R>` in-place
+    /// record spine).
+    ///
+    /// An owned-aggregate record admitted by the value-class gate is seeded for
+    /// `DropKind::RecordInPlace`, which drives codegen to synthesise BOTH the
+    /// clone AND the drop body for the record (`emit_state_clone_drop_synthesis`,
+    /// llvm.rs ~6517). Every field of such a record must therefore have BOTH a
+    /// clone and a drop helper:
+    ///   - `BitCopy` — covered by the wholesale memcpy; no per-field helper.
+    ///   - `String` / `Bytes` — `hew_string_*` / `hew_bytes_*` helpers.
+    ///   - `Vec` / `HashMap` / `HashSet` — managed `collection_layout_witness`
+    ///     clone/free pair, provided the element/key/value is itself supported
+    ///     and the container carries no opaque handle (the managed clone would
+    ///     shallow-copy an opaque pointer → double-free / UAF on a deep clone).
+    ///   - `UserRecord` / `Enum` — recursively synthesised per-record / per-enum
+    ///     helper (the codegen `emit_field_{clone,drop}_step` `UserRecord`/`Enum`
+    ///     arms dispatch to the nested thunk).
+    ///
+    /// Returns `false` ONLY for `OpaqueHandle` (and any container transitively
+    /// nesting one). An opaque handle (`json.Value`, `cron.Expr`) has no dup
+    /// runtime helper, so the record's synthesised CLONE body would fail closed
+    /// LATE at codegen clone-synthesis (`clone_helper_for_kind`, llvm.rs ~6254).
+    /// A record carrying one must NOT be admitted to the owned-aggregate
+    /// value-class: today it admits at the MIR gate (→ `CowValue`), is seeded for
+    /// `RecordInPlace`, and only fails closed during clone-synthesis — a fragile
+    /// MIR-admits/codegen-refuses seam. This predicate moves the refusal back to
+    /// the W3.029 value-class gate (`fail-closed at the gate, not late`).
+    ///
+    /// `IoHandle` (`Generator`/`Stream`/`Sink`/`Connection`/`CancellationToken`)
+    /// is admitted: a `ValueClass::AffineResource`/`Linear` field is NOT
+    /// owned-aggregate-by-value, so a record carrying one is dropped field-wise
+    /// through the resource-drop path (`hew_gen_free` / `*_close`) and is NEVER
+    /// seeded for `RecordInPlace`, so its clone body is never synthesised. The
+    /// proven `Holder { inner: Generator<i64,()> }` corpus (`generator_exec`)
+    /// drops the handle exactly once with no record clone/drop thunk emitted —
+    /// rejecting `IoHandle` here would over-reject that working shape at the
+    /// value-class gate.
+    ///
+    /// The `UserRecord` / `Enum` arms carry only a registry key here; their
+    /// nested fields/payloads are re-classified by the recursive classifier,
+    /// which fails closed at the `ResolvedTy` authority
+    /// (`ty_contains_unclonable_opaque`) before an opaque-bearing nested record
+    /// or enum can be produced — so a `true` here for a nested record/enum is
+    /// only reached when that record/enum itself classified cleanly.
+    #[must_use]
+    pub fn supports_value_class_drop_spine(&self) -> bool {
+        match self {
+            StateFieldCloneKind::BitCopy { .. }
+            | StateFieldCloneKind::String
+            | StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::IoHandle { .. }
+            | StateFieldCloneKind::UserRecord { .. }
+            | StateFieldCloneKind::Enum { .. } => true,
+            // Containers: supported iff they carry no opaque handle (the managed
+            // clone/free witness fails closed on an opaque-bearing container) and
+            // the element/key/value kind is itself supported.
+            StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
+                !self.contains_opaque_handle() && elem.supports_value_class_drop_spine()
+            }
+            StateFieldCloneKind::HashMap { key, val } => {
+                !self.contains_opaque_handle()
+                    && key.supports_value_class_drop_spine()
+                    && val.supports_value_class_drop_spine()
+            }
+            // Opaque handle: no dup runtime helper, so the synthesised record
+            // clone body fails closed. Reject at the value-class gate.
+            StateFieldCloneKind::OpaqueHandle { .. } => false,
+        }
+    }
 }
 
 /// IO-handle subkind. Today the only inhabitant is `Connection`; the
@@ -743,9 +814,16 @@ fn classify_named(
     // ("HIR resolution gap: ResolvedTy::Named drops builtin
     // discriminator"). Until W4.011 lands, every non-opaque `Named { name }`
     // arm in this module MUST honour record_layouts-first.
-    if record_layouts.iter().any(|r| r.name == name) {
+    //
+    // The lookup is keyed via `lookup_record_layout`, which resolves BOTH a
+    // bare-name monomorphic record AND a generic INSTANTIATION mangled by
+    // `hew_hir::mangle` (`Pair<i64, string>` → `Pair$$i64$string`). For the
+    // generic case the resolved layout's `field_tys` are already SUBSTITUTED,
+    // so `classify_user_record` recurses concrete types and carries the mangled
+    // key in `UserRecord { name }` (the key codegen re-resolves the thunk by).
+    if let Some(layout) = lookup_record_layout(name, args, record_layouts) {
         return classify_user_record(
-            name,
+            &layout.name,
             record_layouts,
             enum_layouts,
             opaque_handle_names,
@@ -956,8 +1034,16 @@ fn classify_named(
                     visited,
                 );
             }
+            // Resolve the record layout key the same mangling-aware way as the
+            // record-layouts-first branch above so a generic instantiation that
+            // reaches this fall-through (not a builtin, not an enum) recurses its
+            // SUBSTITUTED fields and carries the mangled key. A genuine miss
+            // passes the bare name to `classify_user_record`, which fails closed
+            // as `MissingRecordLayout` naming the unresolved type.
+            let record_key = lookup_record_layout(name, args, record_layouts)
+                .map_or(name, |layout| layout.name.as_str());
             classify_user_record(
-                name,
+                record_key,
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
@@ -993,6 +1079,35 @@ fn lookup_enum_layout<'a>(
         enum_layouts
             .iter()
             .find(|el| el.name == full_mangled || el.name == short_mangled)
+    }
+}
+
+/// Resolve a `Named { name, args }` field type to its registered
+/// [`RecordLayout`], if any. The lookup key mirrors `lookup_enum_layout` and
+/// `user_record_layout_key` (`hew-mir/src/lower.rs`): the plain `name` for a
+/// monomorphic record (`args` empty), or the `hew_hir::mangle`d symbol for a
+/// generic INSTANTIATION (`Pair<i64, string>` → `Pair$$i64$string`). The
+/// per-instantiation layout the producer registers under the mangled key
+/// carries SUBSTITUTED field types (`[i64, string]`), so a caller that recurses
+/// `layout.field_tys` recurses concrete types, never the bare `A`/`B` params.
+/// Module-qualified names are matched both as the full name and the short
+/// (post-`.`) suffix so imported records resolve.
+fn lookup_record_layout<'a>(
+    name: &str,
+    args: &[ResolvedTy],
+    record_layouts: &'a [RecordLayout],
+) -> Option<&'a RecordLayout> {
+    let short = name.rsplit_once('.').map_or(name, |(_, s)| s);
+    if args.is_empty() {
+        record_layouts
+            .iter()
+            .find(|r| r.name == name || r.name == short)
+    } else {
+        let full_mangled = hew_hir::mangle(name, args);
+        let short_mangled = hew_hir::mangle(short, args);
+        record_layouts
+            .iter()
+            .find(|r| r.name == full_mangled || r.name == short_mangled)
     }
 }
 
@@ -1435,6 +1550,106 @@ mod tests {
             result,
             Err(ClassificationError::MissingRecordLayout { ref name }) if name == "Phantom"
         ));
+    }
+
+    /// Slice 2 — a generic record INSTANTIATION carrying an owned string field
+    /// resolves its mangled layout (`Pair$$i64$string`), recurses its
+    /// SUBSTITUTED fields `[i64, string]`, and classifies as a `UserRecord`
+    /// whose carried name is the mangled key codegen re-resolves the thunk by.
+    #[test]
+    fn generic_record_instantiation_resolves_mangled_layout() {
+        let key = hew_hir::mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
+        let records = vec![RecordLayout {
+            name: key.clone(),
+            field_tys: vec![ResolvedTy::I64, ResolvedTy::String],
+        }];
+        let mut v = HashSet::new();
+        let result = classify_state_field(
+            &named("Pair", vec![ResolvedTy::I64, ResolvedTy::String]),
+            &records,
+            &mut v,
+        )
+        .expect("generic owned-record instantiation must classify");
+        assert_eq!(
+            result,
+            StateFieldCloneKind::UserRecord { name: key },
+            "the carried UserRecord name must be the mangled instantiation key"
+        );
+        assert!(
+            v.is_empty(),
+            "the recursion guard must be drained on success"
+        );
+    }
+
+    /// Slice 2 negative control — an all-`BitCopy` generic instantiation still
+    /// classifies as a `UserRecord` (the layout resolves; every field is
+    /// `BitCopy`), so no owned-field drop is synthesised for it.
+    #[test]
+    fn generic_record_instantiation_all_bitcopy_classifies() {
+        let key = hew_hir::mangle("Pair", &[ResolvedTy::I64, ResolvedTy::I64]);
+        let records = vec![RecordLayout {
+            name: key.clone(),
+            field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+        }];
+        let mut v = HashSet::new();
+        let result = classify_state_field(
+            &named("Pair", vec![ResolvedTy::I64, ResolvedTy::I64]),
+            &records,
+            &mut v,
+        )
+        .expect("all-BitCopy generic instantiation must classify");
+        assert_eq!(result, StateFieldCloneKind::UserRecord { name: key });
+    }
+
+    /// Slice 2 — transitive fail-closed: a generic record whose substituted
+    /// field is an opaque handle (`Box<json.Value>` → `Box$$json.Value` with a
+    /// `json.Value` field) must fail closed, because the recursion classifies
+    /// the substituted opaque field (`OpaqueHandle`) — there is no shallow
+    /// clone. A regression here would be a UAF on supervisor restart
+    /// (`unclonable-leaf-fails-closed-transitively`). The opaque field is
+    /// `OpaqueHandle`, which is a recorded-but-unclonable kind: the record
+    /// classifies structurally but the opaque leaf carries no clone helper, so
+    /// the downstream owned-aggregate authority (which requires every field
+    /// classify cleanly under the actor-state classifier) excludes it. Here we
+    /// pin that the recursion descends into the SUBSTITUTED opaque field and
+    /// produces an `OpaqueHandle`, never a silent BitCopy/shallow clone.
+    #[test]
+    fn generic_record_with_opaque_substituted_field_classifies_opaque_leaf() {
+        let key = hew_hir::mangle("Box", &[ResolvedTy::named_opaque("json.Value", vec![])]);
+        let records = vec![RecordLayout {
+            name: key.clone(),
+            // The substituted field is the opaque handle, NOT the bare `T`.
+            field_tys: vec![ResolvedTy::named_opaque("json.Value", vec![])],
+        }];
+        let mut v = HashSet::new();
+        let result = classify_state_field_full(
+            &named("Box", vec![ResolvedTy::named_opaque("json.Value", vec![])]),
+            &records,
+            &[],
+            &[],
+            &mut v,
+        )
+        .expect("the record itself classifies; the opaque leaf is recorded");
+        // The record classifies as a UserRecord carrying the mangled key, but
+        // its substituted field is the opaque handle — confirm the recursion
+        // reaches the opaque leaf rather than treating `T` as BitCopy. We assert
+        // by classifying the field type directly: it must be OpaqueHandle, the
+        // unclonable leaf that the owned-aggregate authority rejects.
+        assert_eq!(result, StateFieldCloneKind::UserRecord { name: key });
+        let mut fv = HashSet::new();
+        let field_kind = classify_state_field_full(
+            &ResolvedTy::named_opaque("json.Value", vec![]),
+            &records,
+            &[],
+            &[],
+            &mut fv,
+        )
+        .expect("opaque handle classifies as a recorded handle kind");
+        assert!(
+            matches!(field_kind, StateFieldCloneKind::OpaqueHandle { .. }),
+            "the substituted opaque field must classify as OpaqueHandle (no \
+             shallow clone), got {field_kind:?}"
+        );
     }
 
     #[test]
@@ -2108,5 +2323,69 @@ mod tests {
             elem: Box::new(StateFieldCloneKind::String),
         }
         .contains_opaque_handle());
+    }
+
+    #[test]
+    fn supports_value_class_drop_spine_admits_supported_rejects_opaque() {
+        // Supported leaf kinds (clone + drop helper exists): BitCopy, String,
+        // Bytes, UserRecord, Enum — and containers whose element/key/value is
+        // itself supported and carries no opaque handle.
+        assert!(StateFieldCloneKind::BitCopy { size_bytes: 8 }.supports_value_class_drop_spine());
+        assert!(StateFieldCloneKind::String.supports_value_class_drop_spine());
+        assert!(StateFieldCloneKind::Bytes.supports_value_class_drop_spine());
+        assert!(StateFieldCloneKind::UserRecord {
+            name: "Inner".to_string(),
+        }
+        .supports_value_class_drop_spine());
+        assert!(StateFieldCloneKind::Enum {
+            name: "Option$$string".to_string(),
+        }
+        .supports_value_class_drop_spine());
+        assert!(StateFieldCloneKind::Vec {
+            elem: Box::new(StateFieldCloneKind::String),
+        }
+        .supports_value_class_drop_spine());
+        assert!(StateFieldCloneKind::HashMap {
+            key: Box::new(StateFieldCloneKind::String),
+            val: Box::new(StateFieldCloneKind::Bytes),
+        }
+        .supports_value_class_drop_spine());
+
+        // IoHandle variants are ADMITTED: an AffineResource/Linear field is not
+        // owned-aggregate-by-value, so a record carrying one drops field-wise via
+        // the resource-drop path and is never seeded for RecordInPlace clone
+        // synthesis. The proven `Holder { inner: Generator<i64,()> }` corpus
+        // (generator_exec) drops the handle once with no record thunk; rejecting
+        // it here would over-reject that working shape.
+        assert!(StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        }
+        .supports_value_class_drop_spine());
+        assert!(StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Generator,
+        }
+        .supports_value_class_drop_spine());
+        assert!(StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Stream,
+        }
+        .supports_value_class_drop_spine());
+
+        // OpaqueHandle (no dup runtime helper) must be REJECTED — the
+        // value-class clone-synthesis would fail closed on it, so the record
+        // must not admit at the gate.
+        assert!(!StateFieldCloneKind::OpaqueHandle {
+            name: "json.Value".to_string(),
+        }
+        .supports_value_class_drop_spine());
+
+        // A container transitively carrying an opaque handle is rejected even
+        // though `Vec` is otherwise supported — the managed clone would
+        // shallow-copy the opaque pointer (double-free / UAF on a deep clone).
+        assert!(!StateFieldCloneKind::Vec {
+            elem: Box::new(StateFieldCloneKind::OpaqueHandle {
+                name: "json.Value".to_string(),
+            }),
+        }
+        .supports_value_class_drop_spine());
     }
 }

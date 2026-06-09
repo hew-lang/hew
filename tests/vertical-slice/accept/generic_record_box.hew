@@ -1,0 +1,13 @@
+// Module-defined generic owned record + constructor, imported and instantiated
+// (with an owned `string` field) + dropped by a SEPARATE module. This is the
+// imported-generic-record surface the value-class admit key must resolve under
+// the SAME mangle the codegen drop/clone thunk uses (`Box$$string`, NOT the
+// module-qualified `generic_record_box.Box$$string`). A key divergence would
+// fail closed (W3.029) at the importing site even though the layout exists.
+pub type Box<T> {
+    value: T;
+}
+
+pub fn boxed(s: string) -> Box<string> {
+    Box { value: s }
+}

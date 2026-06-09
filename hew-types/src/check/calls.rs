@@ -477,14 +477,18 @@ impl Checker {
                 type_params.len(),
             )?;
             self.check_arity(args, expected_params.len(), "this function", span);
-            for (i, arg) in args.iter().enumerate() {
-                if let Some(param_ty) = expected_params.get(i) {
-                    let (expr, arg_span) = arg.expr();
-                    let mut expected_ty = param_ty.clone();
-                    for (param, replacement) in type_params.iter().zip(inferred_args.iter()) {
-                        expected_ty = expected_ty.substitute_named_param(param, replacement);
+            {
+                let subst_map: HashMap<String, Ty> = type_params
+                    .iter()
+                    .zip(inferred_args.iter())
+                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .collect();
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(param_ty) = expected_params.get(i) {
+                        let (expr, arg_span) = arg.expr();
+                        let expected_ty = param_ty.substitute_named_params_parallel(&subst_map);
+                        self.check_against(expr, arg_span, &expected_ty);
                     }
-                    self.check_against(expr, arg_span, &expected_ty);
                 }
             }
             let result_ty = Ty::normalize_named(
@@ -698,16 +702,22 @@ impl Checker {
                 }
             }
             self.check_arity(args, expected_params.len(), "this function", span);
-            for (i, arg) in args.iter().enumerate() {
-                if let Some(param_ty) = expected_params.get(i) {
-                    let (expr, span) = arg.expr();
-                    let mut expected_ty = param_ty.clone();
-                    if !type_params.is_empty() {
-                        for (param, replacement) in type_params.iter().zip(inferred_args.iter()) {
-                            expected_ty = expected_ty.substitute_named_param(param, replacement);
-                        }
+            {
+                let subst_map: HashMap<String, Ty> = type_params
+                    .iter()
+                    .zip(inferred_args.iter())
+                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .collect();
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(param_ty) = expected_params.get(i) {
+                        let (expr, span) = arg.expr();
+                        let expected_ty = if subst_map.is_empty() {
+                            param_ty.clone()
+                        } else {
+                            param_ty.substitute_named_params_parallel(&subst_map)
+                        };
+                        self.check_against(expr, span, &expected_ty);
                     }
-                    self.check_against(expr, span, &expected_ty);
                 }
             }
             let resolved_args: Vec<Ty> = inferred_args

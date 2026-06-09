@@ -4602,6 +4602,52 @@ fn push_unknown_type_diagnostics_for_layout_ty(
     }
 }
 
+/// Recursively strip the module prefix from every `Named` name in a type spine,
+/// mirroring codegen's `shorten_named_args` (llvm.rs ~3218). At import-use sites
+/// the MIR carries module-qualified names in both the origin AND the type args
+/// (`Pair<i64, json.Value>` → `Named { name: "Pair", args: [i64, json.Value] }`),
+/// while every layout-registration + codegen-thunk site keys on the bare
+/// (short) names (`Pair$$i64$Value`). Normalising the whole spine here keeps
+/// MIR's `user_record_layout_key` byte-congruent with the codegen consumers.
+fn shorten_named_ty_spine(ty: &ResolvedTy) -> ResolvedTy {
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            is_opaque,
+        } => ResolvedTy::Named {
+            name: short_name(name).to_string(),
+            args: args.iter().map(shorten_named_ty_spine).collect(),
+            builtin: *builtin,
+            is_opaque: *is_opaque,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Resolve the `record_field_orders` key for a user record type — the key MIR
+/// and codegen must agree on so the value-class admit, the drop-plan validator,
+/// and the synthesised `__hew_record_{clone,drop}_inplace_<R>` thunk all name
+/// the same layout.
+///
+/// For a generic INSTANTIATION the origin name AND every type arg are
+/// prefix-stripped before mangling, exactly as the codegen consumers do
+/// (`record_inplace_drop_name`, `collect_record_inplace_drop_seeds`,
+/// `is_heap_owning_record_composite_return`, and `resolve_ty` all
+/// `mangle(short_name(name), &shorten_named_args(args))`). Without the strip an
+/// IMPORTED generic record (`mymod.Pair<i64, string>`) keyed
+/// `mymod.Pair$$i64$string` here — or one carrying a module-qualified arg
+/// (`Pair<json.Value, i64>` keyed `Pair$$json.Value$i64`) — would diverge from
+/// the codegen-side `Pair$$i64$string` / `Pair$$Value$i64`. MIR would then
+/// admit/look up under a key downstream never resolves, a fail-closed mismatch.
+/// In-repo unqualified generics (`name == short`, no qualified args) are
+/// unaffected (the strip is a no-op).
+///
+/// The bare-name MONOMORPHIC arm keeps the FULL qualified name: imported
+/// monomorphic records register under the bare name but `lookup_record_field_
+/// order` already strips the prefix on a miss, so the full key resolves there
+/// while preserving the legacy behaviour every monomorphic caller depends on.
 fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
     match ty {
         ResolvedTy::Named {
@@ -4615,7 +4661,10 @@ fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
             args,
             builtin: None,
             ..
-        } => Some(hew_hir::mangle(name, args)),
+        } => {
+            let short_args: Vec<ResolvedTy> = args.iter().map(shorten_named_ty_spine).collect();
+            Some(hew_hir::mangle(short_name(name), &short_args))
+        }
         _ => None,
     }
 }
@@ -5168,20 +5217,30 @@ impl Builder {
     /// Returns `Some(kinds)` iff the record named by `key`:
     ///   1. has a registered layout (`record_field_orders`),
     ///   2. classifies cleanly under the SAME field classifier actor-state
-    ///      records use (`classify_actor_state_fields_with_enum_layouts`) — so
-    ///      codegen is guaranteed to be able to synthesize the matching
-    ///      `__hew_record_{clone,drop}_inplace_<R>` thunk for every field, AND
-    ///   3. carries at least one non-`BitCopy` owned field (otherwise it is a
+    ///      records use (`classify_actor_state_fields_with_opaque_handles`), AND
+    ///   3. every field's kind is admissible to the in-place record value-class
+    ///      (`StateFieldCloneKind::supports_value_class_drop_spine`) — so codegen
+    ///      can synthesize BOTH the clone and drop side of the
+    ///      `__hew_record_{clone,drop}_inplace_<R>` thunk for every field. A
+    ///      field carrying an `OpaqueHandle` (no dup helper) fails closed HERE at
+    ///      the W3.029 value-class gate, not late at codegen clone-synthesis, AND
+    ///   4. carries at least one non-`BitCopy` owned field (otherwise it is a
     ///      plain `BitCopy` aggregate that needs no owned-value drop and is
     ///      classified by `ValueClass::of_ty` upstream).
     ///
     /// This is the single admission gate for an owned record passed/returned by
     /// value: `string` fields (RC-6), `bytes` fields (RC-4), `Vec`/`HashMap`/
     /// `HashSet` fields (G12), and nested owned record/enum fields all classify
-    /// here. A record carrying a field the classifier rejects (e.g. an
-    /// unsupported IO handle that has no clone helper, or an unresolved nested
-    /// type) returns `None` and stays fail-closed at the W3.029 reject —
-    /// codegen never sees a record whose drop thunk it cannot emit.
+    /// here. A record carrying a field the classifier rejects (an unresolved
+    /// nested type) — OR a field that classifies but whose CLONE direction has no
+    /// helper (`OpaqueHandle` such as `json.Value`) — returns `None` and stays
+    /// fail-closed at the W3.029 reject. The value-class-admissible gate (step 3)
+    /// is the load-bearing addition: without it `Pair<json.Value, i64>` admitted
+    /// as `CowValue` here, was seeded for `RecordInPlace`, and failed closed only
+    /// LATE at codegen clone-synthesis. Codegen now never sees a record whose
+    /// clone/drop thunk it cannot emit. (`IoHandle` fields are admitted: they
+    /// drop field-wise via the resource-drop path, never via `RecordInPlace`, so
+    /// no record clone thunk is synthesised for them.)
     ///
     /// Generalizes `owned_string_record_field_kinds_for_key` (String-only) to
     /// the full owned-field surface. Passing `self.enum_layouts` lets a record
@@ -5204,31 +5263,57 @@ impl Builder {
             &self.opaque_handle_names,
         )
         .ok()?;
+        // Fail closed at the value-class gate, not late at codegen. An admitted
+        // owned-aggregate record is seeded for `DropKind::RecordInPlace`, which
+        // drives codegen to synthesise BOTH the clone and the drop body. A field
+        // whose kind has no clone-side helper (`OpaqueHandle` — e.g.
+        // `json.Value`) must NOT admit: codegen cannot synthesise the
+        // `__hew_record_clone_inplace_<R>` thunk for it and would fail closed
+        // LATE (llvm.rs ~6254), leaving a fragile MIR-admits/codegen-refuses
+        // seam. Reject here so `Pair<json.Value, i64>` stays at the W3.029
+        // reject (`UnsupportedUserRecordValueClass`) BEFORE codegen, while every
+        // supported owned shape (String, Bytes, Vec/HashMap/HashSet, nested
+        // UserRecord/Enum, AND IoHandle handles dropped field-wise) still
+        // admits.
+        if !kinds
+            .iter()
+            .all(crate::state_clone::StateFieldCloneKind::supports_value_class_drop_spine)
+        {
+            return None;
+        }
         let has_owned_field = kinds
             .iter()
             .any(|k| !matches!(k, crate::state_clone::StateFieldCloneKind::BitCopy { .. }));
         has_owned_field.then_some(kinds)
     }
 
-    /// True when `ty` is a monomorphic user record admitted by the unified
+    /// True when `ty` is a user record admitted by the unified
     /// owned-aggregate-record authority. The single predicate the `decide`
     /// value-class gate and the drop-elaboration allow-set derivation share so
     /// they can never disagree on which records are owned-by-value.
     ///
-    /// Restricted to **bare-name monomorphic** records (`monomorphic_user_
-    /// record_key` — args empty). The `RecordInPlace` drop path keys its helper
-    /// on the bare record name (`record_inplace_drop_name` requires
-    /// `args.is_empty()`), and the drop-plan validator re-derives the same way,
-    /// so admitting a generic INSTANTIATION (`Wrapper<string>`, whose `ty`
-    /// carries `args: [string]`) here would emit a `RecordInPlace` drop the
-    /// validator rejects (`DropPlanUndetermined`) and codegen cannot lower.
-    /// Generic record instantiations therefore stay fail-closed at the W3.029
-    /// reject — a clean typed diagnostic, never a codegen-front error. A
-    /// monomorphic record whose layout is registered under a `$$`-mangled key
-    /// is still admitted via the bare-name path; only the use-site `ty` shape
-    /// (bare vs args-bearing) gates here.
+    /// Keyed via `user_record_layout_key`, which resolves BOTH a bare-name
+    /// monomorphic record (`Wrapper`) AND a generic INSTANTIATION mangled by
+    /// `hew_hir::mangle` (`Pair<i64, string>` → `Pair$$i64$string`). The
+    /// per-instantiation layout the producer registers under the mangled key
+    /// (`module.record_layouts`, lower.rs ~961) is resolved here, its
+    /// SUBSTITUTED field types classified, and — when every field classifies —
+    /// the instantiation is admitted as `CowValue` so codegen can synthesise
+    /// the matching `__hew_record_{clone,drop}_inplace_<mangled>` thunk. The
+    /// drop-plan validator (`expected_drop_kind_for_validation`,
+    /// `RecordInPlace` arm) re-derives against the SAME key so the elaborated
+    /// `RecordInPlace` drop on an args-bearing `ElabDrop::ty` is accepted, and
+    /// the codegen `record_inplace_drop_name` mangles identically so the helper
+    /// name agrees end-to-end.
+    ///
+    /// Fail-closed default is preserved: a record (bare or generic) whose
+    /// mangled layout is absent, OR whose substituted fields do not all
+    /// classify, returns `false` and stays at the W3.029 reject — codegen never
+    /// observes a record whose drop thunk it cannot emit. The W3.029 gate is
+    /// added-around, never relaxed: reverting this key change restores the
+    /// reject for `Pair$$i64$string`.
     fn is_owned_aggregate_record_ty(&self, ty: &ResolvedTy) -> bool {
-        monomorphic_user_record_key(ty).is_some_and(|key| {
+        user_record_layout_key(ty).is_some_and(|key| {
             self.owned_aggregate_record_field_kinds_for_key(&key)
                 .is_some()
         })
@@ -16850,15 +16935,21 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
 
 fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
     match drop.kind {
-        // owned-string record drops are keyed by both kind and `ElabDrop::ty`: the
-        // place remains an ordinary stack `Local`, while the synthesized helper
-        // identity is the monomorphic user-record type. Keep `drop_kind_for`
-        // closed for generic `@resource` locals; this validation arm accepts
-        // only the dedicated kind on local user-record storage.
+        // owned-aggregate record drops are keyed by both kind and `ElabDrop::ty`:
+        // the place remains an ordinary stack `Local`, while the synthesized
+        // helper identity is the user-record type. `user_record_layout_key`
+        // accepts BOTH a bare-name monomorphic record and a generic
+        // INSTANTIATION (`Pair<i64, string>`, whose `ty` carries args), keying
+        // the latter on its `hew_hir::mangle`d name — the same key
+        // `is_owned_aggregate_record_ty` (the admit authority) and the codegen
+        // `record_inplace_drop_name` resolve, so the dedicated kind is accepted
+        // exactly when the elaborator was authorised to emit it. A `Named`
+        // resolved-but-bare type (`Place::Local`) is the only shape that earns
+        // the dedicated kind; everything else re-derives via the Place-driven
+        // dispatcher so a non-record place cannot silently carry a
+        // `RecordInPlace` kind.
         DropKind::RecordInPlace => {
-            if matches!(drop.place, Place::Local(_))
-                && monomorphic_user_record_key(&drop.ty).is_some()
-            {
+            if matches!(drop.place, Place::Local(_)) && user_record_layout_key(&drop.ty).is_some() {
                 DropKind::RecordInPlace
             } else {
                 drop_kind_for(drop.place, &drop.ty, None)
@@ -24135,6 +24226,171 @@ mod w3053_aggregate_handle_double_free_gate {
             !is_refused(&findings, h),
             "the borrowed LocalPid handler of `conn.attach` must NOT be refused; \
              got {findings:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod generic_record_owned_aggregate_admission {
+    //! Slice 1 — the value-class admit authority `is_owned_aggregate_record_ty`
+    //! must accept a generic record INSTANTIATION keyed on its `hew_hir::mangle`d
+    //! name (`Pair$$i64$string`) once its substituted-field layout is registered,
+    //! and stay fail-closed (W3.029) for any instantiation whose mangled layout
+    //! is absent or whose substituted fields do not all classify. The key change
+    //! is added-around the gate, never relaxing it: the unregistered/unclassifiable
+    //! shapes still return `false` here and reject downstream.
+    use super::*;
+
+    /// A `Builder` whose `record_field_orders` carries exactly the supplied
+    /// (mangled or bare) record keys + their substituted field types.
+    fn builder_with_field_orders(orders: Vec<(&str, Vec<(&str, ResolvedTy)>)>) -> Builder {
+        let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+        for (key, fields) in orders {
+            record_field_orders.insert(
+                key.to_string(),
+                fields
+                    .into_iter()
+                    .map(|(fname, fty)| (fname.to_string(), fty))
+                    .collect(),
+            );
+        }
+        Builder {
+            record_field_orders,
+            ..Builder::default()
+        }
+    }
+
+    fn pair_ty(args: Vec<ResolvedTy>) -> ResolvedTy {
+        ResolvedTy::named_user("Pair", args)
+    }
+
+    /// `Pair<i64, string>` whose mangled layout `Pair$$i64$string` is registered
+    /// with substituted fields `[i64, string]` is admitted: it owns the `string`
+    /// field, every field classifies, so codegen can synthesise its drop thunk.
+    #[test]
+    fn generic_instantiation_with_registered_mangled_layout_is_admitted() {
+        let key = hew_hir::mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
+        let builder = builder_with_field_orders(vec![(
+            key.as_str(),
+            vec![("first", ResolvedTy::I64), ("second", ResolvedTy::String)],
+        )]);
+        assert!(
+            builder
+                .is_owned_aggregate_record_ty(&pair_ty(vec![ResolvedTy::I64, ResolvedTy::String])),
+            "Pair<i64,string> with a registered mangled layout owning a string \
+             field must be admitted as an owned-aggregate record"
+        );
+    }
+
+    /// `Pair<i64, i64>` is all-`BitCopy`: it has no owned field, so the
+    /// owned-aggregate authority returns `false` (it is classified by
+    /// `ValueClass::of_ty` upstream, not via the drop spine — no drop thunk).
+    #[test]
+    fn generic_instantiation_all_bitcopy_is_not_owned_aggregate() {
+        let key = hew_hir::mangle("Pair", &[ResolvedTy::I64, ResolvedTy::I64]);
+        let builder = builder_with_field_orders(vec![(
+            key.as_str(),
+            vec![("first", ResolvedTy::I64), ("second", ResolvedTy::I64)],
+        )]);
+        assert!(
+            !builder.is_owned_aggregate_record_ty(&pair_ty(vec![ResolvedTy::I64, ResolvedTy::I64])),
+            "an all-BitCopy generic instantiation has no owned field and must not \
+             be an owned-aggregate record"
+        );
+    }
+
+    /// Negative control / fail-closed: a generic instantiation whose mangled
+    /// layout is NOT registered (the producer never monomorphised it, or a key
+    /// mismatch) stays fail-closed — the authority cannot resolve the layout, so
+    /// it returns `false` and the W3.029 reject fires downstream.
+    #[test]
+    fn generic_instantiation_without_registered_layout_fails_closed() {
+        // Register only the i64/string layout; ask about i64/bytes.
+        let key = hew_hir::mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
+        let builder = builder_with_field_orders(vec![(
+            key.as_str(),
+            vec![("first", ResolvedTy::I64), ("second", ResolvedTy::String)],
+        )]);
+        assert!(
+            !builder
+                .is_owned_aggregate_record_ty(&pair_ty(vec![ResolvedTy::I64, ResolvedTy::Bytes])),
+            "an unregistered generic instantiation must stay fail-closed (W3.029), \
+             never silently admitted"
+        );
+    }
+
+    /// The bare-name monomorphic path is unchanged: a registered bare record
+    /// owning a string field is still admitted (no regression from routing the
+    /// key through `user_record_layout_key`).
+    #[test]
+    fn bare_name_monomorphic_owned_record_still_admitted() {
+        let builder = builder_with_field_orders(vec![(
+            "PairIS",
+            vec![("first", ResolvedTy::I64), ("second", ResolvedTy::String)],
+        )]);
+        assert!(
+            builder.is_owned_aggregate_record_ty(&ResolvedTy::named_user("PairIS", vec![])),
+            "the bare-name monomorphic owned record must remain admitted"
+        );
+    }
+
+    /// P1-1 — fail closed at the value-class gate, not late at codegen. A generic
+    /// instantiation whose substituted field is an `#[opaque]` handle
+    /// (`json.Value`) classifies as `OpaqueHandle`, whose CLONE direction has no
+    /// dup runtime helper. The admit authority must REJECT it at the W3.029
+    /// value-class gate — NOT admit it as `CowValue` and let codegen fail closed
+    /// late during clone-synthesis. The opaque field is registered with
+    /// `is_opaque: true`, so the classifier routes it to `OpaqueHandle` by type
+    /// identity (no `opaque_handle_names` entry required).
+    #[test]
+    fn generic_instantiation_with_opaque_field_rejected_at_value_class_gate() {
+        let opaque = ResolvedTy::named_opaque("json.Value", vec![]);
+        // Register under the SHORT-arg-normalised key the admit authority now
+        // computes (`Pair$$Value$i64`, matching codegen), so the layout RESOLVES
+        // and the rejection is genuinely the clone-helper-supported gate (P1-1),
+        // not a key miss. The substituted field stays the opaque handle.
+        let key = hew_hir::mangle(
+            "Pair",
+            &[ResolvedTy::named_user("Value", vec![]), ResolvedTy::I64],
+        );
+        let builder = builder_with_field_orders(vec![(
+            key.as_str(),
+            vec![("first", opaque.clone()), ("second", ResolvedTy::I64)],
+        )]);
+        // Sanity: the layout resolves under the authority's computed key — so a
+        // pass below is the clone-support gate firing, never a lookup miss.
+        assert!(
+            builder
+                .owned_aggregate_record_field_kinds_for_key(&key)
+                .is_none(),
+            "the opaque-bearing layout resolves but the clone-support gate must \
+             reject it (None), not a key miss"
+        );
+        assert!(
+            !builder.is_owned_aggregate_record_ty(&pair_ty(vec![opaque, ResolvedTy::I64])),
+            "Pair<json.Value, i64> carries an OpaqueHandle field whose clone \
+             direction has no helper; it must fail closed at the W3.029 \
+             value-class gate, NOT admit as CowValue and refuse late at codegen"
+        );
+    }
+
+    /// Companion to the opaque-reject test: the supported drop-matrix shapes are
+    /// NOT over-rejected by the clone-helper-supported gate. A nested-Vec owned
+    /// field (`Pair<string, Vec<i64>>`) — the deepest supported owned shape in
+    /// the corpus — still admits.
+    #[test]
+    fn generic_instantiation_with_supported_owned_fields_still_admitted() {
+        let vec_i64 =
+            ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::I64]);
+        let key = hew_hir::mangle("Pair", &[ResolvedTy::String, vec_i64.clone()]);
+        let builder = builder_with_field_orders(vec![(
+            key.as_str(),
+            vec![("first", ResolvedTy::String), ("second", vec_i64.clone())],
+        )]);
+        assert!(
+            builder.is_owned_aggregate_record_ty(&pair_ty(vec![ResolvedTy::String, vec_i64])),
+            "Pair<string, Vec<i64>> carries only clone/drop-supported owned \
+             fields and must still admit — the opaque gate must not over-reject"
         );
     }
 }

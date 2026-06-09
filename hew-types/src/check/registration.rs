@@ -4818,19 +4818,25 @@ impl Checker {
         if trait_names.is_empty() || trait_names.len() != impl_names.len() {
             return ty.clone();
         }
-        let mut renamed = ty.clone();
-        for (t, u) in trait_names.iter().zip(impl_names.iter()) {
-            if t == u {
-                continue;
-            }
-            let replacement = Ty::Named {
-                builtin: None,
-                name: (*u).to_string(),
-                args: vec![],
-            };
-            renamed = renamed.substitute_named_param(t, &replacement);
-        }
-        renamed
+        // Build the full rename map and substitute in parallel.  Sequential
+        // substitution aliases entries when trait names and impl names
+        // permute: renaming T→U then U→T would map both back to T.
+        // Identity entries (t == u) are harmless to include.
+        let subst_map: HashMap<String, Ty> = trait_names
+            .iter()
+            .zip(impl_names.iter())
+            .map(|(t, u)| {
+                (
+                    (*t).to_string(),
+                    Ty::Named {
+                        builtin: None,
+                        name: (*u).to_string(),
+                        args: vec![],
+                    },
+                )
+            })
+            .collect();
+        ty.substitute_named_params_parallel(&subst_map)
     }
 
     /// Enforce that an impl method's signature matches the declared trait

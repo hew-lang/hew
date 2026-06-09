@@ -66,12 +66,12 @@ fn literal_pattern_matches_type(literal: &Literal, ty: &Ty) -> bool {
 }
 
 fn substitute_pattern_field_ty(raw_field_ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
-    type_params
+    let map: HashMap<String, Ty> = type_params
         .iter()
         .zip(type_args.iter())
-        .fold(raw_field_ty.clone(), |acc, (tp, concrete)| {
-            acc.substitute_named_param(tp, concrete)
-        })
+        .map(|(p, a)| (p.clone(), a.clone()))
+        .collect();
+    raw_field_ty.substitute_named_params_parallel(&map)
 }
 
 /// Extract the single binding name introduced by a sub-pattern, if any.

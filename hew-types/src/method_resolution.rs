@@ -14,12 +14,15 @@ use crate::BuiltinType;
 use crate::Ty;
 
 fn instantiate_named_method_sig(mut sig: FnSig, type_params: &[String], type_args: &[Ty]) -> FnSig {
-    for (type_param, type_arg) in type_params.iter().zip(type_args.iter()) {
-        for param_ty in &mut sig.params {
-            *param_ty = param_ty.substitute_named_param(type_param, type_arg);
-        }
-        sig.return_type = sig.return_type.substitute_named_param(type_param, type_arg);
+    let subst_map: HashMap<String, Ty> = type_params
+        .iter()
+        .zip(type_args.iter())
+        .map(|(p, a)| (p.clone(), a.clone()))
+        .collect();
+    for param_ty in &mut sig.params {
+        *param_ty = param_ty.substitute_named_params_parallel(&subst_map);
     }
+    sig.return_type = sig.return_type.substitute_named_params_parallel(&subst_map);
 
     let substituted_params: HashSet<_> = type_params.iter().cloned().collect();
     sig.type_params

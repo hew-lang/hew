@@ -23145,3 +23145,210 @@ fn insert_expr_type_mirrors_boundary_concreteness_split() {
         "leaked inference var must be absent from the typed handoff map"
     );
 }
+
+// --- Generic swap regression (G4b-bug-1) ---
+//
+// A return type that PERMUTES the type params of a generic record triggered a
+// false "type mismatch" because the sequential per-param substitution loop
+// aliased the two params: applying A→B then B→A over the same accumulator
+// turned both fields back to A. Parallel substitution fixes this.
+
+#[test]
+fn generic_swap_return_type_typechecks_without_false_mismatch() {
+    // fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> { Pair { first: p.second, second: p.first } }
+    // Before fix: "type mismatch: expected `B`, found `A`" on `p.first` (the
+    // `second` field of the return, which expects type A after swapping).
+    let output = check_source(
+        r"
+type Pair<A, B> { first: A; second: B; }
+
+fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
+    Pair<B, A> { first: p.second, second: p.first }
+}
+
+fn main() {
+    let p = Pair { first: 1, second: 2 };
+    let _s = swap(p);
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "generic swap must type-check without errors; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_swap_heterogeneous_params_typechecks() {
+    // Heterogeneous concrete args (i64 / bool) expose the aliasing bug most
+    // clearly: before the fix the second field got expected type `A` instead of
+    // `i64`, and the checker emitted "expected `A`, found `i64`".
+    let output = check_source(
+        r"
+type Pair<A, B> { first: A; second: B; }
+
+fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
+    Pair<B, A> { first: p.second, second: p.first }
+}
+
+fn main() {
+    let p = Pair { first: 1, second: true };
+    let _s = swap(p);
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "heterogeneous generic swap must type-check; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_identity_pair_homogeneous_still_typechecks() {
+    // Confirm that the non-swapping (homogeneous) case was not broken by the
+    // parallel-substitution change.
+    let output = check_source(
+        r"
+type Pair<A, B> { first: A; second: B; }
+
+fn fst<A, B>(p: Pair<A, B>) -> A { p.first }
+
+fn main() {
+    let p = Pair { first: 10, second: 3 };
+    let _x = fst(p);
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "identity (non-swap) generic must still type-check; got: {:#?}",
+        output.errors
+    );
+}
+
+// --- expressions.rs field-access swap regression (G4b-bug-2) ---
+//
+// `expressions.rs` resolves `receiver.field` for a generic type by zipping
+// `td.type_params` with the instantiation `args` and substituting the field's
+// declared type.  When the args are themselves abstract named params in swapped
+// order (e.g. `Pair<B, A>` inside a function generic over `<A, B>`), sequential
+// substitution aliases both params: A→B then B→A maps `A` back to `A`, so
+// `p.first` in `fn f<A,B>(p: Pair<B,A>) -> B` yielded type `A` instead of `B`.
+// Parallel substitution reads the original field type once and maps all params
+// simultaneously.
+
+#[test]
+fn generic_field_access_on_swapped_instantiation_typechecks() {
+    // fn get_first_of_swapped<A, B>(p: Pair<B, A>) -> B { p.first }
+    // Before fix: "type mismatch: expected `B`, found `A`" on `p.first`.
+    // Field `first: A` in `Pair<A, B>`, instantiated with args [B, A]:
+    // sequential A→B then B→A gives A again; parallel gives B.
+    let output = check_source(
+        r"
+type Pair<A, B> { first: A; second: B; }
+
+fn get_first_of_swapped<A, B>(p: Pair<B, A>) -> B {
+    p.first
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "field access on swapped generic instantiation must type-check; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_field_access_second_on_swapped_instantiation_typechecks() {
+    // fn get_second_of_swapped<A, B>(p: Pair<B, A>) -> A { p.second }
+    // Companion: field `second: B`, instantiated with args [B, A].
+    // Sequential B→B (no-op for param A), then B→A gives A. Actually fine
+    // in the single-param substitution — but the combined swap test below
+    // exercises both fields in the same function to catch any residual alias.
+    let output = check_source(
+        r"
+type Pair<A, B> { first: A; second: B; }
+
+fn get_second_of_swapped<A, B>(p: Pair<B, A>) -> A {
+    p.second
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "second-field access on swapped generic instantiation must type-check; got: {:#?}",
+        output.errors
+    );
+}
+
+// --- generics.rs trait-object-bound swap regression (G4b-bug-3) ---
+//
+// `apply_trait_object_bound_substitutions` (generics.rs) substitutes the
+// trait's declared type params into the method signature using the concrete
+// args from the `dyn Trait<...>` bound.  When a generic function is
+// parameterised `<A, B>` and accepts `dyn Mapper<B, A>` (swapped), the
+// bound.args are [Named("B"), Named("A")] while type_params are ["A", "B"].
+// Sequential substitution: A→B over the method sig, then B→A aliases the
+// just-renamed B back to A — so `val: A` is expected for the arg instead
+// of `val: B`.  Parallel substitution fixes the alias.
+
+#[test]
+fn dyn_trait_two_params_swapped_bound_typechecks() {
+    // trait Mapper<A, B> { fn map(Self, A) -> B }
+    // fn apply_swapped<A, B>(f: dyn Mapper<B, A>, val: B) -> A { f.map(val) }
+    // Before fix: "type mismatch: expected `A`, found `B`" on `val`.
+    let output = check_source(
+        r"
+trait Mapper<A, B> {
+    fn map(val: A) -> B;
+}
+
+fn apply_swapped<A, B>(f: dyn Mapper<B, A>, val: B) -> A {
+    f.map(val)
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "dyn Mapper<B,A> call must type-check under swapped bound; got: {:#?}",
+        output.errors
+    );
+}
+
+// --- registration.rs rename_method_type_params swap regression (G4b-bug-4) ---
+//
+// `rename_method_type_params` (registration.rs) renames the trait method's
+// declared type params to match the impl method's names before comparing
+// signatures.  When the impl reverses the trait's param order
+// (`trait Discard<T,U>` / `impl fn discard<U,T>`), sequential application
+// renames T→U then U→T — mapping both back to T.  The impl's first param
+// `U` therefore fails to match the now-aliased expected `T` even though the
+// signature is structurally equivalent.  Parallel rename resolves the alias.
+
+#[test]
+fn impl_method_swapped_type_param_names_accepted() {
+    // trait Discard { fn discard<T, U>(a: T, b: U) -> i64; }
+    // impl Discard for Discarter { fn discard<U, T>(a: U, b: T) -> i64 { 0 } }
+    // Before fix: false "parameter `a` has type `U` but trait requires `T`".
+    let output = check_source(
+        r"
+trait Discard {
+    fn discard<T, U>(a: T, b: U) -> i64;
+}
+
+type Discarter { }
+
+impl Discard for Discarter {
+    fn discard<U, T>(a: U, b: T) -> i64 { 0 }
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "impl with swapped method type-param names must satisfy trait; got: {:#?}",
+        output.errors
+    );
+}

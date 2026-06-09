@@ -1,0 +1,25 @@
+// A generic record monomorphised with an OWNED (non-BitCopy) field type
+// (`string`). This is the generic owned-record drop spine the lane admits: the
+// `Box$$string` layout is discovered, its `string` field gets an in-place
+// record drop thunk synthesised, and the value is dropped exactly once at scope
+// exit. Construct + read the owned field + drop; correct output proves the
+// admit + drop path end-to-end.
+//
+// Historical note: before the generic owned-record drop spine landed, this
+// shape failed closed with `UnsupportedUserRecordValueClass` (the in-place
+// record drop keyed on bare names only). The lane lifted that restriction for
+// clone/drop-SUPPORTED owned leaves (String/Bytes/Vec/nested record+enum). A
+// clone-UNSUPPORTED leaf (opaque/IO handle) still fails closed at the value-
+// class admit gate — pinned by the `hew-mir` admission unit tests.
+record Box<T> {
+    value: T
+}
+
+fn make<T>(x: T) -> Box<T> {
+    Box { value: x }
+}
+
+fn main() {
+    let b = make("hello");
+    println(b.value);
+}

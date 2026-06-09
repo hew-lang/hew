@@ -9,8 +9,8 @@
 //! and `p: Pair<i64>`): the impl-method monomorphisation is registered so MIR
 //! has a concrete body. Each positive test instantiates at two distinct
 //! concrete types to prove genuine polymorphism (not a single-type special
-//! case); the negative test pins the out-of-slice owned-field shape to a clean
-//! fail-closed diagnostic.
+//! case); a further test pins the generic owned-record drop spine (a
+//! clone/drop-supported owned field such as `string`) admitting and running.
 
 mod support;
 
@@ -27,15 +27,6 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 fn run_fixture(name: &str) -> std::process::Output {
     std::process::Command::new(hew_binary())
         .arg("run")
-        .arg(fixture_path(name))
-        .current_dir(repo_root())
-        .output()
-        .unwrap_or_else(|e| panic!("failed to run hew binary: {e}"))
-}
-
-fn check_fixture(name: &str) -> std::process::Output {
-    std::process::Command::new(hew_binary())
-        .arg("check")
         .arg(fixture_path(name))
         .current_dir(repo_root())
         .output()
@@ -141,33 +132,35 @@ fn generic_impl_method_dispatches_at_two_bitcopy_types() {
     );
 }
 
-/// Out-of-slice shape: a generic record monomorphised with an owned
-/// (non-BitCopy) field type (`string`) must fail closed with a clean typed
-/// `UnsupportedUserRecordValueClass` diagnostic at the MIR boundary — never a
-/// crash, never a codegen-front error, never silently-wrong output. This pins
-/// the staged boundary so a future regression that silently lowers a malformed
-/// drop (or crashes) is caught.
+/// A generic record monomorphised with an OWNED (clone/drop-SUPPORTED) field
+/// type (`string`) is admitted as the generic owned-record drop spine: the
+/// `Box$$string` layout is discovered, its `string` field gets an in-place
+/// record drop thunk, and the value drops exactly once at scope exit. This pins
+/// the lane's deliverable — the shape that previously failed closed with
+/// `UnsupportedUserRecordValueClass` now compiles and runs. The complementary
+/// fail-closed direction (clone-UNSUPPORTED opaque/IO-handle leaves) is pinned
+/// by the `hew-mir` admission unit tests
+/// (`generic_instantiation_with_opaque_field_rejected_at_value_class_gate`).
 #[test]
-fn generic_record_with_owned_field_fails_closed() {
-    // `check` reaches the MIR boundary without needing the native toolchain, so
-    // the fail-closed diagnostic is asserted without `require_codegen`.
-    let output = check_fixture("generic_record_owned_field_reject.hew");
+fn generic_record_with_owned_field_admits_and_runs() {
+    require_codegen();
+
+    let output = run_fixture("generic_record_owned_field_admit.hew");
     assert!(
-        !output.status.success(),
-        "expected fail-closed rejection, but check succeeded"
+        output.status.success(),
+        "expected the generic owned-record drop spine to admit and run; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "hello",
+        "generic owned-record (Box<string>) output mismatch; stdout: {stdout}"
+    );
+    // Admit cleanly, not crash: no Rust panic / backtrace leaked to the user.
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("UnsupportedUserRecordValueClass"),
-        "expected UnsupportedUserRecordValueClass diagnostic; stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("Box$$string"),
-        "diagnostic should name the offending mangled instantiation; stderr: {stderr}"
-    );
-    // Fail closed, not crash: no Rust panic / backtrace leaked to the user.
-    assert!(
         !stderr.contains("panicked") && !stderr.contains("RUST_BACKTRACE"),
-        "fail-closed path must not surface a Rust panic; stderr: {stderr}"
+        "the admit path must not surface a Rust panic; stderr: {stderr}"
     );
 }

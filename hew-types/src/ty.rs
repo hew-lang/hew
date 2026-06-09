@@ -1584,6 +1584,113 @@ impl Ty {
             _ => self.clone(),
         }
     }
+
+    /// Substitute all named type parameters simultaneously in a single structural
+    /// traversal. Unlike chaining [`substitute_named_param`] calls sequentially,
+    /// this never re-substitutes the result of one replacement into another —
+    /// so a swap map like `{"A": B, "B": A}` correctly yields `Pair<B,A>` rather
+    /// than aliasing both params back to `A`.
+    ///
+    /// Every `Ty::Named` leaf with empty args is looked up in `map` exactly once.
+    /// If found, the replacement is returned as-is (no further substitution into
+    /// the replacement). Composites recurse structurally.
+    #[must_use]
+    pub fn substitute_named_params_parallel(&self, map: &HashMap<String, Ty>) -> Ty {
+        match self {
+            Ty::Named { name, args, .. } if args.is_empty() => {
+                if let Some(replacement) = map.get(name.as_str()) {
+                    replacement.clone()
+                } else {
+                    self.clone()
+                }
+            }
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
+                name: name.clone(),
+                builtin: *builtin,
+                args: args
+                    .iter()
+                    .map(|a| a.substitute_named_params_parallel(map))
+                    .collect(),
+            },
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|e| e.substitute_named_params_parallel(map))
+                    .collect(),
+            ),
+            Ty::Array(inner, n) => {
+                Ty::Array(Box::new(inner.substitute_named_params_parallel(map)), *n)
+            }
+            Ty::Slice(inner) => Ty::Slice(Box::new(inner.substitute_named_params_parallel(map))),
+            Ty::Function { params, ret } => Ty::Function {
+                params: params
+                    .iter()
+                    .map(|p| p.substitute_named_params_parallel(map))
+                    .collect(),
+                ret: Box::new(ret.substitute_named_params_parallel(map)),
+            },
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => Ty::Closure {
+                params: params
+                    .iter()
+                    .map(|p| p.substitute_named_params_parallel(map))
+                    .collect(),
+                ret: Box::new(ret.substitute_named_params_parallel(map)),
+                captures: captures
+                    .iter()
+                    .map(|c| c.substitute_named_params_parallel(map))
+                    .collect(),
+            },
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => Ty::Pointer {
+                is_mutable: *is_mutable,
+                pointee: Box::new(pointee.substitute_named_params_parallel(map)),
+            },
+            Ty::Borrow { pointee } => Ty::Borrow {
+                pointee: Box::new(pointee.substitute_named_params_parallel(map)),
+            },
+            Ty::TraitObject { traits } => Ty::TraitObject {
+                traits: traits
+                    .iter()
+                    .map(|bound| TraitObjectBound {
+                        trait_name: bound.trait_name.clone(),
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|arg| arg.substitute_named_params_parallel(map))
+                            .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| {
+                                (name.clone(), ty.substitute_named_params_parallel(map))
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            Ty::Task(inner) => Ty::Task(Box::new(inner.substitute_named_params_parallel(map))),
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(base.substitute_named_params_parallel(map)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
+            _ => self.clone(),
+        }
+    }
 }
 
 /// User-facing type wrapper that preserves Hew numeric spellings.
@@ -2016,5 +2123,90 @@ mod tests {
             Ty::Tuple(vec![Ty::Var(v1)]).apply_subst(&subst),
             Ty::Tuple(vec![Ty::Error])
         );
+    }
+
+    // --- substitute_named_params_parallel ---
+
+    fn named(n: &str) -> Ty {
+        Ty::Named {
+            builtin: None,
+            name: n.to_string(),
+            args: vec![],
+        }
+    }
+
+    fn named_with_args(n: &str, args: Vec<Ty>) -> Ty {
+        Ty::Named {
+            builtin: None,
+            name: n.to_string(),
+            args,
+        }
+    }
+
+    #[test]
+    fn swap_map_parallel_does_not_alias_params() {
+        // Regression: sequential substitution of {A→i32, B→string} on
+        // Named("Pair", [A, B]) produces Pair<i32, string> after first pass and
+        // then, if A→i32 was already applied, the second pass over B→string
+        // leaves B unchanged — or worse: a swap map {A→B, B→A} aliases both
+        // params back to the same type.
+        //
+        // Parallel substitution must replace all leaves in one pass, so
+        // Pair<A, B> under {A→B, B→A} becomes Pair<B, A>, not Pair<A, A>.
+        let pair_a_b = named_with_args("Pair", vec![named("A"), named("B")]);
+        let swap_map: HashMap<String, Ty> =
+            [("A".to_string(), named("B")), ("B".to_string(), named("A"))]
+                .into_iter()
+                .collect();
+
+        let result = pair_a_b.substitute_named_params_parallel(&swap_map);
+
+        assert_eq!(
+            result,
+            named_with_args("Pair", vec![named("B"), named("A")]),
+            "swap map must produce Pair<B,A>, not Pair<A,A>"
+        );
+    }
+
+    #[test]
+    fn parallel_substitution_with_concrete_types_is_identical_to_sequential() {
+        // When no param in the map is also a replacement target for another
+        // param (i.e. no permutation), parallel and sequential results are the same.
+        let pair_a_b = named_with_args("Pair", vec![named("A"), named("B")]);
+        let map: HashMap<String, Ty> = [("A".to_string(), Ty::I64), ("B".to_string(), Ty::String)]
+            .into_iter()
+            .collect();
+
+        let result = pair_a_b.substitute_named_params_parallel(&map);
+
+        assert_eq!(result, named_with_args("Pair", vec![Ty::I64, Ty::String]),);
+    }
+
+    #[test]
+    fn parallel_substitution_leaves_unmentioned_params_intact() {
+        // Params not in the map pass through unchanged.
+        let ty = named_with_args("Triple", vec![named("X"), named("Y"), named("Z")]);
+        let map: HashMap<String, Ty> = [("X".to_string(), Ty::Bool)].into_iter().collect();
+
+        let result = ty.substitute_named_params_parallel(&map);
+
+        assert_eq!(
+            result,
+            named_with_args("Triple", vec![Ty::Bool, named("Y"), named("Z")]),
+        );
+    }
+
+    #[test]
+    fn parallel_substitution_does_not_recurse_into_replacements() {
+        // If A→B and the replacement B is itself a named param, the result
+        // must stay as B — not chain through a further lookup for B.
+        let ty = named("A");
+        let map: HashMap<String, Ty> = [("A".to_string(), named("B")), ("B".to_string(), Ty::I64)]
+            .into_iter()
+            .collect();
+
+        // Parallel: A → lookup("A") = B, done. Sequential would then apply B→i64.
+        let result = ty.substitute_named_params_parallel(&map);
+        assert_eq!(result, named("B"), "parallel must not chain through B→i64");
     }
 }

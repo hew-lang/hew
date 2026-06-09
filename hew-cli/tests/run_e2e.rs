@@ -923,6 +923,62 @@ fn run_user_record_string_field_is_dropped_once() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
+/// Generic-instantiation twin of `run_user_record_string_field_is_dropped_once`:
+/// a `Pair<i64, string>` carrying a computed (heap) string is constructed and
+/// dropped on every one of 100k iterations. The generic owned-record drop spine
+/// must free the string field exactly once per iteration — a double-free aborts
+/// (the loop is the exactly-once witness), a missed drop leaks.
+#[test]
+fn run_generic_record_string_field_is_dropped_once() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/generic_record_string_field.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/generic_record_string_field.expected"),
+    )
+    .expect("read generic_record_string_field.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic_record_string_field should run cleanly (a double-free would \
+         abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// Generic record swap that moves an owned string across instantiations
+/// (`Pair<i64, string>` -> `Pair<string, i64>`) and returns the result by value,
+/// 100k times. The returned generic owned record is dropped exactly once at the
+/// caller; the callee transfers the string into the new instantiation. A
+/// double-free aborts, a missed drop leaks.
+#[test]
+fn run_generic_record_swap_owned_is_dropped_once() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/generic_record_swap_owned.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/generic_record_swap_owned.expected"),
+    )
+    .expect("read generic_record_swap_owned.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic_record_swap_owned should run cleanly (a double-free would \
+         abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
 /// W5-011 P3 actor-context drop-safety guard: a heap-owning `string` moved into
 /// an actor mailbox must NOT be scope-dropped by the sender on any exit path.
 /// The mailbox takes ownership of the buffer (no retain-on-send on the M-COW

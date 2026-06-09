@@ -20,14 +20,19 @@ impl Checker {
         if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
             let type_params = &trait_info.type_params;
             if type_params.len() == bound.args.len() {
-                for (param_name, replacement) in type_params.iter().zip(bound.args.iter()) {
-                    for param_ty in &mut sig.params {
-                        *param_ty = param_ty.substitute_named_param(param_name, replacement);
-                    }
-                    sig.return_type = sig
-                        .return_type
-                        .substitute_named_param(param_name, replacement);
+                // Build the substitution map once and apply in parallel so
+                // permuted trait args (e.g. `dyn Mapper<B, A>` for a trait
+                // declared `Mapper<A, B>`) don't alias under sequential
+                // per-pair substitution.
+                let subst_map: HashMap<String, Ty> = type_params
+                    .iter()
+                    .zip(bound.args.iter())
+                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .collect();
+                for param_ty in &mut sig.params {
+                    *param_ty = param_ty.substitute_named_params_parallel(&subst_map);
                 }
+                sig.return_type = sig.return_type.substitute_named_params_parallel(&subst_map);
             }
         }
         for param_ty in &mut sig.params {
@@ -161,12 +166,18 @@ impl Checker {
             while resolved_type_args.len() < sig.type_params.len() {
                 resolved_type_args.push(Ty::Var(TypeVar::fresh()));
             }
-            for (tp, ta) in sig.type_params.iter().zip(resolved_type_args.iter()) {
+            {
+                let subst_map: HashMap<String, Ty> = sig
+                    .type_params
+                    .iter()
+                    .zip(resolved_type_args.iter())
+                    .map(|(tp, ta)| (tp.clone(), ta.clone()))
+                    .collect();
                 params = params
                     .iter()
-                    .map(|param| param.substitute_named_param(tp, ta))
+                    .map(|param| param.substitute_named_params_parallel(&subst_map))
                     .collect();
-                ret = ret.substitute_named_param(tp, ta);
+                ret = ret.substitute_named_params_parallel(&subst_map);
             }
             // Collapse any `Ty::AssocType` carriers whose `base` has now
             // become concrete (e.g. `I::Item` with `I → Counter` and the
@@ -231,13 +242,15 @@ impl Checker {
         type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
         type_args: &[Ty],
     ) -> HashMap<(String, String, String), Ty> {
+        let subst_map: HashMap<String, Ty> = sig
+            .type_params
+            .iter()
+            .zip(type_args.iter())
+            .map(|(tp, ta)| (tp.clone(), self.subst.resolve(ta)))
+            .collect();
         let mut instantiated = HashMap::with_capacity(type_param_assoc_bindings.len());
         for (key, binding) in type_param_assoc_bindings {
-            let mut ty = binding.clone();
-            for (type_param, type_arg) in sig.type_params.iter().zip(type_args.iter()) {
-                let resolved_arg = self.subst.resolve(type_arg);
-                ty = ty.substitute_named_param(type_param, &resolved_arg);
-            }
+            let ty = binding.substitute_named_params_parallel(&subst_map);
             instantiated.insert(key.clone(), ty);
         }
         instantiated

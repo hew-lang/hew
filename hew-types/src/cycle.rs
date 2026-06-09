@@ -461,12 +461,13 @@ fn collect_instantiated_value_type_fields<'a>(
 }
 
 fn instantiate_value_field_ty(field_ty: &Ty, td: &TypeDef, args: &[Ty]) -> Ty {
-    td.type_params
+    let map: HashMap<String, Ty> = td
+        .type_params
         .iter()
         .zip(args.iter())
-        .fold(field_ty.clone(), |ty, (param, arg)| {
-            ty.substitute_named_param(param, arg)
-        })
+        .map(|(p, a)| (p.clone(), a.clone()))
+        .collect();
+    field_ty.substitute_named_params_parallel(&map)
 }
 
 fn is_value_type_node(td: &TypeDef) -> bool {
@@ -523,14 +524,15 @@ fn collect_actor_refs<'a>(
                         && !visited_structs.contains(&key)
                     {
                         visited_structs.insert(key);
+                        let param_map: HashMap<String, Ty> = td
+                            .type_params
+                            .iter()
+                            .zip(args.iter())
+                            .map(|(p, a)| (p.clone(), a.clone()))
+                            .collect();
                         for field_ty in td.fields.values() {
-                            let instantiated_field = td
-                                .type_params
-                                .iter()
-                                .zip(args.iter())
-                                .fold(field_ty.clone(), |field, (param, arg)| {
-                                    field.substitute_named_param(param, arg)
-                                });
+                            let instantiated_field =
+                                field_ty.substitute_named_params_parallel(&param_map);
                             collect_actor_refs(
                                 &instantiated_field,
                                 type_defs,

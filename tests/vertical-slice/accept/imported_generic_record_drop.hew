@@ -1,0 +1,28 @@
+// P1-2 fixture: a generic owned record (`Box<T>`) is DEFINED in the
+// `generic_record_box` module and INSTANTIATED + DROPPED here, in a different
+// module. The owned `string` field is dropped exactly once per loop iteration at
+// the importing site. A MIR/codegen key divergence for the imported generic
+// (module-qualified mangle vs codegen's short-name mangle) would fail closed at
+// the value-class gate; this fixture pins the congruent resolution. 100k
+// iterations surface a double-free (SIGSEGV) or a leak.
+import generic_record_box;
+
+fn round(print_it: bool) -> i64 {
+    let a = "owned";
+    let b = "value";
+    let label = a + "-" + b;
+    let box = generic_record_box.boxed(label);
+    if print_it {
+        println(box.value);
+    }
+    0
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 100000 {
+        round(i == 0);
+        i = i + 1;
+    }
+    0
+}

@@ -722,13 +722,22 @@ fn registered_fieldless_user_type_still_requires_codegen_readiness() {
     );
 }
 
+/// A generic record INSTANTIATION carrying an owned (string) field is now
+/// ADMITTED by value (no W3.029) and earns a tag-aware `RecordInPlace` drop on
+/// the mangled-key thunk (`Wrapper$$string`). Migrated forward from
+/// `non_bitcopy_user_record_instantiation_reports_precise_valueclass_diagnostic`,
+/// which pinned the now-reversed reject behaviour — the generic-instantiation
+/// owned-aggregate capability is the residual fail-closed witness this lane
+/// closes. The W3.029 gate is retained for unregistered/unclassifiable shapes
+/// (see `generic_record_owned_aggregate_admission` unit tests in lower.rs).
 #[test]
-fn non_bitcopy_user_record_instantiation_reports_precise_valueclass_diagnostic() {
+fn non_bitcopy_user_record_instantiation_admits_with_record_drop() {
     let parsed = hew_parser::parse(
         r#"
         pub type Wrapper<T> { inner: T }
         fn main() -> i64 {
             let w = Wrapper { inner: "owned" };
+            println(w.inner);
             0
         }
         "#,
@@ -748,22 +757,23 @@ fn non_bitcopy_user_record_instantiation_reports_precise_valueclass_diagnostic()
     let pipeline = lower_hir_module(&output.module);
 
     assert!(
-        pipeline.diagnostics.iter().any(|d| {
-            matches!(
-                &d.kind,
-                MirDiagnosticKind::UnsupportedUserRecordValueClass { name, reason }
-                    if name == "Wrapper$$string" && reason.contains("field `inner`")
-            )
-        }),
-        "Wrapper<string> must produce precise W3.029 diagnostic: {:?}",
+        !source_has_w3029_in(&pipeline, "Wrapper$$string"),
+        "generic owned-record instantiation Wrapper<string> must be admitted, \
+         not W3.029-rejected: {:?}",
         pipeline.diagnostics
+    );
+    assert!(
+        pipeline_has_record_inplace_drop(&pipeline),
+        "the admitted generic owned record must earn a RecordInPlace scope-exit \
+         drop on its mangled-key thunk: {:?}",
+        pipeline.elaborated_mir
     );
     assert!(
         !pipeline
             .diagnostics
             .iter()
             .any(|d| matches!(d.kind, MirDiagnosticKind::DecisionMapTotal { .. })),
-        "precise user-record value-class diagnostic should suppress generic DecisionMapTotal: {:?}",
+        "admitting the generic owned record must keep the decision map total: {:?}",
         pipeline.diagnostics
     );
 }

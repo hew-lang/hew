@@ -339,6 +339,28 @@ grep -q 'JoinBranchNotActorAsk' "${reject_output}"
 # rx.recv() ... }` still checks OK.
 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/select_recv_guard.hew" >"${accept_output}" 2>&1
 
+# Reject (SELECT ship-3, HEW-SPEC §4.11.1): the task-await arm
+# `<id> from await <expr>` is NOT one of the three sealed select forms. There is
+# no bindable first-class task handle (Task<T> unnameable; fork parser-only), so
+# the checker select-arm gate rejects it at CHECK time with the actor-ask form
+# diagnostic — never a silent lowering, never a late MIR/codegen error.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_arm_await_task_dropped.hew" >"${reject_output}" 2>&1; then
+  echo "expected select_arm_await_task_dropped fixture to fail" >&2
+  exit 1
+fi
+grep -qF 'select arm source must be actor.method(args)' "${reject_output}"
+
+# Reject (SELECT ship-3, HEW-SPEC §4.11.1): the stream-next arm
+# `<id> from <stream>.recv()` over a Stream<T> is NOT a sealed select form — the
+# `.recv()` arm is channel-only (Receiver<T>). A Stream<T> receiver is rejected
+# by the checker select-arm gate (before MIR), so the diagnostic is the select-arm
+# form error, not the owned-handle aggregate-extraction fail-closed.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_arm_stream_recv_dropped.hew" >"${reject_output}" 2>&1; then
+  echo "expected select_arm_stream_recv_dropped fixture to fail" >&2
+  exit 1
+fi
+grep -qF 'select arm source must be actor.method(args)' "${reject_output}"
+
 # Supervisor bootstrap: spawn AppSupervisor → hew_supervisor_new + add_child_spec + start;
 # main returns 42 after bootstrap completes successfully.
 run_accept_expect_status "supervisor_basic" 42

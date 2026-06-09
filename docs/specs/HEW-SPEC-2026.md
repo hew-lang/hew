@@ -3187,37 +3187,38 @@ values — and integrate with structured concurrency and the actor model.
 #### 4.11.1 `select` Expression
 
 `select { }` is a **sealed compiler-known construct** in edition 2026. It
-waits for the first of five named operation forms to complete, evaluates
+waits for the first of three named operation forms to complete, evaluates
 the corresponding arm, and cancels the losing arms. There is no user-
-implementable `Awaitable` trait — the five forms are exhaustive.
+implementable `Awaitable` trait — the three forms are exhaustive.
 
 **Canonical syntax:**
 
 ```hew
 select {
-    msg     from next(events)          => handle(msg),    // Stream<T>::next
     reply   from worker.call(x)        => use(reply),     // actor ask
-    done    from await user_task       => use(done),      // Task<T>
     item    from inbox.recv()          => use(item),      // channel receive
     after 5.seconds                    => abort(),        // timer
 }
 ```
 
-The five arm-source discriminators are syntactic markers, recognised at
+The three arm-source discriminators are syntactic markers, recognised at
 HIR lowering:
 
-- `next(<stream-expr>)` — a call where the callee is the bare identifier
-  `next` (sealed in this position; the surface does not look for a
-  user-defined `next` function).
 - `<actor-expr>.<method>(<args>)` — a method-call expression on an actor
   expression. The `ask` keyword is reserved for a future syntactic marker
   (see HEW-FUTURE) but is not lexer-recognised in edition 2026; the
   sealed-form discriminator is the method-call shape itself.
-- `await <task-expr>` — the existing `await` keyword.
 - `<receiver-expr>.recv()` — a std/channel receive on a `Receiver<T>`.
 - `after <duration-expr>` — the timer arm; carries no binding.
 
-**The five forms (closed set).** Each form is fully specified by four
+> A stream-next arm (`<id> from <stream>.recv()` over a `Stream<T>`) and a
+> task-await arm (`<id> from await <task>`) were specified in earlier drafts
+> but are **not** part of edition 2026's sealed set: neither has a usable
+> first-class substrate today (no `Stream<T>` handle is obtainable without
+> aggregate-extraction that fails closed; `Task<T>` is unnameable and `fork`
+> is parser-only). They return with their substrate — see HEW-FUTURE.
+
+**The three forms (closed set).** Each form is fully specified by four
 columns: what the winning arm binds, how the winning arm propagates a
 non-success outcome at the source, how the runtime cleans up *that* arm
 when a different arm wins (loser cleanup), and how the runtime cleans up
@@ -3227,22 +3228,13 @@ cleanup columns; the difference is which side initiates the teardown.
 
 | Form                       | Winning bind / type             | Winning error or trap at the source                                                                                                                                                                                       | Loser cleanup (a different arm won)                                                                                                                                                                       | Outer-cancellation cleanup (enclosing scope cancelled, `select` still pending)                                                                              |
 | -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<id> from next(<stream>)` | `id: Option<T>` for `Stream<T>` | The stream's own error surface — if the stream reports an error on next, the winning arm sees it on the stream's terms. The stream binding remains usable.                                                                | Pending read is withdrawn from the stream; the stream itself is **not consumed** and remains usable in the enclosing scope.                                                                              | Same as loser cleanup: pending read withdrawn, stream binding remains usable for the cancellation handler.                                                  |
 | `<id> from <actor>.<method>(<args>)` | `id: <reply-type>` per ask | `AskError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, `Cancelled`, `LocalShutdown`, or `OrphanedAsk` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
-| `<id> from await <task>`   | `id: T` for `Task<T>`           | The awaited task wins **only** when it completes with `Ok(T)`. If the task instead resolves to the unnamed cancellation `Err` per §4.4, that `Err` propagates through the `select` site as if the surrounding scope had taken the `Err` itself; the `select` does not treat the cancelled task as a winning arm. Traps in the awaited task propagate as traps through the `select` site (§4.4). | The task is cancelled at its next safepoint (§4.5). The resulting `Err` is consumed by the `select` site and not surfaced; the awaitable handle is torn down.                                            | The task is cancelled at its next safepoint and the awaitable handle is torn down; the outer cancellation propagates through the `select` site as usual. |
 | `<id> from <rx>.recv()`    | `id: Option<T>` for `Receiver<T>` | `None` is a normal winning value indicating that the channel is closed; `Some(value)` carries the received item. Channel receive has no separate error surface in edition 2026.                              | Pending receive is withdrawn from the channel core; the receiver binding remains usable in the enclosing scope.                                                                                         | Same as loser cleanup: pending receive withdrawn, receiver binding remains usable for the cancellation handler.                                             |
 | `after <duration>`         | no binding; arm type is `()`-shaped at the source | None. Timers cannot fail or trap in edition 2026.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
 
-The `from await` row resolves the apparent tension between §4.4 (which
-types `await` as `Result<T, _>`) and the `select` arm binding `id: T`:
-`from await` is "successful completion only". Cancellation and trap
-outcomes of the awaited task are *not* winning completions; they
-propagate through the `select` site by the same rule that propagates
-them out of any other safepoint in the enclosing scope.
-
 **Semantics:**
 
-1. **Exhaustive arm set.** Each arm's source must be one of the five
+1. **Exhaustive arm set.** Each arm's source must be one of the three
    forms above. Anything else is `SelectArmInvalid` at parse or type-
    check time.
 2. **First-completion wins.** The first arm whose source completes (or
@@ -3266,42 +3258,40 @@ them out of any other safepoint in the enclosing scope.
 
 ```
 select {
-    p1 from next(s1)         => r1,         where s1: Stream<A>, r1: T
-    p2 from act.call(x)      => r2,         where act.call(x): B, r2: T
-    p3 from await t          => r3,         where t: Task<C>, r3: T
-    p4 from rx.recv()        => r4,         where rx: Receiver<D>, r4: T
-    after d                  => r5,         where d: Duration, r5: T
+    p1 from act.call(x)      => r1,         where act.call(x): B, r1: T
+    p2 from rx.recv()        => r2,         where rx: Receiver<D>, r2: T
+    after d                  => r3,         where d: Duration, r3: T
 } : T
 ```
 
 The bound identifiers are in scope only inside their own `=>`
-expression. Their static types follow the table above: `p1: Option<A>`
-for `from next` (so `None` is a legitimate winning value indicating the
-stream observed EOF on that call), `p2: B` for the actor-ask arm, `p3: C` for
-`from await` (the `Ok` payload; cancellation and traps propagate per the
-table), `p4: Option<D>` for the channel receive arm, and no binding for
-`after`.
+expression. Their static types follow the table above: `p1: B` for the
+actor-ask arm, `p2: Option<D>` for the channel receive arm (so `None` is
+a legitimate winning value indicating the channel observed EOF on that
+call), and no binding for `after`.
 
 **Why sealed?**
 
 A user-implementable `Awaitable` trait would have to specify coherence
 rules, cancellation hooks, fairness rules, pinning constraints, and a
-loser-cleanup protocol — all unsettled in edition 2026. The five forms
+loser-cleanup protocol — all unsettled in edition 2026. The three forms
 above are the workloads `select` exists to serve. A user `Awaitable`
 surface may land in a future edition once trait lowering and generator
 cancellation are proven; see HEW-FUTURE.md.
 
 **Implementation status (informative, not normative).** Edition 2026's
-surface is the construct's contract. The HIR layer recognises all five
-arm forms and rejects non-sealed sources with structural diagnostics;
-the MIR layer carries the per-arm sealed shape on the terminator. The
-runtime substrate that decides the winner and runs each form's loser-
-cleanup is wired separately — codegen fails closed with a per-arm-kind
-message until the substrate lands. Programs whose `select{}` use is
-purely surface-level (parsing, lowering, structural diagnostics) are
-accepted; programs that reach codegen with a `select{}` construct are
-rejected with a clear "runtime substrate not yet wired" error naming
-the missing primitive for the offending arm form.
+surface is the construct's contract. The three sealed arm forms — actor
+ask, channel `recv()`, and `after` — type-check, lower, and reach live
+codegen: the runtime substrate that decides the winner and runs each
+form's loser-cleanup is wired (see the channel-receive and actor-ask
+`select` vertical-slice fixtures, which compile and run). The arm set is
+restricted by the **type checker**, not by codegen: a stream-next arm
+(`<stream>.recv()` over `Stream<T>`) or a task-await arm
+(`await <task>`) is rejected at check time with a structural diagnostic
+("select arm source must be actor.method(args)"), because neither has a
+usable first-class substrate in edition 2026 (see the note under
+"Canonical syntax" above). They are not silently lowered and they never
+reach codegen.
 
 #### 4.11.2 `join` Expression
 
@@ -3376,11 +3366,10 @@ diagnostic pointing at the offending position.
 
 | Composition                                              | Legality        | Rationale                                                                                                                                                                                          |
 | -------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `select {}` inside a `scope {}` body or child             | Legal           | The five `select` forms are single-await constructs and compose with the scope block's cancellation discipline at their safepoints.                                                                |
+| `select {}` inside a `scope {}` body or child             | Legal           | The three `select` forms are single-await constructs and compose with the scope block's cancellation discipline at their safepoints.                                                                |
 | `fork name = select { ... }`                             | Legal           | A child task's expression may be a `select` expression; the binding is the `select` expression's result type.                                                                                      |
 | `scope {}` inside a `select` arm's `=>` result expression | Legal           | The arm has already won; its result expression runs in the surrounding scope as ordinary code that happens to contain a scope block.                                                               |
-| `scope { ... }` as a `select` arm source                  | **Rejected**    | The five sealed arm sources are exhaustive (§4.11.1). A scope block is a *lexical region*, not a pending operation, and starting one as a `select` competitor would create children whose scope is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
-| `await <task>` arm where `<task>` was bound by `fork name = expr` of the enclosing block | Legal | A scoped child handle is a legal `await` source; the `select` arm's loser-cleanup rule (cancel the awaited task) is exactly what scope-structural cancellation expects when the awaited task is no longer needed. |
+| `scope { ... }` as a `select` arm source                  | **Rejected**    | The three sealed arm sources are exhaustive (§4.11.1). A scope block is a *lexical region*, not a pending operation, and starting one as a `select` competitor would create children whose scope is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
 
 **Cancellation propagation across the composition (normative):**
 
@@ -4758,9 +4747,10 @@ If you want this to be directly executable as an engineering project, the next m
   `#[linear]` types must be consumed via a declared consuming method and have
   no implicit drop.
 - **Sealed `select{}`.** `select{}` widens from actor-receive-only to a
-  five-form sealed construct over task await, stream `next`, actor request-reply,
-  channel receive (`pat from rx.recv()`), and timer (§4.11). Not user-extensible
-  in this edition.
+  three-form sealed construct over actor request-reply, channel receive
+  (`pat from rx.recv()`), and timer (`after`) (§4.11). The earlier-drafted
+  stream-`next` and task-`await` arms are deferred with their substrate
+  (see HEW-FUTURE). Not user-extensible in this edition.
 - **`scope{}` / `fork` split.** The `scope |s| { s.launch / s.spawn / s.cancel }`
   surface is removed entirely. `scope { }` is the structured-concurrency
   block (the scope boundary). `fork name = expr;` / `fork expr;`

@@ -167,10 +167,12 @@ pub enum HirDiagnosticKind {
     /// expression, causing it to escape the `scope{}` body. Task handles are
     /// scope-body-scoped; await them inside the body with `await name`.
     TaskCannotEscape,
-    /// A `select` arm's source expression is not one of the four sealed
-    /// forms (`next(stream)`, `actor.method(args)`, `await task`, or the
-    /// timer arm `after duration`). Per HEW-SPEC-2026 §4.11.1 the four
-    /// forms are exhaustive; arbitrary expressions are rejected.
+    /// A `select` arm's source expression is not one of the three sealed
+    /// forms (`actor.method(args)`, a channel `rx.recv()`, or the timer
+    /// arm `after duration`). Per HEW-SPEC-2026 §4.11.1 the three forms
+    /// are exhaustive; arbitrary expressions are rejected. (Earlier drafts
+    /// also listed `next(stream)` and `await task`; those arms are deferred
+    /// with their substrate — see HEW-FUTURE §1.4.)
     SelectArmNotSealedForm {
         /// Short description of the offending source shape, e.g.
         /// `"literal"`, `"binary expression"`, `"identifier"`. The shape

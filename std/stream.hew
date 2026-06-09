@@ -10,7 +10,7 @@
 //!   values are valid items
 //! - `sink.close()` or drop yields graceful EOF; `stream.close()` or drop is a
 //!   local cancel/discard of unread items
-//! - Core `.next()` / `.write()` operations are blocking and backpressured; no
+//! - Core `.recv()` / `.write()` operations are blocking and backpressured; no
 //!   nonblocking semantics are promised here
 //! - Stage-1 errors cover constructor/open failures only; transport/runtime
 //!   read/write errors remain wrapper-specific and out of scope
@@ -52,7 +52,7 @@ type Sink<T> {
 // ── Stream<T> methods ─────────────────────────────────────────────────
 //
 // Method resolution is handled by the compiler intrinsic in
-// `hew-types/src/stdlib.rs`.  The enricher dispatches `.next()` and
+// `hew-types/src/stdlib.rs`.  The enricher dispatches `.recv()` and
 // other methods to the correct C symbol based on `T`.
 
 // ── Sink<T> methods ───────────────────────────────────────────────────

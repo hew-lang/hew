@@ -60,7 +60,36 @@ barrier" rule parse today but lack end-to-end implementation and have
 not been audited against the actor mailbox protocol's failure modes.
 Track under #1236.
 
-### 1.4 Supervision extras beyond ask / restart / escalation
+### 1.4 Deferred `select{}` arms: stream-next and task-await
+
+**[Target: returns with its substrate]**
+
+Edition 2026's `select{}` is a **three-form** sealed construct: actor
+ask (`<id> from <actor>.<method>(...)`), channel receive
+(`<id> from <rx>.recv()`), and timer (`after <duration>`) — see
+HEW-SPEC-2026 §4.11.1. Two arm forms from earlier drafts are deferred,
+each blocked on a missing first-class substrate, not on the `select`
+machinery (the select winner/loser-cleanup codegen seam is already live
+for the shipped arms):
+
+- **Stream-next arm** (`<id> from <stream>.recv()` over `Stream<T>`,
+  binding `Option<T>`). Deferred because no usable `Stream<T>` handle can
+  be obtained today: every acquisition path (`stream.pipe()` tuple
+  extraction, `stream.from_file(...)?` Result extraction) trips the
+  owned-handle aggregate-extraction fail-closed (`OwnedHandleAggregate*`,
+  tracked for v0.5.1), and a bare `Stream<T>.recv()` is not yet ABI-wired
+  in codegen. Returns once stream-handle binding lands.
+- **Task-await arm** (`<id> from await <task>`, binding `T` for
+  `Task<T>`). Deferred because `Task<T>` is not nameable (§4.3) and
+  `fork name = expr;` is parser-only in this build, so there is no
+  bindable first-class task handle to select on. Returns with the
+  `fork`/`Task` substrate.
+
+Both forms are rejected at **check** time today (the type checker
+restricts the arm set; codegen is not involved), so re-introducing them
+is purely additive.
+
+### 1.5 Supervision extras beyond ask / restart / escalation
 
 **[Target: v0.6]**
 
@@ -70,7 +99,7 @@ Edition 2026 ships supervisor strategies (`one_for_one`, `one_for_all`,
 hot-swap upgrades, dynamic strategy changes, supervisor introspection
 APIs — are deferred.
 
-### 1.5 Generators (`gen fn`, `async gen fn`, `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`)
+### 1.6 Generators (`gen fn`, `async gen fn`, `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`)
 
 **[Target: v0.6 / gated on Cluster 4]**
 
@@ -89,7 +118,7 @@ Surface inventory:
 - `#[prefetch(N)]` attribute as an optimisation hint on cross-actor
   generators.
 
-### 1.6 Auto-injected `RwLock`/`Mutex`/`Atomic` wrappers
+### 1.7 Auto-injected `RwLock`/`Mutex`/`Atomic` wrappers
 
 **[REJECTED]**
 
@@ -98,7 +127,7 @@ with the appropriate synchronisation primitive. Reversed 2026-05-09.
 Concurrent unsynchronised mutable bindings are an error in edition 2026;
 the diagnostic includes a fix-it pointing at the right wrapper.
 
-### 1.7 On-crash consuming-handler attribute for `@linear` actor fields
+### 1.8 On-crash consuming-handler attribute for `@linear` actor fields
 
 **[Target: v0.7+]**
 
@@ -115,7 +144,7 @@ teardown on the crash path. The handler's signature, the supervisor's
 delivery guarantee, and the diagnostic that fires when the actor's
 declared restart classification cannot honour the attribute are
 unsettled and need design work alongside the broader supervision-extras
-surface (§1.4). Defer until a real workload demands a `@linear` actor
+surface (§1.5). Defer until a real workload demands a `@linear` actor
 field that is neither escalation-only nor `@resource`-backed.
 
 ---

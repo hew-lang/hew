@@ -11787,7 +11787,7 @@ impl LowerCtx {
                         source_shape: "function call".into(),
                     },
                     span.clone(),
-                    "select arm source must be next(...), an actor method call, or `await <task>`",
+                    "select arm source must be an actor method call, a channel `rx.recv()`, or `after <duration>`",
                 ));
                 HirSelectArmKind::StreamNext {
                     stream: Box::new(self.unsupported_expr(span, "non-sealed arm source")),
@@ -11865,7 +11865,7 @@ impl LowerCtx {
                         source_shape: shape,
                     },
                     span.clone(),
-                    "select arm source must be next(...), an actor method call, or `await <task>`",
+                    "select arm source must be an actor method call, a channel `rx.recv()`, or `after <duration>`",
                 ));
                 HirSelectArmKind::StreamNext {
                     stream: Box::new(self.unsupported_expr(span, "non-sealed arm source")),

@@ -333,8 +333,8 @@ fn main() {}
 #[test]
 fn machine_generic_decl() {
     // `machine Name<T, U> { ... }` parses with the type-param names
-    // threaded onto `MachineDecl::type_params`. No bounds, no defaults,
-    // no machine-over-machine generics — those are not supported in v0.5.
+    // threaded onto `MachineDecl::type_params`. Trait bounds (`<T: Trait>`)
+    // are accepted at the parser level (see the bounded-decl test below).
     let source = r"
 machine Light {
     state Off;
@@ -392,25 +392,31 @@ machine Collision<T> {
         })
         .collect();
 
+    let names: Vec<Vec<String>> = machines
+        .iter()
+        .map(|m| m.type_params.iter().map(|p| p.name.clone()).collect())
+        .collect();
+
     assert_eq!(machines[0].name, "Light");
     assert!(machines[0].type_params.is_empty());
 
     assert_eq!(machines[1].name, "Lifecycle");
-    assert_eq!(machines[1].type_params, vec!["T".to_string()]);
+    assert_eq!(names[1], vec!["T".to_string()]);
+    assert!(machines[1].type_params[0].bounds.is_empty());
     assert_eq!(machines[1].states.len(), 2);
     assert_eq!(machines[1].events.len(), 1);
     assert_eq!(machines[1].transitions.len(), 1);
 
     assert_eq!(machines[2].name, "Triple");
     assert_eq!(
-        machines[2].type_params,
+        names[2],
         vec!["T".to_string(), "U".to_string(), "V".to_string()]
     );
 
     // Parser accepts a type-param/state-name collision because name binding is
     // not a parser concern; later semantic passes may reject it if needed.
     assert_eq!(machines[3].name, "Collision");
-    assert_eq!(machines[3].type_params, vec!["T".to_string()]);
+    assert_eq!(names[3], vec!["T".to_string()]);
     assert_eq!(machines[3].states[0].name, "T");
 }
 
@@ -431,27 +437,101 @@ machine Empty<> {
 }
 
 #[test]
-fn parse_machine_generic_decl_trait_bounds_are_rejected() {
-    // Trait bounds on machine type parameters are not supported in v0.5;
-    // they are a v0.6+ ratification. Reject with a clear diagnostic so
-    // users do not silently lose the bound.
+fn parse_machine_generic_decl_trait_bounds_are_accepted() {
+    // Trait bounds on machine type parameters are accepted by the parser.
+    // Bound enforcement is the type-checker's responsibility — the parser
+    // simply threads the bounds through verbatim onto `TypeParam.bounds`.
     let source = r"
-machine Bounded<T: Display> {
+trait Resource {
+    fn close(self);
+}
+
+trait Display {
+    fn show(self) -> String;
+}
+
+machine Bounded<T: Resource, U: Resource + Display> {
     state Idle;
+    state Active { handle: T; meta: U; }
+
+    event Start { handle: T; meta: U; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle, meta: event.meta } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
 }
 ";
     let result = hew_parser::parse(source);
     assert!(
-        !result.errors.is_empty(),
-        "expected parse error for `<T: Display>`"
-    );
-    let has_bound_msg = result
-        .errors
-        .iter()
-        .any(|e| format!("{e:?}").contains("trait bounds on machine type parameters"));
-    assert!(
-        has_bound_msg,
-        "expected trait-bound rejection diagnostic, got: {:?}",
+        result.errors.is_empty(),
+        "expected clean parse, got: {:?}",
         result.errors
+    );
+
+    let machine = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            hew_parser::ast::Item::Machine(m) if m.name == "Bounded" => Some(m),
+            _ => None,
+        })
+        .expect("Bounded machine should parse");
+
+    assert_eq!(machine.type_params.len(), 2);
+    assert_eq!(machine.type_params[0].name, "T");
+    assert_eq!(machine.type_params[0].bounds.len(), 1);
+    assert_eq!(machine.type_params[0].bounds[0].name, "Resource");
+    assert_eq!(machine.type_params[1].name, "U");
+    assert_eq!(machine.type_params[1].bounds.len(), 2);
+    assert_eq!(machine.type_params[1].bounds[0].name, "Resource");
+    assert_eq!(machine.type_params[1].bounds[1].name, "Display");
+}
+
+#[test]
+fn machine_trait_bounds_round_trip_through_formatter() {
+    // Parse → format → parse → assert structural equality on the AST.
+    // Guards against the formatter silently dropping bounds when emitting
+    // a machine declaration with `<T: Trait>` type parameters.
+    let source = r"trait Resource {
+    fn close(self);
+}
+
+machine Lifecycle<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "initial parse errors: {:?}",
+        parsed.errors
+    );
+
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "reparse of formatted source failed: {:?}\n\n--- formatted ---\n{}",
+        reparsed.errors,
+        formatted
+    );
+
+    // Compare programs structurally, ignoring span byte offsets which
+    // naturally differ between the original and reformatted source.
+    assert!(
+        hew_parser::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+        "AST structural inequality after round-trip\n--- formatted ---\n{formatted}"
     );
 }

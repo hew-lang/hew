@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use hew_parser::ast::{CallArg, Expr, ImportDecl, Item, Pattern, Program, Spanned, Stmt, TypeExpr};
+use hew_types::{check::SpanKey, Ty};
 
 use crate::Diagnostic;
 
@@ -96,7 +97,7 @@ struct ProfileChecker<'a> {
     user_functions: BTreeSet<String>,
     user_types: BTreeSet<String>,
     enum_variants: BTreeSet<String>,
-    _type_output: &'a hew_types::TypeCheckOutput,
+    type_output: &'a hew_types::TypeCheckOutput,
 }
 
 impl<'a> ProfileChecker<'a> {
@@ -107,7 +108,7 @@ impl<'a> ProfileChecker<'a> {
             user_functions: BTreeSet::new(),
             user_types: BTreeSet::new(),
             enum_variants: BTreeSet::new(),
-            _type_output: type_output,
+            type_output,
         };
         checker.collect_declarations(program);
         checker
@@ -213,6 +214,10 @@ impl<'a> ProfileChecker<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "check_stmt walks every admitted statement variant fail-closed; splitting would obscure the admission contract"
+    )]
     fn check_stmt(&mut self, stmt: &Stmt, span: &std::ops::Range<usize>) {
         match stmt {
             Stmt::Let { value, ty, .. } | Stmt::Var { value, ty, .. } => {
@@ -259,16 +264,67 @@ impl<'a> ProfileChecker<'a> {
                 }
             }
             Stmt::Expression(expr) => self.check_expr(expr),
-            Stmt::Loop { .. }
-            | Stmt::For { .. }
-            | Stmt::While { .. }
-            | Stmt::WhileLet { .. }
-            | Stmt::Break { .. }
-            | Stmt::Continue { .. } => self.reject(
-                span.clone(),
-                "reserved_control_flow",
-                "this control-flow form is reserved for a later sandbox bytecode lowering pass",
-            ),
+            Stmt::Loop { body, label } => {
+                if label.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "labeled loops are not yet admitted in the sandbox profile",
+                    );
+                }
+                self.check_block(body);
+            }
+            Stmt::For { is_await, iterable, body, label, .. } => {
+                if *is_await {
+                    self.reject(
+                        span.clone(),
+                        "reserved_runtime_feature",
+                        "for-await requires async runtime support reserved for a later sandbox VM milestone",
+                    );
+                    return;
+                }
+                if label.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "labeled for loops are not yet admitted in the sandbox profile",
+                    );
+                }
+                self.check_expr(iterable);
+                self.check_block(body);
+            }
+            Stmt::While { condition, body, label } => {
+                if label.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "labeled while loops are not yet admitted in the sandbox profile",
+                    );
+                }
+                self.check_expr(condition);
+                self.check_block(body);
+            }
+            Stmt::WhileLet { expr, body, label, .. } => {
+                if label.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "labeled while-let loops are not yet admitted in the sandbox profile",
+                    );
+                }
+                self.check_expr(expr);
+                self.check_block(body);
+            }
+            Stmt::Break { value, .. } => {
+                if value.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "break-with-value is not yet admitted in the sandbox profile",
+                    );
+                }
+            }
+            Stmt::Continue { .. } => {}
             Stmt::IfLet { expr, body, else_body, .. } => {
                 self.check_expr(expr);
                 self.check_block(body);
@@ -292,9 +348,18 @@ impl<'a> ProfileChecker<'a> {
         let (expr, span) = expr;
         match expr {
             Expr::Literal(_) | Expr::Identifier(_) | Expr::This | Expr::RegexLiteral(_) => {}
-            Expr::Binary { left, right, .. } | Expr::Is { lhs: left, rhs: right } => {
+            Expr::Binary { left, right, .. } => {
                 self.check_expr(left);
                 self.check_expr(right);
+            }
+            Expr::Is { lhs, rhs } => {
+                self.reject(
+                    span.clone(),
+                    "reserved_runtime_feature",
+                    "identity comparison needs heap identity semantics reserved for a later sandbox VM milestone",
+                );
+                self.check_expr(lhs);
+                self.check_expr(rhs);
             }
             Expr::Unary { operand, .. }
             | Expr::Cast { expr: operand, .. }
@@ -379,10 +444,7 @@ impl<'a> ProfileChecker<'a> {
                 for arg in args {
                     self.check_expr(arg.expr());
                 }
-                if !matches!(
-                    method.as_str(),
-                    "new" | "find" | "is_match" | "replace" | "free" | "len" | "push" | "get" | "slice"
-                ) {
+                if !self.method_is_admitted(receiver, method) {
                     self.reject(
                         span.clone(),
                         "unknown_method_symbol",
@@ -460,7 +522,7 @@ impl<'a> ProfileChecker<'a> {
                     || self.enum_variants.contains(name)
                     || matches!(
                         name.as_str(),
-                        "println" | "panic" | "Some" | "None" | "Ok" | "Err" | "Vec::new"
+                        "print" | "println" | "panic" | "Some" | "None" | "Ok" | "Err" | "Vec::new"
                     )
                 {
                     return;
@@ -527,6 +589,37 @@ impl<'a> ProfileChecker<'a> {
                 self.check_pattern(right);
             }
         }
+    }
+
+    fn method_is_admitted(&self, receiver: &Spanned<Expr>, method: &str) -> bool {
+        if matches!((&receiver.0, method), (Expr::Identifier(module), "new") if module == "regex" || module == "Vec")
+        {
+            return true;
+        }
+
+        let Some(receiver_ty) = self.ty_for_expr(receiver) else {
+            return false;
+        };
+        match receiver_ty.materialize_literal_defaults() {
+            Ty::String => matches!(method, "len" | "slice"),
+            Ty::Array(_, _) | Ty::Slice(_) => matches!(method, "len" | "get"),
+            Ty::Named { name, .. } if name == "Vec" => matches!(method, "len" | "push" | "get"),
+            Ty::Named { name, .. }
+                if name.eq_ignore_ascii_case("Regex")
+                    || name.ends_with(".Regex")
+                    || name == "regex.Pattern" =>
+            {
+                matches!(method, "find" | "is_match" | "replace" | "free")
+            }
+            _ => false,
+        }
+    }
+
+    fn ty_for_expr(&self, expr: &Spanned<Expr>) -> Option<Ty> {
+        self.type_output
+            .expr_types
+            .get(&SpanKey::from(&expr.1))
+            .cloned()
     }
 
     fn check_type_expr(&mut self, ty: &TypeExpr, span: &std::ops::Range<usize>) {

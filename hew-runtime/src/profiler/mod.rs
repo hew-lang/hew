@@ -32,7 +32,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use metrics::MetricsRing;
-pub use server::ProfilerContext;
+pub use server::{run_tcp_with_listener, ProfilerContext, OBSERVE_SCHEMA_VERSION};
 
 /// Global state for running profiler threads.
 ///

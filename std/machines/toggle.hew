@@ -1,0 +1,27 @@
+//! Minimal cross-module Moore machine fixture.
+//!
+//! Used by `examples/machine/run_cross_module_toggle.hew` to exercise the
+//! HIR cross-module machine-binding path: a bare `Flip` event and qualified
+//! `Toggle::Off` / `Toggle::On` state ctors referenced from a different
+//! module must resolve through `machine_ctor_registry` after the HIR
+//! pre-pass walks `program.module_graph` (see `hew-hir/src/lower.rs`).
+//!
+//! Intentionally tiny — Unit states only, no entry/exit blocks, no
+//! transition payloads — so it exercises only the substrate path under
+//! test without depending on MIR-layer machinery (struct-state ctors,
+//! `event.handle` field access, `state` wildcard transitions) that is
+//! out of scope here.
+
+pub machine Toggle {
+    state Off;
+    state On;
+
+    event Flip;
+
+    on Flip: Off -> On {
+        On
+    }
+    on Flip: On -> Off {
+        Off
+    }
+}

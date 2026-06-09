@@ -1120,6 +1120,13 @@ pub enum HirExprKind {
         field_idx: usize,
         field_name: String,
     },
+    /// Read a payload field from the transition's matched `event` value.
+    MachineEventFieldAccess {
+        machine_name: String,
+        event_idx: usize,
+        field_idx: usize,
+        field_name: String,
+    },
     /// `while cond { body }` — loops until `cond` evaluates to false.
     ///
     /// The expression type is always `Unit`; a while loop never produces
@@ -1181,6 +1188,39 @@ pub enum HirExprKind {
         /// Arms in source order. Each arm's `variant_match` is `None` for
         /// a wildcard arm or `Some(VariantMatch)` for a unit-variant arm.
         arms: Vec<HirMatchArm>,
+    },
+    /// `while let <PayloadVariant>(bindings) = scrutinee { body }` — loops
+    /// while the scrutinee's tag matches `variant_idx`. Each iteration
+    /// re-evaluates `scrutinee` from scratch (the surface semantics: the
+    /// pattern's right-hand side is checked anew on every iteration), then
+    /// either binds the variant's payload fields and runs `body` before
+    /// looping back, or exits the loop.
+    ///
+    /// The expression type is always `Unit`; a while-let loop never yields
+    /// a value. MIR lowering emits a four-block CFG (entry → header →
+    /// body → exit) mirroring `lower_while` + `lower_match_enum_tag`.
+    ///
+    /// **Scope (v0.5 substrate)**: only a single payload-bearing enum
+    /// constructor pattern (e.g. `Some(x)`) is accepted here. Unit-variant
+    /// patterns (`None`), or-patterns, guards, and arbitrary patterns are
+    /// rejected at HIR lowering with a structured `NotYetImplemented`
+    /// diagnostic — the same shape used by `HirExprKind::Match`.
+    WhileLet {
+        /// Re-evaluated each iteration. Its `ty` is the resolved enum type
+        /// (e.g. `Option<i64>`).
+        scrutinee: Box<HirExpr>,
+        /// Checker-resolved `(type_name, variant_name)` identity of the
+        /// continue-arm variant (`Some` for `Option<T>`).
+        variant_match: VariantMatch,
+        /// Zero-based variant index in declaration order; matches the
+        /// `EnumLayout.variants` ordering used by MIR/codegen.
+        variant_idx: u32,
+        /// Payload bindings introduced by the pattern. Walked at MIR
+        /// lowering to emit `Move { src: Place::MachineVariant }` at body
+        /// entry — identical to a `Match` arm's payload handling.
+        bindings: Vec<HirMatchArmBinding>,
+        /// Loop body.
+        body: HirBlock,
     },
     Unsupported(String),
 }

@@ -116,7 +116,7 @@ pub fn lookup_dispatch_type_by_ptr(dispatch_ptr: usize) -> &'static str {
 ///
 /// Returns `Some("ActorName::handler_name")` when registered, `None` otherwise.
 /// This variant avoids a `transmute` by operating on the raw `usize` pointer.
-pub fn lookup_handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<String> {
+pub fn handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<String> {
     if dispatch_ptr == 0 {
         return None;
     }
@@ -149,22 +149,6 @@ pub fn register_handler_name(
             .entry((key, msg_type))
             .or_insert(handler_name);
     });
-}
-
-/// Look up the fully-qualified handler name for a `(dispatch_fn_ptr, msg_type)` pair.
-///
-/// Returns `Some("ActorName::handler_name")` when the pair was previously registered
-/// via `register_handler_name`, or `None` if not found.
-pub fn lookup_handler_name(dispatch_fn: Option<HewDispatchFn>, msg_type: i32) -> Option<String> {
-    let key = dispatch_fn.map_or(0, |f| f as usize);
-    if key == 0 {
-        return None;
-    }
-    HANDLER_NAME_REGISTRY.access(|guard| {
-        guard
-            .as_ref()
-            .and_then(|m| m.get(&(key, msg_type)).cloned())
-    })
 }
 
 /// Look up the dispatch function pointer (as `usize`) for a live actor by its ID.
@@ -296,8 +280,6 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
                 "runnable"
             } else if state_int == HewActorState::Running as i32 {
                 "running"
-            } else if state_int == HewActorState::Blocked as i32 {
-                "blocked"
             } else if state_int == HewActorState::Stopping as i32 {
                 "stopping"
             } else if state_int == HewActorState::Crashed as i32 {
@@ -546,6 +528,79 @@ mod tests {
         unsafe { unregister(actor_ptr) };
     }
 
+    /// Removal-of-Blocked invariant: cycling an actor through every valid
+    /// state (and through the stale legacy discriminant `3`) must never
+    /// surface `"blocked"` on a snapshot.  Discriminant `3` falls through to
+    /// the catch-all `"unknown"` label — the variant has been excised from
+    /// the runtime enum and the registry's stringifier no longer recognises
+    /// it as a real state.
+    #[test]
+    fn snapshot_never_reports_blocked_state() {
+        use std::sync::atomic::Ordering;
+
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        clear_dispatch_registry();
+        REGISTRY.access(|reg| {
+            if let Some(m) = reg.as_mut() {
+                m.clear();
+            }
+        });
+
+        register_dispatch_type(Some(fake_dispatch_e), "CooperativeActor");
+
+        // SAFETY: zero-init of a #[repr(C)] HewActor is sound — every atomic
+        // field has a valid zero pattern and every pointer field is null.
+        let mut actor: Box<HewActor> = unsafe { Box::new(std::mem::zeroed()) };
+        actor.id = 0x1234_5678_9abc_def0;
+        actor.pid = 0x1234_5678_9abc_def0;
+        actor.dispatch = Some(fake_dispatch_e);
+
+        let actor_ptr: *mut HewActor = &raw mut *actor;
+        // SAFETY: actor_ptr is valid for the duration of this test.
+        unsafe { register(actor_ptr) };
+
+        // Every state the runtime is allowed to transition into, plus the
+        // stale legacy `3` discriminant that used to mean Blocked.  The
+        // probe asserts that none of these states stringify to "blocked".
+        let states: &[(i32, &str)] = &[
+            (HewActorState::Idle as i32, "idle"),
+            (HewActorState::Runnable as i32, "runnable"),
+            (HewActorState::Running as i32, "running"),
+            (HewActorState::Stopping as i32, "stopping"),
+            (HewActorState::Crashed as i32, "crashed"),
+            (HewActorState::Stopped as i32, "stopped"),
+            // Legacy Blocked discriminant — must now be "unknown".
+            (3, "unknown"),
+            // Out-of-range value — catch-all.
+            (999, "unknown"),
+        ];
+
+        for (raw, expected_label) in states {
+            actor.actor_state.store(*raw, Ordering::Relaxed);
+
+            let snaps = snapshot_all();
+            let snap = snaps
+                .iter()
+                .find(|s| s.id == actor.id)
+                .expect("registered actor must appear in snapshot");
+
+            assert_ne!(
+                snap.state, "blocked",
+                "snapshot must never report \"blocked\" (raw state={raw})"
+            );
+            assert_eq!(
+                snap.state, *expected_label,
+                "snapshot label for raw state {raw} should be {expected_label}"
+            );
+        }
+
+        // SAFETY: actor_ptr is still valid; actor has not been freed.
+        unsafe { unregister(actor_ptr) };
+    }
+
     unsafe extern "C-unwind" fn fake_dispatch_handler(
         _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
@@ -568,7 +623,7 @@ mod tests {
             "Counter::on_increment".to_owned(),
         );
         let ptr = fake_dispatch_handler as *const () as usize;
-        let result = lookup_handler_name_by_ptr(ptr, 7);
+        let result = handler_name_by_ptr(ptr, 7);
         assert_eq!(
             result.as_deref(),
             Some("Counter::on_increment"),
@@ -579,7 +634,7 @@ mod tests {
     /// Unknown (`dispatch_ptr`, `msg_type`) pair returns None.
     #[test]
     fn handler_name_unknown_pair_returns_none() {
-        let result = lookup_handler_name_by_ptr(0xdead_beef_cafe_babe, 42);
+        let result = handler_name_by_ptr(0xdead_beef_cafe_babe, 42);
         assert!(result.is_none(), "unknown pair must return None");
     }
 
@@ -593,7 +648,7 @@ mod tests {
         register_handler_name(Some(fake_dispatch_handler), 99, "Actor::first".to_owned());
         register_handler_name(Some(fake_dispatch_handler), 99, "Actor::second".to_owned());
         let ptr = fake_dispatch_handler as *const () as usize;
-        let result = lookup_handler_name_by_ptr(ptr, 99);
+        let result = handler_name_by_ptr(ptr, 99);
         // First registration wins.
         assert_eq!(result.as_deref(), Some("Actor::first"));
     }
@@ -608,12 +663,12 @@ mod tests {
         register_handler_name(Some(fake_dispatch_handler), 55, "MyType::on_msg".to_owned());
         let ptr = fake_dispatch_handler as *const () as usize;
         assert!(
-            lookup_handler_name_by_ptr(ptr, 55).is_some(),
+            handler_name_by_ptr(ptr, 55).is_some(),
             "handler name must be present before clear"
         );
         clear_dispatch_registry();
         assert!(
-            lookup_handler_name_by_ptr(ptr, 55).is_none(),
+            handler_name_by_ptr(ptr, 55).is_none(),
             "handler name must be absent after clear_dispatch_registry"
         );
     }

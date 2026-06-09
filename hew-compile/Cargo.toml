@@ -13,7 +13,6 @@ categories = ["compilers"]
 [dependencies]
 hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }
-hew-serialize = { path = "../hew-serialize" }
 hew-types = { path = "../hew-types" }
 serde.workspace = true
 toml.workspace = true

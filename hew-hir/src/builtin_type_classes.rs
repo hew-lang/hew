@@ -1,4 +1,3 @@
-use hew_parser::ast::ResourceMarker as AstResourceMarker;
 use hew_types::builtin_type::{
     BuiltinHandleFamily, BuiltinType, BuiltinTypeMarker, BuiltinTypeRole as BuiltinRegistrationRole,
 };
@@ -182,10 +181,7 @@ pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
         type_classes.insert(
             registration.name().to_string(),
             (
-                registration
-                    .marker
-                    .to_ast_marker()
-                    .unwrap_or(AstResourceMarker::None),
+                registration.marker,
                 registration.close_method.map(str::to_string),
             ),
         );
@@ -205,7 +201,7 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("Duplex"),
-            Some(&(AstResourceMarker::Resource, Some("close".to_string())))
+            Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }
 
@@ -215,7 +211,7 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("Sink"),
-            Some(&(AstResourceMarker::Resource, Some("close".to_string())))
+            Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }
 
@@ -225,7 +221,7 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("Stream"),
-            Some(&(AstResourceMarker::Resource, Some("close".to_string())))
+            Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }
 
@@ -235,7 +231,7 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("LambdaActorHandle"),
-            Some(&(AstResourceMarker::Resource, Some("close".to_string())))
+            Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }
 
@@ -245,7 +241,7 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("SendHalf"),
-            Some(&(AstResourceMarker::Resource, Some("close".to_string())))
+            Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }
 
@@ -255,7 +251,7 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("RecvHalf"),
-            Some(&(AstResourceMarker::Resource, Some("close".to_string())))
+            Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }
 
@@ -313,7 +309,7 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("CrashAction"),
-            Some(&(AstResourceMarker::None, None)),
+            Some(&(ResourceMarker::None, None)),
             "CrashAction must be in type_classes so push_unknown_type_diagnostics skips it"
         );
     }

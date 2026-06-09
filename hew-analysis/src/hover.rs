@@ -1237,6 +1237,7 @@ mod tests {
         fn_sigs.insert(name.to_string(), sig);
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -1266,6 +1267,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         }
     }
 
@@ -1506,6 +1508,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -1535,6 +1538,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         };
         let offset = source.find("Point").unwrap();
         let result = hover(source, &pr, Some(&tc), offset);
@@ -1597,6 +1601,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -1626,6 +1631,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
         assert!(result.is_some(), "should find hover via expr_types");
@@ -1648,6 +1654,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -1677,6 +1684,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
@@ -1753,6 +1761,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -1782,6 +1791,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), use_offset).unwrap();
@@ -1908,6 +1918,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -1937,6 +1948,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset).unwrap();
         // Goes through ResolvedTy::from_ty(materialize_literal_defaults)

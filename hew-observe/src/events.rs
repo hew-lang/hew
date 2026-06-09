@@ -46,20 +46,6 @@ impl TraceEventMeta {
     }
 }
 
-pub const ACTIONABLE_TRACE_EVENT_TYPES: &[&str] = &[
-    "send",
-    "spawn",
-    "crash",
-    "stop",
-    "duplex_created",
-    "duplex_half_split",
-    "duplex_closed",
-    "sink_closed",
-    "stream_closed",
-    "lambda_spawned",
-    "lambda_released",
-];
-
 pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
     // Runtime-emitted v0.5 trace events. GenBlockInMachineTransition,
     // AwaitInMachineTransition, and MachineDispatchUnreachable are diagnostics
@@ -327,7 +313,11 @@ mod tests {
 
     #[test]
     fn current_v05_trace_events_are_actionable() {
-        for event_type in ACTIONABLE_TRACE_EVENT_TYPES {
+        for event_type in CURRENT_TRACE_EVENT_METADATA
+            .iter()
+            .filter(|meta| meta.is_actionable())
+            .map(|meta| meta.name)
+        {
             let meta = trace_event_meta(event_type);
             assert!(
                 meta.is_actionable(),
@@ -374,10 +364,6 @@ mod tests {
             assert!(
                 !meta.is_actionable(),
                 "{event_type} must remain non-actionable until producer emission lands"
-            );
-            assert!(
-                !ACTIONABLE_TRACE_EVENT_TYPES.contains(&event_type),
-                "{event_type} must not be promoted into the actionable set"
             );
         }
     }

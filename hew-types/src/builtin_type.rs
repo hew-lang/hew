@@ -325,11 +325,6 @@ impl BuiltinType {
     }
 
     #[must_use]
-    pub const fn is_actor_handle(self) -> bool {
-        matches!(self, Self::ActorRef | Self::Actor | Self::LocalPid)
-    }
-
-    #[must_use]
     pub const fn is_substrate_handle(self) -> bool {
         matches!(
             self,

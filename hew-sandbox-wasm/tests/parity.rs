@@ -12,6 +12,7 @@ const HEW_SEED: &str = "42";
 const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "hello_world",
     "fibonacci",
+    "pattern_matching",
     "counter_actor",
     "actor_pipeline",
     "supervisor",
@@ -27,7 +28,12 @@ const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
         test_name: "fibonacci",
         source_rel: "examples/playground/basics/fibonacci.hew",
-        accepted_divergences: &[AcceptedDivergence::ReservedControlFlowLowering],
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "pattern_matching",
+        source_rel: "examples/playground/types/pattern_matching.hew",
+        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "counter_actor",
@@ -35,7 +41,6 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[
             AcceptedDivergence::ReservedRuntimeFeatureLowering,
             AcceptedDivergence::UnknownActorMethodSymbol,
-            AcceptedDivergence::UnknownProfileSymbol,
         ],
     },
     ParityCase {
@@ -71,8 +76,6 @@ struct ParityCase {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum AcceptedDivergence {
-    #[doc = "Catalog: docs/sandbox-vm-divergences.md#reserved-control-flow-lowering"]
-    ReservedControlFlowLowering,
     #[doc = "Catalog: docs/sandbox-vm-divergences.md#reserved-runtime-feature-lowering"]
     ReservedRuntimeFeatureLowering,
     #[doc = "Catalog: docs/sandbox-vm-divergences.md#unknown-actor-method-symbol"]
@@ -84,7 +87,6 @@ enum AcceptedDivergence {
 impl AcceptedDivergence {
     fn diagnostic_kind(self) -> &'static str {
         match self {
-            Self::ReservedControlFlowLowering => "reserved_control_flow",
             Self::ReservedRuntimeFeatureLowering => "reserved_runtime_feature",
             Self::UnknownActorMethodSymbol => "unknown_method_symbol",
             Self::UnknownProfileSymbol => "unknown_symbol",
@@ -93,9 +95,6 @@ impl AcceptedDivergence {
 
     fn reason(self) -> &'static str {
         match self {
-            Self::ReservedControlFlowLowering => {
-                "playground source uses loop/for lowering not admitted by the sandbox profile yet"
-            }
             Self::ReservedRuntimeFeatureLowering => {
                 "playground source uses actor, supervisor, machine, await, or spawn runtime features reserved for a later sandbox milestone"
             }

@@ -199,6 +199,7 @@ mod tests {
         fn_sigs.insert(name.to_string(), sig);
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -228,6 +229,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         }
     }
 
@@ -357,6 +359,7 @@ mod tests {
 
         let tc = TypeCheckOutput {
             expr_types,
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -386,6 +389,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -439,6 +443,7 @@ mod tests {
 
         let tc = TypeCheckOutput {
             expr_types,
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -468,6 +473,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());

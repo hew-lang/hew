@@ -179,8 +179,15 @@ impl Checker {
                                 // Parallel to the TypeDecl arm: seed the machine's
                                 // name so orphan-rule and locally_non_generic checks
                                 // inside the body pass see it as locally-defined.
+                                // Also seed the synthesised `<Name>Event` companion
+                                // type so event-typed parameters and bare event
+                                // ctors in imported machine modules resolve as
+                                // locally-non-generic.
                                 self.local_type_defs.insert(md.name.clone());
                                 self.source_type_defs.insert(md.name.clone());
+                                let event_type_name = format!("{}Event", md.name);
+                                self.local_type_defs.insert(event_type_name.clone());
+                                self.source_type_defs.insert(event_type_name);
                             }
                             Item::Trait(tr) => {
                                 self.local_trait_defs.insert(tr.name.clone());
@@ -387,6 +394,7 @@ impl Checker {
 
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
+            is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
             method_call_consumes_receiver: std::mem::take(&mut self.method_call_consumes_receiver),
             actor_send_aliasing: std::mem::take(&mut self.actor_send_aliasing),
@@ -430,6 +438,7 @@ impl Checker {
                     (k, arm)
                 })
                 .collect(),
+            lang_items: std::mem::take(&mut self.lang_items),
         };
 
         // Detect actor reference cycles and emit warnings.

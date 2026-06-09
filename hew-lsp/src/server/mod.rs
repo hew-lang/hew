@@ -6038,6 +6038,64 @@ machine Traffic {
         );
     }
 
+    fn assert_no_hard_type_errors(fixture_name: &str, doc: &DocumentState) {
+        let Some(type_output) = doc.type_output.as_ref() else {
+            panic!("missing type output for {fixture_name}");
+        };
+        let hard_errors: Vec<_> = type_output
+            .errors
+            .iter()
+            .filter(|error| error.severity == hew_types::error::Severity::Error)
+            .collect();
+        assert!(
+            hard_errors.is_empty(),
+            "hard type errors in {fixture_name}: {hard_errors:?}"
+        );
+    }
+
+    fn assert_v05_completion_labels(
+        fixture_name: &str,
+        source: &str,
+        offset: usize,
+        expected_labels: &[&str],
+    ) {
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors(fixture_name, &doc);
+        let items: Vec<_> = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        )
+        .into_iter()
+        .map(to_lsp_completion)
+        .collect();
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        for expected in expected_labels {
+            assert!(
+                labels.contains(expected),
+                "completion for {fixture_name} missing {expected}; got {labels:?}"
+            );
+        }
+    }
+
+    fn assert_v05_hover_contains(fixture_name: &str, source: &str, offset: usize, expected: &str) {
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors(fixture_name, &doc);
+        let hover = hew_analysis::hover::hover(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        )
+        .unwrap_or_else(|| panic!("hover missing in {fixture_name} at offset {offset}"));
+        assert!(
+            hover.contents.contains(expected),
+            "hover for {fixture_name} should contain {expected:?}, got: {}",
+            hover.contents
+        );
+    }
+
     fn assert_lsp_rejection_diagnostic(
         fixture_name: &str,
         source: &str,
@@ -6160,11 +6218,87 @@ machine Traffic {
 
     #[test]
     fn v05_is_operator_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_is_operator.hew");
         assert_v05_lsp_fixture(
             "v05_is_operator",
-            include_str!("../../tests/fixtures/v05_is_operator.hew"),
+            source,
             "is_probe",
             &["Payload", "is_probe", "is_operator"],
+        );
+    }
+
+    #[test]
+    fn v05_is_operator_rhs_type_pattern_lsp_surfaces_are_correct() {
+        let source = include_str!("../../tests/fixtures/v05_is_operator.hew");
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors("v05_is_operator", &doc);
+
+        let uri = Url::parse(&v05_fixture_path("v05_is_operator")).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        let published = refresh_document_and_dependents(&uri, source, &documents);
+        let diagnostics = published
+            .iter()
+            .find(|(published_uri, _)| published_uri == &uri)
+            .map_or(&[] as &[Diagnostic], |(_, diagnostics)| {
+                diagnostics.as_slice()
+            });
+        assert!(
+            !diagnostics.iter().any(|diagnostic| {
+                diagnostic.source.as_deref() == Some("hew-types")
+                    && diagnostic
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("kind"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("UndefinedVariable")
+                    && diagnostic.message.contains("Payload")
+            }),
+            "`is` operator RHS type pattern should not resolve as a value variable; got {diagnostics:?}"
+        );
+
+        let rhs_offset = source.find("is Payload").expect("is type pattern") + "is ".len();
+        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            uri.as_str(),
+            rhs_offset,
+        )
+        .expect("RHS type pattern should resolve");
+        let def = resolution
+            .def_location()
+            .expect("RHS type pattern should jump to type declaration");
+        assert!(
+            def.1.start < source.find("fn is_probe").expect("probe fn"),
+            "`is` RHS definition should point at Payload type declaration, got {def:?}"
+        );
+
+        let semantic_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
+        let payload_token = semantic_tokens
+            .iter()
+            .find(|token| token.start == rhs_offset)
+            .expect("Payload RHS should produce a semantic token");
+        assert_eq!(
+            payload_token.token_type,
+            hew_analysis::token_types::TYPE,
+            "`is` RHS Payload should be classified as a type token"
+        );
+
+        let completion_offset = rhs_offset;
+        let completions = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            completion_offset,
+        );
+        let labels: Vec<&str> = completions.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Payload"),
+            "`is` RHS completion should include Payload type, got {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"is_probe"),
+            "`is` RHS completion should be type-pattern focused, got {labels:?}"
         );
     }
 
@@ -6179,12 +6313,228 @@ machine Traffic {
     }
 
     #[test]
+    fn v05_extern_unsafe_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_extern_unsafe",
+            include_str!("../../tests/fixtures/v05_extern_unsafe.hew"),
+            "extern_unsafe_probe",
+            &["extern \"C\"", "raw_number", "extern_unsafe_probe"],
+        );
+    }
+
+    #[test]
+    fn v05_extern_unsafe_resolves_extern_call_definition() {
+        let source = include_str!("../../tests/fixtures/v05_extern_unsafe.hew");
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors("v05_extern_unsafe", &doc);
+        let call_offset = source.rfind("raw_number").expect("raw_number call");
+        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            &v05_fixture_path("v05_extern_unsafe"),
+            call_offset,
+        )
+        .expect("extern raw_number call should resolve");
+        let def = resolution
+            .def_location()
+            .expect("extern raw_number should have a definition");
+        assert!(
+            def.1.start < source.find("fn extern_unsafe_probe").expect("probe fn"),
+            "extern definition should point at the extern declaration, got {def:?}"
+        );
+    }
+
+    #[test]
+    fn v05_string_methods_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_string_methods.hew");
+        assert_v05_lsp_fixture(
+            "v05_string_methods",
+            source,
+            "string_methods_probe",
+            &["string_methods_probe"],
+        );
+        let hover_offset = source.find("text.slice").expect("slice call");
+        assert_v05_hover_contains("v05_string_methods", source, hover_offset, "string");
+    }
+
+    #[test]
+    fn v05_string_methods_completion_includes_full_l2_surface() {
+        let source = include_str!("../../tests/fixtures/v05_string_methods.hew");
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors("v05_string_methods", &doc);
+        let offset = source.find("text.clone").expect("text.clone") + "text.".len();
+        let items = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        let expected = [
+            "slice",
+            "replace",
+            "find",
+            "index_of",
+            "split",
+            "lines",
+            "repeat",
+            "char_at",
+            "chars",
+            "is_digit",
+            "is_alpha",
+            "is_alphanumeric",
+            "clone",
+        ];
+        let missing: Vec<_> = expected
+            .iter()
+            .copied()
+            .filter(|label| !labels.contains(label))
+            .collect();
+        assert_eq!(
+            missing.as_slice(),
+            &[] as &[&str],
+            "string method completion should include all L2-wired methods; missing {missing:?}, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn v05_trait_bounds_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_trait_bounds",
+            include_str!("../../tests/fixtures/v05_trait_bounds.hew"),
+            "trait_bounds_probe",
+            &[
+                "Describable",
+                "describe",
+                "Label",
+                "trait_bounds_probe",
+                "trait_bounds_use",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_impl_where_clause_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_impl_where_clause",
+            include_str!("../../tests/fixtures/v05_impl_where_clause.hew"),
+            "impl_where_clause_probe",
+            &["Holder", "impl", "show", "impl_where_clause_probe"],
+        );
+    }
+
+    #[test]
+    fn v05_record_decl_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_record_decl.hew");
+        assert_v05_lsp_fixture(
+            "v05_record_decl",
+            source,
+            "record_decl_probe",
+            &["AutoRecord", "record_decl_probe"],
+        );
+        let offset =
+            source.find("AutoRecord { count").expect("record literal") + "AutoRecord { ".len();
+        assert_v05_completion_labels("v05_record_decl", source, offset, &["count", "name"]);
+    }
+
+    #[test]
+    fn v05_while_let_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_while_let.hew");
+        assert_v05_lsp_fixture(
+            "v05_while_let",
+            source,
+            "while_let_probe",
+            &["while_let_probe"],
+        );
+        let offset = source.find("total + value").expect("while-let value") + "total + ".len();
+        assert_v05_hover_contains("v05_while_let", source, offset, "value: i64");
+    }
+
+    #[test]
     fn v05_machine_generics_lsp_coverage() {
         assert_v05_lsp_fixture(
             "v05_machine_generics",
             include_str!("../../tests/fixtures/v05_machine_generics.hew"),
             "machine_generics_probe",
             &["Boxed", "Store", "Idle", "machine_generics_probe"],
+        );
+    }
+
+    #[test]
+    fn v05_machine_substrate_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_machine_substrate.hew");
+        assert_v05_lsp_fixture(
+            "v05_machine_substrate",
+            source,
+            "machine_substrate_probe",
+            &[
+                "Resource",
+                "close",
+                "FileHandle",
+                "Lifecycle",
+                "Idle",
+                "Active",
+                "Start",
+                "Stop",
+                "Started",
+                "machine_substrate_probe",
+            ],
+        );
+        let offset = source
+            .find("lifecycle.state_name")
+            .expect("state_name call")
+            + "lifecycle.".len();
+        assert_v05_completion_labels(
+            "v05_machine_substrate",
+            source,
+            offset,
+            &["step", "state_name"],
+        );
+    }
+
+    #[test]
+    fn v05_cross_module_machine_ctor_lsp_coverage() {
+        let main_source = include_str!("../../tests/fixtures/v05_cross_module_machine_main.hew");
+        let defs_source = include_str!("../../tests/fixtures/v05_cross_module_machine_defs.hew");
+        let main_uri = make_test_uri("/v05/cross_module/main.hew");
+        let defs_uri = make_test_uri("/v05/cross_module/machines/toggle.hew");
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        refresh_document_and_dependents(&defs_uri, defs_source, &documents);
+        refresh_document_and_dependents(&main_uri, main_source, &documents);
+
+        let main_doc = documents
+            .get(&main_uri)
+            .expect("main fixture should be analyzed");
+        assert_no_hard_type_errors("v05_cross_module_machine_main", &main_doc);
+        let type_output = main_doc
+            .type_output
+            .as_ref()
+            .expect("cross-module machine fixture should be type checked");
+        assert!(
+            type_output.type_defs.contains_key("Toggle"),
+            "imported machine type should be visible in type defs"
+        );
+        assert!(
+            type_output.type_defs.contains_key("ToggleEvent"),
+            "imported machine event type should be visible in type defs"
+        );
+
+        let state_name_offset = main_source
+            .find("toggle.state_name")
+            .expect("state_name call")
+            + "toggle.".len();
+        let items = hew_analysis::completions::complete(
+            &main_doc.source,
+            &main_doc.parse_result,
+            main_doc.type_output.as_ref(),
+            state_name_offset,
+        );
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels.contains(&"state_name"),
+            "cross-module machine completion should include state_name, got {labels:?}"
         );
     }
 
@@ -6324,6 +6674,71 @@ machine Traffic {
             include_str!("../../tests/fixtures/v05_async_await.hew"),
             "async_probe",
             &["async_value", "async_probe", "async_await"],
+        );
+    }
+
+    #[test]
+    fn v05_generators_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_generators",
+            include_str!("../../tests/fixtures/v05_generators.hew"),
+            "generator_probe",
+            &["generator_probe", "generators"],
+        );
+    }
+
+    #[test]
+    fn v05_closures_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_closures",
+            include_str!("../../tests/fixtures/v05_closures.hew"),
+            "closure_probe",
+            &["closure_probe", "closures"],
+        );
+    }
+
+    #[test]
+    fn v05_result_option_ctors_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_result_option_ctors",
+            include_str!("../../tests/fixtures/v05_result_option_ctors.hew"),
+            "result_option_probe",
+            &[
+                "Result",
+                "Ok",
+                "Err",
+                "Option",
+                "Some",
+                "None",
+                "result_option_probe",
+                "result_option_ctors",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_match_enum_variant_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_match_enum_variant",
+            include_str!("../../tests/fixtures/v05_match_enum_variant.hew"),
+            "match_enum_probe",
+            &[
+                "Shape",
+                "Circle",
+                "Square",
+                "match_enum_probe",
+                "match_enum_variant",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_display_fstring_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_display_fstring",
+            include_str!("../../tests/fixtures/v05_display_fstring.hew"),
+            "display_probe",
+            &["Point", "display_probe", "display_fstring"],
         );
     }
 }

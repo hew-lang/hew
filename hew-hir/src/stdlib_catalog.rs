@@ -28,6 +28,13 @@ pub enum BuiltinLinkage {
     RuntimeFfiShim {
         symbol: &'static str,
     },
+    // NOTE: `PrintIntercept` and `ToStringShim` below are retained as transitional
+    // linkage variants. The L3 Display + f-strings work routes interpolants
+    // through the lang-item registry and user `impl Display for T` methods,
+    // making these shims redundant at the surface level — but their actual
+    // retirement (and the print-macro rewrites that depend on it) belongs to
+    // the Phase-2/3 codegen-rs lane (#340γ follow-on). Deletion is intentionally
+    // deferred to that work to keep this revision boundary surgical.
     PrintIntercept {
         runtime_symbol: &'static str,
         kind: PrintKind,
@@ -41,6 +48,23 @@ pub enum BuiltinLinkage {
     },
     CompilerIntrinsic {
         intrinsic: &'static str,
+    },
+    /// `Node::register<T>(name, pid)` — register an actor by bare PID.
+    ///
+    /// Per registry R81 (2026-05-23), `LocalPid<T>` lowers to a `u64` at
+    /// the C-ABI boundary, not a `*mut HewActor`. Codegen must therefore
+    /// synthesise a two-step call sequence:
+    /// 1. `hew_actor_pid(actor_ptr: ptr) -> u64` — extract the numeric PID
+    ///    from the `LocalPid<T>` alloca (which is a `ptr` in LLVM).
+    /// 2. `hew_node_api_register_by_pid(name: ptr, pid: u64) -> i32` — the
+    ///    actual C-ABI registration call.
+    ///
+    /// `RuntimeFfiShim` cannot be used here because the LLVM call sequence
+    /// requires an intermediate PID-extraction step that the generic
+    /// `Terminator::Call` handler cannot express.
+    NodeRegisterByPid {
+        register_symbol: &'static str,
+        pid_accessor: &'static str,
     },
 }
 
@@ -109,6 +133,10 @@ const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
 const BOOL_BOOL: &[BuiltinTy] = &[BuiltinTy::Bool, BuiltinTy::Bool];
 const STRING_STRING: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::String];
+const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
+const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
+const STRING_STRING_STRING: &[BuiltinTy] =
+    &[BuiltinTy::String, BuiltinTy::String, BuiltinTy::String];
 const F64_F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64, BuiltinTy::F64];
 const EMPTY: &[BuiltinTy] = &[];
 
@@ -254,6 +282,17 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_clone",
         },
     ),
+    // Class A: string concatenation used by f-string interpolation lowering
+    // to join Display::fmt segments.  Resolves by exact name (no overload set).
+    direct(
+        "string_concat",
+        BuiltinClass::ClassA,
+        STRING_STRING,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_concat",
+        },
+    ),
     // Class A: monomorphic assertion and len overloads.
     assert_entry!("assert_eq_i64", "assert_eq", I64_I64, "hew_assert_eq_i64"),
     assert_entry!(
@@ -338,6 +377,33 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_is_empty",
         },
     ),
+    overload(
+        "is_digit_str",
+        "is_digit",
+        STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_is_digit",
+        },
+    ),
+    overload(
+        "is_alpha_str",
+        "is_alpha",
+        STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_is_alpha",
+        },
+    ),
+    overload(
+        "is_alphanumeric_str",
+        "is_alphanumeric",
+        STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_is_alphanumeric",
+        },
+    ),
     // Class A: string transform overloads (return String via the C-string-clone path).
     overload(
         "trim_str",
@@ -364,6 +430,96 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::String,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_string_to_uppercase",
+        },
+    ),
+    overload(
+        "clone_str",
+        "clone",
+        STRING,
+        BuiltinTy::String,
+        BuiltinLinkage::StringCloneShim {
+            symbol: "hew_string_clone",
+        },
+    ),
+    overload(
+        "replace_str",
+        "replace",
+        STRING_STRING_STRING,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_replace",
+        },
+    ),
+    overload(
+        "split_str",
+        "split",
+        STRING_STRING,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_split",
+        },
+    ),
+    overload(
+        "lines_str",
+        "lines",
+        STRING,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_lines",
+        },
+    ),
+    overload(
+        "find_str",
+        "find",
+        STRING_STRING,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_find",
+        },
+    ),
+    overload(
+        "index_of_str",
+        "index_of",
+        STRING_STRING,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_index_of_start",
+        },
+    ),
+    overload(
+        "slice_str",
+        "slice",
+        STRING_I64_I64,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_slice",
+        },
+    ),
+    overload(
+        "repeat_str",
+        "repeat",
+        STRING_I64,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_repeat",
+        },
+    ),
+    overload(
+        "char_at_str",
+        "char_at",
+        STRING_I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_char_at",
+        },
+    ),
+    overload(
+        "chars_str",
+        "chars",
+        STRING,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_chars",
         },
     ),
     // Class B: math module intrinsics.
@@ -609,6 +765,84 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::I64,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_random_choices_vec",
+        },
+    ),
+    // Class B: Node namespace — distributed-node lifecycle builtins (A7 S1).
+    //
+    // Each entry maps the Hew `Node::X` call form to its `hew_node_api_X` C
+    // extern in `hew-runtime/src/hew_node.rs`.  The C functions return `c_int`
+    // (0 = success, -1 = error) but are declared `Unit` here so HIR/MIR treat
+    // them as void-returning and the call is emitted without a destination slot.
+    // On x86-64 and arm64 the callee's return value sits in rax/x0 and is
+    // harmlessly discarded by the caller — this is the standard C idiom for
+    // ignoring a return value.  Error surfacing is deferred to a follow-on lane.
+    direct(
+        "Node::set_transport",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_set_transport",
+        },
+    ),
+    direct(
+        "Node::start",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_start",
+        },
+    ),
+    direct(
+        "Node::connect",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_connect",
+        },
+    ),
+    direct(
+        "Node::shutdown",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_shutdown",
+        },
+    ),
+    // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
+    //
+    // Per R81, `LocalPid<T>` lowers to a bare `u64` PID at the C-ABI
+    // boundary.  The catalog param list `[String, U64]` is a placeholder
+    // for HIR/MIR name-resolution purposes — codegen handles this linkage
+    // variant specially and does not use the generic `declare_catalog_ffi`
+    // path (which would construct the wrong LLVM function type).
+    direct(
+        "Node::register",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::String, BuiltinTy::U64],
+        BuiltinTy::I32,
+        BuiltinLinkage::NodeRegisterByPid {
+            register_symbol: "hew_node_api_register_by_pid",
+            pid_accessor: "hew_actor_pid",
+        },
+    ),
+    // `RemotePid::from_raw(node_id: u64, serial: u64) -> RemotePid<T>`
+    //
+    // Constructs a `RemotePid<T>` from a raw (node_id, serial) pair.  The
+    // `RemotePid<T>` type lowers to a bare `u64` PID — identical encoding to
+    // `LocalPid<T>` — so the return type is `U64` at the C-ABI boundary.
+    // The runtime validates that `node_id` is non-zero and fits in u16 (the
+    // packed encoding constraint).  See `hew-runtime/src/hew_node.rs`.
+    direct(
+        "RemotePid::from_raw",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64, BuiltinTy::U64],
+        BuiltinTy::U64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_remote_pid_from_raw",
         },
     ),
 ];

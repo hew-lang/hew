@@ -46,16 +46,14 @@ use rand::rng;
 use rand::RngExt;
 
 use crate::cluster::HewCluster;
+use crate::envelope::{
+    encode_envelope_frame_from_raw_parts, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, WIRE_VERSION,
+};
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
 use crate::util::MutexExt;
-use crate::wire::{
-    hew_wire_buf_free, hew_wire_buf_init, hew_wire_buf_init_read, hew_wire_decode_envelope,
-    hew_wire_encode_envelope, HewWireBuf, HewWireEnvelope, HBF_FLAG_COMPRESSED, HBF_MAGIC,
-    HBF_VERSION, HEW_WIRE_FIXED32, HEW_WIRE_LENGTH_DELIMITED, HEW_WIRE_VARINT,
-};
 
 // ── Connection states ──────────────────────────────────────────────────
 
@@ -664,12 +662,10 @@ fn local_schema_hash() -> u32 {
     }
 
     let mut hash = FNV1A32_OFFSET_BASIS;
-    hash = fnv1a32_update(hash, &HBF_MAGIC);
-    hash = fnv1a32_update(hash, &[HBF_VERSION]);
-    hash = fnv1a32_update(hash, &[HBF_FLAG_COMPRESSED]);
-    hash = fnv1a32_update(hash, &HEW_WIRE_VARINT.to_le_bytes());
-    hash = fnv1a32_update(hash, &HEW_WIRE_LENGTH_DELIMITED.to_le_bytes());
-    fnv1a32_update(hash, &HEW_WIRE_FIXED32.to_le_bytes())
+    hash = fnv1a32_update(hash, b"CBOR-ENVELOPE");
+    hash = fnv1a32_update(hash, &[WIRE_VERSION]);
+    hash = fnv1a32_update(hash, &[FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE]);
+    fnv1a32_update(hash, &[1, 2, 3, 4, 5, 6, 7, 8])
 }
 
 fn local_handshake(
@@ -863,31 +859,24 @@ unsafe fn encode_envelope(
     payload: *mut u8,
     payload_len: usize,
 ) -> Option<Vec<u8>> {
-    #[expect(clippy::cast_possible_truncation, reason = "payload bounded by caller")]
-    let env = HewWireEnvelope {
-        target_actor_id,
-        source_actor_id: 0,
-        msg_type,
-        payload_size: payload_len as u32,
-        payload,
-        request_id: 0,
-        source_node_id: 0,
-    };
-    // SAFETY: zeroed is valid for HewWireBuf.
-    let mut wire_buf: HewWireBuf = unsafe { std::mem::zeroed() };
-    // SAFETY: wire_buf is a valid stack allocation.
-    unsafe { hew_wire_buf_init(&raw mut wire_buf) };
-    // SAFETY: pointers are valid for the duration of the call.
-    if unsafe { hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0 {
-        // SAFETY: wire_buf was initialised above.
-        unsafe { hew_wire_buf_free(&raw mut wire_buf) };
-        return None;
+    // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
+    match unsafe {
+        encode_envelope_frame_from_raw_parts(
+            target_actor_id,
+            0,
+            msg_type,
+            payload.cast_const(),
+            payload_len,
+            0,
+            0,
+        )
+    } {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            set_last_error(format!("hew_connmgr_send: {err}"));
+            None
+        }
     }
-    // SAFETY: wire_buf.data points to wire_buf.len readable bytes until free.
-    let bytes = unsafe { std::slice::from_raw_parts(wire_buf.data, wire_buf.len) }.to_vec();
-    // SAFETY: wire_buf was initialised above.
-    unsafe { hew_wire_buf_free(&raw mut wire_buf) };
-    Some(bytes)
 }
 
 #[cfg(feature = "encryption")]
@@ -1097,74 +1086,68 @@ fn reader_loop(
         let now = unsafe { crate::io_time::hew_now_ms() };
         last_activity.store(now, Ordering::Release);
 
-        // Decode envelope and route.
+        // Decode CBOR envelope and route.
         if let Some(router_fn) = router {
             // SAFETY: buf contains `read_len` valid bytes from recv.
             unsafe {
-                let mut wire_buf: HewWireBuf = std::mem::zeroed();
-                hew_wire_buf_init_read(&raw mut wire_buf, payload_ptr.cast(), payload_len);
+                let frame_bytes = std::slice::from_raw_parts(payload_ptr.cast_const(), payload_len);
+                let mut envelope = match crate::envelope::decode_envelope_frame(frame_bytes) {
+                    Ok(envelope) => envelope,
+                    Err(err) => {
+                        set_last_error(format!(
+                            "connection reader CBOR envelope decode failure: {err}"
+                        ));
+                        continue;
+                    }
+                };
 
-                let mut envelope: HewWireEnvelope = std::mem::zeroed();
-                let rc = hew_wire_decode_envelope(&raw mut wire_buf, &raw mut envelope);
-                if rc == 0 {
-                    // Reply envelopes (request_id > 0, source_node_id == 0) are
-                    // deposited directly into the reply routing table, bypassing
-                    // the normal inbound router.
-                    if envelope.request_id > 0 && envelope.source_node_id == 0 {
-                        if is_ask_rejection_reply(envelope.msg_type, peer_feature_flags) {
-                            let reason_payload =
-                                if envelope.payload_size > 0 && !envelope.payload.is_null() {
-                                    std::slice::from_raw_parts(
-                                        envelope.payload,
-                                        envelope.payload_size as usize,
-                                    )
-                                } else {
-                                    &[]
-                                };
-                            // Rejection reply: the remote node hit its inbound
-                            // ask path and sent an encoded AskError reason.
-                            // Mark the pending ask as failed so the originating
-                            // caller gets the precise remote rejection reason.
-                            //
-                            // The `supports_ask_rejection` guard ensures that
-                            // old nodes (which never send this sentinel) cannot
-                            // accidentally trigger this path even if they happen
-                            // to send a message with msg_type = 65535.
-                            crate::hew_node::fail_remote_reply(envelope.request_id, reason_payload);
-                        } else {
-                            let reply_payload =
-                                if envelope.payload_size > 0 && !envelope.payload.is_null() {
-                                    std::slice::from_raw_parts(
-                                        envelope.payload,
-                                        envelope.payload_size as usize,
-                                    )
-                                } else {
-                                    &[]
-                                };
-                            crate::hew_node::complete_remote_reply(
-                                envelope.request_id,
-                                reply_payload,
-                            );
-                        }
-                    } else {
-                        // I/O recv span: bracket the router call so the
-                        // mailbox enqueue captures the io_recv span as the
-                        // parent of the actor-dispatch span.
-                        // Fast path: `io_recv_span_begin` returns None when
-                        // tracing is disabled (a single atomic load).
-                        let saved_ctx = crate::tracing::io_recv_span_begin(conn_id);
-                        router_fn(
-                            envelope.target_actor_id,
-                            envelope.msg_type,
-                            envelope.payload,
-                            envelope.payload_size as usize,
+                // Reply envelopes (request_id > 0, source_node_id == 0) are
+                // deposited directly into the reply routing table, bypassing
+                // the normal inbound router.
+                if envelope.request_id > 0 && envelope.source_node_id == 0 {
+                    if is_ask_rejection_reply(envelope.msg_type, peer_feature_flags) {
+                        // Rejection reply: the remote node hit its inbound
+                        // ask path and sent an encoded AskError reason.
+                        // Mark the pending ask as failed so the originating
+                        // caller gets the precise remote rejection reason.
+                        //
+                        // The `supports_ask_rejection` guard ensures that
+                        // old nodes (which never send this sentinel) cannot
+                        // accidentally trigger this path even if they happen
+                        // to send a message with msg_type = 65535.
+                        crate::hew_node::fail_remote_reply(
                             envelope.request_id,
-                            envelope.source_node_id,
-                            mgr,
+                            envelope.payload.as_slice(),
                         );
-                        if let Some(saved) = saved_ctx {
-                            crate::tracing::io_recv_span_end(saved);
-                        }
+                    } else {
+                        crate::hew_node::complete_remote_reply(
+                            envelope.request_id,
+                            envelope.payload.as_slice(),
+                        );
+                    }
+                } else {
+                    // I/O recv span: bracket the router call so the
+                    // mailbox enqueue captures the io_recv span as the
+                    // parent of the actor-dispatch span.
+                    // Fast path: `io_recv_span_begin` returns None when
+                    // tracing is disabled (a single atomic load).
+                    let saved_ctx = crate::tracing::io_recv_span_begin(conn_id);
+                    let payload_ptr = if envelope.payload.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        envelope.payload.as_mut_ptr()
+                    };
+                    router_fn(
+                        envelope.target_actor_id,
+                        envelope.msg_type,
+                        payload_ptr,
+                        envelope.payload.len(),
+                        envelope.request_id,
+                        envelope.source_node_id,
+                        mgr,
+                    );
+                    if let Some(saved) = saved_ctx {
+                        crate::tracing::io_recv_span_end(saved);
                     }
                 }
             }
@@ -1470,7 +1453,10 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         {
             // QUIC provides TLS 1.3 encryption — skip Noise when using QUIC transport.
             // SAFETY: mgr.transport is valid while the connection manager is alive.
-            unsafe { crate::quic_transport::hew_transport_is_quic(mgr.transport) }
+            unsafe {
+                crate::quic_transport::hew_transport_is_quic(mgr.transport)
+                    || crate::quic_mesh::hew_transport_is_quic_mesh(mgr.transport)
+            }
         }
         #[cfg(not(feature = "quic"))]
         {

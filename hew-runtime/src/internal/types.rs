@@ -43,14 +43,19 @@ pub enum HewOverflowPolicy {
     Coalesce = 4,
 }
 
-/// Actor state (8-state CAS machine).
+/// Actor state CAS machine.
+///
+/// Discriminant `3` is intentionally unused: it was previously assigned to a
+/// `Blocked` variant that the v0.5 actor model never transitions into.  The
+/// gap is preserved so that any cached integer state value coming back from
+/// a stale profiler snapshot maps to the catch-all "unknown" label rather
+/// than silently aliasing onto a different state.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HewActorState {
     Idle = 0,
     Runnable = 1,
     Running = 2,
-    Blocked = 3,
     Stopping = 4,
     Crashed = 5,
     Stopped = 6,
@@ -107,39 +112,6 @@ pub enum HewTaskError {
     Cancelled = 1,
     Timeout = 2,
     Panic = 3,
-}
-
-/// Restart policy for supervised actors.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HewRestartPolicy {
-    Permanent = 0,
-    Transient = 1,
-    Temporary = 2,
-}
-
-/// Restart strategy for supervisors.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HewRestartStrategy {
-    /// Restart only the failed child.
-    OneForOne = 0,
-    /// Restart all children when any child fails.
-    OneForAll = 1,
-    /// Restart the failed child and all children started after it.
-    RestForOne = 2,
-}
-
-/// Circuit breaker states for supervised actors.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HewCircuitBreakerState {
-    /// Normal operation, restarts are allowed.
-    Closed = 0,
-    /// Circuit is open, restarts are blocked.
-    Open = 1,
-    /// Circuit allows one probe restart to test if the issue is resolved.
-    HalfOpen = 2,
 }
 
 /// Typed failure reason for an ask (local or remote).
@@ -329,6 +301,30 @@ pub enum ExitReason {
 }
 
 impl ExitReason {
+    /// Return the canonical slug name for this exit reason.
+    ///
+    /// Stable string identifiers consumed by the profiler/observe event
+    /// surface (`/api/crashes` JSON `trap_kind` field). The "Signal" variant
+    /// collapses every OS-signal exit into a single bucket; downstream
+    /// consumers can still inspect the raw `signal` field for the signal
+    /// number. "Normal" appears when an actor stops cleanly (no trap).
+    #[must_use]
+    pub const fn trap_kind_name(self) -> &'static str {
+        match self {
+            ExitReason::HeapExceeded => "HeapExceeded",
+            ExitReason::IntegerOverflow => "IntegerOverflow",
+            ExitReason::DivideByZero => "DivideByZero",
+            ExitReason::SignedMinDivNegOne => "SignedMinDivNegOne",
+            ExitReason::ShiftOutOfRange => "ShiftOutOfRange",
+            ExitReason::IndexOutOfBounds => "IndexOutOfBounds",
+            ExitReason::ActorSendFailed => "ActorSendFailed",
+            ExitReason::MachineDispatchUnreachable => "MachineDispatchUnreachable",
+            ExitReason::ExhaustivenessFallthrough => "ExhaustivenessFallthrough",
+            ExitReason::Signal(_) => "Signal",
+            ExitReason::Normal => "Normal",
+        }
+    }
+
     /// Convert a raw `error_code` from `hew_actor_get_error` into a named
     /// `ExitReason`.
     #[must_use]

@@ -331,10 +331,12 @@ impl<'a> PackageEmitter<'a> {
             params.push(local);
         }
 
-        ctx.lower_block(&function.body)?;
+        let trailing_val = ctx.lower_block(&function.body)?;
         if !ctx.current_is_terminated() {
             let span_ref = ctx.package.spans.span_ref(&span);
-            if result_ty == Ty::Unit {
+            if let Some(val) = trailing_val {
+                ctx.terminate(Terminator::ret(vec![Operand::local(val)], span_ref));
+            } else if result_ty == Ty::Unit {
                 let unit = ctx.emit_const_unit(Some(span.clone()));
                 ctx.terminate(Terminator::ret(vec![Operand::local(unit)], span_ref));
             } else {
@@ -541,6 +543,37 @@ impl<'a> PackageEmitter<'a> {
         id
     }
 
+    fn register_stdout_print(&mut self) -> String {
+        let id = "sym:core.stdout.print".to_string();
+        let cap_id = "core.stdout".to_string();
+        self.capabilities
+            .entry(cap_id.clone())
+            .or_insert(Capability {
+                id: cap_id.clone(),
+                disposition: "allowed".to_string(),
+                reason: "stdout is captured by the educational sandbox trace".to_string(),
+                required_by: Vec::new(),
+            });
+        if let Some(cap) = self.capabilities.get_mut(&cap_id) {
+            if !cap.required_by.contains(&id) {
+                cap.required_by.push(id.clone());
+                cap.required_by.sort();
+            }
+        }
+        self.stdlib_symbols
+            .entry(id.clone())
+            .or_insert(StdlibSymbol {
+                id: id.clone(),
+                module: "core.stdout".to_string(),
+                name: "print".to_string(),
+                params: vec!["type:string".to_string()],
+                result: "type:unit".to_string(),
+                capability: Some(cap_id),
+                admission: "allowed".to_string(),
+            });
+        id
+    }
+
     fn register_regex_symbol(&mut self, name: &str, result: &str) -> String {
         let id = format!("sym:std.text.regex.{name}");
         self.capabilities
@@ -572,6 +605,13 @@ impl<'a> PackageEmitter<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct LoopTargets {
+    continue_id: String,
+    exit_id: String,
+    label: Option<String>,
+}
+
 #[derive(Debug)]
 struct FunctionEmitter<'pkg, 'src> {
     package: &'pkg mut PackageEmitter<'src>,
@@ -582,6 +622,7 @@ struct FunctionEmitter<'pkg, 'src> {
     next_local: usize,
     next_block: usize,
     bindings: HashMap<String, String>,
+    loop_targets: Vec<LoopTargets>,
 }
 
 impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
@@ -595,6 +636,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             next_local: 0,
             next_block: 0,
             bindings: HashMap::new(),
+            loop_targets: Vec::new(),
         }
     }
 
@@ -703,6 +745,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         Ok(None)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lower_stmt dispatches every admitted statement variant fail-closed; splitting would obscure the control-flow"
+    )]
     fn lower_stmt(
         &mut self,
         stmt: &Stmt,
@@ -785,16 +831,104 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     self.emit_unsupported(Some(span));
                 }
             }
-            Stmt::If { .. }
-            | Stmt::IfLet { .. }
-            | Stmt::Match { .. }
-            | Stmt::Loop { .. }
-            | Stmt::For { .. }
-            | Stmt::While { .. }
-            | Stmt::WhileLet { .. }
-            | Stmt::Break { .. }
-            | Stmt::Continue { .. }
-            | Stmt::Defer(_) => self.emit_unsupported(Some(span)),
+            Stmt::If { .. } | Stmt::IfLet { .. } | Stmt::Match { .. } | Stmt::Defer(_) => {
+                self.emit_unsupported(Some(span));
+            }
+            Stmt::Loop { label, body } => {
+                let span_ref = self.package.spans.span_ref(&span);
+                let (header_idx, header_id) = self.new_block("loop_header", span_ref.clone());
+                let (exit_idx, exit_id) = self.new_block("loop_exit", span_ref.clone());
+                self.terminate(Terminator::br(header_id.clone(), Vec::new(), span_ref));
+                self.switch_to(header_idx);
+                self.loop_targets.push(LoopTargets {
+                    continue_id: header_id.clone(),
+                    exit_id: exit_id.clone(),
+                    label: label.clone(),
+                });
+                self.lower_block(body)?;
+                if !self.current_is_terminated() {
+                    self.terminate(Terminator::br(header_id, Vec::new(), None));
+                }
+                self.loop_targets.pop();
+                self.switch_to(exit_idx);
+            }
+            Stmt::For {
+                label,
+                is_await,
+                pattern,
+                iterable,
+                body,
+            } => {
+                if *is_await {
+                    self.emit_unsupported(Some(span));
+                } else {
+                    self.emit_for_range(label.clone(), pattern, iterable, body, span)?;
+                }
+            }
+            Stmt::While {
+                label,
+                condition,
+                body,
+            } => {
+                let span_ref = self.package.spans.span_ref(&span);
+                let (header_idx, header_id) = self.new_block("while_header", span_ref.clone());
+                let (body_idx, body_id) = self.new_block("while_body", span_ref.clone());
+                let (exit_idx, exit_id) = self.new_block("while_exit", span_ref.clone());
+                self.terminate(Terminator::br(
+                    header_id.clone(),
+                    Vec::new(),
+                    span_ref.clone(),
+                ));
+                self.switch_to(header_idx);
+                let cond = self.lower_expr(condition)?;
+                self.terminate(Terminator::br_if(
+                    Operand::local(cond),
+                    body_id,
+                    exit_id.clone(),
+                    Vec::new(),
+                    span_ref,
+                ));
+                self.switch_to(body_idx);
+                self.loop_targets.push(LoopTargets {
+                    continue_id: header_id.clone(),
+                    exit_id: exit_id.clone(),
+                    label: label.clone(),
+                });
+                self.lower_block(body)?;
+                if !self.current_is_terminated() {
+                    self.terminate(Terminator::br(header_id, Vec::new(), None));
+                }
+                self.loop_targets.pop();
+                self.switch_to(exit_idx);
+            }
+            Stmt::WhileLet {
+                label,
+                pattern,
+                expr,
+                body,
+            } => {
+                self.emit_while_let(label.clone(), pattern, expr, body, span)?;
+            }
+            Stmt::Break { label, value: None } => {
+                if let Some(exit_id) = self.resolve_loop_exit(label.as_deref()) {
+                    let span_ref = self.package.spans.span_ref(&span);
+                    self.terminate(Terminator::br(exit_id, Vec::new(), span_ref));
+                } else {
+                    self.emit_unsupported(Some(span));
+                }
+            }
+            Stmt::Break { .. } => {
+                // break-with-value is rejected at the profile level; trap defensively
+                self.emit_unsupported(Some(span));
+            }
+            Stmt::Continue { label } => {
+                if let Some(continue_id) = self.resolve_loop_continue(label.as_deref()) {
+                    let span_ref = self.package.spans.span_ref(&span);
+                    self.terminate(Terminator::br(continue_id, Vec::new(), span_ref));
+                } else {
+                    self.emit_unsupported(Some(span));
+                }
+            }
         }
         Ok(())
     }
@@ -1012,8 +1146,85 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 Ok(dst)
             }
-            Expr::If { .. }
-            | Expr::IfLet { .. }
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                let cond_local = self.lower_expr(condition)?;
+                let span_ref = self.package.spans.span_ref(span);
+                let (then_idx, then_id) = self.new_block("if_then", span_ref.clone());
+                let (exit_idx, exit_id) = self.new_block("if_exit", span_ref.clone());
+
+                if let Some(else_expr) = else_block.as_deref() {
+                    let (else_idx, else_id) = self.new_block("if_else", span_ref.clone());
+                    let result_ty = self.ty_for_expr(expr);
+                    let result_local =
+                        self.declare_local(None, &result_ty, true, Some(span.clone()));
+                    self.terminate(Terminator::br_if(
+                        Operand::local(cond_local),
+                        then_id,
+                        else_id,
+                        Vec::new(),
+                        span_ref,
+                    ));
+
+                    self.switch_to(then_idx);
+                    let then_val = self.lower_expr(then_block)?;
+                    self.emit_instruction(
+                        "local.set",
+                        None,
+                        vec![
+                            Operand::local(result_local.clone()),
+                            Operand::local(then_val),
+                        ],
+                        Some(then_block.1.clone()),
+                        None,
+                    );
+                    if !self.current_is_terminated() {
+                        let s = self.package.spans.span_ref(&then_block.1);
+                        self.terminate(Terminator::br(exit_id.clone(), Vec::new(), s));
+                    }
+
+                    self.switch_to(else_idx);
+                    let else_val = self.lower_expr(else_expr)?;
+                    self.emit_instruction(
+                        "local.set",
+                        None,
+                        vec![
+                            Operand::local(result_local.clone()),
+                            Operand::local(else_val),
+                        ],
+                        Some(else_expr.1.clone()),
+                        None,
+                    );
+                    if !self.current_is_terminated() {
+                        let s = self.package.spans.span_ref(&else_expr.1);
+                        self.terminate(Terminator::br(exit_id, Vec::new(), s));
+                    }
+
+                    self.switch_to(exit_idx);
+                    Ok(result_local)
+                } else {
+                    // No else branch: result is always unit.
+                    self.terminate(Terminator::br_if(
+                        Operand::local(cond_local),
+                        then_id,
+                        exit_id.clone(),
+                        Vec::new(),
+                        span_ref,
+                    ));
+                    self.switch_to(then_idx);
+                    self.lower_expr(then_block)?;
+                    if !self.current_is_terminated() {
+                        let s = self.package.spans.span_ref(&then_block.1);
+                        self.terminate(Terminator::br(exit_id, Vec::new(), s));
+                    }
+                    self.switch_to(exit_idx);
+                    Ok(self.emit_const_unit(Some(span.clone())))
+                }
+            }
+            Expr::IfLet { .. }
             | Expr::Tuple(_)
             | Expr::ArrayRepeat { .. }
             | Expr::MapLiteral { .. }
@@ -1167,6 +1378,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         Ok(dst)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lower_call dispatches all call forms and built-in stdlib symbols fail-closed; splitting would obscure the dispatch table"
+    )]
     fn lower_call(
         &mut self,
         function: &Spanned<Expr>,
@@ -1176,6 +1391,15 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         match &function.0 {
             Expr::Identifier(name) if name == "println" => {
                 let symbol = self.package.register_stdout();
+                let mut operands = vec![Operand::symbol(symbol)];
+                for arg in args {
+                    operands.push(Operand::local(self.lower_expr(arg.expr())?));
+                }
+                self.emit_instruction("call.stdlib", None, operands, Some(span.clone()), None);
+                Ok(self.emit_const_unit(Some(span)))
+            }
+            Expr::Identifier(name) if name == "print" => {
+                let symbol = self.package.register_stdout_print();
                 let mut operands = vec![Operand::symbol(symbol)];
                 for arg in args {
                     operands.push(Operand::local(self.lower_expr(arg.expr())?));
@@ -1592,6 +1816,291 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             .cloned()
             .unwrap_or(Ty::Unit)
             .materialize_literal_defaults()
+    }
+
+    fn resolve_loop_exit(&self, label: Option<&str>) -> Option<String> {
+        if let Some(lbl) = label {
+            self.loop_targets
+                .iter()
+                .rev()
+                .find(|t| t.label.as_deref() == Some(lbl))
+                .map(|t| t.exit_id.clone())
+        } else {
+            self.loop_targets.last().map(|t| t.exit_id.clone())
+        }
+    }
+
+    fn resolve_loop_continue(&self, label: Option<&str>) -> Option<String> {
+        if let Some(lbl) = label {
+            self.loop_targets
+                .iter()
+                .rev()
+                .find(|t| t.label.as_deref() == Some(lbl))
+                .map(|t| t.continue_id.clone())
+        } else {
+            self.loop_targets.last().map(|t| t.continue_id.clone())
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "emit_for_range lowers a range-based for loop through 4 CFG blocks; splitting by block would obscure the loop structure"
+    )]
+    fn emit_for_range(
+        &mut self,
+        label: Option<String>,
+        pattern: &Spanned<Pattern>,
+        iterable: &Spanned<Expr>,
+        body: &AstBlock,
+        span: std::ops::Range<usize>,
+    ) -> Result<(), CompileError> {
+        let (iterable_expr, _) = iterable;
+        // `0..n` and `0..=n` parse as Expr::Binary with BinaryOp::Range / RangeInclusive.
+        // The standalone Expr::Range variant covers open-ended forms like `..n` or `n..`.
+        let (start_opt, end_opt, inclusive): (
+            Option<&Spanned<Expr>>,
+            Option<&Spanned<Expr>>,
+            bool,
+        ) = match iterable_expr {
+            Expr::Binary {
+                op: BinaryOp::Range,
+                left,
+                right,
+            } => (Some(left.as_ref()), Some(right.as_ref()), false),
+            Expr::Binary {
+                op: BinaryOp::RangeInclusive,
+                left,
+                right,
+            } => (Some(left.as_ref()), Some(right.as_ref()), true),
+            Expr::Range {
+                start,
+                end,
+                inclusive,
+            } => (start.as_deref(), end.as_deref(), *inclusive),
+            _ => {
+                self.emit_unsupported(Some(span));
+                return Ok(());
+            }
+        };
+        let Pattern::Identifier(var_name) = &pattern.0 else {
+            self.emit_unsupported(Some(span));
+            return Ok(());
+        };
+        let var_name = var_name.clone();
+        let end_val = if let Some(end_expr) = end_opt {
+            self.lower_expr(end_expr)?
+        } else {
+            self.emit_unsupported(Some(span));
+            return Ok(());
+        };
+        let (start_val, elem_ty) = if let Some(start_expr) = start_opt {
+            let ty = self.ty_for_expr(start_expr);
+            (self.lower_expr(start_expr)?, ty)
+        } else {
+            let zero = self.lower_literal(
+                &Literal::Integer {
+                    value: 0,
+                    radix: hew_parser::ast::IntRadix::Decimal,
+                },
+                span.clone(),
+            );
+            (zero, Ty::I64)
+        };
+
+        let saved_bindings = self.bindings.clone();
+        let loop_var = self.declare_local(
+            Some(var_name.clone()),
+            &elem_ty,
+            true,
+            Some(pattern.1.clone()),
+        );
+        self.bindings.insert(var_name, loop_var.clone());
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![Operand::local(loop_var.clone()), Operand::local(start_val)],
+            Some(span.clone()),
+            None,
+        );
+
+        let span_ref = self.package.spans.span_ref(&span);
+        let (header_idx, header_id) = self.new_block("for_header", span_ref.clone());
+        let (body_idx, body_id) = self.new_block("for_body", span_ref.clone());
+        let (continue_idx, continue_id) = self.new_block("for_continue", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("for_exit", span_ref.clone());
+
+        self.terminate(Terminator::br(
+            header_id.clone(),
+            Vec::new(),
+            span_ref.clone(),
+        ));
+        self.switch_to(header_idx);
+
+        let cmp_op = if inclusive { "cmp.le" } else { "cmp.lt" };
+        let cond = self.temp_local(&Ty::Bool, Some(span.clone()));
+        self.emit_instruction(
+            cmp_op,
+            Some(cond.clone()),
+            vec![Operand::local(loop_var.clone()), Operand::local(end_val)],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br_if(
+            Operand::local(cond),
+            body_id,
+            exit_id.clone(),
+            Vec::new(),
+            span_ref,
+        ));
+
+        self.switch_to(body_idx);
+        self.loop_targets.push(LoopTargets {
+            continue_id: continue_id.clone(),
+            exit_id: exit_id.clone(),
+            label,
+        });
+        self.lower_block(body)?;
+        if !self.current_is_terminated() {
+            self.terminate(Terminator::br(continue_id.clone(), Vec::new(), None));
+        }
+        self.loop_targets.pop();
+
+        self.switch_to(continue_idx);
+        let one = self.lower_literal(
+            &Literal::Integer {
+                value: 1,
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        let next_val = self.temp_local(&elem_ty, Some(span.clone()));
+        self.emit_instruction(
+            "i64.checked_add",
+            Some(next_val.clone()),
+            vec![Operand::local(loop_var.clone()), Operand::local(one)],
+            Some(span.clone()),
+            None,
+        );
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![Operand::local(loop_var), Operand::local(next_val)],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(header_id, Vec::new(), None));
+
+        self.bindings = saved_bindings;
+        self.switch_to(exit_idx);
+        Ok(())
+    }
+
+    fn emit_while_let(
+        &mut self,
+        label: Option<String>,
+        pattern: &Spanned<Pattern>,
+        expr: &Spanned<Expr>,
+        body: &AstBlock,
+        span: std::ops::Range<usize>,
+    ) -> Result<(), CompileError> {
+        let Pattern::Constructor { name, patterns } = &pattern.0 else {
+            self.emit_unsupported(Some(span));
+            return Ok(());
+        };
+        let (constructor_name, payload_patterns) = (name.clone(), patterns.clone());
+
+        let span_ref = self.package.spans.span_ref(&span);
+        let (header_idx, header_id) = self.new_block("wl_header", span_ref.clone());
+        let (body_idx, body_id) = self.new_block("wl_body", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("wl_exit", span_ref.clone());
+
+        self.terminate(Terminator::br(
+            header_id.clone(),
+            Vec::new(),
+            span_ref.clone(),
+        ));
+        self.switch_to(header_idx);
+
+        let scrutinee = self.lower_expr(expr)?;
+        let tag_local = self.temp_local(&Ty::I64, Some(expr.1.clone()));
+        self.emit_instruction(
+            "enum.tag",
+            Some(tag_local.clone()),
+            vec![Operand::local(scrutinee.clone())],
+            Some(expr.1.clone()),
+            None,
+        );
+        let expected_tag = self
+            .package
+            .enum_variant_tags
+            .get(&constructor_name)
+            .map_or(0, |(_, tag, _)| *tag);
+        let expected_local = self.lower_literal(
+            &Literal::Integer {
+                value: i64::try_from(expected_tag).unwrap_or(0),
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        let cond = self.temp_local(&Ty::Bool, Some(span.clone()));
+        self.emit_instruction(
+            "cmp.eq",
+            Some(cond.clone()),
+            vec![Operand::local(tag_local), Operand::local(expected_local)],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br_if(
+            Operand::local(cond),
+            body_id,
+            exit_id.clone(),
+            Vec::new(),
+            span_ref,
+        ));
+
+        self.switch_to(body_idx);
+        let saved_bindings = self.bindings.clone();
+        let payload_tys = self
+            .package
+            .enum_variant_tags
+            .get(&constructor_name)
+            .map(|(_, _, tys)| tys.clone())
+            .unwrap_or_default();
+        for (idx, payload_pattern) in payload_patterns.iter().enumerate() {
+            if let Pattern::Identifier(binding) = &payload_pattern.0 {
+                let ty = payload_tys.get(idx).cloned().unwrap_or(Ty::Unit);
+                let local = self.declare_local(
+                    Some(binding.clone()),
+                    &ty,
+                    false,
+                    Some(payload_pattern.1.clone()),
+                );
+                self.emit_instruction(
+                    "enum.payload",
+                    Some(local.clone()),
+                    vec![
+                        Operand::local(scrutinee.clone()),
+                        Operand::literal(idx as u64),
+                    ],
+                    Some(payload_pattern.1.clone()),
+                    None,
+                );
+                self.bindings.insert(binding.clone(), local);
+            }
+        }
+        self.loop_targets.push(LoopTargets {
+            continue_id: header_id.clone(),
+            exit_id: exit_id.clone(),
+            label,
+        });
+        self.lower_block(body)?;
+        if !self.current_is_terminated() {
+            self.terminate(Terminator::br(header_id, Vec::new(), None));
+        }
+        self.loop_targets.pop();
+        self.bindings = saved_bindings;
+        self.switch_to(exit_idx);
+        Ok(())
     }
 
     #[expect(

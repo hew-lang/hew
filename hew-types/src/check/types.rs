@@ -76,6 +76,12 @@ impl ExecutionContextReader {
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// RHS spans of accepted `lhs is TypeName` type patterns.
+    ///
+    /// The parser still represents the RHS as an identifier expression; this
+    /// checker-owned table tells downstream tooling/lowering not to resolve that
+    /// identifier through the value namespace.
+    pub is_type_patterns: HashMap<SpanKey, Ty>,
     pub method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     /// Spans of method calls whose resolved method declares `consumes_receiver`.
     ///
@@ -306,6 +312,12 @@ pub struct TypeCheckOutput {
     /// WHEN-OBSOLETE: never; this table is the checker's authoritative
     /// output for match semantics downstream.
     pub pattern_resolutions: HashMap<SpanKey, ArmResolution>,
+    /// Compiler-recognised lang-item registry built from `#[lang_item("…")]`
+    /// attributes on traits and trait methods during trait registration.
+    /// HIR lowering consults this table to discover the trait/method names
+    /// for f-string `Display` dispatch instead of hard-coding `"Display"` /
+    /// `"fmt"` symbols. See [`crate::LangItemRegistry`].
+    pub lang_items: crate::LangItemRegistry,
 }
 
 /// By-value capture mode selected for one closure environment field.
@@ -598,6 +610,7 @@ impl Default for TypeCheckOutput {
     fn default() -> Self {
         Self {
             expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),
             lowering_facts: HashMap::new(),
@@ -627,6 +640,7 @@ impl Default for TypeCheckOutput {
             actor_protocol_descriptors: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: crate::LangItemRegistry::new(),
         }
     }
 }
@@ -1315,6 +1329,7 @@ pub struct Checker {
     pub(super) errors: Vec<TypeError>,
     pub(super) warnings: Vec<TypeError>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub(super) method_call_consumes_receiver: HashSet<SpanKey>,
@@ -1417,6 +1432,12 @@ pub struct Checker {
     /// about substitution. Bounds are slice-2-specific. Keeping them apart
     /// avoids invalidating every existing reader.
     pub(super) current_type_param_bounds: Vec<HashMap<String, Vec<String>>>,
+    /// Trait bounds declared on each machine's generic type parameters, keyed
+    /// by machine name. Populated during `register_machine_decl` from
+    /// `MachineDecl.type_params`. Consulted at the use site by
+    /// `check_struct_init` (struct-state brace constructor path) where no
+    /// `FnSig` pipeline carries the bounds.
+    pub(super) machine_type_param_bounds: HashMap<String, HashMap<String, Vec<String>>>,
     pub(super) current_return_type: Option<Ty>,
     pub(super) in_generator: bool,
     pub(super) loop_depth: u32,
@@ -1610,6 +1631,18 @@ pub struct Checker {
     /// time; `Substitution::resolve` is applied at the `check_program` output
     /// boundary before the map is moved into `TypeCheckOutput`.
     pub(super) pending_pattern_resolutions: HashMap<SpanKey, ArmResolution>,
+    /// Lang-item registry accumulated during trait registration.
+    ///
+    /// Mirrors [`TypeCheckOutput::lang_items`]. Populated in the
+    /// `Item::Trait(td)` arm of `register_top_level` (registration.rs) by
+    /// walking `TraitDecl.lang_item` and each `TraitItem::Method.lang_item`
+    /// attribute. Duplicate keys raise a `duplicate_definition` error so
+    /// the registry remains one-binding-per-key. Moved into the output at
+    /// `check_program` exit.
+    pub(super) lang_items: crate::LangItemRegistry,
+    /// Spans of previously registered lang-item keys, for duplicate-key
+    /// diagnostics. Keyed by lang-item string.
+    pub(super) lang_item_spans: HashMap<String, Span>,
     /// When a `let name = |...| ...` is being synthesised, holds `name` so that
     /// `synthesize_identifier` can detect a recursive self-reference inside the
     /// closure body and emit `ClosureRecursive` instead of `UndefinedVariable`.
@@ -1649,6 +1682,7 @@ impl Checker {
             errors: Vec::new(),
             warnings: Vec::new(),
             expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
@@ -1687,6 +1721,7 @@ impl Checker {
             registered_stdlib_hew_sources: HashSet::new(),
             generic_ctx: Vec::new(),
             current_type_param_bounds: Vec::new(),
+            machine_type_param_bounds: HashMap::new(),
             current_return_type: None,
             in_generator: false,
             loop_depth: 0,
@@ -1747,6 +1782,8 @@ impl Checker {
             intrinsic_declarations: HashMap::new(),
             pending_let_closure_name: None,
             pending_pattern_resolutions: HashMap::new(),
+            lang_items: crate::LangItemRegistry::new(),
+            lang_item_spans: HashMap::new(),
         }
     }
 

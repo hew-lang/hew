@@ -530,7 +530,7 @@ impl Checker {
         self.register_builtin_fn(
             "Node::register",
             vec![Ty::String, Ty::Var(TypeVar::fresh())],
-            Ty::Unit,
+            Ty::I32,
         );
         self.register_builtin_fn("Node::lookup", vec![Ty::String], Ty::Var(TypeVar::fresh()));
 
@@ -743,6 +743,14 @@ impl Checker {
                         .or_insert_with(|| info.clone());
                     let qualified = format!("builtins.{}", tr.name);
                     self.trait_defs.entry(qualified).or_insert(info);
+                    // Harvest #[lang_item("...")] from the stdlib-shipped trait
+                    // declaration so HIR f-string lowering can discover the
+                    // canonical Display::fmt name through `LangItemRegistry`
+                    // even when the user's program never declares the trait
+                    // itself. Without this, every `f"…"` lowering in user code
+                    // would fail-closed with "no lang-item registered for key
+                    // `display_fmt`".
+                    self.register_trait_lang_items(tr, 0..0);
                 }
                 Item::TypeDecl(td) if td.visibility.is_pub() => {
                     self.pre_register_type_decl(td);
@@ -942,8 +950,14 @@ impl Checker {
                                 // Pre-seed the machine name so that resolve_type_expr
                                 // inside state/event field resolution sees the machine
                                 // as locally-non-generic instead of injecting a fresh var.
+                                // Also seed the synthesised `<Name>Event` companion so
+                                // imported machines surface their event union as a
+                                // locally-defined type for the non-root module body.
                                 self.local_type_defs.insert(md.name.clone());
                                 self.source_type_defs.insert(md.name.clone());
+                                let event_type_name = format!("{}Event", md.name);
+                                self.local_type_defs.insert(event_type_name.clone());
+                                self.source_type_defs.insert(event_type_name);
                             }
                             _ => {}
                         }
@@ -1037,6 +1051,14 @@ impl Checker {
                             supers.iter().map(|s| s.name.clone()).collect();
                         self.trait_super.insert(td.name.clone(), super_names);
                     }
+                    // Harvest `#[lang_item("…")]` attributes into the
+                    // lang-item registry so downstream passes (HIR f-string
+                    // lowering) can discover the trait/method names by role
+                    // rather than by hard-coded surface symbols. Trait-level
+                    // tags register with `method_name: None`; method-level
+                    // tags carry the enclosing trait's name so HIR can build
+                    // the `<SelfType>::<method>` impl symbol.
+                    self.register_trait_lang_items(td, span.clone());
                 }
                 Item::Supervisor(sd) => {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
@@ -1775,11 +1797,16 @@ impl Checker {
     )]
     pub(super) fn register_machine_decl(&mut self, md: &MachineDecl) {
         // Build the machine's self-type: `Machine` or `Machine<T, U, …>`.
-        // MachineDecl.type_params is Vec<String> (bare identifiers), unlike
-        // RecordDecl which uses Option<Vec<TypeParam>>. We treat each param
-        // name as a Ty::Named with no further args, matching how record
-        // constructors thread type params into their return type.
-        let type_param_names: Vec<String> = md.type_params.clone();
+        // MachineDecl.type_params is Vec<TypeParam> — we extract bare names
+        // here for the self-type and collect declared trait bounds into a
+        // side table consulted at use sites (struct-state brace init) and
+        // mirrored onto unit-state constructor FnSigs for the call path.
+        let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.clone()).collect();
+        let type_param_bounds = self.collect_type_param_bounds(Some(&md.type_params), None);
+        if !type_param_bounds.is_empty() {
+            self.machine_type_param_bounds
+                .insert(md.name.clone(), type_param_bounds.clone());
+        }
         let machine_generic_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
@@ -1814,6 +1841,7 @@ impl Checker {
                     state.name.clone(),
                     FnSig {
                         type_params: type_param_names.clone(),
+                        type_param_bounds: type_param_bounds.clone(),
                         return_type: machine_ty.clone(),
                         is_pure: true,
                         ..FnSig::default()
@@ -2274,12 +2302,56 @@ impl Checker {
         }
     }
 
+    /// Validate that every trait named in a machine's generic bounds resolves
+    /// to a registered trait. Emits `UndefinedType` at the machine decl span
+    /// for any unknown name. Called from `check_machine_exhaustiveness`,
+    /// after Pass 2 has populated `trait_defs` for all in-scope traits.
+    pub(super) fn validate_machine_type_param_bounds(&mut self, md: &MachineDecl, span: &Span) {
+        for param in &md.type_params {
+            for bound in &param.bounds {
+                if self.is_known_trait(&bound.name) {
+                    continue;
+                }
+                let similar = crate::error::find_similar(
+                    &bound.name,
+                    self.trait_defs.keys().map(String::as_str),
+                );
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!(
+                        "unknown trait `{bound}` in bound on type parameter `{param_name}` of machine `{machine}`",
+                        bound = bound.name,
+                        param_name = param.name,
+                        machine = md.name,
+                    ),
+                    similar,
+                );
+            }
+        }
+    }
+
+    /// Resolve a trait-bound name against the registered trait table,
+    /// accepting both unqualified and module-qualified forms.
+    fn is_known_trait(&self, name: &str) -> bool {
+        if self.trait_defs.contains_key(name) {
+            return true;
+        }
+        if let Some(uq) = self.strip_module_qualifier(name) {
+            if self.trait_defs.contains_key(uq) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Check that the machine's state × event matrix is fully covered.
     #[expect(
         clippy::too_many_lines,
         reason = "exhaustiveness checking requires many validation steps"
     )]
     pub(super) fn check_machine_exhaustiveness(&mut self, md: &MachineDecl, span: &Span) {
+        self.validate_machine_type_param_bounds(md, span);
         let state_names: Vec<&str> = md.states.iter().map(|s| s.name.as_str()).collect();
         let event_names: Vec<&str> = md.events.iter().map(|e| e.name.as_str()).collect();
 
@@ -2377,6 +2449,18 @@ impl Checker {
                 covered.insert(key);
             }
 
+            // Push the machine's declared generic-param bounds so that
+            // `type_param_carries_bound` / resolver projection inside the
+            // transition body see `T: Resource` and recognise `T` as
+            // satisfying its bound. Pops at the end of this iteration's
+            // body block.
+            let machine_bounds_scope =
+                self.collect_type_param_scope_with_bounds(Some(&md.type_params), None);
+            let pushed_machine_bounds = !machine_bounds_scope.is_empty();
+            if pushed_machine_bounds {
+                self.current_type_param_bounds.push(machine_bounds_scope);
+            }
+
             // Fix 6: Transition body validation with source-state field scoping.
             // Bind `state` as the machine type, and track the source state so
             // that `state.field` access resolves correctly for payload states.
@@ -2387,9 +2471,9 @@ impl Checker {
             let transition_machine_args: Vec<Ty> = md
                 .type_params
                 .iter()
-                .map(|name| Ty::Named {
+                .map(|param| Ty::Named {
                     builtin: None,
-                    name: name.clone(),
+                    name: param.name.clone(),
                     args: vec![],
                 })
                 .collect();
@@ -2413,9 +2497,9 @@ impl Checker {
                     args: md
                         .type_params
                         .iter()
-                        .map(|name| Ty::Named {
+                        .map(|param| Ty::Named {
                             builtin: None,
-                            name: name.clone(),
+                            name: param.name.clone(),
                             args: vec![],
                         })
                         .collect(),
@@ -2452,9 +2536,9 @@ impl Checker {
                     args: md
                         .type_params
                         .iter()
-                        .map(|name| Ty::Named {
+                        .map(|param| Ty::Named {
                             builtin: None,
-                            name: name.clone(),
+                            name: param.name.clone(),
                             args: vec![],
                         })
                         .collect(),
@@ -2463,6 +2547,9 @@ impl Checker {
             }
             self.current_machine_transition = None;
             self.env.pop_scope();
+            if pushed_machine_bounds {
+                self.current_type_param_bounds.pop();
+            }
         }
 
         // Check that every (state, event) pair is covered
@@ -2612,6 +2699,59 @@ impl Checker {
 
     pub(super) fn trait_info_from_decl(tr: &TraitDecl) -> TraitInfo {
         Self::trait_info_from_decl_with_diagnostics(tr, &mut Vec::new())
+    }
+
+    /// Harvest `#[lang_item("…")]` tags from a trait declaration into
+    /// [`Checker::lang_items`].
+    ///
+    /// Two kinds of entries are produced:
+    ///
+    /// * Trait-level (`#[lang_item("display")]` on the `trait` itself) →
+    ///   `LangItemBinding { trait_name: <td.name>, method_name: None }`.
+    /// * Method-level (`#[lang_item("display_fmt")]` on a `TraitItem::Method`)
+    ///   → `LangItemBinding { trait_name: <td.name>, method_name:
+    ///   Some(<m.name>) }`. The enclosing trait name is propagated so HIR
+    ///   lowering can derive `<SelfType>::<method_name>` impl symbols.
+    ///
+    /// Duplicate keys raise `TypeError::duplicate_definition` against the
+    /// trait's span so the registry remains one-binding-per-key.
+    pub(super) fn register_trait_lang_items(&mut self, td: &TraitDecl, span: Span) {
+        if let Some(key) = &td.lang_item {
+            if let Some(prev) = self.lang_item_spans.insert(key.clone(), span.clone()) {
+                self.errors
+                    .push(TypeError::duplicate_definition(span.clone(), key, prev));
+            } else {
+                self.lang_items.insert(
+                    key.clone(),
+                    crate::LangItemBinding {
+                        trait_name: td.name.clone(),
+                        method_name: None,
+                    },
+                );
+            }
+        }
+        for item in &td.items {
+            if let TraitItem::Method(m) = item {
+                if let Some(key) = &m.lang_item {
+                    let method_span = m.span.clone();
+                    if let Some(prev) = self
+                        .lang_item_spans
+                        .insert(key.clone(), method_span.clone())
+                    {
+                        self.errors
+                            .push(TypeError::duplicate_definition(method_span, key, prev));
+                    } else {
+                        self.lang_items.insert(
+                            key.clone(),
+                            crate::LangItemBinding {
+                                trait_name: td.name.clone(),
+                                method_name: Some(m.name.clone()),
+                            },
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Build `TraitInfo` and surface trait-body diagnostics. Duplicate
@@ -2968,9 +3108,19 @@ impl Checker {
                     let saved_local_type_defs = self.local_type_defs.clone();
                     let saved_source_type_defs = self.source_type_defs.clone();
                     for (item, _) in &module.items {
-                        if let Item::TypeDecl(td) = item {
-                            self.local_type_defs.insert(td.name.clone());
-                            self.source_type_defs.insert(td.name.clone());
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.local_type_defs.insert(td.name.clone());
+                                self.source_type_defs.insert(td.name.clone());
+                            }
+                            Item::Machine(md) => {
+                                self.local_type_defs.insert(md.name.clone());
+                                self.source_type_defs.insert(md.name.clone());
+                                let event_type_name = format!("{}Event", md.name);
+                                self.local_type_defs.insert(event_type_name.clone());
+                                self.source_type_defs.insert(event_type_name);
+                            }
+                            _ => {}
                         }
                     }
 
@@ -4221,9 +4371,19 @@ impl Checker {
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
-            if let Item::TypeDecl(td) = item {
-                self.local_type_defs.insert(td.name.clone());
-                self.source_type_defs.insert(td.name.clone());
+            match item {
+                Item::TypeDecl(td) => {
+                    self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
+                    let event_type_name = format!("{}Event", md.name);
+                    self.local_type_defs.insert(event_type_name.clone());
+                    self.source_type_defs.insert(event_type_name);
+                }
+                _ => {}
             }
         }
 
@@ -4239,6 +4399,17 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_machine_type_namespace_names(&md.name, span) {
+                        continue;
+                    }
+                    self.register_machine_decl(md);
+                    self.known_types.insert(md.name.clone());
+                    self.known_types.insert(format!("{}Event", md.name));
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {
@@ -4352,6 +4523,13 @@ impl Checker {
                     self.register_qualified_type_alias(module_short, &td.name);
                     self.record_module_type_export(module_short, &td.name);
                 }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    self.register_qualified_type_alias(module_short, &md.name);
+                    self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
+                }
                 Item::Actor(ad) => {
                     self.register_qualified_type_alias(module_short, &ad.name);
                     self.record_module_type_export(module_short, &ad.name);
@@ -4416,6 +4594,31 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_flat_file_import_type_name(
+                        &mut current_import_pub_spans,
+                        &md.name,
+                        span,
+                    ) {
+                        skipped_type_names.insert(md.name.clone());
+                        continue;
+                    }
+                    let event_type_name = format!("{}Event", md.name);
+                    if !self.register_flat_file_import_type_name(
+                        &mut current_import_pub_spans,
+                        &event_type_name,
+                        span,
+                    ) {
+                        skipped_type_names.insert(event_type_name);
+                        continue;
+                    }
+                    self.register_machine_decl(md);
+                    self.known_types.insert(md.name.clone());
+                    self.known_types.insert(format!("{}Event", md.name));
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {
@@ -4572,9 +4775,19 @@ impl Checker {
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
-            if let Item::TypeDecl(td) = item {
-                self.local_type_defs.insert(td.name.clone());
-                self.source_type_defs.insert(td.name.clone());
+            match item {
+                Item::TypeDecl(td) => {
+                    self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
+                    let event_type_name = format!("{}Event", md.name);
+                    self.local_type_defs.insert(event_type_name.clone());
+                    self.source_type_defs.insert(event_type_name);
+                }
+                _ => {}
             }
         }
 
@@ -4613,6 +4826,19 @@ impl Checker {
                     self.register_qualified_type_alias(module_short, &td.name);
                     self.record_module_type_export(module_short, &td.name);
                     self.known_types.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_machine_type_namespace_names(&md.name, span) {
+                        continue;
+                    }
+                    self.register_machine_decl(md);
+                    self.register_qualified_type_alias(module_short, &md.name);
+                    self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
+                    self.known_types.insert(md.name.clone());
+                    self.known_types.insert(format!("{}Event", md.name));
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {

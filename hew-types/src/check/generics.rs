@@ -203,11 +203,31 @@ impl Checker {
     }
 
     pub(super) fn enforce_type_param_bounds(&mut self, sig: &FnSig, type_args: &[Ty], span: &Span) {
-        if sig.type_params.is_empty() {
+        self.enforce_named_type_param_bounds(
+            &sig.type_params,
+            &sig.type_param_bounds,
+            type_args,
+            span,
+        );
+    }
+
+    /// Generic bound-enforcement entry point parameterised by type-param names
+    /// and a bounds map.  Used by `enforce_type_param_bounds` (`FnSig` calls)
+    /// and by use-site enforcement for machine generic constructors that do
+    /// not route through a function call (struct-state brace init via
+    /// `check_struct_init`).
+    pub(super) fn enforce_named_type_param_bounds(
+        &mut self,
+        type_params: &[String],
+        type_param_bounds: &HashMap<String, Vec<String>>,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
+        if type_params.is_empty() {
             return;
         }
-        for (idx, param_name) in sig.type_params.iter().enumerate() {
-            let Some(bounds) = sig.type_param_bounds.get(param_name) else {
+        for (idx, param_name) in type_params.iter().enumerate() {
+            let Some(bounds) = type_param_bounds.get(param_name) else {
                 continue;
             };
             let Some(type_arg) = type_args.get(idx) else {
@@ -468,6 +488,19 @@ impl Checker {
     /// its enclosing impl) carries `trait_name` as a where-clause bound, either
     /// directly or via super-trait extension.
     pub(super) fn type_param_carries_bound(&self, param_name: &str, trait_name: &str) -> bool {
+        // Consult the active bounds stack first (covers machine transition
+        // bodies, impl-method scopes, and any other context that pushes
+        // `current_type_param_bounds` without setting `current_function`).
+        for frame in self.current_type_param_bounds.iter().rev() {
+            if let Some(bounds) = frame.get(param_name) {
+                if bounds
+                    .iter()
+                    .any(|b| b == trait_name || self.trait_extends(b, trait_name))
+                {
+                    return true;
+                }
+            }
+        }
         let Some(fn_name) = self.current_function.as_ref() else {
             return false;
         };

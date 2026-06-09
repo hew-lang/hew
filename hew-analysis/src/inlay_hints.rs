@@ -649,6 +649,7 @@ mod tests {
         );
         TypeCheckOutput {
             expr_types,
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
@@ -678,6 +679,7 @@ mod tests {
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
         }
     }
 

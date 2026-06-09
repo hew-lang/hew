@@ -13,7 +13,7 @@ extern crate hew_runtime;
 use base64::Engine as _;
 use hew_cabi::{
     cabi::str_to_malloc,
-    vec::{hwvec_to_u8, u8_to_hwvec, HewVec},
+    vec::{u8_to_hwvec, HewVec},
 };
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -155,62 +155,6 @@ pub unsafe extern "C" fn hew_json_type(val: *const HewJsonValue) -> i32 {
         serde_json::Value::Array(_) => 5,
         serde_json::Value::Object(_) => 6,
     }
-}
-
-/// Get the boolean value from a [`HewJsonValue`].
-///
-/// Returns 1 if `val` is a JSON boolean, 0 otherwise (including null).
-///
-/// # Safety
-///
-/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_json_is_bool(val: *const HewJsonValue) -> i32 {
-    if val.is_null() {
-        return 0;
-    }
-    // SAFETY: val is a valid HewJsonValue pointer per caller contract.
-    let v = unsafe { &*val };
-    i32::from(matches!(v.inner, serde_json::Value::Bool(_)))
-}
-
-/// Returns 1 if `val` is a JSON integer-valued number, 0 otherwise.
-///
-/// Matches the values that [`hew_json_get_int`] can extract without coercion.
-///
-/// # Safety
-///
-/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_json_is_int(val: *const HewJsonValue) -> i32 {
-    if val.is_null() {
-        return 0;
-    }
-    // SAFETY: val is a valid HewJsonValue pointer per caller contract.
-    let v = unsafe { &*val };
-    match &v.inner {
-        serde_json::Value::Number(n) if n.is_i64() || n.is_u64() => 1,
-        _ => 0,
-    }
-}
-
-/// Returns 1 if `val` is any JSON number (integer or float), 0 otherwise.
-///
-/// Matches the values that [`hew_json_get_float`] can extract — JSON does not
-/// distinguish integer-valued floats at the value level, so both integer and
-/// float numbers are accepted.
-///
-/// # Safety
-///
-/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_json_is_float(val: *const HewJsonValue) -> i32 {
-    if val.is_null() {
-        return 0;
-    }
-    // SAFETY: val is a valid HewJsonValue pointer per caller contract.
-    let v = unsafe { &*val };
-    i32::from(matches!(v.inner, serde_json::Value::Number(_)))
 }
 
 /// Returns 1 for `true`, 0 for `false` or if the value is not a boolean.
@@ -589,39 +533,9 @@ pub unsafe extern "C" fn hew_json_object_set_string(
     }
 }
 
-/// Set a bytes field on a JSON object as a base64-encoded string.
-///
-/// # Safety
-///
-/// Same as [`hew_json_object_set_bool`]. `val` must be a valid bytes
-/// [`HewVec`] pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_json_object_set_bytes(
-    obj: *mut HewJsonValue,
-    key: *const c_char,
-    val: *mut HewVec,
-) {
-    if obj.is_null() || key.is_null() || val.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
-    // SAFETY: val is non-null (checked above) and points to a valid bytes HewVec.
-    let encoded = base64::engine::general_purpose::STANDARD.encode(unsafe { hwvec_to_u8(val) });
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
-        map.insert(key, serde_json::Value::String(encoded));
-    }
-}
-
 /// Set a `char` (Unicode codepoint) field on a JSON object as an integer.
 ///
-/// `val` is the Unicode codepoint as an `i64`. The public wire descriptor and
-/// C++ consumer use the integer-codepoint range `0..=0x10_FFFF` (see
-/// `IntegerBounds::for_kind(Char)` in `hew-wirecodec/src/plan.rs`).
+/// `val` is the Unicode codepoint as an `i64`, in the range `0..=0x10_FFFF`.
 /// Emitted as a JSON number (integer).
 ///
 /// # Safety
@@ -968,7 +882,7 @@ mod tests {
     unsafe fn read_and_free_bytes(ptr: *mut HewVec) -> Vec<u8> {
         assert!(!ptr.is_null());
         // SAFETY: ptr is a valid bytes HewVec returned by this crate.
-        let bytes = unsafe { hwvec_to_u8(ptr) };
+        let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(ptr) };
         // SAFETY: ptr was allocated by the runtime allocator.
         unsafe { hew_cabi::vec::hew_vec_free(ptr) };
         bytes

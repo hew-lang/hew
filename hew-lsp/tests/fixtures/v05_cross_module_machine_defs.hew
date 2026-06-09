@@ -1,0 +1,14 @@
+pub machine Toggle {
+    state Off;
+    state On;
+
+    event Flip;
+
+    on Flip: Off -> On {
+        On
+    }
+    on Flip: On -> Off {
+        Off
+    }
+}
+

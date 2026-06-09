@@ -1,0 +1,13 @@
+record AutoRecord {
+    count: i64,
+    name: string,
+}
+
+fn record_decl_probe() -> i64 {
+    let value = AutoRecord { count: 7, name: "ok" };
+    value.count
+}
+
+fn record_decl_use() -> i64 {
+    record_decl_probe()
+}

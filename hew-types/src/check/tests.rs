@@ -36,12 +36,6 @@ fn test_empty_program() {
 }
 
 #[test]
-fn test_type_checker_creation() {
-    let checker = Checker::new(ModuleRegistry::new(vec![]));
-    assert_eq!(checker.errors.len(), 0);
-}
-
-#[test]
 fn freshen_inner_recurses_into_pointer_pointee_vars() {
     let checker = Checker::new(ModuleRegistry::new(vec![]));
     let original = TypeVar::fresh();
@@ -145,6 +139,77 @@ fn remote_pid_does_not_fall_through_to_local_actor_dispatch() {
             .any(|error| error.kind == TypeErrorKind::UndefinedMethod),
         "remote actor receive dispatch should be rejected as an undefined method; got: {:?}",
         output.errors
+    );
+}
+
+#[test]
+fn turbofish_on_remote_pid_from_raw_resolves_concrete_type() {
+    // A7 S3: `RemotePid::<T>::from_raw(...)` must propagate the explicit
+    // turbofish type-arg through the impl-block-introduced type parameter
+    // so the result is typed `RemotePid<Counter>`, not `RemotePid<T>`.
+    let output = check_source(
+        r"
+        actor Counter {
+            receive fn inc() {}
+        }
+
+        fn main() {
+            let p: RemotePid<Counter> = RemotePid::<Counter>::from_raw(1, 42);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "turbofish on RemotePid::from_raw should type-check; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn turbofish_on_remote_pid_from_raw_rejects_mismatched_assignment() {
+    // Fail-closed: explicit turbofish T must not silently coerce to a
+    // different annotated `RemotePid<U>` at the assignment site.
+    let output = check_source(
+        r"
+        actor Counter {
+            receive fn inc() {}
+        }
+        actor Worker {
+            receive fn ping() {}
+        }
+
+        fn main() {
+            let p: RemotePid<Counter> = RemotePid::<Worker>::from_raw(1, 42);
+        }
+        ",
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "RemotePid<Worker> must not satisfy RemotePid<Counter> binding",
+    );
+}
+
+#[test]
+fn turbofish_arity_mismatch_is_rejected() {
+    // Fail-closed: too many turbofish args on a 1-arity associated fn
+    // must surface as a typed arity diagnostic, not silent success.
+    let output = check_source(
+        r"
+        actor Counter {
+            receive fn inc() {}
+        }
+
+        fn main() {
+            let p = RemotePid::<Counter, Counter>::from_raw(1, 42);
+        }
+        ",
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "turbofish with too many type args must produce a diagnostic",
     );
 }
 
@@ -6215,8 +6280,10 @@ fn import_trait_from_module_glob() {
             body: None,
             span: 0..0,
             doc_comment: None,
+            lang_item: None,
         })],
         doc_comment: None,
+        lang_item: None,
     };
     let import = make_user_import(
         &["mylib", "fmt"],
@@ -6256,8 +6323,10 @@ fn import_private_trait_not_registered() {
             body: None,
             span: 0..0,
             doc_comment: None,
+            lang_item: None,
         })],
         doc_comment: None,
+        lang_item: None,
     };
     let import = make_user_import(
         &["mylib", "internals"],
@@ -9351,6 +9420,7 @@ fn make_checker_with_trait(
                 body: None,
                 span: 0..0,
                 doc_comment: None,
+                lang_item: None,
             })
         })
         .collect();
@@ -9371,6 +9441,7 @@ fn make_checker_with_trait(
         super_traits: None,
         items,
         doc_comment: None,
+        lang_item: None,
     };
 
     let info = Checker::trait_info_from_decl(&td);
@@ -10937,9 +11008,11 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 body: None,
                 span: 0..0,
                 doc_comment: None,
+                lang_item: None,
             }),
         ],
         doc_comment: None,
+        lang_item: None,
     };
     let info_super = Checker::trait_info_from_decl(&assoc_super);
     checker
@@ -10976,8 +11049,10 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             body: None,
             span: 0..0,
             doc_comment: None,
+            lang_item: None,
         })],
         doc_comment: None,
+        lang_item: None,
     };
     let info_child = Checker::trait_info_from_decl(&child);
     checker
@@ -11028,8 +11103,10 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             body: None,
             span: 0..0,
             doc_comment: None,
+            lang_item: None,
         })],
         doc_comment: None,
+        lang_item: None,
     };
     let info_super = Checker::trait_info_from_decl(&generic_super);
     checker
@@ -11065,8 +11142,10 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             body: None,
             span: 0..0,
             doc_comment: None,
+            lang_item: None,
         })],
         doc_comment: None,
+        lang_item: None,
     };
     let info_child = Checker::trait_info_from_decl(&child);
     checker
@@ -11641,8 +11720,10 @@ mod non_root_module_inference_scope {
                 }),
                 span: 0..0,
                 doc_comment: None,
+                lang_item: None,
             })],
             doc_comment: None,
+            lang_item: None,
         };
         let program = Program {
             module_graph: None,
@@ -11683,8 +11764,10 @@ mod non_root_module_inference_scope {
                 }),
                 span: 0..0,
                 doc_comment: None,
+                lang_item: None,
             })],
             doc_comment: None,
+            lang_item: None,
         };
         let program = Program {
             module_graph: None,
@@ -11742,8 +11825,10 @@ mod non_root_module_inference_scope {
                 }),
                 span: 0..0,
                 doc_comment: None,
+                lang_item: None,
             })],
             doc_comment: None,
+            lang_item: None,
         };
         let greeter = TypeDecl {
             visibility: Visibility::Private,

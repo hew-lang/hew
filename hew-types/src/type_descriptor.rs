@@ -7,11 +7,6 @@
 //! `from_ty_strict_generic_args` (the fail-closed conversion for THIR→MIR
 //! layer transitions that must not silently accept un-arged generic types).
 //!
-//! Wire-kind dispatch (`wire_kind() -> PrimitiveWireKind`) lives in
-//! `hew-wirecodec::wire_boundary` as an extension trait on `ResolvedTy`,
-//! because `PrimitiveWireKind` is owned by `hew-wirecodec` and that crate
-//! already depends on `hew-types`.
-//!
 //! LESSONS upheld: `checker-output-boundary`, `checker-authority`,
 //! `type-info-survival`, `boundary-fail-closed`.
 

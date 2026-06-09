@@ -600,7 +600,13 @@ fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
     MachineDecl {
         visibility: Visibility::Pub,
         name: name.to_string(),
-        type_params: type_params.iter().map(ToString::to_string).collect(),
+        type_params: type_params
+            .iter()
+            .map(|n| TypeParam {
+                name: (*n).to_string(),
+                bounds: vec![],
+            })
+            .collect(),
         has_default: false,
         states: vec![unit_state("Idle"), unit_state("Active")],
         events: vec![unit_event("Start"), unit_event("Stop")],
@@ -1197,7 +1203,10 @@ fn imported_generic_machine_type_params_survive_registration() {
     let md = MachineDecl {
         visibility: Visibility::Pub,
         name: "Worker".to_string(),
-        type_params: vec!["T".to_string()],
+        type_params: vec![TypeParam {
+            name: "T".to_string(),
+            bounds: vec![],
+        }],
         has_default: false,
         states: vec![unit_state("Idle"), unit_state("Active")],
         events: vec![unit_event("Start"), unit_event("Stop")],
@@ -1328,5 +1337,167 @@ fn two_modules_with_different_machines_no_collision() {
     assert!(
         output.fn_sigs.contains_key("Idle"),
         "Beta::Idle constructor must be registered"
+    );
+}
+
+/// Gate program: a machine declaring `<T: Resource>` parses and
+/// type-checks cleanly. Bound enforcement is parsed-only at this layer;
+/// downstream slices will validate bound resolution against trait
+/// definitions.
+#[test]
+fn machine_with_trait_bound_parses_and_checks() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+machine Lifecycle<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let output = typecheck_isolated(source);
+    assert!(
+        output.errors.is_empty(),
+        "trait-bounded machine should type-check, got: {:?}",
+        output.errors
+    );
+    let td = output
+        .type_defs
+        .get("Lifecycle")
+        .expect("Lifecycle should be registered as a type");
+    assert_eq!(td.type_params, vec!["T".to_string()]);
+}
+
+/// Slice β positive gate: a use site `Lifecycle<File>` where `File: Resource`
+/// satisfies the declared bound — must type-check without bound diagnostics.
+#[test]
+fn machine_generic_use_site_satisfies_bound() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type File { path: i64; }
+
+impl Resource for File {
+    fn close(self) {}
+}
+
+machine Lifecycle<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn main() {
+    let f = File { path: 7 };
+    let m = Active { handle: f };
+}
+";
+    let output = typecheck_isolated(source);
+    assert!(
+        output.errors.is_empty(),
+        "use-site satisfying bound must type-check, got: {:?}",
+        output.errors
+    );
+}
+
+/// Slice β negative gate: a use site `Lifecycle<Plain>` where `Plain` does
+/// not implement `Resource` must produce a `BoundsNotSatisfied` diagnostic
+/// naming the trait and the type-param.
+#[test]
+fn machine_generic_use_site_violates_bound_errors() {
+    let source = r"
+trait Resource {
+    fn close(self);
+}
+
+type Plain { x: i64; }
+
+machine Lifecycle<T: Resource> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+
+fn main() {
+    let p = Plain { x: 1 };
+    let m = Active { handle: p };
+}
+";
+    let output = typecheck_isolated(source);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    assert!(
+        !bound_errors.is_empty(),
+        "use-site violating bound must produce BoundsNotSatisfied, got: {:?}",
+        output.errors
+    );
+    let msg = &bound_errors[0].message;
+    assert!(
+        msg.contains("Plain") && msg.contains("Resource"),
+        "diagnostic must name the offending type and the unmet trait, got: {msg}"
+    );
+}
+
+/// Slice β negative gate: an unknown trait name in a machine generic bound
+/// must produce an `UndefinedType` diagnostic at the machine declaration
+/// site rather than silently passing through.
+#[test]
+fn machine_generic_unknown_trait_in_bound_errors() {
+    let source = r"
+machine Lifecycle<T: NonExistentTrait> {
+    state Idle;
+    state Active { handle: T; }
+
+    event Start { handle: T; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { handle: event.handle } }
+    on Stop: Active -> Idle { Idle }
+    on Start: _ -> _ { state }
+    on Stop: _ -> _ { state }
+}
+";
+    let output = typecheck_isolated(source);
+    let unknown_trait_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::UndefinedType
+                && e.message.contains("NonExistentTrait")
+                && e.message.contains("unknown trait")
+        })
+        .collect();
+    assert!(
+        !unknown_trait_errors.is_empty(),
+        "unknown trait in machine generic bound must produce UndefinedType, got: {:?}",
+        output.errors
     );
 }

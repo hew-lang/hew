@@ -1,0 +1,8 @@
+import machines::toggle;
+
+fn cross_module_machine_probe() -> string {
+    var toggle: Toggle = Toggle::Off;
+    toggle.step(Flip);
+    toggle.state_name()
+}
+

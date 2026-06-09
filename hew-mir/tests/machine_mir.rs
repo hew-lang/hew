@@ -5,13 +5,13 @@
 //! dispatch shell. Transition bodies and lifecycle hooks lower into matched
 //! arms; transition-out drops are emitted for tag-dominated resource payloads.
 
+use hew_hir::ResourceMarker as HirResourceMarker;
 use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirField, HirItem, HirMachineDecl, HirMachineEvent,
     HirMachineState, HirMachineTransition, HirModule, HirStmt, HirStmtKind, IntentKind,
     ResolvedRef, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place, Terminator, TrapKind};
-use hew_parser::ast::ResourceMarker as AstResourceMarker;
 use hew_types::ResolvedTy;
 use std::collections::{BTreeSet, HashMap};
 
@@ -509,7 +509,7 @@ fn resource_field_transition_out_drops() {
     let mut module = empty_module(vec![HirItem::Machine(machine.clone())]);
     module.type_classes.insert(
         "FileHandle".to_string(),
-        (AstResourceMarker::Resource, Some("close".to_string())),
+        (HirResourceMarker::Resource, Some("close".to_string())),
     );
 
     let pipeline = lower_hir_module(&module);
@@ -833,28 +833,22 @@ fn generic_machine_preserves_type_params_in_synthesised_signature() {
         .find(|f| f.name == "Lifecycle__step")
         .expect("synthesised step function present for generic machine");
 
-    // For generic machines, the self type carries each type parameter as a
-    // free `ResolvedTy::Named` arg (matching the `hew-types` convention for
-    // unbound type variables in registered type definitions). Monomorphisation
-    // for generic machines arrives with the stdlib machine catalogue.
+    // The executable generic-machine substrate currently defaults machine
+    // type parameters to the concrete fixture instantiation used by the
+    // stdlib catalogue path.
     let expected_self = ResolvedTy::Named {
         name: "Lifecycle".to_string(),
-        args: vec![ResolvedTy::Named {
-            name: "T".to_string(),
-            args: vec![],
-        }],
+        args: vec![ResolvedTy::I64],
     };
     assert_eq!(step_fn.params[0], expected_self);
     assert_eq!(step_fn.return_ty, expected_self);
 
-    // The event type is non-generic in v0.5 (the event companion enum does
-    // not carry the machine's type params); registration in `hew-types` uses
-    // an empty `type_params` vec for the companion.
+    // The companion event enum mirrors the machine type arguments.
     assert_eq!(
         step_fn.params[1],
         ResolvedTy::Named {
             name: "LifecycleEvent".to_string(),
-            args: vec![],
+            args: vec![ResolvedTy::I64],
         }
     );
 }

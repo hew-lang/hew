@@ -14,7 +14,6 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::io::{ErrorKind, Read, Write};
-use std::mem;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -27,9 +26,9 @@ use crate::lifetime::poison_safe::{PoisonSafe, PoisonSafeRw};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::actor::{self, HewActor};
+use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::internal::types::HewActorState;
 use crate::set_last_error;
-use crate::wire::{self, HewWireBuf, HewWireEnvelope};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -178,42 +177,38 @@ pub(crate) unsafe fn wire_send_envelope(
     payload: *mut u8,
     payload_len: usize,
 ) -> c_int {
-    #[expect(clippy::cast_possible_truncation, reason = "payload bounded by caller")]
-    let env = HewWireEnvelope {
-        target_actor_id,
-        source_actor_id,
-        msg_type,
-        payload_size: payload_len as u32,
-        payload,
-        request_id: 0,
-        source_node_id: 0,
+    // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
+    let bytes = match unsafe {
+        encode_envelope_frame_from_raw_parts(
+            target_actor_id,
+            source_actor_id,
+            msg_type,
+            payload.cast_const(),
+            payload_len,
+            0,
+            0,
+        )
+    } {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            set_last_error(format!("wire_send_envelope: {err}"));
+            return HEW_ERR_SERIALIZE;
+        }
     };
-    // SAFETY: zeroed is valid for HewWireBuf (null data pointer, zero lengths).
-    let mut buf: HewWireBuf = unsafe { mem::zeroed() };
-    // SAFETY: buf is a valid stack allocation.
-    unsafe { wire::hew_wire_buf_init(&raw mut buf) };
-    // SAFETY: buf and env are valid stack locals; payload validity is the caller's responsibility.
-    if unsafe { wire::hew_wire_encode_envelope(&raw mut buf, &raw const env) } != 0 {
-        // SAFETY: buf was initialised above.
-        unsafe { wire::hew_wire_buf_free(&raw mut buf) };
-        return HEW_ERR_SERIALIZE;
-    }
     // SAFETY: transport is valid per caller contract.
     let t = unsafe { &*transport };
     // SAFETY: t.ops was set during transport creation and remains valid for
     // the transport's lifetime; caller guarantees transport is not freed.
     let result = if let Some(ops) = unsafe { t.ops.as_ref() } {
         if let Some(send_fn) = ops.send {
-            // SAFETY: buf was successfully encoded; data/len are valid.
-            unsafe { send_fn(t.r#impl, conn, buf.data.cast::<c_void>(), buf.len) }
+            // SAFETY: bytes was successfully encoded; data/len are valid.
+            unsafe { send_fn(t.r#impl, conn, bytes.as_ptr().cast::<c_void>(), bytes.len()) }
         } else {
             -1
         }
     } else {
         -1
     };
-    // SAFETY: buf was initialised above.
-    unsafe { wire::hew_wire_buf_free(&raw mut buf) };
     if result > 0 {
         HEW_OK
     } else {
@@ -224,7 +219,7 @@ pub(crate) unsafe fn wire_send_envelope(
 /// Send a message through an actor reference.
 ///
 /// LOCAL path: direct call to `hew_actor_send`.
-/// REMOTE path: encode as HBF envelope, send over transport.
+/// REMOTE path: encode as CBOR envelope, send over transport.
 ///
 /// # Safety
 ///

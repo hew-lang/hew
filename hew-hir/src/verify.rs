@@ -201,7 +201,8 @@ impl Verifier {
             HirExprKind::ContextReader { .. }
             | HirExprKind::Literal(_)
             | HirExprKind::RegexLiteralRef { .. }
-            | HirExprKind::MachineFieldAccess { .. } => {}
+            | HirExprKind::MachineFieldAccess { .. }
+            | HirExprKind::MachineEventFieldAccess { .. } => {}
             HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => self.block(body),
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.expr(duration);
@@ -425,6 +426,22 @@ impl Verifier {
                 self.binding(binding.id, binding.span.clone());
                 self.expr(start);
                 self.expr(end);
+                self.block(body);
+            }
+            HirExprKind::WhileLet {
+                scrutinee,
+                bindings,
+                body,
+                ..
+            } => {
+                self.expr(scrutinee);
+                for binding in bindings {
+                    // While-let payload bindings are scoped to the body
+                    // (one fresh BindingId allocated by HIR lowering);
+                    // register them here so the duplicate-binding check
+                    // covers the new shape, mirroring `Match` arm bindings.
+                    self.binding(binding.binding, expr.span.clone());
+                }
                 self.block(body);
             }
             HirExprKind::Unsupported(reason) => {

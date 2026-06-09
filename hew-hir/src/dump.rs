@@ -769,6 +769,18 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             )
             .expect("write to string");
         }
+        HirExprKind::MachineEventFieldAccess {
+            machine_name,
+            event_idx,
+            field_idx,
+            field_name,
+        } => {
+            writeln!(
+                out,
+                "{pad}  machine-event-field-access {machine_name}Event[{event_idx}].{field_name}[{field_idx}]"
+            )
+            .expect("write to string");
+        }
         HirExprKind::While { condition, body } => {
             writeln!(out, "{pad}  while").expect("write to string");
             dump_expr(out, condition, indent + 4);
@@ -813,6 +825,24 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
+        }
+        HirExprKind::WhileLet {
+            scrutinee,
+            variant_match,
+            variant_idx,
+            bindings,
+            body,
+        } => {
+            writeln!(
+                out,
+                "{pad}  while-let {}::{} [variant_idx={variant_idx}, bindings={}]",
+                variant_match.type_name,
+                variant_match.variant_name,
+                bindings.len(),
+            )
+            .expect("write to string");
+            dump_expr(out, scrutinee, indent + 4);
+            dump_block(out, body, indent + 4);
         }
     }
 }

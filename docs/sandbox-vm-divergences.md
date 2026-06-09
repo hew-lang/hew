@@ -14,6 +14,7 @@ The sandbox VM is deterministic by design. It admits programs whose observable b
 - [Web Worker single-threaded execution](#web-worker-single-threaded-execution)
 - [Regex engine differences](#regex-engine-differences)
 - [Profile admission diagnostics](#profile-admission-diagnostics)
+- [v0.5 substrate surface admission](#v05-substrate-surface-admission)
 - [Out-of-scope native surfaces](#out-of-scope-native-surfaces)
 
 ## Scheduler determinism vs native preemption
@@ -62,6 +63,21 @@ The bytecode exporter rejects source that cannot be represented by the current s
 | <a id="reserved-runtime-feature-lowering"></a>Reserved runtime feature lowering | `reserved_runtime_feature` | Actor, supervisor, machine, async, generator, and structured-concurrency features that need additional VM runtime support are not exported yet. |
 | <a id="unknown-actor-method-symbol"></a>Unknown actor method symbol | `unknown_method_symbol` | Method calls that cannot be resolved through the current sandbox profile allowlist are rejected. |
 | <a id="unknown-profile-symbol"></a>Unknown profile symbol | `unknown_symbol` | Helpers or builtins outside the current sandbox profile allowlist are rejected. |
+| <a id="unsafe-rejected"></a>Unsafe rejected | `unsafe_rejected` | Unsafe blocks are rejected by the browser sandbox profile. |
+
+## v0.5 substrate surface admission
+
+The current sandbox profile is explicit allowlist first. Native v0.5 surfaces that are not yet represented by sandbox bytecode or the TypeScript VM must reject before bytecode emission with a typed diagnostic.
+
+| Surface | Sandbox disposition | Diagnostic / opcode evidence |
+| --- | --- | --- |
+| `extern` / native FFI | Rejected as native-only. | `Unsupported::NATIVE_ONLY`; covered by sandbox profile tests. |
+| `unsafe` blocks | Rejected. | `unsafe_rejected`; covered by sandbox profile tests. |
+| `while let` | Rejected until loop/control-flow lowering is admitted. | `reserved_control_flow`; covered by sandbox profile tests. |
+| String methods | `len` and `slice` are admitted; broader native string methods remain rejected until the VM has matching shims. | `string.len` / `string.slice` bytecode tests for admitted methods; `unknown_method_symbol` tests for unsupported methods. |
+| Machine generics | Rejected with the rest of machine runtime declarations. | `reserved_runtime_feature`; covered by sandbox profile tests. |
+| Record construction / auto-derived record layout | Admitted for deterministic value records. | `record.new` and `record.get` bytecode tests. |
+| `is` identity operator | Rejected until sandbox heap identity semantics are admitted. | `reserved_runtime_feature`; covered by sandbox profile tests. |
 
 ## Out-of-scope native surfaces
 

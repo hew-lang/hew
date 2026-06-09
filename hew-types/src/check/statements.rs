@@ -999,6 +999,12 @@ impl Checker {
                 }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                // Record the pattern resolution so HIR lowering can consume
+                // the same `pattern_resolutions` side-table that powers
+                // `Match` lowering — without this entry HIR cannot resolve
+                // the constructor's `(type_name, variant_name)` identity or
+                // payload-binding field indices for `while-let`.
+                self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.clone());
                 }

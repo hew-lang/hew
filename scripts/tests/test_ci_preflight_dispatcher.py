@@ -328,6 +328,36 @@ def test_runtime_net_lane_budget_annotation() -> None:
     )
 
 
+def test_runtime_net_lane_rebuilds_libhew() -> None:
+    """runtime-net lane includes make stdlib + freshness check before tests.
+
+    Both hew-runtime and hew-lib source changes must produce libhew.a before
+    test-runtime-net runs, so that linked programs never test against a stale .a.
+    """
+    for path in ("hew-runtime/src/lib.rs", "hew-lib/src/lib.rs"):
+        result = run_dispatcher(path)
+        assert result.returncode == 0, result.stderr
+        assert "Selected profile: runtime-net" in result.stdout, (
+            f"Expected runtime-net profile for {path}.\nstdout:\n{result.stdout}"
+        )
+        assert "make stdlib" in result.stdout, (
+            f"Expected 'make stdlib' in runtime-net commands for {path}.\n"
+            f"stdout:\n{result.stdout}"
+        )
+        assert "scripts/check-libhew-fresh.sh" in result.stdout, (
+            f"Expected 'scripts/check-libhew-fresh.sh' in runtime-net commands for {path}.\n"
+            f"stdout:\n{result.stdout}"
+        )
+        # Freshness gate must appear before the test command.
+        stdlib_pos = result.stdout.index("make stdlib")
+        fresh_pos = result.stdout.index("scripts/check-libhew-fresh.sh")
+        test_pos = result.stdout.index("make test-runtime-net")
+        assert stdlib_pos < fresh_pos < test_pos, (
+            f"Expected order: make stdlib < check-libhew-fresh < test-runtime-net.\n"
+            f"stdout:\n{result.stdout}"
+        )
+
+
 def test_zero_timeout_fails_closed() -> None:
     """PREFLIGHT_TIMEOUT_NARROW=0 must fail closed, not bypass the watchdog.
 
@@ -381,6 +411,7 @@ _TESTS = [
     test_profile_json_records_elapsed_for_each_command,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,
+    test_runtime_net_lane_rebuilds_libhew,
     test_zero_timeout_fails_closed,
 ]
 

@@ -886,9 +886,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .map(|s| crate::model::MachineVariantLayout {
                             name: s.name.clone(),
-                            // Slice 5: populate from HirMachineState.fields in
-                            // declaration order. Empty for zero-payload states.
-                            field_tys: s.fields.iter().map(|f| f.ty.clone()).collect(),
+                            field_tys: s
+                                .fields
+                                .iter()
+                                .map(|f| default_machine_type_params_to_i64(&f.ty, md))
+                                .collect(),
                         })
                         .collect(),
                     events: md
@@ -896,7 +898,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                         .iter()
                         .map(|e| crate::model::MachineVariantLayout {
                             name: e.name.clone(),
-                            field_tys: e.fields.iter().map(|f| f.ty.clone()).collect(),
+                            field_tys: e
+                                .fields
+                                .iter()
+                                .map(|f| default_machine_type_params_to_i64(&f.ty, md))
+                                .collect(),
                         })
                         .collect(),
                 });
@@ -1664,21 +1670,14 @@ fn synthesize_machine_step_fn(
     // For generic machines, build the self-type with each type-param as a
     // free `ResolvedTy::Named` arg (the same convention as registration in
     // `hew-types`). Non-generic machines have an empty args vec.
-    let type_args: Vec<ResolvedTy> = md
-        .type_params
-        .iter()
-        .map(|param| ResolvedTy::Named {
-            name: param.clone(),
-            args: vec![],
-        })
-        .collect();
+    let type_args: Vec<ResolvedTy> = md.type_params.iter().map(|_| ResolvedTy::I64).collect();
     let self_ty = ResolvedTy::Named {
         name: md.name.clone(),
         args: type_args.clone(),
     };
     let event_ty = ResolvedTy::Named {
         name: format!("{}Event", md.name),
-        args: vec![],
+        args: type_args.clone(),
     };
     let return_ty = self_ty.clone();
 
@@ -1708,6 +1707,9 @@ fn synthesize_machine_step_fn(
         current_function_symbol: emit_name.clone(),
         ..Builder::default()
     };
+    for param in &md.type_params {
+        builder.subst.insert(param.clone(), ResolvedTy::I64);
+    }
 
     // Allocate parameter locals. `self` → Local(0), `event` → Local(1).
     let self_place = builder.alloc_local(self_ty.clone());
@@ -1864,6 +1866,7 @@ fn synthesize_machine_step_fn(
                 state_idx,
                 transition,
                 (self_binding, self_place),
+                (event_binding, event_place),
             );
             builder.finish_current_block(Terminator::Return);
         }
@@ -1960,8 +1963,10 @@ fn emit_machine_step_transition_return(
     state_idx: usize,
     transition: &HirMachineTransition,
     self_info: (BindingId, Place),
+    event_info: (BindingId, Place),
 ) {
     let (self_binding, self_place) = self_info;
+    let (event_binding, event_place) = event_info;
 
     let target_idx = md
         .states
@@ -1978,14 +1983,26 @@ fn emit_machine_step_transition_return(
     }
 
     let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
+    let prev_machine_event = builder.current_machine_event_binding.replace(event_binding);
     let prev_self_place = builder.binding_locals.insert(self_binding, self_place);
-    let next = builder.lower_value(&transition.body);
+    let prev_event_place = builder.binding_locals.insert(event_binding, event_place);
+    let next = if is_machine_state_passthrough(&transition.body) {
+        Some(self_place)
+    } else {
+        builder.lower_value(&transition.body)
+    };
     if let Some(place) = prev_self_place {
         builder.binding_locals.insert(self_binding, place);
     } else {
         builder.binding_locals.remove(&self_binding);
     }
+    if let Some(place) = prev_event_place {
+        builder.binding_locals.insert(event_binding, place);
+    } else {
+        builder.binding_locals.remove(&event_binding);
+    }
     builder.current_machine_self_binding = prev_machine_self;
+    builder.current_machine_event_binding = prev_machine_event;
 
     let Some(next) = next else {
         builder.diagnostics.push(MirDiagnostic {
@@ -2034,6 +2051,74 @@ fn emit_machine_step_transition_return(
         dest: Place::ReturnSlot,
         src: next,
     });
+}
+
+fn is_machine_state_passthrough(expr: &hew_hir::HirExpr) -> bool {
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(_),
+        } if name == "state" => true,
+        HirExprKind::Block(block) => block
+            .tail
+            .as_deref()
+            .is_some_and(is_machine_state_passthrough),
+        _ => false,
+    }
+}
+
+fn default_machine_type_params_to_i64(ty: &ResolvedTy, md: &HirMachineDecl) -> ResolvedTy {
+    match ty {
+        ResolvedTy::Named { name, args } if args.is_empty() && md.type_params.contains(name) => {
+            ResolvedTy::I64
+        }
+        ResolvedTy::Named { name, args } => ResolvedTy::Named {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|arg| default_machine_type_params_to_i64(arg, md))
+                .collect(),
+        },
+        ResolvedTy::Tuple(elems) => ResolvedTy::Tuple(
+            elems
+                .iter()
+                .map(|elem| default_machine_type_params_to_i64(elem, md))
+                .collect(),
+        ),
+        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
+            params: params
+                .iter()
+                .map(|param| default_machine_type_params_to_i64(param, md))
+                .collect(),
+            ret: Box::new(default_machine_type_params_to_i64(ret, md)),
+        },
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => ResolvedTy::Closure {
+            params: params
+                .iter()
+                .map(|param| default_machine_type_params_to_i64(param, md))
+                .collect(),
+            ret: Box::new(default_machine_type_params_to_i64(ret, md)),
+            captures: captures
+                .iter()
+                .map(|capture| default_machine_type_params_to_i64(capture, md))
+                .collect(),
+        },
+        ResolvedTy::Pointer {
+            is_mutable,
+            pointee,
+        } => ResolvedTy::Pointer {
+            is_mutable: *is_mutable,
+            pointee: Box::new(default_machine_type_params_to_i64(pointee, md)),
+        },
+        ResolvedTy::Task(inner) => {
+            ResolvedTy::Task(Box::new(default_machine_type_params_to_i64(inner, md)))
+        }
+        other => other.clone(),
+    }
 }
 
 fn emit_machine_transition_out_drops(
@@ -2642,6 +2727,7 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::AwaitTask { .. }
         | HirExprKind::ContextReader { .. }
         | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
@@ -2804,6 +2890,12 @@ fn collect_unknown_self_fields_in_expr(
             for arm in arms {
                 collect_unknown_self_fields_in_expr(&arm.body, state_fields, seen, unknown);
             }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            collect_unknown_self_fields_in_expr(scrutinee, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
         }
     }
 }
@@ -3162,9 +3254,10 @@ fn push_unknown_type_diagnostics(
     for name in named_type_names(ty) {
         if builder.type_classes.contains_key(&name)
             || matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor")
+            || matches!(name.as_str(), "Vec" | "HashMap" | "HashSet")
             || builder.actor_layouts.contains_key(&name)
             || builder.supervisor_layout_map.contains_key(&name)
-            || builder.machine_layout_names.contains(&name)
+            || machine_layout_name_matches(&builder.machine_layout_names, &name)
             // `Generator<Y, R>` is the checker-supplied type for gen-block
             // expressions. The S3a shell uses it as a placeholder; S3b/S4
             // replace the shell with a real state-record type. Silence the
@@ -3193,6 +3286,16 @@ fn push_unknown_type_diagnostic(
                 .to_string(),
         });
     }
+}
+
+fn machine_layout_name_matches(layout_names: &HashSet<String>, name: &str) -> bool {
+    layout_names
+        .iter()
+        .any(|known| known == name || short_name(known) == short_name(name))
+}
+
+fn short_name(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
 #[derive(Debug, Default)]
@@ -3368,6 +3471,7 @@ struct Builder {
     /// not lowered. Slice 4b sets it while walking transition bodies; Slice
     /// 4c reads the emitted `Place::MachineVariant` places.
     current_machine_self_binding: Option<BindingId>,
+    current_machine_event_binding: Option<BindingId>,
     /// Set to `true` inside a gen-block body builder to enable
     /// `HirExprKind::Yield` → `Terminator::Yield` construction.
     /// The parent builder's field stays `false` (the `Default`).
@@ -3902,7 +4006,7 @@ impl Builder {
                 let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
                     return None;
                 };
-                let dest = self.alloc_local(expr.ty.clone());
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 let op = numeric_method_op(*op);
                 let signed = numeric_method_signedness(*signedness);
                 match *family {
@@ -4167,7 +4271,7 @@ impl Builder {
                     }
                 }
 
-                let dest = self.alloc_local(expr.ty.clone());
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.instructions.push(Instr::RecordInit {
                     ty: expr.ty.clone(),
                     fields: field_pairs,
@@ -4327,7 +4431,7 @@ impl Builder {
                     return None;
                 };
                 let record_place = self.lower_value(object)?;
-                let dest = self.alloc_local(expr.ty.clone());
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.instructions.push(Instr::RecordFieldLoad {
                     record: record_place,
                     field_offset,
@@ -4654,6 +4758,65 @@ impl Builder {
                 });
                 Some(dest)
             }
+            HirExprKind::MachineEventFieldAccess {
+                machine_name,
+                event_idx,
+                field_idx,
+                field_name,
+            } => {
+                let Some(event_binding) = self.current_machine_event_binding else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineEventFieldAccess({machine_name}Event[{event_idx}].{field_name}) — \
+                                 outside a machine transition body"
+                            ),
+                        },
+                        note: "machine event-field reads are only legal inside a transition body"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let Some(event_place) = self.binding_locals.get(&event_binding).copied() else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineEventFieldAccess({machine_name}Event[{event_idx}].{field_name}) — \
+                                 event binding has no allocated local"
+                            ),
+                        },
+                        note: "internal: synthesize_machine_step_fn must allocate the event parameter local"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let Place::Local(event_local) = event_place else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "MachineEventFieldAccess({machine_name}Event[{event_idx}].{field_name}) — \
+                                 event binding maps to non-Local place {event_place:?}"
+                            ),
+                        },
+                        note: "internal: machine event parameter must be a Place::Local".to_string(),
+                    });
+                    return None;
+                };
+                let dest = self.alloc_local(expr.ty.clone());
+                let variant_idx_u32 =
+                    u32::try_from(*event_idx).expect("event index exceeds u32::MAX");
+                let field_idx_u32 =
+                    u32::try_from(*field_idx).expect("field index exceeds u32::MAX");
+                self.instructions.push(Instr::Move {
+                    dest,
+                    src: Place::MachineVariant {
+                        local: event_local,
+                        variant_idx: variant_idx_u32,
+                        field_idx: field_idx_u32,
+                    },
+                });
+                Some(dest)
+            }
             HirExprKind::MachineStep {
                 machine_name,
                 receiver,
@@ -4706,13 +4869,19 @@ impl Builder {
                 let self_arg = self.lower_value(receiver)?;
                 let event_arg = self.lower_value(event)?;
                 let ret_ty = ResolvedTy::Named {
-                    name: machine_name.clone(),
-                    args: Vec::new(),
+                    name: match &receiver.ty {
+                        ResolvedTy::Named { name, .. } => name.clone(),
+                        _ => machine_name.clone(),
+                    },
+                    args: match &receiver.ty {
+                        ResolvedTy::Named { args, .. } => args.clone(),
+                        _ => Vec::new(),
+                    },
                 };
                 let ret_local = self.alloc_local(ret_ty.clone());
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
-                    callee: mangle_machine_step(machine_name),
+                    callee: mangle_machine_step(short_name(machine_name)),
                     args: vec![self_arg, event_arg],
                     dest: Some(ret_local),
                     next,
@@ -4771,6 +4940,13 @@ impl Builder {
                 body,
             } => self.lower_for_range(binding, start, end, *inclusive, body),
             HirExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, &expr.ty),
+            HirExprKind::WhileLet {
+                scrutinee,
+                variant_idx,
+                bindings,
+                body,
+                ..
+            } => self.lower_while_let(scrutinee, *variant_idx, bindings, body),
             HirExprKind::RegexLiteralRef { .. } => {
                 // Standalone regex literal expressions (as opposed to match-arm
                 // patterns) require a module-level global slot for the compiled
@@ -6423,6 +6599,167 @@ impl Builder {
         if let Some(tail) = &body.tail {
             let _ = self.lower_value(tail);
         }
+        self.finish_current_block(Terminator::Goto { target: header_bb });
+
+        // Exit: subsequent lowering continues here.
+        self.start_block(exit_bb);
+        None
+    }
+
+    /// Lower `while let <Ctor>(bindings) = scrutinee { body }` to a four-block
+    /// CFG that re-evaluates the scrutinee each iteration and dispatches on
+    /// the resulting enum tag:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   Goto header_bb
+    ///
+    /// header_bb:
+    ///   scrutinee_place = lower(scrutinee)        ← re-evaluated each iter
+    ///   tag_local = Move { src: Place::EnumTag(scrutinee_local) }
+    ///   k_local = ConstI64(variant_idx)
+    ///   cond_local = IntCmp(Eq, tag_local, k_local)
+    ///   Branch { cond: cond_local, then: body_bb, else: exit_bb }
+    ///
+    /// body_bb:
+    ///   for each binding:
+    ///     dest = Move { src: Place::MachineVariant { scrutinee_local,
+    ///                                                variant_idx, field_idx } }
+    ///     register binding_locals[binding.id] = dest
+    ///   lower(body)
+    ///   Goto header_bb                            ← back-edge
+    ///
+    /// exit_bb:
+    ///   (subsequent lowering continues here)
+    /// ```
+    ///
+    /// The CFG is a hybrid of `lower_while` (header/body/exit shape) and
+    /// `lower_match_enum_tag` (tag-compare + payload extraction). The
+    /// scrutinee is evaluated inside the header block so each loop iteration
+    /// produces a fresh enum value — matching the surface semantics of
+    /// `while let` re-checking the pattern on every pass.
+    ///
+    /// The expression always has type `Unit`; `None` is returned (no value
+    /// Place) matching `lower_while`.
+    fn lower_while_let(
+        &mut self,
+        scrutinee: &HirExpr,
+        variant_idx: u32,
+        bindings: &[hew_hir::HirMatchArmBinding],
+        body: &hew_hir::HirBlock,
+    ) -> Option<Place> {
+        let header_bb = self.alloc_block();
+        let body_bb = self.alloc_block();
+        let exit_bb = self.alloc_block();
+
+        // Entry → header.
+        self.finish_current_block(Terminator::Goto { target: header_bb });
+
+        // Header: re-evaluate scrutinee, load enum tag, compare to variant_idx,
+        // branch to body or exit.
+        self.start_block(header_bb);
+        let scrutinee_place = self.lower_value(scrutinee)?;
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(n) => n,
+            other => {
+                // Fail closed: a poisoned scrutinee shape leaves no half-built
+                // CFG (same fail-closed pattern as `lower_match_enum_tag`).
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "while-let scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "while-let scrutinee must lower to Place::Local; got {other:?}. \
+                         The HIR producer should only emit WhileLet for enum-typed scrutinees \
+                         backed by a local slot"
+                    ),
+                });
+                return None;
+            }
+        };
+
+        // Load the variant tag into a fresh i64 local, mirroring
+        // `lower_match_enum_tag`. `Place::EnumTag(local)` is the substrate
+        // primitive that codegen GEPs to outer-struct field 0; widening from
+        // the per-enum tag width to i64 happens inside the Move arm.
+        let tag_local = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::Move {
+            dest: tag_local,
+            src: Place::EnumTag(scrutinee_local),
+        });
+
+        // Compare tag against the continue-arm variant index.
+        let k_local = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: k_local,
+            value: i64::from(variant_idx),
+        });
+        let cond_local = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            pred: crate::model::CmpPred::Eq,
+            lhs: tag_local,
+            rhs: k_local,
+            dest: cond_local,
+        });
+        self.finish_current_block(Terminator::Branch {
+            cond: cond_local,
+            then_target: body_bb,
+            else_target: exit_bb,
+        });
+
+        // Body: bind payload fields, lower body, loop back to header.
+        // The binding writes use `Place::MachineVariant` (same primitive used
+        // by `lower_match_enum_tag` arm-body entry); MIR codegen GEPs to the
+        // variant payload field.
+        //
+        // Bindings live for the body block only — we save and restore any
+        // pre-existing entries in `binding_locals` so nested while-let loops
+        // can shadow the same name without confusion.
+        self.start_block(body_bb);
+        let mut overwritten_bindings = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let binding_ty = self.subst_ty(&binding.ty);
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: scrutinee.site,
+                ty: binding_ty.clone(),
+            });
+            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                self.owned_locals
+                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+            }
+            let dest = self.alloc_local(binding.ty.clone());
+            self.instructions.push(Instr::Move {
+                dest,
+                src: Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: binding.field_idx,
+                },
+            });
+            let previous = self.binding_locals.insert(binding.binding, dest);
+            overwritten_bindings.push((binding.binding, previous));
+        }
+
+        for stmt in &body.statements {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &body.tail {
+            let _ = self.lower_value(tail);
+        }
+
+        // Restore the prior `binding_locals` entries so the binding scope
+        // ends at the body's end — matches Match-arm body-block semantics.
+        for (binding, previous) in overwritten_bindings.into_iter().rev() {
+            if let Some(previous) = previous {
+                self.binding_locals.insert(binding, previous);
+            } else {
+                self.binding_locals.remove(&binding);
+            }
+        }
+
         self.finish_current_block(Terminator::Goto { target: header_bb });
 
         // Exit: subsequent lowering continues here.
@@ -9399,7 +9736,8 @@ impl Builder {
             // wires the constructor; the real drop kind will replace this.
             ResolvedTy::Named { name, .. } if name == "Generator" => true,
             ResolvedTy::Named { name, args } if args.is_empty() => {
-                self.actor_layouts.contains_key(name) || self.machine_layout_names.contains(name)
+                self.actor_layouts.contains_key(name)
+                    || machine_layout_name_matches(&self.machine_layout_names, name)
             }
             // Generic enum applications (`Named { name: "Option", args: [I64] }`):
             // the origin name is in `machine_layout_names` if the HIR mono pass
@@ -9408,7 +9746,9 @@ impl Builder {
             // arm is purely for generic enum types. Classifying as `BitCopy`
             // matches the tagged-union substrate — enums are stack-allocated
             // discriminated unions with no drop side-effect.
-            ResolvedTy::Named { name, .. } => self.machine_layout_names.contains(name),
+            ResolvedTy::Named { name, .. } => {
+                machine_layout_name_matches(&self.machine_layout_names, name)
+            }
             _ => actor_name_from_handle_ty(ty).is_some(),
         }
     }

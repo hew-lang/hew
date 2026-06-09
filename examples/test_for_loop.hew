@@ -1,8 +1,0 @@
-//! Status: aspirational (Hew roadmap: v0.5 codegen-rs parity for non-spine statements and stdlib calls)
-//! Description: Test file to verify for loop compilation
-
-// Test file to verify for loop compilation
-fn main() {
-    let x = 42;
-    println(x);
-}

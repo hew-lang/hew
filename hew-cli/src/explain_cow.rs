@@ -23,39 +23,45 @@
 //! - `(user impl Drop)` — arg's resolved type carries a user
 //!   `impl Drop for T`.
 
-use hew_serialize::{ActorSendAliasingData, ActorSendAliasingEntry, ActorSendCopyReasonData};
+use std::collections::HashMap;
+
+use hew_types::check::{ActorSendAliasing, ActorSendCopyReason, SpanKey};
 
 /// Render `--explain-cow` output for all entries to the provided writer.
 ///
 /// `source` is the full source text of the file; `filename` is the label
 /// used in the output header (typically the path passed to `hew check`).
+///
+/// Entries are iterated in `(start, end)` order so the output is stable
+/// regardless of the underlying map's iteration order.
 pub fn render_explain_cow(
-    entries: &[ActorSendAliasingEntry],
+    entries: &HashMap<SpanKey, ActorSendAliasing>,
     source: &str,
     filename: &str,
     out: &mut dyn std::io::Write,
 ) {
-    for entry in entries {
-        let (line, col) = crate::diagnostic::offset_to_line_col(source, entry.start);
-        let (kind_label, reason) = match entry.kind {
-            ActorSendAliasingData::Alias => ("ALIAS", String::new()),
-            ActorSendAliasingData::Copy { reason } => {
-                ("COPY", format!(" ({})", reason_label(reason)))
-            }
+    let mut sorted: Vec<(&SpanKey, &ActorSendAliasing)> = entries.iter().collect();
+    sorted.sort_by_key(|(k, _)| (k.start, k.end));
+
+    for (span, decision) in sorted {
+        let (line, col) = crate::diagnostic::offset_to_line_col(source, span.start);
+        let (kind_label, reason) = match decision {
+            ActorSendAliasing::Alias => ("ALIAS", String::new()),
+            ActorSendAliasing::Copy(reason) => ("COPY", format!(" ({})", reason_label(*reason))),
         };
         // Print: filename:line:col: send — KIND (reason)
         let _ = writeln!(out, "{filename}:{line}:{col}: send — {kind_label}{reason}");
     }
 }
 
-/// Map a wire-side `ActorSendCopyReasonData` to the human-facing label
-/// shown in `--explain-cow` output.
-fn reason_label(reason: ActorSendCopyReasonData) -> &'static str {
+/// Map a native `ActorSendCopyReason` to the human-facing label shown in
+/// `--explain-cow` output.
+fn reason_label(reason: ActorSendCopyReason) -> &'static str {
     match reason {
-        ActorSendCopyReasonData::NotIdentifier => "non-identifier expression",
-        ActorSendCopyReasonData::CopyType => "Copy type",
-        ActorSendCopyReasonData::StdlibDrop => "stdlib Drop",
-        ActorSendCopyReasonData::UserDrop => "user impl Drop",
+        ActorSendCopyReason::NotIdentifier => "non-identifier expression",
+        ActorSendCopyReason::CopyType => "Copy type",
+        ActorSendCopyReason::StdlibDrop => "stdlib Drop",
+        ActorSendCopyReason::UserDrop => "user impl Drop",
     }
 }
 
@@ -63,25 +69,22 @@ fn reason_label(reason: ActorSendCopyReasonData) -> &'static str {
 mod tests {
     use super::*;
 
-    fn make_entry(start: usize, end: usize, kind: ActorSendAliasingData) -> ActorSendAliasingEntry {
-        ActorSendAliasingEntry { start, end, kind }
-    }
-
-    fn make_copy(
-        start: usize,
-        end: usize,
-        reason: hew_serialize::ActorSendCopyReasonData,
-    ) -> ActorSendAliasingEntry {
-        make_entry(start, end, ActorSendAliasingData::Copy { reason })
+    fn map_of(
+        entries: Vec<(usize, usize, ActorSendAliasing)>,
+    ) -> HashMap<SpanKey, ActorSendAliasing> {
+        entries
+            .into_iter()
+            .map(|(start, end, decision)| (SpanKey { start, end }, decision))
+            .collect()
     }
 
     #[test]
     fn render_copy_entry_includes_copy_type_reason() {
-        let entries = vec![make_copy(
+        let entries = map_of(vec![(
             4,
             5,
-            hew_serialize::ActorSendCopyReasonData::CopyType,
-        )];
+            ActorSendAliasing::Copy(ActorSendCopyReason::CopyType),
+        )]);
         let source = "abc\nxyz";
         let mut out = Vec::new();
         render_explain_cow(&entries, source, "test.hew", &mut out);
@@ -107,24 +110,15 @@ mod tests {
         // site rendered with the same placeholder reason.
         let cases = [
             (
-                hew_serialize::ActorSendCopyReasonData::NotIdentifier,
+                ActorSendCopyReason::NotIdentifier,
                 "non-identifier expression",
             ),
-            (
-                hew_serialize::ActorSendCopyReasonData::CopyType,
-                "Copy type",
-            ),
-            (
-                hew_serialize::ActorSendCopyReasonData::StdlibDrop,
-                "stdlib Drop",
-            ),
-            (
-                hew_serialize::ActorSendCopyReasonData::UserDrop,
-                "user impl Drop",
-            ),
+            (ActorSendCopyReason::CopyType, "Copy type"),
+            (ActorSendCopyReason::StdlibDrop, "stdlib Drop"),
+            (ActorSendCopyReason::UserDrop, "user impl Drop"),
         ];
         for (reason, expected_label) in cases {
-            let entries = vec![make_copy(0, 1, reason)];
+            let entries = map_of(vec![(0, 1, ActorSendAliasing::Copy(reason))]);
             let mut out = Vec::new();
             render_explain_cow(&entries, "x", "f.hew", &mut out);
             let output = String::from_utf8(out).unwrap();
@@ -137,7 +131,7 @@ mod tests {
 
     #[test]
     fn render_alias_entry_no_reason() {
-        let entries = vec![make_entry(0, 1, ActorSendAliasingData::Alias)];
+        let entries = map_of(vec![(0, 1, ActorSendAliasing::Alias)]);
         let source = "xyz";
         let mut out = Vec::new();
         render_explain_cow(&entries, source, "handler.hew", &mut out);
@@ -157,17 +151,37 @@ mod tests {
         // of a CRLF source resolves to line 2.
         let source = "abc\r\nxyz";
         // 'x' is at byte offset 5 in "abc\r\nxyz".
-        let entries = vec![make_copy(
+        let entries = map_of(vec![(
             5,
             6,
-            hew_serialize::ActorSendCopyReasonData::CopyType,
-        )];
+            ActorSendAliasing::Copy(ActorSendCopyReason::CopyType),
+        )]);
         let mut out = Vec::new();
         render_explain_cow(&entries, source, "f.hew", &mut out);
         let output = String::from_utf8(out).unwrap();
         assert!(
             output.contains("f.hew:2:1"),
             "CRLF: 'x' should be 2:1, got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn render_emits_entries_in_span_order() {
+        // Map iteration order is unspecified; the renderer must sort so the
+        // output is byte-stable regardless of insertion order.
+        let entries = map_of(vec![
+            (10, 11, ActorSendAliasing::Alias),
+            (0, 1, ActorSendAliasing::Copy(ActorSendCopyReason::CopyType)),
+            (5, 6, ActorSendAliasing::Alias),
+        ]);
+        let mut out = Vec::new();
+        render_explain_cow(&entries, "0123456789abc", "f.hew", &mut out);
+        let output = String::from_utf8(out).unwrap();
+        let copy_pos = output.find("COPY").expect("COPY present");
+        let first_alias = output.find("ALIAS").expect("ALIAS present");
+        assert!(
+            copy_pos < first_alias,
+            "entry at span 0..1 must render before later spans, got: {output:?}"
         );
     }
 }

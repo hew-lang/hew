@@ -381,11 +381,6 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
 }
 
 #[must_use]
-pub fn builtin_named_type_info(kind: BuiltinNamedType) -> &'static BuiltinNamedTypeInfo {
-    kind.info()
-}
-
-#[must_use]
 pub fn builtin_method_info(
     kind: BuiltinNamedType,
     method: &str,
@@ -550,10 +545,4 @@ pub fn builtin_type_def(kind: BuiltinNamedType) -> &'static TypeDef {
             })
             .collect()
     })[&kind]
-}
-
-/// Resolve a builtin named type spelling to its canonical short name.
-#[must_use]
-pub fn canonical_builtin_named_type_name(name: &str) -> Option<&'static str> {
-    builtin_named_type(name).map(BuiltinNamedType::canonical_name)
 }

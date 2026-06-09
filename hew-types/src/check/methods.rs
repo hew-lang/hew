@@ -1466,6 +1466,68 @@ impl Checker {
         }
     }
 
+    /// Map a `string` method name to the catalog FFI symbol that backs it
+    /// at runtime, or `None` when no direct FFI rewrite is wired (the call
+    /// will then resolve through other catalog/HIR mechanisms or surface a
+    /// downstream error if unsupported).
+    fn string_method_runtime_symbol(method: &str) -> Option<&'static str> {
+        Some(match method {
+            "len" => "len_str",
+            "contains" => "contains_str",
+            "starts_with" => "starts_with_str",
+            "ends_with" => "ends_with_str",
+            "is_empty" => "is_empty_str",
+            "is_digit" => "is_digit_str",
+            "is_alpha" => "is_alpha_str",
+            "is_alphanumeric" => "is_alphanumeric_str",
+            "trim" => "trim_str",
+            "to_uppercase" | "to_upper" => "to_uppercase_str",
+            "to_lowercase" | "to_lower" => "to_lowercase_str",
+            "clone" => "clone_str",
+            "replace" => "replace_str",
+            "split" => "split_str",
+            "lines" => "lines_str",
+            "find" => "find_str",
+            "index_of" => "index_of_str",
+            "slice" => "slice_str",
+            "repeat" => "repeat_str",
+            "char_at" => "char_at_str",
+            "chars" => "chars_str",
+            _ => return None,
+        })
+    }
+
+    /// Resolve a method call on `Ty::String` through the `impl string` block
+    /// declared in `std/builtins.hew` when the method is a built-in inherent
+    /// (one with a known runtime FFI symbol).  Anything else — including
+    /// user `impl MyTrait for string` dispatch — falls back to the legacy
+    /// path so primitive-trait-impl metadata continues to be recorded for
+    /// codegen.
+    pub(super) fn dispatch_string_method(
+        &mut self,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        if let Some(c_symbol) = Self::string_method_runtime_symbol(method) {
+            if let Some(sig) = self.lookup_named_method_sig("string", &[], method) {
+                let applied = self.apply_instantiated_call_signature(
+                    &sig,
+                    None,
+                    args,
+                    span,
+                    SignatureArgApplication::PositionalOnly {
+                        arity_context: format!("method '{method}'"),
+                    },
+                    true,
+                );
+                self.record_runtime_method_call_rewrite(span, c_symbol);
+                return applied.return_type;
+            }
+        }
+        self.check_string_method(method, args, span)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "String has many methods to type-check"
@@ -1512,6 +1574,14 @@ impl Checker {
             }
             "is_digit" | "is_alpha" | "is_alphanumeric" => {
                 self.check_arity(args, 0, &format!("`String::{method}`"), span);
+                self.record_runtime_method_call_rewrite(
+                    span,
+                    match method {
+                        "is_digit" => "is_digit_str",
+                        "is_alpha" => "is_alpha_str",
+                        _ => "is_alphanumeric_str",
+                    },
+                );
                 Ty::Bool
             }
             "to_uppercase" | "to_upper" => {
@@ -1526,7 +1596,12 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "trim_str");
                 Ty::String
             }
-            "clone" => Ty::String,
+            "clone" => {
+                // v0.5 uses the stable clone shim (`hew_string_clone`); when the string ABI
+                // grows a header/refcount, revisit per `.tmp/orchestration/sota-string-cow-research-2026-05-23.md`.
+                self.record_runtime_method_call_rewrite(span, "clone_str");
+                Ty::String
+            }
             "replace" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -1536,6 +1611,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
                 }
+                self.record_runtime_method_call_rewrite(span, "replace_str");
                 Ty::String
             }
             "split" => {
@@ -1543,10 +1619,12 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
                 }
+                self.record_runtime_method_call_rewrite(span, "split_str");
                 self.make_vec_type(Ty::String, span)
             }
             "lines" => {
                 self.check_arity(args, 0, "`String::lines`", span);
+                self.record_runtime_method_call_rewrite(span, "lines_str");
                 self.make_vec_type(Ty::String, span)
             }
             "find" | "index_of" => {
@@ -1554,6 +1632,14 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
                 }
+                self.record_runtime_method_call_rewrite(
+                    span,
+                    if method == "find" {
+                        "find_str"
+                    } else {
+                        "index_of_str"
+                    },
+                );
                 Ty::I64
             }
             "slice" => {
@@ -1565,6 +1651,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::I64);
                 }
+                self.record_runtime_method_call_rewrite(span, "slice_str");
                 Ty::String
             }
             "repeat" => {
@@ -1572,6 +1659,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::I64);
                 }
+                self.record_runtime_method_call_rewrite(span, "repeat_str");
                 Ty::String
             }
             "char_at" => {
@@ -1579,10 +1667,12 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::I64);
                 }
+                self.record_runtime_method_call_rewrite(span, "char_at_str");
                 Ty::I64
             }
             "chars" => {
                 self.check_arity(args, 0, "`String::chars`", span);
+                self.record_runtime_method_call_rewrite(span, "chars_str");
                 self.make_vec_type(Ty::Char, span)
             }
             _ => {
@@ -3172,8 +3262,15 @@ impl Checker {
                 }
                 Ty::Unit
             }
-            // String methods
-            (Ty::String, _) => self.check_string_method(method, args, span),
+            // String methods — prefer the `impl string` block declared in
+            // std/builtins.hew (registered via register_builtins_hew_impls).
+            // If the method exists on that impl, type-check the call against
+            // the impl signature and record the runtime FFI rewrite mapping
+            // (catalog overload symbol).  Falls back to the legacy hardcoded
+            // dispatch in `check_string_method` only when the impl block has
+            // no matching method, preserving today's behaviour for methods
+            // whose rewrite isn't yet wired through the catalog.
+            (Ty::String, _) => self.dispatch_string_method(method, args, span),
             // Generator methods route through the Iterator contract:
             // .next() returns Option<yielded type>.
             (

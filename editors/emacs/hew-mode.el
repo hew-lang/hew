@@ -60,15 +60,17 @@
 
 ;; Keywords
 ;; Keywords — sourced from hew-lexer ALL_KEYWORDS (single source of truth).
+;; v0.5 additions: is, emit, entry, exit, transitions, drives (machine sub-keywords);
+;;                 link, monitor (actor sub-keywords); fork promoted from actor group.
 (defconst hew-keywords
-  '("if" "else" "match" "loop" "for" "in" "while"
+  '("if" "else" "is" "match" "loop" "for" "in" "while"
     "break" "continue" "return"
     "let" "var" "const" "fn" "gen" "type" "struct" "indirect" "enum"
     "trait" "impl" "import" "pub" "super" "where"
-    "actor" "receive" "init" "spawn" "async" "move" "await" "this"
+    "actor" "fork" "link" "monitor" "receive" "init" "spawn" "async" "move" "await" "this"
     "supervisor" "child" "restart" "budget" "strategy"
     "wire" "reserved" "optional" "deprecated" "default"
-    "machine" "state" "event" "on" "when"
+    "machine" "state" "event" "on" "when" "entry" "exit" "emit" "transitions" "drives"
     "try" "catch" "select" "join" "yield" "cooperate" "after" "from"
     "scope" "race" "defer" "foreign"
     "dyn" "unsafe" "extern" "package"

@@ -400,7 +400,8 @@ fn print_json_hir(machine: &HirMachineDecl) {
 // ── AST-backed renderers (used with --no-check) ──────────────────────────────
 
 fn print_mermaid(md: &MachineDecl) {
-    print_mermaid_title(&md.name, &md.type_params);
+    let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.clone()).collect();
+    print_mermaid_title(&md.name, &type_param_names);
     println!("stateDiagram-v2");
 
     if let Some(first) = md.states.first() {

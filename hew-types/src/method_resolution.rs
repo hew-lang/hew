@@ -41,11 +41,19 @@ fn lookup_user_type_def<'a>(
 }
 
 fn lookup_user_fn_sig<'a>(fn_sigs: &'a HashMap<String, FnSig>, key: &str) -> Option<&'a FnSig> {
-    fn_sigs.get(key).or_else(|| {
-        let (type_name, method_name) = key.split_once("::")?;
-        let (_, short) = type_name.rsplit_once('.')?;
-        fn_sigs.get(&format!("{short}::{method_name}"))
-    })
+    fn_sigs
+        .get(key)
+        .or_else(|| {
+            let (type_name, method_name) = key.split_once("::")?;
+            let (_, short) = type_name.rsplit_once('.')?;
+            fn_sigs.get(&format!("{short}::{method_name}"))
+        })
+        .or_else(|| {
+            let (type_name, method_name) = key.split_once("::")?;
+            fn_sigs.iter().find_map(|(sig_name, sig)| {
+                (scoped_method_name(sig_name, type_name) == Some(method_name)).then_some(sig)
+            })
+        })
 }
 
 fn merge_builtin_type_def(mut type_def: TypeDef, builtin: TypeDef) -> TypeDef {
@@ -60,6 +68,23 @@ fn merge_builtin_type_def(mut type_def: TypeDef, builtin: TypeDef) -> TypeDef {
 
 fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
     match ty {
+        Ty::I8 => Some(("i8", &[])),
+        Ty::I16 => Some(("i16", &[])),
+        Ty::I32 => Some(("i32", &[])),
+        Ty::I64 => Some(("i64", &[])),
+        Ty::U8 => Some(("u8", &[])),
+        Ty::U16 => Some(("u16", &[])),
+        Ty::U32 => Some(("u32", &[])),
+        Ty::U64 => Some(("u64", &[])),
+        Ty::Isize => Some(("isize", &[])),
+        Ty::Usize => Some(("usize", &[])),
+        Ty::F32 => Some(("f32", &[])),
+        Ty::F64 => Some(("f64", &[])),
+        Ty::Bool => Some(("bool", &[])),
+        Ty::Char => Some(("char", &[])),
+        Ty::String => Some(("string", &[])),
+        Ty::Bytes => Some(("bytes", &[])),
+        Ty::Duration => Some(("duration", &[])),
         // ActorRef<T>/LocalPid<T> wrap an actor type T — unwrap to dispatch methods on T.
         // RemotePid<T> is intentionally NOT unwrapped here: its methods are
         // resolved against RemotePid itself, not T.
@@ -76,6 +101,13 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
         Ty::Named { name, args, .. } => Some((name.as_str(), args.as_slice())),
         _ => None,
     }
+}
+
+fn scoped_method_name<'a>(sig_name: &'a str, type_name: &str) -> Option<&'a str> {
+    let scoped_prefix = format!("{type_name}::");
+    sig_name
+        .rsplit_once('.')
+        .and_then(|(_, unqualified)| unqualified.strip_prefix(&scoped_prefix))
 }
 
 fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<FnSig> {
@@ -235,11 +267,14 @@ pub fn collect_method_sigs_for_named_type(
         .rsplit_once('.')
         .map(|(_, short)| format!("{short}::"));
     for (sig_name, sig) in fn_sigs {
-        let method_name = sig_name.strip_prefix(&exact_prefix).or_else(|| {
-            short_prefix
-                .as_ref()
-                .and_then(|prefix| sig_name.strip_prefix(prefix))
-        });
+        let method_name = sig_name
+            .strip_prefix(&exact_prefix)
+            .or_else(|| {
+                short_prefix
+                    .as_ref()
+                    .and_then(|prefix| sig_name.strip_prefix(prefix))
+            })
+            .or_else(|| scoped_method_name(sig_name, type_name));
         if let Some(method_name) = method_name {
             let method_name = method_name.to_string();
             if seen.insert(method_name.clone()) {

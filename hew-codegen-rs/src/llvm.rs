@@ -477,6 +477,20 @@ enum FnSymbol<'ctx> {
         kind: PrintKind,
         newline: bool,
     },
+    /// Two-step call shim for `Node::register<T>(name, pid)`.
+    ///
+    /// R81 mandates that `LocalPid<T>` reaches the C-ABI extern as a bare
+    /// `u64` PID, but the LLVM alloca for a `LocalPid<T>` local is a `ptr`
+    /// (a `*mut HewActor`). Codegen must therefore synthesise:
+    ///   1. `hew_actor_pid(actor_ptr) -> u64`
+    ///   2. `hew_node_api_register_by_pid(name_ptr, pid_u64) -> i32`
+    ///
+    /// `register_fn` is `hew_node_api_register_by_pid(ptr, i64) -> i32`.
+    /// `pid_fn`      is `hew_actor_pid(ptr) -> i64`.
+    NodeRegisterPid {
+        register_fn: FunctionValue<'ctx>,
+        pid_fn: FunctionValue<'ctx>,
+    },
 }
 
 impl<'ctx> FnSymbol<'ctx> {
@@ -494,6 +508,11 @@ impl<'ctx> FnSymbol<'ctx> {
             Self::PrintIntercept { .. } => Err(CodegenError::FailClosed(format!(
                 "{context} expected `{callee}` to be a callable LLVM function, \
                  but it is a stdlib print intercept"
+            ))),
+            Self::NodeRegisterPid { .. } => Err(CodegenError::FailClosed(format!(
+                "{context} expected `{callee}` to be a callable LLVM function, \
+                 but it is the Node::register PID-extraction shim — \
+                 handle FnSymbol::NodeRegisterPid in Terminator::Call instead"
             ))),
         }
     }
@@ -1022,6 +1041,38 @@ fn predeclare_stdlib_catalog<'ctx>(
                 );
             }
             BuiltinLinkage::CompilerIntrinsic { .. } => {}
+            BuiltinLinkage::NodeRegisterByPid {
+                register_symbol,
+                pid_accessor,
+            } => {
+                // Declare both LLVM functions manually: the catalog param list
+                // is a placeholder and cannot be fed through `declare_catalog_ffi`
+                // (which would produce the wrong LLVM types for the LocalPid<T>
+                // argument).
+                let ptr_ty = ctx.ptr_type(AddressSpace::default());
+                let i64_ty = ctx.i64_type();
+                let i32_ty = ctx.i32_type();
+
+                // hew_actor_pid(actor: *mut HewActor) -> u64
+                let pid_fn_ty = i64_ty.fn_type(&[ptr_ty.into()], false);
+                let pid_fn = llvm_mod.get_function(pid_accessor).unwrap_or_else(|| {
+                    llvm_mod.add_function(pid_accessor, pid_fn_ty, Some(Linkage::External))
+                });
+
+                // hew_node_api_register_by_pid(name: *const c_char, pid: u64) -> c_int
+                let reg_fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
+                let register_fn = llvm_mod.get_function(register_symbol).unwrap_or_else(|| {
+                    llvm_mod.add_function(register_symbol, reg_fn_ty, Some(Linkage::External))
+                });
+
+                fn_symbols.insert(
+                    entry.name.to_string(),
+                    FnSymbol::NodeRegisterPid {
+                        register_fn,
+                        pid_fn,
+                    },
+                );
+            }
         }
     }
     Ok(())
@@ -1600,14 +1651,22 @@ fn machine_layout_for_local<'a, 'ctx>(
     } else {
         let key = mangle(name, args);
         if !fn_ctx.machine_layouts.contains_key(&key) {
-            return Err(CodegenError::FailClosed(format!(
-                "Place::MachineTag/MachineVariant references generic enum `{name}` \
-                 with type args {args:?}: mangled key `{key}` is not in \
-                 IrPipeline.machine_layouts — the monomorphisation was not registered \
-                 by `register_enum_layouts` (registration-mismatch)"
-            )));
+            let short_key = mangle(short_name(name), args);
+            if fn_ctx.machine_layouts.contains_key(&short_key) {
+                short_key
+            } else if fn_ctx.machine_layouts.contains_key(short_name(name)) {
+                short_name(name).to_string()
+            } else {
+                return Err(CodegenError::FailClosed(format!(
+                    "Place::MachineTag/MachineVariant references generic enum `{name}` \
+                     with type args {args:?}: mangled key `{key}` is not in \
+                     IrPipeline.machine_layouts — the monomorphisation was not registered \
+                     by `register_enum_layouts` (registration-mismatch)"
+                )));
+            }
+        } else {
+            key
         }
-        key
     };
     fn_ctx.machine_layouts.get(&lookup_key).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -1616,6 +1675,10 @@ fn machine_layout_for_local<'a, 'ctx>(
              and codegen"
         ))
     })
+}
+
+fn short_name(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
 /// Resolve any `ResolvedTy` to its LLVM `BasicTypeEnum`, consulting the
@@ -1666,6 +1729,15 @@ fn resolve_ty<'ctx>(
         };
         if let Some(st) = record_layouts.get(lookup_key.as_ref()) {
             return Ok((*st).into());
+        }
+        if !args.is_empty() {
+            let short_key = mangle(short_name(name), args);
+            if let Some(st) = record_layouts.get(short_key.as_str()) {
+                return Ok((*st).into());
+            }
+            if let Some(st) = record_layouts.get(short_name(name)) {
+                return Ok((*st).into());
+            }
         }
     }
     if let ResolvedTy::Tuple(elems) = ty {
@@ -1795,6 +1867,14 @@ fn primitive_to_llvm<'ctx>(
         }
         ResolvedTy::Named { name, .. } if name == "HewTaskScope" => {
             Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
+        ResolvedTy::Named { name, .. } if name == "RemotePid" => {
+            // `RemotePid<T>` lowers to a bare u64 PID (same encoding as
+            // `LocalPid<T>` at the wire level, but `LocalPid<T>` uses a ptr
+            // alloca because it holds a `*mut HewActor`).  `RemotePid<T>` is
+            // always a packed (node_id: u16, serial: u64) PID — a numeric
+            // value, not a heap pointer.
+            Ok(ctx.i64_type().into())
         }
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
             "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
@@ -7319,6 +7399,88 @@ fn lower_terminator<'ctx>(
                         emit_machine_step_exit_call(fn_ctx, queue)?;
                     }
                 }
+                FnSymbol::NodeRegisterPid {
+                    register_fn,
+                    pid_fn,
+                } => {
+                    // Two-step lowering per R81:
+                    //   step 1: pid_u64 = hew_actor_pid(actor_ptr)
+                    //   step 2: result  = hew_node_api_register_by_pid(name_ptr, pid_u64)
+                    //
+                    // The `LocalPid<T>` alloca is a `ptr` (not u64); we must
+                    // load it as a pointer value and pass it to `hew_actor_pid`
+                    // before passing the numeric PID to the register extern.
+                    let [name_arg, pid_arg] = args.as_slice() else {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Node::register expects exactly 2 arguments (name, pid), got {}",
+                            args.len()
+                        )));
+                    };
+                    let dest_place = dest.as_ref().ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "Node::register (i32-returning) must carry a Terminator::Call dest"
+                                .into(),
+                        )
+                    })?;
+
+                    // Load the name string pointer (ptr-typed alloca).
+                    let (name_ptr, name_ty) = place_pointer(fn_ctx, *name_arg)?;
+                    let name_val = fn_ctx
+                        .builder
+                        .build_load(name_ty, name_ptr, "reg_name")
+                        .map_err(|e| CodegenError::Llvm(format!("load reg name: {e:?}")))?;
+
+                    // Load the LocalPid<T> alloca as a raw pointer.
+                    let (actor_alloca_ptr, actor_alloca_ty) = place_pointer(fn_ctx, *pid_arg)?;
+                    let actor_ptr = fn_ctx
+                        .builder
+                        .build_load(actor_alloca_ty, actor_alloca_ptr, "reg_actor_ptr")
+                        .map_err(|e| CodegenError::Llvm(format!("load LocalPid<T> ptr: {e:?}")))?;
+
+                    // Step 1: extract the u64 PID from the actor pointer.
+                    let pid_call = fn_ctx
+                        .builder
+                        .build_call(pid_fn, &[metadata_value_from_basic(actor_ptr)], "actor_pid")
+                        .map_err(|e| CodegenError::Llvm(format!("hew_actor_pid call: {e:?}")))?;
+                    let pid_u64 = pid_call.try_as_basic_value().basic().ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_actor_pid returned void — expected u64".into(),
+                        )
+                    })?;
+
+                    // Step 2: register by PID.
+                    let reg_call = fn_ctx
+                        .builder
+                        .build_call(
+                            register_fn,
+                            &[
+                                metadata_value_from_basic(name_val),
+                                metadata_value_from_basic(pid_u64),
+                            ],
+                            "reg_result",
+                        )
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("hew_node_api_register_by_pid call: {e:?}"))
+                        })?;
+                    let reg_i32 = reg_call.try_as_basic_value().basic().ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_node_api_register_by_pid returned void — expected i32".into(),
+                        )
+                    })?;
+
+                    // Store the i32 return value into the destination.
+                    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+                    let i32_ty = fn_ctx.ctx.i32_type();
+                    if dest_ty != BasicTypeEnum::IntType(i32_ty) {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Node::register dest type {dest_ty:?} does not match i32"
+                        )));
+                    }
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, reg_i32)
+                        .map_err(|e| CodegenError::Llvm(format!("store reg result: {e:?}")))?;
+                }
             }
             let next_bb = *fn_ctx
                 .blocks
@@ -9645,20 +9807,9 @@ fn build_module_for_target<'ctx>(
     // be populated up front. Empty `record_layouts` (most existing pipelines)
     // produces an empty map and changes no behaviour for record-free code.
     let mut record_layouts = register_record_layouts(ctx, &pipeline.record_layouts)?;
-    // Slice 5: register machine tagged-union types alongside records.
-    // `register_machine_layouts` inserts the outer struct of each machine
-    // and its `<Name>Event` companion into `record_layouts` so `resolve_ty`
-    // resolves `ResolvedTy::Named { name: "Foo" }` to the machine's outer
-    // struct the same way it resolves a record. The richer per-variant
-    // metadata (inner structs, tag int type) lives in `machine_layouts`.
-    let mut machine_layouts = register_machine_layouts(
-        ctx,
-        &llvm_mod,
-        &pipeline.machine_layouts,
-        &mut record_layouts,
-        target_data.as_ref(),
-    )?;
-    // Register user-defined enum layouts into the same `machine_layouts` map.
+    let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
+    // Register user-defined enum layouts before machines so machine payloads
+    // can name enum types declared in imported stdlib modules.
     // Enum-typed locals use the same `Place::MachineTag` / `Place::MachineVariant`
     // addressing as machine-typed locals; the map lookup in
     // `machine_layout_for_local` is keyed by type name and does not
@@ -9670,6 +9821,20 @@ fn build_module_for_target<'ctx>(
         &mut machine_layouts,
         target_data.as_ref(),
     )?;
+    // Slice 5: register machine tagged-union types alongside records.
+    // `register_machine_layouts` inserts the outer struct of each machine
+    // and its `<Name>Event` companion into `record_layouts` so `resolve_ty`
+    // resolves `ResolvedTy::Named { name: "Foo" }` to the machine's outer
+    // struct the same way it resolves a record. The richer per-variant
+    // metadata (inner structs, tag int type) lives in `machine_layouts`.
+    let machine_layout_map = register_machine_layouts(
+        ctx,
+        &llvm_mod,
+        &pipeline.machine_layouts,
+        &mut record_layouts,
+        target_data.as_ref(),
+    )?;
+    machine_layouts.extend(machine_layout_map);
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
     predeclare_extern_decls(

@@ -48,17 +48,13 @@ impl ResourceMarker {
 /// for compatibility with existing HIR/MIR construction sites; callers must use
 /// `lookup_type_marker` so `BitCopy` registrations that have no parser spelling
 /// are still observed. LESSONS: `type-info-survival`.
-pub type TypeClassTable = HashMap<String, (AstResourceMarker, Option<String>)>;
+pub type TypeClassTable = HashMap<String, (ResourceMarker, Option<String>)>;
 
 #[must_use]
 pub fn lookup_type_marker(name: &str, type_classes: &TypeClassTable) -> Option<ResourceMarker> {
     crate::builtin_type_classes::builtin_type_registration(name)
         .map(|registration| registration.marker)
-        .or_else(|| {
-            type_classes
-                .get(name)
-                .map(|(marker, _)| ResourceMarker::from(*marker))
-        })
+        .or_else(|| type_classes.get(name).map(|(marker, _)| *marker))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -124,7 +120,13 @@ impl ValueClass {
                 Some(ResourceMarker::BitCopy) => Self::BitCopy,
                 Some(ResourceMarker::Resource) => Self::AffineResource,
                 Some(ResourceMarker::Linear) => Self::Linear,
-                Some(ResourceMarker::None) | None => Self::Unknown,
+                Some(ResourceMarker::None) | None => {
+                    if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
+                        Self::CowValue
+                    } else {
+                        Self::Unknown
+                    }
+                }
             },
             // Task handles are consume-once: MirCheck::MustConsume fires if a
             // ForkTaskHandle binding is live at an exit without being consumed

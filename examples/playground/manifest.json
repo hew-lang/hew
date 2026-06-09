@@ -21,7 +21,7 @@
     "expected_path": "basics/fibonacci.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   },
@@ -138,7 +138,7 @@
     "expected_path": "types/pattern_matching.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   },

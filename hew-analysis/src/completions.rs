@@ -43,6 +43,10 @@ pub fn complete(
         return items;
     }
 
+    if let Some(items) = try_is_type_pattern_completions(source, type_output, offset) {
+        return items;
+    }
+
     let mut items: Vec<CompletionItem> = KEYWORDS
         .iter()
         .map(|kw| CompletionItem {
@@ -97,6 +101,33 @@ pub fn complete(
     items.retain(|item| seen.insert(item.label.clone()));
 
     items
+}
+
+fn try_is_type_pattern_completions(
+    source: &str,
+    type_output: Option<&TypeCheckOutput>,
+    offset: usize,
+) -> Option<Vec<CompletionItem>> {
+    let before = &source[..offset];
+    let trimmed = before.trim_end();
+    if !trimmed.ends_with(" is") {
+        return None;
+    }
+    let tc = type_output?;
+    let mut items: Vec<_> = tc
+        .type_defs
+        .keys()
+        .map(|name| CompletionItem {
+            label: name.clone(),
+            kind: CompletionKind::Type,
+            detail: None,
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    (!items.is_empty()).then_some(items)
 }
 
 /// If the cursor is right after a `.`, find the receiver type and offer its methods/fields.

@@ -92,9 +92,13 @@ async function poll() {
       fetch("/api/metrics/history"),
       fetch("/api/actors"),
     ]);
-    const snap = await metricsRes.json();
-    const history = await historyRes.json();
-    const actors = await actorsRes.json();
+    // Every `/api/*` JSON response is wrapped in the canonical observe
+    // envelope `{"schema_version":"v0.5","data":<body>}`. Unwrap once at
+    // the seam so the rest of the dashboard keeps working with the inner
+    // shapes.
+    const snap = (await metricsRes.json()).data;
+    const history = (await historyRes.json()).data;
+    const actors = (await actorsRes.json()).data;
 
     // Uptime.
     document.getElementById("uptime").textContent =

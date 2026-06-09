@@ -2,7 +2,7 @@
 /// via the dot-postfix path (e.g. `fs.IoError::TimedOut(0)`).
 ///
 /// Covers the `DoubleColon` accumulation added to `parse_dot_postfix`
-/// to emit `MethodCall { receiver, method: "Type::Variant", args }`.
+/// to emit qualified constructor call paths.
 use hew_parser::ast::{CallArg, Expr, Item, Stmt};
 
 fn first_body_expr(source: &str) -> Expr {
@@ -36,20 +36,14 @@ fn first_body_expr(source: &str) -> Expr {
 #[test]
 fn cross_module_enum_variant_tuple_payload_parses() {
     let expr = first_body_expr("fn f() { a.B::C(1) }");
-    let Expr::MethodCall {
-        receiver,
-        method,
-        args,
-    } = expr
-    else {
-        panic!("expected MethodCall, got: {expr:?}");
+    let Expr::Call { function, args, .. } = expr else {
+        panic!("expected Call, got: {expr:?}");
     };
     assert!(
-        matches!(receiver.0, Expr::Identifier(ref n) if n == "a"),
-        "expected Identifier(a) receiver, got: {:?}",
-        receiver.0
+        matches!(function.0, Expr::Identifier(ref n) if n == "a.B::C"),
+        "expected qualified constructor callee, got: {:?}",
+        function.0
     );
-    assert_eq!(method, "B::C");
     assert_eq!(args.len(), 1);
     let CallArg::Positional((Expr::Literal(lit), _)) = &args[0] else {
         panic!("expected positional literal arg, got: {:?}", args[0]);
@@ -65,19 +59,14 @@ fn cross_module_enum_variant_tuple_payload_parses() {
 #[test]
 fn cross_module_enum_nested_segments_parses() {
     let expr = first_body_expr("fn f() { a.B::C::D(0) }");
-    let Expr::MethodCall {
-        receiver,
-        method,
-        args,
-    } = expr
-    else {
-        panic!("expected MethodCall, got: {expr:?}");
+    let Expr::Call { function, args, .. } = expr else {
+        panic!("expected Call, got: {expr:?}");
     };
     assert!(
-        matches!(receiver.0, Expr::Identifier(ref n) if n == "a"),
-        "expected Identifier(a) receiver"
+        matches!(function.0, Expr::Identifier(ref n) if n == "a.B::C::D"),
+        "expected qualified constructor callee, got: {:?}",
+        function.0
     );
-    assert_eq!(method, "B::C::D");
     assert_eq!(args.len(), 1);
 }
 
@@ -87,25 +76,15 @@ fn cross_module_enum_nested_segments_parses() {
 fn cross_module_enum_chained_field_then_variant_parses() {
     // `a.b` is FieldAccess; `.C::D(0)` is MethodCall on that result.
     let expr = first_body_expr("fn f() { a.b.C::D(0) }");
-    let Expr::MethodCall {
-        receiver,
-        method,
-        args,
-    } = expr
-    else {
-        panic!("expected outer MethodCall, got: {expr:?}");
-    };
-    assert_eq!(method, "C::D");
-    assert_eq!(args.len(), 1);
-    // The receiver of the MethodCall must be FieldAccess(a, b).
-    let Expr::FieldAccess { object, field } = receiver.0 else {
-        panic!("expected FieldAccess receiver, got: {:?}", receiver.0);
+    let Expr::Call { function, args, .. } = expr else {
+        panic!("expected outer Call, got: {expr:?}");
     };
     assert!(
-        matches!(object.0, Expr::Identifier(ref n) if n == "a"),
-        "expected Identifier(a) object"
+        matches!(function.0, Expr::Identifier(ref n) if n == "a.b.C::D"),
+        "expected qualified constructor callee, got: {:?}",
+        function.0
     );
-    assert_eq!(field, "b");
+    assert_eq!(args.len(), 1);
 }
 
 // --- Negative regression: single-segment method call still works ---
@@ -149,9 +128,13 @@ fn field_access_regression() {
 #[test]
 fn cross_module_enum_variant_multi_arg_parses() {
     let expr = first_body_expr("fn f() { mod.Outer::Inner(x, y) }");
-    let Expr::MethodCall { method, args, .. } = expr else {
-        panic!("expected MethodCall, got: {expr:?}");
+    let Expr::Call { function, args, .. } = expr else {
+        panic!("expected Call, got: {expr:?}");
     };
-    assert_eq!(method, "Outer::Inner");
+    assert!(
+        matches!(function.0, Expr::Identifier(ref n) if n == "mod.Outer::Inner"),
+        "expected qualified constructor callee, got: {:?}",
+        function.0
+    );
     assert_eq!(args.len(), 2);
 }

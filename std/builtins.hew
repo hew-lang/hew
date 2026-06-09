@@ -74,7 +74,7 @@ impl<T: ActorMsg> LocalPid<T> {
     }
 }
 
-impl LocalPid<T> {
+impl<T> LocalPid<T> {
     // WASM-TODO(#1451): RemotePid cross-node routing is native-only until
     // a wasm peer transport is decided.
     /// Obtain a remote pid that routes to the same actor via `node_handle`.
@@ -84,7 +84,7 @@ impl LocalPid<T> {
     fn to_remote_via(pid: LocalPid<T>, node_handle: dyn Display) -> RemotePid<T> {}
 }
 
-impl RemotePid<T> {
+impl<T> RemotePid<T> {
     // WASM-TODO(#1451): RemotePid construction is native-only until a wasm
     // peer transport is decided.
     /// Construct a remote pid from raw node/serial components.
@@ -164,7 +164,9 @@ impl<T> Index for Vec<T> {
 ///
 /// Blanket impls below cover the primitive numeric kinds, `bool`,
 /// `char`, and `string`; user types add their own impls per receiver.
+#[lang_item("display")]
 pub trait Display {
+    #[lang_item("display_fmt")]
     fn fmt(val: Self) -> string;
 }
 
@@ -230,6 +232,93 @@ impl Display for bool {
 impl Display for char {
     fn fmt(val: char) -> string {
         to_string(val)
+    }
+}
+
+impl Display for f64 {
+    fn fmt(val: f64) -> string {
+        to_string(val)
+    }
+}
+
+impl Display for string {
+    fn fmt(val: string) -> string {
+        val
+    }
+}
+
+// ---------------------------------------------------------------------------
+// String methods
+// ---------------------------------------------------------------------------
+impl string {
+    fn len(s: string) -> i64 {
+        0
+    }
+    fn is_empty(s: string) -> bool {
+        false
+    }
+    fn contains(s: string, needle: string) -> bool {
+        false
+    }
+    fn starts_with(s: string, prefix: string) -> bool {
+        false
+    }
+    fn ends_with(s: string, suffix: string) -> bool {
+        false
+    }
+    fn to_uppercase(s: string) -> string {
+        ""
+    }
+    fn to_upper(s: string) -> string {
+        ""
+    }
+    fn to_lowercase(s: string) -> string {
+        ""
+    }
+    fn to_lower(s: string) -> string {
+        ""
+    }
+    fn trim(s: string) -> string {
+        ""
+    }
+    fn is_digit(s: string) -> bool {
+        false
+    }
+    fn is_alpha(s: string) -> bool {
+        false
+    }
+    fn is_alphanumeric(s: string) -> bool {
+        false
+    }
+    fn clone(s: string) -> string {
+        ""
+    }
+    fn replace(s: string, from: string, to: string) -> string {
+        ""
+    }
+    fn split(s: string, sep: string) -> Vec<string> {
+        Vec::new()
+    }
+    fn lines(s: string) -> Vec<string> {
+        Vec::new()
+    }
+    fn find(s: string, needle: string) -> i64 {
+        0
+    }
+    fn index_of(s: string, needle: string) -> i64 {
+        0
+    }
+    fn slice(s: string, start: i64, end: i64) -> string {
+        ""
+    }
+    fn repeat(s: string, n: i64) -> string {
+        ""
+    }
+    fn char_at(s: string, idx: i64) -> i64 {
+        0
+    }
+    fn chars(s: string) -> Vec<char> {
+        Vec::new()
     }
 }
 

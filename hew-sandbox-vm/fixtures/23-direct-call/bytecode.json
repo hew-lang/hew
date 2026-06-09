@@ -33,13 +33,12 @@
           "terminator": {
             "args": [
               {
-                "kind": "trap",
-                "value": "internal_error"
+                "kind": "local",
+                "value": "local:id.1"
               }
             ],
-            "op": "trap",
-            "span": "span:0-39",
-            "trap_kind": "internal_error"
+            "op": "return",
+            "span": "span:0-39"
           }
         }
       ],
@@ -274,7 +273,7 @@
       }
     ]
   },
-  "package_id": "pkg:337378daab14b39c",
+  "package_id": "pkg:3dbd5c54e0a2042e",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

@@ -126,6 +126,62 @@ impl Checker {
         }
     }
 
+    /// Verify that `ty` has a `Display` impl reachable by f-string
+    /// interpolation lowering. The Display trait is identified through the
+    /// lang-item registry (`LANG_ITEM_DISPLAY` key) so stdlib can rename or
+    /// move the trait by relocating its `#[lang_item("display")]` attribute
+    /// without code changes here. Mirrors the lookup that
+    /// `lower_display_dispatch` performs in HIR: primitives consult
+    /// `primitive_trait_impls`, user-named types consult `trait_impls_set`,
+    /// and `string` is accepted as a passthrough. Emits a clear
+    /// `BoundsNotSatisfied` diagnostic on miss so the negative gate is
+    /// raised at check time rather than as an opaque HIR/MIR error.
+    pub(super) fn require_display_impl(&mut self, ty: &Ty, span: &Span) {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if matches!(resolved, Ty::String) {
+            return;
+        }
+        if matches!(resolved, Ty::Var(_) | Ty::Error) {
+            return;
+        }
+        // Resolve the Display trait name through the lang-item registry.
+        // No `#[lang_item("display")]` in scope means the program defines no
+        // Display trait at all — in which case f-string interpolation can
+        // only accept the trivially-string / inference-pending cases handled
+        // above. Falling back to the literal name `"Display"` keeps
+        // pre-lang-item check-time tests (no stdlib loaded) working with the
+        // implicit naming convention.
+        let display_trait = self
+            .lang_items
+            .display_trait()
+            .map_or_else(|| "Display".to_string(), str::to_owned);
+        if let Some(canonical) = resolved.canonical_lowering_name() {
+            if self
+                .primitive_trait_impls
+                .contains_key(&(canonical.to_string(), display_trait.clone()))
+            {
+                return;
+            }
+        }
+        if let Ty::Named { name, .. } = &resolved {
+            if self
+                .trait_impls_set
+                .contains(&(name.clone(), display_trait.clone()))
+            {
+                return;
+            }
+        }
+        let ty_str = format!("{}", resolved.user_facing());
+        self.report_error(
+            TypeErrorKind::BoundsNotSatisfied,
+            span,
+            format!(
+                "type `{ty_str}` does not implement `{display_trait}` \
+                 (f-string interpolation requires `impl {display_trait} for {ty_str}`)"
+            ),
+        );
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "expression check covers all AST variants"
@@ -165,7 +221,8 @@ impl Checker {
             Expr::InterpolatedString(parts) => {
                 for part in parts {
                     if let StringPart::Expr((expr, expr_span)) = part {
-                        self.synthesize(expr, expr_span);
+                        let part_ty = self.synthesize(expr, expr_span);
+                        self.require_display_impl(&part_ty, expr_span);
                     }
                 }
                 Ty::String
@@ -822,6 +879,10 @@ impl Checker {
         Ty::Unit
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single dispatch over all identifier forms (context readers, module-qualified variants, bindings, fn sigs, constructors, type aliases); splitting would fragment shared error-reporting state"
+    )]
     pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
         if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
             if self.in_actor_handler_context {
@@ -848,6 +909,39 @@ impl Checker {
                 ),
             );
             return Ty::Error;
+        }
+        // Module-qualified value constructor reference encoded as a flat
+        // `Identifier("module.Type::Variant")` by `parse_dot_postfix` when no
+        // call-args or brace-body follow.  Dispatch to the fail-closed
+        // module-aware checker before falling through to the generic
+        // "undefined variable" path, which would produce a misleading error.
+        //
+        // Guard: only intercept when:
+        //  - the module part isn't a known binding or local type (mirrors
+        //    the check_field_access guard at line 3631)
+        //  - the combined "module.Type" key is NOT already in type_defs
+        //    (registered module-qualified types like "lifecycle.Lifecycle"
+        //    are correctly resolved by resolve_identifier_variant via the
+        //    type_defs flat-key path — don't short-circuit that path)
+        if let Some(dot_pos) = name.find('.') {
+            let candidate_module = &name[..dot_pos];
+            let rest = &name[dot_pos + 1..];
+            if let Some(colon_pos) = rest.find("::") {
+                let type_name = &rest[..colon_pos];
+                let variant_name = &rest[colon_pos + 2..];
+                let is_binding = self.env.lookup_ref(candidate_module).is_some();
+                let is_known_type = self.type_defs.contains_key(candidate_module);
+                let qualified_key = format!("{candidate_module}.{type_name}");
+                let qualified_in_type_defs = self.type_defs.contains_key(&qualified_key);
+                if !is_binding && !is_known_type && !qualified_in_type_defs {
+                    return self.check_module_qualified_variant_ref(
+                        candidate_module,
+                        type_name,
+                        variant_name,
+                        span,
+                    );
+                }
+            }
         }
         if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
             let binding_id = binding.id;
@@ -957,7 +1051,7 @@ impl Checker {
                                 let sig_names_correct_enum = sig
                                     .return_type
                                     .type_name()
-                                    .is_some_and(|n| n == type_prefix);
+                                    .is_some_and(|n| Ty::names_match_qualified(n, type_prefix));
                                 if sig_names_correct_enum {
                                     let mut ret = sig.return_type.clone();
                                     for tp in &sig.type_params {
@@ -2148,7 +2242,10 @@ impl Checker {
                 // Reject mismatched qualified prefix (e.g. OtherEnum::Variant
                 // when expected is MyEnum).
                 let prefix_ok = !name.contains("::")
-                    || name.split("::").next().unwrap_or("") == expected_enum_name.as_str();
+                    || Ty::names_match_qualified(
+                        name.split("::").next().unwrap_or(""),
+                        expected_enum_name,
+                    );
 
                 let mut handled = false;
                 if prefix_ok {
@@ -4489,6 +4586,14 @@ impl Checker {
             // Emit unconditionally; see the struct-init branch above for the
             // boundary-prune rationale and validator location.
             self.record_concrete_record_init_type_args(span, &type_args);
+            // Enforce trait bounds declared on the machine's generic type
+            // parameters. Other variant carriers (enum/struct/record) do not
+            // currently route bounds through the brace-init path; the bounds
+            // side table is keyed by machine name, so this is a no-op for
+            // non-machine carriers.
+            if let Some(bounds) = self.machine_type_param_bounds.get(&enum_name).cloned() {
+                self.enforce_named_type_param_bounds(&enum_type_params, &bounds, &type_args, span);
+            }
             Ty::Named {
                 builtin: None,
                 name: enum_name,
@@ -4834,6 +4939,9 @@ impl Checker {
     /// don't double-poison.
     fn synthesize_is(&mut self, lhs: &Spanned<Expr>, rhs: &Spanned<Expr>, span: &Span) -> Ty {
         let lhs_ty = self.synthesize(&lhs.0, &lhs.1);
+        if let Some(rhs_ty) = self.resolve_is_type_pattern(&rhs.0) {
+            return self.synthesize_is_type_pattern(lhs, &lhs_ty, rhs, &rhs_ty, span);
+        }
         let rhs_ty = self.synthesize(&rhs.0, &rhs.1);
         let lhs_resolved = self.subst.resolve(&lhs_ty);
         let rhs_resolved = self.subst.resolve(&rhs_ty);
@@ -4875,6 +4983,73 @@ impl Checker {
                     rhs_resolved.user_facing()
                 ),
             );
+        }
+
+        Ty::Bool
+    }
+
+    fn resolve_is_type_pattern(&self, rhs: &Expr) -> Option<Ty> {
+        let Expr::Identifier(name) = rhs else {
+            return None;
+        };
+        Ty::from_name(name).or_else(|| {
+            self.lookup_type_def(name)
+                .map(|type_def| Ty::normalize_named(type_def.name, vec![]))
+        })
+    }
+
+    fn synthesize_is_type_pattern(
+        &mut self,
+        lhs: &Spanned<Expr>,
+        lhs_ty: &Ty,
+        rhs: &Spanned<Expr>,
+        rhs_ty: &Ty,
+        span: &Span,
+    ) -> Ty {
+        let lhs_resolved = self.subst.resolve(lhs_ty);
+        let rhs_resolved = self.subst.resolve(rhs_ty);
+
+        if matches!(lhs_resolved, Ty::Error | Ty::Var(_))
+            || matches!(rhs_resolved, Ty::Error | Ty::Var(_))
+        {
+            return Ty::Bool;
+        }
+
+        let lhs_ok = self.is_identity_capable(&lhs_resolved);
+        let rhs_ok = self.is_identity_capable(&rhs_resolved);
+
+        if !lhs_ok {
+            self.report_is_value_type(&lhs.1, &lhs_resolved);
+        }
+        if !rhs_ok {
+            self.report_is_value_type(&rhs.1, &rhs_resolved);
+        }
+
+        if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
+            self.report_error(
+                TypeErrorKind::Mismatch {
+                    expected: lhs_resolved.user_facing().to_string(),
+                    actual: rhs_resolved.user_facing().to_string(),
+                },
+                span,
+                format!(
+                    "`is` type pattern must match the operand type; found `{}` and `{}`",
+                    lhs_resolved.user_facing(),
+                    rhs_resolved.user_facing()
+                ),
+            );
+        } else if lhs_ok && rhs_ok {
+            if !matches!(lhs.0, Expr::Identifier(_)) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    &lhs.1,
+                    "`is` type patterns currently require an identifier operand".to_string(),
+                );
+                return Ty::Bool;
+            }
+            let rhs_key = SpanKey::from(&rhs.1);
+            self.is_type_patterns.insert(rhs_key, rhs_resolved.clone());
+            self.record_type(&rhs.1, &rhs_resolved);
         }
 
         Ty::Bool

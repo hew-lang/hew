@@ -17,6 +17,7 @@ use serde::Serialize;
 use std::cell::Cell;
 
 type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
+type StructInitFields = (Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
 
 /// Parse an integer literal string, returning both value and radix.
 ///
@@ -1492,7 +1493,7 @@ impl<'src> Parser<'src> {
                     }
                     Some(Token::Trait) => {
                         self.advance();
-                        let mut t = self.parse_trait_decl(vis)?;
+                        let mut t = self.parse_trait_decl(vis, &attrs)?;
                         t.doc_comment = doc_comment;
                         Item::Trait(t)
                     }
@@ -1582,7 +1583,7 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Trait) => {
                 self.advance();
-                let mut t = self.parse_trait_decl(Visibility::Private)?;
+                let mut t = self.parse_trait_decl(Visibility::Private, &attrs)?;
                 t.doc_comment = doc_comment;
                 Item::Trait(t)
             }
@@ -2217,7 +2218,11 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn parse_trait_decl(&mut self, visibility: Visibility) -> Option<TraitDecl> {
+    fn parse_trait_decl(
+        &mut self,
+        visibility: Visibility,
+        attrs: &[Attribute],
+    ) -> Option<TraitDecl> {
         let name = self.expect_ident()?;
 
         let type_params = self.parse_opt_type_params()?;
@@ -2241,6 +2246,11 @@ impl<'src> Parser<'src> {
 
         self.expect(&Token::RightBrace)?;
 
+        let lang_item = attrs
+            .iter()
+            .find(|a| a.name == "lang_item")
+            .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
+
         Some(TraitDecl {
             visibility,
             name,
@@ -2248,11 +2258,13 @@ impl<'src> Parser<'src> {
             super_traits,
             items,
             doc_comment: None,
+            lang_item,
         })
     }
 
     fn parse_trait_item(&mut self) -> Option<TraitItem> {
         let doc_comment = self.collect_doc_comments();
+        let attrs = self.parse_attributes();
         let is_pure = self.eat(&Token::Pure);
         match self.peek() {
             Some(Token::Fn) => {
@@ -2276,6 +2288,11 @@ impl<'src> Parser<'src> {
                 };
                 let fn_end = self.peek_span().start;
 
+                let lang_item = attrs
+                    .iter()
+                    .find(|a| a.name == "lang_item")
+                    .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
+
                 Some(TraitItem::Method(TraitMethod {
                     name,
                     is_pure,
@@ -2286,6 +2303,7 @@ impl<'src> Parser<'src> {
                     body,
                     span: fn_start..fn_end,
                     doc_comment,
+                    lang_item,
                 }))
             }
             Some(Token::Type) => {
@@ -2730,14 +2748,13 @@ impl<'src> Parser<'src> {
     fn parse_machine_decl(&mut self, visibility: Visibility) -> Option<MachineDecl> {
         let name = self.expect_ident()?;
 
-        // Optional generic type parameters: `machine Name<T, U> { ... }`.
-        //
-        // v0.5 accepts bare identifiers only. Trait bounds (`<T: Trait>`)
-        // and machine-over-machine generics are not supported per
-        // `docs/specs/HEW-SPEC-2026.md` §3.11.8; reject them here with a
-        // clear diagnostic instead of silently dropping the bound.
+        // Optional generic type parameters: `machine Name<T, U> { ... }` or
+        // `machine Name<T: Trait, U> { ... }`. Trait bounds are accepted at
+        // the parser level — bound enforcement is the type-checker's job
+        // (see `docs/specs/HEW-SPEC-2026.md` §3.11.8). Variance markers,
+        // defaults, and machine-over-machine generics remain unsupported.
         let type_params = if self.eat(&Token::Less) {
-            self.parse_machine_type_params()?
+            self.parse_type_params()?
         } else {
             Vec::new()
         };
@@ -2938,55 +2955,6 @@ impl<'src> Parser<'src> {
             transitions,
             has_default,
         })
-    }
-
-    /// Parse the body of a machine-decl type-parameter list — the tokens
-    /// between the opening `<` (already consumed) and the closing `>`.
-    ///
-    /// v0.5.0 accepts only bare identifiers separated by commas. Anything
-    /// else (trait bounds, defaults, lifetimes, variance markers) is
-    /// rejected with a span-pointed diagnostic so the user is not silently
-    /// dropped into a "the bound was ignored" cliff.
-    fn parse_machine_type_params(&mut self) -> Option<Vec<String>> {
-        let mut params = Vec::new();
-
-        if self.at_closing_angle() {
-            self.error(
-                "empty type parameter list on machine declaration: add at \
-                 least one type parameter, e.g. `machine Lifecycle<T> { ... }`"
-                    .to_string(),
-            );
-            self.eat_closing_angle();
-            return None;
-        }
-
-        while !self.at_end() && !self.at_closing_angle() {
-            let name = self.expect_ident()?;
-
-            // Reject trait bounds outright. v0.6+ may revisit; today we
-            // need every machine generic to be a plain name so the HIR /
-            // codegen substrate has a single shape to lower.
-            if self.peek() == Some(&Token::Colon) {
-                self.error(format!(
-                    "trait bounds on machine type parameters are not supported \
-                     in v0.5 (parameter `{name}`); declare the bound on the \
-                     using site instead"
-                ));
-                return None;
-            }
-
-            params.push(name);
-
-            if !self.eat(&Token::Comma) {
-                break;
-            }
-        }
-
-        if !self.eat_closing_angle() {
-            self.error("expected `>` to close machine type parameter list".to_string());
-            return None;
-        }
-        Some(params)
     }
 
     /// Parse a state pattern: an identifier or `_` (wildcard).
@@ -5359,12 +5327,66 @@ impl<'src> Parser<'src> {
                 self.advance();
 
                 // Handle path expressions like Vec::new, HashMap::new
+                // Optionally accept Rust-style turbofish on a path segment:
+                // `Type::<T, U>::method` — the `<...>` are stashed and surface
+                // as the call's `type_args` when the path is invoked with `(`.
+                let mut turbofish: Option<Vec<Spanned<TypeExpr>>> = None;
                 while self.eat(&Token::DoubleColon) {
+                    if self.peek() == Some(&Token::Less) {
+                        let saved = self.save_pos();
+                        self.advance(); // consume '<'
+                        if let Some(args) = self.parse_type_args() {
+                            if turbofish.is_some() {
+                                self.error(
+                                    "turbofish `::<...>` may appear at most once in a path"
+                                        .to_string(),
+                                );
+                            }
+                            turbofish = Some(args);
+                            // A turbofish must be followed by another `::ident`
+                            // segment or the call site `(`. If we don't see
+                            // `::` next we fall out of the loop and let the
+                            // surrounding logic (`(args)`) consume the call.
+                            continue;
+                        }
+                        self.restore_pos(saved);
+                        break;
+                    }
                     if let Some(segment) = self.expect_ident() {
                         name = format!("{name}::{segment}");
                     } else {
                         break;
                     }
+                }
+
+                // If turbofish was present, the path must be invoked as a call.
+                // Build the `Expr::Call` here so the explicit type args reach the
+                // checker via `Call.type_args` exactly as for the bare-call form
+                // `Type::method<T>(args)`. The struct-init / generic-call paths
+                // below are skipped because turbofish is unambiguously a call.
+                if let Some(type_args) = turbofish {
+                    if self.peek() != Some(&Token::LeftParen) {
+                        self.error(
+                            "turbofish `::<...>` must be followed by a function call `(...)`"
+                                .to_string(),
+                        );
+                        return None;
+                    }
+                    self.advance(); // consume '('
+                    let args = self.parse_call_args()?;
+                    self.expect(&Token::RightParen)?;
+                    let end = self.peek_span().start;
+                    let func_span = start..end;
+                    let func = (Expr::Identifier(name), func_span.clone());
+                    return Some((
+                        Expr::Call {
+                            function: Box::new(func),
+                            type_args: Some(type_args),
+                            args,
+                            is_tail_call: false,
+                        },
+                        start..end,
+                    ));
                 }
 
                 // Check for struct initialization — including the explicit-type-arg form
@@ -6163,6 +6185,10 @@ impl<'src> Parser<'src> {
         Some(params)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single dispatch over all postfix-dot syntactic forms; splitting fragments shared start/cursor state"
+    )]
     fn parse_dot_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
         let start = lhs.1.start;
         self.advance(); // consume .
@@ -6192,6 +6218,29 @@ impl<'src> Parser<'src> {
                 method = format!("{method}::{segment}");
             } else {
                 break;
+            }
+        }
+
+        if method.contains("::") {
+            if let Some(mut name) = Self::dotted_expr_name(&lhs.0) {
+                name.push('.');
+                name.push_str(&method);
+                if self.peek() == Some(&Token::LeftBrace) {
+                    self.advance(); // consume {
+                    let (fields, base) = self.parse_struct_init_fields()?;
+                    let end = self.peek_span().start;
+                    return Some((
+                        Expr::StructInit {
+                            name,
+                            fields,
+                            type_args: None,
+                            base,
+                        },
+                        start..end,
+                    ));
+                }
+                let end = self.peek_span().start;
+                return Some((Expr::Identifier(name), start..end));
             }
         }
 
@@ -6287,6 +6336,49 @@ impl<'src> Parser<'src> {
                 },
                 start..end,
             ))
+        }
+    }
+
+    fn parse_struct_init_fields(&mut self) -> Option<StructInitFields> {
+        let mut fields = Vec::new();
+        let mut base: Option<Box<Spanned<Expr>>> = None;
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            if self.peek() == Some(&Token::DotDot) {
+                self.advance(); // consume `..`
+                let base_expr = self.parse_expr()?;
+                base = Some(Box::new(base_expr));
+                self.eat(&Token::Comma);
+                if self.peek() != Some(&Token::RightBrace) {
+                    self.error(
+                        "functional-update `..base` must be the last item in the field list"
+                            .to_string(),
+                    );
+                }
+                break;
+            }
+            let field_name = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let value = self.parse_expr()?;
+            fields.push((field_name, value));
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(&Token::RightBrace)?;
+        Some((fields, base))
+    }
+
+    fn dotted_expr_name(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Identifier(name) => Some(name.clone()),
+            Expr::FieldAccess { object, field } => {
+                let mut name = Self::dotted_expr_name(&object.0)?;
+                name.push('.');
+                name.push_str(field);
+                Some(name)
+            }
+            _ => None,
         }
     }
 

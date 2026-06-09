@@ -918,32 +918,6 @@ impl Ty {
         Self::builtin_named(BuiltinType::RecvHalf, vec![r])
     }
 
-    /// Extract `S` from `SendHalf<S>`, or `None` if not a `SendHalf`.
-    #[must_use]
-    pub fn as_send_half(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named {
-                builtin: Some(BuiltinType::SendHalf),
-                args,
-                ..
-            } if args.len() == 1 => Some(&args[0]),
-            _ => None,
-        }
-    }
-
-    /// Extract `R` from `RecvHalf<R>`, or `None` if not a `RecvHalf`.
-    #[must_use]
-    pub fn as_recv_half(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named {
-                builtin: Some(BuiltinType::RecvHalf),
-                args,
-                ..
-            } if args.len() == 1 => Some(&args[0]),
-            _ => None,
-        }
-    }
-
     /// Construct `Generator<yields, returns>`.
     #[must_use]
     pub fn generator(yields: Ty, returns: Ty) -> Ty {
@@ -1068,18 +1042,6 @@ impl Ty {
         }
     }
 
-    /// If this is `Sender<T>`, return `Some(&T)`.
-    #[must_use]
-    pub fn as_sender(&self) -> Option<&Ty> {
-        self.as_single_arg_builtin_named(BuiltinNamedType::Sender)
-    }
-
-    /// If this is `Receiver<T>`, return `Some(&T)`.
-    #[must_use]
-    pub fn as_receiver(&self) -> Option<&Ty> {
-        self.as_single_arg_builtin_named(BuiltinNamedType::Receiver)
-    }
-
     /// If this is `Stream<T>`, return `Some(&T)`.
     #[must_use]
     pub fn as_stream(&self) -> Option<&Ty> {
@@ -1129,18 +1091,6 @@ impl Ty {
             } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
-    }
-
-    /// Check if this is a Stream type.
-    #[must_use]
-    pub fn is_stream(&self) -> bool {
-        self.as_stream().is_some()
-    }
-
-    /// Check if this is a Sink type.
-    #[must_use]
-    pub fn is_sink(&self) -> bool {
-        self.as_sink().is_some()
     }
 
     /// Canonicalize known named builtins to their shared spelling before

@@ -208,29 +208,83 @@ fn index_impl_still_lowers_unchanged() {
 }
 
 #[test]
-fn impl_block_with_where_clause_emits_fail_closed_shape_diagnostic() {
-    // Fail-closed boundary: a where-clause on the impl is outside V0b's
-    // sufficient surface and MUST surface as
-    // `ImplBlockShapeNotLowered { shape: "impl with where-clause" }` rather
-    // than fall through to the generic `top-level-item` catch-all.
+fn impl_block_with_single_bound_where_clause_lowers() {
+    // V0b admits single-bound where-clauses of shape `where T: SingleTrait`
+    // where `T` is one of the impl's own type parameters. The bound has no
+    // runtime artefact (consumed by the checker's bound-enforcement plumbing
+    // at the use site); HIR lowering simply admits the impl and threads its
+    // methods through the regular flatten-to-`HirItem::Function` path.
     let output = lower(
         r"
+        pub trait Eq {
+            fn eq(a: Self, b: Self) -> bool;
+        }
+
         pub type Wrap<T> {
             inner: T;
         }
 
-        impl<T> Iterator for Wrap<T> where T: Eq {
-            fn next(w: Wrap<T>) -> i64 {
-                1
+        impl<T> Wrap<T> where T: Eq {
+            fn first(w: Wrap<T>) -> Wrap<T> {
+                w
             }
         }
         ",
     );
 
-    // The fail-closed shape diagnostic from V0b must appear; filter to
-    // only diagnostics from the impl block by selecting on kind, not on
-    // every diagnostic the lowering pass might emit.
-    let _ = &output;
+    assert_no_top_level_item_unsupported(&output);
+    let shape_diag = output.diagnostics.iter().find_map(|d| {
+        if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
+            Some(shape.clone())
+        } else {
+            None
+        }
+    });
+    assert!(
+        shape_diag.is_none(),
+        "single-bound `where T: Trait` impl must lower; got shape diagnostic: {shape_diag:?} \
+         out of full diagnostics: {:#?}",
+        output.diagnostics,
+    );
+    let has_first = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Wrap::first"));
+    assert!(
+        has_first,
+        "Wrap::first must be emitted when the where-clause is admitted"
+    );
+}
+
+#[test]
+fn impl_block_with_multi_bound_where_clause_emits_fail_closed_shape_diagnostic() {
+    // Fail-closed boundary: multi-bound `where T: A + B` predicates are
+    // outside V0b's sufficient surface (γ1 lifts only single-bound
+    // `where T: Trait`). The diagnostic must surface as
+    // `ImplBlockShapeNotLowered { shape: "multi-bound where-clause on `T`" }`
+    // rather than fall through to the generic `top-level-item` catch-all.
+    let output = lower(
+        r"
+        pub trait Eq {
+            fn eq(a: Self, b: Self) -> bool;
+        }
+
+        pub trait Ord {
+            fn cmp(a: Self, b: Self) -> i64;
+        }
+
+        pub type Wrap<T> {
+            inner: T;
+        }
+
+        impl<T> Wrap<T> where T: Eq + Ord {
+            fn first(w: Wrap<T>) -> Wrap<T> {
+                w
+            }
+        }
+        ",
+    );
 
     let shape_diag = output.diagnostics.iter().find_map(|d| {
         if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
@@ -241,9 +295,51 @@ fn impl_block_with_where_clause_emits_fail_closed_shape_diagnostic() {
     });
     assert_eq!(
         shape_diag.as_deref(),
-        Some("impl with where-clause"),
-        "V0b must surface a precise shape diagnostic for where-clauses; \
-         got diagnostics: {:#?}",
+        Some("multi-bound where-clause on `T`"),
+        "V0b must surface a precise shape diagnostic for multi-bound \
+         where-clauses; got diagnostics: {:#?}",
+        output.diagnostics,
+    );
+}
+
+#[test]
+fn impl_block_with_where_clause_on_non_type_param_emits_fail_closed_shape_diagnostic() {
+    // Fail-closed boundary: predicates on non-type-param types (e.g.
+    // `where Wrap<T>: Eq`) are outside V0b's sufficient surface — γ1 only
+    // admits predicates on the impl's own type parameters.
+    let output = lower(
+        r"
+        pub trait Eq {
+            fn eq(a: Self, b: Self) -> bool;
+        }
+
+        pub type Wrap<T> {
+            inner: T;
+        }
+
+        impl<T> Wrap<T> where Wrap<T>: Eq {
+            fn first(w: Wrap<T>) -> Wrap<T> {
+                w
+            }
+        }
+        ",
+    );
+
+    let shape_diag = output.diagnostics.iter().find_map(|d| {
+        if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
+            Some(shape.clone())
+        } else {
+            None
+        }
+    });
+    assert!(
+        matches!(
+            shape_diag.as_deref(),
+            Some(s) if s.starts_with("where-clause predicate on parameterised type")
+        ),
+        "V0b must surface a precise shape diagnostic for parameterised-type \
+         where-clauses; got diagnostic: {shape_diag:?} out of full diagnostics: \
+         {:#?}",
         output.diagnostics,
     );
 }

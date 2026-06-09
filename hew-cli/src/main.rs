@@ -1039,6 +1039,26 @@ fn cmd_run(a: &args::RunArgs) {
         })
     });
 
+    // When --show-stack-hints is set, run the frontend early to collect and
+    // print the escape-analysis hints before the program executes. Suppressed
+    // under --format=json so program output is not corrupted. The full compile
+    // still runs below; this is an intentional double-frontend so the run path
+    // does not need to thread hints through the compilation pipeline.
+    let json = a.format == args::DiagnosticFormat::Json;
+    if a.show_stack_hints && !json {
+        let target_spec = target::TargetSpec::from_requested(options.target.as_deref())
+            .unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            });
+        let frontend_options = compile::frontend_options(&target_spec, &options);
+        if let Ok((result, _)) = hew_compile::check_file_with_state(&input, &frontend_options) {
+            diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
+        }
+        // A frontend failure here is silently swallowed: the full compile below
+        // will surface the same error with proper diagnostic attribution.
+    }
+
     if target.is_wasi() {
         cmd_run_wasi(a, &input, &options, &target, timeout);
     } else {

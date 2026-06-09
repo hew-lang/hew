@@ -256,6 +256,49 @@ impl ChannelCore {
         self.pop()
     }
 
+    /// Block until the channel is readable (an item is queued or the sink
+    /// closed) WITHOUT consuming, or until `cancelled` is observed. Returns
+    /// `true` when readable, `false` when cancelled. Used by the `select{}`
+    /// channel-recv arm's poll thread: the winner edge pops the item itself via
+    /// the non-blocking `try_recv`, so this never consumes (a losing arm leaves
+    /// its item queued for the next consumer). Foreign-thread blocking only —
+    /// the select substrate itself is not worker-free (it mirrors the stream
+    /// select arm's poll thread); the worker-free path is `await rx.recv()`.
+    #[must_use]
+    pub fn wait_ready(&self, cancelled: &std::sync::atomic::AtomicBool) -> bool {
+        let mut inner = self.locked();
+        loop {
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                return false;
+            }
+            if !inner.queue.is_empty() || inner.sink_closed {
+                return true;
+            }
+            inner = self
+                .cv
+                .wait(inner)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Cancel a pending [`Self::wait_ready`] without a lost-wakeup window: set
+    /// the caller's `cancelled` predicate AND notify the condvar while holding
+    /// the SAME `inner` mutex that `wait_ready` checks the predicate under.
+    ///
+    /// `wait_ready` evaluates `cancelled` and the readiness predicate while
+    /// holding `inner`, then atomically releases `inner` and parks on `cv`.
+    /// Because this store + `notify_all` run under `inner`, they cannot
+    /// interleave between the waiter's predicate check and its park: either we
+    /// win the lock first (the waiter then observes `cancelled` before parking),
+    /// or the waiter parks first (releasing `inner`) and our subsequent
+    /// `notify_all` reaches the already-parked waiter. The cancel wake can never
+    /// be lost.
+    pub fn cancel_wait(&self, cancelled: &std::sync::atomic::AtomicBool) {
+        let _inner = self.locked();
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        self.cv.notify_all();
+    }
+
     /// Detach an abandoned consumer registration (the codegen abandon edge).
     /// Releases the core's in-flight ref if `slot` is still the registered
     /// consumer; idempotent if a deposit already consumed it.

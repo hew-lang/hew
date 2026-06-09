@@ -252,14 +252,45 @@ const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// exempts it from its `ResolvedRef::Item(_)` guard via
 /// [`is_synthetic_builtin_item`] and routes it to `hew_duplex_pair`.
 ///
-/// The sibling checker builtins `duplex` (detached) and `channel` are
-/// deliberately NOT seeded here: `duplex` has no runtime constructor
-/// (`hew_duplex_new` was removed in the M2 runtime refactor) and `channel`
-/// has no MIR producer / allowlisted runtime symbol. Registering either would
-/// pass `verify_hir` but fail closed at the MIR boundary — pretend-support
-/// rather than a real lowering path. The runnable Stream/Sink constructor
-/// surface is `std::stream`'s `pipe`/`bytes_pipe` (real `fn` items).
+/// The sibling checker builtin `duplex` (detached) is deliberately NOT seeded
+/// here: `duplex` has no runtime constructor (`hew_duplex_new` was removed in
+/// the M2 runtime refactor). Registering it would pass `verify_hir` but fail
+/// closed at the MIR boundary — pretend-support rather than a real lowering
+/// path. The runnable Stream/Sink constructor surface is `std::stream`'s
+/// `pipe`/`bytes_pipe` (real `fn` items).
 const SYNTHETIC_DUPLEX_PAIR_ITEM: ItemId = ItemId(u32::MAX / 2 - 11);
+
+/// Synthetic-builtin sentinel `ItemId`s for the four channel recv out-param-ABI
+/// symbols (`hew_channel_recv`, `hew_channel_recv_int`, `hew_channel_try_recv`,
+/// `hew_channel_try_recv_int`).
+///
+/// These symbols are registered by the checker (`registration.rs:5364`) but
+/// are NOT extern-declared in `std/channel/channel.hew` (they use an
+/// out-parameter ABI for `Option<T>` that cannot be expressed as a plain
+/// `extern "C"` declaration). Without a synthetic `fn_registry` entry the HIR
+/// import filter (`collect_all_bare_call_names`) would see these bare names as
+/// unresolvable and skip the `recv`/`try_recv` impl methods entirely, leaving
+/// the user with a "no method recv" error.
+///
+/// By seeding them here:
+///   1. The import filter admits `recv`/`try_recv` (the body calls are now
+///      resolvable via `fn_registry`).
+///   2. `lower_identifier` resolves them to `ResolvedRef::Item(_)` rather than
+///      `Unresolved`, so the HIR callable-set gate fires `CallableUnsupportedInMir`
+///      (which `build_callable_set` then silences) rather than the premature
+///      `IndirectCallUnsupported`.
+///   3. `is_synthetic_builtin_item` admits the IDs, so MIR's
+///      `runtime_symbol_for_call_expr` does NOT short-circuit on the
+///      `ResolvedRef::Item` guard and reaches the `user_name_to_c_symbol`
+///      table; since these names have no entry there, the function returns
+///      `None`, and MIR falls through to `module_fn_names` (which this lane
+///      also populates) → `lower_direct_call` → `Terminator::Call`.
+///   4. Codegen intercepts the `Terminator::Call` by callee name and emits the
+///      custom null-ptr → `Option<T>` materialisation sequence.
+const SYNTHETIC_CHANNEL_RECV_STR_ITEM: ItemId = ItemId(u32::MAX / 2 - 12);
+const SYNTHETIC_CHANNEL_RECV_INT_ITEM: ItemId = ItemId(u32::MAX / 2 - 13);
+const SYNTHETIC_CHANNEL_TRY_RECV_STR_ITEM: ItemId = ItemId(u32::MAX / 2 - 14);
+const SYNTHETIC_CHANNEL_TRY_RECV_INT_ITEM: ItemId = ItemId(u32::MAX / 2 - 15);
 
 /// Inclusive floor of the synthetic-builtin sentinel `ItemId` band.
 ///
@@ -3383,6 +3414,9 @@ fn collect_call_sites_in_expr(
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_call_sites_in_expr(task, out, trait_out);
                     }
+                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                        collect_call_sites_in_expr(receiver, out, trait_out);
+                    }
                     HirSelectArmKind::AfterTimer { duration } => {
                         collect_call_sites_in_expr(duration, out, trait_out);
                     }
@@ -5327,6 +5361,39 @@ impl LowerCtx {
                 },
             );
         }
+        self.seed_channel_recv_fn_registry();
+    }
+
+    /// Seeds `fn_registry` entries for the four channel receive out-param-ABI
+    /// symbols (`hew_channel_recv`, `hew_channel_recv_int`,
+    /// `hew_channel_try_recv`, `hew_channel_try_recv_int`).
+    ///
+    /// These are registered by the checker (`registration.rs:5364`) but are
+    /// not extern-declared in `channel.hew`. Return types are placeholders
+    /// (MIR reads the actual `Option<T>` type from `expr_types` at the call
+    /// site); param types carry only arity. See `SYNTHETIC_CHANNEL_RECV_*_ITEM`
+    /// for the full rationale.
+    fn seed_channel_recv_fn_registry(&mut self) {
+        for (name, id) in [
+            ("hew_channel_recv", SYNTHETIC_CHANNEL_RECV_STR_ITEM),
+            ("hew_channel_recv_int", SYNTHETIC_CHANNEL_RECV_INT_ITEM),
+            ("hew_channel_try_recv", SYNTHETIC_CHANNEL_TRY_RECV_STR_ITEM),
+            (
+                "hew_channel_try_recv_int",
+                SYNTHETIC_CHANNEL_TRY_RECV_INT_ITEM,
+            ),
+        ] {
+            self.fn_registry.insert(
+                name.to_string(),
+                FnEntry {
+                    id,
+                    return_ty: ResolvedTy::Unit,
+                    param_tys: Vec::new(),
+                    linkage: None,
+                    type_params: Vec::new(),
+                },
+            );
+        }
     }
 
     fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
@@ -5787,6 +5854,9 @@ impl LowerCtx {
                         }
                         HirSelectArmKind::TaskAwait { task } => {
                             self.wrap_var_self_explicit_expr_returns(task, receiver, abi_return_ty);
+                        }
+                        HirSelectArmKind::ChannelRecv { receiver: rx, .. } => {
+                            self.wrap_var_self_explicit_expr_returns(rx, receiver, abi_return_ty);
                         }
                         HirSelectArmKind::AfterTimer { duration } => {
                             self.wrap_var_self_explicit_expr_returns(
@@ -8256,6 +8326,40 @@ impl LowerCtx {
         )
     }
 
+    /// True when the `await`'s inner expression is a suspending `std::channel`
+    /// `recv()` over a `Receiver<T>` — i.e. the checker wired the method call to
+    /// the `hew_channel_recv` (string) / `hew_channel_recv_int` (int) runtime
+    /// symbol. `await rx.recv()` is a bindable, value-producing await (NEW-4):
+    /// it lowers to the inner recv call whose `Option<T>` result the MIR
+    /// `SuspendingChannelRecv` resume edge binds (or the blocking call for a
+    /// context-free caller). `try_recv` never suspends and is not awaitable here.
+    fn is_channel_recv_await(&self, inner_key: &SpanKey) -> bool {
+        matches!(
+            self.method_call_rewrites.get(inner_key),
+            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
+                if c_symbol == "hew_channel_recv" || c_symbol == "hew_channel_recv_int"
+        )
+    }
+
+    /// `Some(true)` when the method call at `key` is a channel `recv` over an
+    /// int element (`hew_channel_recv_int`), `Some(false)` for the string
+    /// element (`hew_channel_recv`), `None` when it is not a channel recv.
+    fn channel_recv_elem_is_int(&self, key: &SpanKey) -> Option<bool> {
+        match self.method_call_rewrites.get(key) {
+            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
+                if c_symbol == "hew_channel_recv_int" =>
+            {
+                Some(true)
+            }
+            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
+                if c_symbol == "hew_channel_recv" =>
+            {
+                Some(false)
+            }
+            _ => None,
+        }
+    }
+
     /// True when the `await`'s inner expression is a suspending typed-stream
     /// `send()` over a `Sink<bytes>` — i.e. the checker wired the method call to
     /// the `hew_sink_write_bytes` runtime symbol. `await sink.send(x)` is a
@@ -8299,6 +8403,7 @@ impl LowerCtx {
                             ) || self.conn_await_reads.contains_key(&inner_key)
                                 || self.listener_await_accepts.contains(&inner_key)
                                 || self.is_stream_recv_await(&inner_key)
+                                || self.is_channel_recv_await(&inner_key)
                         }
                         _ => false,
                     };
@@ -9920,6 +10025,17 @@ impl LowerCtx {
                 if self.is_stream_recv_await(&SpanKey::from(&inner.1)) {
                     return self.lower_expr(inner, intent);
                 }
+                // NEW-4: `await rx.recv()` over a `std::channel` `Receiver<T>` —
+                // the checker wired the inner method call to `hew_channel_recv`
+                // (string) / `hew_channel_recv_int` (int). Strip the `await` and
+                // lower the inner recv directly; its `Option<T>` result is bound
+                // on the resume edge of the MIR `SuspendingChannelRecv` (the
+                // suspendable-caller flip in `lower_direct_call`), or the blocking
+                // call for a context-free caller. Mirrors the stream-recv /
+                // conn-read bindable-await paths.
+                if self.is_channel_recv_await(&SpanKey::from(&inner.1)) {
+                    return self.lower_expr(inner, intent);
+                }
                 // NEW-7: `await sink.send(x)` over a `Sink<bytes>` — the checker
                 // wired the inner method call to `hew_sink_write_bytes`. Strip the
                 // `await` and lower the inner send directly (unit); the MIR
@@ -10783,6 +10899,16 @@ impl LowerCtx {
                     Some(ActorMethodKind::Fire(_)) | None => ResolvedTy::Unit,
                 }
             }
+            HirSelectArmKind::ChannelRecv { elem_is_int, .. } => {
+                // The binding receives `Option<T>` — the same shape the awaited
+                // `rx.recv()` produces. `None` is the channel-closed signal.
+                let elem = if *elem_is_int {
+                    ResolvedTy::I64
+                } else {
+                    ResolvedTy::String
+                };
+                Self::resolved_option_ty(elem)
+            }
             HirSelectArmKind::StreamNext { .. }
             | HirSelectArmKind::TaskAwait { .. }
             | HirSelectArmKind::AfterTimer { .. } => ResolvedTy::Unit,
@@ -11511,6 +11637,20 @@ impl LowerCtx {
                 method,
                 args,
             } => {
+                // NEW-4: `pat from rx.recv()` — a std/channel receive arm. The
+                // checker recorded the runtime rewrite (hew_channel_recv*) on
+                // this method-call span; recognise it as a ChannelRecv arm
+                // before the generic actor-ask interpretation.
+                if method == "recv" {
+                    if let Some(elem_is_int) = self.channel_recv_elem_is_int(&SpanKey::from(&span))
+                    {
+                        let recv = self.lower_expr(receiver, IntentKind::Read);
+                        return HirSelectArmKind::ChannelRecv {
+                            receiver: Box::new(recv),
+                            elem_is_int,
+                        };
+                    }
+                }
                 let actor = self.lower_expr(receiver, IntentKind::Read);
                 let lowered_args: Vec<HirExpr> = args
                     .iter()
@@ -16426,6 +16566,9 @@ fn collect_captures_walk(
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_captures_walk(task, param_ids, seen, captures, self_id);
                     }
+                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                        collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+                    }
                     HirSelectArmKind::AfterTimer { duration } => {
                         collect_captures_walk(duration, param_ids, seen, captures, self_id);
                     }
@@ -16704,6 +16847,14 @@ fn collect_general_closure_captures_walk(
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_general_closure_captures_walk(task, outer_bindings, seen, captures);
+                    }
+                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                        collect_general_closure_captures_walk(
+                            receiver,
+                            outer_bindings,
+                            seen,
+                            captures,
+                        );
                     }
                     HirSelectArmKind::AfterTimer { duration } => {
                         collect_general_closure_captures_walk(
@@ -17545,6 +17696,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_hir_emitted_events_walk(task, event_names, out);
+                    }
+                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                        collect_hir_emitted_events_walk(receiver, event_names, out);
                     }
                     HirSelectArmKind::AfterTimer { duration } => {
                         collect_hir_emitted_events_walk(duration, event_names, out);
@@ -19901,6 +20055,19 @@ fn build_callable_set(
     ] {
         set.insert(name.to_string());
     }
+    // Channel recv out-param-ABI symbols — seeded into `fn_registry` by
+    // `seed_stdlib_fn_registry` and lowered as `Terminator::Call` by MIR
+    // (not `CallRuntimeAbi`; they are not in the runtime-symbol allowlist).
+    // Codegen intercepts the `Terminator::Call` by name and emits the
+    // null-ptr → `Option<T>` materialisation.
+    for name in [
+        "hew_channel_recv",
+        "hew_channel_recv_int",
+        "hew_channel_try_recv",
+        "hew_channel_try_recv_int",
+    ] {
+        set.insert(name.to_string());
+    }
     set
 }
 
@@ -20261,6 +20428,9 @@ fn scan_expr_for_call_shape(
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         scan_expr_for_call_shape(task, callable, diagnostics);
+                    }
+                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                        scan_expr_for_call_shape(receiver, callable, diagnostics);
                     }
                     HirSelectArmKind::AfterTimer { duration } => {
                         scan_expr_for_call_shape(duration, callable, diagnostics);

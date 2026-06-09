@@ -159,6 +159,9 @@ fn terminator_reads(term: &Terminator) -> Vec<Place> {
         // `SuspendingStreamNext` reads `stream` (the recv source); `result_dest`
         // is a write slot bound on the resume edge, not a read.
         Terminator::SuspendingStreamNext { stream, .. } => vec![*stream],
+        // `SuspendingChannelRecv` reads `receiver` (the recv source); `result_dest`
+        // is a write slot bound on the resume edge, not a read.
+        Terminator::SuspendingChannelRecv { receiver, .. } => vec![*receiver],
         // `SuspendingStreamSend` reads `sink` + `value` (the send sources).
         Terminator::SuspendingStreamSend { sink, value, .. } => vec![*sink, *value],
         // The suspendable-callee driver reads the closure pair + forwarded args;
@@ -186,6 +189,7 @@ fn terminator_reads(term: &Terminator) -> Vec<Place> {
                     r
                 }
                 crate::model::SelectArmKind::TaskAwait { task } => vec![*task],
+                crate::model::SelectArmKind::ChannelRecv { receiver, .. } => vec![*receiver],
                 crate::model::SelectArmKind::AfterTimer { duration } => vec![*duration],
             })
             .collect(),

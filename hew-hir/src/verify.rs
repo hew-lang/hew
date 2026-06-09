@@ -399,6 +399,9 @@ impl Verifier {
                         crate::node::HirSelectArmKind::TaskAwait { task } => {
                             self.expr(task);
                         }
+                        crate::node::HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                            self.expr(receiver);
+                        }
                         crate::node::HirSelectArmKind::AfterTimer { duration } => {
                             self.expr(duration);
                         }

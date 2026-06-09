@@ -2059,6 +2059,14 @@ pub enum HirSelectArmKind {
     /// Cancellation and trap outcomes propagate through the `select`
     /// site per HEW-SPEC-2026 §4.11.1.
     TaskAwait { task: Box<HirExpr> },
+    /// `pat from <rx>.recv() => body`. The arm waits for a queued item
+    /// on a std/channel `Receiver<T>` (NEW-4); the binding receives
+    /// `Option<T>` (`None` on channel close). `elem_is_int` selects the
+    /// int vs string element ABI for the winner-edge materialisation.
+    ChannelRecv {
+        receiver: Box<HirExpr>,
+        elem_is_int: bool,
+    },
     /// `after <duration-expr> => body`. The arm fires when the
     /// deadline elapses; the body runs with no binding.
     AfterTimer { duration: Box<HirExpr> },

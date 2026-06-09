@@ -1842,6 +1842,12 @@ impl BasicBlock {
             // exits to the executor; resume + cleanup are the in-CFG successors.
             | Terminator::SuspendingAccept {
                 resume, cleanup, ..
+            }
+            // The suspending channel-recv ramp parks the consumer continuation on
+            // channel readiness exactly like the stream-recv ramp: the default
+            // edge exits to the executor; resume + cleanup are the in-CFG successors.
+            | Terminator::SuspendingChannelRecv {
+                resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
     }
@@ -2257,6 +2263,54 @@ pub enum Terminator {
         /// (dropping the pending item), and the slot freed there.
         cleanup: u32,
     },
+    /// Non-blocking `await rx.recv()` over a `std::channel` `Receiver<T>` from a
+    /// SUSPENDABLE caller (NEW-4). The std-channel analogue of
+    /// [`Terminator::SuspendingStreamNext`]: instead of blocking an OS worker in
+    /// `hew_channel_recv` / `hew_channel_recv_int`, codegen lowers this as a
+    /// `coro.suspend` source — it creates a read slot, registers the parked
+    /// continuation with the channel core (`hew_channel_await_recv`), suspends
+    /// (freeing the worker), and on the resume / immediate-ready edge pops the
+    /// now-available item from the queue through the non-blocking
+    /// `hew_channel_try_recv` / `hew_channel_try_recv_int` and binds it as
+    /// `Option<T>` (`None` on close → null / out-valid 0). The item travels
+    /// through the channel queue held across the suspend (NOT a terminator
+    /// operand), exactly as `SuspendingStreamNext`'s item travels through its
+    /// channel core — which is why the resume binding lives ON the terminator.
+    /// The receiver handle is BORROWED (read for registration + pop); receive
+    /// never consumes or double-closes it.
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` / `is_coroutine`: any function whose CFG contains this
+    /// terminator is lowered as a `presplitcoroutine`. Emitted ONLY when the
+    /// lowering function carries the execution context
+    /// (`FunctionCallConv::carries_execution_context` — actor handler / closure
+    /// / task entry); a `FunctionCallConv::Default` caller (`main`, free fns)
+    /// runs on a foreign thread with no parkable continuation and keeps the
+    /// blocking `hew_channel_recv` / `hew_channel_recv_int` FFI call.
+    SuspendingChannelRecv {
+        /// The channel receiver handle the recv is registered against (the
+        /// receiver of `rx.recv()`). Read by codegen to register the parked
+        /// continuation with the channel core and to pop the item on resume.
+        receiver: Place,
+        /// The `Option<T>` slot bound on the resume / immediate-ready edge after
+        /// a sender deposited an item (or the channel closed → `None`). Identical
+        /// role to [`Terminator::SuspendingStreamNext::result_dest`].
+        result_dest: Place,
+        /// `true` → `Option<i64>` element (`hew_channel_recv_int` /
+        /// `hew_channel_try_recv_int`, out-valid ABI); `false` → `Option<string>`
+        /// element (`hew_channel_recv` / `hew_channel_try_recv`, nullable-ptr
+        /// ABI). Selects which non-blocking pop the resume edge materialises.
+        elem_is_int: bool,
+        /// Block reached on the coro switch resume edge (case 0) — the body
+        /// continues here after `enqueue_resume` woke the parked continuation and
+        /// the item is bound. This is the `next` block of the original recv.
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the frame's
+        /// teardown when the parked continuation is abandoned (`coro.destroy`);
+        /// the read slot is cancelled, the channel-await registration detached,
+        /// and the slot freed there.
+        cleanup: u32,
+    },
     /// Remote actor ask: send `value` to a `RemotePid<T>` and construct
     /// `Result<Reply, AskError>` in `result_dest`.
     RemoteAsk {
@@ -2363,6 +2417,13 @@ pub enum SelectArmKind {
     },
     /// `await <task>` — task completion.
     TaskAwait { task: Place },
+    /// `<rx>.recv()` — std/channel receive (NEW-4). The select-flavoured
+    /// equivalent of an awaited `rx.recv()`: the arm registers a readiness
+    /// poll on the channel core and, on winning, pops the queued item via the
+    /// non-blocking `try_recv` and binds `Option<T>`. `elem_is_int` selects the
+    /// string (nullable-ptr) vs int (out-valid) materialisation, mirroring
+    /// [`Terminator::SuspendingChannelRecv`].
+    ChannelRecv { receiver: Place, elem_is_int: bool },
     /// `after <duration>` — timer.
     AfterTimer { duration: Place },
 }

@@ -172,6 +172,15 @@ impl std::fmt::Display for CodegenError {
                     )
                 } else if symbol == "hew_tcp_stream_from_conn" {
                     ("the TCP transport substrate", "WASM-TODO(#1451)")
+                } else if symbol == "hew_channel_poll" || symbol == "hew_channel_await_recv" {
+                    // NEW-4 suspending channel receive: the `select{}` channel-recv
+                    // arm (`hew_channel_poll`) and the worker-free `await rx.recv()`
+                    // carrier (`hew_channel_await_recv`) both back onto the native
+                    // channel core (`cfg(not(target_arch = "wasm32"))`).
+                    (
+                        "the suspending channel-receive substrate",
+                        "WASM-TODO(#1451)",
+                    )
                 } else if symbol == "hew_gen_yield"
                     || symbol == "hew_gen_ctx_create"
                     || symbol == "hew_gen_next"
@@ -569,6 +578,27 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                 {
                     return Some("hew_stream_poll".to_string());
                 }
+                // NEW-4 channel-recv select arm: the winning/loser dispatch emits
+                // `hew_channel_poll` / `hew_channel_cancel_pending_read`, whose
+                // native channel core is `cfg(not(target_arch = "wasm32"))`
+                // (`hew-runtime/src/lib.rs` gates `pub mod channel`). The HIR gate
+                // (`check_wasm_blocking_recv_gate`) rejects syntactic `.recv()`
+                // first; this is the defence-in-depth codegen catch for any
+                // direct-MIR select-arm path that bypasses it. WASM-TODO(#1451).
+                if arms
+                    .iter()
+                    .any(|arm| matches!(arm.kind, hew_mir::SelectArmKind::ChannelRecv { .. }))
+                {
+                    return Some("hew_channel_poll".to_string());
+                }
+            }
+            // NEW-4 worker-free `await rx.recv()` carrier: emits
+            // `hew_channel_await_recv`, also part of the native-only channel core
+            // (`cfg(not(target_arch = "wasm32"))`). Surface the structured
+            // fail-closed diagnostic for any direct-MIR recv carrier rather than
+            // letting wasm-ld discover the dangling reference. WASM-TODO(#1451).
+            if let Terminator::SuspendingChannelRecv { .. } = &block.terminator {
+                return Some("hew_channel_await_recv".to_string());
             }
             // Generators substrate WASM parity gate: `Terminator::Yield` emits a
             // direct call to the runtime symbol `hew_gen_yield`, but the
@@ -1345,6 +1375,48 @@ fn intern_runtime_decl<'ctx>(
         "hew_sink_detach_await" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // ── NEW-4 std/channel suspending receive ─────────────────────────────
+        // hew_channel_await_recv(rx: *mut HewChannelReceiver,
+        //                        actor: *mut HewActor, slot: *mut HewReadSlot)
+        //   -> i32 (`hew-runtime/src/channel.rs`). Registers the parked consumer
+        // continuation + slot with the channel core (or binds immediately).
+        // Returns STREAM_AWAIT_READY (1) or STREAM_AWAIT_SUSPEND (0).
+        "hew_channel_await_recv" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
+        }
+        // hew_channel_detach_recv(rx: *mut HewChannelReceiver,
+        //                         slot: *mut HewReadSlot) -> void. The abandon
+        // edge: releases the channel core's in-flight ref on the slot.
+        "hew_channel_detach_recv" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_channel_poll(rx, callback: fn(*mut c_void), userdata,
+        //   release: fn(*mut c_void)) -> u64 (`hew-runtime/src/channel.rs`).
+        // Registers a select{} readiness poll; fires `callback(userdata)` when
+        // the channel becomes readable, or `release(userdata)` if the poll is
+        // cancelled first (the observer-reference ownership handoff). Returns a
+        // non-zero pending-read id (0 = failure).
+        "hew_channel_poll" => i64_ty.fn_type(
+            &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        ),
+        // hew_channel_cancel_pending_read(rx, id) -> void. Withdraws a losing
+        // select arm's channel poll.
+        "hew_channel_cancel_pending_read" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // hew_channel_recv(rx) / hew_channel_try_recv(rx) -> *mut c_char
+        // (`hew-runtime/src/channel.rs`). null → None; non-null → owned malloc'd
+        // string moved into the Option<string> Some payload (drop spine frees it
+        // via hew_string_drop). The suspend ramp pops via the non-blocking
+        // try_recv on its resume / immediate-ready edge.
+        "hew_channel_recv" | "hew_channel_try_recv" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_channel_recv_int(rx, out_valid: *mut i32) -> i64 /
+        // hew_channel_try_recv_int(rx, out_valid) -> i64. out-valid ABI:
+        // *out_valid = 1 → Some(value); 0 → None.
+        "hew_channel_recv_int" | "hew_channel_try_recv_int" => {
+            i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)
+        }
         // hew_select_first(channels: *mut *mut HewReplyChannel, count: i32,
         //                  timeout_ms: i32) -> i32
         // (`hew-runtime/src/reply_channel.rs:484`). Returns the winning
@@ -20832,6 +20904,18 @@ struct SuspendingStreamSendEmit {
     cleanup: u32,
 }
 
+/// Carrier for [`emit_suspending_channel_recv_terminator`] — the suspending
+/// `await rx.recv()` ramp (`Terminator::SuspendingChannelRecv`).
+struct SuspendingChannelRecvEmit {
+    receiver: Place,
+    result_dest: Place,
+    /// `true` → `Option<i64>` (out-valid ABI); `false` → `Option<string>`
+    /// (nullable-ptr ABI). Selects the non-blocking pop on the bind edge.
+    elem_is_int: bool,
+    resume: u32,
+    cleanup: u32,
+}
+
 /// Carrier for [`emit_suspending_call_closure_terminator`] — the
 /// suspendable-callee driver (`Terminator::SuspendingCallClosure`).
 struct SuspendingCallClosureEmit<'a> {
@@ -21646,6 +21730,398 @@ fn emit_suspending_stream_next_terminator<'ctx>(
         .build_unconditional_branch(resume_bb)
         .llvm_ctx("suspending stream-next bind -> resume br")?;
 
+    Ok(())
+}
+
+/// Emit the caller-side non-blocking `await rx.recv()` over a `std::channel`
+/// `Receiver<T>` (NEW-4 `Terminator::SuspendingChannelRecv`). The std-channel
+/// analogue of [`emit_suspending_stream_next_terminator`].
+///
+/// Shape (the suspending channel-recv ramp):
+/// ```text
+///   self    = hew_actor_self()                       ; the parked-cont actor
+///   rx      = <load receiver handle>                 ; pointer-shaped (opaque)
+///   slot    = hew_read_slot_new()
+///   rc      = hew_channel_await_recv(rx, self, slot)
+///   br (rc == 0) -> do_suspend, bind                 ; 0 = parked, 1 = ready-now
+/// do_suspend:                                        ; coro.suspend (non-final)
+///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
+/// abandon:                                           ; parked cont destroyed
+///   hew_read_slot_cancel(slot)
+///   hew_channel_detach_recv(rx, slot)               ; release the core ref
+///   hew_read_slot_free(slot); br shared cleanup
+/// bind:                                              ; ready-now OR resumed
+///   <Option<string>: ptr = hew_channel_try_recv(rx); null -> None, else Some>
+///   <Option<i64>:    v   = hew_channel_try_recv_int(rx, &valid); valid -> Some>
+///   hew_read_slot_free(slot)                         ; release the creator ref
+///   br resume_bb
+/// ```
+/// The item travels through the channel QUEUE across the suspend (NOT the slot —
+/// the slot is a pure readiness signal); on resume the single consumer pops it
+/// exactly once on its own edge via the non-blocking `try_recv` (an immediate
+/// close → null / out-valid 0 → `None`). The receiver handle is BORROWED for
+/// registration + pop — never consumed or double-closed. Slot refs mirror the
+/// stream-recv ramp: `new` (+1 creator); `hew_channel_await_recv` takes the
+/// channel core's in-flight ref only on the park path; the single
+/// `hew_read_slot_free` on each terminal edge releases the creator ref. The
+/// abandon edge cancels + detaches before freeing so a racing sender deposit
+/// drops its signal and a freed consumer is never woken. The `Some(string)`
+/// payload is the owned malloc'd pointer the MIR drop spine balances with
+/// `hew_string_drop` on EVERY consumption path (match arm or discard), so a
+/// non-match discard frees it exactly once — never the parked branch's
+/// match-scrutinee-only leak fix.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the full caller-side recv ramp — registration + suspend + the \
+              resume-edge Option<T> binding for both the string and int element \
+              kinds — is kept in one place so the suspend point and the value \
+              routing it depends on are read together"
+)]
+fn emit_suspending_channel_recv_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingChannelRecvEmit,
+) -> CodegenResult<()> {
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Terminator::SuspendingChannelRecv reached codegen but the function \
+             carries no coro prologue state — lower_function must detect the \
+             suspend carrier (has_suspend) and emit the prologue before the body"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingChannelRecv resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingChannelRecv cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+    let Place::Local(dest_local) = term.result_dest else {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingChannelRecv result_dest must be a local Option<T> slot, got {:?}",
+            term.result_dest
+        )));
+    };
+
+    // self = the awaiting actor (the live thread-local context) — the same
+    // single-authority accessor the stream/read ramps use across a suspend.
+    let actor_self_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let self_actor = fn_ctx
+        .builder
+        .build_call(actor_self_fn, &[], "suspending_channel_recv_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+    let rx_ptr = load_duplex_handle(fn_ctx, term.receiver, "suspending_channel_recv rx")?;
+
+    let slot_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_new",
+    )?;
+    let slot = fn_ctx
+        .builder
+        .build_call(slot_new, &[], "suspending_channel_recv_slot")
+        .llvm_ctx("hew_read_slot_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
+        .into_pointer_value();
+
+    let await_recv = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_channel_await_recv",
+    )?;
+    let rc = fn_ctx
+        .builder
+        .build_call(
+            await_recv,
+            &[rx_ptr.into(), self_actor.into(), slot.into()],
+            "suspending_channel_recv_register",
+        )
+        .llvm_ctx("hew_channel_await_recv call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_channel_await_recv returned void".into()))?
+        .into_int_value();
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending channel-recv block has no parent function".into())
+        })?;
+    let do_suspend_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_channel_recv_suspend");
+    let bind_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_channel_recv_bind");
+    // rc == 0 (STREAM_AWAIT_SUSPEND) → park; else (READY) bind immediately.
+    let is_suspend = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            rc,
+            rc.get_type().const_zero(),
+            "suspending_channel_recv_is_suspend",
+        )
+        .llvm_ctx("suspending channel-recv suspend compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_suspend, do_suspend_bb, bind_bb)
+        .llvm_ctx("suspending channel-recv register branch")?;
+
+    let slot_cancel = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_cancel",
+    )?;
+    let slot_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_free",
+    )?;
+    let detach_recv = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_channel_detach_recv",
+    )?;
+
+    // ── do_suspend: park the continuation (non-final). Default → return the coro
+    // handle to the trampoline; case 0 → bind; case 1 → abandon teardown. ──────
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    let abandon_cleanup_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_channel_recv_abandon_cleanup");
+    let cc = crate::coro::CoroContext {
+        ctx: fn_ctx.ctx,
+        llvm_mod: fn_ctx.llvm_mod,
+        builder: &fn_ctx.builder,
+        function: parent,
+        handle: coro.handle,
+        id_token: coro.id_token,
+    };
+    cc.emit_suspend(
+        bind_bb,
+        abandon_cleanup_bb,
+        coro.suspend_return_block,
+        false,
+        "suspending_channel_recv",
+    )?;
+
+    // ── abandon_cleanup: cancel the slot (a racing sender deposit drops its
+    // signal + skips the wake), detach the channel-await registration (release
+    // the core's in-flight ref), free the creator ref, then join shared cleanup.
+    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
+    fn_ctx
+        .builder
+        .build_call(
+            slot_cancel,
+            &[slot.into()],
+            "suspending_channel_recv_abandon_cancel",
+        )
+        .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_call(
+            detach_recv,
+            &[rx_ptr.into(), slot.into()],
+            "suspending_channel_recv_abandon_detach",
+        )
+        .llvm_ctx("hew_channel_detach_recv (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_call(
+            slot_free,
+            &[slot.into()],
+            "suspending_channel_recv_abandon_free",
+        )
+        .llvm_ctx("hew_read_slot_free (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(coro.cleanup_block)
+        .llvm_ctx("suspending channel-recv abandon -> shared cleanup br")?;
+
+    // ── bind: ready-now OR resumed. Pop the queued item via the non-blocking
+    // try_recv (the single consumer's own edge), map it into the Option<T> dest,
+    // release the creator ref, branch to the MIR resume. ──────────────────────
+    fn_ctx.builder.position_at_end(bind_bb);
+    // The await already ensured readiness (an item is queued or the channel
+    // closed), so the bind edge pops via the NON-BLOCKING try_recv — the single
+    // consumer's own edge, popping the queued item exactly once (close → None).
+    let pop_symbol = if term.elem_is_int {
+        "hew_channel_try_recv_int"
+    } else {
+        "hew_channel_try_recv"
+    };
+    store_channel_recv_option(fn_ctx, rx_ptr, dest_local, pop_symbol, term.elem_is_int)?;
+    fn_ctx
+        .builder
+        .build_call(
+            slot_free,
+            &[slot.into()],
+            "suspending_channel_recv_bind_free",
+        )
+        .llvm_ctx("hew_read_slot_free (bind) call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(resume_bb)
+        .llvm_ctx("suspending channel-recv bind -> resume br")?;
+
+    Ok(())
+}
+
+/// Materialise an `Option<T>` channel-recv result into `dest_local` by calling
+/// `recv_symbol` (one of `hew_channel_recv` / `hew_channel_try_recv` for the
+/// string ABI, or `hew_channel_recv_int` / `hew_channel_try_recv_int` for the
+/// int out-valid ABI). Shared by the suspend ramp's bind edge (which passes the
+/// non-blocking `try_recv` variant) and the non-suspending `Terminator::Call`
+/// intercept (which passes the actual callee — blocking `recv` for default
+/// callers, `try_recv` for `try_recv()`).
+///
+/// Branchless: the Option tag is a `select` on the null-ptr / out-valid signal
+/// and the payload is stored unconditionally (a `None`-tagged Option never reads
+/// or drops its payload slot, so a stored null pointer / stale i64 is inert).
+/// For `Option<string>` the payload is the owned malloc'd pointer, which the
+/// MIR drop spine frees with `hew_string_drop` on every consumption path.
+fn store_channel_recv_option<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    rx_ptr: inkwell::values::PointerValue<'ctx>,
+    dest_local: u32,
+    recv_symbol: &str,
+    elem_is_int: bool,
+) -> CodegenResult<()> {
+    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
+    let BasicTypeEnum::IntType(tag_int) = tag_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "channel recv dest Option tag must be integer-typed; got {tag_ty:?}"
+        )));
+    };
+    let payload_place = Place::EnumVariant {
+        local: dest_local,
+        variant_idx: 0,
+        field_idx: 0,
+    };
+    let (payload_ptr, _) = place_pointer(fn_ctx, payload_place)?;
+
+    if elem_is_int {
+        let recv_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            recv_symbol,
+        )?;
+        let i32_ty = fn_ctx.ctx.i32_type();
+        let out_valid = fn_ctx
+            .builder
+            .build_alloca(i32_ty, "channel_recv_out_valid")
+            .llvm_ctx("channel recv out_valid alloca")?;
+        let value = fn_ctx
+            .builder
+            .build_call(
+                recv_fn,
+                &[rx_ptr.into(), out_valid.into()],
+                "hew_channel_try_recv_int_call",
+            )
+            .llvm_ctx("hew_channel_try_recv_int call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_channel_try_recv_int returned void".into())
+            })?;
+        let valid = fn_ctx
+            .builder
+            .build_load(i32_ty, out_valid, "channel_recv_valid")
+            .llvm_ctx("channel recv out_valid load")?
+            .into_int_value();
+        let is_some = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                valid,
+                i32_ty.const_int(1, false),
+                "channel_recv_is_some",
+            )
+            .llvm_ctx("channel recv valid compare")?;
+        // tag: Some = 0, None = 1.
+        let tag_val = fn_ctx
+            .builder
+            .build_select(
+                is_some,
+                tag_int.const_zero(),
+                tag_int.const_int(1, false),
+                "channel_recv_tag",
+            )
+            .llvm_ctx("channel recv tag select")?;
+        fn_ctx
+            .builder
+            .build_store(payload_ptr, value)
+            .llvm_ctx("channel recv int payload store")?;
+        fn_ctx
+            .builder
+            .build_store(tag_ptr, tag_val)
+            .llvm_ctx("channel recv int tag store")?;
+    } else {
+        let recv_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            recv_symbol,
+        )?;
+        let ret_ptr = fn_ctx
+            .builder
+            .build_call(recv_fn, &[rx_ptr.into()], "hew_channel_recv_str_call")
+            .llvm_ctx("hew_channel_recv (string) call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_channel_recv (string) returned void".into())
+            })?
+            .into_pointer_value();
+        let is_null = fn_ctx
+            .builder
+            .build_is_null(ret_ptr, "channel_recv_is_null")
+            .llvm_ctx("channel recv null compare")?;
+        // tag: None (null) = 1, Some (non-null) = 0.
+        let tag_val = fn_ctx
+            .builder
+            .build_select(
+                is_null,
+                tag_int.const_int(1, false),
+                tag_int.const_zero(),
+                "channel_recv_tag",
+            )
+            .llvm_ctx("channel recv tag select")?;
+        // Store the owned pointer into the Some payload slot (inert when None).
+        fn_ctx
+            .builder
+            .build_store(payload_ptr, ret_ptr)
+            .llvm_ctx("channel recv str payload store")?;
+        fn_ctx
+            .builder
+            .build_store(tag_ptr, tag_val)
+            .llvm_ctx("channel recv str tag store")?;
+    }
     Ok(())
 }
 
@@ -24004,6 +24480,54 @@ fn lower_terminator<'ctx>(
                 )?;
                 return Ok(());
             }
+            // `rx.recv()` / `rx.try_recv()` over a `std::channel` `Receiver<T>`
+            // route to `hew_channel_recv*` / `hew_channel_try_recv*`. In a
+            // context-bearing caller `recv` already flipped to
+            // `Terminator::SuspendingChannelRecv` (the suspend ramp); a
+            // `Terminator::Call` to these symbols is the NON-SUSPENDING path: a
+            // default caller's blocking `recv` (`main`/free fn — a foreign thread
+            // with no parkable continuation) or any `try_recv` (never suspends).
+            // Materialise `Option<string>` (nullable-ptr ABI) / `Option<i64>`
+            // (out-valid ABI) in-place. Dispatch by callee name, mirroring the
+            // `hew_remote_pid_tell` / stream-recv precedent.
+            if matches!(
+                callee.as_str(),
+                "hew_channel_recv"
+                    | "hew_channel_try_recv"
+                    | "hew_channel_recv_int"
+                    | "hew_channel_try_recv_int"
+            ) {
+                let [rx_arg] = args.as_slice() else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "{callee} expects exactly 1 argument (the receiver handle), got {}",
+                        args.len()
+                    )));
+                };
+                let dest_place = dest.as_ref().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "{callee} returns Option<T>; producer must supply a dest place"
+                    ))
+                })?;
+                let Place::Local(dest_local) = dest_place else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "{callee} dest must be Place::Local (Option<T> enum slot), got {dest_place:?}"
+                    )));
+                };
+                let rx_ptr = load_duplex_handle(fn_ctx, *rx_arg, &format!("{callee} rx"))?;
+                let elem_is_int = matches!(
+                    callee.as_str(),
+                    "hew_channel_recv_int" | "hew_channel_try_recv_int"
+                );
+                store_channel_recv_option(fn_ctx, rx_ptr, *dest_local, callee, elem_is_int)?;
+                let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
+                    CodegenError::FailClosed(format!("{callee} next bb{next} missing"))
+                })?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(next_bb)
+                    .llvm_ctx_with(|| format!("{callee} br next"))?;
+                return Ok(());
+            }
             if let Some(intrinsic) = math_builtin_intrinsic(callee) {
                 if !fn_symbols.contains_key(callee) {
                     emit_math_builtin_intrinsic_call(
@@ -24915,6 +25439,22 @@ fn lower_terminator<'ctx>(
                 cleanup: *cleanup,
             },
         )?,
+        Terminator::SuspendingChannelRecv {
+            receiver,
+            result_dest,
+            elem_is_int,
+            resume,
+            cleanup,
+        } => emit_suspending_channel_recv_terminator(
+            fn_ctx,
+            SuspendingChannelRecvEmit {
+                receiver: *receiver,
+                result_dest: *result_dest,
+                elem_is_int: *elem_is_int,
+                resume: *resume,
+                cleanup: *cleanup,
+            },
+        )?,
         Terminator::SuspendingStreamSend {
             sink,
             value,
@@ -25288,7 +25828,8 @@ fn emit_select_terminator<'ctx>(
         match &arm.kind {
             SelectArmKind::ActorAsk { .. }
             | SelectArmKind::StreamNext { .. }
-            | SelectArmKind::TaskAwait { .. } => wait_arm_indices.push(i),
+            | SelectArmKind::TaskAwait { .. }
+            | SelectArmKind::ChannelRecv { .. } => wait_arm_indices.push(i),
             SelectArmKind::AfterTimer { .. } => {
                 if after_arm_index.is_some() {
                     return Err(CodegenError::FailClosed(
@@ -25407,6 +25948,18 @@ fn emit_select_terminator<'ctx>(
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_stream_cancel_pending_read",
+    )?;
+    let channel_poll = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_channel_poll",
+    )?;
+    let channel_poll_cancel = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_channel_cancel_pending_read",
     )?;
     let task_completion_observe = intern_runtime_decl(
         ctx,
@@ -25609,6 +26162,68 @@ fn emit_select_terminator<'ctx>(
                     .into_int_value();
                 (status, true)
             }
+            SelectArmKind::ChannelRecv { receiver, .. } => {
+                // Signal-only readiness poll (mirrors TaskAwait's observe +
+                // StreamNext's pending-id): register a poll on the channel that
+                // fires `signal_ready(ch)` when readable. The winner edge pops
+                // the item itself via try_recv, so nothing is consumed here.
+                fn_ctx
+                    .builder
+                    .build_call(
+                        channel_retain,
+                        &[ch_val.into()],
+                        &format!("select_channel_ch_retain_{slot_idx}"),
+                    )
+                    .llvm_ctx("channel poll channel retain")?;
+                let rx_ptr = load_duplex_handle(fn_ctx, *receiver, "select_channel_handle")?;
+                let pending_id = fn_ctx
+                    .builder
+                    .build_call(
+                        channel_poll,
+                        &[
+                            rx_ptr.into(),
+                            signal_ready.as_global_value().as_pointer_value().into(),
+                            ch_val.into(),
+                            // Cancel-path release for the retained observer ref:
+                            // a withdrawn poll frees exactly one reference of
+                            // `ch_val` WITHOUT firing the readiness callback,
+                            // matching `signal_ready`'s consume on the fire path
+                            // (exactly-once ownership handoff — H1).
+                            channel_free.as_global_value().as_pointer_value().into(),
+                        ],
+                        &format!("select_channel_poll_{slot_idx}"),
+                    )
+                    .llvm_ctx("hew_channel_poll call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_channel_poll returned void".into())
+                    })?
+                    .into_int_value();
+                let pending_slot = pending_id_slot_ptr(slot_idx)?;
+                fn_ctx
+                    .builder
+                    .build_store(pending_slot, pending_id)
+                    .llvm_ctx("channel poll pending-id store")?;
+                let failed = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        pending_id,
+                        i64_ty.const_zero(),
+                        &format!("select_channel_poll_failed_{slot_idx}"),
+                    )
+                    .llvm_ctx("channel poll cmp")?;
+                let status = fn_ctx
+                    .builder
+                    .build_int_z_extend(
+                        failed,
+                        i32_ty,
+                        &format!("select_channel_status_{slot_idx}"),
+                    )
+                    .llvm_ctx("channel poll status zext")?;
+                (status, true)
+            }
             SelectArmKind::AfterTimer { .. } => {
                 unreachable!("wait_arm_indices excludes AfterTimer")
             }
@@ -25707,6 +26322,27 @@ fn emit_select_terminator<'ctx>(
                             &format!("select_cleanup_cancel_{j}"),
                         )
                         .llvm_ctx("setup-fail cancel")?;
+                }
+                SelectArmKind::ChannelRecv { receiver, .. } => {
+                    let rx_ptr = load_duplex_handle(fn_ctx, *receiver, "select_cleanup_channel")?;
+                    let pending_slot = pending_id_slot_ptr(j)?;
+                    let pending_id = fn_ctx
+                        .builder
+                        .build_load(
+                            i64_ty,
+                            pending_slot,
+                            &format!("select_cleanup_chan_pending_id_{j}"),
+                        )
+                        .llvm_ctx("setup-fail channel pending id load")?
+                        .into_int_value();
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            channel_poll_cancel,
+                            &[rx_ptr.into(), pending_id.into()],
+                            &format!("select_cleanup_channel_cancel_{j}"),
+                        )
+                        .llvm_ctx("setup-fail channel cancel")?;
                 }
                 SelectArmKind::AfterTimer { .. } => {
                     unreachable!("wait_arm_indices excludes AfterTimer")
@@ -25911,124 +26547,162 @@ fn emit_select_terminator<'ctx>(
             .into_pointer_value();
 
         let (dest_ptr, dest_ty) = place_pointer(fn_ctx, binding_place)?;
-        let task_result_ptr = if matches!(arm.kind, SelectArmKind::TaskAwait { .. }) {
-            let task_place = match &arm.kind {
-                SelectArmKind::TaskAwait { task } => *task,
-                _ => unreachable!("checked above"),
+        if let SelectArmKind::ChannelRecv {
+            receiver,
+            elem_is_int,
+        } = &arm.kind
+        {
+            // The poll fired `signal_ready` on readiness WITHOUT consuming; the
+            // winning consumer pops the queued item itself on its own edge via
+            // the non-blocking try_recv and materialises `Option<T>` (close →
+            // `None`). The owned `Some(string)` pointer is balanced by the MIR
+            // drop spine — it never crosses the park thread, so a losing arm
+            // (left queued + cancelled) cannot leak it.
+            let Place::Local(dest_local) = binding_place else {
+                return Err(CodegenError::FailClosed(format!(
+                    "select{{}} ChannelRecv arm {arm_idx} binding must be Place::Local, got {binding_place:?}"
+                )));
             };
-            let task_ptr = load_duplex_handle(fn_ctx, task_place, "select_task_winner")?;
-            Some(
+            let rx_ptr = load_duplex_handle(fn_ctx, *receiver, "select_channel_winner")?;
+            let pop_symbol = if *elem_is_int {
+                "hew_channel_try_recv_int"
+            } else {
+                "hew_channel_try_recv"
+            };
+            store_channel_recv_option(fn_ctx, rx_ptr, dest_local, pop_symbol, *elem_is_int)?;
+            let _ = dest_ptr;
+            let _ = dest_ty;
+            // Free the winning channel's caller-side ref (its poll already
+            // cleared its own pending_read; no cancel needed).
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[win_ch.into()],
+                    &format!("select_win_chan_ch_free_{winner_slot}"),
+                )
+                .llvm_ctx("select channel winner ch free")?;
+        } else {
+            let task_result_ptr = if matches!(arm.kind, SelectArmKind::TaskAwait { .. }) {
+                let task_place = match &arm.kind {
+                    SelectArmKind::TaskAwait { task } => *task,
+                    _ => unreachable!("checked above"),
+                };
+                let task_ptr = load_duplex_handle(fn_ctx, task_place, "select_task_winner")?;
+                Some(
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            task_get_result,
+                            &[task_ptr.into()],
+                            &format!("select_task_get_result_{winner_slot}"),
+                        )
+                        .llvm_ctx("hew_task_get_result call")?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed("hew_task_get_result returned void".into())
+                        })?
+                        .into_pointer_value(),
+                )
+            } else {
+                None
+            };
+            let reply_ptr = if let Some(result_ptr) = task_result_ptr {
+                result_ptr
+            } else {
                 fn_ctx
                     .builder
                     .build_call(
-                        task_get_result,
-                        &[task_ptr.into()],
-                        &format!("select_task_get_result_{winner_slot}"),
+                        reply_wait,
+                        &[win_ch.into()],
+                        &format!("select_reply_wait_{winner_slot}"),
                     )
-                    .llvm_ctx("hew_task_get_result call")?
+                    .llvm_ctx("hew_reply_wait call")?
                     .try_as_basic_value()
                     .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("hew_task_get_result returned void".into())
-                    })?
-                    .into_pointer_value(),
-            )
-        } else {
-            None
-        };
-        let reply_ptr = if let Some(result_ptr) = task_result_ptr {
-            result_ptr
-        } else {
+                    .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
+                    .into_pointer_value()
+            };
+
+            // Defensive null check on the reply pointer. `hew_reply_wait`
+            // returns null when the published value pointer was null —
+            // which happens on the allocation-failure-during-publish path
+            // (`take_ready_reply` at `hew-runtime/src/reply_channel.rs:164`
+            // returns null after `hew_reply_channel_mark_allocation_failed`
+            // toggled the flag). `hew_select_first` will route us here
+            // because the channel reached `ready=true` with a null value;
+            // dereferencing would SIGSEGV. Mirrors `Terminator::Ask`'s
+            // null-trap shape (`llvm.rs:4831-4854`).
+            let null_bb =
+                ctx.append_basic_block(parent_fn, &format!("select_reply_null_trap_{winner_slot}"));
+            let ok_bb =
+                ctx.append_basic_block(parent_fn, &format!("select_reply_ok_{winner_slot}"));
+            let is_null = fn_ctx
+                .builder
+                .build_is_null(reply_ptr, &format!("select_reply_is_null_{winner_slot}"))
+                .llvm_ctx("select reply null cmp")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(is_null, null_bb, ok_bb)
+                .llvm_ctx("select reply null branch")?;
+            // Null-reply trap branch.
+            fn_ctx.builder.position_at_end(null_bb);
+            let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
+                CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
+            })?;
+            let trap_fn = trap_intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[])
+                .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
             fn_ctx
                 .builder
                 .build_call(
-                    reply_wait,
+                    trap_fn,
+                    &[],
+                    &format!("select_reply_null_trap_call_{winner_slot}"),
+                )
+                .llvm_ctx("select reply null trap")?;
+            fn_ctx
+                .builder
+                .build_unreachable()
+                .llvm_ctx("select reply null unreachable")?;
+            // Ok branch: load + store + frees.
+            fn_ctx.builder.position_at_end(ok_bb);
+            let reply_val = fn_ctx
+                .builder
+                .build_load(
+                    dest_ty,
+                    reply_ptr,
+                    &format!("select_reply_value_{winner_slot}"),
+                )
+                .llvm_ctx("select reply load")?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, reply_val)
+                .llvm_ctx("select reply store")?;
+
+            if task_result_ptr.is_none() {
+                fn_ctx
+                    .builder
+                    .build_call(
+                        libc_free,
+                        &[reply_ptr.into()],
+                        &format!("select_reply_free_{winner_slot}"),
+                    )
+                    .llvm_ctx("select reply free")?;
+            }
+
+            // Free the winning channel's caller-side ref (no cancel — we
+            // consumed its reply, the channel is not abandoned).
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
                     &[win_ch.into()],
-                    &format!("select_reply_wait_{winner_slot}"),
+                    &format!("select_win_ch_free_{winner_slot}"),
                 )
-                .llvm_ctx("hew_reply_wait call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
-                .into_pointer_value()
-        };
-
-        // Defensive null check on the reply pointer. `hew_reply_wait`
-        // returns null when the published value pointer was null —
-        // which happens on the allocation-failure-during-publish path
-        // (`take_ready_reply` at `hew-runtime/src/reply_channel.rs:164`
-        // returns null after `hew_reply_channel_mark_allocation_failed`
-        // toggled the flag). `hew_select_first` will route us here
-        // because the channel reached `ready=true` with a null value;
-        // dereferencing would SIGSEGV. Mirrors `Terminator::Ask`'s
-        // null-trap shape (`llvm.rs:4831-4854`).
-        let null_bb =
-            ctx.append_basic_block(parent_fn, &format!("select_reply_null_trap_{winner_slot}"));
-        let ok_bb = ctx.append_basic_block(parent_fn, &format!("select_reply_ok_{winner_slot}"));
-        let is_null = fn_ctx
-            .builder
-            .build_is_null(reply_ptr, &format!("select_reply_is_null_{winner_slot}"))
-            .llvm_ctx("select reply null cmp")?;
-        fn_ctx
-            .builder
-            .build_conditional_branch(is_null, null_bb, ok_bb)
-            .llvm_ctx("select reply null branch")?;
-        // Null-reply trap branch.
-        fn_ctx.builder.position_at_end(null_bb);
-        let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
-            CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
-        })?;
-        let trap_fn = trap_intrinsic
-            .get_declaration(fn_ctx.llvm_mod, &[])
-            .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-        fn_ctx
-            .builder
-            .build_call(
-                trap_fn,
-                &[],
-                &format!("select_reply_null_trap_call_{winner_slot}"),
-            )
-            .llvm_ctx("select reply null trap")?;
-        fn_ctx
-            .builder
-            .build_unreachable()
-            .llvm_ctx("select reply null unreachable")?;
-        // Ok branch: load + store + frees.
-        fn_ctx.builder.position_at_end(ok_bb);
-        let reply_val = fn_ctx
-            .builder
-            .build_load(
-                dest_ty,
-                reply_ptr,
-                &format!("select_reply_value_{winner_slot}"),
-            )
-            .llvm_ctx("select reply load")?;
-        fn_ctx
-            .builder
-            .build_store(dest_ptr, reply_val)
-            .llvm_ctx("select reply store")?;
-
-        if task_result_ptr.is_none() {
-            fn_ctx
-                .builder
-                .build_call(
-                    libc_free,
-                    &[reply_ptr.into()],
-                    &format!("select_reply_free_{winner_slot}"),
-                )
-                .llvm_ctx("select reply free")?;
+                .llvm_ctx("select winner ch free")?;
         }
-
-        // Free the winning channel's caller-side ref (no cancel — we
-        // consumed its reply, the channel is not abandoned).
-        fn_ctx
-            .builder
-            .build_call(
-                channel_free,
-                &[win_ch.into()],
-                &format!("select_win_ch_free_{winner_slot}"),
-            )
-            .llvm_ctx("select winner ch free")?;
 
         // Loser cleanup: every OTHER ActorAsk arm gets cancel + free,
         // in that order (Risk R4 — cancel BEFORE free is the UAF
@@ -26103,6 +26777,27 @@ fn emit_select_terminator<'ctx>(
                             &format!("select_loser_cancel_w{winner_slot}_l{loser_slot}"),
                         )
                         .llvm_ctx("select loser cancel")?;
+                }
+                SelectArmKind::ChannelRecv { receiver, .. } => {
+                    let rx_ptr = load_duplex_handle(fn_ctx, *receiver, "select_loser_channel")?;
+                    let pending_slot = pending_id_slot_ptr(loser_slot)?;
+                    let pending_id = fn_ctx
+                        .builder
+                        .build_load(
+                            i64_ty,
+                            pending_slot,
+                            &format!("select_loser_chan_pending_id_w{winner_slot}_l{loser_slot}"),
+                        )
+                        .llvm_ctx("select loser channel pending id load")?
+                        .into_int_value();
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            channel_poll_cancel,
+                            &[rx_ptr.into(), pending_id.into()],
+                            &format!("select_loser_channel_cancel_w{winner_slot}_l{loser_slot}"),
+                        )
+                        .llvm_ctx("select loser channel cancel")?;
                 }
                 SelectArmKind::AfterTimer { .. } => {
                     unreachable!("wait_arm_indices excludes AfterTimer")
@@ -26205,6 +26900,28 @@ fn emit_select_terminator<'ctx>(
                             &format!("select_after_loser_cancel_{loser_slot}"),
                         )
                         .llvm_ctx("select after loser cancel")?;
+                }
+                SelectArmKind::ChannelRecv { receiver, .. } => {
+                    let rx_ptr =
+                        load_duplex_handle(fn_ctx, *receiver, "select_after_loser_channel")?;
+                    let pending_slot = pending_id_slot_ptr(loser_slot)?;
+                    let pending_id = fn_ctx
+                        .builder
+                        .build_load(
+                            i64_ty,
+                            pending_slot,
+                            &format!("select_after_loser_chan_pending_id_{loser_slot}"),
+                        )
+                        .llvm_ctx("select after loser channel pending id load")?
+                        .into_int_value();
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            channel_poll_cancel,
+                            &[rx_ptr.into(), pending_id.into()],
+                            &format!("select_after_loser_channel_cancel_{loser_slot}"),
+                        )
+                        .llvm_ctx("select after loser channel cancel")?;
                 }
                 SelectArmKind::AfterTimer { .. } => {
                     unreachable!("wait_arm_indices excludes AfterTimer")
@@ -26500,6 +27217,7 @@ fn declare_function<'ctx>(
                 | Terminator::SuspendingStreamNext { .. }
                 | Terminator::SuspendingStreamSend { .. }
                 | Terminator::SuspendingAccept { .. }
+                | Terminator::SuspendingChannelRecv { .. }
         )
     });
     let return_ty_llvm = if is_coroutine {
@@ -26935,6 +27653,7 @@ fn lower_function<'ctx>(
                 | Terminator::SuspendingStreamNext { .. }
                 | Terminator::SuspendingStreamSend { .. }
                 | Terminator::SuspendingAccept { .. }
+                | Terminator::SuspendingChannelRecv { .. }
         )
     });
 
@@ -28405,6 +29124,7 @@ fn build_module_for_target<'ctx>(
                                     | Terminator::SuspendingStreamNext { .. }
                                     | Terminator::SuspendingStreamSend { .. }
                                     | Terminator::SuspendingAccept { .. }
+                                    | Terminator::SuspendingChannelRecv { .. }
                             )
                         })
                     })
@@ -34008,6 +34728,146 @@ mod tests {
             found, "hew_gen_yield",
             "WASM exclusion scan must surface `hew_gen_yield` for a \
              function containing `Terminator::Yield`; got `{found}`"
+        );
+    }
+
+    /// Wrap a single raw-MIR function into an otherwise-empty `IrPipeline` for
+    /// the wasm-exclusion-scan regressions.
+    fn raw_mir_only_pipeline(body: RawMirFunction) -> IrPipeline {
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![body],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            user_consts: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+            actor_send_aliasing: std::collections::HashMap::new(),
+            polymorphic_mir: Vec::new(),
+        }
+    }
+
+    /// Code-2 (NEW-4 wasm fail-closed): a `select{}` arm that receives from a
+    /// channel emits `hew_channel_poll` whose native channel core is
+    /// `cfg(not(target_arch = "wasm32"))`. The wasm-exclusion scan must surface a
+    /// structured `WasmUnsupportedSubstrate("hew_channel_poll")` BEFORE textual
+    /// IR emission — not a dangling `wasm-ld` reference. This is the
+    /// defence-in-depth codegen catch for any direct-MIR select-arm path that
+    /// bypasses the HIR `.recv()` gate. LESSONS P0 `boundary-fail-closed`.
+    #[test]
+    fn wasm_exclusion_scan_flags_select_channel_recv_arm_as_channel_poll() {
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let body = RawMirFunction {
+            name: "select_channel_recv_wasm_excl_test".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Select {
+                        arms: vec![hew_mir::SelectArm {
+                            kind: hew_mir::SelectArmKind::ChannelRecv {
+                                receiver: Place::Local(0),
+                                elem_is_int: false,
+                            },
+                            body_block: 1,
+                            binding: Some(Place::Local(1)),
+                        }],
+                        next: 1,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+        };
+        let pipeline = raw_mir_only_pipeline(body);
+        let found = uses_wasm_excluded_symbol(&pipeline)
+            .expect("a select{} ChannelRecv arm must be flagged as WASM-excluded");
+        assert_eq!(
+            found, "hew_channel_poll",
+            "WASM exclusion scan must surface `hew_channel_poll` for a \
+             `select{{}}` channel-recv arm; got `{found}`"
+        );
+    }
+
+    /// Code-2 (NEW-4 wasm fail-closed): a direct-MIR `Terminator::SuspendingChannelRecv`
+    /// carrier (the worker-free `await rx.recv()` lowering) emits
+    /// `hew_channel_await_recv`, also part of the native-only channel core. The
+    /// wasm-exclusion scan must fail closed with a structured
+    /// `WasmUnsupportedSubstrate("hew_channel_await_recv")` rather than a link
+    /// error. LESSONS P0 `boundary-fail-closed`.
+    #[test]
+    fn wasm_exclusion_scan_flags_suspending_channel_recv_as_await_recv() {
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let body = RawMirFunction {
+            name: "suspending_channel_recv_wasm_excl_test".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::SuspendingChannelRecv {
+                        receiver: Place::Local(0),
+                        result_dest: Place::Local(1),
+                        elem_is_int: false,
+                        resume: 1,
+                        cleanup: 2,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+                BasicBlock {
+                    id: 2,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+        };
+        let pipeline = raw_mir_only_pipeline(body);
+        let found = uses_wasm_excluded_symbol(&pipeline)
+            .expect("a SuspendingChannelRecv carrier must be flagged as WASM-excluded");
+        assert_eq!(
+            found, "hew_channel_await_recv",
+            "WASM exclusion scan must surface `hew_channel_await_recv` for a \
+             `Terminator::SuspendingChannelRecv` carrier; got `{found}`"
         );
     }
 

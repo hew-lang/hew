@@ -619,6 +619,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         "actor-ask"
                     }
                     crate::node::HirSelectArmKind::TaskAwait { .. } => "task-await",
+                    crate::node::HirSelectArmKind::ChannelRecv { .. } => "channel-recv",
                     crate::node::HirSelectArmKind::AfterTimer { .. } => "after-timer",
                 };
                 let binding_label = arm.binding_name.as_deref().unwrap_or("_");

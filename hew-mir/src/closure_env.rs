@@ -318,6 +318,7 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
                     HirSelectArmKind::StreamNext { .. }
                     | HirSelectArmKind::ActorAsk { .. }
                     | HirSelectArmKind::TaskAwait { .. }
+                    | HirSelectArmKind::ChannelRecv { .. }
                     | HirSelectArmKind::AfterTimer { .. } => {
                         *found = true;
                     }

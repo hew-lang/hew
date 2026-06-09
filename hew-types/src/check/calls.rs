@@ -1193,6 +1193,34 @@ impl Checker {
         span: &Span,
         construct: &str,
     ) -> Ty {
+        // NEW-4: a `pat from rx.recv()` select/join arm over a std/channel
+        // `Receiver<T>`. Recognised before the actor-ask shape: the receiver is
+        // a channel handle (not an actor), and `recv` resolves to `Option<T>`
+        // with a recorded runtime rewrite (hew_channel_recv*), exactly as an
+        // awaited `rx.recv()`. The select substrate polls the channel core for
+        // readiness and binds `Option<T>` on the winning edge.
+        if let Expr::MethodCall {
+            receiver, method, ..
+        } = expr
+        {
+            if method == "recv" {
+                let recv_ty = {
+                    let ty = self.synthesize(&receiver.0, &receiver.1);
+                    self.subst.resolve(&ty)
+                };
+                if matches!(
+                    &recv_ty,
+                    Ty::Named { name, .. } if name == "Receiver" || name == "channel.Receiver"
+                ) {
+                    let prev = self.inside_await_expr;
+                    self.inside_await_expr = true;
+                    let synthesized = self.synthesize(expr, span);
+                    self.inside_await_expr = prev;
+                    return self.subst.resolve(&synthesized);
+                }
+            }
+        }
+
         let (method_expr, method_span, receiver_expr, receiver_span) = match expr {
             Expr::MethodCall { receiver, .. } => (expr, span, &receiver.0, &receiver.1),
             Expr::Await(inner) => {

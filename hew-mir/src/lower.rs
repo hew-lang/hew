@@ -1537,6 +1537,24 @@ pub fn lower_hir_module_with_facts(
     for mono in &module.monomorphisations {
         module_fn_names.insert(mono.mangled_name.clone());
     }
+    // Channel recv out-param-ABI symbols: registered by the checker
+    // (`registration.rs:5364`) and in `fn_registry` (via
+    // `seed_stdlib_fn_registry`) but absent from the stdlib catalog and
+    // from `extern "C"` blocks in `channel.hew`. Adding them here routes
+    // a `BindingRef { name: "hew_channel_recv*", resolved: Item(_) }` call
+    // through `lower_direct_call` → `Terminator::Call` (not through
+    // `lower_runtime_call` / `Instr::CallRuntimeAbi`, which would require
+    // these to be in `runtime_symbols::MIR_EMITTER_RUNTIME_SYMBOLS`).
+    // Codegen intercepts the `Terminator::Call` by callee name and emits
+    // the null-ptr → `Option<T>` materialisation.
+    for name in [
+        "hew_channel_recv",
+        "hew_channel_recv_int",
+        "hew_channel_try_recv",
+        "hew_channel_try_recv_int",
+    ] {
+        module_fn_names.insert(name.to_string());
+    }
     let module_generic_fn_names: HashSet<String> = module
         .items
         .iter()
@@ -4032,6 +4050,9 @@ fn collect_unknown_self_fields_in_expr(
                     }
                     hew_hir::HirSelectArmKind::TaskAwait { task } => {
                         collect_unknown_self_fields_in_expr(task, state_fields, seen, unknown);
+                    }
+                    hew_hir::HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                        collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
                     }
                     hew_hir::HirSelectArmKind::AfterTimer { duration } => {
                         collect_unknown_self_fields_in_expr(duration, state_fields, seen, unknown);
@@ -9880,6 +9901,7 @@ impl Builder {
                     | Terminator::SuspendingStreamNext { .. }
                     | Terminator::SuspendingStreamSend { .. }
                     | Terminator::SuspendingAccept { .. }
+                    | Terminator::SuspendingChannelRecv { .. }
                     | Terminator::Select { .. } => false,
                 }
             }
@@ -13806,8 +13828,39 @@ impl Builder {
             }
         }
 
-        // Suspendable-caller flip (NEW-7, producer): `sink.send(x)` over a
-        // `Sink<bytes>` resolves to `hew_sink_write_bytes`. In an execution-
+        // Suspendable-caller flip (NEW-4): `await rx.recv()` over a
+        // `std::channel` `Receiver<T>` resolves to `hew_channel_recv`
+        // (string) / `hew_channel_recv_int` (int). In a caller that carries the
+        // execution context (actor handler / closure / task entry) the recv
+        // SUSPENDS over the channel-await substrate instead of blocking the
+        // worker — emit `Terminator::SuspendingChannelRecv`. A
+        // `FunctionCallConv::Default` caller (`main`, free fn) has no parkable
+        // continuation and keeps the blocking `hew_channel_recv*` call (codegen
+        // intercepts the `Terminator::Call` by name and materialises
+        // `Option<T>`). `try_recv` never suspends and always keeps the blocking
+        // (immediate) call. This reuses the SAME `carries_execution_context`
+        // discriminator as the stream-recv flip above (DI-019/DI-020).
+        if matches!(callee_symbol, "hew_channel_recv" | "hew_channel_recv_int")
+            && self.current_function_call_conv.carries_execution_context()
+        {
+            if let (Some(result_dest), [receiver]) = (dest, arg_places.as_slice()) {
+                let elem_is_int = callee_symbol == "hew_channel_recv_int";
+                let next = self.alloc_block();
+                // `SuspendingChannelRecv` carries no separate MIR cleanup block —
+                // it rides the multi-suspend epilogue, so `cleanup` reuses `next`
+                // exactly as `SuspendingStreamNext`/`SuspendingRead` do.
+                self.finish_current_block(Terminator::SuspendingChannelRecv {
+                    receiver: *receiver,
+                    result_dest,
+                    elem_is_int,
+                    resume: next,
+                    cleanup: next,
+                });
+                self.start_block(next);
+                return dest;
+            }
+        }
+
         // context caller the send SUSPENDS on a full ring (backpressure-aware)
         // instead of blocking the worker — emit
         // `Terminator::SuspendingStreamSend`. A non-full ring binds immediately
@@ -14853,6 +14906,37 @@ impl Builder {
                     (
                         SelectArmKind::TaskAwait { task: task_place },
                         Some(await_dest),
+                    )
+                }
+                HirSelectArmKind::ChannelRecv {
+                    receiver,
+                    elem_is_int,
+                } => {
+                    // The arm binds `Option<T>` — the same shape an awaited
+                    // `rx.recv()` produces; the winner edge pops the queued item
+                    // via the non-blocking try_recv and materialises it.
+                    let recv_place = self.lower_value(receiver)?;
+                    let elem = if *elem_is_int {
+                        ResolvedTy::I64
+                    } else {
+                        ResolvedTy::String
+                    };
+                    let option_ty = ResolvedTy::Named {
+                        name: "Option".to_string(),
+                        args: vec![elem],
+                        builtin: None,
+                        is_opaque: false,
+                    };
+                    let item_dest = self.alloc_local(option_ty);
+                    if let Some(binding_id) = arm.binding_id {
+                        self.binding_locals.insert(binding_id, item_dest);
+                    }
+                    (
+                        SelectArmKind::ChannelRecv {
+                            receiver: recv_place,
+                            elem_is_int: *elem_is_int,
+                        },
+                        Some(item_dest),
                     )
                 }
                 HirSelectArmKind::AfterTimer { duration } => {
@@ -17607,6 +17691,9 @@ fn validate_cross_block_split_consume(
             }
             | Terminator::SuspendingAccept {
                 resume, cleanup, ..
+            }
+            | Terminator::SuspendingChannelRecv {
+                resume, cleanup, ..
             } => {
                 emit(*resume);
                 emit(*cleanup);
@@ -17651,6 +17738,9 @@ fn validate_cross_block_split_consume(
                 resume, cleanup, ..
             }
             | Terminator::SuspendingAccept {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingChannelRecv {
                 resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
@@ -18224,6 +18314,7 @@ pub fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
             | Terminator::SuspendingStreamNext { .. }
             | Terminator::SuspendingStreamSend { .. }
             | Terminator::SuspendingAccept { .. }
+            | Terminator::SuspendingChannelRecv { .. }
     )
 }
 
@@ -18267,6 +18358,9 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // `SuspendingStreamNext` reads `stream` (the recv source); `result_dest`
         // is a write slot bound on the resume edge, not a source.
         Terminator::SuspendingStreamNext { stream, .. } => vec![*stream],
+        // `SuspendingChannelRecv` reads `receiver` (the recv source); `result_dest`
+        // is a write slot bound on the resume edge, not a source.
+        Terminator::SuspendingChannelRecv { receiver, .. } => vec![*receiver],
         // `SuspendingStreamSend` reads `sink` + `value` (the send sources).
         Terminator::SuspendingStreamSend { sink, value, .. } => vec![*sink, *value],
         // The suspendable-callee driver reads the closure pair (`callee`) and
@@ -18297,6 +18391,7 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
                         places.push(*value);
                     }
                     SelectArmKind::TaskAwait { task } => places.push(*task),
+                    SelectArmKind::ChannelRecv { receiver, .. } => places.push(*receiver),
                     SelectArmKind::AfterTimer { duration } => places.push(*duration),
                 }
                 // `arm.binding` is the slot the won arm's value is written
@@ -18502,6 +18597,9 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         // `SuspendingStreamNext` carries only `stream` (a stream handle read),
         // never a generator-yielded `local`, so it never escapes one.
         | Terminator::SuspendingStreamNext { .. }
+        // `SuspendingChannelRecv` carries only `receiver` (a channel handle read),
+        // never a generator-yielded `local`, so it never escapes one.
+        | Terminator::SuspendingChannelRecv { .. }
         // The suspendable-callee driver's `args` are borrows (same posture as
         // `Call`/`Instr::Call*`); the closure callee does not retain a fresh
         // yielded value, so this terminator never escapes `local`.
@@ -21761,6 +21859,14 @@ fn enumerate_exits(
             // edge additionally cancels + frees the read slot), never at the
             // suspend site.
             | Terminator::SuspendingAccept {
+                resume, cleanup, ..
+            }
+            // `SuspendingChannelRecv` has the identical drop posture: the read
+            // slot + the live-across-suspend receiver handle ride the coro frame,
+            // dropped exactly once by the `cleanup` outline on `coro.destroy`
+            // (the abandon edge additionally detaches the channel-await
+            // registration + cancels/frees the slot), never at the suspend site.
+            | Terminator::SuspendingChannelRecv {
                 resume, cleanup, ..
             } => (
                 ExitPath::Suspend {

@@ -2026,6 +2026,17 @@ fn walk_expr(
                         diagnostics,
                         cap_diag_emitted,
                     ),
+                    HirSelectArmKind::ChannelRecv { receiver, .. } => walk_expr(
+                        receiver,
+                        subst,
+                        machine_decls,
+                        residual_domain,
+                        seen,
+                        order,
+                        cap,
+                        diagnostics,
+                        cap_diag_emitted,
+                    ),
                     HirSelectArmKind::AfterTimer { duration } => walk_expr(
                         duration,
                         subst,

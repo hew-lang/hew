@@ -699,6 +699,22 @@ mod tests {
             let notify = std::thread::spawn(move || notify_monitors_on_death(target_id, 77));
             entered.wait();
 
+            // The DOWN message has now been delivered: `notify` is parked in
+            // the hook still holding the LIVE_ACTORS lock. Verify delivery
+            // from the main thread *before* spawning the free thread, so the
+            // thread-spawn happens-before edge orders this read + node free
+            // ahead of the free thread's mailbox teardown (rather than racing
+            // its drain through the TSan-invisible std `Barrier`).
+            let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
+            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, SYS_MSG_DOWN);
+            let payload = &*((*node).data.cast::<DownMessage>());
+            assert_eq!(payload.monitored_actor_id, target_id);
+            assert_eq!(payload.ref_id, ref_id);
+            assert_eq!(payload.reason, 77);
+            mailbox::hew_msg_node_free(node);
+
             (*watcher).actor_state.store(
                 HewActorState::Idle as i32,
                 std::sync::atomic::Ordering::Release,
@@ -719,16 +735,6 @@ mod tests {
             while !free_started.load(std::sync::atomic::Ordering::Acquire) {
                 std::thread::yield_now();
             }
-
-            let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
-            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, SYS_MSG_DOWN);
-            let payload = &*((*node).data.cast::<DownMessage>());
-            assert_eq!(payload.monitored_actor_id, target_id);
-            assert_eq!(payload.ref_id, ref_id);
-            assert_eq!(payload.reason, 77);
-            mailbox::hew_msg_node_free(node);
 
             std::thread::sleep(std::time::Duration::from_millis(50));
             assert!(

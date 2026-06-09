@@ -4368,6 +4368,23 @@ pub enum MirStatement {
         ty: ResolvedTy,
         intent: IntentKind,
     },
+    /// B1 — an owned single-owner operand (`@resource` / `@linear`) was placed
+    /// (aliased) into an aggregate constructor (tuple). PURELY a move-checker
+    /// marker: it records the alias so a SUBSEQUENT use of the source binding is
+    /// flagged `UseAfterConsume` at CHECK time (the explicit-consume-after-move
+    /// double-free, e.g. `(s, r); s.close()`). It deliberately does NOT consume
+    /// the binding for DROP purposes — the source keeps its drop obligation and
+    /// the alias/escape-scan drop machinery (W3.053 + the per-aggregate
+    /// composite-drop derivations) decides the single owner exactly as before.
+    /// Modelling it as a `Use { Consume }` instead would suppress the source
+    /// drop and break that machinery (it would silently turn the W3.053
+    /// fail-closed double-free refusals into leaks).
+    AggregateAlias {
+        binding: BindingId,
+        name: String,
+        site: SiteId,
+        ty: ResolvedTy,
+    },
     Return {
         site: Option<SiteId>,
         ty: ResolvedTy,

@@ -1351,8 +1351,20 @@ fn activate_actor(actor: *mut HewActor) {
                         reply_channel: msg_ref.reply_channel,
                     };
                     let prev_context = execution_context.prev_context;
-                    let installed_prev =
-                        crate::execution_context::set_current_context(&raw mut execution_context);
+                    // Publish a single raw pointer to the dispatch-local context
+                    // and thread it through every subsequent use. Re-borrowing the
+                    // local with `&raw mut` is fine (SharedReadWrite tags coexist),
+                    // but capturing it by `&mut` — as
+                    // `catch_unwind(AssertUnwindSafe(|| dispatch(&raw mut
+                    // execution_context, …)))` previously did — issues a Unique
+                    // retag that invalidates the pointer already stored in the
+                    // thread-local context slot. The post-dispatch `hew_trace_end`
+                    // read of that slot was then Stacked-Borrows UB (Miri:
+                    // tracing.rs `(*ctx).trace`). Threading one raw pointer avoids
+                    // any further borrow of the local, so the published pointer
+                    // stays valid for the whole dispatch.
+                    let ec_ptr: *mut HewExecutionContext = &raw mut execution_context;
+                    let installed_prev = crate::execution_context::set_current_context(ec_ptr);
                     debug_assert_eq!(installed_prev, prev_context);
                     crate::tracing::hew_trace_begin(a.id, msg_ref.msg_type);
 
@@ -1360,11 +1372,9 @@ fn activate_actor(actor: *mut HewActor) {
                     // context for this dispatch and its lock seat came from the
                     // actor's registered sidecar. The helper fails closed when
                     // the seat is absent or poisoned.
-                    let lock_acquired = unsafe {
-                        crate::actor::hew_actor_state_lock_acquire_for_context(
-                            &raw mut execution_context,
-                        )
-                    } == crate::actor::HEW_ACTOR_STATE_LOCK_OK;
+                    let lock_acquired =
+                        unsafe { crate::actor::hew_actor_state_lock_acquire_for_context(ec_ptr) }
+                            == crate::actor::HEW_ACTOR_STATE_LOCK_OK;
                     if !lock_acquired {
                         // Refuse to enter the handler without the per-actor lock.
                         // SAFETY: `actor` is the actor currently owned by this
@@ -1380,12 +1390,11 @@ fn activate_actor(actor: *mut HewActor) {
                         // Read reply-channel state from the dispatch ctx
                         // BEFORE restoring `prev_context`, so the values come
                         // from this dispatch's frame.
-                        let reply_consumed =
-                            current_reply_channel_consumed_on(&raw mut execution_context);
-                        let crash_reply = clear_reply_channel_on(&raw mut execution_context);
+                        let reply_consumed = current_reply_channel_consumed_on(ec_ptr);
+                        let crash_reply = clear_reply_channel_on(ec_ptr);
                         let restored_context =
                             crate::execution_context::set_current_context(prev_context);
-                        debug_assert_eq!(restored_context, &raw mut execution_context);
+                        debug_assert_eq!(restored_context, ec_ptr);
 
                         if !reply_consumed && !crash_reply.is_null() {
                             // SAFETY: crash_reply is a valid HewReplyChannel pointer.
@@ -1418,7 +1427,7 @@ fn activate_actor(actor: *mut HewActor) {
                     // to park the activation.
                     let dispatch_result = catch_unwind(AssertUnwindSafe(|| unsafe {
                         dispatch(
-                            &raw mut execution_context,
+                            ec_ptr,
                             a.state,
                             msg_ref.msg_type,
                             dispatch_data,
@@ -1437,11 +1446,8 @@ fn activate_actor(actor: *mut HewActor) {
 
                     // SAFETY: `execution_context.lock_seat` was initialized from the
                     // live actor immediately before the matching acquire.
-                    let release_result = unsafe {
-                        crate::actor::hew_actor_state_lock_release_for_context(
-                            &raw mut execution_context,
-                        )
-                    };
+                    let release_result =
+                        unsafe { crate::actor::hew_actor_state_lock_release_for_context(ec_ptr) };
                     if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
                         // SAFETY: `actor` is the actor currently owned by this
                         // scheduler frame.
@@ -1453,10 +1459,10 @@ fn activate_actor(actor: *mut HewActor) {
                         }
                         crate::signal::clear_dispatch_recovery();
                         crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
-                        let _ = clear_reply_channel_on(&raw mut execution_context);
+                        let _ = clear_reply_channel_on(ec_ptr);
                         let restored_context =
                             crate::execution_context::set_current_context(prev_context);
-                        debug_assert_eq!(restored_context, &raw mut execution_context);
+                        debug_assert_eq!(restored_context, ec_ptr);
                         // SAFETY: msg is exclusively owned by this worker.
                         unsafe {
                             (*msg).reply_channel = std::ptr::null_mut();
@@ -1491,7 +1497,12 @@ fn activate_actor(actor: *mut HewActor) {
                     if !suspend_handle.is_null() {
                         a.suspended_reply_channel
                             .store(msg_ref.reply_channel, Ordering::Release);
-                        stash_suspended_cancel_token(a, execution_context.cancel_token.cast());
+                        // SAFETY: `ec_ptr` points at the live dispatch-local
+                        // context; reading `cancel_token` through it avoids
+                        // re-borrowing the local (which would Unique-retag and
+                        // invalidate the published thread-local pointer).
+                        let cancel_token = unsafe { (*ec_ptr).cancel_token };
+                        stash_suspended_cancel_token(a, cancel_token.cast());
                     }
 
                     // SEC-2 sibling edge: a Rust unwind caught by `catch_unwind`
@@ -1515,9 +1526,8 @@ fn activate_actor(actor: *mut HewActor) {
                         crate::execution_context::reply_channel_swap_unwind();
                     }
 
-                    let reply_consumed =
-                        current_reply_channel_consumed_on(&raw mut execution_context);
-                    let _ = clear_reply_channel_on(&raw mut execution_context);
+                    let reply_consumed = current_reply_channel_consumed_on(ec_ptr);
+                    let _ = clear_reply_channel_on(ec_ptr);
 
                     // Preserve the mailbox-owned reply sender only for teardown
                     // states so hew_msg_node_free can publish the self-stop
@@ -1537,7 +1547,7 @@ fn activate_actor(actor: *mut HewActor) {
                     crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
                     let restored_context =
                         crate::execution_context::set_current_context(prev_context);
-                    debug_assert_eq!(restored_context, &raw mut execution_context);
+                    debug_assert_eq!(restored_context, ec_ptr);
 
                     #[expect(
                         clippy::cast_possible_truncation,

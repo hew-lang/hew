@@ -124,6 +124,15 @@ mod shared {
         pub(super) worker_id: u32,
         /// Message type being processed when crash occurred.
         pub(super) msg_type: AtomicI32,
+        /// `true` when the recovery was entered through the runtime's
+        /// intentional direct-longjmp path (a Hew `panic()` or a `HEW_TRAP_*`
+        /// runtime trap), `false` when it was entered through the hardware
+        /// fault signal handler. The intentional path reuses the `SIGSEGV`
+        /// signal number (11) as its marker, so without this flag an
+        /// intentional panic and a genuine SIGSEGV null-deref are reported
+        /// identically — letting real faults hide among the supervised
+        /// panic-and-restart traffic. Reset to `false` on every dispatch.
+        pub(super) intentional_panic: AtomicBool,
     }
 
     impl RecoveryState {
@@ -138,6 +147,7 @@ mod shared {
                 in_recovery: AtomicBool::new(false),
                 worker_id,
                 msg_type: AtomicI32::new(0),
+                intentional_panic: AtomicBool::new(false),
             }
         }
     }
@@ -177,6 +187,9 @@ mod shared {
         state.crash_signal.store(0, Ordering::Relaxed);
         state.fault_addr = 0;
         state.in_recovery.store(false, Ordering::Release);
+        // Fresh dispatch: any crash from here is a genuine hardware fault
+        // until the intentional direct-longjmp path explicitly marks itself.
+        state.intentional_panic.store(false, Ordering::Relaxed);
 
         // Extract message type from HewMsgNode for crash reporting.
         let msg_type = if msg.is_null() {
@@ -209,6 +222,7 @@ mod shared {
         let actor = state.current_actor;
         let msg_type = state.msg_type.load(Ordering::Acquire);
         let worker_id = state.worker_id;
+        let intentional = state.intentional_panic.load(Ordering::Acquire);
 
         // Cache actor data before supervisor notification to avoid race.
         // After hew_actor_trap, another thread could process the supervisor
@@ -241,12 +255,22 @@ mod shared {
             crate::crash::push_crash_report(report);
         }
 
-        // Enhanced crash logging with cached actor data.
-        let name = signal_name(signal);
+        // Crash logging with cached actor data. Distinguish an intentional Hew
+        // `panic()` / `HEW_TRAP_*` runtime trap (recovered via the direct
+        // longjmp marker, which reuses signal 11) from a genuine hardware fault
+        // so a real null-deref SIGSEGV is reported distinctly instead of being
+        // masked by the identical-looking supervised panic-and-restart traffic.
         if actor_id != 0 {
-            eprintln!(
-                "hew: actor {actor_id} (pid={cached_pid}) crashed with {name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
-            );
+            if intentional {
+                eprintln!(
+                    "hew: actor {actor_id} (pid={cached_pid}) panicked (trap code {signal}), msg_type={msg_type}, worker={worker_id}"
+                );
+            } else {
+                let name = signal_name(signal);
+                eprintln!(
+                    "hew: actor {actor_id} (pid={cached_pid}) crashed with {name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
+                );
+            }
         }
 
         // Clear recovery context.
@@ -300,8 +324,51 @@ mod shared {
         }
         state.crash_signal.store(code, Ordering::Release);
         state.fault_addr = 0;
+        // Mark this recovery as an intentional Hew panic / runtime trap so the
+        // reporter does not mislabel it as a hardware SIGSEGV (the marker code
+        // reuses signal 11). Set before clearing `jmp_buf_valid` so it is
+        // visible by the time recovery reads it.
+        state.intentional_panic.store(true, Ordering::Release);
         state.jmp_buf_valid.store(false, Ordering::Release);
         true
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// B2 de-masking invariant: the runtime's intentional direct-longjmp
+        /// path (a Hew `panic()` / `HEW_TRAP_*` runtime trap) reuses the
+        /// `SIGSEGV` signal number (11) as its recovery marker. Without an
+        /// explicit flag, an intentional supervised panic-and-restart is
+        /// reported identically to a genuine hardware SIGSEGV null-deref, so a
+        /// real first-spawn fault hides among the panic traffic. This pins the
+        /// flag that lets the reporter tell them apart.
+        #[test]
+        fn intentional_panic_flag_distinguishes_trap_from_hardware_fault() {
+            let mut state = RecoveryState::new(0);
+            // Fresh state: a crash would be treated as a genuine hardware fault.
+            assert!(!state.intentional_panic.load(Ordering::Acquire));
+
+            // Entering a dispatch leaves the flag false (hardware-fault default):
+            // a SIGSEGV from handler code must still report "crashed with SIGSEGV".
+            // SAFETY: null actor/msg is the documented quiescent case for the
+            // metadata store (no dereference of either pointer).
+            unsafe { prepare_dispatch_impl(&mut state, ptr::null_mut(), ptr::null_mut()) };
+            assert!(!state.intentional_panic.load(Ordering::Acquire));
+
+            // The intentional panic/trap path marks the recovery so the reporter
+            // labels it a panic, not a SIGSEGV null-deref.
+            mark_recovery_active_impl(&mut state);
+            assert!(try_direct_longjmp_preamble_with_code(&mut state, 11));
+            assert!(state.intentional_panic.load(Ordering::Acquire));
+
+            // The next dispatch resets it: a subsequent genuine fault is reported
+            // as a real crash rather than being masked by the prior panic.
+            // SAFETY: same quiescent null-pointer case as above.
+            unsafe { prepare_dispatch_impl(&mut state, ptr::null_mut(), ptr::null_mut()) };
+            assert!(!state.intentional_panic.load(Ordering::Acquire));
+        }
     }
 }
 

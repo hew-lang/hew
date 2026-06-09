@@ -93,12 +93,22 @@ pub enum BindingState {
     /// point. Carries the earliest consume site for diagnostic
     /// anchoring.
     MaybeConsumed(SiteId),
+    /// B1 — the binding was aliased into an aggregate (tuple) constructor on
+    /// at least one predecessor path. It is STILL a live single owner for drop
+    /// purposes (every drop reader treats this identically to `Live`), but a
+    /// subsequent use is a use-after-move double-free (`(s, r); s.close()`) and
+    /// is flagged `UseAfterConsume`. The carried site is the aggregate-construct
+    /// site, used as the `consumed_at` anchor. Decoupling the use-check from the
+    /// `Consumed` state is deliberate: `Consumed` suppresses the source's drop,
+    /// which would break the alias/escape-scan drop machinery (W3.053).
+    AliasedIntoAggregate(SiteId),
 }
 
 /// Meet over the four-state lattice. Commutative, associative,
 /// idempotent — property-tested.
 #[must_use]
 pub fn meet(a: BindingState, b: BindingState) -> BindingState {
+    use BindingState::AliasedIntoAggregate as Aliased;
     use BindingState::{Consumed, Live, MaybeConsumed, Uninit};
     // Order operands so the match table is half-size: handle (a, b)
     // and (b, a) via canonical ordering on the discriminant.
@@ -121,6 +131,17 @@ pub fn meet(a: BindingState, b: BindingState) -> BindingState {
         (Consumed(sa), Consumed(sb)) => Consumed(min_site(sa, sb)),
         (Consumed(sa), MaybeConsumed(sb)) => MaybeConsumed(min_site(sa, sb)),
         (MaybeConsumed(sa), MaybeConsumed(sb)) => MaybeConsumed(min_site(sa, sb)),
+        // `AliasedIntoAggregate` is `Live` for every drop reader; it differs
+        // only in flagging a later use. Self-meet keeps the marker (carrying
+        // the earliest alias site); meeting with `Live` keeps it (the alias
+        // survives the join). Meeting with `Consumed`/`MaybeConsumed` follows
+        // the SAME `Live ⊓ {Consumed,MaybeConsumed} = MaybeConsumed` rule the
+        // drop machinery already relies on (so no new drop behaviour), and the
+        // resulting `MaybeConsumed` still flags a post-join use.
+        (Aliased(sa), Aliased(sb)) => Aliased(min_site(sa, sb)),
+        (Live, Aliased(s)) => Aliased(s),
+        (Consumed(sa), Aliased(sb)) => MaybeConsumed(min_site(sa, sb)),
+        (MaybeConsumed(sa), Aliased(sb)) => MaybeConsumed(min_site(sa, sb)),
         // The canonical ordering ensures `lo` ≤ `hi`; the remaining
         // mirrored arms are unreachable.
         _ => unreachable!("canonical_order ensures all reachable arms enumerated"),
@@ -141,6 +162,7 @@ fn discriminant_rank(s: BindingState) -> u8 {
         BindingState::Live => 1,
         BindingState::Consumed(_) => 2,
         BindingState::MaybeConsumed(_) => 3,
+        BindingState::AliasedIntoAggregate(_) => 4,
     }
 }
 
@@ -198,7 +220,8 @@ fn transfer_block(
                     }
                     BindingState::Live => {}
                     BindingState::Consumed(consumed_at)
-                    | BindingState::MaybeConsumed(consumed_at) => {
+                    | BindingState::MaybeConsumed(consumed_at)
+                    | BindingState::AliasedIntoAggregate(consumed_at) => {
                         if use_after_consume_seen.insert((*binding, *site)) {
                             checks.push(MirCheck::UseAfterConsume {
                                 binding: *binding,
@@ -209,10 +232,55 @@ fn transfer_block(
                         }
                     }
                 }
+                // A binding already aliased into a live aggregate keeps that
+                // state: the consume transition below would suppress its drop
+                // (the very breakage `AliasedIntoAggregate` exists to avoid),
+                // and the use was already flagged. For any other prior state a
+                // genuine `Consume` use transitions to `Consumed` as usual.
                 if *intent == IntentKind::Consume
                     && ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
+                    && !matches!(
+                        state.get(binding),
+                        Some(BindingState::AliasedIntoAggregate(_))
+                    )
                 {
                     state.insert(*binding, BindingState::Consumed(*site));
+                }
+            }
+            MirStatement::AggregateAlias {
+                binding,
+                name,
+                site,
+                ..
+            } => {
+                match state.get(binding).copied() {
+                    // The SAME owned handle placed into an aggregate twice
+                    // (`(t, t)` / `(h, ..., h)`): the second placement is a
+                    // use-after-move — both aggregate fields would free the one
+                    // handle. Flag it and anchor at the first placement.
+                    Some(BindingState::AliasedIntoAggregate(prev_site)) => {
+                        if use_after_consume_seen.insert((*binding, *site)) {
+                            checks.push(MirCheck::UseAfterConsume {
+                                binding: *binding,
+                                name: name.clone(),
+                                consumed_at: prev_site,
+                                used_at: *site,
+                            });
+                        }
+                    }
+                    // Mark the source aliased ONLY if it is currently a live
+                    // owner (a fresh aggregate member always is). Aliasing is
+                    // `Live` for every drop reader; it differs only in flagging
+                    // a later use. A binding already `Consumed`/`MaybeConsumed`
+                    // was caught by its own `Use` and is left untouched.
+                    None | Some(BindingState::Live) => {
+                        state.insert(*binding, BindingState::AliasedIntoAggregate(*site));
+                    }
+                    Some(
+                        BindingState::Uninit
+                        | BindingState::Consumed(_)
+                        | BindingState::MaybeConsumed(_),
+                    ) => {}
                 }
             }
             MirStatement::Return { .. }
@@ -965,7 +1033,10 @@ pub fn analyze(
             };
             let needs_report = matches!(
                 state,
-                BindingState::Live | BindingState::MaybeConsumed(_) | BindingState::Uninit
+                BindingState::Live
+                    | BindingState::MaybeConsumed(_)
+                    | BindingState::Uninit
+                    | BindingState::AliasedIntoAggregate(_)
             );
             if needs_report && must_consume_seen.insert((*binding, block.id)) {
                 checks.push(MirCheck::MustConsume {

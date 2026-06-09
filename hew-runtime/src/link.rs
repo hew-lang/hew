@@ -698,6 +698,25 @@ mod tests {
             let propagate = std::thread::spawn(move || propagate_exit_to_links(target_id, 91));
             entered.wait();
 
+            // The EXIT message has now been delivered: `propagate` is parked
+            // in the hook still holding the LIVE_ACTORS lock, so the
+            // `hew_mailbox_send_sys` call already completed. Verify delivery
+            // from the main thread *before* spawning the free thread. The
+            // thread spawn below is a happens-before edge, so this read +
+            // node free is ordered ahead of the free thread's later mailbox
+            // teardown and the two never race. (Reading the mailbox
+            // concurrently with a pending free instead would race its drain,
+            // ordered only by the std `Barrier` the runtime cannot expose to
+            // ThreadSanitizer.)
+            let mailbox = (*linked_actor).mailbox.cast::<mailbox::HewMailbox>();
+            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, SYS_MSG_EXIT);
+            let payload = &*((*node).data.cast::<ExitMessage>());
+            assert_eq!(payload.crashed_actor_id, target_id);
+            assert_eq!(payload.reason, 91);
+            mailbox::hew_msg_node_free(node);
+
             (*linked_actor).actor_state.store(
                 HewActorState::Idle as i32,
                 std::sync::atomic::Ordering::Release,
@@ -718,15 +737,6 @@ mod tests {
             while !free_started.load(std::sync::atomic::Ordering::Acquire) {
                 std::thread::yield_now();
             }
-
-            let mailbox = (*linked_actor).mailbox.cast::<mailbox::HewMailbox>();
-            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, SYS_MSG_EXIT);
-            let payload = &*((*node).data.cast::<ExitMessage>());
-            assert_eq!(payload.crashed_actor_id, target_id);
-            assert_eq!(payload.reason, 91);
-            mailbox::hew_msg_node_free(node);
 
             std::thread::sleep(Duration::from_millis(50));
             assert!(

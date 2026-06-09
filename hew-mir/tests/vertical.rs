@@ -510,6 +510,177 @@ fn checked_mir_finding_carries_consume_and_use_sites() {
     );
 }
 
+// ---------- B1: use-after-move INTO AN AGGREGATE (tuple) ----------
+//
+// An owned single-owner operand (`@resource` / `@linear`) moved into a
+// tuple constructor must consume its source binding, so a later use is
+// rejected at CHECK time. Before the fix the aggregate-construct move
+// did not mark the source consumed, so `(s, r); s.close()` passed
+// `hew check` and double-freed at runtime (explicit close + the
+// moved-into tuple's scope-exit drop). Copy operands (BitCopy ints,
+// CowValue strings) carry no single-owner drop obligation and must NOT
+// be flagged.
+
+#[test]
+fn checked_mir_rejects_use_after_move_into_tuple() {
+    // `h` is an `@resource` (AffineResource) value moved into the tuple
+    // `(h, g)`. The trailing read of `h.fd` is a use after the move and
+    // must surface `UseAfterConsume`.
+    let p = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn use_after_move_into_tuple() -> i64 {
+            let h = File { fd: 1 };
+            let g = File { fd: 2 };
+            let pair = (h, g);
+            let leaked = h.fd;
+            let _ = pair;
+            leaked
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "h"
+        )),
+        "use of `h` after it was moved into the tuple `(h, g)` must surface \
+         UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
+#[test]
+fn checked_mir_rejects_duplicate_owned_handle_in_one_tuple() {
+    // The same owned handle placed into a tuple TWICE (`(h, h)`) double-moves:
+    // both aggregate fields would free the one handle. The second placement is
+    // a use-after-move and must surface `UseAfterConsume` (caught at the
+    // aggregate-alias marker, not just at a later separate use).
+    let p = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn duplicate_owned_in_tuple() -> (File, File) {
+            let h = File { fd: 1 };
+            return (h, h);
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "h"
+        )),
+        "placing the same owned handle `h` into a tuple twice must surface \
+         UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
+#[test]
+fn checked_mir_rejects_duplicate_owned_param_in_one_tuple() {
+    // The owned PARAMETER analogue — a param is not in `owned_locals` but is
+    // still a single owner, so `(p, p)` must be rejected too (the value-class
+    // guard, not `owned_locals` membership, is the authority).
+    let p = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn duplicate_owned_param(p: File) -> (File, File) {
+            return (p, p);
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "p"
+        )),
+        "placing the same owned param `p` into a tuple twice must surface \
+         UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
+#[test]
+fn tuple_build_and_return_without_post_move_use_is_accepted() {
+    // Positive control: building `(a, b)` from owned resources and
+    // returning the tuple — with NO post-move use of `a`/`b` — must NOT
+    // produce a false-positive UseAfterConsume.
+    let p = lower_source(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(self) { } }
+        fn build_pair() -> (File, File) {
+            let a = File { fd: 1 };
+            let b = File { fd: 2 };
+            let pair = (a, b);
+            return pair;
+        }
+    ",
+    );
+    assert!(
+        !p.diagnostics
+            .iter()
+            .any(|d| matches!(&d.kind, MirDiagnosticKind::UseAfterConsume { .. })),
+        "a legitimate tuple build + return with no post-move use must NOT \
+         fire UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
+#[test]
+fn copy_operands_moved_into_tuple_are_not_flagged() {
+    // Copy-operand control: BitCopy ints placed into a tuple are shared,
+    // not moved — reusing the source `a` after `(a, 6)` must stay clean
+    // (the false-positive guard the fix must preserve).
+    let p = lower_source(
+        r"fn main() -> i64 {
+            let a = 5;
+            let pair = (a, 6);
+            let reused = a;
+            let _ = pair;
+            reused
+        }",
+    );
+    assert!(
+        !p.diagnostics
+            .iter()
+            .any(|d| matches!(&d.kind, MirDiagnosticKind::UseAfterConsume { .. })),
+        "reusing a BitCopy operand after it was placed into a tuple must NOT \
+         fire UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
+#[test]
+fn cowvalue_string_moved_into_tuple_is_not_flagged() {
+    // CowValue strings copy-on-write share freely; placing one into a
+    // tuple and reading it afterwards is safe and must NOT be flagged.
+    let p = lower_source(
+        r#"fn main() -> string {
+            let a = "hello";
+            let pair = (a, "world");
+            let reused = a;
+            let _ = pair;
+            reused
+        }"#,
+    );
+    assert!(
+        !p.diagnostics
+            .iter()
+            .any(|d| matches!(&d.kind, MirDiagnosticKind::UseAfterConsume { .. })),
+        "reusing a CowValue string after it was placed into a tuple must NOT \
+         fire UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
 #[test]
 fn checked_mir_rejects_use_of_uninitialised_binding() {
     // `let x;` declares without initialising; the subsequent `let _y = x;`

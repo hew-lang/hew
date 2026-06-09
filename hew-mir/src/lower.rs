@@ -4559,6 +4559,7 @@ fn collect_unknown_type_diagnostics(
             MirStatement::Bind { ty, .. }
             | MirStatement::Evaluate { ty, .. }
             | MirStatement::Use { ty, .. }
+            | MirStatement::AggregateAlias { ty, .. }
             | MirStatement::Return { ty, .. }
             | MirStatement::Drop { ty, .. } => {
                 push_unknown_type_diagnostics(ty, builder, &mut reported, diagnostics);
@@ -6857,6 +6858,13 @@ impl Builder {
                     .iter()
                     .map(|elem| self.lower_value(elem))
                     .collect::<Option<Vec<_>>>()?;
+
+                // B1: an owned single-owner element is MOVED into the tuple —
+                // mark its source binding aliased so a later use is rejected at
+                // CHECK without disturbing the drop machinery.
+                for elem in elements {
+                    self.alias_moved_owned_operand(elem);
+                }
 
                 // Allocate a local for the tuple result.
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
@@ -16698,6 +16706,56 @@ impl Builder {
     fn mark_binding_moved(&mut self, id: BindingId) {
         self.owned_locals.retain(|(binding, _, _)| *binding != id);
     }
+
+    /// B1 (use-after-move into an aggregate): when an owned, single-owner
+    /// operand (`@resource` / `@linear`) is moved (aliased) into a tuple
+    /// constructor, emit a checker-stream `MirStatement::AggregateAlias` marker
+    /// for the source binding so the move-checker dataflow flags any later use
+    /// of it as `UseAfterConsume` at CHECK time — instead of letting
+    /// `(s, r); s.close()` pass `hew check` and double-free at runtime (the
+    /// explicit `close` plus the caller's drop of the returned/aliased tuple).
+    ///
+    /// The marker is deliberately NOT a `Use { Consume }`: consuming the source
+    /// would suppress its scope-exit drop and break the alias/escape-scan drop
+    /// machinery (it would silently turn the W3.053 fail-closed aggregate-
+    /// double-free refusals into leaks). `AggregateAlias` keeps the binding a
+    /// live owner for every drop reader and only adds the use-after-move check.
+    ///
+    /// Copy operands carry no single-owner drop obligation and share freely, so
+    /// they must NOT be flagged (the false-positive guard the brief requires):
+    /// `BitCopy` ints/durations and `CowValue` strings/bytes/tuples/Vec are
+    /// never registered in `owned_locals` and their `ValueClass` is neither
+    /// `AffineResource` nor `Linear`, so both guards exclude them.
+    fn alias_moved_owned_operand(&mut self, operand: &HirExpr) {
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(id),
+        } = &operand.kind
+        else {
+            return;
+        };
+        // The Copy false-positive guard: only a genuinely owned single-owner
+        // operand carries a drop obligation a second consumer could double-free.
+        // `AffineResource` / `Linear` are exactly the owned handle / single-owner
+        // value classes; `BitCopy` ints/durations, `CowValue` strings/bytes/
+        // tuples/Vec, and `View` borrows are all excluded. This is keyed on the
+        // value class (not `owned_locals` membership) so an owned-handle FUNCTION
+        // PARAMETER — which is not registered in `owned_locals` — is still tracked
+        // (`(token, token)` of an owned param double-frees just as a local does).
+        let ty = self.subst_ty(&operand.ty);
+        if !matches!(
+            ValueClass::of_ty(&ty, &self.type_classes),
+            ValueClass::AffineResource | ValueClass::Linear
+        ) {
+            return;
+        }
+        self.statements.push(MirStatement::AggregateAlias {
+            binding: *id,
+            name: name.clone(),
+            site: operand.site,
+            ty,
+        });
+    }
 }
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
@@ -20757,7 +20815,41 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
             }
             places
         }
-        _ => Vec::new(),
+        // F-1: a SUSPENDABLE `await peer.method(owned)` / `await sink.send(owned)`
+        // transfers its `value` payload into the message / channel queue exactly
+        // as the blocking `Ask`/`Send` above do. Before this arm both fell into a
+        // `_ => Vec::new()` catch-all and were NOT poisoned, so a suspendable
+        // handler whose payload was an owned handle double-freed (the source
+        // body-end drop plus the message consumption both released it). Poison the
+        // payload so the escape gate refuses-or-poisons it like the blocking forms.
+        Terminator::SuspendingAsk { value, .. }
+        | Terminator::SuspendingStreamSend { value, .. } => vec![*value],
+        // A SUSPENDABLE `await closure(args...)` forwards `args` BY VALUE into the
+        // callee coroutine, exactly as the non-suspending [`Instr::CallClosure`]
+        // does (`instr_escape_places` poisons its `args`). An owned-handle arg
+        // therefore escapes to the callee while the source-side drop is still
+        // live — the same double-free family as the suspending ask/send above —
+        // so the forwarded `args` must be poisoned identically. The closure pair
+        // (`callee`) is a borrowed read, not a transfer, so it is excluded.
+        Terminator::SuspendingCallClosure { args, .. } => args.clone(),
+        // The remaining suspending carriers transfer no owned value OUT: their
+        // operands are read-back result slots (`SuspendingRead`/`Accept`/
+        // `StreamNext`/`ChannelRecv`), never a payload moved into a sink the
+        // fixpoint cannot model. They were already empty under the old catch-all;
+        // they stay empty here EXPLICITLY so the match is exhaustive and a future
+        // terminator variant forces a compile-time escape-poison decision instead
+        // of silently slipping through unpoisoned.
+        Terminator::SuspendingRead { .. }
+        | Terminator::SuspendingAccept { .. }
+        | Terminator::SuspendingStreamNext { .. }
+        | Terminator::SuspendingChannelRecv { .. } => Vec::new(),
+        // Control-flow / non-transferring terminators escape nothing.
+        Terminator::Return
+        | Terminator::Goto { .. }
+        | Terminator::Branch { .. }
+        | Terminator::Trap { .. }
+        | Terminator::MakeGenerator { .. }
+        | Terminator::Suspend { .. } => Vec::new(),
     }
 }
 
@@ -21629,7 +21721,9 @@ fn enumerate_exits(
                         .get(binding)
                         .copied()
                         .unwrap_or(dataflow::BindingState::Uninit),
-                    dataflow::BindingState::Live | dataflow::BindingState::MaybeConsumed(_)
+                    dataflow::BindingState::Live
+                        | dataflow::BindingState::MaybeConsumed(_)
+                        | dataflow::BindingState::AliasedIntoAggregate(_)
                 ),
                 // No binding mapping → conservatively keep the drop.
                 // This arm guards against future surfaces that build
@@ -24824,6 +24918,150 @@ mod generic_record_owned_aggregate_admission {
             builder.is_owned_aggregate_record_ty(&pair_ty(vec![ResolvedTy::String, vec_i64])),
             "Pair<string, Vec<i64>> carries only clone/drop-supported owned \
              fields and must still admit — the opaque gate must not over-reject"
+        );
+    }
+}
+
+#[cfg(test)]
+mod f1_suspending_escape_poison {
+    //! F-1: the escape-poison gate (`terminator_escape_places`) must list the
+    //! `value` payload of a SUSPENDABLE `await peer.method(owned)` / `await
+    //! sink.send(owned)` as escaping, exactly as the blocking
+    //! `Ask`/`Send`/`RemoteAsk` already do. Before the fix both suspending
+    //! payload-carriers fell into a `_ => Vec::new()` catch-all and were NOT
+    //! poisoned, so a suspendable handler whose payload was an owned handle
+    //! double-freed (the source body-end drop plus the message consumption both
+    //! released it). These tests poke the gate directly with synthetic
+    //! terminators because the owned-handle-leaf payload shapes have no
+    //! buildable v0.5 source surface that reaches a `SuspendingAsk` /
+    //! `SuspendingStreamSend` (owned-handle aggregate extraction is itself
+    //! fail-closed), mirroring the `w3053_aggregate_handle_double_free_gate`
+    //! synthetic-MIR approach. They FAIL on the pre-fix catch-all tree.
+    use super::*;
+
+    fn sink_string_ty() -> ResolvedTy {
+        ResolvedTy::named_builtin("Sink", BuiltinType::Sink, vec![ResolvedTy::String])
+    }
+
+    #[test]
+    fn suspending_ask_poisons_its_owned_payload() {
+        let value = Place::Local(3);
+        let term = Terminator::SuspendingAsk {
+            actor: Place::Local(1),
+            msg_type: 0,
+            value,
+            result_dest: Place::Local(4),
+            reply_dest: Place::Local(5),
+            error_dest: Place::Local(6),
+            resume: 1,
+            cleanup: 2,
+        };
+        let mut local_tys = vec![ResolvedTy::I64; 7];
+        local_tys[3] = sink_string_ty();
+        assert!(
+            terminator_escape_places(&term, &local_tys).contains(&value),
+            "SuspendingAsk.value (an owned Sink payload) must escape-poison so it \
+             is excluded from the source body-end drop — else it double-frees"
+        );
+    }
+
+    #[test]
+    fn suspending_stream_send_poisons_its_owned_payload() {
+        let value = Place::Local(2);
+        let term = Terminator::SuspendingStreamSend {
+            sink: Place::Local(1),
+            value,
+            resume: 1,
+            cleanup: 2,
+        };
+        let mut local_tys = vec![ResolvedTy::I64; 3];
+        local_tys[2] = sink_string_ty();
+        assert_eq!(
+            terminator_escape_places(&term, &local_tys),
+            vec![value],
+            "SuspendingStreamSend.value must escape-poison like the blocking Send"
+        );
+    }
+
+    #[test]
+    fn suspending_ask_matches_blocking_ask_escape_set() {
+        // The fix's invariant: the suspendable analogue poisons identically to
+        // the blocking form. A divergence is exactly the F-1 double-free gap.
+        let value = Place::Local(3);
+        let local_tys = vec![ResolvedTy::I64; 7];
+        let blocking = Terminator::Ask {
+            actor: Place::Local(1),
+            msg_type: 0,
+            value,
+            result_dest: Place::Local(4),
+            reply_dest: Place::Local(5),
+            error_dest: Place::Local(6),
+            next: 1,
+        };
+        let suspending = Terminator::SuspendingAsk {
+            actor: Place::Local(1),
+            msg_type: 0,
+            value,
+            result_dest: Place::Local(4),
+            reply_dest: Place::Local(5),
+            error_dest: Place::Local(6),
+            resume: 1,
+            cleanup: 2,
+        };
+        assert_eq!(
+            terminator_escape_places(&blocking, &local_tys),
+            terminator_escape_places(&suspending, &local_tys),
+            "the suspendable ask must poison the same payload set as the blocking ask"
+        );
+    }
+
+    #[test]
+    fn non_payload_suspending_carriers_escape_nothing() {
+        // The read-back carriers transfer no owned value OUT; they must remain
+        // empty (no over-poisoning that would refuse legitimate code).
+        let read = Terminator::SuspendingRead {
+            conn: Place::Local(1),
+            result_dest: Place::Local(2),
+            resume: 1,
+            cleanup: 2,
+        };
+        let next = Terminator::SuspendingStreamNext {
+            stream: Place::Local(1),
+            result_dest: Place::Local(2),
+            resume: 1,
+            cleanup: 2,
+        };
+        assert!(terminator_escape_places(&read, &[]).is_empty());
+        assert!(terminator_escape_places(&next, &[]).is_empty());
+    }
+
+    #[test]
+    fn suspending_call_closure_poisons_its_forwarded_args() {
+        // `await closure(owned_handle)` forwards `args` by value into the callee
+        // coroutine exactly as the non-suspending `Instr::CallClosure` does, so
+        // an owned-handle arg must escape-poison identically (else the source
+        // body-end drop plus the callee's consumption double-free). The closure
+        // pair (`callee`) is a borrowed read and must NOT be poisoned.
+        let callee = Place::Local(1);
+        let arg0 = Place::Local(2);
+        let arg1 = Place::Local(3);
+        let term = Terminator::SuspendingCallClosure {
+            callee,
+            args: vec![arg0, arg1],
+            ret_ty: ResolvedTy::Unit,
+            result_dest: None,
+            resume: 1,
+            cleanup: 2,
+        };
+        let escaped = terminator_escape_places(&term, &[]);
+        assert_eq!(
+            escaped,
+            vec![arg0, arg1],
+            "SuspendingCallClosure must poison its forwarded args like Instr::CallClosure"
+        );
+        assert!(
+            !escaped.contains(&callee),
+            "the borrowed closure pair must NOT be poisoned"
         );
     }
 }

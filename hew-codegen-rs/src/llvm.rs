@@ -29057,22 +29057,31 @@ fn emit_xnode_codec_thunks<'ctx>(
 
         // Allocate the destination value (malloc, so the caller owns it via libc::free).
         let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+        // `LLVMSizeOf` always returns the size as an i64 constant expression
+        // (getelementptr + ptrtoint to i64), regardless of target pointer width.
         let size = llvm_ty.size_of().ok_or_else(|| {
             CodegenError::FailClosed("deserialize: value has no static size".into())
         })?;
         // Publish the struct byte size so the runtime hands the mailbox the right
-        // count (the in-memory struct size, not the wire length).
+        // count (the in-memory struct size, not the wire length). The slot is i64.
         builder
             .build_store(out_struct_size, size)
             .llvm_ctx("de store struct size")?;
-        let malloc_fn = declare_codec_prim(
-            ctx,
-            llvm_mod,
-            "malloc",
-            ptr_ty.fn_type(&[i64_ty.into()], false),
-        );
+        // `malloc`'s size param is `size_t`: i32 on wasm32, i64 on native.
+        // Use the shared helper so the declaration is consistent with any prior
+        // `get_or_declare_libc_malloc` call in this module, then coerce the i64
+        // size down to the target width (no-op on native where size_ty == i64).
+        let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
+        let malloc_size_ty = runtime_size_ty(ctx, llvm_mod);
+        let malloc_size = if malloc_size_ty == i64_ty {
+            size
+        } else {
+            builder
+                .build_int_truncate(size, malloc_size_ty, "de_size_trunc")
+                .llvm_ctx("de malloc size trunc")?
+        };
         let dst = builder
-            .build_call(malloc_fn, &[size.into()], "de_value")
+            .build_call(malloc_fn, &[malloc_size.into()], "de_value")
             .llvm_ctx("de value malloc")?
             .try_as_basic_value()
             .basic()
@@ -29117,19 +29126,33 @@ fn emit_xnode_codec_thunks<'ctx>(
         }
 
         // Zero-init so partially-decoded values have well-defined slots.
+        // `memset(ptr, int, size_t)`: the size arg is `size_t`, which is i32 on
+        // wasm32 and i64 on native — match the declaration and the call arg.
+        let memset_size_ty = runtime_size_ty(ctx, llvm_mod);
         let memset = declare_codec_prim(
             ctx,
             llvm_mod,
             "memset",
             ptr_ty.fn_type(
-                &[ptr_ty.into(), ctx.i32_type().into(), i64_ty.into()],
+                &[ptr_ty.into(), ctx.i32_type().into(), memset_size_ty.into()],
                 false,
             ),
         );
+        let memset_size = if memset_size_ty == i64_ty {
+            size
+        } else {
+            builder
+                .build_int_truncate(size, memset_size_ty, "de_memset_size_trunc")
+                .llvm_ctx("de memset size trunc")?
+        };
         builder
             .build_call(
                 memset,
-                &[dst.into(), ctx.i32_type().const_zero().into(), size.into()],
+                &[
+                    dst.into(),
+                    ctx.i32_type().const_zero().into(),
+                    memset_size.into(),
+                ],
                 "de_zero",
             )
             .llvm_ctx("de zero-init")?;
@@ -36065,6 +36088,91 @@ fn main() {
             record_inplace_drop_name(&ResolvedTy::I64),
             Err(CodegenError::FailClosed(_))
         ));
+    }
+
+    /// Regression: the deserialize thunk's `malloc` call must use the target's
+    /// `size_t` width — `i32` on wasm32, `i64` on 64-bit native — not a
+    /// hardcoded `i64`.  Before the fix, `emit_xnode_codec_thunks` declared
+    /// `malloc` with a hardcoded `i64` param and passed an i64 `size_of()`
+    /// constant, which the LLVM verifier rejected on wasm32 because the
+    /// correctly-declared `malloc(i32)` (from `get_or_declare_libc_malloc`)
+    /// was seen first and the subsequent call site passed the wrong width.
+    ///
+    /// The same width fix applies to the `memset` zero-init call in the same
+    /// thunk body.
+    #[test]
+    fn deserialize_thunk_malloc_uses_target_size_t_width() {
+        // Build a pipeline that has an actor handler with a non-empty param_tys
+        // so that `emit_xnode_codec_module_init` → `emit_xnode_codec_thunks`
+        // is reached.  A simple I64 message type is sufficient; it produces a
+        // concrete deserialize thunk body that contains the `malloc` call.
+        let symbol = "MallocWidthActor__recv__tick";
+        let handler_layout = hew_mir::ActorHandlerLayout {
+            name: "handler_1".to_string(),
+            symbol: symbol.to_string(),
+            msg_type: 1,
+            param_tys: vec![ResolvedTy::I64],
+            return_ty: ResolvedTy::Unit,
+            requires_state_guard: false,
+        };
+        // The MIR function for the handler uses ActorHandler call-conv.  Because
+        // the function name contains `__recv__`, `declare_function` appends a
+        // trailing `i32` borrow_mode param after the explicit `params` entries.
+        // The dispatch trampoline calls it as (ctx_ptr, i64_msg, i32_borrow_mode),
+        // so `params` and `locals` must both carry the i64 message type.
+        let handler_fn = RawMirFunction {
+            name: symbol.to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::ActorHandler,
+            params: vec![ResolvedTy::I64],
+            locals: vec![ResolvedTy::I64],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![Instr::EnterContext, Instr::ExitContext],
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+        };
+        let pipeline =
+            pipeline_with_actor_handlers("MallocWidthActor", vec![(handler_layout, handler_fn)]);
+
+        // ── wasm32 ──────────────────────────────────────────────────────────
+        let ctx = Context::create();
+        let wasm_machine =
+            target_machine_for_triple("wasm32-unknown-unknown").expect("wasm32 target machine");
+        let wasm_mod =
+            build_module_for_target(&ctx, &pipeline, "malloc_width_wasm32", Some(&wasm_machine))
+                .expect("wasm32 codec-thunk module must build without LLVM verifier error");
+        let wasm_ir = wasm_mod.print_to_string().to_string();
+
+        // The deserialize thunk must call `malloc` with an i32 argument on wasm32.
+        assert!(
+            wasm_ir.contains("call ptr @malloc(i32"),
+            "wasm32 deserialize thunk must call malloc with i32 size arg (size_t = i32 on wasm32);\
+             \n{wasm_ir}"
+        );
+        assert!(
+            !wasm_ir.contains("call ptr @malloc(i64"),
+            "wasm32 deserialize thunk must NOT call malloc with i64 size arg;\n{wasm_ir}"
+        );
+
+        // ── native ──────────────────────────────────────────────────────────
+        let native_mod = build_module(&ctx, &pipeline, "malloc_width_native")
+            .expect("native codec-thunk module must build");
+        let native_ir = native_mod.print_to_string().to_string();
+
+        // On 64-bit native targets the size arg is i64.
+        assert!(
+            native_ir.contains("call ptr @malloc(i64"),
+            "native deserialize thunk must call malloc with i64 size arg (size_t = i64 on 64-bit);\
+             \n{native_ir}"
+        );
+        assert!(
+            !native_ir.contains("call ptr @malloc(i32"),
+            "native deserialize thunk must NOT call malloc with i32 size arg;\n{native_ir}"
+        );
     }
 }
 

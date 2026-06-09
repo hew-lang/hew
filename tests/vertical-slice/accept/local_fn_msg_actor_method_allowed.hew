@@ -1,0 +1,14 @@
+// Accept: local actor receive-method dispatch keeps the value model. Function
+// pointers are Send and may be sent locally even though they are not
+// Serializable for RemotePid<T>::tell.
+fn inc(x: i64) -> i64 {
+    x + 1
+}
+
+actor Worker {
+    receive fn carry(f: fn(i64) -> i64) {}
+}
+
+fn send_local(pid: LocalPid<Worker>) {
+    pid.carry(inc);
+}

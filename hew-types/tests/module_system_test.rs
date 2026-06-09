@@ -5,8 +5,8 @@
 //! all behave correctly.
 
 use hew_parser::ast::{
-    ActorDecl, Block, ConstDecl, Expr, FnDecl, ImportDecl, ImportName, ImportSpec, IntRadix, Item,
-    Literal, Param, Program, ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr, Visibility,
+    ActorDecl, Block, Expr, FnDecl, ImportDecl, ImportName, ImportSpec, IntRadix, Item, Literal,
+    Param, Program, ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr, Visibility,
 };
 use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
 use hew_types::check::{SpanKey, TypeDefKind};
@@ -23,7 +23,6 @@ fn make_pub_fn(name: &str) -> FnDecl {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
-        is_pure: false,
         name: name.to_string(),
         type_params: None,
         params: vec![],
@@ -49,23 +48,6 @@ fn make_pub_fn(name: &str) -> FnDecl {
         decl_span: 0..0,
         fn_span: 0..0,
         intrinsic: None,
-    }
-}
-
-fn make_named_type(name: &str, type_args: Option<Vec<Spanned<TypeExpr>>>) -> TypeExpr {
-    TypeExpr::Named {
-        name: name.to_string(),
-        type_args,
-    }
-}
-
-fn make_pub_const(name: &str, ty: TypeExpr) -> ConstDecl {
-    ConstDecl {
-        visibility: Visibility::Pub,
-        name: name.to_string(),
-        ty: (ty, 0..0),
-        value: (Expr::Literal(Literal::Bool(false)), 0..0),
-        doc_comment: None,
     }
 }
 
@@ -213,72 +195,6 @@ fn test_glob_import_resolution() {
     assert!(
         output.fn_sigs.contains_key("other"),
         "glob import should register unqualified 'other'"
-    );
-}
-
-#[test]
-#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives."]
-fn test_file_import_const_annotation_rejects_unsupported_hashset() {
-    let import = make_user_import(
-        &[],
-        None,
-        vec![(
-            Item::Const(make_pub_const(
-                "FLAGS",
-                make_named_type("HashSet", Some(vec![(make_named_type("bool", None), 0..0)])),
-            )),
-            0..0,
-        )],
-    );
-
-    let program = Program {
-        items: vec![(Item::Import(import), 0..0)],
-        module_doc: None,
-        module_graph: None,
-    };
-    let mut checker = isolated_checker();
-    let output = checker.check_program(&program);
-
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        }),
-        "file import pub const annotation should reject unsupported HashSet, got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives."]
-fn test_user_module_const_annotation_rejects_unsupported_hashset() {
-    let import = make_user_import(
-        &["myapp", "utils"],
-        None,
-        vec![(
-            Item::Const(make_pub_const(
-                "FLAGS",
-                make_named_type("HashSet", Some(vec![(make_named_type("bool", None), 0..0)])),
-            )),
-            0..0,
-        )],
-    );
-
-    let program = Program {
-        items: vec![(Item::Import(import), 0..0)],
-        module_doc: None,
-        module_graph: None,
-    };
-    let mut checker = isolated_checker();
-    let output = checker.check_program(&program);
-
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        }),
-        "user-module pub const annotation should reject unsupported HashSet, got: {:?}",
-        output.errors
     );
 }
 
@@ -432,7 +348,6 @@ fn test_private_items_not_visible() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private, // private
-        is_pure: false,
         name: "private_fn".to_string(),
         type_params: None,
         params: vec![],
@@ -686,7 +601,6 @@ fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
 fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> ReceiveFnDecl {
     ReceiveFnDecl {
         is_generator: false,
-        is_pure: false,
         name: name.to_string(),
         type_params: None,
         params: params

@@ -94,7 +94,6 @@
     "other": [
       "dyn",
       "unsafe",
-      "pure",
       "is"
     ],
     "reserved_unused": [
@@ -177,7 +176,6 @@
     "cooperate",
     "catch",
     "defer",
-    "pure",
     "as",
     "machine",
     "state",

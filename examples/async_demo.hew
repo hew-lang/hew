@@ -1,12 +1,14 @@
 //! Status: aspirational (Hew roadmap: v0.6 concurrency surfaces plus codegen-rs parity)
-//! Description: Async Demo example.
+//! Description: Actor call-reply demo.
 
-fn compute(n: i32) -> i32 {
-    let result = fib(n);
-    result
+actor Calculator {
+    receive fn compute(n: i64) -> i64 {
+        let result = fib(n);
+        result
+    }
 }
 
-fn fib(n: i32) -> i32 {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -15,7 +17,7 @@ fn fib(n: i32) -> i32 {
 }
 
 fn main() {
-    let future = compute(10);
-    let result = await future;
+    let calculator = spawn Calculator;
+    let result = calculator.compute(10);
     println(result);
 }

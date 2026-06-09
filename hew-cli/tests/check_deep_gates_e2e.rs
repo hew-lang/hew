@@ -58,8 +58,7 @@ fn check_fails_on_hir_gate_before_ok() {
         "fn main() -> i64 {\n\
          \x20\x20\x20\x20let x = 1;\n\
          \x20\x20\x20\x20return match x {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x201 => 10,\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20_ => 0,\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20y => y,\n\
          \x20\x20\x20\x20};\n\
          }\n",
     );
@@ -258,8 +257,7 @@ fn show_stack_hints_render_before_later_hir_failure() {
          \x20\x20\x20\x20let _r = f(1);\n\
          \x20\x20\x20\x20let x = 1;\n\
          \x20\x20\x20\x20return match x {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x201 => 10,\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20_ => 0,\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20y => y,\n\
          \x20\x20\x20\x20};\n\
          }\n",
     );

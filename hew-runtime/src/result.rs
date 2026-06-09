@@ -636,12 +636,9 @@ mod tests {
     fn unwrap_i32_aborts_on_err() {
         // Catches: unwrap returning garbage instead of aborting on Err
         let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "result::tests::_helper_unwrap_i32_err",
-                "--include-ignored",
-            ])
+            .args(["--exact", "result::tests::_helper_unwrap_i32_err"])
             .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_unwrap_i32_err")
             .output()
             .unwrap();
         assert!(
@@ -652,8 +649,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "subprocess helper for unwrap_i32_aborts_on_err death test"]
     fn _helper_unwrap_i32_err() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| v != "_helper_unwrap_i32_err") {
+            return;
+        }
         let res = hew_result_err_code(1);
         let _ = hew_result_unwrap_i32(&raw const res);
     }

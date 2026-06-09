@@ -1,9 +1,9 @@
 mod support;
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::{Duration, Instant};
 
-use support::{hew_binary, repo_root, require_codegen, strip_ansi};
+use support::{hew_binary, repo_root, require_codegen, run_bounded_hew_run, strip_ansi};
 
 /// Verify that `hew run --timeout` kills the entire process tree spawned by
 /// the compiled Hew program, not just the root binary.
@@ -53,14 +53,14 @@ fn run_timeout_kills_grandchild_process_tree() {
     // on a heavily loaded CI runner.  The program loops forever, so the
     // timeout always fires; the assertion is that the whole process group is
     // dead, not how long it took.
-    let output = Command::new(hew_binary())
+    let mut command = Command::new(hew_binary());
+    command
         .arg("run")
         .arg("--timeout")
         .arg("30")
         .arg(&hew_src)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+        .current_dir(dir.path());
+    let output = support::run_bounded_command(command, format!("hew run {}", hew_src.display()));
 
     assert!(
         !output.status.success(),
@@ -120,18 +120,44 @@ fn run_timeout_kills_grandchild_process_tree() {
 
 #[test]
 fn timeout_zero_is_rejected() {
-    let output = Command::new(hew_binary())
-        .args(["run", "--timeout", "0", "placeholder.hew"])
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = support::bounded_hew_command(
+        ["run", "--timeout", "0", "placeholder.hew"],
+        repo_root(),
+        "hew run --timeout 0",
+    );
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Error: --timeout must be at least 1 second"));
 }
 
-#[ignore = "v0.5 native codegen lacks a supported infinite-loop fixture for this timeout assertion"]
+#[cfg(unix)]
+#[test]
+fn bounded_exec_helper_kills_infinite_output_child() {
+    let mut command = Command::new("sh");
+    command.args(["-c", "while :; do printf '0123456789abcdef'; done"]);
+
+    let start = Instant::now();
+    let result = support::try_run_bounded_command(
+        command,
+        "infinite-output proof fixture",
+        Duration::from_secs(3),
+    );
+    let elapsed = start.elapsed();
+
+    assert!(
+        result
+            .as_ref()
+            .err()
+            .is_some_and(hew_testutil::BoundedExecError::is_timeout),
+        "bounded helper should kill infinite-output fixture, got: {result:?}",
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "bounded helper returned too slowly after 3s deadline: {elapsed:?}",
+    );
+}
+
 #[test]
 fn run_timeout_exit_code_is_non_zero() {
     require_codegen();
@@ -144,14 +170,14 @@ fn run_timeout_exit_code_is_non_zero() {
     )
     .unwrap();
 
-    let output = Command::new(hew_binary())
+    let mut command = Command::new(hew_binary());
+    command
         .arg("run")
         .arg("--timeout")
         .arg("1")
         .arg(&path)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+        .current_dir(dir.path());
+    let output = support::run_bounded_command(command, format!("hew run {}", path.display()));
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -176,12 +202,7 @@ fn native_run_emits_no_deployment_target_mismatch_warning() {
     let path = dir.path().join("deployment_target_check.hew");
     std::fs::write(&path, "fn main() {}\n").expect("write source");
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&path)
-        .current_dir(dir.path())
-        .output()
-        .expect("invoke hew run");
+    let output = run_bounded_hew_run(&path, dir.path());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -198,12 +219,7 @@ fn run_program_with_simple_arithmetic_succeeds() {
     let path = dir.path().join("arithmetic_run.hew");
     std::fs::write(&path, "fn main() {\n    println(1 + 2);\n}\n").unwrap();
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&path)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&path, dir.path());
 
     assert!(
         output.status.success(),
@@ -215,6 +231,101 @@ fn run_program_with_simple_arithmetic_succeeds() {
 }
 
 #[test]
+fn run_generic_vec_into_iter_static_dispatch_outputs_first_value() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("generic_vec_into_iter_dispatch.hew");
+    std::fs::write(
+        &path,
+        r"
+        fn first_or_zero<I>(var it: I) -> i64
+        where
+            I: Iterator<Item = i64>,
+        {
+            match it.next() {
+                Some(x) => x,
+                None => 0,
+            }
+        }
+
+        fn main() {
+            let v: Vec<i64> = Vec::new();
+            v.push(42);
+            println(first_or_zero(v.into_iter()));
+        }
+        ",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, dir.path());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+#[test]
+fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("generic_user_iterator_dispatch.hew");
+    std::fs::write(
+        &path,
+        r"
+        type Counter {
+            cur: i64;
+            end: i64;
+        }
+
+        impl Iterator for Counter {
+            type Item = i64;
+
+            fn next(var self) -> Option<i64> {
+                if self.cur >= self.end {
+                    None
+                } else {
+                    let out = self.cur;
+                    self.cur = self.cur + 1;
+                    Some(out)
+                }
+            }
+        }
+
+        fn first_or_zero<I>(var it: I) -> i64
+        where
+            I: Iterator<Item = i64>,
+        {
+            match it.next() {
+                Some(x) => x,
+                None => 0,
+            }
+        }
+
+        fn main() {
+            println(first_or_zero(Counter { cur: 7, end: 10 }));
+        }
+        ",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, dir.path());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
+}
+
+#[test]
 fn run_string_methods_smoke_matches_expected() {
     require_codegen();
 
@@ -223,12 +334,7 @@ fn run_string_methods_smoke_matches_expected() {
         std::fs::read_to_string(repo_root().join("examples/string_methods_smoke.expected"))
             .expect("read string_methods_smoke.expected");
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&source, repo_root());
 
     assert!(
         output.status.success(),
@@ -263,12 +369,7 @@ fn run_move_out_string_is_freed_once_no_double_free() {
     )
     .expect("read move_out_no_double_free.expected");
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&source, repo_root());
 
     // A double-free aborts the process (SIGABRT) via the runtime's
     // `free_cstring` sentinel check, so `success()` is itself the proof.
@@ -306,12 +407,7 @@ fn run_alias_wrappers_no_double_free() {
     )
     .expect("read alias_wrappers_no_double_free.expected");
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&source, repo_root());
 
     // A double-free aborts the process (SIGABRT) via the runtime's
     // `free_cstring` sentinel check, so `success()` is itself the proof.
@@ -350,12 +446,7 @@ fn run_destructure_payload_no_double_free() {
     )
     .expect("read destructure_payload_no_double_free.expected");
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&source, repo_root());
 
     assert!(
         output.status.success(),
@@ -385,12 +476,7 @@ fn run_fn_local_string_is_dropped_bounded_memory() {
     )
     .expect("read fn_local_string_dropped.expected");
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&source, repo_root());
 
     assert!(
         output.status.success(),
@@ -423,12 +509,7 @@ fn run_actor_sent_string_not_double_freed() {
     )
     .expect("read actor_sent_string_not_double_freed.expected");
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&source, repo_root());
 
     // A double-free aborts the process (SIGABRT) via the runtime's
     // `free_cstring` sentinel check, so `success()` is itself the proof.
@@ -470,22 +551,13 @@ fn run_imports_std_io_and_round_trips_stdin_to_stdout() {
     )
     .unwrap();
 
-    let mut child = Command::new(hew_binary())
-        .arg("run")
-        .arg(&hew_src)
-        .current_dir(repo_root())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    {
-        let mut stdin = child.stdin.take().expect("stdin should be piped");
-        stdin.write_all(b"hello from stdin\n").unwrap();
-    }
-
-    let output = child.wait_with_output().unwrap();
+    let mut command = Command::new(hew_binary());
+    command.arg("run").arg(&hew_src).current_dir(repo_root());
+    let output = support::run_bounded_command_with_stdin(
+        command,
+        format!("hew run {}", hew_src.display()),
+        b"hello from stdin\n",
+    );
     assert!(
         output.status.success(),
         "hew run should succeed; stdout: {}\nstderr: {}",
@@ -521,12 +593,7 @@ fn run_fstring_interpolates_primitives_via_display() {
     )
     .unwrap();
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&hew_src)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&hew_src, repo_root());
 
     assert!(
         output.status.success(),
@@ -564,12 +631,7 @@ fn run_fstring_interpolates_bool_and_int() {
     )
     .unwrap();
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&hew_src)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&hew_src, repo_root());
 
     assert!(
         output.status.success(),
@@ -606,12 +668,7 @@ fn run_fstring_rejects_type_without_display_impl() {
     )
     .unwrap();
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&hew_src)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&hew_src, repo_root());
 
     assert!(
         !output.status.success(),
@@ -663,12 +720,7 @@ fn run_fstring_dispatches_user_defined_display() {
     )
     .unwrap();
 
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&hew_src)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
+    let output = run_bounded_hew_run(&hew_src, repo_root());
 
     assert!(
         output.status.success(),
@@ -677,4 +729,151 @@ fn run_fstring_dispatches_user_defined_display() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "got Point(7)\n",);
+}
+
+/// T-1 value oracle: `type R { b: i64, a: i64 }` matched as `R { a, b }`.
+///
+/// Declaration order: `b` is at index 0, `a` is at index 1.
+/// Pattern binding order: `a` first, then `b`.
+/// `R { b: 10, a: 20 }` → `match r { R { a, b } => a - b }` → 20 - 10 = 10.
+///
+/// If field offsets were resolved alphabetically (`a → 0, b → 1`) the result
+/// would be 10 - 20 = -10, producing exit code 246 (i64 → u8 wrapping on Linux)
+/// rather than 10 — a distinct wrong value that this oracle catches.
+///
+/// Pairs with the MIR unit test `record_project_declaration_order_not_alphabetical`
+/// which asserts the `FieldOffset` values directly.
+#[test]
+fn run_struct_match_declaration_order_not_alphabetical() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/match_struct_decl_order.hew");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        exit_code, 10,
+        "expected exit 10 (a - b = 20 - 10); \
+         exit {exit_code} means field offsets may be wrong (alphabetical sort would give -10 → 246); \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// Regression oracle — for-range loop variable derives its type from the
+/// checker-resolved `Range<T>` element type, not the start bound.
+///
+/// `for i in 0..n` with `n: i32` passed to `take_i32(i32)`.  The checker
+/// resolves the range as `Range<i32>`, so `i` should be `i32` throughout.
+/// Before the fix the loop counter was always `I64`, causing `IntCmp` /
+/// `IntArithChecked` width-guard failures at codegen.
+///
+/// The program sums 0+1+2+3+4+5+6 = 21 and returns 21 as the exit code.
+#[test]
+fn for_range_i32_bound_runs_and_returns_correct_value() {
+    require_codegen();
+
+    let fixture = repo_root().join("tests/vertical-slice/accept/for_range_regression.hew");
+    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&fixture)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew run");
+
+    assert_eq!(
+        output.status.code(),
+        Some(21),
+        "expected exit 21 (sum 0..7); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "expected no diagnostics; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// Regression oracle — mixed-width range bounds (i32..i64) produce a loop
+/// variable typed at the wider bound (i64), not the narrower start bound.
+///
+/// `for i in a..b` with `a: i32 = 2, b: i64 = 6` passed to `id_i64(i64)`.
+/// The checker resolves `Range<i64>` (common width of i32 and i64 is i64).
+/// Before the fix, HIR derived element type from `start_hir.ty = i32`,
+/// causing `call i64 @id_i64(i32 %arg)` which LLVM rejected.
+///
+/// Sums 2+3+4+5 = 14; exit code 14.
+#[test]
+fn for_range_mixed_width_bounds_runs_and_returns_correct_value() {
+    require_codegen();
+
+    let fixture = repo_root().join("tests/vertical-slice/accept/for_range_mixed_width_bounds.hew");
+    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&fixture)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew run");
+
+    assert_eq!(
+        output.status.code(),
+        Some(14),
+        "expected exit 14 (sum 2..6 as i64); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "expected no diagnostics; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// Regression oracle — negative integer literal range bounds lower correctly
+/// when the loop variable is narrowed to a concrete integer type.
+///
+/// `for i in -5..5` with `id_i32(i)`.  The checker narrows the deferred
+/// range `TypeVar` to `i32`.  Before the fix, the inner literal `5` inside
+/// the negated start bound `-5` kept the `IntLiteral`→`I64` materialized
+/// default, while the outer `-5` span was re-recorded as `i32`.  MIR
+/// codegen then rejected `IntNegChecked` because dest (i32) ≠ operand (i64).
+///
+/// Sum of {-5,-4,-3,-2,-1,0,1,2,3,4} = -5.  Exit code 256 - 5 = 251.
+#[test]
+fn for_range_negative_literal_bound_runs_and_returns_correct_value() {
+    require_codegen();
+
+    let fixture =
+        repo_root().join("tests/vertical-slice/accept/for_range_negative_literal_bound.hew");
+    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&fixture)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew run");
+
+    assert_eq!(
+        output.status.code(),
+        Some(251),
+        "expected exit 251 (sum -5..5 as i32, wraps to 251); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "expected no diagnostics; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }

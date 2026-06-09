@@ -193,11 +193,14 @@ fn run_colour_match_fixture_executes() {
     let expected_path = fixture.with_extension("expected");
     let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
 
-    let output = std::process::Command::new(&hew_bin)
-        .arg("run")
-        .arg(&fixture)
-        .output()
-        .expect("spawn hew run");
+    let mut command = std::process::Command::new(&hew_bin);
+    command.arg("run").arg(&fixture);
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        format!("hew run {}", fixture.display()),
+        hew_testutil::DEFAULT_EXEC_TIMEOUT,
+    )
+    .expect("spawn hew run");
     assert!(
         output.status.success(),
         "hew run exited non-zero (status={:?}); stderr:\n{}",
@@ -231,11 +234,14 @@ fn run_colour_match_wildcard_fixture_executes() {
     let expected_path = fixture.with_extension("expected");
     let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
 
-    let output = std::process::Command::new(&hew_bin)
-        .arg("run")
-        .arg(&fixture)
-        .output()
-        .expect("spawn hew run");
+    let mut command = std::process::Command::new(&hew_bin);
+    command.arg("run").arg(&fixture);
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        format!("hew run {}", fixture.display()),
+        hew_testutil::DEFAULT_EXEC_TIMEOUT,
+    )
+    .expect("spawn hew run");
     assert!(
         output.status.success(),
         "hew run exited non-zero (status={:?}); stderr:\n{}",
@@ -271,11 +277,14 @@ fn run_colour_match_let_fixture_executes() {
     let expected_path = fixture.with_extension("expected");
     let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
 
-    let output = std::process::Command::new(&hew_bin)
-        .arg("run")
-        .arg(&fixture)
-        .output()
-        .expect("spawn hew run");
+    let mut command = std::process::Command::new(&hew_bin);
+    command.arg("run").arg(&fixture);
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        format!("hew run {}", fixture.display()),
+        hew_testutil::DEFAULT_EXEC_TIMEOUT,
+    )
+    .expect("spawn hew run");
     assert!(
         output.status.success(),
         "hew run exited non-zero (status={:?}); stderr:\n{}",
@@ -334,11 +343,14 @@ fn run_enum_fixture_executes(name: &str) {
     let expected_path = fixture.with_extension("expected");
     let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
 
-    let output = std::process::Command::new(&hew_bin)
-        .arg("run")
-        .arg(&fixture)
-        .output()
-        .expect("spawn hew run");
+    let mut command = std::process::Command::new(&hew_bin);
+    command.arg("run").arg(&fixture);
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        format!("hew run {}", fixture.display()),
+        hew_testutil::DEFAULT_EXEC_TIMEOUT,
+    )
+    .expect("spawn hew run");
     assert!(
         output.status.success(),
         "hew run exited non-zero (status={:?}); stderr:\n{}",

@@ -144,7 +144,7 @@ fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> byt
 actor ClientHandler {
     let conn: Connection;
     let client_id: string;
-    let router: ActorRef<Router>;
+    let router: LocalPid<Router>;
     receive fn start() {
         var buf = bytes::new();
         var connected = true;
@@ -268,11 +268,11 @@ actor ClientHandler {
 // Parallel arrays: sub_topics[i] <-> sub_conns[i] <-> sub_qos[i]
 actor Router {
     let client_conns: Vec<Connection>;
-    let client_actors: Vec<ActorRef<ClientHandler>>;
+    let client_actors: Vec<LocalPid<ClientHandler>>;
     let sub_topics: Vec<string>;
     let sub_conns: Vec<Connection>;
     let sub_qos: Vec<i32>;
-    receive fn register_client(conn: Connection, handler: ActorRef<ClientHandler>) {
+    receive fn register_client(conn: Connection, handler: LocalPid<ClientHandler>) {
         client_conns.push(conn);
         client_actors.push(handler);
         println("[router] client registered");
@@ -324,7 +324,7 @@ actor Router {
     receive fn client_disconnect(conn: Connection) {
         // Remove from client registry
         var new_conns: Vec<Connection> = Vec::new();
-        var new_actors: Vec<ActorRef<ClientHandler>> = Vec::new();
+        var new_actors: Vec<LocalPid<ClientHandler>> = Vec::new();
         for i in 0 .. client_conns.len() {
             if client_conns.get(i) != conn {
                 new_conns.push(client_conns.get(i));
@@ -353,7 +353,7 @@ actor Router {
 
 // Listener — accept loop; spawns a ClientHandler for each new connection.
 actor Listener {
-    let router: ActorRef<Router>;
+    let router: LocalPid<Router>;
     receive fn start() {
         let lst = net.listen(":1883");
         println("[listener] MQTT broker ready on :1883");
@@ -369,7 +369,7 @@ actor Listener {
 
 fn main() {
     let empty_conns: Vec<Connection> = Vec::new();
-    let empty_actors: Vec<ActorRef<ClientHandler>> = Vec::new();
+    let empty_actors: Vec<LocalPid<ClientHandler>> = Vec::new();
     let empty_sub_topics: Vec<string> = Vec::new();
     let empty_sub_conns: Vec<Connection> = Vec::new();
     let empty_sub_qos: Vec<i32> = Vec::new();

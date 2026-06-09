@@ -17,5 +17,4 @@ extern "C" {
     fn hew_util_streq(a: &string, b: &string) -> bool;
 }
 
-fn main() {
-}
+fn main() {}

@@ -39,8 +39,8 @@ fn main() {
 
     // Spawn the supervisor — it starts and monitors the Counter children.
     let sup = spawn CounterPool;
-    let c1 = supervisor_child(sup, 0);
-    let c2 = supervisor_child(sup, 1);
+    let c1 = sup.c1;
+    let c2 = sup.c2;
     // Increment each independently — no shared state.
     c1.increment(10);
     c1.increment(5);

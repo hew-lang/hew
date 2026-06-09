@@ -40,6 +40,35 @@ fn removed_regex_not_match_op_is_rejected() {
     );
 }
 
+#[test]
+fn pure_fn_modifier_is_rejected() {
+    let source = r"pure fn foo() -> i64 { return 1; }";
+    let result = hew_parser::parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected `pure fn` to be rejected, got clean parse"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|err| err.message.contains("found pure") || err.message.contains("pure")),
+        "expected parse error to identify `pure`, got {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn normal_fn_still_parses() {
+    let source = r"fn foo() -> i64 { return 1; }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "expected normal `fn` to parse cleanly, got {:?}",
+        result.errors
+    );
+}
+
 /// `fork { ... }` block syntax was removed in v0.5; use `scope { ... }` with
 /// `fork name = call(...);` bindings instead.  The parser emits a clear
 /// diagnostic pointing at the replacement form.
@@ -340,6 +369,56 @@ fn comparison_full_spaces_parses_normally() {
     assert!(
         parses_without_operator_removed_error(source),
         "expected `x < -y` to parse as comparison, but got E_OPERATOR_REMOVED"
+    );
+}
+
+/// F2 regression: `Point { x, .. }` is a deferred rest-pattern that the parser
+/// does not yet fully support. When `..` appears inside a struct pattern field
+/// list, `expect_ident` fails on the `..` token and returns `None`; the parser
+/// propagates errors and never panics.
+///
+/// This test asserts:
+///   1. Parsing never panics (a panic would kill the test process outright).
+///   2. At least one parse error is reported (the `..` is rejected cleanly).
+///
+/// A future implementation may parse `..` as a rest marker (`has_rest = true`)
+/// and this test can be updated to assert a clean parse. Until then, clean
+/// rejection is the fail-closed contract.
+#[test]
+fn struct_rest_pattern_does_not_panic() {
+    // If the parser panics, the test process is killed and the test harness
+    // reports a crash — this assertion would never be reached, which is itself
+    // the proof. The explicit `!result.errors.is_empty()` asserts clean rejection.
+    let source = r"
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn main() -> i64 {
+    let p = Point { x: 3, y: 4 };
+    match p {
+        Point { x, .. } => x,
+    }
+}";
+    let result = hew_parser::parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse errors for `Point {{ x, .. }}` (rest pattern not yet supported), \
+         got a clean parse — either the parser now supports rest patterns \
+         (update this test) or a silent accept occurred"
+    );
+    // No `..` field name must appear in the AST (it must not be silently accepted
+    // as a field named "..").
+    // The errors confirm the parser rejected the `..` token.
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("expected identifier") || e.message.contains("`..`")),
+        "expected an 'expected identifier' or '`..`' error for the rest pattern; \
+         got: {:?}",
+        result.errors
     );
 }
 

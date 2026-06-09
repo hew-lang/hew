@@ -2472,9 +2472,12 @@ mod tests {
             .args([
                 "--exact",
                 "vec::tests::_helper_vec_push_layout_stub_fails_closed",
-                "--include-ignored",
             ])
             .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "_helper_vec_push_layout_stub_fails_closed",
+            )
             .output()
             .unwrap();
         assert!(
@@ -2490,14 +2493,17 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for test_vec_push_layout_stub_fails_closed — must abort"]
     fn _helper_vec_push_layout_stub_fails_closed() {
         #[repr(C)]
         struct Payload {
             a: u64,
             b: u64,
         }
-
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |v| v != "_helper_vec_push_layout_stub_fails_closed")
+        {
+            return;
+        }
         let layout = HewTypeLayout {
             size: core::mem::size_of::<Payload>(),
             align: core::mem::align_of::<Payload>(),
@@ -2516,12 +2522,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn test_vec_get_generic_oob() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "vec::tests::_helper_vec_get_generic_oob",
-                "--include-ignored",
-            ])
+            .args(["--exact", "vec::tests::_helper_vec_get_generic_oob"])
             .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_vec_get_generic_oob")
             .output()
             .unwrap();
         assert!(
@@ -2536,14 +2539,15 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for test_vec_get_generic_oob — must panic"]
     fn _helper_vec_get_generic_oob() {
         #[repr(C)]
         struct Payload {
             a: u64,
             b: u64,
         }
-
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| v != "_helper_vec_get_generic_oob") {
+            return;
+        }
         // SAFETY: FFI calls use valid vec pointer and stack-allocated payload.
         unsafe {
             let v = hew_vec_new_generic(i64::try_from(core::mem::size_of::<Payload>()).unwrap(), 0);
@@ -2973,12 +2977,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn vec_remove_at_layout_oob_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "vec::tests::_helper_vec_remove_at_layout_oob",
-                "--include-ignored",
-            ])
+            .args(["--exact", "vec::tests::_helper_vec_remove_at_layout_oob"])
             .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_vec_remove_at_layout_oob")
             .output()
             .unwrap();
         assert!(
@@ -2994,8 +2995,11 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for vec_remove_at_layout_oob_aborts — must abort"]
     fn _helper_vec_remove_at_layout_oob() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| v != "_helper_vec_remove_at_layout_oob")
+        {
+            return;
+        }
         let layout = point_layout();
         // SAFETY: FFI calls use valid layout-backed HewVec and Plain Point layout.
         unsafe {
@@ -3015,9 +3019,9 @@ mod tests {
             .args([
                 "--exact",
                 "vec::tests::_helper_vec_remove_at_layout_managed",
-                "--include-ignored",
             ])
             .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_vec_remove_at_layout_managed")
             .output()
             .unwrap();
         assert!(
@@ -3033,8 +3037,12 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for vec_remove_at_layout_layout_managed_aborts — must abort"]
     fn _helper_vec_remove_at_layout_managed() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |v| v != "_helper_vec_remove_at_layout_managed")
+        {
+            return;
+        }
         let layout = HewTypeLayout {
             size: 16,
             align: 8,
@@ -3431,12 +3439,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn vec_clone_layout_layout_managed_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "vec::tests::_helper_vec_clone_layout_managed",
-                "--include-ignored",
-            ])
+            .args(["--exact", "vec::tests::_helper_vec_clone_layout_managed"])
             .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_vec_clone_layout_managed")
             .output()
             .unwrap();
         assert!(
@@ -3452,8 +3457,11 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for vec_clone_layout_layout_managed_aborts — must abort"]
     fn _helper_vec_clone_layout_managed() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| v != "_helper_vec_clone_layout_managed")
+        {
+            return;
+        }
         let layout = HewTypeLayout {
             size: 16,
             align: 8,
@@ -3602,9 +3610,9 @@ mod tests {
             .args([
                 "--exact",
                 "vec::tests::_helper_vec_clone_managed_layout_managed",
-                "--include-ignored",
             ])
             .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_vec_clone_managed_layout_managed")
             .output()
             .unwrap();
         assert!(
@@ -3620,8 +3628,12 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for vec_clone_managed_layout_managed_aborts — must abort"]
     fn _helper_vec_clone_managed_layout_managed() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |v| v != "_helper_vec_clone_managed_layout_managed")
+        {
+            return;
+        }
         let layout = HewTypeLayout {
             size: 16,
             align: 8,
@@ -3644,9 +3656,9 @@ mod tests {
             .args([
                 "--exact",
                 "vec::tests::_helper_vec_free_managed_layout_managed",
-                "--include-ignored",
             ])
             .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_vec_free_managed_layout_managed")
             .output()
             .unwrap();
         assert!(
@@ -3662,8 +3674,12 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for vec_free_managed_layout_managed_aborts — must abort"]
     fn _helper_vec_free_managed_layout_managed() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |v| v != "_helper_vec_free_managed_layout_managed")
+        {
+            return;
+        }
         let layout = HewTypeLayout {
             size: 16,
             align: 8,

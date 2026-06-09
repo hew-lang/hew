@@ -183,6 +183,32 @@ impl Checker {
         arg_application: SignatureArgApplication<'_>,
         record_call_type_args: bool,
     ) -> AppliedCallSignature {
+        let empty_assoc_bindings = HashMap::new();
+        self.apply_instantiated_call_signature_with_assoc(
+            sig,
+            &empty_assoc_bindings,
+            type_args,
+            args,
+            span,
+            arg_application,
+            record_call_type_args,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "call application needs the signature, its associated-type side table, source args, span, and arity mode"
+    )]
+    pub(super) fn apply_instantiated_call_signature_with_assoc(
+        &mut self,
+        sig: &FnSig,
+        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        span: &Span,
+        arg_application: SignatureArgApplication<'_>,
+        record_call_type_args: bool,
+    ) -> AppliedCallSignature {
         let (freshened_params, freshened_ret, resolved_type_args) =
             self.instantiate_fn_sig_for_call(sig, type_args, span);
 
@@ -267,7 +293,12 @@ impl Checker {
             }
         }
 
-        self.enforce_type_param_bounds(sig, &resolved_type_args, span);
+        self.enforce_type_param_bounds_with_assoc(
+            sig,
+            type_param_assoc_bindings,
+            &resolved_type_args,
+            span,
+        );
 
         if record_call_type_args && !sig.type_params.is_empty() {
             self.record_concrete_call_type_args(span, &resolved_type_args);
@@ -898,14 +929,6 @@ impl Checker {
             .filter(|qualified| self.fn_sigs.contains_key(qualified))
             .unwrap_or_else(|| func_name.clone());
         if let Some(sig) = self.fn_sigs.get(&resolved_fn_name).cloned() {
-            // Purity check: pure functions can only call other pure functions
-            if self.in_pure_function && !sig.is_pure {
-                self.report_error(
-                    TypeErrorKind::PurityViolation,
-                    span,
-                    format!("cannot call impure function `{func_name}` from a pure function"),
-                );
-            }
             if let Some(caller) = &self.current_function {
                 self.call_graph
                     .entry(caller.clone())
@@ -922,8 +945,14 @@ impl Checker {
                     .borrow_mut()
                     .insert(ImportKey::new(self.current_module.clone(), module));
             }
-            let applied_sig = self.apply_instantiated_call_signature(
+            let assoc_bindings = self
+                .fn_type_param_assoc_bindings
+                .get(&resolved_fn_name)
+                .cloned()
+                .unwrap_or_default();
+            let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                 &sig,
+                &assoc_bindings,
                 type_args,
                 args,
                 span,

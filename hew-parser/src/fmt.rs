@@ -711,9 +711,6 @@ impl<'a> Formatter<'a> {
             self.write(&format!("#[lang_item(\"{key}\")]\n"));
         }
         self.write_indent();
-        if m.is_pure {
-            self.write("pure ");
-        }
         self.write("fn ");
         self.write(&m.name);
         self.format_fn_signature(
@@ -1267,9 +1264,7 @@ impl<'a> Formatter<'a> {
         self.write_outer_doc(recv.doc_comment.as_ref());
         self.format_attributes(&recv.attributes);
         self.write_indent();
-        if recv.is_pure {
-            self.write("pure ");
-        }
+
         if recv.is_generator {
             self.write("receive gen fn ");
         } else {
@@ -1356,9 +1351,7 @@ impl<'a> Formatter<'a> {
         self.format_attributes(&decl.attributes);
         self.write_indent();
         self.write_visibility(decl.visibility);
-        if decl.is_pure {
-            self.write("pure ");
-        }
+
         if decl.is_async {
             self.write("async ");
         }
@@ -1556,6 +1549,9 @@ impl<'a> Formatter<'a> {
                     } if name == "Self"
                 )
             {
+                if p.is_mutable {
+                    f.write("var ");
+                }
                 f.write("self");
                 return;
             }

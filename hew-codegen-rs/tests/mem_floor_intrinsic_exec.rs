@@ -620,14 +620,11 @@ fn mem_floor_is_not_a_wasm_excluded_substrate() {
 /// an import (the wasm runtime supplies `hew_alloc`/`hew_dealloc` the same way
 /// the native build links them).
 ///
-/// DISABLED by default (`#[ignore]`): it requires the wasm toolchain
-/// (`wasm-ld`/`rust-lld`) which is not guaranteed in every CI lane. Run with
-/// `cargo test -p hew-codegen-rs --test mem_floor_intrinsic_exec -- --ignored`
-/// to exercise the wasm link path. The active
+/// Requires the wasm toolchain (`wasm-ld`/`rust-lld`); verified passing on
+/// this host (wasmtime + wasm32-wasip1 present). The active
 /// `mem_floor_is_not_a_wasm_excluded_substrate` test guards the parity
-/// contract on every run; this one is the on-demand link-level proof.
+/// contract on every run; this one is the link-level proof.
 #[test]
-#[ignore = "requires the wasm toolchain (wasm-ld/rust-lld); run with --ignored"]
 fn mem_floor_emits_linkable_wasm_module() {
     let pipeline = floor_exec_pipeline();
     let tmp = std::env::temp_dir().join("hew-mem-floor-wasm-emit");

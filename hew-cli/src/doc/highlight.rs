@@ -95,7 +95,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Cooperate
         | Token::Catch
         | Token::Defer
-        | Token::Pure
         | Token::As
         | Token::Machine
         | Token::State

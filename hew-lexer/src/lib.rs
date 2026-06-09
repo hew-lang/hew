@@ -264,8 +264,6 @@ pub enum Token<'src> {
     Catch,
     #[token("defer")]
     Defer,
-    #[token("pure")]
-    Pure,
     #[token("as")]
     As,
     #[token("machine")]
@@ -667,7 +665,6 @@ define_keywords! {
     Cooperate  => "cooperate",
     Catch      => "catch",
     Defer      => "defer",
-    Pure       => "pure",
     As         => "as",
     Machine    => "machine",
     State      => "state",

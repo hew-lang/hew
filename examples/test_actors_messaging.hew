@@ -31,7 +31,6 @@ fn test_basic_actor() -> i64 {
     counter.increment(20);
     counter.increment(12);
     let count = await counter.get_count();
-    stop(counter);
     if count == 42 {
         println("PASS: basic actor spawn + messaging");
         1
@@ -52,8 +51,6 @@ fn test_multiple_actors() -> i64 {
     await second;
     await third;
     println("PASS: multiple actors");
-    stop(p1);
-    stop(p2);
     1
 }
 

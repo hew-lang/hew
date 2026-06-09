@@ -136,6 +136,9 @@ run_accept_expect_status "assert_eq_fail" 134
 grep -q 'assertion failed: assert_eq(4, 5)' "${stderr_output}"
 
 run_accept_expect_status "exit_42" 42
+run_accept_expect_status "for_vec_sum_42" 42
+run_accept_expect_status "iter_manual_next_42" 42
+run_accept_expect_status "for_range_regression" 21
 
 # defer: basic (no effect on return), executes (exit override), LIFO, block scope
 run_accept_expect_status "defer_basic" 7
@@ -585,15 +588,13 @@ grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
 grep -qF 'scope deadline body' "${reject_output}"
 grep -qF 'non-empty timeout bodies remain fail-closed' "${reject_output}"
 
-# Reject: `for x in non_range_iterable` — only integer Range (a..b, a..=b) is
-# supported in the current vertical slice.  Pins the fail-closed boundary at
-# hew-hir/src/lower.rs non-range iterable arm.
+# Reject: `for x in non_iterable` — Vec<T> is accepted through IntoIterator,
+# but values with no iterable contract must still fail closed.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/for_non_range_iterable.hew" >"${reject_output}" 2>&1; then
   echo "expected for-non-range-iterable fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-grep -qF 'non-Range iterable' "${reject_output}"
+grep -qF 'type is not iterable' "${reject_output}"
 
 # ---------------------------------------------------------------------------
 # gen{} checker — typed generator blocks
@@ -994,6 +995,23 @@ grep -q 'composite return of heap-owning payload' "${reject_output}"
 # emit_remote_pid_tell_call. Regression in the in-place construction would
 # produce a wrong SendError discriminant, exiting 1 or 2 instead.
 run_accept_expect_status "remote_pid_tell" 42
+
+# Accept: Node::lookup(name) must expose the registered local actor as a
+# RemotePid<T>, and pid.tell(msg) must deliver through the in-process
+# send-by-id path.
+run_accept_expect_status "node_lookup_tell" 0
+
+# A640/S3: compile-time Serializable floor for RemotePid<T>::tell.
+"${HEW}" check "${ROOT}/tests/vertical-slice/accept/positive_record_remote_tell.hew" \
+    >"${accept_output}" 2>&1
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/negative_fn_msg_remote_tell.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected negative_fn_msg_remote_tell fixture to fail" >&2
+  exit 1
+fi
+grep -q 'Serializable' "${reject_output}"
+"${HEW}" check "${ROOT}/tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew" \
+    >"${accept_output}" 2>&1
 
 # ---------------------------------------------------------------------------
 # W2.006 Stage 1 — HewScope removal: scope{} MIR shape invariant.

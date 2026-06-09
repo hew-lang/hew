@@ -57,7 +57,7 @@ use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
     DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
     DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, ImportKey,
-    IntegerTypeInfo, PendingLoweringFact, TraitAssociatedTypeInfo, TraitInfo,
+    IntegerTypeInfo, PendingLoweringFact, TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
     WasmUnsupportedFeature,
 };
 use self::util::{

@@ -82,8 +82,11 @@ fn context_reader_offset(reader: ExecutionContextReader) -> usize {
     }
 }
 
-fn stage2_literal_match_scrutinee_ty(ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::I64 | ResolvedTy::Bool | ResolvedTy::Char)
+fn literal_match_scrutinee_ty(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::I64 | ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String
+    )
 }
 
 /// Classify a resolved integer type as signed or unsigned. Returns
@@ -1310,6 +1313,13 @@ pub fn lower_hir_module_with_facts(
                 // diagnostics produced while lowering the abstract body are
                 // discarded so programs that compile today are unaffected.
                 if !func.type_params.is_empty() {
+                    if module
+                        .diagnostic_source_modules
+                        .get(&func.id)
+                        .is_some_and(|source| source == "std.builtins")
+                    {
+                        continue;
+                    }
                     let abstract_subst: HashMap<String, ResolvedTy> = func
                         .type_params
                         .iter()
@@ -3518,6 +3528,9 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::Unary { operand, .. } => {
             collect_unknown_self_fields_in_expr(operand, state_fields, seen, unknown);
         }
+        HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
+        }
         HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_unknown_self_fields_in_expr(elem, state_fields, seen, unknown);
@@ -3641,9 +3654,6 @@ fn collect_unknown_self_fields_in_expr(
             if let Some(end) = end {
                 collect_unknown_self_fields_in_expr(end, state_fields, seen, unknown);
             }
-        }
-        HirExprKind::CoerceToDynTrait { value, .. } => {
-            collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
         }
         HirExprKind::MachineEmit { fields, .. } => {
             for (_, field_val) in fields {
@@ -4126,6 +4136,11 @@ fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
         } => Some(hew_hir::mangle(name, args)),
         _ => None,
     }
+}
+
+fn vec_iter_record_layout_key(ty: &ResolvedTy) -> Option<String> {
+    let key = user_record_layout_key(ty)?;
+    (key == "VecIter" || key.starts_with("VecIter$$")).then_some(key)
 }
 
 fn is_unsupported_user_record_value_class_ty(ty: &ResolvedTy, builder: &Builder) -> bool {
@@ -4868,7 +4883,7 @@ impl Builder {
                 // Weak self-capture would try to look up a slot for
                 // the let-binding that doesn't exist yet.
                 let pending = if matches!(&value.kind, HirExprKind::SpawnLambdaActor { .. }) {
-                    let slot = self.alloc_local(binding.ty.clone());
+                    let slot = self.alloc_local(self.subst_ty(&binding.ty));
                     let Place::Local(local_id) = slot else {
                         unreachable!("alloc_local returns Place::Local");
                     };
@@ -5038,7 +5053,7 @@ impl Builder {
                             self.binding_locals.insert(binding.id, src);
                         }
                         Place::Local(_) | Place::ReturnSlot => {
-                            let slot = self.alloc_local(binding.ty.clone());
+                            let slot = self.alloc_local(binding_ty.clone());
                             self.instructions.push(Instr::Move { dest: slot, src });
                             self.binding_locals.insert(binding.id, slot);
                         }
@@ -5196,7 +5211,8 @@ impl Builder {
                 let Some(record_place) = self.lower_value(object) else {
                     return;
                 };
-                let type_name = match &object.ty {
+                let object_ty = self.subst_ty(&object.ty);
+                let type_name = match &object_ty {
                     ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
                         hew_hir::mangle(name, args)
                     }
@@ -5385,6 +5401,37 @@ impl Builder {
                 operand,
                 operand_ty,
             } => self.lower_unary(*op, operand, operand_ty, &expr.ty, expr.site),
+            HirExprKind::NumericCast {
+                value,
+                from_ty,
+                to_ty,
+            } => {
+                let src = self.lower_value(value)?;
+                let from_ty = self.subst_ty(from_ty);
+                let to_ty = self.subst_ty(to_ty);
+                if !from_ty.can_explicitly_numeric_cast_to(&to_ty) {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "numeric cast from {} to {} is outside the checker-admitted matrix",
+                                from_ty.user_facing(),
+                                to_ty.user_facing()
+                            ),
+                        },
+                        note: "HIR NumericCast carried a non-numeric cast; the HIR verifier should have rejected it"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                let dest = self.alloc_local(to_ty.clone());
+                self.instructions.push(Instr::NumericCast {
+                    dest,
+                    src,
+                    from_ty,
+                    to_ty,
+                });
+                Some(dest)
+            }
             HirExprKind::TupleLiteral { elements } => {
                 // Lower each element expression to a MIR Place.
                 let lowered_elements: Vec<Place> = elements
@@ -5627,7 +5674,8 @@ impl Builder {
                 // is `Named { name, args: <concrete> }` and the layout was
                 // registered under the mangled name; for a monomorphic
                 // record `args` is empty and the bare name is the key.
-                let record_key = match &expr.ty {
+                let expr_ty = self.subst_ty(&expr.ty);
+                let record_key = match &expr_ty {
                     ResolvedTy::Named {
                         name: tname, args, ..
                     } if !args.is_empty() => hew_hir::mangle(tname, args),
@@ -5819,7 +5867,8 @@ impl Builder {
                 // For a generic record instantiation (`b: Box<i64>` reading
                 // `b.value`) the key is the mangled name `Box$$i64`; for a
                 // monomorphic record the key is the bare name.
-                let type_name = match &object.ty {
+                let object_ty = self.subst_ty(&object.ty);
+                let type_name = match &object_ty {
                     ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
                         hew_hir::mangle(name, args)
                     }
@@ -5956,7 +6005,7 @@ impl Builder {
                 // GEP at `field_index` into the struct alloca + load.
                 let field_index = u32::try_from(*index)
                     .expect("tuple index exceeds u32::MAX — impossible in Hew");
-                let dest = self.alloc_local(expr.ty.clone());
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.instructions.push(Instr::TupleFieldLoad {
                     tuple: inner_place,
                     field_index,
@@ -5969,14 +6018,16 @@ impl Builder {
                 // (`container.ty` was set by `synthesize_index`).
                 // W3 collections-sugar S2: string/bytes route to their
                 // own runtime ABI; Vec keeps the existing path.
-                match &container.ty {
+                let container_ty = self.subst_ty(&container.ty);
+                let elem_ty = self.subst_ty(&expr.ty);
+                match &container_ty {
                     ResolvedTy::String => {
-                        self.lower_string_index(container, index, &expr.ty, expr.site)
+                        self.lower_string_index(container, index, &elem_ty, expr.site)
                     }
                     ResolvedTy::Bytes => {
-                        self.lower_bytes_index(container, index, &expr.ty, expr.site)
+                        self.lower_bytes_index(container, index, &elem_ty, expr.site)
                     }
-                    _ => self.lower_vec_index(container, index, &expr.ty, expr.site),
+                    _ => self.lower_vec_index(container, index, &elem_ty, expr.site),
                 }
             }
             HirExprKind::Slice {
@@ -7138,6 +7189,14 @@ impl Builder {
             return Some(dest);
         }
 
+        if matches!(op, BinaryOp::Add) && matches!(ty, ResolvedTy::String) {
+            self.instructions.push(Instr::CallRuntimeAbi(
+                crate::model::RuntimeCall::new("hew_string_concat", vec![lhs, rhs], Some(dest))
+                    .expect("hew_string_concat is an allowlisted runtime symbol"),
+            ));
+            return Some(dest);
+        }
+
         // B-2 overflow-trap lowering. The default `+` / `-` / `*` on
         // integer types lowers to the checked LLVM intrinsic family
         // (`llvm.{s,u}{add,sub,mul}.with.overflow.iN`) with a hard
@@ -7747,8 +7806,8 @@ impl Builder {
                     site: scrutinee.site,
                 },
                 note: format!(
-                    "Stage 2/3/4 of W3.005 not yet landed: MIR lowering cannot yet compare \
-                     constructor payload fields before entering the arm body ({} pending \
+                    "MIR lowering cannot yet compare constructor or aggregate payload fields \
+                     before entering the arm body ({} pending \
                      predicate(s) on this arm)",
                     arm.payload_predicates.len()
                 ),
@@ -7773,6 +7832,14 @@ impl Builder {
                 hew_hir::HirMatchArmPredicate::EnumVariant { .. }
             )
         });
+        let has_project = arms.iter().any(|a| {
+            matches!(
+                a.predicate,
+                hew_hir::HirMatchArmPredicate::RecordProject { .. }
+                    | hew_hir::HirMatchArmPredicate::TupleProject { .. }
+            )
+        });
+        let project_scrutinee = self.is_project_match_scrutinee_ty(&scrutinee.ty);
 
         assert!(
             !(has_literal && has_variant),
@@ -7782,14 +7849,193 @@ impl Builder {
             !(has_literal && has_regex),
             "checker invariant violated: mixed Literal/Regex arms"
         );
+        assert!(
+            !(has_project && (has_literal || has_regex || has_variant)),
+            "checker invariant violated: mixed project/refutable match arms"
+        );
 
         if has_regex {
             self.lower_match_regex(scrutinee, arms, result_ty)
-        } else if has_literal || stage2_literal_match_scrutinee_ty(&scrutinee.ty) {
+        } else if has_literal || literal_match_scrutinee_ty(&scrutinee.ty) {
             self.lower_match_literal(scrutinee, arms, result_ty)
+        } else if has_project || project_scrutinee {
+            self.lower_match_project(scrutinee, arms, result_ty)
         } else {
             self.lower_match_enum_tag(scrutinee, arms, result_ty)
         }
+    }
+
+    fn is_project_match_scrutinee_ty(&self, ty: &ResolvedTy) -> bool {
+        match ty {
+            ResolvedTy::Tuple(_) => true,
+            _ => user_record_layout_key(&self.subst_ty(ty))
+                .is_some_and(|key| self.record_field_orders.contains_key(&key)),
+        }
+    }
+
+    fn project_match_scrutinee_is_bitcopy(&self, ty: &ResolvedTy) -> bool {
+        match self.subst_ty(ty) {
+            ResolvedTy::Tuple(items) => items.iter().all(|item| {
+                ValueClass::of_ty(&self.subst_ty(item), &self.type_classes) == ValueClass::BitCopy
+            }),
+            other => ValueClass::of_ty(&other, &self.type_classes) == ValueClass::BitCopy,
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "record/tuple project lowering keeps binding setup, field loads, and arm body CFG in one fail-closed block"
+    )]
+    fn lower_match_project(
+        &mut self,
+        scrutinee: &HirExpr,
+        arms: &[hew_hir::HirMatchArm],
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let selected = arms.iter().find(|arm| {
+            matches!(
+                arm.predicate,
+                hew_hir::HirMatchArmPredicate::RecordProject { .. }
+                    | hew_hir::HirMatchArmPredicate::TupleProject { .. }
+                    | hew_hir::HirMatchArmPredicate::Wildcard
+            )
+        })?;
+
+        let result_place = self.alloc_local(result_ty.clone());
+        let scrutinee_place = self.lower_value(scrutinee)?;
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(local) => local,
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "project match scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "record/tuple match destructure requires a local scrutinee; got {other:?}"
+                    ),
+                });
+                return None;
+            }
+        };
+
+        if !selected.bindings.is_empty() && !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty)
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "non-BitCopy record/tuple match destructure".to_string(),
+                    site: scrutinee.site,
+                },
+                note: format!(
+                    "record/tuple match destructure currently copies projected fields from the \
+                     scrutinee; `{}` is not known to be BitCopy, so owning-field destructure \
+                     is rejected fail-closed until partial-move/drop elaboration is wired",
+                    scrutinee.ty.user_facing()
+                ),
+            });
+            return None;
+        }
+
+        let join_bb = self.alloc_block();
+        let body_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Goto { target: body_bb });
+        self.start_block(body_bb);
+
+        let mut overwritten_bindings = Vec::with_capacity(selected.bindings.len());
+        for binding in &selected.bindings {
+            let binding_ty = self.subst_ty(&binding.ty);
+            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "owning field match destructure binding".to_string(),
+                        site: selected.body.site,
+                    },
+                    note: format!(
+                        "binding `{}` has non-BitCopy type `{}`; record/tuple match destructure \
+                         defers owning-field move semantics rather than copying or double-dropping",
+                        binding.name,
+                        binding_ty.user_facing()
+                    ),
+                });
+                return None;
+            }
+
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: selected.body.site,
+                ty: binding_ty.clone(),
+            });
+            let dest = self.alloc_local(binding_ty);
+            match &selected.predicate {
+                hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                    self.instructions.push(Instr::RecordFieldLoad {
+                        record: Place::Local(scrutinee_local),
+                        field_offset: FieldOffset(binding.field_idx),
+                        dest,
+                    });
+                }
+                hew_hir::HirMatchArmPredicate::TupleProject { arity } => {
+                    if binding.field_idx >= *arity {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "tuple project binding index out of range".to_string(),
+                                site: selected.body.site,
+                            },
+                            note: format!(
+                                "binding `{}` projects field {} from arity {} tuple; \
+                                 the checker/HIR verifier should have rejected this",
+                                binding.name, binding.field_idx, arity
+                            ),
+                        });
+                        return None;
+                    }
+                    self.instructions.push(Instr::TupleFieldLoad {
+                        tuple: Place::Local(scrutinee_local),
+                        field_index: binding.field_idx,
+                        dest,
+                    });
+                }
+                hew_hir::HirMatchArmPredicate::Wildcard => {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "wildcard match arm with project bindings".to_string(),
+                            site: selected.body.site,
+                        },
+                        note: "wildcard match arms must not carry project bindings; this is a checker/HIR bug"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                hew_hir::HirMatchArmPredicate::EnumVariant { .. }
+                | hew_hir::HirMatchArmPredicate::Literal { .. }
+                | hew_hir::HirMatchArmPredicate::Regex { .. } => {
+                    panic!("checker invariant violated: refutable arm in project match lowering");
+                }
+            }
+            let previous = self.binding_locals.insert(binding.binding, dest);
+            overwritten_bindings.push((binding.binding, previous));
+        }
+
+        let value = self.lower_value(&selected.body);
+
+        for (binding, previous) in overwritten_bindings.into_iter().rev() {
+            if let Some(previous) = previous {
+                self.binding_locals.insert(binding, previous);
+            } else {
+                self.binding_locals.remove(&binding);
+            }
+        }
+
+        if let Some(src) = value {
+            self.instructions.push(Instr::Move {
+                dest: result_place,
+                src,
+            });
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+        self.start_block(join_bb);
+        Some(result_place)
     }
 
     #[allow(
@@ -7824,6 +8070,10 @@ impl Builder {
                 }
                 hew_hir::HirMatchArmPredicate::Regex { .. } => {
                     panic!("checker invariant violated: mixed Literal/Regex arms");
+                }
+                hew_hir::HirMatchArmPredicate::RecordProject { .. }
+                | hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                    panic!("checker invariant violated: mixed Literal/Project arms");
                 }
             }
         }
@@ -7951,13 +8201,34 @@ impl Builder {
                 });
                 Some(dest)
             }
+            (HirLiteral::String(value), ResolvedTy::String) => {
+                let bytes = value.as_bytes();
+                if bytes.contains(&0) {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "string literal match pattern with embedded NUL".to_string(),
+                            site,
+                        },
+                        note: "string match literals use the C-string runtime equality ABI; \
+                               embedded NUL would truncate comparison, so it is rejected"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::StringLit {
+                    bytes: bytes.to_vec(),
+                    dest,
+                });
+                Some(dest)
+            }
             _ => {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!("unsupported literal match predicate {lit:?}: {ty:?}"),
                         site,
                     },
-                    note: "literal match lowering is wired only for i64, bool, and char"
+                    note: "literal match lowering is wired only for i64, bool, char, and string"
                         .to_string(),
                 });
                 None
@@ -8063,6 +8334,10 @@ impl Builder {
                 }
                 hew_hir::HirMatchArmPredicate::Literal { .. } => {
                     panic!("checker invariant violated: mixed Literal/Regex arms");
+                }
+                hew_hir::HirMatchArmPredicate::RecordProject { .. }
+                | hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                    panic!("checker invariant violated: mixed Regex/Project arms");
                 }
             }
         }
@@ -8542,6 +8817,10 @@ impl Builder {
                 hew_hir::HirMatchArmPredicate::Literal { .. } => {
                     panic!("checker invariant violated: mixed Literal/Variant arms");
                 }
+                hew_hir::HirMatchArmPredicate::RecordProject { .. }
+                | hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                    panic!("checker invariant violated: mixed Variant/Project arms");
+                }
             }
         }
 
@@ -8669,7 +8948,9 @@ impl Builder {
                     site: arm.body.site,
                     ty: binding_ty.clone(),
                 });
-                if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                let keep_for_drop_elab =
+                    ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy;
+                if keep_for_drop_elab {
                     self.owned_locals.push((
                         binding.binding,
                         binding.name.clone(),
@@ -8686,12 +8967,17 @@ impl Builder {
                     },
                 });
                 let previous = self.binding_locals.insert(binding.binding, dest);
-                overwritten_bindings.push((binding.binding, previous));
+                overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
             }
 
             let value = self.lower_value(&arm.body);
 
-            for (binding, previous) in overwritten_bindings.into_iter().rev() {
+            for (binding, previous, keep_for_drop_elab) in overwritten_bindings.into_iter().rev() {
+                // Owned arm payloads stay addressable for function-wide drop elaboration;
+                // lexical liveness is still narrowed by the exit-state dataflow.
+                if keep_for_drop_elab {
+                    continue;
+                }
                 if let Some(previous) = previous {
                     self.binding_locals.insert(binding, previous);
                 } else {
@@ -8989,10 +9275,21 @@ impl Builder {
         inclusive: bool,
         body: &hew_hir::HirBlock,
     ) -> Option<Place> {
-        // Allocate the counter (i64) and a place for the (exclusive) upper
-        // bound.  Both are written in the entry block before the loop header.
-        let counter = self.alloc_local(ResolvedTy::I64);
-        let end_val = self.alloc_local(ResolvedTy::I64);
+        // The loop counter and bound use the checker-resolved element type from
+        // the HIR binding.  The HIR lowers this from the range bounds, so a
+        // `for i in 2..n` with `n: i32` produces an `i32` counter, matching the
+        // widths of any `Vec<i32>` elements or other `i32` operands computed
+        // from `i` inside the loop body.  Falls back to I64 when the binding
+        // type is not a concrete integer (e.g. unconstrained literal range
+        // `0..8` that was never narrowed by use — those still default to i64).
+        let elem_ty = self.subst_ty(&binding.ty);
+        let counter_ty = if integer_bit_width(&elem_ty).is_some() {
+            elem_ty.clone()
+        } else {
+            ResolvedTy::I64
+        };
+        let counter = self.alloc_local(counter_ty.clone());
+        let end_val = self.alloc_local(counter_ty.clone());
 
         // Initialise counter = start.
         let start_place = self.lower_value(start)?;
@@ -9007,7 +9304,7 @@ impl Builder {
         //                       overflow so `a..=i64::MAX` fails closed).
         let raw_end = self.lower_value(end)?;
         if inclusive {
-            let one = self.alloc_local(ResolvedTy::I64);
+            let one = self.alloc_local(counter_ty.clone());
             self.instructions.push(Instr::ConstI64 {
                 dest: one,
                 value: 1,
@@ -9084,7 +9381,7 @@ impl Builder {
             binding: binding.id,
             name: binding.name.clone(),
             site: hew_hir::SiteId(0),
-            ty: ResolvedTy::I64,
+            ty: counter_ty.clone(),
         });
 
         self.active_scopes.push(body.scope);
@@ -9112,7 +9409,7 @@ impl Builder {
         // WHEN obsolete: when Hew introduces explicit wrapping loops or
         // explicit index-type annotations that allow unsigned indices.
         self.start_block(inc_bb);
-        let one = self.alloc_local(ResolvedTy::I64);
+        let one = self.alloc_local(counter_ty.clone());
         self.instructions.push(Instr::ConstI64 {
             dest: one,
             value: 1,
@@ -12550,6 +12847,10 @@ impl Builder {
                 inferred
             } else if self.is_known_actor_runtime_ty(&resolved_ty) {
                 ValueClass::BitCopy
+            } else if vec_iter_record_layout_key(&resolved_ty)
+                .is_some_and(|key| self.record_field_orders.contains_key(&key))
+            {
+                ValueClass::CowValue
             } else {
                 ValueClass::Unknown
             }
@@ -13699,6 +14000,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             ..
         } => vec![*dest, *operand, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
+        Instr::NumericCast { dest, src, .. } => vec![*dest, *src],
         Instr::Drop { place, .. } => vec![*place],
         Instr::WitnessSizeOf { dest, .. } | Instr::WitnessAlignOf { dest, .. } => vec![*dest],
         Instr::WitnessDropGlue { place, .. } => vec![*place],
@@ -13959,6 +14261,7 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntNegChecked { operand, .. } => vec![*operand],
         // The src is read into the dest; the dest is a write.
         Instr::Move { src, .. } => vec![*src],
+        Instr::NumericCast { src, .. } => vec![*src],
         // A Drop reads the place it releases.
         Instr::Drop { place, .. } => vec![*place],
         // Witness size/align read no operand (the type is static metadata,
@@ -14116,6 +14419,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::IdentityCompare { .. }
         | Instr::CancellationTokenIsCancelled { .. }
         | Instr::Move { .. }
+        | Instr::NumericCast { .. }
         | Instr::CallRuntimeAbi(_)
         | Instr::AutoLockAcquire { .. }
         | Instr::AutoLockRelease { .. }

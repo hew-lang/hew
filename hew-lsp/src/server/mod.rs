@@ -2341,7 +2341,6 @@ machine Traffic {
             TypeErrorKind::UnreachableCode,
             TypeErrorKind::Shadowing,
             TypeErrorKind::DeadCode,
-            TypeErrorKind::PurityViolation,
             TypeErrorKind::OrphanImpl,
             TypeErrorKind::PlatformLimitation,
             TypeErrorKind::OnUpgradeNotYetWired,
@@ -6948,21 +6947,6 @@ machine Traffic {
             !parse_result.errors.is_empty(),
             "v05_async_await.hew must produce parse errors: \
              `async fn` / `await` are not valid Hew syntax and the parser must reject them"
-        );
-    }
-
-    // The original smoke-test placeholder is kept ignored (not removed) so that
-    // when a future designer evaluates async/await adoption, the test body and
-    // expected symbols are still visible as documentation of the intended surface.
-    // W4.023 Stage 0: known-rejected (permanently — see above fail-closed test)
-    #[test]
-    #[ignore = "known-rejected: `async fn`/`await` are not valid Hew v0.5 syntax; see v05_async_await_is_rejected_with_parse_errors for the fail-closed assertion"]
-    fn v05_async_await_lsp_coverage() {
-        assert_v05_lsp_fixture(
-            "v05_async_await",
-            include_str!("../../tests/fixtures/v05_async_await.hew"),
-            "async_probe",
-            &["async_value", "async_probe", "async_await"],
         );
     }
 

@@ -1134,6 +1134,47 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
+        HirExprKind::NumericCast {
+            value,
+            from_ty,
+            to_ty,
+        } => {
+            visit_ty(
+                from_ty,
+                &expr.span,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            visit_ty(
+                to_ty,
+                &expr.span,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            walk_expr(
+                value,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+        }
         HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 walk_expr(

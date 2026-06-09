@@ -372,6 +372,20 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             dump_expr(out, left, indent + 4);
             dump_expr(out, right, indent + 4);
         }
+        HirExprKind::NumericCast {
+            value,
+            from_ty,
+            to_ty,
+        } => {
+            writeln!(
+                out,
+                "{pad}  numeric-cast {} -> {}",
+                from_ty.user_facing(),
+                to_ty.user_facing()
+            )
+            .expect("write to string");
+            dump_expr(out, value, indent + 4);
+        }
         HirExprKind::Call { callee, args } => {
             writeln!(out, "{pad}  call").expect("write to string");
             dump_expr(out, callee, indent + 4);
@@ -915,6 +929,12 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     }
                     crate::node::HirMatchArmPredicate::Literal { lit, ty } => {
                         format!("literal {lit:?}: {ty:?}")
+                    }
+                    crate::node::HirMatchArmPredicate::RecordProject { ty } => {
+                        format!("record-project {ty:?}")
+                    }
+                    crate::node::HirMatchArmPredicate::TupleProject { arity } => {
+                        format!("tuple-project arity={arity}")
                     }
                     crate::node::HirMatchArmPredicate::Regex { pattern, .. } => {
                         format!("re{pattern:?}")

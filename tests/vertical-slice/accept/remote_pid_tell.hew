@@ -18,8 +18,8 @@
 // test/native-m3-quic-mesh-cross-node-integration lands. Add a two-process
 // variant that starts a real node, registers Worker, calls tell, and asserts
 // Result::Ok.
-type Ping {
-    n: i64;
+record Ping {
+    n: i64,
 }
 
 actor Worker {

@@ -4120,14 +4120,14 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn stream_poll_double_register_aborts() {
-        // Spawn a child that runs the ignored helper below.
+        // Spawn a child that runs the helper below via HEW_DEATH_TEST gate.
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "stream::tests::_helper_stream_poll_double_register",
-                "--include-ignored",
             ])
             .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_stream_poll_double_register")
             .output()
             .unwrap();
         assert!(
@@ -4138,8 +4138,12 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "subprocess helper for stream_poll_double_register_aborts — calls process::abort"]
     fn _helper_stream_poll_double_register() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |v| v != "_helper_stream_poll_double_register")
+        {
+            return;
+        }
         // SAFETY: standard test ownership. The second poll must abort.
         unsafe {
             let pair = hew_stream_channel(4);

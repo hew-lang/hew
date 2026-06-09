@@ -252,6 +252,74 @@ impl fmt::Display for BoundaryError {
 impl std::error::Error for BoundaryError {}
 
 impl ResolvedTy {
+    /// Returns `true` for every concrete integer type admitted by the checker.
+    /// `Bool` and `Char` are deliberately excluded: `bool` participates in
+    /// explicit casts only through the checker-owned bool<->integer rules, and
+    /// `char` is not in `coerce.rs`'s numeric matrix.
+    #[must_use]
+    pub fn is_integer(&self) -> bool {
+        matches!(
+            self,
+            Self::I8
+                | Self::I16
+                | Self::I32
+                | Self::I64
+                | Self::U8
+                | Self::U16
+                | Self::U32
+                | Self::U64
+                | Self::Isize
+                | Self::Usize
+        )
+    }
+
+    /// Returns `true` for the concrete floating-point types admitted by the
+    /// checker numeric matrix.
+    #[must_use]
+    pub fn is_float(&self) -> bool {
+        matches!(self, Self::F32 | Self::F64)
+    }
+
+    /// Returns `true` for integer or floating-point types. Mirrors
+    /// [`Ty::is_numeric`] after checker-boundary conversion.
+    #[must_use]
+    pub fn is_numeric(&self) -> bool {
+        self.is_integer() || self.is_float()
+    }
+
+    /// Returns `true` for signed integer types, including platform-sized
+    /// `isize`.
+    #[must_use]
+    pub fn is_signed_integer(&self) -> bool {
+        matches!(
+            self,
+            Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Isize
+        )
+    }
+
+    /// Returns `true` for unsigned integer types, including platform-sized
+    /// `usize`.
+    #[must_use]
+    pub fn is_unsigned_integer(&self) -> bool {
+        matches!(
+            self,
+            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::Usize
+        )
+    }
+
+    /// Checker-authoritative explicit `as` cast matrix after conversion to
+    /// `ResolvedTy`.
+    ///
+    /// This mirrors `hew-types/src/check/coerce.rs::cast_is_valid`: numeric
+    /// <-> numeric, `bool` -> integer, and integer -> `bool`. Everything else
+    /// stays fail-closed at HIR/MIR/codegen boundaries.
+    #[must_use]
+    pub fn can_explicitly_numeric_cast_to(&self, target: &Self) -> bool {
+        (self.is_numeric() && target.is_numeric())
+            || (*self == Self::Bool && target.is_integer())
+            || (self.is_integer() && *target == Self::Bool)
+    }
+
     /// Convert a checker-internal [`Ty`] into a boundary [`ResolvedTy`].
     ///
     /// This is the **single authorised conversion** from `Ty` to

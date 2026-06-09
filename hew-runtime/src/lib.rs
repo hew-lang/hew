@@ -568,8 +568,9 @@ pub use execution_context::{
 };
 
 // ── WASM entry point ─────────────────────────────────────────────────────────
-// Provides `_start` for WASI command modules. The compiler renames the user's
-// `main()` to `__original_main` when targeting WASM.
+// Provides `_start` for WASI command modules. The compiler keeps the
+// freestanding export as `main` and also defines `__original_main` for the
+// WASI runtime entry point.
 
 #[cfg(all(target_arch = "wasm32", not(test)))]
 extern "C" {
@@ -580,7 +581,7 @@ extern "C" {
 #[cfg(all(target_arch = "wasm32", not(test)))]
 #[no_mangle]
 pub extern "C" fn _start() {
-    // SAFETY: `__original_main` is always emitted by hew-codegen for every
+    // SAFETY: `__original_main` is emitted by hew-codegen for every WASI-linked
     // Hew program and has the signature `() -> i32`.
     let code = unsafe { __original_main() };
     if code != 0 {

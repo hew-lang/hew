@@ -41,8 +41,8 @@ git log --oneline -5  # confirm expected HEAD
    ```
    ### Changed
    
-   - **stdlib vec: `index_of` now returns `int`:** changed from `fn index_of(elem: T) -> Option<int>` 
-     to `fn index_of(elem: T) -> int` (returning `-1` if not found). Update call sites to 
+   - **stdlib vec: `index_of` now returns `i64`:** changed from `fn index_of(elem: T) -> Option<i64>` 
+     to `fn index_of(elem: T) -> i64` (returning `-1` if not found). Update call sites to 
      check `result < 0` instead of matching `Option`.
    ```
 

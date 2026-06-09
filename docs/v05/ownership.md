@@ -10,7 +10,7 @@ later, and the caller cannot observe changes inside the callee.
 
 Under the hood, Hew uses **copy-on-write (COW)** with atomic reference-counting so that
 physically distinct copies are only allocated when one side mutates the shared payload
-(similar to the Bytes mechanism, generalized to String, Vec, and other heap types in P2+).
+(similar to the `bytes` mechanism, generalized to `string`, `Vec`, and other heap types in P2+).
 The surface contract is pure value semantics — the COW mechanism is invisible.
 
 ## `&T` — immutable borrow marker
@@ -107,8 +107,8 @@ documented limitation for v0.5; a future lane will evaluate ORCA-style cycle col
 | Phase | Content |
 |-------|---------|
 | P0 (now) | `&T` surface syntax, fail-closed diagnostic for unresolved `.clone()`, value-semantics contract |
-| P1 | Layout-witness VWT defined and bound to `Bytes` |
-| P2 | COW refcount generalized to `String`/`Vec`/`Array`/`HashMap`/`HashSet`; `.clone()` wired |
+| P1 | Layout-witness VWT defined and bound to `bytes` |
+| P2 | COW refcount generalized to `string`/`Vec`/`Array`/`HashMap`/`HashSet`; `.clone()` wired |
 | P3 | Drop-site emission via VWT; MIR `build_lifo_drops` integration |
 | P4 | `std/`/`examples/` full migration; diagnostics polish |
 | P6 | `Linear`/`iso` zero-copy move fast path for provably-unique actor sends |

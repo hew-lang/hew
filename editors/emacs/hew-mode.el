@@ -74,7 +74,7 @@
     "try" "catch" "select" "join" "yield" "cooperate" "after" "from"
     "scope" "race" "defer" "foreign"
     "dyn" "unsafe" "extern" "package"
-    "pure" "as")
+    "as")
   "Hew language keywords.")
 
 (defconst hew-builtin-types

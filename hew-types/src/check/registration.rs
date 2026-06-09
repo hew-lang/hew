@@ -327,7 +327,7 @@ impl Checker {
             .map(str::to_string)
     }
 
-    fn register_rcfree_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
+    fn structural_member_types_for_type(type_def: &TypeDef) -> Vec<Ty> {
         let mut member_types: Vec<Ty> = type_def.fields.values().cloned().collect();
         for variant in type_def.variants.values() {
             match variant {
@@ -338,8 +338,19 @@ impl Checker {
                 }
             }
         }
+        member_types
+    }
+
+    fn register_rcfree_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
+        let member_types = Self::structural_member_types_for_type(type_def);
         self.registry
             .register_rcfree_members(type_name.to_string(), member_types);
+    }
+
+    fn register_serializable_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
+        let member_types = Self::structural_member_types_for_type(type_def);
+        self.registry
+            .register_serializable_type(type_name.to_string(), member_types);
     }
 
     #[expect(
@@ -1599,6 +1610,9 @@ impl Checker {
                 .all(|f| self.registry.implements_marker(f, MarkerTrait::Encode));
 
         self.registry.register_type(td.name.clone(), field_types);
+        if td.wire.is_some() || kind == TypeDefKind::Enum {
+            self.register_serializable_members_for_type(&td.name, &type_def);
+        }
         self.register_rcfree_members_for_type(&td.name, &type_def);
 
         self.type_defs.insert(td.name.clone(), type_def);
@@ -1718,10 +1732,13 @@ impl Checker {
         } else {
             tuple_field_types
         };
-        self.registry.register_type(rd.name.clone(), field_types);
+        self.registry
+            .register_type(rd.name.clone(), field_types.clone());
         // Mark this as a record type so implements_marker applies the correct
         // value-type semantics (Resource always false; all other markers field-driven).
         self.registry.register_record_type(rd.name.clone());
+        self.registry
+            .register_serializable_type(rd.name.clone(), field_types);
         self.register_rcfree_members_for_type(&rd.name, &type_def);
 
         self.type_defs.insert(rd.name.clone(), type_def);
@@ -1779,7 +1796,6 @@ impl Checker {
                     FnSig {
                         params,
                         return_type,
-                        is_pure: true,
                         ..FnSig::default()
                     },
                 );
@@ -1808,7 +1824,6 @@ impl Checker {
                 FnSig {
                     params,
                     return_type,
-                    is_pure: true,
                     ..FnSig::default()
                 },
             );
@@ -1845,7 +1860,6 @@ impl Checker {
                     method_name.to_string(),
                     FnSig {
                         return_type,
-                        is_pure: true,
                         ..FnSig::default()
                     },
                 );
@@ -1869,7 +1883,6 @@ impl Checker {
                 FnSig {
                     params,
                     return_type,
-                    is_pure: true,
                     ..FnSig::default()
                 },
             );
@@ -2090,7 +2103,6 @@ impl Checker {
                         type_params: type_param_names.clone(),
                         type_param_bounds: type_param_bounds.clone(),
                         return_type: machine_ty.clone(),
-                        is_pure: true,
                         ..FnSig::default()
                     },
                 );
@@ -2191,7 +2203,6 @@ impl Checker {
                 "state_name".to_string(),
                 FnSig {
                     return_type: Ty::String,
-                    is_pure: true,
                     ..FnSig::default()
                 },
             );
@@ -2842,11 +2853,13 @@ impl Checker {
             // transition body see `T: Resource` and recognise `T` as
             // satisfying its bound. Pops at the end of this iteration's
             // body block.
-            let machine_bounds_scope = self.collect_type_param_scope_with_bounds(
+            let mut machine_scope_holes = Vec::new();
+            let machine_bounds_scope = self.collect_type_param_scope_with_assoc_bindings(
                 Some(&md.type_params),
                 md.where_clause.as_ref(),
+                &mut machine_scope_holes,
             );
-            let pushed_machine_bounds = !machine_bounds_scope.is_empty();
+            let pushed_machine_bounds = !machine_bounds_scope.bounds.is_empty();
             if pushed_machine_bounds {
                 self.current_type_param_bounds.push(machine_bounds_scope);
             }
@@ -2957,11 +2970,13 @@ impl Checker {
 
             // Push generic-param bounds so that type-param-bound resolution
             // inside a lifecycle block mirrors what transition bodies see.
-            let machine_bounds_scope = self.collect_type_param_scope_with_bounds(
+            let mut machine_scope_holes = Vec::new();
+            let machine_bounds_scope = self.collect_type_param_scope_with_assoc_bindings(
                 Some(&md.type_params),
                 md.where_clause.as_ref(),
+                &mut machine_scope_holes,
             );
-            let pushed_machine_bounds = !machine_bounds_scope.is_empty();
+            let pushed_machine_bounds = !machine_bounds_scope.bounds.is_empty();
             if pushed_machine_bounds {
                 self.current_type_param_bounds.push(machine_bounds_scope);
             }
@@ -3170,6 +3185,7 @@ impl Checker {
 
         let field_types: Vec<_> = type_def.fields.values().cloned().collect();
         self.registry.register_type(wd.name.clone(), field_types);
+        self.register_serializable_members_for_type(&wd.name, &type_def);
         self.register_rcfree_members_for_type(&wd.name, &type_def);
 
         self.type_defs.insert(wd.name.clone(), type_def);
@@ -3345,11 +3361,13 @@ impl Checker {
             span,
         );
         let entries = self.build_impl_alias_entries(id);
-        let impl_bounds_map = self.collect_type_param_scope_with_bounds(
+        let mut impl_scope_holes = Vec::new();
+        let impl_bounds_map = self.collect_type_param_scope_with_assoc_bindings(
             id.type_params.as_ref(),
             id.where_clause.as_ref(),
+            &mut impl_scope_holes,
         );
-        let pushed_impl_bounds = !impl_bounds_map.is_empty();
+        let pushed_impl_bounds = !impl_bounds_map.bounds.is_empty();
         if pushed_impl_bounds {
             self.current_type_param_bounds.push(impl_bounds_map);
         }
@@ -3817,7 +3835,6 @@ impl Checker {
                                     param_names: param_names.clone(),
                                     params: params.clone(),
                                     return_type: return_type.clone(),
-                                    is_pure: m.is_pure,
                                     ..FnSig::default()
                                 };
                                 self.fn_sigs.insert(method_key, sig);
@@ -3828,7 +3845,6 @@ impl Checker {
                                             param_names,
                                             params,
                                             return_type,
-                                            is_pure: m.is_pure,
                                             ..FnSig::default()
                                         },
                                     );
@@ -3882,7 +3898,6 @@ impl Checker {
                                     params,
                                     return_type,
                                     is_async,
-                                    is_pure: method.is_pure,
                                     ..FnSig::default()
                                 },
                             );
@@ -3946,7 +3961,6 @@ impl Checker {
                 is_async: false,
                 is_generator: false,
                 visibility: hew_parser::ast::Visibility::Private,
-                is_pure: method.is_pure,
                 name: method.name.clone(),
                 type_params: method.type_params.clone(),
                 params: method.params.clone(),
@@ -3963,6 +3977,28 @@ impl Checker {
             },
         );
         self.current_trait_for_self_projection = prev_trait_self;
+    }
+
+    /// Collect the full resolver scope for declared type params: trait-bound
+    /// names plus any associated-type bindings attached to those bounds.
+    pub(super) fn collect_type_param_scope_with_assoc_bindings(
+        &mut self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+        hole_vars: &mut Vec<TypeVar>,
+    ) -> TypeParamScope {
+        let bounds = self.collect_type_param_scope_with_bounds(type_params, where_clause);
+        let pushed_bounds_for_assoc = !bounds.is_empty();
+        if pushed_bounds_for_assoc {
+            self.current_type_param_bounds
+                .push(TypeParamScope::new(bounds.clone(), HashMap::new()));
+        }
+        let assoc_bindings =
+            self.collect_type_param_assoc_bindings(type_params, where_clause, hole_vars);
+        if pushed_bounds_for_assoc {
+            self.current_type_param_bounds.pop();
+        }
+        TypeParamScope::new(bounds, assoc_bindings)
     }
 
     /// Like `collect_type_param_bounds` but always includes a key for every
@@ -4038,6 +4074,69 @@ impl Checker {
     pub(super) fn push_unique_bound(entry: &mut Vec<String>, bound: &str) {
         if !entry.iter().any(|b| b == bound) {
             entry.push(bound.to_string());
+        }
+    }
+
+    pub(super) fn collect_type_param_assoc_bindings(
+        &mut self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+        hole_vars: &mut Vec<TypeVar>,
+    ) -> HashMap<(String, String, String), Ty> {
+        let mut bindings = HashMap::new();
+        let mut declared = HashSet::new();
+        if let Some(params) = type_params {
+            for param in params {
+                declared.insert(param.name.clone());
+                for bound in &param.bounds {
+                    self.collect_type_param_bound_assoc_bindings(
+                        &param.name,
+                        bound,
+                        &mut bindings,
+                        hole_vars,
+                    );
+                }
+            }
+        }
+        if let Some(wc) = where_clause {
+            for predicate in &wc.predicates {
+                if let TypeExpr::Named { name, type_args } = &predicate.ty.0 {
+                    if !declared.contains(name) {
+                        continue;
+                    }
+                    if type_args.as_ref().is_some_and(|args| !args.is_empty()) {
+                        continue;
+                    }
+                    for bound in &predicate.bounds {
+                        self.collect_type_param_bound_assoc_bindings(
+                            name,
+                            bound,
+                            &mut bindings,
+                            hole_vars,
+                        );
+                    }
+                }
+            }
+        }
+        bindings
+    }
+
+    fn collect_type_param_bound_assoc_bindings(
+        &mut self,
+        param_name: &str,
+        bound: &TraitBound,
+        bindings: &mut HashMap<(String, String, String), Ty>,
+        hole_vars: &mut Vec<TypeVar>,
+    ) {
+        for binding in &bound.assoc_type_bindings {
+            let key = (
+                param_name.to_string(),
+                bound.name.clone(),
+                binding.name.clone(),
+            );
+            bindings
+                .entry(key)
+                .or_insert_with(|| self.resolve_registered_annotation_ty(&binding.ty, hole_vars));
         }
     }
 
@@ -4176,15 +4275,16 @@ impl Checker {
         // param/return types. Includes type params with no bounds so the
         // resolver can distinguish "in scope with no bounds" (emit
         // missing-bound diagnostic) from "not in scope" (fall through).
-        let fn_bounds = self.collect_type_param_scope_with_bounds(
+        let mut hole_vars = Vec::new();
+        let fn_scope = self.collect_type_param_scope_with_assoc_bindings(
             fd.type_params.as_ref(),
             fd.where_clause.as_ref(),
+            &mut hole_vars,
         );
-        let pushed_bounds = !fn_bounds.is_empty();
+        let pushed_bounds = !fn_scope.bounds.is_empty();
         if pushed_bounds {
-            self.current_type_param_bounds.push(fn_bounds);
+            self.current_type_param_bounds.push(fn_scope.clone());
         }
-        let mut hole_vars = Vec::new();
         let param_names = fd
             .params
             .iter()
@@ -4212,6 +4312,7 @@ impl Checker {
             declared_return
         };
 
+        let fn_assoc_bindings = fn_scope.assoc_bindings;
         let sig = FnSig {
             type_params: fd.type_params.as_ref().map_or(vec![], |params| {
                 params.iter().map(|p| p.name.clone()).collect()
@@ -4222,7 +4323,6 @@ impl Checker {
             params,
             return_type,
             is_async: fd.is_async,
-            is_pure: fd.is_pure,
             doc_comment: fd.doc_comment.clone(),
             extern_symbol: self.ingest_extern_symbol_attrs(&fd.attributes),
             // Receiver mutability flag — see `FnSig::requires_mutable_receiver`.
@@ -4240,6 +4340,8 @@ impl Checker {
         let key = scoped_module_item_name(self.current_module.as_deref(), name)
             .unwrap_or_else(|| name.to_string());
         self.fn_sigs.insert(key.clone(), sig);
+        self.fn_type_param_assoc_bindings
+            .insert(key.clone(), fn_assoc_bindings);
         self.record_fn_sig_inference_holes(&key, hole_vars);
         // If the declaration carries `#[intrinsic("name")]`, validate its
         // placement and (if accepted) record the mapping so HIR lowering can
@@ -4398,9 +4500,13 @@ impl Checker {
         // Push impl-level bounds onto the resolver's stack so the method
         // signature can reference `T::Bar` where `T` is an impl type param
         // (e.g. `impl<I: Iterator> Foo for X { fn next() -> I::Item }`).
-        let impl_bounds_map =
-            self.collect_type_param_scope_with_bounds(impl_type_params, impl_where_clause);
-        let pushed_impl_bounds = !impl_bounds_map.is_empty();
+        let mut impl_scope_holes = Vec::new();
+        let impl_bounds_map = self.collect_type_param_scope_with_assoc_bindings(
+            impl_type_params,
+            impl_where_clause,
+            &mut impl_scope_holes,
+        );
+        let pushed_impl_bounds = !impl_bounds_map.bounds.is_empty();
         if pushed_impl_bounds {
             self.current_type_param_bounds.push(impl_bounds_map);
         }
@@ -4414,7 +4520,14 @@ impl Checker {
         // so `type_param_carries_bound` would otherwise miss impl-level bounds
         // such as `T: Display` in `impl<T: Display> Holder<T>`.
         if let Some(impl_tps) = impl_type_params {
-            let impl_bounds = self.collect_type_param_bounds(impl_type_params, impl_where_clause);
+            let mut impl_scope_holes = Vec::new();
+            let impl_scope = self.collect_type_param_scope_with_assoc_bindings(
+                impl_type_params,
+                impl_where_clause,
+                &mut impl_scope_holes,
+            );
+            let impl_bounds = impl_scope.bounds;
+            let impl_assoc_bindings = impl_scope.assoc_bindings;
             let key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
                 .unwrap_or_else(|| method_key.clone());
             if let Some(sig) = self.fn_sigs.get_mut(&key) {
@@ -4430,11 +4543,19 @@ impl Checker {
                     }
                 }
             }
+            let bindings = self.fn_type_param_assoc_bindings.entry(key).or_default();
+            for (assoc_key, ty) in impl_assoc_bindings {
+                bindings.entry(assoc_key).or_insert(ty);
+            }
         }
 
-        let impl_bounds_map =
-            self.collect_type_param_scope_with_bounds(impl_type_params, impl_where_clause);
-        let pushed_impl_bounds = !impl_bounds_map.is_empty();
+        let mut impl_scope_holes = Vec::new();
+        let impl_bounds_map = self.collect_type_param_scope_with_assoc_bindings(
+            impl_type_params,
+            impl_where_clause,
+            &mut impl_scope_holes,
+        );
+        let pushed_impl_bounds = !impl_bounds_map.bounds.is_empty();
         if pushed_impl_bounds {
             self.current_type_param_bounds.push(impl_bounds_map);
         }
@@ -4495,7 +4616,6 @@ impl Checker {
                 Self::push_unique_bound(entry, &bound);
             }
         }
-
         // Re-use the structured `extern_symbol` already parsed by
         // `register_fn_sig_with_name` above. Re-parsing the attribute
         // here would emit duplicate `InvalidExternSymbolTemplate`
@@ -4516,7 +4636,6 @@ impl Checker {
             params,
             return_type,
             is_async: method.is_async,
-            is_pure: method.is_pure,
             extern_symbol,
             // Mirror `register_fn_sig_with_name`'s computation so that
             // `lookup_named_method_sig` (which prefers `td.methods` before
@@ -5021,16 +5140,17 @@ impl Checker {
             self.generic_ctx.push(generic_bindings);
         }
 
-        let rf_scope = self.collect_type_param_scope_with_bounds(
+        let mut hole_vars = Vec::new();
+        let rf_scope = self.collect_type_param_scope_with_assoc_bindings(
             rf.type_params.as_ref(),
             rf.where_clause.as_ref(),
+            &mut hole_vars,
         );
-        let pushed_rf_bounds = !rf_scope.is_empty();
+        let pushed_rf_bounds = !rf_scope.bounds.is_empty();
         if pushed_rf_bounds {
-            self.current_type_param_bounds.push(rf_scope);
+            self.current_type_param_bounds.push(rf_scope.clone());
         }
 
-        let mut hole_vars = Vec::new();
         let param_names = rf.params.iter().map(|p| p.name.clone()).collect();
         let params = rf
             .params
@@ -5063,7 +5183,6 @@ impl Checker {
             param_names,
             params,
             return_type,
-            is_pure: rf.is_pure,
             ..FnSig::default()
         };
 
@@ -5073,6 +5192,8 @@ impl Checker {
         }
         self.actor_receive_methods.insert(method_name.clone());
         self.record_fn_sig_inference_holes(&method_name, hole_vars);
+        self.fn_type_param_assoc_bindings
+            .insert(method_name.clone(), rf_scope.assoc_bindings);
         self.fn_sigs.insert(method_name, sig);
     }
 
@@ -5576,8 +5697,10 @@ impl Checker {
                     }
                     let qualified = format!("{module_short}.{}", fd.name);
                     if !self.fn_sigs.contains_key(&qualified) {
-                        let sig = self.build_fn_sig_from_decl(fd);
+                        let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                         self.module_fn_exports.insert(qualified.clone());
+                        self.fn_type_param_assoc_bindings
+                            .insert(qualified.clone(), assoc_bindings);
                         self.fn_sigs.insert(qualified, sig);
                     }
                 }
@@ -5700,7 +5823,9 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    let sig = self.build_fn_sig_from_decl(fd);
+                    let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
+                    self.fn_type_param_assoc_bindings
+                        .insert(fd.name.clone(), assoc_bindings);
                     self.fn_sigs.insert(fd.name.clone(), sig);
                 }
                 Item::Const(cd) => {
@@ -5943,15 +6068,19 @@ impl Checker {
                         continue;
                     }
 
-                    let sig = self.build_fn_sig_from_decl(fd);
+                    let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                     let qualified = format!("{module_short}.{}", fd.name);
                     self.module_fn_exports.insert(qualified.clone());
+                    self.fn_type_param_assoc_bindings
+                        .insert(qualified.clone(), assoc_bindings.clone());
                     self.fn_sigs.insert(qualified, sig.clone());
 
                     // If named import or glob, also register unqualified (using alias if present)
                     if Self::should_import_name(&fd.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &fd.name)
                             .unwrap_or_else(|| fd.name.clone());
+                        self.fn_type_param_assoc_bindings
+                            .insert(binding_name.clone(), assoc_bindings);
                         self.fn_sigs.insert(binding_name.clone(), sig);
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), binding_name),
@@ -6118,21 +6247,35 @@ impl Checker {
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).
-    pub(super) fn build_fn_sig_from_decl(&mut self, fd: &FnDecl) -> FnSig {
+    pub(super) fn build_fn_sig_from_decl_with_assoc(
+        &mut self,
+        fd: &FnDecl,
+    ) -> (FnSig, HashMap<(String, String, String), Ty>) {
+        let mut hole_vars = Vec::new();
+        let scope = self.collect_type_param_scope_with_assoc_bindings(
+            fd.type_params.as_ref(),
+            fd.where_clause.as_ref(),
+            &mut hole_vars,
+        );
+        let pushed_bounds = !scope.bounds.is_empty();
+        if pushed_bounds {
+            self.current_type_param_bounds.push(scope.clone());
+        }
         let param_names = fd.params.iter().map(|p| p.name.clone()).collect();
         let params = fd
             .params
             .iter()
-            .map(|p| self.resolve_registered_annotation_ty_no_holes(&p.ty))
+            .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
             .collect();
         let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
-            self.resolve_registered_annotation_ty_no_holes(ret)
+            self.resolve_registered_annotation_ty(ret, &mut hole_vars)
         });
+        if pushed_bounds {
+            self.current_type_param_bounds.pop();
+        }
         let type_params = fd.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
-        let type_param_bounds =
-            self.collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref());
         let return_type = if fd.is_generator && fd.is_async {
             Ty::async_generator(declared_return)
         } else if fd.is_generator {
@@ -6140,17 +6283,19 @@ impl Checker {
         } else {
             declared_return
         };
-        FnSig {
+        let assoc_bindings = scope.assoc_bindings;
+        let sig = FnSig {
             type_params,
-            type_param_bounds,
+            type_param_bounds: self
+                .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
             param_names,
             params,
             return_type,
             is_async: fd.is_async,
-            is_pure: fd.is_pure,
             doc_comment: fd.doc_comment.clone(),
             ..FnSig::default()
-        }
+        };
+        (sig, assoc_bindings)
     }
 
     /// Register an actor's core items: the type declaration, receive functions,

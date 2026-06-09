@@ -104,12 +104,10 @@ fn fmt_generic_function_with_bounds() {
 }
 
 #[test]
-fn fmt_pure_function() {
-    let src = r"pure fn checksum(x: i32) -> i32 {
-    x
-}";
+fn fmt_mutable_self_receiver_preserves_var() {
+    let src = "impl Counter {\n    fn next(var self) -> i64 {\n        1\n    }\n}\n";
     let out = roundtrip(src);
-    assert!(out.contains("pure fn checksum"), "output: {out}");
+    assert!(out.contains("fn next(var self) -> i64"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------
@@ -603,15 +601,15 @@ fn fmt_actor_on_stop_and_receive_attributes_roundtrip() {
 }
 
 #[test]
-fn fmt_actor_pure_method_without_preamble() {
+fn fmt_actor_method_without_preamble() {
     let src = r"actor Counter {
-    pure fn current() -> i32 {
+    fn current() -> i32 {
         0
     }
 }";
     let out = roundtrip(src);
     assert!(
-        out.contains("actor Counter {\n    pure fn current() -> i32 {"),
+        out.contains("actor Counter {\n    fn current() -> i32 {"),
         "output: {out}"
     );
 }

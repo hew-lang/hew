@@ -1109,20 +1109,16 @@ fn span_contains_offset(span: &Span, offset: usize) -> bool {
     span.is_empty() || (span.start <= offset && offset <= span.end)
 }
 
-/// Format a bare function signature line: `[pure] [async] fn name(params)[-> ret]`.
+/// Format a bare function signature line: `[async] fn name(params)[-> ret]`.
 #[must_use]
 pub fn format_fn_sig_line(name: &str, params: &[String], sig: &FnSig) -> String {
-    let pure_prefix = if sig.is_pure { "pure " } else { "" };
     let async_prefix = if sig.is_async { "async " } else { "" };
     let ret = if sig.return_type == Ty::Unit {
         String::new()
     } else {
         format!(" -> {}", sig.return_type.user_facing())
     };
-    format!(
-        "{pure_prefix}{async_prefix}fn {name}({}){ret}",
-        params.join(", ")
-    )
+    format!("{async_prefix}fn {name}({}){ret}", params.join(", "))
 }
 
 /// Format a function signature in a markdown code block for hover display.
@@ -1307,14 +1303,6 @@ mod tests {
         sig.is_async = true;
         let line = format_fn_sig_line("fetch", &[], &sig);
         assert!(line.starts_with("async fn fetch"));
-    }
-
-    #[test]
-    fn format_sig_line_pure() {
-        let mut sig = make_fn_sig(vec![], vec![], Ty::I32);
-        sig.is_pure = true;
-        let line = format_fn_sig_line("compute", &[], &sig);
-        assert!(line.starts_with("pure fn compute"));
     }
 
     #[test]

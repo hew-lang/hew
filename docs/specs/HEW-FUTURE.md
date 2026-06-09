@@ -176,7 +176,7 @@ Cluster 6's stdlib port-forward.
 
 **[Target: v0.6 / Cluster 6]**
 
-Edition 2026 admits `HashMap<String, V>` for a fixed set of `V`. Generic
+Edition 2026 admits `HashMap<string, V>` for a fixed set of `V`. Generic
 key types and the full hash/equality protocol land with the stdlib port
 in Cluster 6.
 

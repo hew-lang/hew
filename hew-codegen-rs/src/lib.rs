@@ -17,7 +17,8 @@
 //!
 //! ## Public surface
 //!
-//! - [`emit_module`] — emit native + wasm artefacts for an `IrPipeline`.
+//! - [`emit_module`] — emit native + freestanding wasm artefacts for an `IrPipeline`.
+//! - [`emit_module_objects`] — emit IR/object artefacts without freestanding wasm linking.
 //! - [`validate_codegen_front`] — in-process build + LLVM-verify without any
 //!   artefact emission.
 //! - [`verify_pipeline`] — compatibility alias for [`validate_codegen_front`].
@@ -28,5 +29,6 @@
 pub mod llvm;
 
 pub use llvm::{
-    emit_module, validate_codegen_front, verify_pipeline, CodegenError, EmitArtefacts, EmitOptions,
+    emit_module, emit_module_objects, validate_codegen_front, verify_pipeline, CodegenError,
+    EmitArtefacts, EmitOptions,
 };

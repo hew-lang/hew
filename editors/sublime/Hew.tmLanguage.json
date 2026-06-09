@@ -293,7 +293,7 @@
         {
           "comment": "Other keywords",
           "name": "keyword.other.hew",
-          "match": "\\b(dyn|pure|unsafe)\\b"
+          "match": "\\b(dyn|unsafe)\\b"
         },
         {
           "comment": "Boolean literals",
@@ -549,8 +549,8 @@
     "function-definitions": {
       "patterns": [
         {
-          "comment": "Generator function definition (gen fn, async gen fn, receive gen fn, pure gen fn)",
-          "match": "\\b((?:pure\\s+)?(?:receive\\s+)?(?:async\\s+)?gen)\\s+(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "comment": "Generator function definition (gen fn, async gen fn, receive gen fn)",
+          "match": "\\b((?:receive\\s+)?(?:async\\s+)?gen)\\s+(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
           "captures": {
             "1": {
               "name": "keyword.declaration.hew"
@@ -564,8 +564,8 @@
           }
         },
         {
-          "comment": "Receive fn definition (optionally pure)",
-          "match": "\\b((?:pure\\s+)?receive)\\s+(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "comment": "Receive fn definition",
+          "match": "\\b(receive)\\s+(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
           "captures": {
             "1": {
               "name": "keyword.actor.hew"
@@ -591,8 +591,8 @@
           }
         },
         {
-          "comment": "Function definition (optionally pure)",
-          "match": "\\b((?:pure\\s+)?fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "comment": "Function definition",
+          "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
           "captures": {
             "1": {
               "name": "keyword.declaration.hew"

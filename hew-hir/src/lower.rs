@@ -20,11 +20,12 @@ use hew_parser::ast::{
     StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl,
     TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
 };
+use hew_types::BuiltinType;
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildKind, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, LoweringFact,
-    MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily, NumericMethodLowering,
-    PatternKind, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
+    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, ImplId,
+    LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
+    NumericMethodLowering, PatternKind, ResolvedTy, SpanKey, Ty, TyPattern, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -146,12 +147,13 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
     }
 }
 
-fn stage2_literal_match_supported(lit: &HirLiteral, ty: &ResolvedTy) -> bool {
+fn literal_match_supported(lit: &HirLiteral, ty: &ResolvedTy) -> bool {
     matches!(
         (lit, ty),
         (HirLiteral::Integer(_), ResolvedTy::I64)
             | (HirLiteral::Bool(_), ResolvedTy::Bool)
             | (HirLiteral::Char(_), ResolvedTy::Char)
+            | (HirLiteral::String(_), ResolvedTy::String)
     )
 }
 
@@ -193,6 +195,8 @@ const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
 /// `machine_ctor_registry`. Variant order matches `hew-codegen-rs/src/llvm.rs`:
 /// Full=0, Closed=1, NodeRoutingNotWired=2.
 const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
+const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
+const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 
 /// Synthetic-builtin sentinel `ItemId`s for the actor `link(target)` /
 /// `monitor(target)` builtins. These have no AST `fn` item, so
@@ -599,6 +603,74 @@ fn render_type_expr(ty: &TypeExpr) -> String {
     }
 }
 
+fn builtin_vec_iterator_program() -> Option<Program> {
+    let parsed = hew_parser::parse(BUILTINS_HEW_SOURCE);
+    debug_assert!(
+        parsed.errors.is_empty(),
+        "std/builtins.hew failed to parse: {:?}",
+        parsed.errors
+    );
+    if !parsed.errors.is_empty() {
+        return None;
+    }
+    let items = parsed
+        .program
+        .items
+        .into_iter()
+        .filter(|(item, _)| {
+            matches!(
+                item,
+                Item::Trait(tr) if tr.name == "Iterator" || tr.name == "IntoIterator"
+            ) || matches!(item, Item::TypeDecl(td) if td.name == "VecIter")
+                || is_builtin_vec_iterator_impl(item)
+        })
+        .collect();
+    Some(Program {
+        items,
+        module_doc: None,
+        module_graph: None,
+    })
+}
+
+fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
+    let Item::Impl(impl_decl) = item else {
+        return false;
+    };
+    let Some(trait_name) = impl_decl
+        .trait_bound
+        .as_ref()
+        .map(|bound| bound.name.as_str())
+    else {
+        return false;
+    };
+    let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
+        return false;
+    };
+    matches!(
+        (trait_name, name.as_str()),
+        ("Iterator", "VecIter") | ("IntoIterator", "Vec")
+    )
+}
+
+fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
+    decl.type_params
+        .as_ref()
+        .map(|params| params.iter().map(|param| param.name.clone()).collect())
+        .unwrap_or_default()
+}
+
+fn check_builtin_vec_iterator_program(program: &Program) -> TypeCheckOutput {
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
+    let output = checker.check_program(program);
+    debug_assert!(
+        output.errors.is_empty(),
+        "std/builtins.hew Vec iterator impls failed to type-check: {:?}",
+        output.errors
+    );
+    output
+}
+
 #[must_use]
 pub fn lower_program(
     program: &Program,
@@ -646,6 +718,10 @@ pub fn lower_program_with_mono_cap(
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
     ctx.seed_stdlib_fn_registry();
+    let builtin_vec_iterator_program = builtin_vec_iterator_program();
+    let builtin_vec_iterator_output = builtin_vec_iterator_program
+        .as_ref()
+        .map(check_builtin_vec_iterator_program);
 
     // Pre-pre-pass: harvest inherent-impl `close` method signatures from
     // the root program so the type-decl pre-pass below can broaden the
@@ -654,6 +730,8 @@ pub fn lower_program_with_mono_cap(
     // [`collect_inherent_impl_close_methods`] for the precise contract
     // (W3.030 Q-α-B + Q-β-C ratifications).
     ctx.impl_close_methods = collect_inherent_impl_close_methods(&program.items);
+
+    let mut builtin_vec_iterator_method_symbols: HashSet<String> = HashSet::new();
 
     // First pass: collect all function signatures so that forward and mutual
     // references in call expressions resolve to the correct return type.
@@ -683,11 +761,9 @@ pub fn lower_program_with_mono_cap(
                     if impl_decl.where_clause.is_none()
                         || classify_unsupported_where_clause(impl_decl).is_none()
                     {
+                        let impl_type_params = impl_type_param_names(impl_decl);
                         for method in &impl_decl.methods {
-                            ctx.register_fn_entry(
-                                &crate::node::HirImplBlock::method_symbol(name, &method.name),
-                                method,
-                            );
+                            ctx.register_impl_method_fn_entry(name, method, &impl_type_params);
                         }
                     }
                 }
@@ -814,16 +890,15 @@ pub fn lower_program_with_mono_cap(
                                 if impl_decl.where_clause.is_none()
                                     || classify_unsupported_where_clause(impl_decl).is_none()
                                 {
+                                    let impl_type_params = impl_type_param_names(impl_decl);
                                     for method in &impl_decl.methods {
                                         if !method.visibility.is_pub() {
                                             continue;
                                         }
-                                        ctx.register_fn_entry(
-                                            &crate::node::HirImplBlock::method_symbol(
-                                                name,
-                                                &method.name,
-                                            ),
+                                        ctx.register_impl_method_fn_entry(
+                                            name,
                                             method,
+                                            &impl_type_params,
                                         );
                                     }
                                 }
@@ -1657,6 +1732,37 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
+    // Register std Vec iterator impl methods only after all user item IDs have
+    // been preallocated. This makes the builtin impls visible to source-body
+    // lowering without perturbing stable user `ItemId`s.
+    if let Some(program) = &builtin_vec_iterator_program {
+        for (item, _) in &program.items {
+            if let Item::Impl(impl_decl) = item {
+                if !is_builtin_vec_iterator_impl(item) {
+                    continue;
+                }
+                if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                    let method_symbols: Vec<String> = impl_decl
+                        .methods
+                        .iter()
+                        .map(|method| crate::node::HirImplBlock::method_symbol(name, &method.name))
+                        .collect();
+                    if method_symbols
+                        .iter()
+                        .any(|symbol| ctx.fn_registry.contains_key(symbol))
+                    {
+                        continue;
+                    }
+                    let impl_type_params = impl_type_param_names(impl_decl);
+                    for method in &impl_decl.methods {
+                        ctx.register_impl_method_fn_entry(name, method, &impl_type_params);
+                    }
+                    builtin_vec_iterator_method_symbols.extend(method_symbols);
+                }
+            }
+        }
+    }
+
     // Third pass: emit all items in source order now that both fn signatures
     // and type markers are fully resolved.
     let mut items: Vec<HirItem> = Vec::new();
@@ -2043,19 +2149,72 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
+    // Inject the std Vec iterator impls through the same lowering path as user
+    // impls so the static-dispatch index sees them. Keep them after source
+    // items to avoid changing user-item ordering guarantees.
+    if let (Some(program), Some(output)) =
+        (&builtin_vec_iterator_program, &builtin_vec_iterator_output)
+    {
+        let item_start = items.len();
+        ctx.with_typecheck_facts(output, |ctx| {
+            let saved_some = ctx
+                .machine_ctor_registry
+                .insert("Some".to_string(), ("Option".to_string(), 0));
+            let saved_none = ctx
+                .machine_ctor_registry
+                .insert("None".to_string(), ("Option".to_string(), 1));
+            for (item, span) in &program.items {
+                if let Item::Impl(impl_decl) = item {
+                    if is_builtin_vec_iterator_impl(item) {
+                        let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
+                            continue;
+                        };
+                        let registered = impl_decl.methods.iter().all(|method| {
+                            builtin_vec_iterator_method_symbols.contains(
+                                &crate::node::HirImplBlock::method_symbol(name, &method.name),
+                            )
+                        });
+                        if !registered {
+                            continue;
+                        }
+                        ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false);
+                    }
+                }
+            }
+            if let Some(previous) = saved_some {
+                ctx.machine_ctor_registry
+                    .insert("Some".to_string(), previous);
+            } else {
+                ctx.machine_ctor_registry.remove("Some");
+            }
+            if let Some(previous) = saved_none {
+                ctx.machine_ctor_registry
+                    .insert("None".to_string(), previous);
+            } else {
+                ctx.machine_ctor_registry.remove("None");
+            }
+        });
+        record_source_modules_for_items(
+            &items[item_start..],
+            "std.builtins",
+            &mut diagnostic_source_modules,
+        );
+    }
+
     // Monomorphic builtin enums (e.g. `LookupError`) intentionally do NOT
     // appear in `items` here. Their declarations live in
     // `std/builtins.hew` and their tagged-union layout is registered
     // out-of-band into MIR via
     // `hew-mir::register_builtin_monomorphic_enum_layouts`, which reads
     // the catalog in `hew_types::builtin_enums::monomorphic_builtin_enums`.
-    // This keeps `HirProgram::items` a faithful mirror of user source —
-    // an earlier prototype injected a synthetic `HirItem::TypeDecl` here
-    // for every monomorphic builtin enum and leaked the type into the
-    // downstream sandbox-VM bytecode descriptor table of every program,
-    // including ones that never referenced `Node::lookup`. Generic
-    // builtin enums (`Option`, `Result`) continue to flow through
-    // `EnumLayoutRegistry` per-instantiation (see below).
+    // Aside from the explicit Vec iterator impl harness entries above, this
+    // keeps `HirProgram::items` a faithful mirror of user source — an earlier
+    // prototype injected a synthetic `HirItem::TypeDecl` here for every
+    // monomorphic builtin enum and leaked the type into the downstream
+    // sandbox-VM bytecode descriptor table of every program, including ones
+    // that never referenced `Node::lookup`. Generic builtin enums (`Option`,
+    // `Result`) continue to flow through `EnumLayoutRegistry` per-instantiation
+    // (see below).
 
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
@@ -2508,6 +2667,9 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(right, out, trait_out);
         }
         HirExprKind::Unary { operand, .. } => collect_call_sites_in_expr(operand, out, trait_out),
+        HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_call_sites_in_expr(value, out, trait_out);
+        }
         HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_call_sites_in_expr(elem, out, trait_out);
@@ -2602,9 +2764,6 @@ fn collect_call_sites_in_expr(
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
             collect_call_sites_in_expr(arg, out, trait_out);
-        }
-        HirExprKind::CoerceToDynTrait { value, .. } => {
-            collect_call_sites_in_expr(value, out, trait_out);
         }
         HirExprKind::MachineEmit { fields, .. } => {
             for (_, e) in fields {
@@ -3282,6 +3441,51 @@ impl LowerCtx {
             target_arch,
             current_impl_self_ty: None,
         }
+    }
+
+    fn with_typecheck_facts<T>(
+        &mut self,
+        tc_output: &TypeCheckOutput,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let saved = (
+            std::mem::replace(
+                &mut self.method_call_rewrites,
+                tc_output.method_call_rewrites.clone(),
+            ),
+            std::mem::replace(
+                &mut self.numeric_method_lowerings,
+                tc_output.numeric_method_lowerings.clone(),
+            ),
+            std::mem::take(&mut self.actor_method_dispatch),
+            std::mem::take(&mut self.machine_method_dispatch),
+            std::mem::take(&mut self.method_call_receiver_kinds),
+            std::mem::take(&mut self.dyn_trait_coercions),
+            std::mem::take(&mut self.dyn_trait_method_calls),
+            std::mem::replace(&mut self.resolved_calls, tc_output.resolved_calls.clone()),
+            std::mem::replace(&mut self.expr_types, tc_output.expr_types.clone()),
+            std::mem::replace(
+                &mut self.resolved_expr_types,
+                tc_output.resolved_expr_types.clone(),
+            ),
+        );
+
+        let result = f(self);
+
+        (
+            self.method_call_rewrites,
+            self.numeric_method_lowerings,
+            self.actor_method_dispatch,
+            self.machine_method_dispatch,
+            self.method_call_receiver_kinds,
+            self.dyn_trait_coercions,
+            self.dyn_trait_method_calls,
+            self.resolved_calls,
+            self.expr_types,
+            self.resolved_expr_types,
+        ) = saved;
+
+        result
     }
 
     fn with_current_return_type<T>(
@@ -4244,6 +4448,27 @@ impl LowerCtx {
                 type_params,
             },
         );
+    }
+
+    fn register_impl_method_fn_entry(
+        &mut self,
+        self_type_name: &str,
+        method: &FnDecl,
+        impl_type_params: &[String],
+    ) {
+        let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
+        self.register_fn_entry(&symbol, method);
+        if impl_type_params.is_empty() {
+            return;
+        }
+        if let Some(entry) = self.fn_registry.get_mut(&symbol) {
+            let method_type_params = std::mem::take(&mut entry.type_params);
+            entry
+                .type_params
+                .reserve(impl_type_params.len() + method_type_params.len());
+            entry.type_params.extend(impl_type_params.iter().cloned());
+            entry.type_params.extend(method_type_params);
+        }
     }
 
     /// Register an `extern "..." { fn ...; }` declaration in `fn_registry`
@@ -6432,6 +6657,30 @@ impl LowerCtx {
         vec![self.lower_stmt(stmt, span, return_ty)]
     }
 
+    fn lower_expression_stmt_kind(&mut self, expr: &Spanned<Expr>) -> HirStmtKind {
+        // Inside a scope{} body, statement-expression calls are child-task
+        // spawns (TI-1). Outside scope{} bodies all calls are synchronous
+        // (TI-3). The TI-1 rewrite only applies when the expression is a
+        // direct call — nested calls inside sub-expressions remain sync.
+        //
+        // Mark this as statement position before lowering so that
+        // `lower_expr`'s `Expr::Await` arm can enforce TI-4 (await is
+        // only legal in statement-expression position, not as a
+        // sub-expression). The flag is consumed by `mem::replace` at the
+        // top of `lower_expr`, so recursive calls see `false`.
+        self.statement_position = true;
+        if self.scope_depth > 0 {
+            if let Expr::Call { .. } = &expr.0 {
+                let spawned = self.lower_spawned_call(expr);
+                HirStmtKind::Expr(spawned)
+            } else {
+                HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read))
+            }
+        } else {
+            HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read))
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single large match on stmt variants; splitting would hurt readability"
@@ -6470,6 +6719,13 @@ impl LowerCtx {
                             span,
                         };
                     }
+                }
+                if let (Pattern::Wildcard, Some(value_expr)) = (&pattern.0, value.as_ref()) {
+                    return HirStmt {
+                        node: self.ids.node(),
+                        kind: self.lower_expression_stmt_kind(value_expr),
+                        span,
+                    };
                 }
                 // Forward-bind for actor-lambda RHS. When the value is
                 // `actor |params| { body }` and the let-pattern is a bare
@@ -6567,29 +6823,7 @@ impl LowerCtx {
                     }
                 }
             }
-            Stmt::Expression(expr) => {
-                // Inside a scope{} body, statement-expression calls are child-task
-                // spawns (TI-1). Outside scope{} bodies all calls are synchronous
-                // (TI-3). The TI-1 rewrite only applies when the expression is a
-                // direct call — nested calls inside sub-expressions remain sync.
-                //
-                // Mark this as statement position before lowering so that
-                // `lower_expr`'s `Expr::Await` arm can enforce TI-4 (await is
-                // only legal in statement-expression position, not as a
-                // sub-expression). The flag is consumed by `mem::replace` at the
-                // top of `lower_expr`, so recursive calls see `false`.
-                self.statement_position = true;
-                if self.scope_depth > 0 {
-                    if let Expr::Call { .. } = &expr.0 {
-                        let spawned = self.lower_spawned_call(expr);
-                        HirStmtKind::Expr(spawned)
-                    } else {
-                        HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read))
-                    }
-                } else {
-                    HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read))
-                }
-            }
+            Stmt::Expression(expr) => self.lower_expression_stmt_kind(expr),
             Stmt::Return(value) => {
                 if let Some(value) = value {
                     let expr = self.lower_expr(value, IntentKind::Consume);
@@ -6978,12 +7212,53 @@ impl LowerCtx {
                         // `xs[a..b]` inside bracket expressions only).
                         let inclusive = *op == BinaryOp::RangeInclusive;
 
-                        // Range element type is always `i64` for integer ranges.
-                        let elem_ty = ResolvedTy::I64;
-
-                        // Lower start and end expressions.
+                        // Lower start and end expressions first so their
+                        // checker-resolved types are available for the loop
+                        // variable binding below.
                         let start_hir = self.lower_expr(range_start, IntentKind::Read);
                         let end_hir = self.lower_expr(range_end, IntentKind::Read);
+
+                        // Derive the loop-variable element type from the
+                        // checker-authoritative Range<T> type recorded on the
+                        // iterable expression.  This is the single source of
+                        // truth: the checker already chose the common integer
+                        // width (e.g. `i64` for a `i32..i64` range) and stored
+                        // `Range<i64>` at the iterable span.  Reading it here
+                        // avoids the "prefer-start-bound" heuristic that picked
+                        // the wrong width when the two bounds had different
+                        // signed widths.
+                        //
+                        // WHY: the old heuristic (start_hir.ty then end_hir.ty)
+                        //   gave the wrong answer for mixed-width bounds such as
+                        //   `a: i32 .. b: i64` — it chose `i32` but the checker
+                        //   resolved `Range<i64>`.  The LLVM verifier then
+                        //   rejected `call i64 @fn(i32 %arg)`.
+                        // WHEN-OBSOLETE: this IS the real solution — no further
+                        //   phase is needed unless Range semantics change.
+                        // WHAT (real solution): read the checker-recorded
+                        //   `Range<T>` at the iterable span and extract `T`.
+                        let elem_ty = {
+                            let range_key = SpanKey::from(&iterable.1);
+                            self.expr_types
+                                .get(&range_key)
+                                .and_then(|ty| ty.as_range().cloned())
+                                .and_then(|inner| ResolvedTy::from_ty(&inner).ok())
+                                .filter(Self::resolved_is_integer)
+                                // Fallback: derive from the lowered bound types.
+                                // Covers cases where the iterable span is absent
+                                // (e.g. an expression that produces a Range but
+                                // is not a syntactic range literal).
+                                .or_else(|| {
+                                    if Self::resolved_is_integer(&start_hir.ty) {
+                                        Some(start_hir.ty.clone())
+                                    } else if Self::resolved_is_integer(&end_hir.ty) {
+                                        Some(end_hir.ty.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(ResolvedTy::I64)
+                        };
 
                         // Bind the loop variable inside a fresh scope so it is
                         // scoped to the body but visible during body lowering.
@@ -7002,19 +7277,7 @@ impl LowerCtx {
                         }
                     }
                     (_, Pattern::Identifier(_)) => {
-                        // Non-Range iterable with a valid pattern: emit a typed
-                        // diagnostic and produce an Unsupported placeholder so
-                        // the pipeline fails closed (no fabricated value).
-                        self.unsupported(
-                            iterable.1.clone(),
-                            "for-in over non-Range iterable; only integer Range (a..b) is supported in this version",
-                            "for-while-lowering",
-                        );
-                        // Lower the body for checker-stream coverage.
-                        self.push_scope();
-                        let _ = self.lower_block(body, &ResolvedTy::Unit);
-                        self.pop_scope();
-                        HirExprKind::Unsupported("for-in over unsupported iterable type".into())
+                        self.lower_for_iter_desugar(pattern, iterable, body, span.clone())
                     }
                     _ => {
                         // Non-identifier pattern: not supported in this slice.
@@ -8299,6 +8562,7 @@ impl LowerCtx {
             Expr::PostfixTry(inner) => self.lower_postfix_try(inner, &span),
             Expr::InterpolatedString(parts) => self.lower_interpolated_string(parts, span.clone()),
             Expr::Tuple(elems) => self.lower_tuple_literal(elems, &span),
+            Expr::Cast { expr: value, ty } => self.lower_numeric_cast_expr(value, ty, &span),
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -8310,7 +8574,11 @@ impl LowerCtx {
         let inner = HirExpr {
             node: self.ids.node(),
             site,
-            value_class: ValueClass::of_ty(&ty, &self.type_classes),
+            value_class: if Self::is_vec_iter_ty(&ty) {
+                ValueClass::CowValue
+            } else {
+                ValueClass::of_ty(&ty, &self.type_classes)
+            },
             ty,
             intent,
             kind,
@@ -9346,7 +9614,26 @@ impl LowerCtx {
         let key = SpanKey::from(&operand.1);
         match self.expr_types.get(&key).cloned() {
             Some(ty) => match ResolvedTy::from_ty(&ty) {
-                Ok(resolved) => Some(resolved),
+                Ok(resolved) => {
+                    // The operand span may have been recorded as `IntLiteral`
+                    // during synthesis and then materialized to `I64` by
+                    // `materialize_literal_defaults` at the checker boundary.
+                    // If the outer result was narrowed to a different concrete
+                    // integer (e.g. `I32`) by deferred range-bound resolution,
+                    // the `I64` is a stale materialization artifact.  Use
+                    // `result_ty` for the operand so `negate(5_literal) →
+                    // i32` does not trip the `operand_ty == result_ty` shape
+                    // guard in `unary_shape_supported`.
+                    if Self::unary_literal_operand_uses_result_ty(op, &operand.0)
+                        && Self::resolved_is_integer(&resolved)
+                        && Self::resolved_is_integer(result_ty)
+                        && resolved != *result_ty
+                    {
+                        Some(result_ty.clone())
+                    } else {
+                        Some(resolved)
+                    }
+                }
                 Err(_) if Self::unary_literal_operand_uses_result_ty(op, &operand.0) => {
                     Some(result_ty.clone())
                 }
@@ -9675,6 +9962,47 @@ impl LowerCtx {
         }
     }
 
+    fn lower_numeric_cast_expr(
+        &mut self,
+        value: &Spanned<Expr>,
+        ty: &Spanned<TypeExpr>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let value = self.lower_expr(value, IntentKind::Read);
+        let from_ty = value.ty.clone();
+        let to_ty = self.lower_type(ty);
+        if !from_ty.can_explicitly_numeric_cast_to(&to_ty) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "numeric cast".to_string(),
+                    reason: format!(
+                        "cast from {} to {} is outside the checker-admitted numeric matrix",
+                        from_ty.user_facing(),
+                        to_ty.user_facing()
+                    ),
+                },
+                span.clone(),
+                "only numeric<->numeric, bool->integer, and integer->bool `as` casts lower to HIR",
+            ));
+            return (
+                HirExprKind::Unsupported(format!(
+                    "unsupported cast from {} to {}",
+                    from_ty.user_facing(),
+                    to_ty.user_facing()
+                )),
+                ResolvedTy::Unit,
+            );
+        }
+        (
+            HirExprKind::NumericCast {
+                value: Box::new(value),
+                from_ty: from_ty.clone(),
+                to_ty: to_ty.clone(),
+            },
+            to_ty,
+        )
+    }
+
     fn lower_type(&mut self, ty: &Spanned<TypeExpr>) -> ResolvedTy {
         match &ty.0 {
             TypeExpr::Named { name, type_args } => {
@@ -9742,6 +10070,8 @@ impl LowerCtx {
                                 registration.builtin,
                                 args,
                             )
+                        } else if let Some(builtin) = hew_types::lookup_builtin_type(name) {
+                            ResolvedTy::named_builtin(name.clone(), builtin, args)
                         } else {
                             ResolvedTy::named_user(name.clone(), args)
                         }
@@ -9832,7 +10162,7 @@ impl LowerCtx {
         }
     }
 
-    fn register_numeric_checked_option_layout(&mut self, operand_ty: &ResolvedTy, span: &Span) {
+    fn register_option_layout(&mut self, operand_ty: &ResolvedTy, span: &Span, context: &str) {
         let key = EnumMonoKey {
             origin: SYNTHETIC_OPTION_ITEM,
             origin_name: "Option".to_string(),
@@ -9860,9 +10190,630 @@ impl LowerCtx {
                     cap: self.enum_layout_registry.cap(),
                 },
                 span.clone(),
-                "enum monomorphisation cap exceeded while registering checked numeric method Option layout",
+                format!(
+                    "enum monomorphisation cap exceeded while registering {context} Option layout"
+                ),
             ));
         }
+    }
+
+    fn register_numeric_checked_option_layout(&mut self, operand_ty: &ResolvedTy, span: &Span) {
+        self.register_option_layout(operand_ty, span, "checked numeric method");
+    }
+
+    fn register_vec_iter_layout(&mut self, elem_ty: &ResolvedTy, span: &Span) {
+        let vec_ty = Self::resolved_vec_ty(elem_ty.clone());
+        let key = RecordMonoKey {
+            origin: SYNTHETIC_VEC_ITER_ITEM,
+            origin_name: "VecIter".to_string(),
+            type_args: vec![elem_ty.clone()],
+        };
+        let fields = vec![
+            ("vec".to_string(), vec_ty),
+            ("idx".to_string(), ResolvedTy::I64),
+        ];
+        if self
+            .record_layout_registry
+            .insert(key, fields, span.clone())
+            .is_err()
+            && !self.record_layout_cap_diag_emitted
+        {
+            self.record_layout_cap_diag_emitted = true;
+            let cap = self.record_layout_registry.cap();
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::RecordLayoutCapExceeded { cap },
+                span.clone(),
+                "too many distinct VecIter<T> instantiations; the compiler refuses to \
+                 monomorphise beyond the configured record-layout cap",
+            ));
+        }
+    }
+
+    fn resolved_vec_ty(elem_ty: ResolvedTy) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![elem_ty],
+            builtin: Some(BuiltinType::Vec),
+        }
+    }
+
+    fn resolved_vec_iter_ty(elem_ty: ResolvedTy) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "VecIter".to_string(),
+            args: vec![elem_ty],
+            builtin: None,
+        }
+    }
+
+    fn resolved_option_ty(elem_ty: ResolvedTy) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Option".to_string(),
+            args: vec![elem_ty],
+            builtin: None,
+        }
+    }
+
+    fn make_expr(
+        &mut self,
+        kind: HirExprKind,
+        ty: ResolvedTy,
+        intent: IntentKind,
+        span: Span,
+    ) -> HirExpr {
+        let value_class = if Self::is_vec_iter_ty(&ty) {
+            ValueClass::CowValue
+        } else {
+            ValueClass::of_ty(&ty, &self.type_classes)
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class,
+            ty,
+            intent,
+            kind,
+            span,
+        }
+    }
+
+    fn is_vec_iter_ty(ty: &ResolvedTy) -> bool {
+        matches!(
+            ty,
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin: None,
+            } if name == "VecIter" && args.len() == 1
+        )
+    }
+
+    fn make_binding_ref(
+        &mut self,
+        name: String,
+        binding: BindingId,
+        ty: ResolvedTy,
+        intent: IntentKind,
+        span: Span,
+    ) -> HirExpr {
+        self.make_expr(
+            HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Binding(binding),
+            },
+            ty,
+            intent,
+            span,
+        )
+    }
+
+    fn make_i64_literal(&mut self, value: i64, span: Span) -> HirExpr {
+        self.make_expr(
+            HirExprKind::Literal(HirLiteral::Integer(value)),
+            ResolvedTy::I64,
+            IntentKind::Read,
+            span,
+        )
+    }
+
+    fn make_unit_block(
+        &mut self,
+        statements: Vec<HirStmt>,
+        tail: Option<HirExpr>,
+        ty: ResolvedTy,
+        span: Span,
+    ) -> HirBlock {
+        HirBlock {
+            node: self.ids.node(),
+            scope: self.ids.scope(),
+            statements,
+            tail: tail.map(Box::new),
+            ty,
+            span,
+        }
+    }
+
+    fn make_vec_len_call(
+        &mut self,
+        vec_expr: HirExpr,
+        elem_ty: &ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
+        self.make_expr(
+            HirExprKind::ResolvedImplCall {
+                receiver: Box::new(vec_expr),
+                impl_id: ImplId(u32::MAX),
+                method_name: "len".to_string(),
+                target_symbol: "hew_vec_len".to_string(),
+                type_args: vec![Self::resolved_ty_pattern(elem_ty)],
+                args: Vec::new(),
+                ret_ty: ResolvedTy::I64,
+            },
+            ResolvedTy::I64,
+            IntentKind::Read,
+            span,
+        )
+    }
+
+    fn resolved_ty_pattern(ty: &ResolvedTy) -> TyPattern {
+        match ty {
+            ResolvedTy::Tuple(items) => {
+                TyPattern::Tuple(items.iter().map(Self::resolved_ty_pattern).collect())
+            }
+            ResolvedTy::Named { name, args, .. } if !args.is_empty() => TyPattern::App {
+                ctor: name.clone(),
+                args: args.iter().map(Self::resolved_ty_pattern).collect(),
+            },
+            _ => TyPattern::Primitive(ty.to_string()),
+        }
+    }
+
+    fn make_option_ctor(
+        &mut self,
+        variant_name: &str,
+        payload: Option<HirExpr>,
+        elem_ty: &ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
+        let option_ty = Self::resolved_option_ty(elem_ty.clone());
+        let variant_idx = match variant_name {
+            "Some" => 0,
+            "None" => 1,
+            _ => unreachable!("only Option::Some/None are synthesized"),
+        };
+        let payload = payload.map(|expr| vec![("0".to_string(), expr)]);
+        self.make_expr(
+            HirExprKind::MachineVariantCtor {
+                machine_name: "Option".to_string(),
+                state_idx: variant_idx,
+                payload,
+            },
+            option_ty,
+            IntentKind::Read,
+            span,
+        )
+    }
+
+    fn lower_builtin_vec_into_iter(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        elem_ty: ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let receiver_hir = self.lower_expr(receiver, IntentKind::Consume);
+        let iter_expr = self.make_vec_iter_init(receiver_hir, elem_ty, span);
+        (iter_expr.kind, iter_expr.ty)
+    }
+
+    fn make_vec_iter_init(
+        &mut self,
+        receiver_hir: HirExpr,
+        elem_ty: ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
+        self.register_vec_iter_layout(&elem_ty, &span);
+        let idx = self.make_i64_literal(0, span.clone());
+        let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
+        self.make_expr(
+            HirExprKind::StructInit {
+                name: "VecIter".to_string(),
+                type_args: vec![elem_ty],
+                fields: vec![("vec".to_string(), receiver_hir), ("idx".to_string(), idx)],
+                base: None,
+            },
+            iter_ty,
+            IntentKind::Read,
+            span,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "synthetic VecIter::next expansion must build the full caller-side state machine in HIR"
+    )]
+    fn lower_builtin_vec_iter_next(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        elem_ty: &ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        self.register_option_layout(elem_ty, &span, "VecIter::next");
+        self.register_vec_iter_layout(elem_ty, &span);
+        let option_ty = Self::resolved_option_ty(elem_ty.clone());
+        let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
+        let lowered_receiver = self.lower_expr(receiver, IntentKind::Modify);
+        let HirExprKind::BindingRef {
+            name: receiver_name,
+            resolved: ResolvedRef::Binding(receiver_binding),
+        } = &lowered_receiver.kind
+        else {
+            self.unsupported(
+                span.clone(),
+                "VecIter::next requires a mutable binding receiver in the Rust MIR pipeline",
+                "iterator-runtime-dispatch",
+            );
+            return (
+                HirExprKind::Unsupported("VecIter::next receiver is not a binding".into()),
+                option_ty,
+            );
+        };
+        let receiver_name = receiver_name.clone();
+        let receiver_binding = *receiver_binding;
+
+        self.push_scope();
+        let iter_obj = self.make_binding_ref(
+            receiver_name.clone(),
+            receiver_binding,
+            iter_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let idx_read = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(iter_obj),
+                field: "idx".to_string(),
+            },
+            ResolvedTy::I64,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let iter_obj = self.make_binding_ref(
+            receiver_name.clone(),
+            receiver_binding,
+            iter_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let vec_read_for_len = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(iter_obj),
+                field: "vec".to_string(),
+            },
+            Self::resolved_vec_ty(elem_ty.clone()),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let len_call = self.make_vec_len_call(vec_read_for_len, elem_ty, span.clone());
+        let condition = self.make_expr(
+            HirExprKind::Binary {
+                op: BinaryOp::GreaterEqual,
+                left: Box::new(idx_read),
+                right: Box::new(len_call),
+            },
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+
+        let none_expr = self.make_option_ctor("None", None, elem_ty, span.clone());
+        let then_block =
+            self.make_unit_block(Vec::new(), Some(none_expr), option_ty.clone(), span.clone());
+        let then_expr = self.make_expr(
+            HirExprKind::Block(then_block),
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+
+        let iter_obj = self.make_binding_ref(
+            receiver_name.clone(),
+            receiver_binding,
+            iter_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let vec_read_for_get = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(iter_obj),
+                field: "vec".to_string(),
+            },
+            Self::resolved_vec_ty(elem_ty.clone()),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let iter_obj = self.make_binding_ref(
+            receiver_name.clone(),
+            receiver_binding,
+            iter_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let idx_read_for_get = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(iter_obj),
+                field: "idx".to_string(),
+            },
+            ResolvedTy::I64,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let value_expr = self.make_expr(
+            HirExprKind::Index {
+                container: Box::new(vec_read_for_get),
+                index: Box::new(idx_read_for_get),
+            },
+            elem_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let value_binding_name = format!("__hew_iter_value_{}", self.ids.binding().0);
+        let value_binding = self.bind(
+            value_binding_name.clone(),
+            elem_ty.clone(),
+            false,
+            span.clone(),
+        );
+        let value_binding_id = value_binding.id;
+        let value_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(value_binding, Some(value_expr)),
+            span: span.clone(),
+        };
+
+        let iter_obj = self.make_binding_ref(
+            receiver_name.clone(),
+            receiver_binding,
+            iter_ty.clone(),
+            IntentKind::Modify,
+            span.clone(),
+        );
+        let idx_assign_target = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(iter_obj),
+                field: "idx".to_string(),
+            },
+            ResolvedTy::I64,
+            IntentKind::Modify,
+            span.clone(),
+        );
+        let iter_obj = self.make_binding_ref(
+            receiver_name,
+            receiver_binding,
+            iter_ty,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let idx_read_for_add = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(iter_obj),
+                field: "idx".to_string(),
+            },
+            ResolvedTy::I64,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let one = self.make_i64_literal(1, span.clone());
+        let idx_plus_one = self.make_expr(
+            HirExprKind::Binary {
+                op: BinaryOp::Add,
+                left: Box::new(idx_read_for_add),
+                right: Box::new(one),
+            },
+            ResolvedTy::I64,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let assign_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Assign {
+                target: idx_assign_target,
+                value: Box::new(idx_plus_one),
+            },
+            span: span.clone(),
+        };
+        let value_ref = self.make_binding_ref(
+            value_binding_name,
+            value_binding_id,
+            elem_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let some_expr = self.make_option_ctor("Some", Some(value_ref), elem_ty, span.clone());
+        let else_block = self.make_unit_block(
+            vec![value_stmt, assign_stmt],
+            Some(some_expr),
+            option_ty.clone(),
+            span.clone(),
+        );
+        let else_expr = self.make_expr(
+            HirExprKind::Block(else_block),
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let if_expr = self.make_expr(
+            HirExprKind::If {
+                condition: Box::new(condition),
+                then_expr: Box::new(then_expr),
+                else_expr: Some(Box::new(else_expr)),
+            },
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let block = self.make_unit_block(Vec::new(), Some(if_expr), option_ty.clone(), span);
+        self.pop_scope();
+        (HirExprKind::Block(block), option_ty)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "for-over-Vec desugars directly to existing Loop/Match HIR nodes"
+    )]
+    fn lower_for_iter_desugar(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        iterable: &Spanned<Expr>,
+        body: &Block,
+        span: Span,
+    ) -> HirExprKind {
+        let Pattern::Identifier(var_name) = &pattern.0 else {
+            unreachable!("lower_for_iter_desugar is only called for identifier patterns");
+        };
+        let lowered_iterable = self.lower_expr(iterable, IntentKind::Consume);
+        let (iter_init, elem_ty) = match lowered_iterable.ty.clone() {
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::Vec),
+            } if name == "Vec" && args.len() == 1 => {
+                let elem_ty = args[0].clone();
+                (
+                    self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
+                    elem_ty,
+                )
+            }
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin: None,
+            } if name == "VecIter" && args.len() == 1 => (lowered_iterable, args[0].clone()),
+            other => {
+                self.unsupported(
+                    iterable.1.clone(),
+                    format!(
+                        "for-in over non-Range iterable `{other}`; the Rust MIR pipeline currently supports Vec<T> and VecIter<T>"
+                    ),
+                    "iterator-runtime-dispatch",
+                );
+                self.push_scope();
+                let _ = self.lower_block(body, &ResolvedTy::Unit);
+                self.pop_scope();
+                return HirExprKind::Unsupported(
+                    "for-in over unsupported non-Range iterable type".into(),
+                );
+            }
+        };
+
+        self.push_scope();
+        let block_scope = self.ids.scope();
+        let iter_name = format!("__hew_for_iter_{}", self.ids.binding().0);
+        let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
+        let iter_binding = self.bind(iter_name.clone(), iter_ty, true, iterable.1.clone());
+        let iter_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(iter_binding, Some(iter_init)),
+            span: iterable.1.clone(),
+        };
+
+        let next_receiver = (Expr::Identifier(iter_name), iterable.1.clone());
+        let (next_kind, next_ty) =
+            self.lower_builtin_vec_iter_next(&next_receiver, &elem_ty, iterable.1.clone());
+        let next_expr = self.make_expr(next_kind, next_ty, IntentKind::Read, iterable.1.clone());
+
+        self.push_scope();
+        let loop_binding = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
+        let some_binding = HirMatchArmBinding {
+            binding: loop_binding.id,
+            field_idx: 0,
+            name: var_name.clone(),
+            ty: elem_ty.clone(),
+        };
+        let body_block = self.lower_block(body, &ResolvedTy::Unit);
+        self.pop_scope();
+        let body_ty = body_block.ty.clone();
+        let some_body = self.make_expr(
+            HirExprKind::Block(body_block),
+            body_ty,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let none_body = self.make_expr(
+            HirExprKind::Break {
+                label: None,
+                value: None,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let match_expr = self.make_expr(
+            HirExprKind::Match {
+                scrutinee: Box::new(next_expr),
+                arms: vec![
+                    HirMatchArm {
+                        predicate: HirMatchArmPredicate::EnumVariant {
+                            variant_match: hew_types::VariantMatch {
+                                type_name: "Option".to_string(),
+                                variant_name: "Some".to_string(),
+                            },
+                            variant_idx: 0,
+                        },
+                        bindings: vec![some_binding],
+                        payload_predicates: Vec::new(),
+                        body: some_body,
+                        span: span.clone(),
+                    },
+                    HirMatchArm {
+                        predicate: HirMatchArmPredicate::EnumVariant {
+                            variant_match: hew_types::VariantMatch {
+                                type_name: "Option".to_string(),
+                                variant_name: "None".to_string(),
+                            },
+                            variant_idx: 1,
+                        },
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        body: none_body,
+                        span: iterable.1.clone(),
+                    },
+                ],
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let match_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(match_expr),
+            span: span.clone(),
+        };
+        let loop_body = self.make_unit_block(
+            Vec::from([match_stmt]),
+            None,
+            ResolvedTy::Unit,
+            span.clone(),
+        );
+        let loop_expr = self.make_expr(
+            HirExprKind::Loop { body: loop_body },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let loop_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(loop_expr),
+            span: span.clone(),
+        };
+        self.pop_scope();
+
+        HirExprKind::Block(HirBlock {
+            node: self.ids.node(),
+            scope: block_scope,
+            statements: vec![iter_stmt, loop_stmt],
+            tail: None,
+            ty: ResolvedTy::Unit,
+            span,
+        })
     }
 
     /// Lower `receiver.method(args)` using the checker's method-call side-tables.
@@ -10255,6 +11206,12 @@ impl LowerCtx {
         }
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
+            Some(MethodCallRewrite::BuiltinVecIntoIter { elem_ty }) => {
+                self.lower_builtin_vec_into_iter(receiver, elem_ty, span)
+            }
+            Some(MethodCallRewrite::BuiltinVecIterNext { elem_ty }) => {
+                self.lower_builtin_vec_iter_next(receiver, &elem_ty, span)
+            }
             Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => {
                 // S5: a method-call rewrite that lands on a builtin-generic
                 // enum result type (e.g. `Result<(), SendError>` for
@@ -10952,6 +11909,12 @@ impl LowerCtx {
             for arg in args {
                 worklist.push(arg.clone());
             }
+            if args
+                .iter()
+                .any(|arg| self.contains_abstract_type_param(arg))
+            {
+                continue;
+            }
             // Retrieve the origin ItemId for this enum.
             let Some(&origin) = self.enum_item_ids.get(name) else {
                 continue;
@@ -11508,22 +12471,13 @@ impl LowerCtx {
                         (HirLiteral::Integer(_), ResolvedTy::I64) => ResolvedTy::I64,
                         (HirLiteral::Bool(_), ResolvedTy::Bool) => ResolvedTy::Bool,
                         (HirLiteral::Char(_), ResolvedTy::Char) => ResolvedTy::Char,
+                        (HirLiteral::String(_), ResolvedTy::String) => ResolvedTy::String,
                         (HirLiteral::Float(_), _) => {
                             let _ = self.lower_expr(&arm.body, IntentKind::Read);
                             self.unsupported(
                                 pattern_span.clone(),
                                 "float literal pattern in match arm",
                                 "match-literal-stage2",
-                            );
-                            rejected = true;
-                            continue;
-                        }
-                        (HirLiteral::String(_), _) => {
-                            let _ = self.lower_expr(&arm.body, IntentKind::Read);
-                            self.unsupported(
-                                pattern_span.clone(),
-                                "string literal pattern in match arm",
-                                "match-literal-stage3",
                             );
                             rejected = true;
                             continue;
@@ -11553,14 +12507,58 @@ impl LowerCtx {
                             continue;
                         }
                     };
-                    debug_assert!(stage2_literal_match_supported(&lit, &ty));
+                    debug_assert!(literal_match_supported(&lit, &ty));
                     HirMatchArmPredicate::Literal { lit, ty }
                 }
-                PatternKind::Binding | PatternKind::StructPattern | PatternKind::TuplePattern => {
+                PatternKind::StructPattern => {
+                    let ResolvedTy::Named { .. } = &scrutinee_hir.ty else {
+                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.unsupported(
+                            pattern_span.clone(),
+                            format!(
+                                "record project pattern on non-record scrutinee type {:?}",
+                                scrutinee_hir.ty
+                            ),
+                            "match-expression-substrate",
+                        );
+                        rejected = true;
+                        continue;
+                    };
+                    HirMatchArmPredicate::RecordProject {
+                        ty: scrutinee_hir.ty.clone(),
+                    }
+                }
+                PatternKind::TuplePattern => {
+                    let ResolvedTy::Tuple(items) = &scrutinee_hir.ty else {
+                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.unsupported(
+                            pattern_span.clone(),
+                            format!(
+                                "tuple project pattern on non-tuple scrutinee type {:?}",
+                                scrutinee_hir.ty
+                            ),
+                            "match-expression-substrate",
+                        );
+                        rejected = true;
+                        continue;
+                    };
+                    let Ok(arity) = u32::try_from(items.len()) else {
+                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.unsupported(
+                            pattern_span.clone(),
+                            "tuple project arity exceeds u32::MAX",
+                            "match-expression-substrate",
+                        );
+                        rejected = true;
+                        continue;
+                    };
+                    HirMatchArmPredicate::TupleProject { arity }
+                }
+                PatternKind::Binding => {
                     let _ = self.lower_expr(&arm.body, IntentKind::Read);
                     self.unsupported(
                         pattern_span.clone(),
-                        "binding / struct / tuple pattern in match arm",
+                        "binding pattern in match arm",
                         "match-expression-substrate",
                     );
                     rejected = true;
@@ -12115,6 +13113,9 @@ fn collect_captures_walk(
         HirExprKind::Unary { operand, .. } => {
             collect_captures_walk(operand, param_ids, seen, captures, self_id);
         }
+        HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_captures_walk(value, param_ids, seen, captures, self_id);
+        }
         HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_captures_walk(elem, param_ids, seen, captures, self_id);
@@ -12245,9 +13246,6 @@ fn collect_captures_walk(
                 collect_captures_walk(e, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::CoerceToDynTrait { value, .. } => {
-            collect_captures_walk(value, param_ids, seen, captures, self_id);
-        }
         HirExprKind::MachineEmit { fields, .. } => {
             // `emit` is only valid inside a machine body, which is never
             // inside a lambda/closure — so this arm should be unreachable in
@@ -12358,6 +13356,9 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::Unary { operand, .. } => {
             collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
+        }
+        HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
         }
         HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
@@ -12495,9 +13496,6 @@ fn collect_general_closure_captures_walk(
             if let Some(e) = end {
                 collect_general_closure_captures_walk(e, outer_bindings, seen, captures);
             }
-        }
-        HirExprKind::CoerceToDynTrait { value, .. } => {
-            collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
         }
         HirExprKind::MachineEmit { fields, .. } => {
             // `emit` cannot appear inside a closure body (machine bodies are
@@ -12997,6 +13995,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         HirExprKind::Unary { operand, .. } => {
             collect_hir_emitted_events_walk(operand, event_names, out);
         }
+        HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_hir_emitted_events_walk(value, event_names, out);
+        }
         HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 collect_hir_emitted_events_walk(elem, event_names, out);
@@ -13205,9 +14206,6 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_hir_emitted_events_walk(receiver, event_names, out);
             collect_hir_emitted_events_walk(arg, event_names, out);
-        }
-        HirExprKind::CoerceToDynTrait { value, .. } => {
-            collect_hir_emitted_events_walk(value, event_names, out);
         }
         HirExprKind::MachineStep {
             receiver, event, ..
@@ -15861,6 +16859,9 @@ fn scan_expr_for_call_shape(
         }
         HirExprKind::Unary { operand, .. } => {
             scan_expr_for_call_shape(operand, callable, diagnostics);
+        }
+        HirExprKind::NumericCast { value, .. } => {
+            scan_expr_for_call_shape(value, callable, diagnostics);
         }
         HirExprKind::TupleLiteral { elements } => {
             for elem in elements {

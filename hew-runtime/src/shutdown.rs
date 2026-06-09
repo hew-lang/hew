@@ -677,7 +677,6 @@ mod tests {
     /// Run this manually after temporarily reverting the deadlock fix to verify
     /// the test actually catches the bug.
     #[test]
-    #[ignore = "Manually run to verify test detects deadlock bug"]
     fn sabotage_deadlock_test() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
@@ -710,7 +709,6 @@ mod tests {
     /// Run this manually after removing the spawn failure fallback to verify
     /// the test catches the infinite wait bug.
     #[test]
-    #[ignore = "Manually run to verify test catches spawn failure stall"]
     fn sabotage_spawn_failure_test() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();

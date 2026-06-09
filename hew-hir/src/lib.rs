@@ -29,8 +29,8 @@ pub use lower::{
 };
 pub use machine_mono::run_machine_mono_pass;
 pub use mono::{
-    mangle_instantiation, ActorMonoKey, ConstValue as MonoConstValue, FunctionMonoKey,
-    MachineMonoEntry, MachineMonoKey, MonoKind, SymbolClass,
+    mangle_instantiation, sanitize_for_symbol, ActorMonoKey, ConstValue as MonoConstValue,
+    FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind, SymbolClass,
 };
 pub use monomorph::{
     mangle, substitute_type_params, EnumLayout, EnumMonoKey, EnumVariantLayout, MonoKey,

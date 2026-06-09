@@ -344,16 +344,7 @@ impl Checker {
                 target,
                 type_args,
                 args,
-            } => {
-                if self.in_pure_function {
-                    self.report_error(
-                        TypeErrorKind::PurityViolation,
-                        span,
-                        "cannot use `spawn` in a pure function".to_string(),
-                    );
-                }
-                self.check_spawn(target, type_args, args, span)
-            }
+            } => self.check_spawn(target, type_args, args, span),
 
             // Lambda (synthesize mode — no expected type)
             Expr::Lambda {
@@ -622,6 +613,50 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    fn expect_concrete_integer_operands(
+        &mut self,
+        common_ty: &Ty,
+        left: &Spanned<Expr>,
+        left_ty: &Ty,
+        right: &Spanned<Expr>,
+        right_ty: &Ty,
+    ) {
+        if integer_type_info(common_ty).is_some() {
+            self.expect_type(common_ty, left_ty, &left.1);
+            self.expect_type(common_ty, right_ty, &right.1);
+            self.record_concrete_integer_operand(common_ty, left, left_ty);
+            self.record_concrete_integer_operand(common_ty, right, right_ty);
+        }
+    }
+
+    fn record_concrete_integer_operand(
+        &mut self,
+        common_ty: &Ty,
+        operand: &Spanned<Expr>,
+        operand_ty: &Ty,
+    ) {
+        let resolved = self.subst.resolve(operand_ty);
+        if resolved.is_integer_literal() || matches!(resolved, Ty::Var(_)) {
+            self.check_against(&operand.0, &operand.1, common_ty);
+        }
+    }
+
+    fn concrete_integer_float_mismatch(left: &Ty, right: &Ty) -> bool {
+        (integer_type_info(left).is_some() && right.is_float() && !right.is_float_literal())
+            || (integer_type_info(right).is_some() && left.is_float() && !left.is_float_literal())
+    }
+
+    fn expect_inferable_literal_binding(&mut self, name: &str, expected: &Ty, span: &Span) {
+        let Some(binding) = self.env.lookup_ref(name) else {
+            return;
+        };
+        if binding.def_span.is_none() {
+            return;
+        }
+        let actual = binding.ty.clone();
+        self.expect_type(expected, &actual, span);
     }
 
     pub(super) fn synthesize_range(
@@ -1406,49 +1441,9 @@ impl Checker {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "concurrency variants (scope/select/join/spawn/unsafe/timeout) with purity checks"
+        reason = "concurrency variants (scope/select/join/spawn/unsafe/timeout)"
     )]
     pub(super) fn synthesize_concurrency(&mut self, expr: &Expr, span: &Span) -> Ty {
-        if self.in_pure_function {
-            match expr {
-                Expr::Scope { .. } => {
-                    self.report_error(
-                        TypeErrorKind::PurityViolation,
-                        span,
-                        "cannot use `scope` in a pure function".to_string(),
-                    );
-                }
-                Expr::ForkChild { .. } => {
-                    self.report_error(
-                        TypeErrorKind::PurityViolation,
-                        span,
-                        "cannot use `fork` in a pure function".to_string(),
-                    );
-                }
-                Expr::Select { .. } => {
-                    self.report_error(
-                        TypeErrorKind::PurityViolation,
-                        span,
-                        "cannot use `select` in a pure function".to_string(),
-                    );
-                }
-                Expr::Join(_) => {
-                    self.report_error(
-                        TypeErrorKind::PurityViolation,
-                        span,
-                        "cannot use `join` in a pure function".to_string(),
-                    );
-                }
-                Expr::SpawnLambdaActor { .. } => {
-                    self.report_error(
-                        TypeErrorKind::PurityViolation,
-                        span,
-                        "cannot use `spawn` in a pure function".to_string(),
-                    );
-                }
-                _ => {}
-            }
-        }
         match expr {
             Expr::ForkChild { .. } => {
                 self.report_error(
@@ -1914,6 +1909,48 @@ impl Checker {
                 range_ty
             }
 
+            (
+                Expr::Binary {
+                    left,
+                    op:
+                        op @ (BinaryOp::Add
+                        | BinaryOp::Subtract
+                        | BinaryOp::Multiply
+                        | BinaryOp::Divide
+                        | BinaryOp::Modulo
+                        | BinaryOp::WrappingAdd
+                        | BinaryOp::WrappingSub
+                        | BinaryOp::WrappingMul
+                        | BinaryOp::BitAnd
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                        | BinaryOp::Shl
+                        | BinaryOp::Shr),
+                    right,
+                },
+                ty,
+            ) if ty.is_integer() => {
+                let actual = self.check_binary_op(left, *op, right);
+                let actual_resolved = self.subst.resolve(&actual);
+                if actual_resolved.is_integer_literal() {
+                    self.check_against(&left.0, &left.1, expected);
+                    self.check_against(&right.0, &right.1, expected);
+                    self.record_type(span, expected);
+                    expected.clone()
+                } else if matches!(actual_resolved, Ty::Never | Ty::Error) {
+                    actual_resolved
+                } else {
+                    let n = self.errors.len();
+                    self.expect_type(expected, &actual, span);
+                    if self.errors.len() > n {
+                        Ty::Error
+                    } else {
+                        self.record_type(span, &actual);
+                        actual
+                    }
+                }
+            }
+
             // Integer literal can coerce to any integer type (with range check)
             (expr, ty) if is_integer_literal(expr) && ty.is_integer() => {
                 if !expected.is_numeric_literal() {
@@ -1943,7 +1980,7 @@ impl Checker {
                         }
                     }
                 }
-                self.record_type(span, expected);
+                self.record_integer_literal_type(expr, span, expected);
                 expected.clone()
             }
 
@@ -2075,11 +2112,13 @@ impl Checker {
                                 }
                             }
                             // Mark the identifier as used
+                            self.expect_inferable_literal_binding(name, expected, span);
                             let _ = self.env.lookup(name);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
                         (ConstValue::Integer(_), ty) if ty.is_float() => {
+                            self.expect_inferable_literal_binding(name, expected, span);
                             let _ = self.env.lookup(name);
                             self.record_type(span, expected);
                             return expected.clone();
@@ -2097,6 +2136,7 @@ impl Checker {
                                 );
                                 return Ty::Error;
                             }
+                            self.expect_inferable_literal_binding(name, expected, span);
                             let _ = self.env.lookup(name);
                             self.record_type(span, expected);
                             return expected.clone();
@@ -2581,6 +2621,9 @@ impl Checker {
             BinaryOp::WrappingAdd | BinaryOp::WrappingSub | BinaryOp::WrappingMul => {
                 if left_resolved.is_integer() && right_resolved.is_integer() {
                     if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                        self.expect_concrete_integer_operands(
+                            &common_ty, left, &left_ty, right, &right_ty,
+                        );
                         common_ty
                     } else {
                         self.report_error(
@@ -2631,7 +2674,37 @@ impl Checker {
                         &left.1,
                     );
                 }
-                if left_resolved.is_numeric() && right_resolved.is_numeric() {
+                if left_resolved.is_integer() && right_resolved.is_integer() {
+                    if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                        self.expect_concrete_integer_operands(
+                            &common_ty, left, &left_ty, right, &right_ty,
+                        );
+                        common_ty
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &left.1,
+                            format!(
+                                "cannot implicitly coerce `{}` and `{}` in arithmetic; use an explicit conversion",
+                                left_resolved.user_facing(),
+                                right_resolved.user_facing()
+                            ),
+                        );
+                        Ty::Error
+                    }
+                } else if left_resolved.is_numeric() && right_resolved.is_numeric() {
+                    if Self::concrete_integer_float_mismatch(&left_resolved, &right_resolved) {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &left.1,
+                            format!(
+                                "cannot implicitly coerce `{}` and `{}` in arithmetic; use an explicit conversion",
+                                left_resolved.user_facing(),
+                                right_resolved.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
                     if let Some(common_ty) = common_numeric_type(&left_resolved, &right_resolved) {
                         common_ty
                     } else {
@@ -2683,6 +2756,9 @@ impl Checker {
             | BinaryOp::Shr => {
                 if left_resolved.is_integer() && right_resolved.is_integer() {
                     if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                        self.expect_concrete_integer_operands(
+                            &common_ty, left, &left_ty, right, &right_ty,
+                        );
                         common_ty
                     } else {
                         self.report_error(
@@ -2723,7 +2799,35 @@ impl Checker {
             | BinaryOp::LessEqual
             | BinaryOp::Greater
             | BinaryOp::GreaterEqual => {
-                if left_resolved.is_numeric() && right_resolved.is_numeric() {
+                if left_resolved.is_integer() && right_resolved.is_integer() {
+                    if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                        self.expect_concrete_integer_operands(
+                            &common_ty, left, &left_ty, right, &right_ty,
+                        );
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &left.1,
+                            format!(
+                                "cannot implicitly coerce `{}` and `{}` for comparison; use an explicit conversion",
+                                left_resolved.user_facing(),
+                                right_resolved.user_facing()
+                            ),
+                        );
+                    }
+                } else if left_resolved.is_numeric() && right_resolved.is_numeric() {
+                    if Self::concrete_integer_float_mismatch(&left_resolved, &right_resolved) {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &left.1,
+                            format!(
+                                "cannot implicitly coerce `{}` and `{}` for comparison; use an explicit conversion",
+                                left_resolved.user_facing(),
+                                right_resolved.user_facing()
+                            ),
+                        );
+                        return Ty::Bool;
+                    }
                     if common_numeric_type(&left_resolved, &right_resolved).is_none() {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
@@ -2758,15 +2862,59 @@ impl Checker {
                             // Stash the bound spans + literal values for the
                             // post-inference pass that re-records them with
                             // the concrete resolved element type.
+                            // Extract the inner operand span when the bound
+                            // is a negated integer literal (`-5`). The inner
+                            // literal's span must also be re-recorded by
+                            // `apply_deferred_range_bound_types` so HIR
+                            // lowering sees the narrowed type (e.g. `i32`)
+                            // rather than the `IntLiteral`→`I64` default.
+                            let left_inner_span = if let hew_parser::ast::Expr::Unary {
+                                op: hew_parser::ast::UnaryOp::Negate,
+                                operand,
+                            } = &left.0
+                            {
+                                if matches!(
+                                    operand.0,
+                                    hew_parser::ast::Expr::Literal(
+                                        hew_parser::ast::Literal::Integer { .. }
+                                    )
+                                ) {
+                                    Some(operand.1.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            let right_inner_span = if let hew_parser::ast::Expr::Unary {
+                                op: hew_parser::ast::UnaryOp::Negate,
+                                operand,
+                            } = &right.0
+                            {
+                                if matches!(
+                                    operand.0,
+                                    hew_parser::ast::Expr::Literal(
+                                        hew_parser::ast::Literal::Integer { .. }
+                                    )
+                                ) {
+                                    Some(operand.1.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
                             self.deferred_range_bounds.push((
                                 left.1.clone(),
                                 var_tv,
                                 extract_integer_literal_value(&left.0),
+                                left_inner_span,
                             ));
                             self.deferred_range_bounds.push((
                                 right.1.clone(),
                                 var_tv,
                                 extract_integer_literal_value(&right.0),
+                                right_inner_span,
                             ));
                             Ty::range(Ty::Var(var_tv))
                         } else {
@@ -5001,6 +5149,17 @@ impl Checker {
         self.expr_type_source_modules
             .insert(key.clone(), self.current_module.clone());
         self.expr_types.insert(key, ty.clone());
+    }
+
+    pub(super) fn record_integer_literal_type(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
+        self.record_type(span, ty);
+        if let Expr::Unary {
+            op: UnaryOp::Negate,
+            operand,
+        } = expr
+        {
+            self.record_type(&operand.1, ty);
+        }
     }
 
     // ── Diagnostic-only stack-allocation hints (HEW-PERF-001) ─────────────

@@ -28,18 +28,6 @@ impl From<hew_parser::ast::ResourceMarker> for ResourceMarker {
     }
 }
 
-impl ResourceMarker {
-    #[must_use]
-    pub fn to_ast_marker(self) -> Option<AstResourceMarker> {
-        match self {
-            Self::None => Some(AstResourceMarker::None),
-            Self::Resource => Some(AstResourceMarker::Resource),
-            Self::Linear => Some(AstResourceMarker::Linear),
-            Self::BitCopy => None,
-        }
-    }
-}
-
 /// Per-named-type classification table consumed by `ValueClass::of_ty`.
 ///
 /// Construction-site authority: the table is populated by HIR lowering

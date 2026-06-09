@@ -38,12 +38,14 @@ serde.workspace = true
 serde_json.workspace = true
 notify = "8"
 dirs.workspace = true
+wasmparser = "0.244"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [dev-dependencies]
 fd-lock = "4"
+hew-testutil = { path = "../hew-testutil" }
 object = "0.39"
 
 [lints]

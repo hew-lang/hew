@@ -33,9 +33,6 @@ fn main() {
     for i in 0 .. 10 {
         w3.work(i + 200);
     }
-    close(w1);
-    close(w2);
-    close(w3);
     await w1;
     await w2;
     await w3;

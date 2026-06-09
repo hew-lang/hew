@@ -67,7 +67,10 @@ pub trait ActorMsg {
 
 /// Trait satisfied by both `LocalPid<A>` and `RemotePid<A>`.
 ///
-/// Use `dyn Pid<Msg = M>` or `P: Pid` when a function should accept either:
+/// Future surface target for accepting either local or remote pids. A640:
+/// generic `P: Pid` sends are fail-closed unless `P::Msg` is concretely proven
+/// Serializable; local-only dispatch through `LocalPid<T>` keeps the value
+/// model below.
 ///
 /// ```
 /// fn ping<P: Pid>(p: P, msg: P::Msg) -> Result<(), SendError> {
@@ -106,7 +109,7 @@ impl<T> RemotePid<T> {
     /// value without a live peer-discovery mechanism. The empty body keeps
     /// codegen fail-closed (no self-recursive stack overflow). Replace when
     /// the peer API lands.
-    fn from_raw(node_id: u16, serial: u64) -> RemotePid<T> {}
+    fn from_raw(node_id: u64, serial: u64) -> RemotePid<T> {}
 }
 
 impl<T: ActorMsg> RemotePid<T> {
@@ -225,7 +228,6 @@ pub type VecIter<T> {
 
 impl<T> Iterator for VecIter<T> {
     type Item = T;
-
     /// Return `Some(vec.get(idx))` and advance `idx` by one; return `None`
     /// once the cursor reaches the vector's length.
     ///
@@ -235,7 +237,7 @@ impl<T> Iterator for VecIter<T> {
         if self.idx >= self.vec.len() {
             None
         } else {
-            let v = self.vec.get(self.idx);
+            let v = self.vec[self.idx];
             self.idx = self.idx + 1;
             Some(v)
         }
@@ -245,7 +247,6 @@ impl<T> Iterator for VecIter<T> {
 impl<T> IntoIterator for Vec<T> {
     type Item = T;
     type IntoIter = VecIter<T>;
-
     /// Produce a `VecIter<T>` positioned at index `0`.
     ///
     /// The returned iterator shares the receiver's underlying refcounted

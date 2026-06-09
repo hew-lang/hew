@@ -38,7 +38,6 @@
 ///
 /// Obtained from `http_client.request(...)`, `http_client.get(...)`, or
 /// `http_client.post(...)`. Must be freed with `free()` when no longer needed.
-#[opaque]
 type Response {
 }
 

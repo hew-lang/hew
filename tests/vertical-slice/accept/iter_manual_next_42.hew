@@ -1,0 +1,21 @@
+fn main() -> i64 {
+    let values: Vec<i64> = Vec::new();
+    values.push(40);
+    values.push(2);
+
+    var iter = values.into_iter();
+    var sum: i64 = 0;
+
+    match iter.next() {
+        Some(first) => { sum = sum + first; },
+        None => { return 1; },
+    }
+    match iter.next() {
+        Some(second) => { sum = sum + second; },
+        None => { return 2; },
+    }
+    match iter.next() {
+        Some(_) => { return 3; },
+        None => { return sum; },
+    }
+}

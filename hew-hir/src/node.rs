@@ -917,6 +917,16 @@ pub enum HirExprKind {
         operand: Box<HirExpr>,
         operand_ty: ResolvedTy,
     },
+    /// Explicit numeric `as` cast admitted by the checker.
+    ///
+    /// `from_ty` and `to_ty` carry the checker/HIR boundary types used by MIR
+    /// and codegen to choose truncation, extension, and int/float conversion
+    /// instructions. Non-numeric casts never construct this node.
+    NumericCast {
+        value: Box<HirExpr>,
+        from_ty: ResolvedTy,
+        to_ty: ResolvedTy,
+    },
     /// Tuple literal construction (`(1, 2)`, `(a, b, c)`).
     ///
     /// Produced from `Expr::Tuple(elems)` when the checker has populated
@@ -1621,6 +1631,8 @@ pub struct HirRegexLiteral {
 /// `EnumVariant` carries the data that was previously split across
 /// `variant_match: Option<VariantMatch>` and `variant_idx: Option<u32>`.
 /// `Literal` is the scalar literal arm for top-level i64 / bool / char matches.
+/// `RecordProject` / `TupleProject` are irrefutable aggregate destructures whose
+/// bindings are materialised from the scrutinee at arm-body entry.
 /// `Regex` is the regex-pattern arm added for string-scrutinee matches.
 ///
 /// MIR lowering (slice 4) dispatches on this enum; codegen (slice 5) drives
@@ -1647,6 +1659,14 @@ pub enum HirMatchArmPredicate {
     /// scrutinee/comparand type so MIR can allocate the constant local at the
     /// same integer width as the scrutinee before emitting `IntCmp Eq`.
     Literal { lit: HirLiteral, ty: ResolvedTy },
+    /// A plain record match-arm project pattern (e.g. `Point { x, y }`).
+    ///
+    /// The resolved scrutinee type is carried so HIR verification can guard the
+    /// checker/HIR boundary. MIR still uses the scrutinee expression type as the
+    /// source of truth for layout lookup and field projection.
+    RecordProject { ty: ResolvedTy },
+    /// A tuple match-arm project pattern (e.g. `(a, b)`).
+    TupleProject { arity: u32 },
     /// A regex literal pattern `re"..."` in a string-scrutinee match arm.
     ///
     /// `literal_id` is the index into `HirModule::regex_literals` for the

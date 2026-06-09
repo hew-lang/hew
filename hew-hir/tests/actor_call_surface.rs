@@ -125,7 +125,9 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(end, out);
             }
         }
-        HirExprKind::CoerceToDynTrait { value, .. } => visit_expr(value, out),
+        HirExprKind::CoerceToDynTrait { value, .. } | HirExprKind::NumericCast { value, .. } => {
+            visit_expr(value, out);
+        }
         HirExprKind::MachineEmit { fields, .. } => {
             for (_, field_val) in fields {
                 visit_expr(field_val, out);

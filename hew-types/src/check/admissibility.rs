@@ -1845,7 +1845,6 @@ mod tests {
                 }],
                 return_type: Ty::Unit,
                 is_async: false,
-                is_pure: false,
                 accepts_kwargs: false,
                 doc_comment: None,
                 extern_symbol: None,

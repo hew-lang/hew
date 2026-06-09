@@ -1,0 +1,7 @@
+fn main() -> i64 {
+    var sum: i64 = 0;
+    for i in 0..7 {
+        sum = sum + i;
+    }
+    return sum;
+}

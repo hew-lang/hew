@@ -190,3 +190,54 @@ fn saturating_sub_clamps_to_signed_min() {
     let ll = compile_to_ll(src, "saturating_sub_i64_min");
     assert_eq!(jit_run_main(&ll), 1);
 }
+
+#[test]
+fn numeric_cast_i64_to_i32_truncates_real_bits() {
+    let src = r"
+        fn main() -> i64 {
+            let x: i64 = 4294967296 + 5;
+            let y: i32 = x as i32;
+            y as i64
+        }
+    ";
+    let ll = compile_to_ll(src, "numeric_cast_i64_i32_trunc");
+    assert_eq!(jit_run_main(&ll), 5);
+}
+
+#[test]
+fn numeric_cast_i32_to_i64_widens() {
+    let src = r"
+        fn main() -> i64 {
+            let x: i32 = 123;
+            x as i64
+        }
+    ";
+    let ll = compile_to_ll(src, "numeric_cast_i32_i64_widen");
+    assert_eq!(jit_run_main(&ll), 123);
+}
+
+#[test]
+fn numeric_cast_i64_to_f64_and_back_executes() {
+    let src = r"
+        fn main() -> i64 {
+            let x: i64 = 7;
+            let f: f64 = x as f64;
+            f as i64
+        }
+    ";
+    let ll = compile_to_ll(src, "numeric_cast_i64_f64_roundtrip");
+    assert_eq!(jit_run_main(&ll), 7);
+}
+
+#[test]
+fn numeric_cast_bool_to_int_and_back_executes() {
+    let src = r"
+        fn main() -> i64 {
+            let n: u16 = true as u16;
+            let b: bool = n as bool;
+            if b { n as i64 } else { 0 }
+        }
+    ";
+    let ll = compile_to_ll(src, "numeric_cast_bool_int_roundtrip");
+    assert_eq!(jit_run_main(&ll), 1);
+}

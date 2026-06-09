@@ -31,20 +31,6 @@ pub fn program_eq_ignoring_spans(a: &Program, b: &Program) -> bool {
     va == vb
 }
 
-/// Produce a pretty-printed, span-stripped JSON rendering of `program`.
-/// Useful as a diff substrate when a round-trip assertion fails.
-///
-/// # Panics
-///
-/// Panics if `Program` fails to serialise to JSON (see
-/// [`program_eq_ignoring_spans`] — same invariant).
-#[must_use]
-pub fn program_debug_json(program: &Program) -> String {
-    let mut v = serde_json::to_value(program).expect("Program serialises to JSON");
-    strip_spans(&mut v);
-    serde_json::to_string_pretty(&v).expect("Value serialises to String")
-}
-
 /// Recursively walk a JSON value and replace any span object
 /// (`{"start": int, "end": int}` with exactly those two keys) with `Null`.
 /// `Spanned<T>` is serialised by `serde` as a two-element array `[value,

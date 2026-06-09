@@ -451,6 +451,28 @@ impl Checker {
                     }
                 }
             }
+            Ty::Tuple(items) => {
+                let mut has_binding_identifier = false;
+                let mut has_full_tuple_project = false;
+                for arm in arms {
+                    if arm.guard.is_some() {
+                        continue;
+                    }
+                    visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
+                        Pattern::Identifier(_) => {
+                            has_binding_identifier = true;
+                        }
+                        Pattern::Tuple(pats) if pats.len() == items.len() => {
+                            has_full_tuple_project = true;
+                        }
+                        _ => {}
+                    });
+                    if has_binding_identifier || has_full_tuple_project {
+                        return;
+                    }
+                }
+                self.warn_non_exhaustive(span, "consider adding a wildcard `_` arm");
+            }
             _ => {
                 // For non-enum types (int, float, string, etc.), check for catch-all patterns.
                 let mut has_catch_all = false;
@@ -474,7 +496,10 @@ impl Checker {
                 }
                 if !has_catch_all {
                     if has_literal_arm
-                        && matches!(scrutinee_ty, Ty::I64 | Ty::IntLiteral | Ty::Char)
+                        && matches!(
+                            scrutinee_ty,
+                            Ty::I64 | Ty::IntLiteral | Ty::Char | Ty::String
+                        )
                     {
                         self.error_non_exhaustive(span, &["_".to_string()], |_| "_".to_string());
                     } else {

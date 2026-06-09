@@ -1288,8 +1288,15 @@ impl Checker {
     ) -> Option<Ty> {
         let sig = self.lookup_named_method_sig(receiver_type_name, type_args, method)?;
         sig.extern_symbol.as_ref()?;
-        let applied_sig = self.apply_instantiated_call_signature(
+        let method_key = format!("{receiver_type_name}::{method}");
+        let assoc_bindings = self
+            .fn_type_param_assoc_bindings
+            .get(&method_key)
+            .cloned()
+            .unwrap_or_default();
+        let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
+            &assoc_bindings,
             None,
             args,
             span,
@@ -1702,6 +1709,126 @@ impl Checker {
                 self.enforce_actor_boundary_send(expr, sp, sp, &ty);
             }
         }
+    }
+
+    fn call_arg_types(&self, args: &[CallArg]) -> Vec<Option<Ty>> {
+        args.iter()
+            .map(|arg| {
+                let (_expr, sp) = arg.expr();
+                self.expr_types.get(&SpanKey::from(sp)).cloned()
+            })
+            .collect()
+    }
+
+    fn serializable_failure_reason(&self, ty: &Ty) -> String {
+        let mut missing = Vec::new();
+        if !self.registry.implements_marker(ty, MarkerTrait::Encode) {
+            missing.push("Encode");
+        }
+        if !self.registry.implements_marker(ty, MarkerTrait::Decode) {
+            missing.push("Decode");
+        }
+        if missing.is_empty() {
+            "it is outside the current Serializable subset (scalars, string, bytes, \
+             tuples/arrays, records/enums, or wire-marked types whose members are Serializable)"
+                .to_string()
+        } else {
+            format!("missing required marker trait(s): {}", missing.join(" + "))
+        }
+    }
+
+    fn report_nonserializable_remote_actor_msg(&mut self, ty: &Ty, span: &Span) {
+        self.report_error(
+            TypeErrorKind::BoundsNotSatisfied,
+            span,
+            format!(
+                "remote actor message type `{}` must implement Serializable before it can \
+                 cross a RemotePid boundary; {}",
+                ty.user_facing(),
+                self.serializable_failure_reason(ty)
+            ),
+        );
+    }
+
+    fn enforce_remote_actor_msg_serializable(&mut self, ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(ty);
+        if matches!(resolved, Ty::Var(_) | Ty::Error) {
+            return true;
+        }
+        if self
+            .registry
+            .implements_marker(&resolved, MarkerTrait::Serializable)
+        {
+            true
+        } else {
+            self.report_nonserializable_remote_actor_msg(&resolved, span);
+            false
+        }
+    }
+
+    /// Enforce the A640 remote serializability floor after method signature
+    /// application has populated `expr_types` for every argument.
+    fn enforce_remote_actor_method_serializable_args(&mut self, args: &[CallArg]) -> bool {
+        let arg_types = self.call_arg_types(args);
+        let mut all_serializable = true;
+        for (arg, ty_opt) in args.iter().zip(arg_types) {
+            let (_expr, sp) = arg.expr();
+            if let Some(ty) = ty_opt {
+                all_serializable &= self.enforce_remote_actor_msg_serializable(&ty, sp);
+            }
+        }
+        all_serializable
+    }
+
+    fn is_unresolved_pid_msg_projection(ty: &Ty) -> bool {
+        matches!(
+            ty,
+            Ty::AssocType {
+                trait_name,
+                assoc_name,
+                ..
+            } if trait_name.as_ref() == "Pid" && assoc_name.as_ref() == "Msg"
+        )
+    }
+
+    fn report_pid_polymorphic_tell_fail_closed(
+        &mut self,
+        type_param_name: &str,
+        ty: &Ty,
+        span: &Span,
+    ) {
+        self.report_error(
+            TypeErrorKind::BoundsNotSatisfied,
+            span,
+            format!(
+                "generic `Pid::tell` on `{type_param_name}` is fail-closed: `{}` must be proven \
+                 Serializable, but the current checker cannot express the required \
+                 `P::Msg: Serializable` associated-type projection bound yet (TODO A640)",
+                ty.user_facing()
+            ),
+        );
+    }
+
+    fn enforce_pid_polymorphic_tell_serializable_args(
+        &mut self,
+        args: &[CallArg],
+        type_param_name: &str,
+    ) -> bool {
+        let arg_types = self.call_arg_types(args);
+        let mut all_serializable = true;
+        for (arg, ty_opt) in args.iter().zip(arg_types) {
+            let (_expr, sp) = arg.expr();
+            if let Some(ty) = ty_opt {
+                let resolved = self.subst.resolve(&ty);
+                if Self::is_unresolved_pid_msg_projection(&resolved) {
+                    self.report_pid_polymorphic_tell_fail_closed(type_param_name, &resolved, sp);
+                    all_serializable = false;
+                } else {
+                    all_serializable &= self.enforce_remote_actor_msg_serializable(&resolved, sp);
+                }
+            }
+        }
+        all_serializable
     }
 
     pub(super) fn check_named_method_fallback(
@@ -3010,6 +3137,30 @@ impl Checker {
             .vec_element_contains_structural_array(&elem_ty_before, &mut elem_ty_before_visiting);
         let _ = self.validate_vec_element_type(&elem_ty, span);
         let result = match method {
+            "into_iter" => {
+                self.check_arity(args, 0, "`Vec::into_iter`", span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if let Ok(elem_resolved) = ResolvedTy::from_ty(&resolved_elem) {
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::PrimitiveTraitImpl {
+                            trait_name: "IntoIterator".to_string(),
+                            canonical_receiver: "Vec".to_string(),
+                        },
+                    );
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::BuiltinVecIntoIter {
+                            elem_ty: elem_resolved,
+                        },
+                    );
+                }
+                Ty::Named {
+                    name: "VecIter".to_string(),
+                    args: vec![resolved_elem],
+                    builtin: None,
+                }
+            }
             "contains" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -3458,8 +3609,14 @@ impl Checker {
                     }
                     self.record_module_qualified_stdlib_call_rewrite_if_any(name, method, span);
                     self.record_module_qualified_user_call_rewrite_if_any(name, method, span);
-                    let applied_sig = self.apply_instantiated_call_signature(
+                    let assoc_bindings = self
+                        .fn_type_param_assoc_bindings
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_default();
+                    let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
+                        &assoc_bindings,
                         None,
                         args,
                         span,
@@ -4077,6 +4234,11 @@ impl Checker {
                         );
                         if method == "tell" {
                             self.enforce_actor_method_send_args(args);
+                            // A640/S3: this is only a compile-time floor. The
+                            // native RemotePid lowering still wraps raw
+                            // in-memory ABI bytes in the CBOR envelope; a
+                            // structural Hew-value encoder is a later slice.
+                            self.enforce_remote_actor_method_serializable_args(args);
                             // S5: real RemotePid<T>::tell lowering. Record a
                             // direct-call rewrite so HIR/MIR lower the call
                             // to `hew_remote_pid_tell`, which codegen
@@ -4820,7 +4982,20 @@ impl Checker {
                         || self.resolved_calls.contains_key(&span_key);
                     if !already_rewritten {
                         let method_key = format!("{name}::{method}");
-                        if self.fn_sigs.contains_key(&method_key) {
+                        if name == "VecIter" && method == "next" {
+                            if let Some(elem_ty) = type_args.first() {
+                                if let Ok(elem_resolved) =
+                                    ResolvedTy::from_ty(&self.subst.resolve(elem_ty))
+                                {
+                                    self.record_method_call_rewrite(
+                                        span,
+                                        MethodCallRewrite::BuiltinVecIterNext {
+                                            elem_ty: elem_resolved,
+                                        },
+                                    );
+                                }
+                            }
+                        } else if self.fn_sigs.contains_key(&method_key) {
                             self.record_method_call_rewrite(
                                 span,
                                 MethodCallRewrite::RewriteToFunction {
@@ -4935,6 +5110,19 @@ impl Checker {
                             },
                             true,
                         );
+                        if declaring_trait == "Pid" && method == "tell" {
+                            // TODO(A640): replace this fail-closed branch with
+                            // a first-class `P::Msg: Serializable` projection
+                            // bound once the checker can express that shape on
+                            // pid-polymorphic call sites. If the projection is
+                            // already concretely bound (for example
+                            // `P: Pid<Msg = Ping>`), the regular Serializable
+                            // gate below proves it and the call may proceed.
+                            if !self.enforce_pid_polymorphic_tell_serializable_args(args, name) {
+                                return Ty::Error;
+                            }
+                            self.enforce_actor_method_send_args(args);
+                        }
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::NamedTypeInstance {
@@ -4958,7 +5146,7 @@ impl Checker {
                                 method_name: method.to_string(),
                             },
                         );
-                        return applied_sig.return_type;
+                        return self.project_assoc_types(&applied_sig.return_type);
                     } else if hits.len() > 1 {
                         // Multiple distinct declaring traits → ambiguous.
                         for arg in args {
@@ -5008,6 +5196,8 @@ impl Checker {
                 }
 
                 if let Some(mut sig) = found_sig {
+                    let pid_tell_dispatch = found_bound
+                        .is_some_and(|bound| bound.trait_name == "Pid" && method == "tell");
                     if let Some(bound) = found_bound {
                         self.record_method_call_receiver_kind(
                             span,
@@ -5102,7 +5292,7 @@ impl Checker {
                             span,
                         );
                     }
-                    self.apply_instantiated_call_signature(
+                    let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
                         None,
                         args,
@@ -5111,8 +5301,14 @@ impl Checker {
                             arity_context: format!("method '{method}'"),
                         },
                         true,
-                    )
-                    .return_type
+                    );
+                    if pid_tell_dispatch {
+                        self.enforce_actor_method_send_args(args);
+                        if !self.enforce_remote_actor_method_serializable_args(args) {
+                            return Ty::Error;
+                        }
+                    }
+                    applied_sig.return_type
                 } else {
                     for arg in args {
                         let (expr, sp) = arg.expr();

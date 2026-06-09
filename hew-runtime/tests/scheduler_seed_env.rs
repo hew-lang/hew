@@ -50,7 +50,7 @@ fn trace_lines(seed: Option<&str>) -> Vec<String> {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .env("HEW_WORKERS", "1")
-        .arg("--ignored")
+        .env("HEW_DEATH_TEST", "seed_trace_helper")
         .arg("--exact")
         .arg("seed_trace_helper")
         .arg("--nocapture");
@@ -78,7 +78,7 @@ fn trace_with_stderr(seed: &str) -> (Vec<String>, String) {
     let output = command
         .env("HEW_WORKERS", "1")
         .env("HEW_SEED", seed)
-        .arg("--ignored")
+        .env("HEW_DEATH_TEST", "seed_trace_helper")
         .arg("--exact")
         .arg("seed_trace_helper")
         .arg("--nocapture")
@@ -123,8 +123,10 @@ fn hew_seed_env_controls_scheduler_seed() {
 }
 
 #[test]
-#[ignore = "subprocess helper; parent test invokes this in isolated scheduler processes"]
 fn seed_trace_helper() {
+    if std::env::var("HEW_DEATH_TEST").map_or(true, |v| v != "seed_trace_helper") {
+        return;
+    }
     TRACE.0.lock().unwrap().clear();
     hew_runtime::scheduler::hew_sched_init();
 

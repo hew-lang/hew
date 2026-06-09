@@ -1,5 +1,7 @@
-use hew_hir::{lower_program, HirExprKind, HirItem, HirLiteral, ResolutionCtx};
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_hir::{
+    lower_program, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate, ResolutionCtx,
+};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
 fn lower_checked(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -102,4 +104,110 @@ fn sum_pair(x: List) -> i64 {
     assert_eq!(arms[0].bindings.len(), 2);
     assert_eq!(arms[0].bindings[0].name, "h");
     assert_eq!(arms[0].bindings[1].name, "t");
+}
+
+#[test]
+fn string_literal_match_lowers_to_literal_predicate() {
+    let output = lower_checked(
+        r#"
+fn classify(s: string) -> i64 {
+    match s {
+        "yes" => 1,
+        "no" => 0,
+        _ => -1,
+    }
+}"#,
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "classify") else {
+        panic!("expected match expression")
+    };
+    assert!(matches!(
+        &arms[0].predicate,
+        HirMatchArmPredicate::Literal {
+            lit: HirLiteral::String(value),
+            ty: ResolvedTy::String,
+        } if value == "yes"
+    ));
+    assert!(matches!(
+        &arms[1].predicate,
+        HirMatchArmPredicate::Literal {
+            lit: HirLiteral::String(value),
+            ty: ResolvedTy::String,
+        } if value == "no"
+    ));
+}
+
+#[test]
+fn record_destructure_match_lowers_to_record_project() {
+    let output = lower_checked(
+        r"
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn sum(p: Point) -> i64 {
+    match p {
+        Point { x, y } => x + y,
+    }
+}",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
+        panic!("expected match expression")
+    };
+    assert!(matches!(
+        &arms[0].predicate,
+        HirMatchArmPredicate::RecordProject {
+            ty: ResolvedTy::Named { name, .. },
+        } if name == "Point"
+    ));
+    assert_eq!(arms[0].bindings.len(), 2);
+    assert_eq!(arms[0].bindings[0].name, "x");
+    assert_eq!(arms[0].bindings[0].field_idx, 0);
+    assert_eq!(arms[0].bindings[1].name, "y");
+    assert_eq!(arms[0].bindings[1].field_idx, 1);
+}
+
+#[test]
+fn tuple_destructure_match_lowers_to_tuple_project() {
+    let output = lower_checked(
+        r"
+fn sum(t: (i64, i64, i64)) -> i64 {
+    match t {
+        (a, b, c) => a + b + c,
+    }
+}",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
+        panic!("expected match expression")
+    };
+    assert!(matches!(
+        &arms[0].predicate,
+        HirMatchArmPredicate::TupleProject { arity: 3 }
+    ));
+    assert_eq!(arms[0].bindings.len(), 3);
+    assert_eq!(arms[0].bindings[0].name, "a");
+    assert_eq!(arms[0].bindings[0].field_idx, 0);
+    assert_eq!(arms[0].bindings[1].name, "b");
+    assert_eq!(arms[0].bindings[1].field_idx, 1);
+    assert_eq!(arms[0].bindings[2].name, "c");
+    assert_eq!(arms[0].bindings[2].field_idx, 2);
 }

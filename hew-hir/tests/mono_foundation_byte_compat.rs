@@ -218,7 +218,7 @@ fn function_mono_key_mangle_matches_legacy() {
 // ── sanitize_for_symbol wiring tests ──────────────────────────────────────
 //
 // These tests guard that `mangle_instantiation` runs origin names through
-// the local `sanitize_for_symbol` helper for every non-Function class, while
+// `hew_hir::sanitize_for_symbol` for every non-Function class, while
 // leaving `SymbolClass::Function` byte-identical to the legacy output.
 //
 // The sanitizer turns any character that is not ASCII alphanumeric or `_`

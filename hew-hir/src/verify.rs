@@ -201,6 +201,55 @@ impl Verifier {
                 self.expr(right);
             }
             HirExprKind::Unary { operand, .. } => self.expr(operand),
+            HirExprKind::NumericCast {
+                value,
+                from_ty,
+                to_ty,
+            } => {
+                self.expr(value);
+                if value.ty != *from_ty {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "numeric cast".to_string(),
+                            reason: format!(
+                                "cast source metadata {} disagrees with value type {}",
+                                from_ty.user_facing(),
+                                value.ty.user_facing()
+                            ),
+                        },
+                        expr.span.clone(),
+                        "numeric cast source type metadata must match the lowered operand",
+                    ));
+                }
+                if expr.ty != *to_ty {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "numeric cast".to_string(),
+                            reason: format!(
+                                "cast target metadata {} disagrees with expression type {}",
+                                to_ty.user_facing(),
+                                expr.ty.user_facing()
+                            ),
+                        },
+                        expr.span.clone(),
+                        "numeric cast target type metadata must match the expression type",
+                    ));
+                }
+                if !from_ty.can_explicitly_numeric_cast_to(to_ty) {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "numeric cast".to_string(),
+                            reason: format!(
+                                "cast from {} to {} is outside the checker-admitted numeric matrix",
+                                from_ty.user_facing(),
+                                to_ty.user_facing()
+                            ),
+                        },
+                        expr.span.clone(),
+                        "numeric cast HIR node carries a non-numeric cast",
+                    ));
+                }
+            }
             HirExprKind::TupleLiteral { elements } => {
                 // Arity check: expr.ty must be ResolvedTy::Tuple with width
                 // matching elements.len(). Checker-authoritative invariant: the
@@ -505,8 +554,28 @@ impl Verifier {
             HirExprKind::Match { scrutinee, arms } => {
                 self.expr(scrutinee);
                 for arm in arms {
-                    if let HirMatchArmPredicate::Literal { lit, ty } = &arm.predicate {
-                        self.match_literal_predicate(lit, ty, arm.span.clone());
+                    match &arm.predicate {
+                        HirMatchArmPredicate::Literal { lit, ty } => {
+                            self.match_literal_predicate(lit, ty, arm.span.clone());
+                        }
+                        HirMatchArmPredicate::RecordProject { ty } => {
+                            self.match_record_project_predicate(
+                                ty,
+                                &scrutinee.ty,
+                                arm.span.clone(),
+                            );
+                        }
+                        HirMatchArmPredicate::TupleProject { arity } => {
+                            self.match_tuple_project_predicate(
+                                *arity,
+                                &scrutinee.ty,
+                                &arm.bindings,
+                                arm.span.clone(),
+                            );
+                        }
+                        HirMatchArmPredicate::Wildcard
+                        | HirMatchArmPredicate::EnumVariant { .. }
+                        | HirMatchArmPredicate::Regex { .. } => {}
                     }
                     for binding in &arm.bindings {
                         self.binding(binding.binding, arm.span.clone());
@@ -580,6 +649,7 @@ impl Verifier {
             (HirLiteral::Integer(_), ResolvedTy::I64)
                 | (HirLiteral::Bool(_), ResolvedTy::Bool)
                 | (HirLiteral::Char(_), ResolvedTy::Char)
+                | (HirLiteral::String(_), ResolvedTy::String)
         );
         if !valid {
             self.diagnostics.push(self.diagnostic(
@@ -587,10 +657,85 @@ impl Verifier {
                     construct: format!(
                         "unsupported top-level literal match predicate {lit:?}: {ty:?}"
                     ),
-                    owning_pass: "match-literal-stage2".to_string(),
+                    owning_pass: "match-literal".to_string(),
                 },
                 span,
-                "literal match predicates are currently limited to i64, bool, and char",
+                "literal match predicates are currently limited to i64, bool, char, and string",
+            ));
+        }
+    }
+
+    fn match_record_project_predicate(
+        &mut self,
+        predicate_ty: &ResolvedTy,
+        scrutinee_ty: &ResolvedTy,
+        span: Range<usize>,
+    ) {
+        if predicate_ty != scrutinee_ty || !matches!(predicate_ty, ResolvedTy::Named { .. }) {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "record match project".to_string(),
+                    reason: format!(
+                        "predicate type {} disagrees with scrutinee type {}",
+                        predicate_ty.user_facing(),
+                        scrutinee_ty.user_facing()
+                    ),
+                },
+                span,
+                "record project predicates must carry the resolved record scrutinee type",
+            ));
+        }
+    }
+
+    fn match_tuple_project_predicate(
+        &mut self,
+        arity: u32,
+        scrutinee_ty: &ResolvedTy,
+        bindings: &[crate::node::HirMatchArmBinding],
+        span: Range<usize>,
+    ) {
+        let ResolvedTy::Tuple(items) = scrutinee_ty else {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "tuple match project".to_string(),
+                    reason: format!(
+                        "tuple project predicate on non-tuple scrutinee {}",
+                        scrutinee_ty.user_facing()
+                    ),
+                },
+                span,
+                "tuple project predicates require a tuple-typed scrutinee",
+            ));
+            return;
+        };
+        if usize::try_from(arity).ok() != Some(items.len()) {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "tuple match project".to_string(),
+                    reason: format!(
+                        "predicate arity {arity} disagrees with scrutinee arity {}",
+                        items.len()
+                    ),
+                },
+                span.clone(),
+                "tuple project arity must match the scrutinee tuple width",
+            ));
+        }
+        if let Some(binding) = bindings.iter().find(|binding| {
+            usize::try_from(binding.field_idx).map_or(true, |idx| idx >= items.len())
+        }) {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "tuple match project".to_string(),
+                    reason: format!(
+                        "binding `{}` projects field {} from arity {} tuple",
+                        binding.name,
+                        binding.field_idx,
+                        items.len()
+                    ),
+                },
+                span,
+                "tuple project binding indices must be within tuple arity",
             ));
         }
     }

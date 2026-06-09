@@ -62,10 +62,12 @@ pub unsafe extern "C" fn hew_trap_with_code(code: c_int) {
         panic!("hew_trap_with_code: trap code {code}");
     }
     if let Some(exit_code) = crate::internal::types::canonical_trap_wasi_exit_code(code) {
+        eprintln!("__hew_wasi_trap_exit_code={exit_code}");
         // JUSTIFIED: wasm32 non-actor traps terminate the process immediately,
         // so bypassing Rust Drop is deliberate and the WASI host reclaims
-        // process resources. Actor paths stamp `actor.error_code` and unwind
-        // above; they do not use this process-exit route.
-        std::process::exit(exit_code);
+        // process resources. Wasmtime rejects WASI proc_exit statuses above
+        // 126, so the Hew CLI captures the sentinel above and maps this
+        // transport status back to the canonical trap code.
+        std::process::exit(1);
     }
 }

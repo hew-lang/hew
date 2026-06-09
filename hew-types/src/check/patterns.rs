@@ -143,6 +143,35 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
     }
 }
 
+/// Classify subpatterns that are not yet safe for plain record/tuple project
+/// patterns.
+///
+/// Enum payload patterns can carry literal predicates today; plain
+/// record/tuple destructures cannot, so accepting `Point { x: 0, y }` or
+/// `(0, y)` would silently widen the arm to an irrefutable project. Keep those
+/// shapes fail-closed until project predicates grow nested comparisons.
+fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static str> {
+    match pattern {
+        Pattern::Wildcard => None,
+        Pattern::Identifier(name) => {
+            let is_constructor_like =
+                name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
+            if is_constructor_like {
+                Some("nested constructor")
+            } else {
+                None
+            }
+        }
+        Pattern::Tuple(pats) if pats.is_empty() => None,
+        Pattern::Literal(lit) => Some(literal_pattern_label(lit)),
+        Pattern::Constructor { .. } => Some("nested constructor"),
+        Pattern::Struct { .. } => Some("struct destructure"),
+        Pattern::Tuple(_) => Some("tuple destructure"),
+        Pattern::Or(_, _) => Some("or-pattern"),
+        Pattern::Regex { .. } => Some("regex pattern"),
+    }
+}
+
 impl Checker {
     fn machine_event_type_outside_transition(&self, ty: &Ty) -> Option<String> {
         let type_name = ty.type_name()?;
@@ -232,7 +261,9 @@ impl Checker {
         is_mutable: bool,
         span: &Span,
     ) {
-        let ty = &self.subst.resolve(ty);
+        let resolved_ty = self.subst.resolve(ty);
+        let projected_ty = self.project_assoc_types(&resolved_ty);
+        let ty = &projected_ty;
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Literal(literal) => {
@@ -718,7 +749,7 @@ impl Checker {
                         binding_name_for_pattern(sub_pat).map(|binding_name| PayloadBinding {
                             field_idx,
                             binding_name,
-                            ty: ty.clone(),
+                            ty: self.project_assoc_types(ty),
                         })
                     })
                     .collect();
@@ -735,10 +766,10 @@ impl Checker {
                 let type_name_opt = scrutinee_ty.type_name();
                 // variant_match: Some(..) for enum struct-variants, None for plain records.
                 // field_tys: name → resolved Ty.
-                // field_order: Some(Vec<name>) in source declaration order for enum
-                //   struct-variants (so field_idx reflects the Vec position, not
-                //   alphabetical sort).  None for plain records (td.fields is a HashMap
-                //   so declaration order is not preserved; alphabetical sort is used).
+                // field_order: Some(Vec<name>) in source declaration order.  Enum
+                //   struct-variants use their variant field Vec; plain records use
+                //   TypeDef::field_order so PayloadBinding.field_idx matches MIR's
+                //   RecordFieldLoad declaration-order offset.
                 let (variant_match, field_tys, field_order) = if let Some(type_name) = type_name_opt
                 {
                     if let Some(td) = self.lookup_type_def(type_name) {
@@ -779,9 +810,10 @@ impl Checker {
                                 };
                             (Some(vm), field_ty_map, order)
                         } else {
-                            // Plain record struct — td.fields is a HashMap so
-                            // declaration order is not preserved here; fall back
-                            // to alphabetical sort for field_idx.
+                            // Plain record struct — TypeDef::field_order is the
+                            // canonical ABI order used by MIR/codegen. Synthetic
+                            // test TypeDefs may leave it empty, in which case we
+                            // fall back to sorted field names only for recovery.
                             let type_params = td.type_params.clone();
                             let type_args = if let Ty::Named { args, .. } = scrutinee_ty {
                                 args.clone()
@@ -798,7 +830,14 @@ impl Checker {
                                     )
                                 })
                                 .collect();
-                            (None, ftm, None)
+                            let order = if td.field_order.is_empty() {
+                                let mut names: Vec<String> = ftm.keys().cloned().collect();
+                                names.sort();
+                                names
+                            } else {
+                                td.field_order.clone()
+                            };
+                            (None, ftm, Some(order))
                         }
                     } else {
                         (None, std::collections::HashMap::new(), None)
@@ -809,9 +848,9 @@ impl Checker {
 
                 let is_enum_variant = variant_match.is_some();
                 // Reject unsupported payload subpatterns in enum struct-variant
-                // arms.  Plain record struct patterns are out of scope.  A field
-                // with no explicit subpattern (e.g. `Shape::Move { x, y }`) is
-                // a shorthand binding and is always supported.
+                // arms. A field with no explicit subpattern (e.g.
+                // `Shape::Move { x, y }`) is a shorthand binding and is always
+                // supported.
                 if is_enum_variant {
                     for pf in fields {
                         if let Some((sub_pat, sub_span)) = &pf.pattern {
@@ -836,23 +875,65 @@ impl Checker {
                             }
                         }
                     }
+                } else {
+                    for pf in fields {
+                        if let Some((sub_pat, sub_span)) = &pf.pattern {
+                            if let Some(label) = unsupported_project_subpattern_label(sub_pat) {
+                                self.report_error_with_note(
+                                    crate::error::TypeErrorKind::InvalidOperation,
+                                    sub_span,
+                                    format!(
+                                        "field subpattern `{label}` in `{name} {{ {} }}` is not yet supported",
+                                        pf.name
+                                    ),
+                                    pattern_span,
+                                    "v0.5 record match destructure supports field bindings (`x`), \
+                                     explicit binding aliases (`x: y`), and wildcards (`x: _`); \
+                                     nested/literal field predicates are reserved for a future \
+                                     match-destructure stage"
+                                        .to_string(),
+                                );
+                                return;
+                            }
+                        }
+                    }
                 }
-                // Compute field_idx using declaration order when available (enum
-                // struct-variants), otherwise fall back to alphabetical sort (plain
-                // records, where td.fields is a HashMap with no preserved order).
+                // Compute field_idx using declaration order. For plain records,
+                // missing fields require `..`; because rest patterns are deferred
+                // in this stage, fail closed instead of implicitly widening.
                 let ordered_field_names: Vec<String> = field_order.unwrap_or_else(|| {
                     let mut names: Vec<String> = field_tys.keys().cloned().collect();
                     names.sort();
                     names
                 });
+                if !is_enum_variant {
+                    let has_unknown_field =
+                        fields.iter().any(|pf| !field_tys.contains_key(&pf.name));
+                    if !has_unknown_field {
+                        let specified: HashSet<&str> =
+                            fields.iter().map(|pf| pf.name.as_str()).collect();
+                        let missing: Vec<String> = ordered_field_names
+                            .iter()
+                            .filter(|field_name| !specified.contains(field_name.as_str()))
+                            .cloned()
+                            .collect();
+                        if !missing.is_empty() {
+                            self.report_error(
+                                crate::error::TypeErrorKind::InvalidOperation,
+                                pattern_span,
+                                format!(
+                                    "record pattern `{name}` omits field(s) {}; rest patterns (`..`) are not yet supported",
+                                    missing.join(", ")
+                                ),
+                            );
+                        }
+                    }
+                }
                 let payload_bindings: Vec<PayloadBinding> = fields
                     .iter()
                     .filter_map(|pf| {
-                        let field_idx = ordered_field_names
-                            .iter()
-                            .position(|n| n == &pf.name)
-                            .unwrap_or(0);
-                        let ty = field_tys.get(&pf.name).cloned().unwrap_or(Ty::Error);
+                        let field_idx = ordered_field_names.iter().position(|n| n == &pf.name)?;
+                        let ty = field_tys.get(&pf.name).cloned()?;
                         // Only emit a PayloadBinding for the concrete binding
                         // name, not for sub-patterns (those are handled by
                         // recursion in bind_pattern, not recorded here).
@@ -864,7 +945,7 @@ impl Checker {
                         binding_name.map(|binding_name| PayloadBinding {
                             field_idx,
                             binding_name,
-                            ty,
+                            ty: self.project_assoc_types(&ty),
                         })
                     })
                     .collect();
@@ -880,6 +961,23 @@ impl Checker {
                 }
             }
             Pattern::Tuple(pats) => {
+                for (sub_pat, sub_span) in pats {
+                    if let Some(label) = unsupported_project_subpattern_label(sub_pat) {
+                        self.report_error_with_note(
+                            crate::error::TypeErrorKind::InvalidOperation,
+                            sub_span,
+                            format!(
+                                "tuple subpattern `{label}` in match destructure is not yet supported"
+                            ),
+                            pattern_span,
+                            "v0.5 tuple match destructure supports element bindings (`x`), \
+                             wildcards (`_`), and unit subpatterns (`()`); nested/literal \
+                             element predicates are reserved for a future match-destructure stage"
+                                .to_string(),
+                        );
+                        return;
+                    }
+                }
                 let elem_tys: Vec<Ty> = if let Ty::Tuple(tys) = scrutinee_ty {
                     tys.clone()
                 } else {
@@ -893,7 +991,7 @@ impl Checker {
                         binding_name_for_pattern(sub_pat).map(|binding_name| PayloadBinding {
                             field_idx,
                             binding_name,
-                            ty: ty.clone(),
+                            ty: self.project_assoc_types(ty),
                         })
                     })
                     .collect();

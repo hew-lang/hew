@@ -18,7 +18,6 @@
 // entries under mangled names) is future work; this fixture is the
 // compile-time surface companion exercising the bound-enforcement
 // pipeline that those later substrate changes will sit underneath.
-
 trait Resource {
     fn close(self);
 }
@@ -38,10 +37,18 @@ machine Bounded<T: Resource> {
     event Start { handle: T; }
     event Finish;
 
-    on Start: Idle -> Holding { Holding { handle: event.handle } }
-    on Finish: Holding -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Finish: _ -> _ { state }
+    on Start: Idle -> Holding {
+        Holding { handle: event.handle }
+    }
+    on Finish: Holding -> Idle {
+        Idle
+    }
+    on Start: _ -> _ {
+        state
+    }
+    on Finish: _ -> _ {
+        state
+    }
 }
 
 fn main() {

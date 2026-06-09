@@ -202,13 +202,45 @@ impl Checker {
         (freshened_params, freshened_ret, resolved_type_args)
     }
 
+    #[cfg(test)]
     pub(super) fn enforce_type_param_bounds(&mut self, sig: &FnSig, type_args: &[Ty], span: &Span) {
-        self.enforce_named_type_param_bounds(
+        self.enforce_type_param_bounds_with_assoc(sig, &HashMap::new(), type_args, span);
+    }
+
+    pub(super) fn enforce_type_param_bounds_with_assoc(
+        &mut self,
+        sig: &FnSig,
+        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
+        let assoc_bindings =
+            self.instantiate_type_param_assoc_bindings(sig, type_param_assoc_bindings, type_args);
+        self.enforce_named_type_param_bounds_with_assoc(
             &sig.type_params,
             &sig.type_param_bounds,
+            &assoc_bindings,
             type_args,
             span,
         );
+    }
+
+    fn instantiate_type_param_assoc_bindings(
+        &self,
+        sig: &FnSig,
+        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
+        type_args: &[Ty],
+    ) -> HashMap<(String, String, String), Ty> {
+        let mut instantiated = HashMap::with_capacity(type_param_assoc_bindings.len());
+        for (key, binding) in type_param_assoc_bindings {
+            let mut ty = binding.clone();
+            for (type_param, type_arg) in sig.type_params.iter().zip(type_args.iter()) {
+                let resolved_arg = self.subst.resolve(type_arg);
+                ty = ty.substitute_named_param(type_param, &resolved_arg);
+            }
+            instantiated.insert(key.clone(), ty);
+        }
+        instantiated
     }
 
     /// Canonical machine-instantiation bound-enforcement entry point.
@@ -368,13 +400,36 @@ impl Checker {
         type_args: &[Ty],
         span: &Span,
     ) {
+        self.enforce_named_type_param_bounds_with_assoc(
+            type_params,
+            type_param_bounds,
+            &HashMap::new(),
+            type_args,
+            span,
+        );
+    }
+
+    fn enforce_named_type_param_bounds_with_assoc(
+        &mut self,
+        type_params: &[String],
+        type_param_bounds: &HashMap<String, Vec<String>>,
+        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
         if type_params.is_empty() {
             return;
         }
         for (idx, param_name) in type_params.iter().enumerate() {
-            let Some(bounds) = type_param_bounds.get(param_name) else {
+            let bounds = type_param_bounds
+                .get(param_name)
+                .cloned()
+                .unwrap_or_default();
+            let assoc_bindings =
+                Self::assoc_bindings_for_type_param(type_param_assoc_bindings, param_name);
+            if bounds.is_empty() && assoc_bindings.is_empty() {
                 continue;
-            };
+            }
             let Some(type_arg) = type_args.get(idx) else {
                 continue;
             };
@@ -389,14 +444,34 @@ impl Checker {
             if resolved_arg.has_inference_var() {
                 self.deferred_bound_checks.push(DeferredBoundCheck {
                     type_param: param_name.clone(),
-                    bounds: bounds.clone(),
+                    bounds,
+                    assoc_bindings,
                     type_arg: type_arg.clone(),
                     span: span.clone(),
                 });
                 continue;
             }
-            self.report_unsatisfied_type_param_bounds(param_name, bounds, &resolved_arg, span);
+            self.report_unsatisfied_type_param_bounds(param_name, &bounds, &resolved_arg, span);
+            self.report_unsatisfied_assoc_type_bindings(
+                param_name,
+                &assoc_bindings,
+                &resolved_arg,
+                span,
+            );
         }
+    }
+
+    fn assoc_bindings_for_type_param(
+        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
+        param_name: &str,
+    ) -> Vec<(String, String, Ty)> {
+        type_param_assoc_bindings
+            .iter()
+            .filter(|((param, _, _), _)| param == param_name)
+            .map(|((_, trait_name, assoc_name), ty)| {
+                (trait_name.clone(), assoc_name.clone(), ty.clone())
+            })
+            .collect()
     }
 
     pub(super) fn drain_deferred_bound_checks(&mut self) {
@@ -411,6 +486,12 @@ impl Checker {
             self.report_unsatisfied_type_param_bounds(
                 &entry.type_param,
                 &entry.bounds,
+                &resolved_arg,
+                &entry.span,
+            );
+            self.report_unsatisfied_assoc_type_bindings(
+                &entry.type_param,
+                &entry.assoc_bindings,
                 &resolved_arg,
                 &entry.span,
             );
@@ -438,6 +519,44 @@ impl Checker {
                 span,
                 msg,
                 suggestions,
+            );
+        }
+    }
+
+    fn report_unsatisfied_assoc_type_bindings(
+        &mut self,
+        param_name: &str,
+        assoc_bindings: &[(String, String, Ty)],
+        resolved_arg: &Ty,
+        span: &Span,
+    ) {
+        for (trait_name, assoc_name, expected_ty) in assoc_bindings {
+            if !self.type_satisfies_trait_bound(resolved_arg, trait_name) {
+                continue;
+            }
+            let actual = self.project_assoc_types(&Ty::AssocType {
+                base: Box::new(resolved_arg.clone()),
+                trait_name: trait_name.clone().into_boxed_str(),
+                assoc_name: assoc_name.clone().into_boxed_str(),
+            });
+            let actual = self.subst.resolve(&actual).materialize_literal_defaults();
+            let expected = self
+                .subst
+                .resolve(expected_ty)
+                .materialize_literal_defaults();
+            if actual.has_inference_var() || expected.has_inference_var() || actual == expected {
+                continue;
+            }
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "type `{}` does not satisfy associated type binding \
+                     `{param_name}: {trait_name}<{assoc_name} = {}>`; found `{}`",
+                    resolved_arg.user_facing(),
+                    expected.user_facing(),
+                    actual.user_facing()
+                ),
             );
         }
     }
@@ -637,7 +756,7 @@ impl Checker {
         // bodies, impl-method scopes, and any other context that pushes
         // `current_type_param_bounds` without setting `current_function`).
         for frame in self.current_type_param_bounds.iter().rev() {
-            if let Some(bounds) = frame.get(param_name) {
+            if let Some(bounds) = frame.bounds.get(param_name) {
                 if bounds
                     .iter()
                     .any(|b| b == trait_name || self.trait_extends(b, trait_name))
@@ -1038,7 +1157,6 @@ impl Checker {
                 param_names,
                 params,
                 return_type,
-                is_pure: m.is_pure,
                 requires_mutable_receiver,
                 ..FnSig::default()
             });
@@ -1173,7 +1291,6 @@ impl Checker {
                     param_names,
                     params,
                     return_type,
-                    is_pure: m.is_pure,
                     requires_mutable_receiver,
                     ..FnSig::default()
                 },

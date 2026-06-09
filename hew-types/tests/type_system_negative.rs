@@ -793,32 +793,7 @@ fn invalid_operation_string_plus_int() {
     );
 }
 
-// ── 9. PurityViolation — call impure fn from pure fn ────────────────
-// PurityViolation requires the `pure fn` keyword. Regular non-receive
-// actor functions are NOT automatically pure.
-
-#[test]
-fn purity_violation_call_impure_from_pure() {
-    let output = typecheck(
-        r"
-        fn side_effect() {}
-        pure fn must_be_pure() {
-            side_effect();
-        }
-        fn main() {}
-    ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::PurityViolation),
-        "Expected PurityViolation, got errors: {:?}",
-        output.errors
-    );
-}
-
-// ── 10. UseAfterMove — send non-Copy value to actor twice ───────────
+// ── 9. UseAfterMove — send non-Copy value to actor twice ───────────
 // The checker marks non-Copy values as moved at actor message boundaries.
 // A struct with a `string` field is non-Copy, triggering move semantics.
 

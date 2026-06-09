@@ -60,7 +60,7 @@ actor Coordinator {
 // Replica — maintains a local counter and syncs with the coordinator.
 actor Replica {
     let name: string;
-    let coordinator: ActorRef<Coordinator>;
+    let coordinator: LocalPid<Coordinator>;
     let local_count: i64;
     init() {
         println(f"[{name}] replica started");

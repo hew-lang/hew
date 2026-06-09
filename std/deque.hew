@@ -24,7 +24,6 @@
 ///
 /// Created by `deque.new()`. Must be freed with `free()` when no longer
 /// needed to avoid leaking memory.
-#[opaque]
 type Deque {
 }
 

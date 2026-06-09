@@ -2,6 +2,121 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Top-level constants:** `const` declarations now lower through HIR,
+  MIR, and native codegen as LLVM globals, making module-scope immutable
+  values part of the compiled language surface rather than a parser-only
+  form.
+- **Result and Option propagation with `?`:** The `?` operator now
+  desugars for both `Result<T, E>` and `Option<T>`, complementing the
+  existing bind-and-propagate `let r? = expr` form with expression-level
+  propagation.
+- **Literal match patterns:** `match` arms now accept integer, boolean,
+  character, and string literals, including nested literal patterns with
+  binding subpatterns, so ordinary value dispatch no longer needs guard
+  expressions or enum-only encodings.
+- **Loop control flow:** Bare `loop` expressions, `break`, and `continue`
+  now lower through the compiler pipeline, completing the core structured
+  loop-control surface.
+- **Collection iteration and layout-backed collections:** `Vec<T>` now
+  participates in the `IntoIterator` / `Iterator` surface, including
+  mutable `Iterator::next` receivers and runtime iterator paths. `Vec<T>`,
+  `HashMap<K, V>`, and `HashSet<T>` also gained layout-backed runtime and
+  codegen support for non-primitive element, key, and value shapes.
+- **Composite values and tuple literals:** Tuple literal construction now
+  lowers end to end, and BitCopy composite return values can travel
+  through return slots rather than being restricted to scalar paths.
+- **Opaque handles and borrow markers:** `#[opaque]` type declarations can
+  model runtime handles as BitCopy values, and immutable `&T` borrow
+  markers support copy-on-write value semantics without transferring
+  ownership by default.
+- **String and bytes operations:** String and bytes indexing/slicing use
+  codepoint-aware semantics through the operator surface, string
+  concatenation lowers to the runtime concat ABI, and `Bytes::push` is
+  wired through native codegen.
+- **Numeric casts and discard bindings:** Numeric `as` casts now lower
+  through native codegen, and top-level wildcard `let _` bindings are
+  treated as explicit discards.
+- **Generic, trait, and machine dispatch:** Machine declarations gained
+  where-clause and const-generic support; generic actor spawns accept
+  explicit type arguments; static trait calls, resolved impl calls, dynamic
+  trait vtables, and machine-generic bound enforcement now flow through
+  canonical checker, HIR, MIR, and codegen metadata.
+- **Cancellation and resource cleanup:** `CancellationToken` is available
+  as a frontend value type, cancellation observation lowers to the runtime,
+  `defer` lowers through scope-exit control flow, and user resource
+  `close` operations route through typed drop dispatch.
+- **Editor diagnostics:** HIR diagnostics now surface through LSP editor
+  diagnostics, and editor syntax definitions recognise the newer record
+  and actor-decorator forms.
+
+### Fixed
+
+- **Fail-closed compiler boundaries:** The checker, HIR, MIR, and codegen
+  front now reject ambiguous module resolution, unsupported collection
+  layouts, missing record layouts, unresolved named-type readiness, and
+  stale lowering shapes instead of silently continuing with partial
+  metadata.
+- **Recursive value types:** Recursive value-type definitions are rejected
+  during checking, preventing invalid self-contained layouts from reaching
+  lowering or runtime code.
+- **Runtime memory safety:** Actor state clone/drop wiring, scheduler
+  teardown, lambda-actor drop, task-scope cancellation cleanup, layout
+  HashSet clone/drop, actor-state offsets, C-string allocation, and
+  string-container ownership now use the correct lifetime and allocator
+  discipline.
+- **Actor and mesh ABI correctness:** Remote actor `tell`, link/monitor,
+  supervisor stop, shareable-value send and receive, mailbox envelopes,
+  `Node::register`, typed `Node::lookup`, and mesh errors now route through
+  typed runtime ABIs with fail-closed envelope modes.
+- **Wire-format hardening:** CBOR envelope frames now conform to the
+  schema, unknown ask-rejection reason bytes are rejected, and mailbox
+  payload classes and cross-node envelope fields are pinned at the ABI
+  boundary.
+- **Builtin and imported call resolution:** Bare builtin enum constructors,
+  builtin `None`, imported public impl methods, imported free-function
+  helpers, where-clause associated bindings, and same-module helper calls
+  now resolve through checker-authoritative metadata.
+- **Trait-object and composite lowering:** Trait-object drops, dynamic
+  vtable calls, borrow and trait-object type-parameter substitution,
+  enum-payload clone/drop/eq synthesis, composite cancel-exit returns, and
+  unreachable-predecessor initialisation checks now preserve correct value
+  semantics.
+- **CLI and editor feedback:** `hew check` now runs through the HIR, MIR,
+  and codegen-front gates and renders MIR diagnostics; LSP diagnostics use
+  the accepted v0.5 surface rather than stale parser-only assumptions.
+- **Build and platform reliability:** Native macOS objects carry the
+  correct deployment target, sanitizer and WASI lanes gate on available
+  runners, fuzz smoke propagates target crash exit codes, and the WASM
+  channel-full path reports a typed last-error instead of panicking.
+
+### Removed
+
+- **Language surface:** The `pure fn` modifier has been removed; `pure fn`
+  now fails during parsing, while ordinary `fn` declarations are unchanged.
+
+### Changed
+
+- **Collection dispatch authority:** Collection methods moved from legacy
+  dual-dispatch shims to resolved-call, layout-witness, and declarative FFI
+  descriptors, with legacy untyped `HashMap` / `HashSet` and primitive Vec
+  families retired behind the new layout-managed path.
+- **String ownership model:** Runtime `String` is now a copy-on-write,
+  refcounted value, with header-aware C-string allocation and container
+  ingress rules that distinguish move ownership from copy-in semantics.
+- **Actor message ownership:** Actor send and receive paths now carry an
+  alias-mode discriminant and support shareable-value borrowing with
+  retain-on-escape, replacing implicit ownership assumptions with explicit
+  single-release envelope behavior.
+- **WASM and target gates:** Unsupported coroutine, blocking receive,
+  scope, memory intrinsic, and sandbox-profile paths now fail closed at the
+  appropriate frontend or lowering boundary instead of depending on target
+  backend behavior.
+- **Legacy runtime substrate:** Deprecated `HewScope` infrastructure and
+  obsolete MLIR-era scripts were removed; scope and task behavior now routes
+  through the current actor/task substrate.
+
 ## [0.5.0] — 2026-05-24
 
 v0.5.0 is the user-trust release: the language, runtime, and toolchain

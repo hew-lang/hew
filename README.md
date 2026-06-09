@@ -158,7 +158,7 @@ Wire types define versioned serialization schemas for use with actors and distri
 
 ```hew
 wire type UserMessage {
-    name: String @1;
+    name: string @1;
     age:  i32    @2;
     // Adding a new @3 field later is backwards-compatible; reusing @1 is not.
 }

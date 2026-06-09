@@ -24,6 +24,9 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+hew-runtime = { path = "../hew-runtime", default-features = false, features = [
+  "profiler",
+] }
 tempfile.workspace = true
 
 [lints]

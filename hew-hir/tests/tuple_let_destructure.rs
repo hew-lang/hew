@@ -142,8 +142,10 @@ fn two_element_tuple_let_produces_three_stmts() {
     }
 }
 
-/// Wildcard element `let (a, _) = duplex_pair<i64, i64>(16);` binds the
-/// wildcard as `_1` (synthetic name `_<idx>`).
+/// Wildcard element `let (a, _) = expr;` lowers without errors — the wildcard
+/// gets a synthetic name `_<idx>` so the tuple expansion proceeds normally.
+/// Regression guard: this case was broken when the `Pattern::Wildcard` branch
+/// in the tuple-let element loop was made to emit `NotYetImplemented`.
 #[test]
 fn tuple_let_wildcard_element_binds_synthetic_name() {
     let source = r"

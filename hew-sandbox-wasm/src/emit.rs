@@ -1679,6 +1679,13 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         arms: &[MatchArm],
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
+        if arms
+            .iter()
+            .any(|arm| matches!(arm.pattern.0, Pattern::Struct { .. } | Pattern::Tuple(_)))
+        {
+            self.emit_unsupported(Some(span.clone()));
+            return Ok(self.emit_const_unit(Some(span)));
+        }
         let scrutinee_local = self.lower_expr(scrutinee)?;
         let result_ty = self.ty_for_span(&span);
         let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));

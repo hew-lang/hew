@@ -17,15 +17,11 @@ fn main() {
     println("Spawning Counter actor on its own thread...");
     let counter = spawn Counter(count: 0);
     println("[main] Sending increment(10)");
-    let first = counter.increment(10);
+    await counter.increment(10);
     println("[main] Sending increment(20)");
-    let second = counter.increment(20);
+    await counter.increment(20);
     println("[main] Sending increment(12)");
-    let third = counter.increment(12);
-    await first;
-    await second;
-    await third;
+    await counter.increment(12);
     println("[main] All messages processed. Stopping actor.");
-    stop(counter);
     println("[main] Done. Expected final count: 42");
 }

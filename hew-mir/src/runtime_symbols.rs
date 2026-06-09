@@ -317,7 +317,11 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // --- SendHalf<T> ---------------------------------------------
     "hew_send_half_send",
     "hew_send_half_try_send",
-    // --- String codepoint index/slice substrate (W3 collections-sugar S2) ----
+    // --- String concat/codepoint index/slice substrate -----------------------
+    // `hew_string_concat(a, b) -> *mut c_char` (`hew-runtime/src/string.rs`).
+    //   Fresh owned concatenation result. Emitted for `string + string`;
+    //   drop-safety follows the existing `String` value-class discipline.
+    "hew_string_concat",
     // `hew_string_index(s, i) -> i32` (`hew-runtime/src/string.rs`).
     //   Codepoint at codepoint offset i; O(n). Aborts on null / invalid
     //   UTF-8 / negative / OOB. NO -1 sentinel. Emitted by the MIR

@@ -9,6 +9,7 @@
 
 use hew_types::ty::{Substitution, Ty};
 use hew_types::unify::unify;
+use hew_types::ResolvedTy;
 
 // ===========================================================================
 // Width set admission
@@ -186,4 +187,56 @@ fn same_width_unification_succeeds() {
         let result = unify(&mut subst, &ty, &ty);
         assert!(result.is_ok(), "{ty:?} should unify with itself");
     }
+}
+
+#[test]
+fn resolved_numeric_cast_matrix_matches_checker_admission() {
+    let numeric = vec![
+        ResolvedTy::I8,
+        ResolvedTy::I16,
+        ResolvedTy::I32,
+        ResolvedTy::I64,
+        ResolvedTy::U8,
+        ResolvedTy::U16,
+        ResolvedTy::U32,
+        ResolvedTy::U64,
+        ResolvedTy::Isize,
+        ResolvedTy::Usize,
+        ResolvedTy::F32,
+        ResolvedTy::F64,
+    ];
+
+    for source in &numeric {
+        for target in &numeric {
+            assert!(
+                source.can_explicitly_numeric_cast_to(target),
+                "numeric cast {source:?} -> {target:?} must be admitted"
+            );
+        }
+    }
+
+    for integer in numeric.iter().filter(|ty| ty.is_integer()) {
+        assert!(
+            ResolvedTy::Bool.can_explicitly_numeric_cast_to(integer),
+            "bool -> {integer:?} must be admitted"
+        );
+        assert!(
+            integer.can_explicitly_numeric_cast_to(&ResolvedTy::Bool),
+            "{integer:?} -> bool must be admitted"
+        );
+    }
+
+    for float in numeric.iter().filter(|ty| ty.is_float()) {
+        assert!(
+            !ResolvedTy::Bool.can_explicitly_numeric_cast_to(float),
+            "bool -> {float:?} must stay outside the checker matrix"
+        );
+        assert!(
+            !float.can_explicitly_numeric_cast_to(&ResolvedTy::Bool),
+            "{float:?} -> bool must stay outside the checker matrix"
+        );
+    }
+
+    assert!(!ResolvedTy::String.can_explicitly_numeric_cast_to(&ResolvedTy::I64));
+    assert!(!ResolvedTy::I64.can_explicitly_numeric_cast_to(&ResolvedTy::String));
 }

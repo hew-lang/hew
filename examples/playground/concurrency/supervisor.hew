@@ -24,8 +24,8 @@ supervisor WorkerPool {
 
 fn main() {
     let sup = spawn WorkerPool;
-    let w1 = supervisor_child(sup, 0);
-    let w2 = supervisor_child(sup, 1);
+    let w1 = sup.w1;
+    let w2 = sup.w2;
     await w1.work(10);
     await w2.work(20);
     await w1.work(30);

@@ -16,10 +16,9 @@ actor Counter {
 
 fn main() {
     // ── Local actor (works today) ────────────────────────────
-    let counter = spawn Counter;
+    let counter = spawn Counter(count: 0);
     counter.increment(5);
     counter.increment(3);
-    await close(counter);
 
     // ── Distributed API (runtime ready, codegen pending) ─────
     // Node::start("0.0.0.0:9000");

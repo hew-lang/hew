@@ -712,7 +712,7 @@ fn finalize_walk_is_idempotent_on_already_finalized_fact() {
 /// Verifies:
 /// (a) module compiles,
 /// (b) IR contains `call ptr @hew_hashmap_new_with_layout(ptr, ptr)`,
-/// (c) the key + value layout globals are emitted,
+/// (c) the key global is emitted and the primitive value layout extern is used,
 /// (d) the Pending key fact advances via the constructor walker arm.
 #[test]
 fn hashmap_new_emits_constructor_call() {
@@ -735,18 +735,20 @@ fn hashmap_new_emits_constructor_call() {
         ll.contains("call ptr @hew_hashmap_new_with_layout"),
         "missing call site in:\n{ll}"
     );
-    // Layout descriptor globals: per `hashmap_key_layout_descriptor_ptr` /
-    // `hashmap_value_layout_descriptor_ptr` the names embed
-    // `<size>_<align>_<key>_plain` (key) and `<size>_<align>_plain`
-    // (value). Point is `{i64, i64}` → size 16, align 8.
+    // Layout descriptor operands: the record key is codegen-synthesized, while
+    // primitive i64 values route to the runtime-owned static descriptor.
     assert!(
         ll.contains("@__hew_map_key_layout_16_8_"),
         "constructor must emit the HewMapKeyLayout-shaped global:\n{ll}"
     );
     assert!(
-        ll.contains("@__hew_map_value_layout_8_8_plain"),
-        "constructor must emit the HewMapValueLayout-shaped global \
-         (i64 value → size 8, align 8):\n{ll}"
+        ll.contains("@hew_layout_val_i64 = external constant i8"),
+        "constructor must declare the primitive i64 value descriptor extern:\n{ll}"
+    );
+    assert!(
+        ll.contains("call ptr @hew_hashmap_new_with_layout")
+            && ll.contains("ptr @hew_layout_val_i64"),
+        "constructor call must pass the runtime i64 value descriptor extern:\n{ll}"
     );
 }
 

@@ -235,7 +235,7 @@ Confirmed at 0b955839:
 | `execution_context.rs:247-265` | **Compile failure on wasm32-wasip1**: `HEW_CTX_OFFSET_*` constants hardcoded for 64-bit; `supervisor_child_index` offset assertion panics at monomorphization. **NEW — not in WASM-TODO list, not in parity matrix** | *(not previously tracked)* | **should-close-before-0.5** (blocks all wasm32 verification) |
 | `scheduler_wasm.rs:310-315,950-959,1374-1383` | Global `CURRENT_REPLY_CHANNEL` instead of ctx-carried channel (silent-divergence) | §1 row 4 | should-close-before-0.5 |
 | `arena_wasm.rs:364-368` | `HeapExceeded` returns `null` instead of typed trap | §2 row 3 | should-close-before-0.5 |
-| `hew-codegen-rs/src/llvm.rs:6340-6364` | WASM linker imports `hew_trap_with_code` as undefined symbol | §4 row 1 | should-close-before-0.5 |
+| `hew-cli/src/link.rs` + `hew-codegen-rs/src/llvm.rs:6340-6364` | **Closed**: WASM links now require target-correct `libhew_runtime.a` and verify no unresolved `env::hew_trap_with_code` / `env::hew_actor_cooperate` / `env::hew_print_value` imports remain | §4 row 1 | closed |
 | `actor.rs:3392-3477,3508-3534` | `hew_panic` on WASM falls through to process exit 101 with no supervisor recovery | §4 row 2 | audit-needed |
 | `jit-symbol-classification.toml` | No `target` bucket; all symbols in `stable`/`codegen-stable`/`internal` without wasm32 vs native distinction | §6 row 1 | silent-divergence |
 | `duration.rs` | **Not a gap** — `hew_seconds` / `hew_milliseconds` / `HewDuration` ARE present with no cfg gate; parity matrix §7 row 2 appears stale for this sub-item. Verified at 0b955839. | §7 row 2 (partial) | stale parity matrix row |

@@ -68,7 +68,7 @@
     "id": "concurrency/async_await",
     "category": "concurrency",
     "name": "Async/Await",
-    "description": "Async functions with await",
+    "description": "Actor call-and-await",
     "source_path": "concurrency/async_await.hew",
     "expected_path": "concurrency/async_await.expected",
     "capabilities": {

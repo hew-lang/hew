@@ -43,16 +43,14 @@ use crate::monomorph::mangle_resolved_ty;
 /// Replace every character that is not ASCII alphanumeric or `_` with `_`,
 /// producing a string that is safe to embed in an LLVM global symbol name.
 ///
-/// This is a local mirror of `hew_mir::sanitize_for_symbol`. Because
-/// `hew-mir` depends on `hew-hir`, we cannot take a reverse dep to avoid a
-/// cycle; the two implementations **must be kept byte-for-byte identical**.
-/// The invariant is guarded by the integration test
-/// `mono_foundation_byte_compat::non_function_origin_name_sanitized`.
+/// This is the canonical implementation. `hew-mir` re-exports this function
+/// via `pub use hew_hir::sanitize_for_symbol` so call sites in hew-codegen
+/// are unaffected.
 ///
-/// The function is intentionally `pub(crate)` — external callers that need
-/// symbol sanitization should go through `hew_mir::sanitize_for_symbol`.
+/// Used in vtable symbol mangling (`hew-mir`) and in non-Function
+/// instantiation mangling here in `hew-hir`.
 #[must_use]
-pub(crate) fn sanitize_for_symbol(s: &str) -> String {
+pub fn sanitize_for_symbol(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' {

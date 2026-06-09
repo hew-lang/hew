@@ -266,7 +266,7 @@ supervisor MySup {
 fn risky() {
     unsafe { do_ffi(); }
     let d: dyn Printable = get_printable();
-    pure fn add(a: i32, b: i32) -> i32 { a + b }
+    let n = 1;
 }
 `,
   });

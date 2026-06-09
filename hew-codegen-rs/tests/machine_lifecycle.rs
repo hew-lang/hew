@@ -91,11 +91,14 @@ fn run_lifecycle_fixture_compiles_and_matches_expected_stdout() {
         String::from_utf8_lossy(&compile.stderr)
     );
 
-    let output = hew_command(&repo)
-        .arg("run")
-        .arg(&fixture)
-        .output()
-        .expect("spawn hew run");
+    let mut command = hew_command(&repo);
+    command.arg("run").arg(&fixture);
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        format!("hew run {}", fixture.display()),
+        hew_testutil::DEFAULT_EXEC_TIMEOUT,
+    )
+    .expect("spawn hew run");
     assert!(
         output.status.success(),
         "hew run run_lifecycle exited non-zero (status={:?}); stderr:\n{}",

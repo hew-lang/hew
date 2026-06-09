@@ -77,9 +77,9 @@ fn main() {
     println("=== Service Stack ===");
     let svc = spawn ServiceStack;
     sleep_ms(50);
-    let cache = supervisor_child(svc, 0);
-    let db = supervisor_child(svc, 1);
-    let api = supervisor_child(svc, 2);
+    let cache = svc.cache;
+    let db = svc.db;
+    let api = svc.api;
     // Normal operation
     cache.store(42);
     sleep_ms(10);
@@ -93,9 +93,9 @@ fn main() {
     println("--- cache crashes ---");
     cache.corrupt();
     sleep_ms(200);
-    let cache2 = supervisor_child(svc, 0);
-    let db2 = supervisor_child(svc, 1);
-    let api2 = supervisor_child(svc, 2);
+    let cache2 = svc.cache;
+    let db2 = svc.db;
+    let api2 = svc.api;
     cache2.store(99);
     sleep_ms(20);
     db2.query(99);

@@ -39,7 +39,6 @@ import std::fs;
 ///
 /// Created by calling `websocket.connect(url)`. Use `send_text()` to
 /// send messages and `recv()` to receive them.
-#[opaque]
 type Conn {
 }
 
@@ -172,7 +171,6 @@ impl MessageMethods for Message {
 ///
 /// Created by calling `websocket.listen(addr)`. Use `accept()` to wait
 /// for the next client connection.
-#[opaque]
 type Server {
 }
 

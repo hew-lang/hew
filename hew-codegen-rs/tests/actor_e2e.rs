@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[test]
 fn actor_e2e_counter_compile_and_exit_code() {
@@ -24,19 +24,14 @@ fn actor_on_stop_compile_and_exit_code() {
 /// bounds the wait and reaps the child so a hang surfaces as a test failure
 /// instead of a leaked process.
 fn run_bounded(binary: &Path, secs: u64) -> std::process::ExitStatus {
-    let mut child = Command::new(binary).spawn().expect("spawn actor fixture");
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().expect("poll actor fixture") {
-            return status;
-        }
-        if start.elapsed() > Duration::from_secs(secs) {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("actor fixture {binary:?} did not exit within {secs}s (deadlock)");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    let mut command = Command::new(binary);
+    hew_testutil::run_command_bounded(
+        &mut command,
+        format!("actor fixture {}", binary.display()),
+        Duration::from_secs(secs),
+    )
+    .unwrap_or_else(|error| panic!("{error}"))
+    .status
 }
 
 fn compile_and_run_actor_fixture(fixture_name: &str, expected_exit_code: i32) {

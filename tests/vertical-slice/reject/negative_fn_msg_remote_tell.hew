@@ -1,0 +1,17 @@
+// Reject: fn pointers are Send but not Serializable, so they must not cross a
+// RemotePid<T>::tell boundary.
+fn inc(x: i64) -> i64 {
+    x + 1
+}
+
+actor Worker {
+    receive fn carry(f: fn(i64) -> i64) {}
+}
+
+impl ActorMsg for Worker {
+    type Msg = fn(i64) -> i64;
+}
+
+fn send_remote(pid: RemotePid<Worker>) -> Result<(), SendError> {
+    pid.tell(inc)
+}

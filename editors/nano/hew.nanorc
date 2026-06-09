@@ -56,7 +56,7 @@ color green "\<(wire|reserved|optional|deprecated|default)\>"
 color green "\<(drives|emit|entry|event|exit|machine|on|state|transitions|when)\>"
 
 # Other keywords
-color green "\<(dyn|unsafe|pure)\>"
+color green "\<(dyn|unsafe)\>"
 
 # Strategy & policy constants
 color brightmagenta "\<(one_for_one|one_for_all|rest_for_one)\>"

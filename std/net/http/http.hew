@@ -26,7 +26,6 @@ import std::fs;
 /// Created by calling `http.listen(addr)`. Use `accept()` to wait for
 /// incoming requests in a loop, then call `close()` before the value goes
 /// out of scope.
-#[opaque]
 type Server {
 }
 
@@ -36,7 +35,6 @@ type Server {
 /// method, path, headers, and body. Must be responded to with one of
 /// the `respond` methods. Call `free()` before the value goes out of
 /// scope; dropping without `free()` is a resource leak.
-#[opaque]
 type Request {
 }
 

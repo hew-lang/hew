@@ -669,7 +669,8 @@ impl Checker {
         &mut self,
         expr_types: &mut HashMap<SpanKey, Ty>,
     ) {
-        for (span, var, maybe_value) in std::mem::take(&mut self.deferred_range_bounds) {
+        for (span, var, maybe_value, inner_span) in std::mem::take(&mut self.deferred_range_bounds)
+        {
             let resolved = self
                 .subst
                 .resolve(&Ty::Var(var))
@@ -709,9 +710,19 @@ impl Checker {
                     continue;
                 }
             }
-            // Re-record the span with the resolved element type so the codegen
-            // generates the bound constant with the correct integer width.
-            expr_types.insert(SpanKey::from(&span), resolved);
+            // Re-record the outer span with the resolved element type so the
+            // codegen generates the bound constant with the correct integer
+            // width.
+            expr_types.insert(SpanKey::from(&span), resolved.clone());
+            // For negated integer literals (`-5`), also re-record the inner
+            // literal's span.  Without this, the inner `5` keeps the
+            // `IntLiteral`→`I64` materialized default, while the outer `-5`
+            // is narrowed to (e.g.) `I32`.  HIR's `lower_unary_expr` then sees
+            // `operand_ty = I64` vs `result_ty = I32` and the `MIR lower`
+            // `IntNegChecked` check rejects them as mismatched.
+            if let Some(inner) = inner_span {
+                expr_types.insert(SpanKey::from(&inner), resolved);
+            }
         }
     }
 
@@ -825,7 +836,7 @@ impl Checker {
         // Walk the bounds stack from top to bottom so the innermost binding
         // wins (mirrors `generic_ctx` lookup semantics).
         for frame in self.current_type_param_bounds.iter().rev() {
-            if let Some(bounds) = frame.get(param_name) {
+            if let Some(bounds) = frame.bounds.get(param_name) {
                 if !bounds.is_empty() {
                     return Some(bounds.clone());
                 }
@@ -847,12 +858,38 @@ impl Checker {
         None
     }
 
+    fn lookup_type_param_assoc_binding(
+        &self,
+        param_name: &str,
+        trait_name: &str,
+        assoc_name: &str,
+    ) -> Option<Ty> {
+        let key = (
+            param_name.to_string(),
+            trait_name.to_string(),
+            assoc_name.to_string(),
+        );
+        for frame in self.current_type_param_bounds.iter().rev() {
+            if let Some(binding) = frame.assoc_bindings.get(&key) {
+                return Some(binding.clone());
+            }
+        }
+        if let Some(fn_name) = self.current_function.as_ref() {
+            return self
+                .fn_type_param_assoc_bindings
+                .get(fn_name)
+                .and_then(|bindings| bindings.get(&key))
+                .cloned();
+        }
+        None
+    }
+
     /// True if `name` is a type parameter declared in the current scope —
     /// either the resolver's bounds stack (even with no bounds) or the
     /// current function's signature.
     fn is_type_param_in_scope(&self, name: &str) -> bool {
         for frame in self.current_type_param_bounds.iter().rev() {
-            if frame.contains_key(name) {
+            if frame.bounds.contains_key(name) {
                 return true;
             }
         }
@@ -867,11 +904,13 @@ impl Checker {
     }
 
     /// Walk a `Ty` and collapse `Ty::AssocType { base, trait_name, assoc_name }`
-    /// carriers whose `base` resolves to a concrete `Ty::Named { name, .. }`
-    /// for which an impl is registered. Carriers whose base is still abstract
-    /// (a generic type param, an unresolved inference variable, another
-    /// `Ty::AssocType`, etc.) pass through unchanged so they can be collapsed
-    /// later when more substitutions arrive.
+    /// carriers whose `base` resolves to either an in-scope type parameter
+    /// with a where-clause associated-type binding or a concrete
+    /// `Ty::Named { name, .. }` for which an impl is registered. Carriers whose
+    /// base is still abstract and unconstrained (a generic type param without
+    /// a matching associated-type binding, an unresolved inference variable,
+    /// another `Ty::AssocType`, etc.) pass through unchanged so they can be
+    /// diagnosed or collapsed later when more substitutions arrive.
     ///
     /// Lookup goes through `impl_assoc_type_bindings`, populated at impl-
     /// registration. When no binding exists for `(base_type, trait, assoc)`,
@@ -889,6 +928,20 @@ impl Checker {
                 // concrete type also collapses.
                 let resolved_base = self.subst.resolve(&projected_base);
                 if let Ty::Named { name, args, .. } = &resolved_base {
+                    if args.is_empty() && self.is_type_param_in_scope(name) {
+                        if let Some(binding) = self.lookup_type_param_assoc_binding(
+                            name,
+                            trait_name.as_ref(),
+                            assoc_name.as_ref(),
+                        ) {
+                            return self.project_assoc_types(&binding);
+                        }
+                        return Ty::AssocType {
+                            base: Box::new(projected_base),
+                            trait_name: trait_name.clone(),
+                            assoc_name: assoc_name.clone(),
+                        };
+                    }
                     let key = (name.clone(), trait_name.to_string(), assoc_name.to_string());
                     if let Some(binding) = self.impl_assoc_type_bindings.get(&key) {
                         // The binding may itself reference impl-level type

@@ -5,6 +5,21 @@
 use super::*;
 
 impl Checker {
+    fn registered_fn_type_param_scope(&self, fn_name: &str) -> TypeParamScope {
+        self.fn_sigs
+            .get(fn_name)
+            .map(|sig| {
+                TypeParamScope::new(
+                    sig.type_param_bounds.clone(),
+                    self.fn_type_param_assoc_bindings
+                        .get(fn_name)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+            })
+            .unwrap_or_default()
+    }
+
     pub(super) fn check_item(&mut self, item: &Item, span: &Span) {
         match item {
             Item::Function(fd) => self.check_function(fd),
@@ -429,19 +444,13 @@ impl Checker {
         }
         let prev_function = self.current_function.take();
         self.current_function = Some(fn_name.to_string());
-        let prev_in_pure = self.in_pure_function;
-        self.in_pure_function = fd.is_pure;
         self.env.push_scope();
 
         // Push this fn's type-param bounds onto the resolver stack so
         // `T::Bar` projections inside `let x: T::Bar = ...` and other in-body
         // type annotations resolve. Popped at end of body check.
-        let body_bounds = self
-            .fn_sigs
-            .get(fn_name)
-            .map(|sig| sig.type_param_bounds.clone())
-            .unwrap_or_default();
-        let pushed_body_bounds = !body_bounds.is_empty();
+        let body_bounds = self.registered_fn_type_param_scope(fn_name);
+        let pushed_body_bounds = !body_bounds.bounds.is_empty();
         if pushed_body_bounds {
             self.current_type_param_bounds.push(body_bounds);
         }
@@ -566,7 +575,6 @@ impl Checker {
         self.classify_stack_hints(fd);
 
         self.in_generator = prev_in_generator;
-        self.in_pure_function = prev_in_pure;
         self.current_return_type = None;
         self.current_function = prev_function;
         if pushed_body_bounds {
@@ -592,7 +600,6 @@ impl Checker {
                         is_async: false,
                         is_generator: false,
                         visibility: Visibility::Private,
-                        is_pure: method.is_pure,
                         name: method.name.clone(),
                         type_params: method.type_params.clone(),
                         params: method.params.clone(),
@@ -853,7 +860,6 @@ impl Checker {
     /// - no parameters (actor fields are in scope by bare name, same as `init { }`)
     /// - no type parameters
     /// - no `where` clause
-    /// - not `pure`
     /// - return type `()` (omitted or explicitly unit)
     ///
     /// Hooks bind actor fields as bare names in scope (mutable) so the
@@ -868,16 +874,6 @@ impl Checker {
         fields: &[FieldDecl],
     ) {
         // ── Signature validation ────────────────────────────────────────
-        if hook.is_pure {
-            self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
-                hook.decl_span.clone(),
-                format!(
-                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot be `pure`",
-                    hook.name
-                ),
-            ));
-        }
         if hook.type_params.as_ref().is_some_and(|tps| !tps.is_empty()) {
             self.errors.push(TypeError::new(
                 TypeErrorKind::InvalidOperation,
@@ -967,7 +963,7 @@ impl Checker {
     ///   lane).
     /// - return type `CrashAction` (variants `Restart | Escalate | Kill`;
     ///   the supervisor consults but honours its own budget rules).
-    /// - not `pure`, no type parameters, no `where` clause.
+    /// - no type parameters, no `where` clause.
     ///
     /// `CrashInfo` and `CrashAction` are provided by `std/failure.hew`
     /// (also pre-bound via `register_builtin_failure_surface` for inline
@@ -979,22 +975,12 @@ impl Checker {
     /// compiled actor method symbol (`<Actor>::on_crash`, emitted via
     /// the existing actor-method serialize path) has the contract the
     /// runtime will rely on.
-    /// Reject `pure`, generic, and `where`-clause modifiers shared by every
+    /// Reject generic and `where`-clause modifiers shared by every
     /// `#[on(<event>)]` lifecycle hook.  Extracted from `check_crash_hook`
     /// because the same triad applies to future event-specific validators
     /// and keeps the per-event entry under the clippy `too_many_lines`
     /// threshold.
     fn reject_hook_modifier_set(&mut self, actor_name: &str, hook: &FnDecl, hook_kind: &str) {
-        if hook.is_pure {
-            self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
-                hook.decl_span.clone(),
-                format!(
-                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot be `pure`",
-                    hook.name
-                ),
-            ));
-        }
         if hook.type_params.as_ref().is_some_and(|tps| !tps.is_empty()) {
             self.errors.push(TypeError::new(
                 TypeErrorKind::InvalidOperation,
@@ -1258,8 +1244,6 @@ impl Checker {
         self.actor_handler_state_guards
             .insert(SpanKey::from(&rf.span), ActorStateGuard::Exclusive);
 
-        let prev_in_pure = self.in_pure_function;
-        self.in_pure_function = rf.is_pure;
         let prev_in_receive_fn = self.in_receive_fn;
         self.in_receive_fn = true;
         let prev_actor_handler_context = self.in_actor_handler_context;
@@ -1349,7 +1333,6 @@ impl Checker {
         self.in_generator = prev_in_generator;
         self.in_receive_fn = prev_in_receive_fn;
         self.in_actor_handler_context = prev_actor_handler_context;
-        self.in_pure_function = prev_in_pure;
         self.current_return_type = None;
         self.current_function = prev_function;
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {

@@ -21,7 +21,6 @@
 ///
 /// Created by `regex.new(pattern)`. Call `free()` before the value goes out of
 /// scope; dropping without `free()` is a resource leak.
-#[opaque]
 type Pattern {
 }
 

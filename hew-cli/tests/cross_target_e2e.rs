@@ -342,7 +342,10 @@ fn native_link_same_arch_explicit_target_produces_runnable_binary() {
     assert_eq!(obj.architecture(), Architecture::Aarch64, "expected arm64");
 
     // The binary must execute without error on this host.
-    let run = Command::new(&output_path).output().expect("run binary");
+    let run = support::run_bounded_command(
+        Command::new(&output_path),
+        format!("run {}", output_path.display()),
+    );
     assert!(
         run.status.success(),
         "linked binary exited non-zero: {:?}\nstderr: {}",

@@ -871,7 +871,6 @@ fn program_with_select(select_expr: Expr) -> Program {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
-        is_pure: false,
         name: "main".to_string(),
         type_params: None,
         params: vec![],

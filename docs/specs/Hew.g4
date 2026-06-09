@@ -293,7 +293,7 @@ traitSuper
     ;
 
 traitItem
-    : 'pure'? fnSig ( ';' | block )            // Required or default method
+    : fnSig ( ';' | block )                    // Required or default method
     | associatedType
     ;
 
@@ -319,7 +319,7 @@ implDecl
     ;
 
 implBodyItem
-    : 'pure'? fnDecl
+    : fnDecl
     | 'type' ident '=' type_ ';'                    // Associated type impl
     ;
 
@@ -374,11 +374,11 @@ coalesceFallback
     ;
 
 receiveFnDecl
-    : attribute* 'pure'? 'receive' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
+    : attribute* 'receive' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
     ;
 
 receiveGenFnDecl
-    : attribute* 'pure'? 'receive' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
+    : attribute* 'receive' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
     ;
 
 // ----------------------------------------------------------------
@@ -475,19 +475,19 @@ externParam
 // ----------------------------------------------------------------
 
 fnDecl
-    : 'pure'? 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
+    : 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
     ;
 
 asyncFnDecl
-    : 'pure'? 'async' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
+    : 'async' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
     ;
 
 genFnDecl
-    : 'pure'? 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
+    : 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
     ;
 
 asyncGenFnDecl
-    : 'pure'? 'async' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
+    : 'async' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
     ;
 
 params

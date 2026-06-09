@@ -730,12 +730,9 @@ mod tests {
     fn unwrap_i32_aborts_on_none() {
         // Catches: unwrap returning garbage instead of aborting on None
         let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "option::tests::_helper_unwrap_i32_none",
-                "--include-ignored",
-            ])
+            .args(["--exact", "option::tests::_helper_unwrap_i32_none"])
             .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_unwrap_i32_none")
             .output()
             .unwrap();
         assert!(
@@ -746,8 +743,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "subprocess helper for unwrap_i32_aborts_on_none death test"]
     fn _helper_unwrap_i32_none() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| v != "_helper_unwrap_i32_none") {
+            return;
+        }
         let opt = hew_option_none();
         let _ = hew_option_unwrap_i32(opt);
     }

@@ -98,7 +98,6 @@ import std::fs;
 ///
 /// Created by `quic.new_client()` or `quic.new_server(addr)`.
 /// Must be released with `close()`.
-#[opaque]
 type QUICEndpoint {
 }
 
@@ -107,7 +106,6 @@ type QUICEndpoint {
 /// A connection multiplexes many independent streams over a single UDP path.
 /// Obtained from `endpoint.connect()` (client) or `endpoint.accept()` (server).
 /// Must be released with `disconnect()`.
-#[opaque]
 type QUICConnection {
 }
 
@@ -119,7 +117,6 @@ type QUICConnection {
 /// Obtained from `conn.open_stream()` or `conn.accept_stream()`.
 /// Finish the send side with `finish()` when no more data will be sent;
 /// the receive side drains naturally.
-#[opaque]
 type QUICStream {
 }
 

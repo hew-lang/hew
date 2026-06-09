@@ -22,7 +22,6 @@
 /// Represents either an element (with tag, attributes, and children) or a
 /// text node. Created by `xml.parse(s)` or by navigating into a parsed
 /// tree. Must be freed with `free()` when no longer needed.
-#[opaque]
 type Node {
 }
 

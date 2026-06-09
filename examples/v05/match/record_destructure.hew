@@ -1,0 +1,11 @@
+type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() -> i64 {
+    let p = Point { x: 3, y: 4 };
+    return match p {
+        Point { x, y } => x + y,
+    };
+}

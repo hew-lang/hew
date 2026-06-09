@@ -84,14 +84,4 @@ fn main() {
     }
     println(f"Total checksum: {checksum_total}");
     println("PASS: fan-out to 10 workers with burst messaging");
-    stop(w1);
-    stop(w2);
-    stop(w3);
-    stop(w4);
-    stop(w5);
-    stop(w6);
-    stop(w7);
-    stop(w8);
-    stop(w9);
-    stop(w10);
 }

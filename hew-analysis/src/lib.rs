@@ -148,15 +148,6 @@ pub mod token_modifiers {
     pub const ASYNC: u32 = 1 << 2;
 }
 
-// ── References ───────────────────────────────────────────────────────
-
-/// A reference location with a flag indicating whether it is the definition site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReferenceSpan {
-    pub span: OffsetSpan,
-    pub is_definition: bool,
-}
-
 // ── Rename ───────────────────────────────────────────────────────────
 
 /// A single text edit for a rename operation.

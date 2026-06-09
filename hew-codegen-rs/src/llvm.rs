@@ -23,10 +23,11 @@
 //!
 //! `emit_module` emits both the host triple and `wasm32-unknown-unknown`.
 //! Native emission writes a relocatable object; `cc` links it into a binary
-//! at the CLI layer. WASM emission writes a relocatable `.wasm.o` and then
-//! runs `wasm-ld --no-entry --export=main` (falling back to
+//! at the CLI layer. Freestanding WASM emission writes a relocatable `.wasm.o`
+//! and can run `wasm-ld --no-entry --export=main` (falling back to
 //! `rust-lld -flavor wasm`) to produce a standalone module that
-//! `wasmtime --invoke main` can instantiate directly.
+//! `wasmtime --invoke main` can instantiate directly. WASI command linking is
+//! owned by `hew-cli/src/link.rs` so the runtime archive is mandatory there.
 //!
 //! ## Emission
 //!
@@ -71,7 +72,9 @@ use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
     TargetTriple,
 };
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
+use inkwell::types::{
+    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, StructType,
+};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue,
     StructValue,
@@ -134,11 +137,9 @@ pub enum CodegenError {
     Link(String),
     /// File I/O error.
     Io(std::io::Error),
-    /// The program uses a runtime substrate symbol that is excluded from
-    /// the wasm32 build (`hew-runtime/src/duplex.rs:54` gates the entire
-    /// duplex module out via `#![cfg(not(target_arch = "wasm32"))]`).
-    /// WASM-TODO(#1451): duplex WASM parity is tracked in issue #1451.
-    /// Omit the WASM target to produce a native binary instead.
+    /// The program uses a runtime substrate symbol that is excluded from, or
+    /// deliberately fail-closed on, the wasm32 build. Omit the WASM target to
+    /// produce a native binary instead.
     WasmUnsupportedSubstrate { symbol: String },
 }
 
@@ -179,6 +180,11 @@ impl std::fmt::Display for CodegenError {
                     (
                         "the layout-backed `HashSet` runtime substrate",
                         "WASM-TODO(#1820): layout-backed HashSet wasm parity not yet designed",
+                    )
+                } else if symbol == "hew_gen_yield" {
+                    (
+                        "the generator yield substrate",
+                        "WASM-TODO(#1451): generator wasm parity not yet designed",
                     )
                 } else {
                     ("a native-only runtime substrate", "WASM-TODO(#1451)")
@@ -274,8 +280,9 @@ pub(crate) use llvm_err;
 // ---------------------------------------------------------------------------
 
 /// Where to write the artefacts. The CLI passes a directory; the emitter
-/// writes `<name>.ll`, `<name>.o`, `<name>.wasm.o`, and `<name>.wasm` into
-/// it. The CLI links the native `.o` into an executable separately.
+/// writes `<name>.ll`, `<name>.o`, `<name>.wasm.o`, and optionally
+/// `<name>.wasm` into it. The CLI links native `.o` files, and WASI command
+/// `.wasm.o` files, into executables separately.
 #[derive(Debug, Clone)]
 pub struct EmitOptions<'a> {
     /// Module name (used as the file stem). Cluster 1 derives this from the
@@ -285,7 +292,7 @@ pub struct EmitOptions<'a> {
     pub out_dir: &'a Path,
     /// Whether to emit a native object alongside the wasm artefact.
     pub native: bool,
-    /// Whether to emit a wasm module (and link it with `wasm-ld`).
+    /// Whether to emit a wasm object.
     pub wasm: bool,
 }
 
@@ -310,10 +317,28 @@ pub struct EmitArtefacts {
 ///
 /// Returns `CodegenError` if any function declares an unsupported construct,
 /// `Module::verify()` rejects the emitted IR, LLVM object emission fails, or
-/// `wasm-ld` fails.
+/// the optional freestanding `wasm-ld` pass fails.
 pub fn emit_module(
     pipeline: &IrPipeline,
     options: &EmitOptions<'_>,
+) -> CodegenResult<EmitArtefacts> {
+    emit_module_with_options(pipeline, options, true)
+}
+
+/// Emit requested IR/object artefacts without running the freestanding WASM
+/// linker. Used by WASI command linking, whose final link must go through the
+/// CLI linker so the target-correct runtime archive is mandatory.
+pub fn emit_module_objects(
+    pipeline: &IrPipeline,
+    options: &EmitOptions<'_>,
+) -> CodegenResult<EmitArtefacts> {
+    emit_module_with_options(pipeline, options, false)
+}
+
+fn emit_module_with_options(
+    pipeline: &IrPipeline,
+    options: &EmitOptions<'_>,
+    link_freestanding_wasm: bool,
 ) -> CodegenResult<EmitArtefacts> {
     // Verify the checker-authored layout-fact lifecycle is in a
     // consistent state before any IR emission.  A `LayoutKey` fact that
@@ -364,12 +389,14 @@ pub fn emit_module(
             "wasm32-unknown-unknown",
             &wasm_obj_path,
         )?;
-        let wasm_path = options
-            .out_dir
-            .join(format!("{}.wasm", options.module_name));
-        link_wasm_module(&wasm_obj_path, &wasm_path)?;
+        if link_freestanding_wasm {
+            let wasm_path = options
+                .out_dir
+                .join(format!("{}.wasm", options.module_name));
+            link_wasm_module(&wasm_obj_path, &wasm_path)?;
+            artefacts.wasm_path = Some(wasm_path);
+        }
         artefacts.wasm_obj_path = Some(wasm_obj_path);
-        artefacts.wasm_path = Some(wasm_path);
     }
 
     Ok(artefacts)
@@ -709,6 +736,9 @@ fn initialise_llvm_targets() {
 struct FnCtx<'a, 'ctx> {
     ctx: &'ctx Context,
     llvm_mod: &'a LlvmModule<'ctx>,
+    /// ABI layout authority for the module target. Native textual emission
+    /// carries host data; cross-target emission carries the target machine data.
+    target_data: &'a TargetData,
     builder: Builder<'ctx>,
     return_slot: PointerValue<'ctx>,
     return_ty: BasicTypeEnum<'ctx>,
@@ -990,6 +1020,9 @@ fn intern_runtime_decl<'ctx>(
         // hew_string_equals(a: *const c_char, b: *const c_char) -> i32
         // (`hew-runtime/src/string.rs`). Returns 1 when equal, 0 otherwise.
         "hew_string_equals" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_string_concat(a: *const c_char, b: *const c_char) -> *mut c_char
+        // (`hew-runtime/src/string.rs`). Returns a fresh owned string.
+        "hew_string_concat" => ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
         // (`hew-runtime/src/reply_channel.rs:296`). Blocks until a reply
         // is deposited; returns the malloc'd reply pointer (caller frees
@@ -7240,6 +7273,239 @@ fn saturating_bound<'ctx>(
     }
 }
 
+fn cast_int_signedness(ty: &ResolvedTy) -> CodegenResult<IntSignedness> {
+    if ty.is_signed_integer() {
+        Ok(IntSignedness::Signed)
+    } else if ty.is_unsigned_integer() {
+        Ok(IntSignedness::Unsigned)
+    } else {
+        Err(CodegenError::FailClosed(format!(
+            "numeric cast expected integer type, got {}",
+            ty.user_facing()
+        )))
+    }
+}
+
+fn expect_int_type<'ctx>(
+    ty: BasicTypeEnum<'ctx>,
+    context: &'static str,
+) -> CodegenResult<IntType<'ctx>> {
+    match ty {
+        BasicTypeEnum::IntType(int_ty) => Ok(int_ty),
+        other => Err(CodegenError::FailClosed(format!(
+            "{context} expected integer storage, got {other:?}"
+        ))),
+    }
+}
+
+fn expect_float_type<'ctx>(
+    ty: BasicTypeEnum<'ctx>,
+    context: &'static str,
+) -> CodegenResult<FloatType<'ctx>> {
+    match ty {
+        BasicTypeEnum::FloatType(float_ty) => Ok(float_ty),
+        other => Err(CodegenError::FailClosed(format!(
+            "{context} expected float storage, got {other:?}"
+        ))),
+    }
+}
+
+fn lower_numeric_cast(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    src: Place,
+    from_ty: &ResolvedTy,
+    to_ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    if !from_ty.can_explicitly_numeric_cast_to(to_ty) {
+        return Err(CodegenError::FailClosed(format!(
+            "NumericCast from {} to {} is outside the checker-admitted matrix",
+            from_ty.user_facing(),
+            to_ty.user_facing()
+        )));
+    }
+
+    let (src_ptr, src_storage) = place_pointer(fn_ctx, src)?;
+    let (dest_ptr, dest_storage) = place_pointer(fn_ctx, dest)?;
+    let expected_src = primitive_to_llvm(fn_ctx.ctx, from_ty)?;
+    let expected_dest = primitive_to_llvm(fn_ctx.ctx, to_ty)?;
+    if src_storage != expected_src {
+        return Err(CodegenError::FailClosed(format!(
+            "NumericCast source place storage {src_storage:?} disagrees with from_ty {} ({expected_src:?})",
+            from_ty.user_facing()
+        )));
+    }
+    if dest_storage != expected_dest {
+        return Err(CodegenError::FailClosed(format!(
+            "NumericCast dest place storage {dest_storage:?} disagrees with to_ty {} ({expected_dest:?})",
+            to_ty.user_facing()
+        )));
+    }
+
+    let casted: BasicValueEnum<'_> = match (from_ty, to_ty) {
+        (ResolvedTy::Bool, target) if target.is_integer() => {
+            let src_int = expect_int_type(src_storage, "bool->int cast source")?;
+            let dest_int = expect_int_type(dest_storage, "bool->int cast dest")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_int, src_ptr, "cast_bool_src")
+                .llvm_ctx("bool cast source load")?
+                .into_int_value();
+            let bit = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    src_v,
+                    src_int.const_zero(),
+                    "cast_bool_nonzero",
+                )
+                .llvm_ctx("bool cast compare")?;
+            fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(bit, dest_int, "cast_bool_to_int")
+                .llvm_ctx("bool to int cast")?
+                .into()
+        }
+        (source, ResolvedTy::Bool) if source.is_integer() => {
+            let src_int = expect_int_type(src_storage, "int->bool cast source")?;
+            let dest_int = expect_int_type(dest_storage, "int->bool cast dest")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_int, src_ptr, "cast_int_bool_src")
+                .llvm_ctx("int to bool source load")?
+                .into_int_value();
+            let bit = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    src_v,
+                    src_int.const_zero(),
+                    "cast_int_to_bool_bit",
+                )
+                .llvm_ctx("int to bool compare")?;
+            fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(bit, dest_int, "cast_int_to_bool")
+                .llvm_ctx("int to bool zext")?
+                .into()
+        }
+        (source, target) if source.is_integer() && target.is_integer() => {
+            let src_int = expect_int_type(src_storage, "int->int cast source")?;
+            let dest_int = expect_int_type(dest_storage, "int->int cast dest")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_int, src_ptr, "cast_int_src")
+                .llvm_ctx("int cast source load")?
+                .into_int_value();
+            let src_width = src_int.get_bit_width();
+            let dest_width = dest_int.get_bit_width();
+            if src_width == dest_width {
+                src_v.into()
+            } else if src_width > dest_width {
+                fn_ctx
+                    .builder
+                    .build_int_truncate(src_v, dest_int, "cast_int_trunc")
+                    .llvm_ctx("int cast truncate")?
+                    .into()
+            } else {
+                match cast_int_signedness(source)? {
+                    IntSignedness::Signed => fn_ctx
+                        .builder
+                        .build_int_s_extend(src_v, dest_int, "cast_int_sext")
+                        .llvm_ctx("int cast sign extend")?
+                        .into(),
+                    IntSignedness::Unsigned => fn_ctx
+                        .builder
+                        .build_int_z_extend(src_v, dest_int, "cast_int_zext")
+                        .llvm_ctx("int cast zero extend")?
+                        .into(),
+                }
+            }
+        }
+        (source, target) if source.is_integer() && target.is_float() => {
+            let src_int = expect_int_type(src_storage, "int->float cast source")?;
+            let dest_float = expect_float_type(dest_storage, "int->float cast dest")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_int, src_ptr, "cast_int_float_src")
+                .llvm_ctx("int to float source load")?
+                .into_int_value();
+            match cast_int_signedness(source)? {
+                IntSignedness::Signed => fn_ctx
+                    .builder
+                    .build_signed_int_to_float(src_v, dest_float, "cast_sint_to_float")
+                    .llvm_ctx("signed int to float cast")?
+                    .into(),
+                IntSignedness::Unsigned => fn_ctx
+                    .builder
+                    .build_unsigned_int_to_float(src_v, dest_float, "cast_uint_to_float")
+                    .llvm_ctx("unsigned int to float cast")?
+                    .into(),
+            }
+        }
+        (source, target) if source.is_float() && target.is_integer() => {
+            let src_float = expect_float_type(src_storage, "float->int cast source")?;
+            let dest_int = expect_int_type(dest_storage, "float->int cast dest")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_float, src_ptr, "cast_float_int_src")
+                .llvm_ctx("float to int source load")?
+                .into_float_value();
+            match cast_int_signedness(target)? {
+                IntSignedness::Signed => fn_ctx
+                    .builder
+                    .build_float_to_signed_int(src_v, dest_int, "cast_float_to_sint")
+                    .llvm_ctx("float to signed int cast")?
+                    .into(),
+                IntSignedness::Unsigned => fn_ctx
+                    .builder
+                    .build_float_to_unsigned_int(src_v, dest_int, "cast_float_to_uint")
+                    .llvm_ctx("float to unsigned int cast")?
+                    .into(),
+            }
+        }
+        (source, target) if source.is_float() && target.is_float() => {
+            let src_float = expect_float_type(src_storage, "float->float cast source")?;
+            let dest_float = expect_float_type(dest_storage, "float->float cast dest")?;
+            let src_v = fn_ctx
+                .builder
+                .build_load(src_float, src_ptr, "cast_float_src")
+                .llvm_ctx("float cast source load")?
+                .into_float_value();
+            let src_width = src_float.get_bit_width();
+            let dest_width = dest_float.get_bit_width();
+            if src_width == dest_width {
+                src_v.into()
+            } else if src_width > dest_width {
+                fn_ctx
+                    .builder
+                    .build_float_trunc(src_v, dest_float, "cast_float_trunc")
+                    .llvm_ctx("float cast truncate")?
+                    .into()
+            } else {
+                fn_ctx
+                    .builder
+                    .build_float_ext(src_v, dest_float, "cast_float_ext")
+                    .llvm_ctx("float cast extend")?
+                    .into()
+            }
+        }
+        _ => {
+            return Err(CodegenError::FailClosed(format!(
+                "unhandled NumericCast from {} to {}",
+                from_ty.user_facing(),
+                to_ty.user_facing()
+            )));
+        }
+    };
+
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, casted)
+        .llvm_ctx("numeric cast store")?;
+    Ok(())
+}
+
 fn lower_instruction(
     fn_ctx: &FnCtx<'_, '_>,
     instr: &Instr,
@@ -8265,6 +8531,15 @@ fn lower_instruction(
                 .builder
                 .build_store(dest_ptr, widened)
                 .llvm_ctx("is store")?;
+            let _ = ctx;
+        }
+        Instr::NumericCast {
+            dest,
+            src,
+            from_ty,
+            to_ty,
+        } => {
+            lower_numeric_cast(fn_ctx, *dest, *src, from_ty, to_ty)?;
             let _ = ctx;
         }
         Instr::Move { dest, src } => {
@@ -9951,6 +10226,10 @@ fn is_layout_vec_runtime_symbol(symbol: &str) -> bool {
     )
 }
 
+fn is_vec_i32_get_set_symbol(symbol: &str) -> bool {
+    matches!(symbol, "hew_vec_get_i32" | "hew_vec_set_i32")
+}
+
 fn is_vec_constructor_symbol(symbol: &str) -> bool {
     symbol == "Vec::new"
 }
@@ -10161,7 +10440,7 @@ fn get_or_emit_eq_thunk<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     elem_ty: BasicTypeEnum<'ctx>,
 ) -> CodegenResult<FunctionValue<'ctx>> {
-    let (size, align) = abi_size_align(elem_ty, None)?;
+    let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
     let key = eq_thunk_struct_key(elem_ty);
     let name = format!("__hew_eq_thunk_{size}_{align}_{key}");
     if let Some(existing) = fn_ctx.llvm_mod.get_function(&name) {
@@ -10892,7 +11171,7 @@ fn get_or_emit_hash_thunk<'ctx>(
     elem_ty: BasicTypeEnum<'ctx>,
     resolved_ty: Option<&ResolvedTy>,
 ) -> CodegenResult<FunctionValue<'ctx>> {
-    let (size, align) = abi_size_align(elem_ty, None)?;
+    let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
     let key = eq_thunk_struct_key(elem_ty);
     let name = format!("__hew_hash_thunk_{size}_{align}_{key}");
     if let Some(existing) = fn_ctx.llvm_mod.get_function(&name) {
@@ -11050,25 +11329,26 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
             return Ok(declare_extern_layout_global(fn_ctx, name));
         }
     }
-    let (size, align) = abi_size_align(elem_ty, None)?;
+    let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
     let key = eq_thunk_struct_key(elem_ty);
     let global_name = format!("__hew_map_key_layout_{size}_{align}_{key}_plain");
     if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
         return Ok(g.as_pointer_value());
     }
     let ctx = fn_ctx.ctx;
-    let i64_ty = ctx.i64_type();
+    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
     let i8_ty = ctx.i8_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     // Shape matches `hew_cabi::map::HewMapKeyLayout` (6 visible fields; the
+    // first two are target-width `usize`, not always native/host `i64`). The
     // implicit padding between `ownership_kind: i8` and `hash_fn: ptr` is
     // inserted by LLVM because the struct is non-packed). W4.001 Stage C0a
     // adds the `drop_fn` field (`Option<HewMapValueDropThunk>`); for Plain
     // ownership we emit a null pointer (None via niche optimisation).
     let layout_ty = ctx.struct_type(
         &[
-            i64_ty.into(),
-            i64_ty.into(),
+            usize_ty.into(),
+            usize_ty.into(),
             i8_ty.into(),
             ptr_ty.into(),
             ptr_ty.into(),
@@ -11083,8 +11363,8 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     let eq_fn = get_or_emit_eq_thunk(fn_ctx, elem_ty)?;
 
     let init = layout_ty.const_named_struct(&[
-        i64_ty.const_int(size, false).into(),
-        i64_ty.const_int(u64::from(align), false).into(),
+        usize_ty.const_int(size, false).into(),
+        usize_ty.const_int(u64::from(align), false).into(),
         i8_ty.const_zero().into(),
         hash_fn.as_global_value().as_pointer_value().into(),
         eq_fn.as_global_value().as_pointer_value().into(),
@@ -11129,13 +11409,13 @@ fn hashmap_value_layout_descriptor_ptr<'ctx>(
             return Ok(declare_extern_layout_global(fn_ctx, name));
         }
     }
-    let (size, align) = abi_size_align(val_ty, None)?;
+    let (size, align) = abi_size_align(val_ty, Some(fn_ctx.target_data))?;
     let global_name = format!("__hew_map_value_layout_{size}_{align}_plain");
     if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
         return Ok(g.as_pointer_value());
     }
     let ctx = fn_ctx.ctx;
-    let i64_ty = ctx.i64_type();
+    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
     let i8_ty = ctx.i8_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     // W4.001 Stage C0a: `HewMapValueLayout` is now
@@ -11143,8 +11423,8 @@ fn hashmap_value_layout_descriptor_ptr<'ctx>(
     // ownership both new function-pointer fields are null (Option::None).
     let layout_ty = ctx.struct_type(
         &[
-            i64_ty.into(),
-            i64_ty.into(),
+            usize_ty.into(),
+            usize_ty.into(),
             i8_ty.into(),
             ptr_ty.into(),
             ptr_ty.into(),
@@ -11152,8 +11432,8 @@ fn hashmap_value_layout_descriptor_ptr<'ctx>(
         false,
     );
     let init = layout_ty.const_named_struct(&[
-        i64_ty.const_int(size, false).into(),
-        i64_ty.const_int(u64::from(align), false).into(),
+        usize_ty.const_int(size, false).into(),
+        usize_ty.const_int(u64::from(align), false).into(),
         i8_ty.const_zero().into(),
         ptr_ty.const_null().into(),
         ptr_ty.const_null().into(),
@@ -11807,6 +12087,154 @@ fn zext_bool_i1_to_dest<'ctx>(
             .llvm_ctx_with(|| format!("{label} zext bool result"))?
             .into())
     }
+}
+
+fn load_signed_int_arg_to_declared_width<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    expected: IntType<'ctx>,
+    label: &str,
+) -> CodegenResult<IntValue<'ctx>> {
+    let (ptr, ty) = place_pointer(fn_ctx, place)?;
+    let BasicTypeEnum::IntType(int_ty) = ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "{label}: Vec index argument must be an integer local, got {ty:?}"
+        )));
+    };
+    let loaded = fn_ctx
+        .builder
+        .build_load(ty, ptr, &format!("{label}_load"))
+        .llvm_ctx_with(|| format!("{label} load"))?
+        .into_int_value();
+    let actual_width = int_ty.get_bit_width();
+    let expected_width = expected.get_bit_width();
+    if actual_width == expected_width {
+        Ok(loaded)
+    } else if actual_width < expected_width {
+        fn_ctx
+            .builder
+            .build_int_s_extend(loaded, expected, &format!("{label}_sext"))
+            .llvm_ctx_with(|| format!("{label} sign-extend to ABI width"))
+    } else {
+        Err(CodegenError::FailClosed(format!(
+            "{label}: Vec index argument width i{actual_width} is wider than the \
+             declared runtime ABI width i{expected_width}"
+        )))
+    }
+}
+
+fn lower_vec_i32_get_set<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    fn_symbols: &FnSymbolMap<'ctx>,
+    callee: &str,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let expected_arity = match callee {
+        "hew_vec_get_i32" => 2,
+        "hew_vec_set_i32" => 3,
+        _ => {
+            return Err(CodegenError::FailClosed(format!(
+                "lower_vec_i32_get_set called with non-i32 Vec get/set symbol `{callee}`"
+            )));
+        }
+    };
+    if args.len() != expected_arity {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee}: expected {expected_arity} args, got {}",
+            args.len()
+        )));
+    }
+
+    let (fv, return_ty, returns_unit) = (*fn_symbols.get(callee).ok_or_else(|| {
+        CodegenError::FailClosed(format!("Vec<i32> call `{callee}` has no declared symbol"))
+    })?)
+    .real(callee, "lower_vec_i32_get_set")?;
+    let params = fv.get_type().get_param_types();
+    if params.len() != expected_arity {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee}: declared runtime ABI expects {} params, but direct call lowering has {expected_arity} args",
+            params.len()
+        )));
+    }
+    let BasicMetadataTypeEnum::IntType(index_ty) = params[1] else {
+        return Err(CodegenError::FailClosed(format!(
+            "{callee}: declared Vec index ABI param must be integer, got {:?}",
+            params[1]
+        )));
+    };
+
+    let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{callee}_arg0"))?;
+    let index = load_signed_int_arg_to_declared_width(
+        fn_ctx,
+        args[1],
+        index_ty,
+        &format!("{callee}_arg1"),
+    )?;
+
+    let mut arg_vals: Vec<BasicMetadataValueEnum> = Vec::with_capacity(expected_arity);
+    arg_vals.push(vec_ptr.into());
+    arg_vals.push(index.into());
+    if callee == "hew_vec_set_i32" {
+        if let Some(d) = dest {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_vec_set_i32 returns unit; producer must not supply dest={d:?}"
+            )));
+        }
+        if !returns_unit {
+            return Err(CodegenError::FailClosed(
+                "hew_vec_set_i32 declaration must return unit".into(),
+            ));
+        }
+        let (value_ptr, value_ty) = place_pointer(fn_ctx, args[2])?;
+        let value = fn_ctx
+            .builder
+            .build_load(value_ty, value_ptr, "hew_vec_set_i32_arg2_load")
+            .llvm_ctx("hew_vec_set_i32 arg2 load")?;
+        arg_vals.push(metadata_value_from_basic(value));
+    }
+    let call_site = fn_ctx
+        .builder
+        .build_call(fv, &arg_vals, &format!("{callee}_call"))
+        .llvm_ctx_with(|| format!("{callee} call"))?;
+
+    if callee == "hew_vec_get_i32" {
+        if returns_unit {
+            return Err(CodegenError::FailClosed(
+                "hew_vec_get_i32 declaration must return a value".into(),
+            ));
+        }
+        let dest_place = dest.ok_or_else(|| {
+            CodegenError::FailClosed(
+                "hew_vec_get_i32 returns a value; producer must supply a dest".into(),
+            )
+        })?;
+        let ret_val = call_site
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_i32 returned void".into()))?;
+        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+        if dest_ty != return_ty {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_vec_get_i32: dest type {dest_ty:?} does not match return type {return_ty:?}"
+            )));
+        }
+        fn_ctx
+            .builder
+            .build_store(dest_ptr, ret_val)
+            .llvm_ctx("hew_vec_get_i32 store")?;
+    }
+
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx_with(|| format!("{callee} br"))?;
+    Ok(())
 }
 
 fn lower_bool_vec_direct_call(
@@ -13448,17 +13876,54 @@ fn lower_call_runtime_abi(
                 .llvm_ctx_with(|| format!("{symbol} store"))?;
             let _ = (i32_ty, ptr_ty);
         }
-        // W3 collections-sugar S2 — string codepoint index / slice.
+        // String runtime calls — concat plus W3 collections-sugar S2 index/slice.
         //
-        // Both arms follow the Vec single-element-getter / slice-range
+        // These arms follow the Vec single-element-getter / slice-range
         // shape: load the `*const c_char` value from a `ptr`-typed
         // String alloca (string locals are represented as `ptr` in
-        // LLVM — see `basic_type_for(ResolvedTy::String)`), pass i64
-        // endpoints, store the return into the producer-allocated
-        // dest. The runtime entries themselves enforce bounds and
-        // libc::abort on OOB / invalid UTF-8.
+        // LLVM — see `basic_type_for(ResolvedTy::String)`), pass any
+        // scalar arguments, and store the return into the producer-allocated
+        // dest. The runtime entries themselves enforce invalid-input bounds.
         //
-        // hew_string_index(s: *const c_char, i: i64) -> i32 (char).
+        // hew_string_concat(a: *const c_char, b: *const c_char) -> *mut c_char.
+        "hew_string_concat" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_string_concat): expected 2 args (a, b), got {}",
+                    args.len()
+                )));
+            }
+            let lhs_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_concat arg0")?;
+            let rhs_ptr = load_duplex_handle(fn_ctx, args[1], "hew_string_concat arg1")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[lhs_ptr.into(), rhs_ptr.into()],
+                    "hew_string_concat_call",
+                )
+                .llvm_ctx("hew_string_concat call")?;
+            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_string_concat returned void".into())
+            })?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_string_concat: producer must supply a dest place".into(),
+                )
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_val)
+                .llvm_ctx("hew_string_concat store")?;
+            let _ = i32_ty;
+        }
         "hew_string_index" => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
@@ -16676,6 +17141,10 @@ fn lower_terminator<'ctx>(
                 lower_layout_vec_direct_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
+            if is_vec_i32_get_set_symbol(callee) {
+                lower_vec_i32_get_set(fn_ctx, fn_symbols, callee, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
             if is_hashmap_layout_probe_symbol(callee) {
                 lower_hashmap_layout_probe(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
@@ -18721,6 +19190,7 @@ fn declare_function<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     func: &RawMirFunction,
     record_layouts: &RecordLayoutMap<'ctx>,
+    emit_wasm_entry_alias: bool,
 ) -> CodegenResult<FnSymbol<'ctx>> {
     let linkage = if func.name == "main" {
         Some(Linkage::External)
@@ -18794,12 +19264,59 @@ fn declare_function<'ctx>(
         BasicTypeEnum::VectorType(v) => v.fn_type(&param_tys, false),
         BasicTypeEnum::ScalableVectorType(v) => v.fn_type(&param_tys, false),
     };
-    let llvm_fn = llvm_mod.add_function(&func.name, fn_ty, linkage);
+    let symbol_name = if emit_wasm_entry_alias && func.name == "main" {
+        "__original_main"
+    } else {
+        &func.name
+    };
+    let llvm_fn = llvm_mod.add_function(symbol_name, fn_ty, linkage);
     Ok(FnSymbol::Real {
         value: llvm_fn,
         return_ty: return_ty_llvm,
         returns_unit: matches!(func.return_ty, ResolvedTy::Unit),
     })
+}
+
+fn emit_wasm_main_export_wrapper<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    fn_symbols: &FnSymbolMap<'ctx>,
+) -> CodegenResult<()> {
+    let Some(symbol) = fn_symbols.get("main").copied() else {
+        return Ok(());
+    };
+    let (original, _return_ty, _returns_unit) =
+        symbol.real("main", "emit_wasm_main_export_wrapper")?;
+    let fn_ty = original.get_type();
+    let params = fn_ty.get_param_types();
+    if !params.is_empty() {
+        return Err(CodegenError::FailClosed(format!(
+            "WASM entry wrapper expected parameterless main, got {} parameters",
+            params.len()
+        )));
+    }
+
+    let wrapper = llvm_mod.add_function("main", fn_ty, Some(Linkage::External));
+    let entry = ctx.append_basic_block(wrapper, "entry");
+    let builder = ctx.create_builder();
+    builder.position_at_end(entry);
+    let call = builder
+        .build_call(original, &[], "__original_main_call")
+        .llvm_ctx("WASM main wrapper call")?;
+    if fn_ty.get_return_type().is_some() {
+        let ret = call.try_as_basic_value().basic().ok_or_else(|| {
+            CodegenError::FailClosed("WASM main wrapper call returned void".into())
+        })?;
+        builder
+            .build_return(Some(&ret))
+            .llvm_ctx("WASM main wrapper return")?;
+    } else {
+        builder
+            .build_return(None)
+            .llvm_ctx("WASM main wrapper return void")?;
+    }
+
+    Ok(())
 }
 
 /// The memory-intrinsic floor (`mem.*`, W5.005 / F1b) for which codegen
@@ -18975,6 +19492,7 @@ fn emit_floor_intrinsic_body<'ctx>(
 fn lower_function<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     func: &RawMirFunction,
     fn_symbols: &FnSymbolMap<'ctx>,
     elab: Option<&ElaboratedMirFunction>,
@@ -19148,6 +19666,7 @@ fn lower_function<'ctx>(
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
+        target_data,
         builder,
         return_slot,
         return_ty: return_ty_llvm,
@@ -19731,15 +20250,22 @@ fn build_module_for_target<'ctx>(
     target_machine: Option<&TargetMachine>,
 ) -> CodegenResult<LlvmModule<'ctx>> {
     let llvm_mod = ctx.create_module(name);
+    let emit_wasm_entry_alias = target_machine.is_some_and(|machine| {
+        machine
+            .get_triple()
+            .as_str()
+            .to_string_lossy()
+            .starts_with("wasm32")
+    });
     let target_data = if let Some(machine) = target_machine {
         let triple = machine.get_triple();
         llvm_mod.set_triple(&triple);
         let data = machine.get_target_data();
         let layout = data.get_data_layout();
         llvm_mod.set_data_layout(&layout);
-        Some(data)
+        data
     } else {
-        None
+        host_target_data()
     };
     // Predeclare opaque LLVM named structs for every record / enum / machine
     // outer + `<Name>Event` companion BEFORE any body-fill pass. Record
@@ -19779,7 +20305,7 @@ fn build_module_for_target<'ctx>(
         &pipeline.enum_layouts,
         &mut record_layouts,
         &mut machine_layouts,
-        target_data.as_ref(),
+        Some(&target_data),
     )?;
     // Slice 5: register machine tagged-union types alongside records.
     // Outer structs + `<Name>Event` companions were predeclared above; this
@@ -19790,7 +20316,7 @@ fn build_module_for_target<'ctx>(
         &llvm_mod,
         &pipeline.machine_layouts,
         &mut record_layouts,
-        target_data.as_ref(),
+        Some(&target_data),
     )?;
     machine_layouts.extend(machine_layout_map);
     // Register synthesised generator-body state-record structs from
@@ -19815,8 +20341,11 @@ fn build_module_for_target<'ctx>(
         &record_layouts,
     )?;
     for func in &pipeline.raw_mir {
-        let sym = declare_function(ctx, &llvm_mod, func, &record_layouts)?;
+        let sym = declare_function(ctx, &llvm_mod, func, &record_layouts, emit_wasm_entry_alias)?;
         fn_symbols.insert(func.name.clone(), sym);
+    }
+    if emit_wasm_entry_alias {
+        emit_wasm_main_export_wrapper(ctx, &llvm_mod, &fn_symbols)?;
     }
     // W3.030 Stage 2 V13: verify every `ElabDrop { drop_fn: Some(_) }`
     // resolves to one of the two `DropDispatch` arms (runtime symbol or
@@ -19846,7 +20375,7 @@ fn build_module_for_target<'ctx>(
         &record_layouts,
         &pipeline.enum_layouts,
         &machine_layouts,
-        target_data.as_ref(),
+        Some(&target_data),
     )?;
     // Supervisor bootstraps replace the MIR-side synthesised body wholesale
     // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
@@ -19893,6 +20422,7 @@ fn build_module_for_target<'ctx>(
         lower_function(
             ctx,
             &llvm_mod,
+            &target_data,
             func,
             &fn_symbols,
             elab,
@@ -21072,6 +21602,131 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
         }
+    }
+
+    fn named_record_ty(name: &str) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: name.to_string(),
+            args: vec![],
+            builtin: None,
+        }
+    }
+
+    fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
+        let entry = BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Call {
+                callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
+                args: vec![Place::Local(0), Place::Local(1)],
+                dest: None,
+                next: 1,
+            },
+        };
+        let ret = BasicBlock {
+            id: 1,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Return,
+        };
+        let blocks = vec![entry, ret];
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![RawMirFunction {
+                name: "main".to_string(),
+                return_ty: ResolvedTy::Unit,
+                call_conv: hew_mir::FunctionCallConv::Default,
+                params: vec![],
+                locals: vec![named_record_ty("Point"), named_record_ty("PtrPayload")],
+                blocks,
+                decisions: Vec::<DecisionFact>::new(),
+                intrinsic_id: None,
+            }],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
+            record_layouts: vec![
+                RecordLayout {
+                    name: "Point".to_string(),
+                    field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+                },
+                RecordLayout {
+                    name: "PtrPayload".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                },
+            ],
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            user_consts: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+            actor_send_aliasing: std::collections::HashMap::new(),
+            polymorphic_mir: Vec::new(),
+        }
+    }
+
+    fn hashmap_descriptor_probe_ir(module_name: &str, triple: Option<&str>) -> String {
+        let ctx = Context::create();
+        let pipeline = hashmap_descriptor_width_probe_pipeline();
+        let module = if let Some(triple) = triple {
+            let machine = target_machine_for_triple(triple).expect("target machine");
+            build_module_for_target(&ctx, &pipeline, module_name, Some(&machine))
+                .expect("targeted descriptor probe module")
+        } else {
+            build_module(&ctx, &pipeline, module_name).expect("native descriptor probe module")
+        };
+        module.print_to_string().to_string()
+    }
+
+    fn descriptor_line<'a>(ir: &'a str, global_prefix: &str) -> &'a str {
+        ir.lines()
+            .find(|line| line.contains(global_prefix) && line.contains("= private constant"))
+            .unwrap_or_else(|| panic!("missing descriptor global {global_prefix} in:\n{ir}"))
+    }
+
+    #[test]
+    fn hashmap_layout_descriptors_use_target_usize_width() {
+        let native = hashmap_descriptor_probe_ir("native_map_layout_width", None);
+        let wasm =
+            hashmap_descriptor_probe_ir("wasm32_map_layout_width", Some("wasm32-unknown-unknown"));
+
+        let native_key = descriptor_line(&native, "@__hew_map_key_layout_16_8_");
+        assert!(
+            native_key.contains("{ i64, i64, i8, ptr, ptr, ptr }")
+                && native_key.contains("{ i64 16, i64 8, i8 0,"),
+            "native key descriptor must use 8-byte usize fields:\n{native_key}\n\nfull IR:\n{native}"
+        );
+        let wasm_key = descriptor_line(&wasm, "@__hew_map_key_layout_16_8_");
+        assert!(
+            wasm_key.contains("{ i32, i32, i8, ptr, ptr, ptr }")
+                && wasm_key.contains("{ i32 16, i32 8, i8 0,"),
+            "wasm32 key descriptor must use 4-byte usize fields:\n{wasm_key}\n\nfull IR:\n{wasm}"
+        );
+
+        let native_value = descriptor_line(&native, "@__hew_map_value_layout_8_8_plain");
+        assert!(
+            native_value.contains("{ i64, i64, i8, ptr, ptr }")
+                && native_value.contains("{ i64 8, i64 8, i8 0,"),
+            "native pointer-field value descriptor must use host pointer ABI and 8-byte usize fields:\n{native_value}\n\nfull IR:\n{native}"
+        );
+        let wasm_value = descriptor_line(&wasm, "@__hew_map_value_layout_4_4_plain");
+        assert!(
+            wasm_value.contains("{ i32, i32, i8, ptr, ptr }")
+                && wasm_value.contains("{ i32 4, i32 4, i8 0,"),
+            "wasm32 pointer-field value descriptor must use wasm pointer ABI and 4-byte usize fields:\n{wasm_value}\n\nfull IR:\n{wasm}"
+        );
+        assert!(
+            !wasm.contains("@__hew_map_value_layout_8_8_plain"),
+            "wasm32 descriptor synthesis must not reuse the native 8-byte pointer layout:\n{wasm}"
+        );
     }
 
     fn pipeline_with_user_const_load(
@@ -23397,6 +24052,7 @@ mod tests {
     /// `fn_symbols` / `actor_layouts` — those have to outlive the helper
     /// invocation.
     struct CompositeHelperHarness<'ctx> {
+        target_data: TargetData,
         record_layouts: RecordLayoutMap<'ctx>,
         machine_layouts: MachineLayoutMap<'ctx>,
         fn_symbols: FnSymbolMap<'ctx>,
@@ -23555,6 +24211,7 @@ mod tests {
         record_fixtures: &[MirRecordLayout],
         enum_fixtures: &[MirEnumLayout],
     ) -> CompositeHelperHarness<'ctx> {
+        let target_data = host_target_data();
         let mut record_layouts: RecordLayoutMap<'ctx> =
             predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[], &[])
                 .expect("named-layout predeclaration must succeed");
@@ -23566,10 +24223,11 @@ mod tests {
             enum_fixtures,
             &mut record_layouts,
             &mut machine_layouts,
-            None,
+            Some(&target_data),
         )
         .expect("enum-layout registration must succeed");
         CompositeHelperHarness {
+            target_data,
             record_layouts,
             machine_layouts,
             fn_symbols: HashMap::new(),
@@ -23604,6 +24262,7 @@ mod tests {
         FnCtx {
             ctx,
             llvm_mod,
+            target_data: &harness.target_data,
             builder,
             return_slot,
             return_ty: i32_ty.into(),
@@ -25027,7 +25686,6 @@ mod tests {
                 params: vec![],
                 return_type: hew_types::Ty::I64,
                 is_async: false,
-                is_pure: true,
                 accepts_kwargs: false,
                 doc_comment: None,
                 extern_symbol: None,

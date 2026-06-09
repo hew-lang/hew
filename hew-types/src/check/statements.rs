@@ -315,6 +315,24 @@ impl Checker {
         }
     }
 
+    fn infer_integer_literal_binding_type(
+        &mut self,
+        value: Option<&Spanned<Expr>>,
+        val_ty: Ty,
+    ) -> Ty {
+        let Some((expr, span)) = value else {
+            return val_ty;
+        };
+        if is_integer_literal(expr) && val_ty.is_integer_literal() {
+            let inferred = Ty::Var(TypeVar::fresh());
+            self.expect_type(&inferred, &val_ty, span);
+            self.record_integer_literal_type(expr, span, &inferred);
+            inferred
+        } else {
+            val_ty
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "statement checking covers many Stmt variants"
@@ -400,6 +418,11 @@ impl Checker {
                     Ty::Var(v)
                 };
                 self.pending_let_closure_name = prev_pending;
+                let val_ty = if ty.is_none() {
+                    self.infer_integer_literal_binding_type(value.as_ref(), val_ty)
+                } else {
+                    val_ty
+                };
                 // Consume the scratch field unconditionally so stale state
                 // never accumulates across statements.  Only register the
                 // generic call signature in lambda_poly_sig_map when the binding value is
@@ -472,7 +495,7 @@ impl Checker {
                     // materialize immediately.
                     if ty.is_none() {
                         if let Some((val, _)) = value {
-                            if val_ty.is_integer_literal() {
+                            if is_integer_literal(val) {
                                 if let Some(v) = extract_integer_literal_value(val) {
                                     self.const_values
                                         .insert(name.clone(), ConstValue::Integer(v));
@@ -508,7 +531,8 @@ impl Checker {
                 };
                 let generic_sig = self.last_lambda_generic_sig.take();
                 let val_ty = if ty.is_none() {
-                    val_ty.materialize_literal_defaults()
+                    self.infer_integer_literal_binding_type(value.as_ref(), val_ty)
+                        .materialize_literal_defaults()
                 } else {
                     val_ty
                 };
@@ -554,19 +578,6 @@ impl Checker {
                 }
             }
             Stmt::Assign { target, op, value } => {
-                // Purity check: pure functions cannot assign to actor fields
-                if self.in_pure_function {
-                    // Check bare field name assignment (actor fields in scope)
-                    if let Expr::Identifier(name) = &target.0 {
-                        if self.current_actor_fields.contains(name) {
-                            self.report_error(
-                                TypeErrorKind::PurityViolation,
-                                span,
-                                format!("cannot assign to actor field `{name}` in a pure function"),
-                            );
-                        }
-                    }
-                }
                 // Classify the assignment target for the side-table before synthesising
                 // so that the entry is always emitted whenever the target is syntactically
                 // valid, regardless of whether subsequent type-checking finds errors.

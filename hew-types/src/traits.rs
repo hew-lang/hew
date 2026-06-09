@@ -37,6 +37,12 @@ pub enum MarkerTrait {
     Decode,
     /// Can be serialized to bytes
     Encode,
+    /// Can cross a remote actor boundary as a Hew value payload.
+    ///
+    /// This is a compile-time floor only: current remote-send lowering still
+    /// wraps raw in-memory ABI bytes in a CBOR envelope, and structural
+    /// Hew-value encoding is a later slice.
+    Serializable,
     /// Contains no `Rc<T>` anywhere in its admissible structure
     RcFree,
     /// Owns an operating-system or runtime resource whose drop closes it.
@@ -61,6 +67,7 @@ impl std::fmt::Display for MarkerTrait {
             MarkerTrait::Drop => write!(f, "Drop"),
             MarkerTrait::Decode => write!(f, "Decode"),
             MarkerTrait::Encode => write!(f, "Encode"),
+            MarkerTrait::Serializable => write!(f, "Serializable"),
             MarkerTrait::RcFree => write!(f, "RcFree"),
             MarkerTrait::Resource => write!(f, "Resource"),
         }
@@ -85,6 +92,7 @@ impl MarkerTrait {
             "Drop" => Some(Self::Drop),
             "Decode" => Some(Self::Decode),
             "Encode" => Some(Self::Encode),
+            "Serializable" => Some(Self::Serializable),
             "RcFree" => Some(Self::RcFree),
             "Resource" => Some(Self::Resource),
             _ => None,
@@ -159,6 +167,12 @@ pub struct TraitRegistry {
     /// the `Resource` marker is always false regardless of field types (a record
     /// wrapping a resource field is not itself an OS/runtime resource).
     records: HashSet<String>,
+    /// Named types admitted to the initial `Serializable` subset.
+    ///
+    /// The value stores every field / variant-payload member that must itself
+    /// be serializable. Registration deliberately includes records, enums, and
+    /// wire-marked types, but not ordinary plain structs.
+    serializable_members: HashMap<String, Vec<Ty>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,11 +207,24 @@ impl TraitRegistry {
         self.rc_free_members.insert(name, member_types);
     }
 
+    /// Register a named type as part of the accepted `Serializable` subset.
+    pub fn register_serializable_type(&mut self, name: String, member_types: Vec<Ty>) {
+        self.serializable_members.insert(name, member_types);
+    }
+
     /// Look up `RcFree` members by exact or module-qualified/unqualified name.
     fn rc_free_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
         self.rc_free_members.get(name).or_else(|| {
             name.rsplit_once('.')
                 .and_then(|(_, unqualified)| self.rc_free_members.get(unqualified))
+        })
+    }
+
+    /// Look up `Serializable` members by exact or module-qualified/unqualified name.
+    fn serializable_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
+        self.serializable_members.get(name).or_else(|| {
+            name.rsplit_once('.')
+                .and_then(|(_, unqualified)| self.serializable_members.get(unqualified))
         })
     }
 
@@ -269,6 +296,86 @@ impl TraitRegistry {
     pub(crate) fn rc_free_status(&self, ty: &Ty) -> RcFreeStatus {
         let mut visiting = HashSet::new();
         self.implements_rc_free(ty, &mut visiting)
+    }
+
+    fn has_encode_decode(&self, ty: &Ty) -> bool {
+        self.implements_marker(ty, MarkerTrait::Encode)
+            && self.implements_marker(ty, MarkerTrait::Decode)
+    }
+
+    fn implements_serializable_inner(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        match ty {
+            Ty::Var(_) | Ty::Error => true,
+            _ if !self.has_encode_decode(ty) => false,
+            Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::IntLiteral
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::FloatLiteral
+            | Ty::Bool
+            | Ty::Char
+            | Ty::Duration
+            | Ty::Unit
+            | Ty::Never
+            | Ty::String
+            | Ty::Bytes => true,
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|elem| self.implements_serializable_inner(elem, visiting)),
+            Ty::Array(inner, _) => self.implements_serializable_inner(inner, visiting),
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                if let Some(negatives) = self.negative_impls.get(name) {
+                    if negatives.contains(&MarkerTrait::Serializable) {
+                        return false;
+                    }
+                }
+                if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+                    return args
+                        .iter()
+                        .all(|arg| self.implements_serializable_inner(arg, visiting));
+                }
+                let Some(members) = self.serializable_members_any(name).cloned() else {
+                    return false;
+                };
+                if !visiting.insert(name.clone()) {
+                    return false;
+                }
+                let ok = members
+                    .iter()
+                    .all(|member| self.implements_serializable_inner(member, visiting));
+                visiting.remove(name);
+                ok
+            }
+            Ty::Slice(_)
+            | Ty::CancellationToken
+            | Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::Pointer { .. }
+            | Ty::Borrow { .. }
+            | Ty::TraitObject { .. }
+            | Ty::Task(_)
+            | Ty::AssocType { .. } => false,
+        }
+    }
+
+    /// Check whether a type is admitted by the current `Serializable` subset.
+    #[must_use]
+    pub fn is_serializable(&self, ty: &Ty) -> bool {
+        let mut visiting = HashSet::new();
+        self.implements_serializable_inner(ty, &mut visiting)
     }
 
     /// Register an actor type.
@@ -354,6 +461,9 @@ impl TraitRegistry {
         reason = "marker derivation covers many Ty variants"
     )]
     pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
+        if marker == MarkerTrait::Serializable {
+            return self.is_serializable(ty);
+        }
         if marker == MarkerTrait::RcFree {
             return matches!(self.rc_free_status(ty), RcFreeStatus::RcFree);
         }
@@ -615,6 +725,7 @@ impl TraitRegistry {
                         MarkerTrait::Drop => field_derives(MarkerTrait::Drop),
                         MarkerTrait::Decode => field_derives(MarkerTrait::Decode),
                         MarkerTrait::Encode => field_derives(MarkerTrait::Encode),
+                        MarkerTrait::Serializable => field_derives(MarkerTrait::Serializable),
                         // RcFree is resolved at the top of implements_marker before
                         // reaching this arm; the field-driven path is correct here too.
                         MarkerTrait::RcFree => field_derives(MarkerTrait::RcFree),
@@ -814,6 +925,57 @@ mod tests {
             ret: Box::new(Ty::Bool),
         };
         assert!(registry.is_send(&fn_ty));
+    }
+
+    #[test]
+    fn test_serializable_marker_uses_encode_decode_and_subset() {
+        let mut registry = TraitRegistry::new();
+        assert!(registry.is_serializable(&Ty::I64));
+        assert!(registry.is_serializable(&Ty::String));
+        assert!(registry.is_serializable(&Ty::Bytes));
+        assert!(registry.is_serializable(&Ty::Tuple(vec![Ty::I64, Ty::Bool])));
+        assert!(registry.is_serializable(&Ty::Array(Box::new(Ty::I64), 4)));
+
+        let ping = Ty::Named {
+            builtin: None,
+            name: "Ping".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Ping".to_string(), vec![Ty::I64]);
+        registry.register_record_type("Ping".to_string());
+        registry.register_serializable_type("Ping".to_string(), vec![Ty::I64]);
+        assert!(registry.is_serializable(&ping));
+
+        let plain = Ty::Named {
+            builtin: None,
+            name: "Plain".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Plain".to_string(), vec![Ty::I64]);
+        assert!(!registry.is_serializable(&plain));
+
+        let fn_ty = Ty::Function {
+            params: vec![Ty::I64],
+            ret: Box::new(Ty::I64),
+        };
+        assert!(registry.is_send(&fn_ty));
+        assert!(!registry.is_serializable(&fn_ty));
+
+        let bad = Ty::Named {
+            builtin: None,
+            name: "Bad".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Bad".to_string(), vec![fn_ty]);
+        registry.register_record_type("Bad".to_string());
+        registry.register_serializable_type(
+            "Bad".to_string(),
+            vec![Ty::Function {
+                params: vec![Ty::I64],
+                ret: Box::new(Ty::I64),
+            }],
+        );
+        assert!(!registry.is_serializable(&bad));
     }
 
     #[test]

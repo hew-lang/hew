@@ -192,17 +192,14 @@ impl<T> Option<T> {
     fn is_some(opt: Option<T>) -> bool {
         panic("hew_option_is_some: declarative FFI body reached without rewrite")
     }
-
     #[extern_symbol(hew_option_is_none)]
     fn is_none(opt: Option<T>) -> bool {
         panic("hew_option_is_none: declarative FFI body reached without rewrite")
     }
-
     #[extern_symbol("hew_option_unwrap_{T}")]
     fn unwrap(opt: Option<T>) -> T {
         panic("hew_option_unwrap: declarative FFI body reached without rewrite")
     }
-
     #[extern_symbol("hew_option_unwrap_or_{T}")]
     fn unwrap_or(opt: Option<T>, fallback: T) -> T {
         panic("hew_option_unwrap_or: declarative FFI body reached without rewrite")

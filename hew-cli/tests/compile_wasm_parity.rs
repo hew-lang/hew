@@ -1,6 +1,6 @@
-//! E5c integration tests: WASM parity classification for the duplex substrate.
+//! E5c integration tests: WASM parity classification for native-only substrates.
 //!
-//! Three behaviours under test:
+//! Four behaviours under test:
 //!
 //! 1. Non-duplex programs (`01-arith.hew`) still emit a `.wasm` artefact when
 //!    WASM is requested with `--target wasm32-unknown-unknown`. The duplex
@@ -10,15 +10,15 @@
 //! 2. A bare compile of a non-duplex program skips WASM emission and produces
 //!    only the native binary.
 //!
-//! 3. WASM-TODO(#1451): `hew_duplex_*` symbols are excluded from wasm32
+//! 3. `CodegenError::WasmUnsupportedSubstrate` diagnostics keep the category
+//!    selected by the codegen display path: HashMap/HashSet report #1820,
+//!    generators report generator parity, and duplex remains duplex/#1451.
+//!
+//! 4. WASM-TODO(#1451): `hew_duplex_*` symbols are excluded from wasm32
 //!    builds via `hew-runtime/src/duplex.rs:54`. The codegen layer returns
 //!    `CodegenError::WasmUnsupportedSubstrate` before invoking `wasm-ld`,
 //!    so the CLI surfaces a structured diagnostic pointing to the WASM target
-//!    rather than a raw linker error. This sub-test is `#[ignore]` because
-//!    reaching it end-to-end requires the HIR→MIR duplex surface to be wired
-//!    through the checker (E3), which has not yet landed on `v05-integration`.
-//!    The codegen-layer gate is tested in
-//!    `hew-codegen-rs/tests/wasm_duplex_classification.rs`.
+//!    rather than a raw linker error.
 mod support;
 
 use std::process::Command;
@@ -144,6 +144,77 @@ fn bare_compile_skips_wasm_for_non_duplex() {
         !stdout.lines().any(|l| l.starts_with("wasm:")),
         "expected no `wasm:` line for bare native compile; got:\n{stdout}"
     );
+}
+
+#[test]
+fn wasm_unsupported_substrate_diagnostics_preserve_symbol_category() {
+    require_codegen();
+
+    assert_wasm_unsupported_category(
+        "examples/ux/15_hashmap.hew",
+        &["HashMap", "#1820"],
+        &["duplex"],
+    );
+    assert_wasm_unsupported_category(
+        "tests/vertical-slice/accept/gen_block_outside_receive.hew",
+        &["generator"],
+        &["duplex"],
+    );
+    assert_wasm_unsupported_category(
+        "tests/vertical-slice/accept/lambda_method_send.hew",
+        &["Duplex", "#1451"],
+        &[],
+    );
+}
+
+fn assert_wasm_unsupported_category(fixture: &str, expected: &[&str], forbidden: &[&str]) {
+    let fixture = repo_root().join(fixture);
+    assert!(fixture.exists(), "fixture not found: {}", fixture.display());
+
+    let emit_dir = tempfile::Builder::new()
+        .prefix("compile-wasm-unsupported-category-")
+        .tempdir()
+        .expect("create temp dir");
+
+    let fixture_str = fixture.to_str().expect("fixture path is valid UTF-8");
+    let emit_dir_str = emit_dir.path().to_str().expect("emit dir is valid UTF-8");
+
+    let output = Command::new(hew_binary())
+        .args([
+            "compile",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--emit-dir",
+            emit_dir_str,
+            fixture_str,
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for wasm-unsupported fixture `{}`:\n{}",
+        fixture.display(),
+        describe_output(&output)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for needle in expected {
+        assert!(
+            stderr.contains(needle),
+            "expected diagnostic for `{}` to contain `{needle}`; got:\n{stderr}",
+            fixture.display()
+        );
+    }
+    let stderr_lower = stderr.to_lowercase();
+    for needle in forbidden {
+        assert!(
+            !stderr_lower.contains(&needle.to_lowercase()),
+            "expected diagnostic for `{}` not to contain `{needle}`; got:\n{stderr}",
+            fixture.display()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

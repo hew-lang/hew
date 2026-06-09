@@ -59,9 +59,9 @@ fn main() {
     sleep_ms(30);
 
     // Get worker handles (typed — the compiler knows these are Worker actors)
-    let w1 = supervisor_child(sup, 0);
-    let w2 = supervisor_child(sup, 1);
-    let w3 = supervisor_child(sup, 2);
+    let w1 = sup.w1;
+    let w2 = sup.w2;
+    let w3 = sup.w3;
     // Round-robin some work
     w1.process(100);
     w2.process(200);
@@ -78,7 +78,7 @@ fn main() {
     // Workers 1 and 3 are unaffected.
     // Worker 2 has been restarted with fresh state (processed=0).
     println("--- after restart, all workers operational ---");
-    let w2_new = supervisor_child(sup, 1);
+    let w2_new = sup.w2;
     w1.process(102);
     w2_new.process(202);
     w3.process(301);

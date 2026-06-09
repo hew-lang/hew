@@ -4,11 +4,11 @@ use common::typecheck;
 use hew_types::Ty;
 
 #[test]
-fn pid_trait_with_assoc_msg_works() {
+fn pid_trait_generic_tell_fails_closed_without_serializable_projection_bound() {
     let output = typecheck(
         r"
-        type Work {
-            id: i32;
+        record Work {
+            id: i32,
         }
 
         actor Worker {
@@ -33,18 +33,22 @@ fn pid_trait_with_assoc_msg_works() {
         ",
     );
     assert!(
-        output.errors.is_empty(),
-        "Pid associated Msg should type-check cleanly: {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("fail-closed")
+                && error.message.contains("P::Msg: Serializable")),
+        "generic Pid::tell must fail closed without a P::Msg Serializable proof: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn local_pid_satisfies_pid_with_actor_msg_assoc() {
+fn local_pid_generic_pid_tell_still_fails_closed_without_projection_bound() {
     let output = typecheck(
         r"
-        type Job {
-            n: i32;
+        record Job {
+            n: i32,
         }
 
         actor Worker {
@@ -68,8 +72,12 @@ fn local_pid_satisfies_pid_with_actor_msg_assoc() {
         ",
     );
     assert!(
-        output.errors.is_empty(),
-        "LocalPid<Worker> should satisfy Pid with Msg = Worker ActorMsg::Msg: {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("fail-closed")
+                && error.message.contains("P::Msg: Serializable")),
+        "generic Pid::tell must fail closed even when a call site later supplies LocalPid: {:#?}",
         output.errors
     );
 }
@@ -78,8 +86,8 @@ fn local_pid_satisfies_pid_with_actor_msg_assoc() {
 fn local_pid_tell_returns_result_send_error() {
     let (prog, output) = common::parse_and_typecheck_inline(
         r"
-        type Job {
-            n: i32;
+        record Job {
+            n: i32,
         }
 
         actor Worker {
@@ -134,8 +142,8 @@ fn local_pid_tell_returns_result_send_error() {
 fn remote_pid_tell_returns_typed_send_error_stub() {
     let output = typecheck(
         r"
-        type Job {
-            n: i32;
+        record Job {
+            n: i32,
         }
 
         actor Worker {

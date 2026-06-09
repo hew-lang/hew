@@ -2086,9 +2086,12 @@ mod generic_vec_tests {
             .args([
                 "--exact",
                 "generic_vec_tests::helper_contains_thunk_null_eq_fn_fails_closed",
-                "--include-ignored",
             ])
             .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "helper_contains_thunk_null_eq_fn_fails_closed",
+            )
             .output()
             .unwrap();
         assert!(
@@ -2104,8 +2107,12 @@ mod generic_vec_tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for contains_thunk_null_eq_fn_fails_closed — must abort"]
     fn helper_contains_thunk_null_eq_fn_fails_closed() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
+            v != "helper_contains_thunk_null_eq_fn_fails_closed"
+        }) {
+            return;
+        }
         let layout = HewTypeLayout {
             size: core::mem::size_of::<Point>(),
             align: core::mem::align_of::<Point>(),
@@ -2126,9 +2133,12 @@ mod generic_vec_tests {
             .args([
                 "--exact",
                 "generic_vec_tests::helper_contains_thunk_layout_managed_fails_closed",
-                "--include-ignored",
             ])
             .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "helper_contains_thunk_layout_managed_fails_closed",
+            )
             .output()
             .unwrap();
         assert!(
@@ -2144,8 +2154,12 @@ mod generic_vec_tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for contains_thunk_layout_managed_fails_closed — must abort"]
     fn helper_contains_thunk_layout_managed_fails_closed() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
+            v != "helper_contains_thunk_layout_managed_fails_closed"
+        }) {
+            return;
+        }
         let layout = HewTypeLayout {
             size: core::mem::size_of::<Point>(),
             align: core::mem::align_of::<Point>(),
@@ -2166,9 +2180,12 @@ mod generic_vec_tests {
             .args([
                 "--exact",
                 "generic_vec_tests::helper_contains_thunk_elem_kind_mismatch_fails_closed",
-                "--include-ignored",
             ])
             .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "helper_contains_thunk_elem_kind_mismatch_fails_closed",
+            )
             .output()
             .unwrap();
         assert!(
@@ -2184,8 +2201,12 @@ mod generic_vec_tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for contains_thunk_elem_kind_mismatch_fails_closed — must abort"]
     fn helper_contains_thunk_elem_kind_mismatch_fails_closed() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
+            v != "helper_contains_thunk_elem_kind_mismatch_fails_closed"
+        }) {
+            return;
+        }
         let layout = HewTypeLayout {
             size: core::mem::size_of::<Point>(),
             align: core::mem::align_of::<Point>(),
@@ -2235,9 +2256,12 @@ mod generic_vec_tests {
             .args([
                 "--exact",
                 "generic_vec_tests::helper_layout_managed_push_remains_fail_closed",
-                "--include-ignored",
             ])
             .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "helper_layout_managed_push_remains_fail_closed",
+            )
             .output()
             .unwrap();
         assert!(
@@ -2253,8 +2277,12 @@ mod generic_vec_tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "helper for layout_managed_push_remains_fail_closed — must abort"]
     fn helper_layout_managed_push_remains_fail_closed() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
+            v != "helper_layout_managed_push_remains_fail_closed"
+        }) {
+            return;
+        }
         let layout = HewTypeLayout {
             size: core::mem::size_of::<Point>(),
             align: core::mem::align_of::<Point>(),

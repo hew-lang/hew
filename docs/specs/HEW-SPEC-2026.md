@@ -166,11 +166,11 @@ Actor behaviours can also be defined via traits:
 
 ```hew
 trait Pingable {
-    receive fn ping() -> String;
+    receive fn ping() -> string;
 }
 
 actor Pinger: Pingable {
-    receive fn ping() -> String {
+    receive fn ping() -> string {
         "pong"
     }
 }
@@ -182,7 +182,7 @@ Receive handlers can be annotated with `#[every(duration)]` to create periodic t
 
 ```hew
 actor HealthChecker {
-    let endpoint: String;
+    let endpoint: string;
     let failures: i64;
 
     #[every(5s)]
@@ -306,7 +306,7 @@ Actors may declare `#[max_heap(N)]` to cap their per-actor arena. If an arena al
 The `?` operator propagates errors from Result types once the v0.6 composite-return spine is available:
 
 ```hew
-fn read_file(path: String) -> Result<String, String> {
+fn read_file(path: string) -> Result<string, string> {
     let handle = open(path)?;  // Early return on error
     let content = read(handle)?;
     Ok(content)
@@ -373,7 +373,7 @@ unaffected.
 ### 3.1 Type categories
 
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
-- **Owned heap types**: `String`, `Bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
+- **Owned heap types**: `string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
 - **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. The runtime has internal `Arc`/ABI support, but v0.2.x does **not** yet expose a user-facing Hew `Arc<T>` type.
 - **Actor references**: `LocalPid<A>` is sendable.
 - **I/O stream types**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only, `Send`, first-class sequential I/O handles (§6.5).
@@ -383,42 +383,6 @@ unaffected.
 - Bindings are immutable by default: `let`.
 - Mutable bindings: `var`.
 - Struct fields are immutable by default; mutation requires `var` field.
-
-### 3.2.1 Pure Functions
-
-A function can be marked `pure` to guarantee it is free of observable side effects.
-The compiler statically verifies purity at type-check time.
-
-```hew
-pure fn add(a: i64, b: i64) -> i64 {
-    a + b
-}
-```
-
-**Purity rules.** Inside a `pure fn` or `pure receive fn`:
-
-1. Only other `pure` functions may be called.
-2. The `spawn`, `fork`, `select`, `join` expressions are forbidden.
-3. Assignment to actor fields (bare field names) is forbidden.
-4. Local `var` mutations _are_ allowed — they do not escape the function.
-
-`pure` may appear before `fn`, `gen fn`, `receive fn`, or `receive gen fn`,
-and in trait method signatures:
-
-```hew
-trait Math {
-    pure fn square(p: Point) -> f64;
-}
-
-actor Calculator {
-    pure receive fn add(a: i64, b: i64) -> i64 {
-        a + b
-    }
-}
-```
-
-Pure receive handlers are guaranteed not to mutate the actor's state, which
-makes it clear which handlers are stateless message transformations.
 
 ### 3.3 Sendability / isolation rule
 
@@ -442,7 +406,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | Type                               | `Send` if...                               |
 | ---------------------------------- | ------------------------------------------ |
 | Value types (i32, f64, bool, char) | Always `Send`                              |
-| `String`                           | Always `Send` (immutable-shareable owned type; alias-shared by refcount retain on send — not deep-copied) |
+| `string`                           | Always `Send` (immutable-shareable owned type; alias-shared by refcount retain on send — not deep-copied) |
 | `LocalPid<A>`                      | Always `Send`                              |
 | `type S { f1: T1; f2: T2; ... }`   | All fields are `Send`                      |
 | `enum E { V1(T1), V2(T2), ... }`   | All variant payloads are `Send`            |
@@ -460,7 +424,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | Type                          | `Frozen` if...                            |
 | ----------------------------- | ----------------------------------------- |
 | Value types                   | Always `Frozen`                           |
-| `String`                      | NOT `Frozen` (mutable content)            |
+| `string`                      | NOT `Frozen` (mutable content)            |
 | `LocalPid<A>`                 | Always `Frozen` (identity reference only) |
 | `type S` with NO `var` fields | All fields are `Frozen`                   |
 | `type S` with ANY `var` field | NOT `Frozen`                              |
@@ -578,7 +542,7 @@ Type fields do NOT require a `let`/`var` prefix. Fields are immutable and use se
 type Point {
     x: f64;          // field declaration
     y: f64;          // field declaration
-    label: String;   // field declaration
+    label: string;   // field declaration
 }
 ```
 
@@ -589,7 +553,7 @@ Actor fields require a `let` or `var` prefix and use semicolons as terminators:
 ```hew
 actor Counter {
     var count: i64 = 0;     // mutable field with default
-    let name: String;        // immutable field, set by init
+    let name: string;        // immutable field, set by init
 }
 ```
 
@@ -615,7 +579,7 @@ worker.send(message);        // message is MOVED via .send()
 >
 > - **Language level** (unchanged): A method call or `.send()` moves the value — the sender can no longer use it.
 > - **Runtime level** (gated): the send mechanism is selected based on the value's admissibility class:
->   - **Immutable-shareable** types (`String`, `bytes`): alias-shared by **refcount retain** — the receiver gets a retained reference to the same backing buffer; no byte copy occurs; a COW write-barrier (`ensure_unique`) forks the buffer before any subsequent mutation, preserving actor isolation.
+>   - **Immutable-shareable** types (`string`, `bytes`): alias-shared by **refcount retain** — the receiver gets a retained reference to the same backing buffer; no byte copy occurs; a COW write-barrier (`ensure_unique`) forks the buffer before any subsequent mutation, preserving actor isolation.
 >   - **Mutable collections** (`Vec<T>`, `HashMap<K,V>`, `HashSet<T>`): **deep-copied** into the receiver's per-actor heap.
 >   - **Consumed-linear (`iso`/Linear) values**: zero-copy **ownership move** (P6 — not yet surfaced in edition 2026).
 > - The send-admissibility gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Note: bare `copy` does **not** imply sendability — a type may derive `Copy` yet hold non-send internals (`copy ⊥ sendable`, B-INV-3). `View`/borrow (`&T`) is rejected across actor boundaries and is not `Send`.
@@ -762,11 +726,11 @@ Hew uses a file-based module system inspired by Rust:
 // This is module network::tcp
 
 pub type Connection {
-    address: String;       // public fields via pub keyword on type
+    address: string;       // public fields via pub keyword on type
     internal_state: i64;   // fields are named, terminated with semicolons
 }
 
-pub fn connect(addr: String) -> Result<Connection, Error> {
+pub fn connect(addr: string) -> Result<Connection, Error> {
     // ...
 }
 
@@ -868,7 +832,7 @@ fn main() {
 `greeting/greeting.hew` (entry):
 
 ```hew
-pub fn hello() -> String {
+pub fn hello() -> string {
     "Hello"
 }
 ```
@@ -876,7 +840,7 @@ pub fn hello() -> String {
 `greeting/greeting_helpers.hew` (peer):
 
 ```hew
-pub fn target() -> String {
+pub fn target() -> string {
     "from a merged directory module!"
 }
 ```
@@ -946,7 +910,7 @@ Traits define shared behaviour that types can implement. Hew has built-in marker
 
 ```hew
 trait Display {
-    fn display(val: Self) -> String;
+    fn display(val: Self) -> string;
 }
 
 trait Iterator {
@@ -965,7 +929,7 @@ trait Clone {
 type Point { x: f64; y: f64 }
 
 impl Display for Point {
-    fn display(p: Point) -> String {
+    fn display(p: Point) -> string {
         f"({p.x}, {p.y})"
     }
 }
@@ -993,11 +957,11 @@ Hew uses **named receivers** instead of a `self` keyword. In trait declarations 
 
 ```hew
 trait Display {
-    fn display(val: Self) -> String;       // val is the receiver (type Self)
+    fn display(val: Self) -> string;       // val is the receiver (type Self)
 }
 
 impl Display for Point {
-    fn display(p: Point) -> String {       // p is the receiver (type Point)
+    fn display(p: Point) -> string {       // p is the receiver (type Point)
         f"({p.x}, {p.y})"
     }
 }
@@ -1152,7 +1116,7 @@ At the **language level**, `send()` **moves** the value — the sender loses acc
 
 | Admissibility class | Runtime mechanism | Examples |
 | ------------------- | ----------------- | -------- |
-| **Immutable-shareable** (`is_immutable_shareable`) | **Alias-shared by refcount retain** — no byte copy | `String`, `bytes` |
+| **Immutable-shareable** (`is_immutable_shareable`) | **Alias-shared by refcount retain** — no byte copy | `string`, `bytes` |
 | **Mutable owned collections** | **Deep-copied** into the receiver's per-actor heap | `Vec<T>`, `HashMap<K,V>`, `HashSet<T>` |
 | **Consumed-linear (`iso`/Linear)** | Zero-copy **ownership move** (P6 — not surfaced in edition 2026) | — |
 
@@ -1160,13 +1124,13 @@ The gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Bare `copy
 
 This hybrid gives the safety of Rust's move semantics (no use-after-send bugs) with actor isolation (no shared mutable state between actors).
 
-> **Immutable-shareable alias sharing:** `String` and `bytes` are immutable-shareable owned heap types. When sent, the runtime retains a reference to the same backing buffer for the receiver rather than copying it. The sender's move and the receiver's retained alias both resolve to the same buffer with a shared refcount; the buffer is freed once the last reference drops. The backing buffer is never mutated in place through a shared alias — if a mutation targets a shared (`rc>1`) buffer, the COW write-barrier (`ensure_unique`) forks a private copy before the write, preserving actor isolation. An immutable `let`-bound sendable value is alias-shared with no barrier (never mutated in place).
+> **Immutable-shareable alias sharing:** `string` and `bytes` are immutable-shareable owned heap types. When sent, the runtime retains a reference to the same backing buffer for the receiver rather than copying it. The sender's move and the receiver's retained alias both resolve to the same buffer with a shared refcount; the buffer is freed once the last reference drops. The backing buffer is never mutated in place through a shared alias — if a mutation targets a shared (`rc>1`) buffer, the COW write-barrier (`ensure_unique`) forks a private copy before the write, preserving actor isolation. An immutable `let`-bound sendable value is alias-shared with no barrier (never mutated in place).
 
 > **Programmer indistinguishability preserved:** From the programmer's perspective the gated model is indistinguishable from move-then-independent-value. The receiver observes an independent value; the sender cannot use the value after send. Alias-sharing is a runtime optimization valid precisely because immutable-shareable values are never mutated in place through shared aliases.
 
 **Move-on-send:**
 
-- When a message is sent to an actor (via method call or `.send()`), the value is moved at the language level — the sender can no longer use it. At runtime, the mechanism is gated: immutable-shareable values (`String`, `bytes`) are alias-shared by retain; mutable collections are deep-copied; `iso`/Linear values are moved (P6).
+- When a message is sent to an actor (via method call or `.send()`), the value is moved at the language level — the sender can no longer use it. At runtime, the mechanism is gated: immutable-shareable values (`string`, `bytes`) are alias-shared by retain; mutable collections are deep-copied; `iso`/Linear values are moved (P6).
 - The receiver observes an independent value (alias-sharing is an optimization invisible to program semantics)
 - No user-visible references or borrows cross actor boundaries — `&T` (borrow/`View`) is not `Send` and is rejected at the actor boundary entirely; the runtime retain optimization applies only to admissible immutable-shareable **owned** values, and the receiver always observes an independent owned value at the language level, never a borrow into the sender's heap
 
@@ -1290,15 +1254,15 @@ fn eval(e: Expr) -> i64 {
 - Non-atomic refcount (fast, single-threaded)
 - Cannot cross actor boundaries (does not implement `Send`)
 - Use for shared ownership within one actor
-- Current compiler support is fail-closed: `Rc<T>` currently accepts `T: Copy`, `String`, `bytes`, and nested `Rc` of supported payloads until recursive drop lowering exists
+- Current compiler support is fail-closed: `Rc<T>` currently accepts `T: Copy`, `string`, `bytes`, and nested `Rc` of supported payloads until recursive drop lowering exists
 - For collection admissibility, the checker currently enforces an internal `RcFree` boundary (current checker behaviour, not stable user-written trait syntax): a type is treated as RcFree only when its resolved structure contains no `Rc<_>` after recursively checking wrapper type arguments, tuples/arrays/slices, and registered named struct/enum/actor members, including module-qualified and non-root private definitions seen during checking
 - `LocalPid<A>` participates in that structural check through its actor type argument: if actor `A` stores non-RcFree state, `LocalPid<A>` is also non-RcFree for collection checks
 - `HashMap` and `HashSet` reject non-RcFree key/value/element types during type checking; `Vec` rejects non-RcFree elements at collection method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
 
 ```hew
-let data: Rc<String> = Rc::new(expensive_computation());
+let data: Rc<string> = Rc::new(expensive_computation());
 let alias = data.clone();  // refcount++, no data copy
-// data and alias share the same String
+// data and alias share the same string
 ```
 
 > See HEW-FUTURE.md §2.3 for the user-facing `Arc<T>` surface — targeted
@@ -1310,7 +1274,7 @@ let alias = data.clone();  // refcount++, no data copy
 **When to use which:**
 | Type | Cross-actor? | Send mechanism | Use case |
 |------|--------------|----------------|----------|
-| Immutable-shareable `T` (`String`, `bytes`) | Yes | Alias-shared by refcount retain | Owned heap types with immutable backing; no byte copy on send |
+| Immutable-shareable `T` (`string`, `bytes`) | Yes | Alias-shared by refcount retain | Owned heap types with immutable backing; no byte copy on send |
 | Mutable collection `T` (`Vec`, `HashMap`, `HashSet`) | Yes | Deep-copied | Receiver gets an independent copy; sender mutation cannot corrupt receiver |
 | `iso`/Linear `T` | Yes (P6) | Zero-copy ownership move | Consumed-linear values; not yet surfaced in edition 2026 |
 | `Rc<T>` | No | N/A | Shared within actor only |
@@ -1368,7 +1332,7 @@ descriptor, socket, allocator handle, GPU context, libc pointer) and
 @resource
 type File {
     fd: i64
-    pub fn open(path: String) -> Result<File, IoError> { ... }
+    pub fn open(path: string) -> Result<File, IoError> { ... }
     pub fn read(self: &File, buf: &mut [byte]) -> Result<i64, IoError> { ... }
     pub fn close(consuming self) -> Result<(), IoError> { ... }
 }
@@ -1393,7 +1357,7 @@ Semantics:
 Typical example — file I/O with implicit cleanup:
 
 ```hew
-fn read_config(path: String) -> Result<Config, IoError> {
+fn read_config(path: string) -> Result<Config, IoError> {
     let f = File::open(path)?;
     let bytes = f.read_all()?;
     parse(bytes)
@@ -1404,7 +1368,7 @@ fn read_config(path: String) -> Result<Config, IoError> {
 Early close, surfacing the I/O error to the caller:
 
 ```hew
-fn read_and_process(path: String) -> Result<Summary, AppError> {
+fn read_and_process(path: string) -> Result<Summary, AppError> {
     let f = File::open(path)?;
     let bytes = f.read_all()?;
     f.close()?;                 // close early; the error is visible.
@@ -1638,7 +1602,7 @@ fn max<T: Ord>(a: T, b: T) -> T {
 
 // Each call generates distinct machine code:
 max(42, 17);           // max$i32
-max("hello", "world"); // max$String
+max("hello", "world"); // max$string
 max(3.14, 2.71);       // max$f64
 ```
 
@@ -1818,7 +1782,7 @@ let checked = |x: i64| -> i64 { x + 1 };
 ```hew
 fn map<T, U>(items: Vec<T>, transform: fn(T) -> U) -> Vec<U> { /* ... */ }
 
-// T=i64, U=String inferred from usage
+// T=i64, U=string inferred from usage
 let strings = map([1, 2, 3], |x| x.to_string());  // x: i64 inferred
 ```
 
@@ -2037,7 +2001,7 @@ fn allocate_buffer(size: usize) -> *mut u8 {
     }
 }
 
-fn safe_read(fd: i32, buf: *mut u8, count: usize) -> Result<usize, String> {
+fn safe_read(fd: i32, buf: *mut u8, count: usize) -> Result<usize, string> {
     let result = unsafe { read(fd, buf, count) };
     if result < 0 {
         Err("read failed")
@@ -2070,7 +2034,7 @@ pub type File {
 }
 
 impl File {
-    pub fn open(path: String) -> Result<File, String> {
+    pub fn open(path: string) -> Result<File, string> {
         let c_path = path.to_c_string();
         let fd = unsafe { open(c_path.as_ptr(), O_RDONLY) };
         if fd < 0 {
@@ -2107,8 +2071,8 @@ HEW-FUTURE.md §3).
 
 Normative in edition 2026:
 
-- Core types and builtins: `Option<T>`, `Result<T, E>`, `Vec<T>`, `String`,
-  `HashMap<String, V>`, `print`, `println`, `panic`.
+- Core types and builtins: `Option<T>`, `Result<T, E>`, `Vec<T>`, `string`,
+  `HashMap<string, V>`, `print`, `println`, `panic`.
 - Concurrency types: `Task<T>`, `Stream<T>`, `Sink<T>`, `ScopeError<E>`,
   `TaskError`, `select` (§4), `after` (§4.11.3).
 - System and I/O: `std::fs`, `std::io`, `std::path`, `std::os`,
@@ -2134,7 +2098,7 @@ The following traits are representative of the current trait style:
 
 ```hew
 trait Display {
-    fn display(val: Self) -> String;
+    fn display(val: Self) -> string;
 }
 
 trait Drop {
@@ -2174,16 +2138,16 @@ pub enum IoError {
     Other(i64);
 }
 
-pub fn io_error_from_message(message: String) -> IoError { ... }
+pub fn io_error_from_message(message: string) -> IoError { ... }
 ```
 
 This pattern is used across every `try_*` function in the `std::fs` module and pairs with the `?` operator for ergonomic error propagation. Each stdlib module defines its own error type following this shape; there is no single cross-module error enum. Future stdlib modules (under #1247) will adopt the same per-module structured error approach.
 
-**String and Vec** are built-in generic/runtime-backed types with dot-syntax
+**`string` and Vec** are built-in generic/runtime-backed types with dot-syntax
 methods:
 
 ```hew
-type String {}
+type string {}
 type Vec<T> {}
 
 impl<T> Vec<T> {
@@ -2207,8 +2171,8 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 `HashMap<K, V>` is also built in. `HashMap.get()` returns `Option<V>`.
 
 **Current implementation boundary** — although the surface spelling is generic,
-the shipped runtime/codegen ABI currently supports only `HashMap<String, V>`
-where `V` is `String`, `bool`, `char`, any integer type, any float type, or
+the shipped runtime/codegen ABI currently supports only `HashMap<string, V>`
+where `V` is `string`, `bool`, `char`, any integer type, any float type, or
 `duration`. Other `HashMap<K, V>` pairs are rejected during type checking.
 Additionally, non-RcFree types in either the key or value position are rejected
 regardless of the ABI key/value check; this is structural, not just a direct
@@ -2219,11 +2183,11 @@ brace-colon syntax.  The parser disambiguates `{` as a map literal when the
 first token after `{` is a `StringLit` followed by `:`:
 
 ```hew
-// Inferred: HashMap<String, i64>
+// Inferred: HashMap<string, i64>
 let scores = {"alice": 10, "bob": 20};
 
 // Explicit type annotation drives checking; each value must match V
-let env: HashMap<String, String> = {
+let env: HashMap<string, string> = {
     "HOST": "localhost",
     "PORT": "8080",
 };
@@ -2232,7 +2196,7 @@ let env: HashMap<String, String> = {
 let flags = {"debug": true, "verbose": false,};
 
 // Empty block {} coerces to HashMap<K,V> when the expected type is known
-let empty: HashMap<String, i64> = {};
+let empty: HashMap<string, i64> = {};
 ```
 
 Rules:
@@ -2288,7 +2252,7 @@ Important current details:
 - `std::io` currently provides plain functions (`read_line`, `write`,
   `write_err`, `read_all`), not `Read`/`Write`/`BufRead` traits
 - Built-in `HashSet<T>` currently lowers the supported surface forms
-  `HashSet<i64>` and `HashSet<String>` through the typed-layout runtime;
+  `HashSet<i64>` and `HashSet<string>` through the typed-layout runtime;
   unsupported `HashSet<T>` usages are rejected fail-closed during type
   checking, including nested annotations, function signatures, and `wire enum`
   payloads; collection element admissibility also requires the internal RcFree
@@ -2325,7 +2289,7 @@ The following are automatically available in every Hew module:
 // Types
 Option, Some, None
 Result, Ok, Err
-String, Vec, Box
+string, Vec, Box
 
 // Traits
 Clone, Copy, Drop
@@ -2587,7 +2551,7 @@ The compiler generates the following for every `machine Name { ... }`:
 | Companion event enum        | `NameEvent` with variants matching each `event` declaration        |
 | Event constructors          | `NameEvent::EventName` (unit) or `NameEvent::EventName { f: v }`  |
 | `m.step(event)`             | Mutates `m` in place; returns `()` — no return value              |
-| `m.state_name()`            | Returns the current state name as `String`                        |
+| `m.state_name()`            | Returns the current state name as `string`                        |
 | Pattern-match support       | Machine values can be matched exactly like enum values             |
 
 **Calling `step()`** — both unqualified and qualified event constructors are
@@ -2976,7 +2940,7 @@ When a scope-block is cancelled:
 **Example with cleanup:**
 
 ```hew
-receive fn download_files(urls: Vec<String>) -> Result<Vec<Data>, Error> {
+receive fn download_files(urls: Vec<string>) -> Result<Vec<Data>, Error> {
     var results: Vec<Data> = Vec::new();
     scope {
         for url in urls {
@@ -3082,7 +3046,7 @@ scope {
 All IO operations in Hew are explicit and return `Result` types:
 
 ```hew
-fn read_config(path: String) -> Result<Config, String> {
+fn read_config(path: string) -> Result<Config, string> {
     let file = fs::open(path)?;
     let content = file.read_to_string()?;
     json::parse(content)
@@ -3132,9 +3096,9 @@ reachable from inside a child body.
 
 ```hew
 actor DataProcessor {
-    var cache: HashMap<String, Data> = HashMap::new();
+    var cache: HashMap<string, Data> = HashMap::new();
 
-    receive fn process_batch(ids: Vec<String>) -> Vec<Data> {
+    receive fn process_batch(ids: Vec<string>) -> Vec<Data> {
         // Indicative shape; see §4.8 design-unsettled note above.
         // The scope joins all forks on exit; `data` is populated
         // via the (unsettled) accumulation mechanism.
@@ -3616,7 +3580,7 @@ The `coalesce(key_expr)` policy replaces an existing queued message that has the
 actor PriceTracker {
     mailbox 100 overflow coalesce(symbol);
 
-    receive fn update_price(symbol: String, price: f64) {
+    receive fn update_price(symbol: string, price: f64) {
         prices.insert(symbol, price);
     }
 }
@@ -3679,9 +3643,9 @@ Sink<T>     // writable sequential destination (blocks when backing buffer is fu
 The contract frozen in this stage is intentionally small:
 
 - `Stream<bytes>` / `Sink<bytes>` are the canonical first-class streaming foundation.
-- `Stream<String>` / `Sink<String>` are convenience text ABI wrappers over the same bounded channel contract.
+- `Stream<string>` / `Sink<string>` are convenience text ABI wrappers over the same bounded channel contract.
 - Core `.next()` / `.write()` operations are blocking and backpressured; this section makes no nonblocking promises.
-- EOF means **end-of-stream only**. Zero-length `bytes` values and empty `String` values are valid data items.
+- EOF means **end-of-stream only**. Zero-length `bytes` values and empty `string` values are valid data items.
 - `sink.close()` or dropping a sink produces graceful EOF after buffered items drain.
 - `stream.close()` or dropping a stream is local cancel/discard of unread items.
 - Stage-1 errors cover constructor/open failures only. Transport/runtime read/write errors after open remain wrapper-specific and out of scope here.
@@ -3705,12 +3669,12 @@ let (bytes_sink, bytes_stream) = stream.bytes_pipe(16);
 let (text_sink, text_stream) = stream.pipe(16);
 
 // Current file helpers remain text-only in this slice
-let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<String>, String>
-let file_out = stream.to_file("out.txt")?;      // Result<Sink<String>, String>
+let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<string>, string>
+let file_out = stream.to_file("out.txt")?;      // Result<Sink<string>, string>
 ```
 
 `from_file()` / `to_file()` are intentionally unchanged in this slice: they
-remain `Stream<String>` / `Sink<String>`. No file-adapter migration is implied
+remain `Stream<string>` / `Sink<string>`. No file-adapter migration is implied
 by this contract freeze.
 
 #### 6.5.2 Current operations
@@ -3732,7 +3696,7 @@ bytes_stream.close(); // local cancel / discard unread items
 ```
 
 `for await` is the usual way to drain a stream. The only adapter point frozen in
-this slice is that `lines()` remains `Stream<String> -> Stream<String>` today;
+this slice is that `lines()` remains `Stream<string> -> Stream<string>` today;
 no `Stream<bytes>` `lines()` surface is promised here.
 
 #### 6.5.3 Lifecycle Rules
@@ -4060,14 +4024,14 @@ let msg3 = MyMessage.from_yaml(yaml_str);
 
 Current shipped helper surface, as registered by the type checker:
 
-- `wire struct` instance methods: `encode() -> bytes`, `to_json() -> String`,
-  `to_yaml() -> String`
+- `wire struct` instance methods: `encode() -> bytes`, `to_json() -> string`,
+  `to_yaml() -> string`
 - `wire struct` static methods: `MyMessage.decode(bytes) -> MyMessage`,
-  `MyMessage.from_json(String) -> MyMessage`,
-  `MyMessage.from_yaml(String) -> MyMessage`
+  `MyMessage.from_json(string) -> MyMessage`,
+  `MyMessage.from_yaml(string) -> MyMessage`
 - unit-only `wire enum` helpers are JSON/YAML-only:
-  `to_json()`, `to_yaml()`, `from_json(String) -> Self`,
-  `from_yaml(String) -> Self`
+  `to_json()`, `to_yaml()`, `from_json(string) -> Self`,
+  `from_yaml(string) -> Self`
 
 These constructors currently return the wire type directly rather than
 `Result<Self, E>`.
@@ -4196,8 +4160,8 @@ program. It provides:
   signature documented at §9.1.1.
 - Bounded mailboxes with configurable overflow policies.
 - Supervisor trees with restart strategies (§5).
-- Built-in collection runtimes for `String`, `Vec<T>`, and
-  `HashMap<String, V>`.
+- Built-in collection runtimes for `string`, `Vec<T>`, and
+  `HashMap<string, V>`.
 - Timer wheels and platform I/O integration (`epoll` / `kqueue` /
   `io_uring`).
 
@@ -4354,7 +4318,7 @@ are expected to land.
 3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The return value is side-effects-only in v0.5 and becomes a control surface no earlier than v0.6.
 4. `#[on(upgrade)]` is rejected during v0.5 lowering; source that needs hot upgrade must wait for the v0.6 upgrade machinery.
 5. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
-6. A hook is **not** `pure`, **not** generic, and has no `where` clause.
+6. A hook is **not** generic and has no `where` clause.
 7. Hook functions are not invocable from message handlers; the runtime is the sole caller.
 8. Multiple `#[on(stop)]` hooks are permitted and execute in **lexical order**.
    `#[on(start)]` and `#[on(crash)]` each appear **at most once** per actor.
@@ -4495,9 +4459,9 @@ When the grammar files and this specification disagree, the parser implementatio
 | `i64`   | `i64`       | Default integer type (fixed 64-bit)            |
 | `u64`  | `u64`       | Default unsigned integer type (fixed 64-bit)   |
 | `byte`  | `u8`        | Single byte                                    |
-| `float` | `f64`       | Default floating-point type                    |
+| `f64`   | `f64`       | Default floating-point type                    |
 
-Integer literals default to `i64` (`i64`). Float literals default to `float` (`f64`).
+Integer literals default to `i64`. Float literals default to `f64`.
 
 **Mixed-width arithmetic requires an explicit cast.** The type checker rejects expressions
 that mix distinct integer widths without a cast. Example:
@@ -4519,7 +4483,7 @@ let j: i64 = n.to_i64();   // explicit conversion required
 All numeric types support explicit conversion methods:
 
 ```hew
-// Integer → float
+// Integer → f64
 let x: i32 = 42;
 let f: f64 = x.to_f64();      // 42.0
 
@@ -4585,7 +4549,7 @@ let w = d / 2;             // OK: duration / i64 → duration
 let r = d / 500ms;         // OK: duration / duration → i64 (ratio)
 let n = -d;                // OK: negation → duration
 let err1 = d + 42;         // COMPILE ERROR: duration + i64
-let err2 = d * 1.5;        // COMPILE ERROR: duration * float
+let err2 = d * 1.5;        // COMPILE ERROR: duration * f64
 let err3 = d * d;          // COMPILE ERROR: duration * duration
 ```
 

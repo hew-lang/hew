@@ -64,7 +64,7 @@ machine TcpState {
     // Events with optional payload data
     event Connect;
     event SynAck;
-    event Data { payload: String; }
+    event Data { payload: string; }
     event Close;
     event Timeout;
 
@@ -163,7 +163,7 @@ on Data: Established -> Established {
 When an event carries payload fields, those fields are accessible by name in the transition body:
 
 ```hew
-event Data { payload: String; }
+event Data { payload: string; }
 
 on Data: Established -> Established {
     // 'payload' is accessible directly from the event
@@ -191,7 +191,7 @@ Transition bodies are **pure** — they compute a new state from the old state a
 - Call `receive fn` methods on actors.
 - Spawn actors or tasks.
 
-_Implementation note: The compiler MAY enforce purity by restricting the set of callable functions in transition bodies to `pure fn` and built-in operators. For v0.1, the compiler SHOULD emit a warning (not an error) for impure calls, to allow incremental adoption._
+_Implementation note: The compiler MAY enforce transition purity through effect analysis or a future annotation system. For v0.1, the compiler SHOULD emit a warning (not an error) for impure calls, to allow incremental adoption._
 
 ### §3.5 No output values (Mealy restriction)
 
@@ -330,7 +330,7 @@ The compiler generates a companion enum for events:
 enum TcpStateEvent {
     Connect;
     SynAck;
-    Data { payload: String; };
+    Data { payload: string; };
     Close;
     Timeout;
 }
@@ -376,7 +376,7 @@ Machines MAY implement traits via `impl` blocks:
 
 ```hew
 impl Display for TcpState {
-    fn to_string(s: TcpState) -> String {
+    fn to_string(s: TcpState) -> string {
         s.state_name()
     }
 }
@@ -406,7 +406,7 @@ s.step(TcpStateEvent::Connect);
 
 _Implementation note: `step()` compiles to a nested switch on (tag, event_tag). The outer switch dispatches on the current state tag; the inner switch dispatches on the event tag. Each branch executes the corresponding transition body._
 
-### §7.2 `M.state_name() -> String`
+### §7.2 `M.state_name() -> string`
 
 Returns the name of the current state as a string, for debugging and logging.
 
@@ -521,7 +521,7 @@ struct TcpStateEvent {
         // variant 0: Connect — no fields
         // variant 1: SynAck — no fields
         // variant 2: Data
-        struct { payload: String; } data;
+        struct { payload: string; } data;
         // variant 3: Close — no fields
         // variant 4: Timeout — no fields
     } data;
@@ -580,7 +580,7 @@ The machine declaration serializes to MessagePack as:
   ],
   "events": [
     { "name": "Connect", "fields": [] },
-    { "name": "Data", "fields": [{ "name": "payload", "type": "String" }] },
+    { "name": "Data", "fields": [{ "name": "payload", "type": "string" }] },
     ...
   ],
   "transitions": [
@@ -660,7 +660,7 @@ Usage in an actor:
 actor ApiGateway {
     var breaker: CircuitBreaker = CircuitBreaker::Closed { failures: 0 };
 
-    receive fn call(req: Request) -> Result<Response, String> {
+    receive fn call(req: Request) -> Result<Response, string> {
         // Check circuit state
         match breaker {
             CircuitBreaker::Open { .. } => {

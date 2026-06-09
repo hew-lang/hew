@@ -74,7 +74,7 @@ The current sandbox profile is explicit allowlist first. Native v0.5 surfaces th
 | `extern` / native FFI | Rejected as native-only. | `Unsupported::NATIVE_ONLY`; covered by sandbox profile tests. |
 | `unsafe` blocks | Rejected. | `unsafe_rejected`; covered by sandbox profile tests. |
 | `while let` | Rejected until loop/control-flow lowering is admitted. | `reserved_control_flow`; covered by sandbox profile tests. |
-| String methods | `len` and `slice` are admitted; broader native string methods remain rejected until the VM has matching shims. | `string.len` / `string.slice` bytecode tests for admitted methods; `unknown_method_symbol` tests for unsupported methods. |
+| `string` methods | `len` and `slice` are admitted; broader native string methods remain rejected until the VM has matching shims. | `string.len` / `string.slice` bytecode tests for admitted methods; `unknown_method_symbol` tests for unsupported methods. |
 | Machine generics | Rejected with the rest of machine runtime declarations. | `reserved_runtime_feature`; covered by sandbox profile tests. |
 | Record construction / auto-derived record layout | Admitted for deterministic value records. | `record.new` and `record.get` bytecode tests. |
 | `is` identity operator | Rejected until sandbox heap identity semantics are admitted. | `reserved_runtime_feature`; covered by sandbox profile tests. |

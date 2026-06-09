@@ -15,7 +15,6 @@
 // `PRIMITIVE_ALIASES` (ty.rs:354) currently accepts are baggage scheduled
 // for removal; this file is written so it does not need re-editing when
 // they are dropped.
-
 import std::fs;
 
 // ---------------------------------------------------------------------------
@@ -31,8 +30,8 @@ import std::fs;
 // access char/byte values directly. We classify a 1-char slice by ASCII
 // membership against literal sets. Equivalent to a codepoint range at
 // runtime, just spelled through `contains`.
-
 const DIGITS: string = "0123456789";
+
 const ID_HEADS: string = "AQD";
 
 fn is_digit_str(c: string) -> bool {
@@ -54,16 +53,15 @@ fn is_id_head_str(c: string) -> bool {
 //
 // FC-P1-* / Lane-N forms are out of scope here — they need alternation
 // + capture groups (regex `find_all` is not in the public stdlib today).
-
 fn extract_ids_in_line(line: string, out: Vec<string>) {
     let n = line.len();
-    for i in 0..n {
-        let head = line.slice(i, i+1); // this should use [i] accessor when available
+    for i in 0 .. n {
+        let head = line.slice(i, i + 1); // this should use [i] accessor when available
         if is_id_head_str(head) {
             // Walk the digit run.
             var end = i + 1;
-            for j in i+1..n {
-                if is_digit_str(line.slice(j, j+1)) { // this should use [j] accessor when available
+            for j in i + 1 .. n {
+                if is_digit_str(line.slice(j, j + 1)) { // this should use [j] accessor when available
                     end = j + 1;
                 } else {
                     break;
@@ -83,7 +81,6 @@ fn extract_ids_in_line(line: string, out: Vec<string>) {
 // Replaces the prior sketch's "name has no dot" heuristic with the real
 // `fs.is_dir` predicate (dialect authority §4 / std/fs.hew:495). No more
 // false negatives on README, Makefile, etc.
-
 fn collect_md_files(dir: string, out: Vec<string>) {
     let entries = fs.list_dir(dir);
     for name in entries {
@@ -109,7 +106,6 @@ fn collect_md_files(dir: string, out: Vec<string>) {
 // HashMap today — typecheck rejects "cannot index into HashMap<string,
 // i32>". Closed by W3.4. We use `get` + `insert` and match on the
 // `Option<i32>` returned by `get`.
-
 fn ingest_file(path: string, index: HashMap<string, i32>) {
     let content = fs.read(path);
     let ids: Vec<string> = Vec::new();
@@ -118,8 +114,12 @@ fn ingest_file(path: string, index: HashMap<string, i32>) {
     }
     for id in ids {
         match index.get(id) {
-            Some(prev) => { index.insert(id, prev + 1); },
-            None => { index.insert(id, 1); },
+            Some(prev) => {
+                index.insert(id, prev + 1);
+            },
+            None => {
+                index.insert(id, 1);
+            },
         }
     }
 }
@@ -132,22 +132,16 @@ fn ingest_file(path: string, index: HashMap<string, i32>) {
 // `os.args_count() -> i64`. A247 #11's preferred `os.args() -> Vec<string>`
 // surface does not exist today; rather than fabricate it, we accept the
 // current surface and default to `.tmp/orchestration` when no arg is given.
-
 fn main() {
     let dir = ".tmp/orchestration";
-
     println(f"hew-orch ingest {dir}");
-
     let files: Vec<string> = Vec::new();
     collect_md_files(dir, files);
-
     println(f"files found: {files.len()}");
-
     let index: HashMap<string, i32> = HashMap::new();
     for file in files {
         ingest_file(file, index);
     }
-
     let keys = index.keys();
     println(f"distinct ids indexed: {keys.len()}");
 
@@ -158,8 +152,12 @@ fn main() {
     // the first 5 keys with their counts, unranked.
     println("first 5 ids (unranked):");
     let kn = keys.len();
-    let limit = if kn < 5 { kn } else { 5 };
-    for k in 0..limit {
+    let limit = if kn < 5 {
+        kn
+    } else {
+        5
+    };
+    for k in 0 .. limit {
         let id = keys[k];
         match index.get(id) {
             Some(c) => {

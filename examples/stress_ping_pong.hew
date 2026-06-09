@@ -51,6 +51,4 @@ fn main() {
     await pinger.report();
     await ponger.report();
     println("PASS: 6000 ping-pong rounds completed");
-    stop(pinger);
-    stop(ponger);
 }

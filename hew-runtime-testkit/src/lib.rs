@@ -242,12 +242,6 @@ impl TestActor {
         }
     }
 
-    /// Try-send with a null payload.
-    pub fn try_send_empty(&self, msg_type: i32) -> i32 {
-        // SAFETY: null/zero payload form documented for hew_actor_try_send.
-        unsafe { hew_runtime::actor::hew_actor_try_send(self.ptr, msg_type, ptr::null_mut(), 0) }
-    }
-
     /// Ask-pattern: send and wait for a reply. Returns the reply pointer
     /// (raw `*mut c_void`) — caller frees with `libc::free` on success.
     ///
@@ -440,14 +434,6 @@ impl TestMailbox {
         // SAFETY: capacity is the FFI's signed type; allocation failure → null → panic.
         let ptr = unsafe { hew_runtime::mailbox::hew_mailbox_new_bounded(capacity) };
         assert!(!ptr.is_null(), "hew_mailbox_new_bounded returned null");
-        Self { ptr }
-    }
-
-    /// New mailbox with explicit overflow policy.
-    pub fn with_policy(capacity: usize, policy: OverflowPolicy) -> Self {
-        // SAFETY: hew_mailbox_new_with_policy is total over (capacity, policy).
-        let ptr = unsafe { hew_runtime::mailbox::hew_mailbox_new_with_policy(capacity, policy) };
-        assert!(!ptr.is_null(), "hew_mailbox_new_with_policy returned null");
         Self { ptr }
     }
 

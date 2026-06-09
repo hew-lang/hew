@@ -157,34 +157,6 @@ fn reject_duplicate_on_start() {
 }
 
 #[test]
-fn reject_pure_hook() {
-    // Hooks may send messages and call I/O; marking one `pure` is a
-    // contradiction the checker rejects.
-    let output = typecheck(
-        r"
-        actor Worker {
-            let count: i32;
-
-            #[on(stop)]
-            pure fn flush() {
-                count
-            }
-        }
-
-        fn main() {}
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("on(stop)") && e.message.contains("`pure`")),
-        "`pure` lifecycle hook should be rejected: {:?}",
-        output.errors
-    );
-}
-
-#[test]
 fn reject_unknown_hook_kind() {
     // `#[on(restart)]` is not a recognised lifecycle hook in this edition;
     // the checker emits a diagnostic listing the valid kinds (start, stop).

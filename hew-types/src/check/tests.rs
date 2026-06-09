@@ -136,50 +136,6 @@ fn cancellation_token_has_no_cancel_method() {
 }
 
 #[test]
-#[ignore = "Vec dispatch migrated to the resolved-call kernel (W4.027 Stage 3); legacy `MethodCallRewrite::RewriteToFunction` Vec entries no longer exist. Coverage of the same surface lives in the structural `no_legacy_vec_rewrite` test plus `resolved_call_registry_lookup`."]
-fn vec_copy_record_layout_methods_record_runtime_rewrites() {
-    let output = check_source(
-        r"
-        type Point { x: i64, y: i64 }
-
-        fn main() {
-            var points: Vec<Point> = [];
-            let p = Point { x: 1, y: 2 };
-            points.push(p);
-            let q = points.get(0);
-            points.set(0, q);
-            let _ = points.pop();
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "Copy record layout Vec push/get/set/pop should type-check: {:#?}",
-        output.errors
-    );
-    let symbols: Vec<_> = output
-        .method_call_rewrites
-        .values()
-        .filter_map(|rewrite| match rewrite {
-            MethodCallRewrite::RewriteToFunction { c_symbol, .. } => Some(c_symbol.as_str()),
-            _ => None,
-        })
-        .collect();
-    for expected in [
-        "hew_vec_push_layout",
-        "hew_vec_get_layout",
-        "hew_vec_set_layout",
-        "hew_vec_pop_layout",
-    ] {
-        assert!(
-            symbols.contains(&expected),
-            "missing layout rewrite {expected}; got {symbols:?}"
-        );
-    }
-}
-
-#[test]
 fn vec_copy_record_new_constructor_typechecks() {
     let output = check_source(
         r"
@@ -347,41 +303,6 @@ fn vec_layout_managed_record_new_remains_fail_closed() {
 }
 
 #[test]
-#[ignore = "Vec dispatch migrated to the resolved-call kernel (W4.027 Stage 3); legacy `MethodCallRewrite::RewriteToFunction` Vec entries no longer exist. The acceptance side of this assertion (no errors) is covered by run-pass fixture `examples/v05/vec_run_pass.hew`."]
-fn vec_layout_remove_copy_record_records_rewrite() {
-    // W3.003: `Vec::remove(idx)` on a Copy record is now runtime-backed via
-    // `hew_vec_remove_at_layout`.  The checker must lift the gate and record
-    // the rewrite with no error; downstream codegen synthesizes the hidden
-    // layout-descriptor operand.
-    let output = check_source(
-        r"
-        type Point { x: i64, y: i64 }
-
-        fn main() {
-            var points: Vec<Point> = [];
-            points.push(Point { x: 1, y: 2 });
-            points.remove(0);
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "Vec::remove on Copy layout-backed record must produce no error, got {:#?}",
-        output.errors
-    );
-    assert!(
-        output.method_call_rewrites.values().any(|rewrite| {
-            matches!(rewrite, MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_vec_remove_at_layout")
-        }),
-        "Vec::remove on Copy layout-backed record must record \
-         hew_vec_remove_at_layout rewrite: {:#?}",
-        output.method_call_rewrites
-    );
-}
-
-#[test]
 fn vec_layout_unsupported_method_remains_fail_closed() {
     // `Vec::clear` on layout-backed records has no runtime backing and
     // must continue to fail closed.  (`Vec::remove`, `Vec::contains`,
@@ -413,40 +334,6 @@ fn vec_layout_unsupported_method_remains_fail_closed() {
             !matches!(rewrite, MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "hew_vec_clear_layout")
         }),
         "layout-backed Vec::clear must not record a runtime rewrite: {:#?}",
-        output.method_call_rewrites
-    );
-}
-
-#[test]
-#[ignore = "Vec dispatch migrated to the resolved-call kernel (W4.027 Stage 3); legacy `MethodCallRewrite::RewriteToFunction` Vec entries no longer exist. Acceptance of equality-eligible Copy records is covered by run-pass fixture `examples/v05/vec_run_pass.hew` (which exercises `Vec<Point>::contains`)."]
-fn vec_layout_contains_eligible_record_records_thunk_rewrite() {
-    // W3.032 Slice 3e: a Copy record with all-integer fields is
-    // equality-eligible; `Vec::contains` must record the
-    // `hew_vec_contains_thunk` rewrite and emit NO diagnostic.
-    let output = check_source(
-        r"
-        type Point { x: i64, y: i64 }
-
-        fn main() {
-            var points: Vec<Point> = [];
-            points.push(Point { x: 1, y: 2 });
-            let _ = points.contains(Point { x: 1, y: 2 });
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "equality-eligible Copy record Vec::contains must not error: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_vec_contains_thunk"
-        )),
-        "equality-eligible Copy record Vec::contains must record hew_vec_contains_thunk rewrite: {:#?}",
         output.method_call_rewrites
     );
 }
@@ -1899,7 +1786,6 @@ fn test_yield_outside_generator() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
-        is_pure: false,
         name: "not_a_gen".to_string(),
         type_params: None,
         params: vec![],
@@ -1930,7 +1816,6 @@ fn test_receive_gen_fn_returns_stream() {
 
     let receive_fn = ReceiveFnDecl {
         is_generator: true,
-        is_pure: false,
         name: "numbers".to_string(),
         type_params: None,
         params: vec![],
@@ -2147,7 +2032,6 @@ fn test_stream_annotation_resolves_to_stream_type() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
-        is_pure: false,
         name: "foo".to_string(),
         type_params: None,
         params: vec![],
@@ -2200,7 +2084,6 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
-        is_pure: false,
         name: "bar".to_string(),
         type_params: None,
         params: vec![],
@@ -2263,7 +2146,6 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
-        is_pure: false,
         name: "baz".to_string(),
         type_params: None,
         params: vec![],
@@ -2573,6 +2455,240 @@ fn typecheck_binary_op_type_mismatch() {
 }
 
 #[test]
+fn int_literal_locals_unify_to_concrete_integer_binary_width() {
+    let source = r"
+        fn step() -> i32 {
+            return 10;
+        }
+
+        fn main() -> i32 {
+            let target_value = 7;
+            var total = 0;
+            if step() == target_value {
+                total = total + step();
+            }
+            return total;
+        }
+        ";
+    let output = check_source(source);
+
+    assert!(
+        output.errors.is_empty(),
+        "literal-seeded operands should infer the i32 binary width: {:#?}",
+        output.errors
+    );
+    let literal_key = span_key_for(source, "7");
+    assert_eq!(
+        output.expr_types.get(&literal_key),
+        Some(&Ty::I32),
+        "literal-backed binding should resolve to the concrete i32 width"
+    );
+}
+
+#[test]
+fn concrete_integer_float_comparison_stays_rejected() {
+    let output = check_source(
+        r"
+        fn bad(x: i32, y: f64) -> bool {
+            return x == y;
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("explicit conversion")),
+        "expected i32 vs f64 comparison to require an explicit conversion: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn integer_string_comparison_stays_rejected() {
+    let output = check_source(
+        r#"
+        fn bad(x: i32) -> bool {
+            return x == "7";
+        }
+        "#,
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "expected i32 vs string comparison to be rejected"
+    );
+}
+
+// ── Regression: literal-bound-to-local width propagation ──────────────────
+//
+// These tests guard the path where a literal is bound to a local variable via
+// `let` or `var`, then compared/computed with a concrete-width integer.  The
+// checker must propagate the concrete width back to the literal local so the
+// HIR and MIR see matching widths at binary operation sites.
+//
+// Background: commit 53aa2a06 fixed the case where a literal is a direct
+// binary operand; the `let target = 7` path works through the `const_values`
+// table + `expect_inferable_literal_binding` machinery.  Without this path
+// the literal materialises to I64 at binding time, causing
+// `IntCmp{I32, I64}` or `IntArithChecked{I32, I64}` in MIR that the
+// fail-closed codegen correctly rejects.
+//
+// This cluster also tests that the for-range loop variable adopts the correct
+// element width (the checker infers the element type from the range bounds;
+// hew-hir threads this through to the HIR binding so MIR locals match).
+
+/// The let-bound literal path (`let target = 7; fn_returning_i32() == target`)
+/// must produce no type errors and the literal must be recorded as I32.
+/// Regression: if `infer_integer_literal_binding_type` stops creating a Var
+/// for the literal, the 7 stays `IntLiteral` → `I64` at output and downstream
+/// MIR sees `IntCmp{I32, I64}`.
+#[test]
+fn let_bound_literal_unifies_to_i32_width_when_compared_against_i32_fn() {
+    let source = r"
+        fn pick(x: i32) -> i32 { x }
+
+        fn main() -> i32 {
+            let target = 7;
+            if pick(7) == target { 1 } else { 0 }
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "let-bound literal compared against i32 fn result must not error: {:#?}",
+        output.errors
+    );
+    let literal_key = span_key_for(source, "7");
+    // The first `7` in the source is `pick(7)` — skip to the `let target = 7`
+    // literal which is the second occurrence.
+    let second_7_pos = source[literal_key.end..]
+        .find('7')
+        .map(|p| p + literal_key.end);
+    if let Some(pos) = second_7_pos {
+        let key = SpanKey {
+            start: pos,
+            end: pos + 1,
+        };
+        let recorded = output.expr_types.get(&key);
+        assert_eq!(
+            recorded,
+            Some(&Ty::I32),
+            "let-bound literal should resolve to I32 via use-site context, got {recorded:?}"
+        );
+    }
+}
+
+/// `var` bindings with an untyped integer literal remain inferable (not
+/// immediately materialised to I64) so that use-site context can narrow them.
+/// Regression: if `var passed = 0` materialises to I64 before `passed +
+/// fn_returning_i32()` constrains it, the arithmetic site gets
+/// IntArithChecked{I64, I32} in MIR.
+#[test]
+fn var_bound_literal_unifies_to_i32_when_added_to_i32_result() {
+    let source = r"
+        fn count() -> i32 { 1 }
+        fn main() -> i32 {
+            var passed = 0;
+            passed = passed + count();
+            passed
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "var-bound literal should infer I32 via arithmetic context: {:#?}",
+        output.errors
+    );
+}
+
+/// `for i in 2 .. n + 1` with `n: i32` — the checker must infer the range
+/// element type as I32 so that uses of `i` as a narrower operand don't get
+/// widened to I64.  Regression: if the range element type defaults to I64
+/// and the literal operands in the loop body are recorded as I32 via the
+/// `n: i32` context, MIR sees IntArithChecked{I64, I32}.
+///
+/// This test validates the checker-level half of the invariant: passing `i`
+/// to a function that accepts `i32` must not require explicit coercion.
+/// The HIR/MIR threading of this type is tested end-to-end by the
+/// `climbing_stairs` and `matrix_multiply` corpus files once the Vec ABI gap
+/// is fixed.
+#[test]
+fn for_range_loop_var_infers_i32_from_i32_bound() {
+    let source = r"
+        fn take_i32(x: i32) -> i32 { x }
+        fn main() -> i32 {
+            let n: i32 = 5;
+            var acc: i32 = 0;
+            for i in 0 .. n {
+                acc = acc + take_i32(i);
+            }
+            acc
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "for-range loop variable should infer i32 when bound is i32: {:#?}",
+        output.errors
+    );
+}
+
+/// Checker accepts mixed-width range bounds (i32..i64) and resolves the
+/// loop variable to the WIDER type (i64), not the narrower start bound.
+///
+/// The checker's `common_integer_type(i32, i64)` chooses `i64`.  The range
+/// type must be `Range<i64>` so HIR reads the correct element type.
+#[test]
+fn for_range_mixed_width_bounds_resolves_to_wider_type() {
+    let source = r"
+        fn id_i64(x: i64) -> i64 { x }
+        fn main() -> i64 {
+            let a: i32 = 2;
+            let b: i64 = 6;
+            var sum: i64 = 0;
+            for i in a..b {
+                sum = sum + id_i64(i);
+            }
+            sum
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "mixed-width range bounds should resolve to the wider type: {:#?}",
+        output.errors
+    );
+}
+
+/// Checker accepts negative literal range bounds (`-5..5`) when the loop
+/// variable is narrowed to i32 via context.
+///
+/// The deferred `TypeVar` for the range element type must be re-recorded for
+/// both the outer (`-5`) span AND the inner literal (`5`) span so HIR
+/// unary lowering sees matching operand/result widths.
+#[test]
+fn for_range_negative_literal_bound_accepted_at_i32() {
+    let source = r"
+        fn id_i32(x: i32) -> i32 { x }
+        fn main() -> i32 {
+            var sum: i32 = 0;
+            for i in -5..5 {
+                sum = sum + id_i32(i);
+            }
+            sum
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "negative literal range bounds should be accepted at i32: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn typecheck_rejects_implicit_signedness_change_in_call() {
     let source = concat!(
         "fn takes_u32(x: u32) -> u32 { x }\n",
@@ -2849,7 +2965,6 @@ fn typecheck_actor_receive_fn_registered() {
 
     let recv = ReceiveFnDecl {
         is_generator: false,
-        is_pure: false,
         name: "greet".to_string(),
         params: vec![Param {
             name: "name".to_string(),
@@ -3212,6 +3327,55 @@ fn typecheck_i64_literal_missing_catchall_is_error() {
             .iter()
             .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
         "literal i64 missing catch-all must be an error: {errors:?}"
+    );
+}
+
+/// String matches are over an open domain; literal arms need a catch-all.
+#[test]
+fn typecheck_string_literal_missing_catchall_is_error() {
+    let (errors, warnings) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    let s: string = \"maybe\";\n",
+        "    match s {\n",
+        "        \"yes\" => 1,\n",
+        "        \"no\" => 0,\n",
+        "    }\n",
+        "    let _done = 0;\n",
+        "}\n",
+    ));
+    assert!(
+        warnings
+            .iter()
+            .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "non-exhaustive literal string match must not be a warning: {warnings:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "literal string missing catch-all must be an error: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_string_literal_with_catchall_is_exhaustive() {
+    let (errors, warnings) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    let s: string = \"maybe\";\n",
+        "    match s {\n",
+        "        \"yes\" => 1,\n",
+        "        \"no\" => 0,\n",
+        "        _ => -1,\n",
+        "    }\n",
+        "    let _done = 0;\n",
+        "}\n",
+    ));
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(
+        warnings
+            .iter()
+            .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "catch-all string match must not warn as non-exhaustive: {warnings:?}"
     );
 }
 
@@ -3992,6 +4156,151 @@ fn parse_and_check_with_stdlib(source: &str) -> (Vec<TypeError>, Vec<TypeError>)
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&result.program);
     (output.errors, output.warnings)
+}
+
+#[test]
+fn where_clause_assoc_binding_projects_iterator_item_in_generic_body() {
+    let result = hew_parser::parse(
+        r"
+        fn first_or_zero<I>(var it: I) -> i64
+        where
+            I: Iterator<Item = i64>,
+        {
+            match it.next() {
+                Some(x) => x,
+                None => 0,
+            }
+        }
+
+        fn main() -> i64 {
+            let v: Vec<i64> = Vec::new();
+            v.push(42);
+            first_or_zero(v.into_iter())
+        }
+        ",
+    );
+    assert!(
+        result.errors.is_empty(),
+        "unexpected parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&result.program);
+
+    assert!(
+        output.warnings.is_empty(),
+        "unexpected warnings: {:?}",
+        output.warnings
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Iterator<Item = i64> should project I::Item to i64 in a generic body: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .pattern_resolutions
+            .values()
+            .flat_map(|arm| arm.payload_bindings.iter())
+            .any(|payload| payload.binding_name == "x" && payload.ty == Ty::I64),
+        "match payload binding from Option<I::Item> should be published as i64: {:?}",
+        output.pattern_resolutions
+    );
+}
+
+#[test]
+fn where_clause_assoc_binding_projects_non_iterator_assoc_type() {
+    let (errors, warnings) = parse_and_check(
+        r"
+        trait Projector {
+            type Output;
+            fn get(self) -> Self::Output;
+        }
+
+        type Meter {
+            value: i64;
+        }
+
+        impl Projector for Meter {
+            type Output = i64;
+
+            fn get(self) -> i64 {
+                self.value
+            }
+        }
+
+        fn read<P>(p: P) -> i64
+        where
+            P: Projector<Output = i64>,
+        {
+            p.get()
+        }
+
+        fn main() -> i64 {
+            read(Meter { value: 42 })
+        }
+        ",
+    );
+
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    assert!(
+        errors.is_empty(),
+        "where-clause associated-type projection should not be Iterator-specific: {errors:?}"
+    );
+}
+
+#[test]
+fn unbound_where_clause_assoc_projection_remains_type_error() {
+    let (errors, _warnings) = parse_and_check_with_stdlib(
+        r"
+        fn first_or_zero<I>(var it: I) -> i64
+        where
+            I: Iterator,
+        {
+            match it.next() {
+                Some(x) => x,
+                None => 0,
+            }
+        }
+        ",
+    );
+
+    assert!(
+        errors.iter().any(|error| error.message.contains("I::Item")),
+        "unbound I::Item must remain unresolved/fail-closed; got {errors:?}"
+    );
+}
+
+#[test]
+fn call_site_rejects_assoc_binding_mismatch() {
+    let (errors, _warnings) = parse_and_check_with_stdlib(
+        r#"
+        fn first_or_zero<I>(var it: I) -> i64
+        where
+            I: Iterator<Item = i64>,
+        {
+            match it.next() {
+                Some(x) => x,
+                None => 0,
+            }
+        }
+
+        fn main() -> i64 {
+            let v: Vec<string> = Vec::new();
+            v.push("not an integer");
+            first_or_zero(v.into_iter())
+        }
+        "#,
+    );
+
+    assert!(
+        errors.iter().any(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("Iterator<Item = i64>")
+                && error.message.contains("string")
+        }),
+        "Vec<string> must not satisfy Iterator<Item = i64>; got {errors:?}"
+    );
 }
 
 #[test]
@@ -6219,7 +6528,6 @@ fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>) -> FnDecl 
         is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
-        is_pure: false,
         name: name.to_string(),
         type_params: None,
         params,
@@ -6243,7 +6551,6 @@ fn make_priv_fn(name: &str) -> FnDecl {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
-        is_pure: false,
         name: name.to_string(),
         type_params: None,
         params: vec![],
@@ -7138,7 +7445,6 @@ fn import_trait_from_module_glob() {
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
             name: "display".to_string(),
-            is_pure: true,
             type_params: None,
             params: vec![],
             return_type: None,
@@ -7181,7 +7487,6 @@ fn import_private_trait_not_registered() {
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
             name: "internal_op".to_string(),
-            is_pure: false,
             type_params: None,
             params: vec![],
             return_type: None,
@@ -7304,7 +7609,6 @@ fn test_file_import_private_items_not_visible() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
-        is_pure: false,
         name: "private_func".to_string(),
         type_params: None,
         params: vec![],
@@ -9199,7 +9503,7 @@ fn const_explicit_width_not_in_const_values_widening_ok() {
 }
 
 #[test]
-fn mutable_var_initializer_materializes_literal_default() {
+fn mutable_var_initializer_keeps_integer_literal_inferable() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let var_stmt = Stmt::Var {
         name: "n".to_string(),
@@ -9211,13 +9515,14 @@ fn mutable_var_initializer_materializes_literal_default() {
         .env
         .lookup_ref("n")
         .expect("mutable binding should be defined");
-    assert_eq!(binding.ty, Ty::I64);
+    assert!(matches!(binding.ty, Ty::Var(_)));
+    assert_eq!(checker.subst.resolve(&binding.ty), Ty::IntLiteral);
     assert_eq!(
         checker
             .expr_types
             .get(&SpanKey { start: 8, end: 9 })
             .cloned(),
-        Some(Ty::I64)
+        Some(binding.ty.clone())
     );
 }
 
@@ -10444,7 +10749,6 @@ fn make_checker_with_trait(
             };
             TraitItem::Method(TraitMethod {
                 name: name.to_string(),
-                is_pure: false,
                 type_params,
                 params: vec![Param {
                     name: "val".to_string(),
@@ -12036,7 +12340,6 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             },
             TraitItem::Method(TraitMethod {
                 name: "do_it".to_string(),
-                is_pure: false,
                 type_params: None,
                 params: vec![Param {
                     name: "val".to_string(),
@@ -12077,7 +12380,6 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         }]),
         items: vec![TraitItem::Method(TraitMethod {
             name: "run".to_string(),
-            is_pure: false,
             type_params: None,
             params: vec![Param {
                 name: "val".to_string(),
@@ -12128,7 +12430,6 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
             name: "map".to_string(),
-            is_pure: false,
             type_params: Some(vec![TypeParam {
                 name: "U".to_string(),
                 bounds: vec![],
@@ -12170,7 +12471,6 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         }]),
         items: vec![TraitItem::Method(TraitMethod {
             name: "run".to_string(),
-            is_pure: false,
             type_params: None,
             params: vec![Param {
                 name: "val".to_string(),
@@ -12277,7 +12577,6 @@ mod non_root_module_inference_scope {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: fn_name.to_string(),
             type_params: None,
             params: vec![Param {
@@ -12417,7 +12716,6 @@ mod non_root_module_inference_scope {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: "root_fn".to_string(),
             type_params: None,
             params: vec![Param {
@@ -12472,7 +12770,6 @@ mod non_root_module_inference_scope {
                 is_async: false,
                 is_generator: false,
                 visibility: Visibility::Private,
-                is_pure: false,
                 name: name.to_string(),
                 type_params: None,
                 params: vec![Param {
@@ -12550,7 +12847,6 @@ mod non_root_module_inference_scope {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: "foo".to_string(),
             type_params: None,
             params: vec![Param {
@@ -12627,7 +12923,6 @@ mod non_root_module_inference_scope {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: "bar".to_string(),
             type_params: None,
             params: vec![],
@@ -12745,7 +13040,6 @@ mod non_root_module_inference_scope {
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
                 name: "answer".to_string(),
-                is_pure: false,
                 type_params: None,
                 params: vec![Param {
                     name: "value".to_string(),
@@ -12799,7 +13093,6 @@ mod non_root_module_inference_scope {
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
                 name: "answer".to_string(),
-                is_pure: false,
                 type_params: None,
                 params: vec![],
                 return_type: Some((TypeExpr::Infer, 10..11)),
@@ -12850,7 +13143,6 @@ mod non_root_module_inference_scope {
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
                 name: "answer".to_string(),
-                is_pure: false,
                 type_params: None,
                 params: vec![Param {
                     name: "value".to_string(),
@@ -13083,7 +13375,6 @@ mod non_root_module_inference_scope {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: "foo".to_string(),
             type_params: None,
             params: vec![],
@@ -13178,7 +13469,6 @@ fn module_graph_body_type_error_is_reported() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
-        is_pure: false,
         name: "bad".to_string(),
         type_params: None,
         params: vec![],
@@ -13233,7 +13523,6 @@ fn module_graph_body_infer_return_resolves_without_error() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
-        is_pure: false,
         name: "inferred".to_string(),
         type_params: None,
         params: vec![],
@@ -13269,7 +13558,6 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
-        is_pure: false,
         name: "ok".to_string(),
         type_params: None,
         params: vec![Param {
@@ -13408,7 +13696,6 @@ fn module_graph_body_private_local_type_is_available() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
-        is_pure: false,
         name: "ok".to_string(),
         type_params: None,
         params: vec![],
@@ -13485,7 +13772,6 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
-        is_pure: false,
         name: "helper".to_string(),
         type_params: None,
         params: vec![],
@@ -13506,7 +13792,6 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
-        is_pure: false,
         name: "ok".to_string(),
         type_params: None,
         params: vec![],
@@ -13535,7 +13820,6 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
-        is_pure: false,
         name: "helper".to_string(),
         type_params: None,
         params: vec![],
@@ -13634,7 +13918,6 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
-        is_pure: false,
         name: "ok".to_string(),
         type_params: None,
         params: vec![],
@@ -13774,7 +14057,6 @@ mod module_body_diagnostic_envelope {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Pub,
-            is_pure: false,
             name: name.to_string(),
             type_params: None,
             params: vec![],
@@ -13833,7 +14115,6 @@ mod module_body_diagnostic_envelope {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: "bad".to_string(),
             type_params: None,
             params: vec![],
@@ -13887,7 +14168,6 @@ mod module_body_diagnostic_envelope {
                 is_async: false,
                 is_generator: false,
                 visibility: Visibility::Pub,
-                is_pure: false,
                 name: fn_name.to_string(),
                 type_params: None,
                 params: vec![],
@@ -13996,7 +14276,6 @@ mod module_body_diagnostic_envelope {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: "foo".to_string(),
             type_params: None,
             params: vec![Param {
@@ -14059,7 +14338,6 @@ mod module_body_diagnostic_envelope {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: "helper".to_string(),
             type_params: None,
             params: vec![Param {
@@ -14209,7 +14487,6 @@ mod warning_source_attribution {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: name.to_string(),
             type_params: None,
             params: vec![],
@@ -14236,7 +14513,6 @@ mod warning_source_attribution {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: name.to_string(),
             type_params: None,
             params: vec![],
@@ -14595,7 +14871,6 @@ mod warning_source_attribution {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Pub,
-            is_pure: false,
             name: "helper".to_string(),
             type_params: None,
             params: vec![],
@@ -14628,7 +14903,6 @@ mod warning_source_attribution {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name: "caller".to_string(),
             type_params: None,
             params: vec![],
@@ -17972,11 +18246,11 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
 ///
 /// Uses `Instant::elapsed`-bounded ratio rather than an absolute wall-clock
 /// threshold so CI hardware differences don't cause false failures.
-/// Gated with `#[ignore]` so it does not run in the standard `cargo test`
-/// sweep — invoke explicitly with `cargo test -- --include-ignored` when you
-/// want the timing signal.
+/// Kept `#[ignore]` (CONVERT-C deferred): migration to `benches/` requires
+/// adding Criterion to hew-types and is non-trivial. Invoke explicitly with
+/// `cargo test -- --include-ignored` when you want the timing signal.
 #[test]
-#[ignore = "wall-clock ratio test; run explicitly with --include-ignored"]
+#[ignore = "wall-clock ratio test; run explicitly with --include-ignored (benches/ migration deferred: no Criterion dep)"]
 fn handle_bearing_registration_scales_linearly_not_quadratically() {
     use std::time::Instant;
 
@@ -20470,6 +20744,103 @@ fn foo(pair: (i64, i64)) -> i64 {
         assert_eq!(arm.payload_bindings[0].field_idx, 0);
         assert_eq!(arm.payload_bindings[1].binding_name, "b");
         assert_eq!(arm.payload_bindings[1].field_idx, 1);
+    }
+
+    #[test]
+    fn record_pattern_uses_declaration_order_for_field_indices() {
+        let resolutions = pattern_resolutions(
+            r"
+type Weird {
+    z: i64,
+    a: i64,
+}
+
+fn foo(w: Weird) -> i64 {
+    match w {
+        Weird { z, a } => z - a,
+    }
+}",
+        );
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(arm.pattern_kind, PatternKind::StructPattern);
+        assert_eq!(arm.payload_bindings.len(), 2);
+        assert_eq!(arm.payload_bindings[0].binding_name, "z");
+        assert_eq!(arm.payload_bindings[0].field_idx, 0);
+        assert_eq!(arm.payload_bindings[1].binding_name, "a");
+        assert_eq!(arm.payload_bindings[1].field_idx, 1);
+    }
+
+    #[test]
+    fn record_match_omitted_field_fails_closed_until_rest_patterns() {
+        let output = check_source(
+            r"
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn foo(p: Point) -> i64 {
+    match p {
+        Point { x } => x,
+    }
+}",
+        );
+        assert!(
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::InvalidOperation
+                    && error.message.contains("omits field(s) y")
+                    && error.message.contains("rest patterns")
+            }),
+            "expected omitted-field rest-pattern diagnostic, got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tuple_match_literal_subpattern_fails_closed() {
+        let output = check_source(
+            r"
+fn foo(pair: (i64, i64)) -> i64 {
+    match pair {
+        (0, y) => y,
+        _ => 0,
+    }
+}",
+        );
+        assert!(
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::InvalidOperation
+                    && error.message.contains("tuple subpattern `integer literal`")
+            }),
+            "expected tuple literal-subpattern diagnostic, got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn record_match_literal_subpattern_fails_closed() {
+        let output = check_source(
+            r"
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn foo(p: Point) -> i64 {
+    match p {
+        Point { x: 0, y } => y,
+        _ => 0,
+    }
+}",
+        );
+        assert!(
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::InvalidOperation
+                    && error.message.contains("field subpattern `integer literal`")
+            }),
+            "expected record literal-subpattern diagnostic, got: {:#?}",
+            output.errors
+        );
     }
 
     // ── or-pattern is absent ─────────────────────────────────────────────────

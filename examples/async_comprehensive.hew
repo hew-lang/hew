@@ -1,23 +1,29 @@
 //! Status: aspirational (Hew roadmap: v0.6 concurrency surfaces plus codegen-rs parity)
-//! Description: Comprehensive async/await demo for Hew language
+//! Description: Comprehensive actor call-and-await demo for Hew language
 
-// Comprehensive async/await demo for Hew language
-fn simple_calculation(n: i32) -> i32 {
-    let result = n * 2 + 1;
-    result
+// Comprehensive actor call-and-await demo for Hew language
+actor Calculator {
+    receive fn simple_calculation(n: i64) -> i64 {
+        let result = n * 2 + 1;
+        result
+    }
 }
 
-fn print_async_message(msg: i32) {
-    println(msg);
+actor Messenger {
+    receive fn print_message(msg: i64) -> i64 {
+        println(msg);
+        0
+    }
 }
 
 fn main() {
-    // Test async function with return value
-    let future = simple_calculation(21);
-    let result = await future;
+    // Actor call with return value.
+    let calculator = spawn Calculator;
+    let result = calculator.simple_calculation(21);
     println(result);
 
-    // Test async function without return value (direct await)
-    await print_async_message(123);
+    // Actor call-and-await with discarded return value.
+    let messenger = spawn Messenger;
+    await messenger.print_message(123);
     println(999);
 }

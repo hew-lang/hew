@@ -830,6 +830,114 @@ mod tests {
         );
     }
 
+    // ── Live profiler server round-trip ──────────────────────────────────
+
+    #[test]
+    fn live_profiler_server_snapshot_round_trips_through_observe_client() {
+        let (listener, addr) = bind_ephemeral_profiler_listener();
+
+        let ctx = std::sync::Arc::new(hew_runtime::profiler::ProfilerContext {
+            ring: std::sync::Arc::new(std::sync::Mutex::new(
+                hew_runtime::profiler::metrics::MetricsRing::new(),
+            )),
+            cluster: std::ptr::null_mut(),
+            connmgr: std::ptr::null_mut(),
+            routing: std::ptr::null_mut(),
+        });
+
+        std::thread::Builder::new()
+            .name("observe-live-smoke-profiler".into())
+            .spawn({
+                let ctx = std::sync::Arc::clone(&ctx);
+                move || hew_runtime::profiler::run_tcp_with_listener(listener, ctx)
+            })
+            .expect("spawn live profiler server");
+
+        let base_url = format!("http://{addr}");
+        wait_for_live_profiler(&base_url);
+
+        let mut client = ProfilerClient::new_tcp(&base_url).expect("create observe TCP client");
+        let raw_body = client
+            .get_bytes("/api/metrics")
+            .expect("live profiler metrics envelope must be readable");
+        let envelope: Envelope<serde_json::Value> = serde_json::from_slice(&raw_body)
+            .unwrap_or_else(|err| panic!("live profiler payload must parse: {err}"));
+        assert_eq!(envelope.schema_version, OBSERVE_SCHEMA_VERSION);
+        let data = envelope
+            .data
+            .as_object()
+            .expect("metrics snapshot data must be a JSON object");
+        for key in [
+            "timestamp_secs",
+            "tasks_spawned",
+            "tasks_completed",
+            "steals",
+            "messages_sent",
+            "messages_received",
+            "active_workers",
+            "alloc_count",
+            "dealloc_count",
+            "bytes_allocated",
+            "bytes_freed",
+            "bytes_live",
+            "peak_bytes_live",
+            "tcp_bytes_read",
+            "tcp_bytes_written",
+            "tcp_accept_count",
+            "tcp_connect_count",
+            "tcp_error_count",
+        ] {
+            assert!(
+                data.contains_key(key),
+                "live metrics v0.5 payload must include {key}"
+            );
+        }
+
+        let metrics = client
+            .fetch_metrics()
+            .expect("observe client must parse live v0.5 metrics snapshot");
+        assert!(
+            metrics.timestamp_secs.is_finite(),
+            "metrics timestamp must be finite"
+        );
+        assert_eq!(client.status, ConnectionStatus::Connected);
+        assert!(
+            client.last_error.is_none(),
+            "successful live fetch must leave no client error, got {:?}",
+            client.last_error
+        );
+    }
+
+    fn wait_for_live_profiler(base_url: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut last_error = None;
+        while std::time::Instant::now() < deadline {
+            match ProfilerClient::new_tcp(base_url) {
+                Ok(mut client) => {
+                    if client.fetch_metrics().is_some() {
+                        return;
+                    }
+                    last_error = client.last_error.map(|err| err.to_string());
+                }
+                Err(err) => last_error = Some(err.to_string()),
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("live profiler did not become ready at {base_url}: {last_error:?}");
+    }
+
+    fn bind_ephemeral_profiler_listener() -> (std::net::TcpListener, std::net::SocketAddr) {
+        for _ in 0..16 {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral profiler port");
+            let addr = listener.local_addr().expect("read ephemeral profiler addr");
+            if addr.port() != 6060 {
+                return (listener, addr);
+            }
+        }
+        panic!("ephemeral profiler port selection kept returning forbidden :6060");
+    }
+
     // ── connect error ─────────────────────────────────────────────────────
 
     #[test]

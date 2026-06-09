@@ -35,7 +35,6 @@
 ///
 /// The type parameter is managed by the compiler — the underlying runtime
 /// handle is type-erased.
-#[opaque]
 type Sender {
 }
 
@@ -46,7 +45,6 @@ type Sender {
 ///
 /// The type parameter is managed by the compiler — the underlying runtime
 /// handle is type-erased.
-#[opaque]
 type Receiver {
 }
 
@@ -153,7 +151,6 @@ pub fn new(capacity: i64) -> (Sender, Receiver) {
 
 // ── FFI bindings ─────────────────────────────────────────────────────
 /// Internal paired channel handle.
-#[opaque]
 type ChannelPair {
 }
 

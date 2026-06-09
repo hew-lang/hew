@@ -40,6 +40,7 @@
 #   make test-parser       — parser + lexer crate tests (narrow)
 #   make test-types        — type-checker + parser + lexer crate tests (narrow)
 #   make test-cli          — CLI crate tests (narrow)
+#   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
 #   make test-hew          — run Hew test files (std/ *_test.hew)
@@ -53,7 +54,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-stdlib test-hew test-release-binary asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-runtime-net test-runtime-unit test-stdlib test-hew test-release-binary asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
@@ -100,7 +101,7 @@ FUZZ_SMOKE_SECONDS ?= 45
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: hew adze runtime stdlib assemble
+all: hew adze runtime stdlib wasm-runtime assemble
 
 # Convenience alias — rebuilds all debug artifacts including libhew.a.
 # Equivalent to `make all`; exists so that `make build` behaves as expected.
@@ -287,7 +288,7 @@ wasm-dist: wasm
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
-assemble: | hew adze runtime stdlib
+assemble: | hew adze runtime stdlib wasm-runtime
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@# assemble-release makes build/std a symlink to ../std; reset it so the
 	@# flat std stub loop below cannot rewrite tracked std/*.hew files in root.
@@ -432,6 +433,17 @@ test-types:
 
 test-cli:
 	cargo nextest run --profile ci -p hew-cli -p adze-cli
+
+test-compiler-pipeline:
+	cargo nextest run --profile ci \
+		-p hew-lexer \
+		-p hew-parser \
+		-p hew-types \
+		-p hew-hir \
+		-p hew-mir \
+		-p hew-codegen-rs \
+		-p hew-cli \
+		-p adze-cli
 
 test-runtime-net:
 	cargo nextest run --profile ci --no-fail-fast \
@@ -727,6 +739,8 @@ install-check:
 		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
 	@test -f $(RELEASE_DIR)/libhew.a \
 		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
+	@test -f $(WASM_RELEASE_DIR)/libhew_runtime.a \
+		|| { echo "Error: wasm runtime not built. Run 'make release' first."; exit 1; }
 
 uninstall:
 	rm -rf $(DESTDIR)$(PREFIX)

@@ -230,11 +230,14 @@ fn run_machine_fixtures_execute_with_expected_stdout() {
         let expected = std::fs::read_to_string(&expected_path)
             .unwrap_or_else(|e| panic!("read {}: {e}", expected_path.display()));
 
-        let output = hew_command(&repo)
-            .arg("run")
-            .arg(&path)
-            .output()
-            .expect("spawn hew run");
+        let mut command = hew_command(&repo);
+        command.arg("run").arg(&path);
+        let output = hew_testutil::run_command_bounded(
+            &mut command,
+            format!("hew run {}", path.display()),
+            hew_testutil::DEFAULT_EXEC_TIMEOUT,
+        )
+        .expect("spawn hew run");
         assert!(
             output.status.success(),
             "hew run {} exited non-zero (status={:?}); stderr:\n{}",

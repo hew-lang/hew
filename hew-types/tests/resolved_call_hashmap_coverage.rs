@@ -100,25 +100,3 @@ fn layout_key_hashmap_methods_dual_emit_resolved_calls() {
         );
     }
 }
-
-#[test]
-#[ignore = "W4.001 Stage C3: legacy per-K allowlist retired; HashMap<i64,i64> is now admitted (i64 impls Hash+Eq) via the resolver authority path."]
-fn unsupported_i64_key_hashmap_stays_checker_rejected_and_unresolved() {
-    let output = typecheck(
-        r"
-        fn main() {
-            let m: HashMap<i64, i64> = HashMap::new();
-            m.insert(1, 2);
-        }
-        ",
-    );
-
-    assert!(
-        !output.errors.is_empty(),
-        "HashMap<i64, i64> must remain rejected by the legacy Stage-B allowlist"
-    );
-    assert!(
-        output.resolved_calls.is_empty(),
-        "rejected HashMap<i64, i64> sites must not receive ResolvedCall entries"
-    );
-}

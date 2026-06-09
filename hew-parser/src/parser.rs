@@ -1368,7 +1368,6 @@ impl<'src> Parser<'src> {
     fn parse_fn_with_modifiers(
         &mut self,
         vis: Visibility,
-        is_pure: bool,
         attrs: Vec<Attribute>,
         doc_comment: &Option<String>,
     ) -> Option<Item> {
@@ -1403,7 +1402,7 @@ impl<'src> Parser<'src> {
             }
             _ => unreachable!("parse_fn_with_modifiers called without fn/async/gen"),
         };
-        let mut f = self.parse_function(fn_start, is_async, is_gen, vis, is_pure, attrs)?;
+        let mut f = self.parse_function(fn_start, is_async, is_gen, vis, attrs)?;
         f.doc_comment.clone_from(doc_comment);
         Some(Item::Function(f))
     }
@@ -1459,10 +1458,9 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Pub) => {
                 let vis = self.parse_visibility();
-                let is_pure = self.eat(&Token::Pure);
                 match self.peek() {
                     Some(Token::Fn | Token::Async | Token::Gen) => {
-                        self.parse_fn_with_modifiers(vis, is_pure, attrs, &doc_comment)?
+                        self.parse_fn_with_modifiers(vis, attrs, &doc_comment)?
                     }
                     Some(Token::Struct) if attrs.iter().any(|a| a.name == "wire") => {
                         let mut t = self.parse_wire_struct(&attrs, vis)?;
@@ -1536,28 +1534,13 @@ impl<'src> Parser<'src> {
                         Item::Const(self.parse_const_decl(vis, doc_comment)?)
                     }
                     _ => {
-                        if is_pure {
-                            self.error(
-                                "'pure' can only be applied to function declarations".to_string(),
-                            );
-                        } else {
-                            self.error("invalid item after 'pub'".to_string());
-                        }
+                        self.error("invalid item after 'pub'".to_string());
                         return None;
                     }
                 }
             }
             Some(Token::Fn | Token::Async | Token::Gen) => {
-                self.parse_fn_with_modifiers(Visibility::Private, false, attrs, &doc_comment)?
-            }
-            Some(Token::Pure) => {
-                self.advance();
-                if let Some(Token::Fn | Token::Async | Token::Gen) = self.peek() {
-                    self.parse_fn_with_modifiers(Visibility::Private, true, attrs, &doc_comment)?
-                } else {
-                    self.error("'pure' can only be applied to function declarations".to_string());
-                    return None;
-                }
+                self.parse_fn_with_modifiers(Visibility::Private, attrs, &doc_comment)?
             }
             Some(Token::Struct) if attrs.iter().any(|a| a.name == "wire") => {
                 let mut t = self.parse_wire_struct(&attrs, Visibility::Private)?;
@@ -1723,7 +1706,6 @@ impl<'src> Parser<'src> {
         is_async: bool,
         is_gen: bool,
         visibility: Visibility,
-        is_pure: bool,
         attributes: Vec<Attribute>,
     ) -> Option<FnDecl> {
         // Capture the byte position of the name token so the debug pipeline
@@ -1770,7 +1752,6 @@ impl<'src> Parser<'src> {
             is_async,
             is_generator: is_gen,
             visibility,
-            is_pure,
             name,
             type_params,
             params,
@@ -1815,7 +1796,6 @@ impl<'src> Parser<'src> {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name,
             type_params,
             params,
@@ -2333,7 +2313,6 @@ impl<'src> Parser<'src> {
             }
         }
 
-        let is_pure = self.eat(&Token::Pure);
         match self.peek() {
             Some(Token::Fn) => {
                 let fn_start = self.peek_span().start;
@@ -2363,7 +2342,6 @@ impl<'src> Parser<'src> {
 
                 Some(TraitItem::Method(TraitMethod {
                     name,
-                    is_pure,
                     type_params,
                     params,
                     return_type,
@@ -2445,7 +2423,6 @@ impl<'src> Parser<'src> {
             } else {
                 Visibility::Private
             };
-            let is_pure = self.eat(&Token::Pure);
             match self.peek() {
                 Some(Token::Type) => {
                     if !method_attrs.is_empty() {
@@ -2474,7 +2451,7 @@ impl<'src> Parser<'src> {
                     let prev_allow_implicit_self =
                         std::mem::replace(&mut self.allow_implicit_self_params, true);
                     let parsed_method =
-                        self.parse_function(fn_start, false, false, vis, is_pure, method_attrs);
+                        self.parse_function(fn_start, false, false, vis, method_attrs);
                     self.allow_implicit_self_params = prev_allow_implicit_self;
                     if let Some(mut method) = parsed_method {
                         if let Some(doc) = doc_comment {
@@ -2560,7 +2537,7 @@ impl<'src> Parser<'src> {
 
             // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
             // methods — not on actor body members (init, receive fn,
-            // receive gen fn, or inherent `pure fn` methods).
+            // receive gen fn, or inherent methods).
             for attr in &attrs {
                 if attr.name == "extern_symbol" {
                     self.error_at(
@@ -2583,82 +2560,45 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightParen)?;
                 let body = self.parse_block()?;
                 init = Some(ActorInit { params, body });
-            } else if self.peek() == Some(&Token::Pure) || self.peek() == Some(&Token::Receive) {
-                let is_pure = self.eat(&Token::Pure);
-                if self.peek() == Some(&Token::Receive) {
-                    let recv_start = self.peek_span().start;
-                    self.advance();
-                    let is_generator = if self.eat(&Token::Gen) {
-                        if !self.eat(&Token::Fn) {
-                            self.error("expected 'fn' after 'receive gen'".to_string());
-                            return None;
-                        }
-                        true
-                    } else {
-                        if !self.eat(&Token::Fn) {
-                            self.error("expected 'fn' after 'receive'".to_string());
-                            return None;
-                        }
-                        false
-                    };
-                    let handler_name = self.expect_ident()?;
-                    let type_params = self.parse_opt_type_params()?;
-                    self.expect(&Token::LeftParen)?;
-                    let params = self.parse_params();
-                    self.expect(&Token::RightParen)?;
-
-                    let return_type = self.parse_opt_return_type()?;
-                    let where_clause = self.parse_opt_where_clause()?;
-
-                    let body = self.parse_block()?;
-                    let recv_end = self.peek_span().start;
-                    receive_fns.push(ReceiveFnDecl {
-                        is_generator,
-                        is_pure,
-                        name: handler_name,
-                        type_params,
-                        params,
-                        return_type,
-                        where_clause,
-                        body,
-                        span: recv_start..recv_end,
-                        attributes: attrs,
-                        doc_comment,
-                    });
-                } else if self.peek() == Some(&Token::Fn) {
-                    // `pure fn` inside an actor body: lifecycle-hook
-                    // annotations propagate so the type-checker can
-                    // diagnose `#[on_*]` + `pure` combinations as
-                    // signature violations (HEW-SPEC-2026 §9.1.2).
-                    let mut hook_attrs = Vec::new();
-                    let mut other_attrs = Vec::new();
-                    for attr in attrs {
-                        if is_lifecycle_hook_attr(&attr.name) {
-                            hook_attrs.push(attr);
-                        } else {
-                            other_attrs.push(attr);
-                        }
+            } else if self.peek() == Some(&Token::Receive) {
+                let recv_start = self.peek_span().start;
+                self.advance();
+                let is_generator = if self.eat(&Token::Gen) {
+                    if !self.eat(&Token::Fn) {
+                        self.error("expected 'fn' after 'receive gen'".to_string());
+                        return None;
                     }
-                    if !other_attrs.is_empty() {
-                        self.error("attributes are not supported on actor methods; use them on receive fn declarations".to_string());
-                    }
-                    let fn_start = self.peek_span().start;
-                    self.advance();
-                    if let Some(mut method) = self.parse_function(
-                        fn_start,
-                        false,
-                        false,
-                        Visibility::Private,
-                        is_pure,
-                        hook_attrs,
-                    ) {
-                        method.doc_comment = doc_comment;
-                        methods.push(method);
-                    }
+                    true
                 } else {
-                    self.error("'pure' can only be applied to function declarations".to_string());
-                    return None;
-                }
+                    if !self.eat(&Token::Fn) {
+                        self.error("expected 'fn' after 'receive'".to_string());
+                        return None;
+                    }
+                    false
+                };
+                let handler_name = self.expect_ident()?;
+                let type_params = self.parse_opt_type_params()?;
+                self.expect(&Token::LeftParen)?;
+                let params = self.parse_params();
+                self.expect(&Token::RightParen)?;
+
+                let return_type = self.parse_opt_return_type()?;
+                let where_clause = self.parse_opt_where_clause()?;
+
+                let body = self.parse_block()?;
+                let recv_end = self.peek_span().start;
+                receive_fns.push(ReceiveFnDecl {
+                    is_generator,
+                    name: handler_name,
+                    type_params,
+                    params,
+                    return_type,
+                    where_clause,
+                    body,
+                    span: recv_start..recv_end,
+                    attributes: attrs,
+                    doc_comment,
+                });
             } else if self.peek() == Some(&Token::Fn) {
                 // Lifecycle-hook attributes `#[on(start)]` and `#[on(stop)]` are
                 // permitted on plain `fn` declarations inside an actor body.
@@ -2678,14 +2618,9 @@ impl<'src> Parser<'src> {
                 }
                 let fn_start = self.peek_span().start;
                 self.advance();
-                if let Some(mut method) = self.parse_function(
-                    fn_start,
-                    false,
-                    false,
-                    Visibility::Private,
-                    false,
-                    hook_attrs,
-                ) {
+                if let Some(mut method) =
+                    self.parse_function(fn_start, false, false, Visibility::Private, hook_attrs)
+                {
                     method.doc_comment = doc_comment;
                     methods.push(method);
                 }

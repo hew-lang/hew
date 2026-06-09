@@ -5,7 +5,7 @@
 //
 // Features shown:
 // - Supervisor declarations with one_for_one and one_for_all strategies
-// - supervisor_child() for typed access to supervised children
+// - supervisor field access for typed access to supervised children
 // - panic() for actor crash + automatic supervisor restart
 // - Children run init blocks on startup
 actor Counter {
@@ -74,13 +74,13 @@ fn main() {
     println("");
 
     // Get supervised children and send messages
-    let c = supervisor_child(svc, 0);
+    let c = svc.counter;
     c.tick();
     sleep_ms(10);
-    let dlog = supervisor_child(svc, 1);
+    let dlog = svc.debug_log;
     dlog.log();
     sleep_ms(10);
-    let elog = supervisor_child(svc, 2);
+    let elog = svc.error_log;
     elog.log();
     sleep_ms(50);
     println("");
@@ -91,7 +91,7 @@ fn main() {
     sleep_ms(200);
 
     // After restart, the counter has fresh state (value=100 from init → 110)
-    let c2 = supervisor_child(svc, 0);
+    let c2 = svc.counter;
     c2.tick();
     sleep_ms(50);
     println("");
@@ -100,7 +100,7 @@ fn main() {
     println("--- StrictPool (one_for_all) ---");
     let sup = spawn StrictPool;
     sleep_ms(50);
-    let a = supervisor_child(sup, 0);
+    let a = sup.a;
     a.tick();
     sleep_ms(10);
     a.tick();

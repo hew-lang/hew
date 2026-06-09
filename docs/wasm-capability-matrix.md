@@ -74,9 +74,10 @@ The **Checker disposition** column documents what the type checker emits when
 | Feature | Checker disposition | Runtime status | Tracking |
 |---------|-------------------|----------------|----------|
 | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | ✅ Pass | Implemented | — |
-| Generators / async streams | ✅ Pass | Implemented | — |
+| Generators / async streams | ⚠️ WASM-TODO (not checker-gated; codegen fail-closed at `hew_gen_yield`) | Scoped for v0.5; generator substrate wasm parity is in progress, not passing today | WASM-TODO(#1451) |
 | Pattern matching, ADTs, generics | ✅ Pass | Implemented | — |
-| Standard collections, arithmetic | ✅ Pass | Implemented | — |
+| Arithmetic and wasm-safe collection surfaces | ✅ Pass | Implemented | — |
+| Layout-backed `HashMap` / `HashSet` | ⚠️ WASM-TODO (not checker-gated; codegen fail-closed on `hew_hashmap_*_layout` / `hew_hashset_*_layout`) | Scoped for v0.5 per A650; descriptor ABI and wasm-table validation are in progress | WASM-TODO(#1820) |
 | Actor ask/reply (`reply_channel_wasm`) | ✅ Pass | Implemented | — |
 | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | ⚠️ WASM-TODO (not checker-gated) | Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer | WASM-TODO |
 | `select {}` (any timeout expression, any arm count) | ✅ Pass | Implemented | — |
@@ -216,14 +217,14 @@ dedicated checker warning/error for them.
 
 ## Generators on WASM — note
 
-The spec previously implied generators might be unsupported on WASM.  As of the
-current implementation, **basic generator syntax and the cooperative scheduler
-do work on Tier 2**.  Generators that depend on blocking I/O (e.g. a generator
-that calls `stream.next()` internally) will encounter the Streams reject above
-at the point of the stream call, not at the generator declaration itself.
+The checker currently admits basic generator syntax for Tier 2, but wasm
+codegen still fail-closes when the lowered program reaches the native-only
+`hew_gen_yield` substrate. Generator parity is scoped for v0.5 under
+WASM-TODO(#1451), so this is an in-progress gap rather than a supported PASS.
 
-If a generator is purely computational (no I/O, no blocking calls), it works
-on WASM unchanged.
+Generators that depend on blocking I/O (e.g. a generator that calls
+`stream.next()` internally) are additionally covered by the Streams reject
+above at the point of the stream call.
 
 ---
 

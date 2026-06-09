@@ -1,0 +1,6 @@
+fn main() -> i64 {
+    let t = (1, 2, 4);
+    return match t {
+        (a, b, c) => a + b + c,
+    };
+}

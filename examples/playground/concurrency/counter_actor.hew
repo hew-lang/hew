@@ -13,10 +13,10 @@ actor Counter {
 }
 
 fn main() {
-    let c = spawn Counter;
+    let c = spawn Counter(count: 0);
     await c.increment(5);
     await c.increment(3);
-    let total = await c.increment(12);
+    let total = c.increment(12);
     print("Final total: ");
     println(total);
 }

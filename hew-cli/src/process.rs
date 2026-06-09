@@ -6,6 +6,13 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// Per-stream capture cap for bounded child output.
+///
+/// Four MiB preserves useful diagnostics while preventing an infinite-output
+/// child from growing the CLI or test process without bound before timeout.
+const MAX_CAPTURED_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const OUTPUT_READ_CHUNK_BYTES: usize = 8 * 1024;
+
 /// Result of running a native binary under a timeout.
 #[derive(Debug)]
 pub(crate) enum BinaryRunOutcome {
@@ -387,10 +394,39 @@ impl ChildPipeReader {
 
 fn drain_pipe<T: Read>(mut stream: T, name: &str) -> Result<String, String> {
     let mut bytes = Vec::new();
-    stream
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read child {name}: {e}"))?;
+    let mut chunk = [0; OUTPUT_READ_CHUNK_BYTES];
+    let mut truncated = false;
+
+    loop {
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|e| format!("cannot read child {name}: {e}"))?;
+        if read == 0 {
+            break;
+        }
+
+        let remaining = MAX_CAPTURED_OUTPUT_BYTES.saturating_sub(bytes.len());
+        if remaining == 0 {
+            truncated = true;
+            continue;
+        }
+
+        let keep = remaining.min(read);
+        bytes.extend_from_slice(&chunk[..keep]);
+        if keep < read {
+            truncated = true;
+        }
+    }
+
+    if truncated {
+        bytes.extend_from_slice(truncation_marker().as_bytes());
+    }
+
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn truncation_marker() -> String {
+    format!("\n[output truncated at {MAX_CAPTURED_OUTPUT_BYTES} bytes]\n")
 }
 
 /// Wait for a child process to exit before `timeout`, terminating it otherwise.
@@ -810,6 +846,40 @@ mod tests {
         assert!(
             !alive,
             "grandchild PID {grandchild_pid} should be dead after process-group kill on timeout"
+        );
+    }
+
+    #[test]
+    fn run_command_captured_caps_output_and_keeps_draining_promptly() {
+        let output_bytes = MAX_CAPTURED_OUTPUT_BYTES + (1024 * 1024);
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("yes 0123456789abcdef | head -c {output_bytes}"));
+
+        let timeout = Duration::from_secs(20);
+        let started = Instant::now();
+        let outcome =
+            run_command_captured(&mut command, timeout).expect("captured command should run");
+        let elapsed = started.elapsed();
+
+        let BinaryRunOutcome::Success { stdout } = outcome else {
+            panic!("expected successful capped capture, got {outcome:?}");
+        };
+
+        let marker = truncation_marker();
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "capped finite output should return promptly, elapsed {elapsed:?}"
+        );
+        assert!(
+            stdout.ends_with(&marker),
+            "captured stdout should end with truncation marker"
+        );
+        assert_eq!(
+            stdout.len(),
+            MAX_CAPTURED_OUTPUT_BYTES + marker.len(),
+            "captured stdout should be capped plus the marker"
         );
     }
 }

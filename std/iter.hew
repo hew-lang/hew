@@ -35,7 +35,6 @@
 // ---------------------------------------------------------------------------
 // Lazy combinator wrappers
 // ---------------------------------------------------------------------------
-
 /// Lazy map adapter: yields `f(x)` for each item produced by the inner
 /// iterator.
 ///
@@ -46,12 +45,10 @@ pub type Map<I, A, B> {
     f: fn(A) -> B;
 }
 
-impl<I, A, B> Iterator for Map<I, A, B>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     type Item = B;
     fn next(it: Map<I, A, B>) -> Option<B> {
+
         // DEFERRED — fail loud, not silent: returning `None` here would
         // make Map look like an empty iterator to every caller.
         //
@@ -75,12 +72,10 @@ pub type Filter<I, A> {
     pred: fn(A) -> bool;
 }
 
-impl<I, A> Iterator for Filter<I, A>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
     type Item = A;
     fn next(it: Filter<I, A>) -> Option<A> {
+
         // DEFERRED — fail loud, not silent. A correct `Filter::next` must
         // pump `it.iter.next()` in a loop, returning `Some(x)` for the
         // first `x` where `pred(x)` is true and `None` once the inner
@@ -107,12 +102,10 @@ pub type Take<I> {
     remaining: i64;
 }
 
-impl<I, A> Iterator for Take<I>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A> Iterator for Take<I> where I: Iterator<Item = A> {
     type Item = A;
     fn next(it: Take<I>) -> Option<A> {
+
         // DEFERRED — fail loud, not silent. A correct `Take::next` must
         // decrement `remaining` each yield so the adapter actually caps
         // the inner stream at `n` items. The previous body
@@ -140,12 +133,10 @@ pub type Skip<I> {
     remaining: i64;
 }
 
-impl<I, A> Iterator for Skip<I>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A> Iterator for Skip<I> where I: Iterator<Item = A> {
     type Item = A;
     fn next(it: Skip<I>) -> Option<A> {
+
         // DEFERRED — fail loud, not silent. A correct `Skip::next` must
         // consume `remaining` items from `it.iter` (looping on inner
         // `next()` until either `remaining == 0` or the inner exhausts)
@@ -165,39 +156,26 @@ where
 }
 
 // ── lazy constructors ────────────────────────────────────────────────────
-
 /// Construct a lazy `Map` adapter over `it` applying `f` to each item.
-pub fn map<I, A, B>(it: I, f: fn(A) -> B) -> Map<I, A, B>
-where
-    I: Iterator<Item = A>,
-{
+pub fn map<I, A, B>(it: I, f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
     Map { iter: it, f: f }
 }
 
 /// Construct a lazy `Filter` adapter over `it` keeping items for which
 /// `pred` returns `true`.
-pub fn filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A>
-where
-    I: Iterator<Item = A>,
-{
+pub fn filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A> where I: Iterator<Item = A> {
     Filter { iter: it, pred: pred }
 }
 
 /// Construct a lazy `Take` adapter that yields at most `n` items from
 /// `it`.
-pub fn take<I, A>(it: I, n: i64) -> Take<I>
-where
-    I: Iterator<Item = A>,
-{
+pub fn take<I, A>(it: I, n: i64) -> Take<I> where I: Iterator<Item = A> {
     Take { iter: it, remaining: n }
 }
 
 /// Construct a lazy `Skip` adapter that discards the first `n` items
 /// from `it`.
-pub fn skip<I, A>(it: I, n: i64) -> Skip<I>
-where
-    I: Iterator<Item = A>,
-{
+pub fn skip<I, A>(it: I, n: i64) -> Skip<I> where I: Iterator<Item = A> {
     Skip { iter: it, remaining: n }
 }
 
@@ -214,31 +192,21 @@ where
 // `<I as Iterator>::Item` is not unified with the bound projection
 // `A`. The signatures and where-bounds below are the locked surface;
 // real bodies land alongside the Q004 fix.
-
 /// Left-fold over `it`: walk every item applying `f(acc, item)` and
 /// return the accumulated value.
-pub fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B
-where
-    I: Iterator<Item = A>,
-{
+pub fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B where I: Iterator<Item = A> {
     panic("iter::fold is unimplemented pending Q004 checker fix (cannot unify `<I as Iterator>::Item` with the where-clause projection `A` in a pump-through body). See std/iter.hew terminal-helpers section.");
     init
 }
 
 /// Return the number of items produced by `it`.
-pub fn count<I, A>(it: I) -> i64
-where
-    I: Iterator<Item = A>,
-{
+pub fn count<I, A>(it: I) -> i64 where I: Iterator<Item = A> {
     panic("iter::count is unimplemented pending Q004 checker fix (cannot unify `<I as Iterator>::Item` with the where-clause projection `A` in a pump-through body). See std/iter.hew terminal-helpers section.");
     0
 }
 
 /// Collect every item produced by `it` into a `Vec<A>`.
-pub fn collect<I, A>(it: I) -> Vec<A>
-where
-    I: Iterator<Item = A>,
-{
+pub fn collect<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
     panic("iter::collect is unimplemented pending Q004 checker fix (cannot unify `<I as Iterator>::Item` with the where-clause projection `A` in a pump-through body). See std/iter.hew terminal-helpers section.");
     Vec::new()
 }
@@ -252,9 +220,6 @@ where
 // downstream while `Vec<T>: IntoIterator` is being wired; once the lazy
 // API can drive a `Vec` end-to-end, this section is retired in a single
 // subtractive commit (Stage 3+ of the iteration-foundation lane).
-
-
-
 /// Apply `f` to every element and return a new vector of results.
 ///
 /// # Examples

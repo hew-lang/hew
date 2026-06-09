@@ -4,6 +4,8 @@
 )]
 
 use fd_lock::RwLock;
+use hew_testutil::{BoundedExecError, DEFAULT_EXEC_TIMEOUT};
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -31,6 +33,22 @@ pub fn require_codegen() {
 pub fn require_wasi_runner() {
     if let Err(error) = WASI_RUNNER_STATUS.get_or_init(bootstrap_wasi_runner) {
         panic!("{error}");
+    }
+}
+
+/// Non-panicking variant of [`require_wasi_runner`].
+///
+/// Returns `false` (and emits a skip notice to stderr) when the WASI
+/// toolchain or `wasmtime` runtime is unavailable, allowing tests to
+/// early-return cleanly instead of panicking. Returns `true` when the
+/// bootstrap succeeds and the test should proceed.
+pub fn try_require_wasi_runner() -> bool {
+    match WASI_RUNNER_STATUS.get_or_init(bootstrap_wasi_runner) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("SKIP: WASI runner unavailable — {error}");
+            false
+        }
     }
 }
 
@@ -337,6 +355,44 @@ pub fn run_hew(args: &[&str]) -> Output {
         .stderr(std::process::Stdio::piped())
         .output()
         .expect("failed to spawn hew binary")
+}
+
+pub fn run_bounded_command(command: Command, label: impl Into<String>) -> Output {
+    try_run_bounded_command(command, label, DEFAULT_EXEC_TIMEOUT)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+pub fn try_run_bounded_command(
+    mut command: Command,
+    label: impl Into<String>,
+    timeout: std::time::Duration,
+) -> Result<Output, BoundedExecError> {
+    hew_testutil::run_command_bounded(&mut command, label, timeout)
+}
+
+pub fn run_bounded_command_with_stdin(
+    mut command: Command,
+    label: impl Into<String>,
+    stdin: &[u8],
+) -> Output {
+    hew_testutil::run_command_bounded_with_stdin(&mut command, label, DEFAULT_EXEC_TIMEOUT, stdin)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+pub fn run_bounded_hew_run(source: &Path, current_dir: &Path) -> Output {
+    let mut command = hew_command();
+    command.arg("run").arg(source).current_dir(current_dir);
+    run_bounded_command(command, format!("hew run {}", source.display()))
+}
+
+pub fn bounded_hew_command<I, S>(args: I, current_dir: &Path, label: impl Into<String>) -> Output
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut command = hew_command();
+    command.args(args).current_dir(current_dir);
+    run_bounded_command(command, label)
 }
 
 pub fn run_hew_in(current_dir: &Path, args: &[&str]) -> Output {

@@ -1104,6 +1104,18 @@ pub enum MethodCallRewrite {
     /// receiver type; codegen lowers it to the borrowing
     /// `hew_cancel_token_is_requested` runtime call.
     CancellationTokenIsCancelled,
+    /// Builtin `Vec<T>::into_iter()` iterator constructor. HIR expands this
+    /// directly to a `VecIter<T>` record so the Rust MIR pipeline does not need
+    /// to lower the generic stdlib impl body.
+    BuiltinVecIntoIter {
+        elem_ty: crate::resolved_ty::ResolvedTy,
+    },
+    /// Builtin `VecIter<T>::next(var self)` state advance. HIR expands this at
+    /// the call site so the caller's mutable iterator binding observes the
+    /// cursor update.
+    BuiltinVecIterNext {
+        elem_ty: crate::resolved_ty::ResolvedTy,
+    },
     /// Static trait dispatch: the method was resolved from the bounds on a
     /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
     /// resolves the concrete callee at monomorphization time.
@@ -1535,7 +1547,7 @@ pub enum TypeDefKind {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "FnSig is the canonical fn-signature record; each bool encodes \
-              a distinct cross-cutting attribute (async/pure/kwargs/mutable-receiver) \
+              a distinct cross-cutting attribute (async/kwargs/mutable-receiver) \
               that downstream passes need to query individually — collapsing into \
               an enum would force per-flag enum-variant matches at every read site"
 )]
@@ -1546,7 +1558,6 @@ pub struct FnSig {
     pub params: Vec<Ty>,
     pub return_type: Ty,
     pub is_async: bool,
-    pub is_pure: bool,
     pub accepts_kwargs: bool,
     pub doc_comment: Option<String>,
     /// Structured `#[extern_symbol("…")]` attribute attached to the
@@ -1598,11 +1609,28 @@ impl Default for FnSig {
             params: vec![],
             return_type: Ty::Unit,
             is_async: false,
-            is_pure: false,
             accepts_kwargs: false,
             doc_comment: None,
             extern_symbol: None,
             requires_mutable_receiver: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct TypeParamScope {
+    pub(super) bounds: HashMap<String, Vec<String>>,
+    pub(super) assoc_bindings: HashMap<(String, String, String), Ty>,
+}
+
+impl TypeParamScope {
+    pub(super) fn new(
+        bounds: HashMap<String, Vec<String>>,
+        assoc_bindings: HashMap<(String, String, String), Ty>,
+    ) -> Self {
+        Self {
+            bounds,
+            assoc_bindings,
         }
     }
 }
@@ -1640,6 +1668,7 @@ pub(super) struct DeferredMonomorphicSite {
 pub(super) struct DeferredBoundCheck {
     pub(super) type_param: String,
     pub(super) bounds: Vec<String>,
+    pub(super) assoc_bindings: Vec<(String, String, Ty)>,
     pub(super) type_arg: Ty,
     pub(super) span: Span,
 }
@@ -1727,6 +1756,7 @@ pub struct Checker {
     pub(super) stack_hints: Vec<StackHint>,
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
+    pub(super) fn_type_param_assoc_bindings: HashMap<String, HashMap<(String, String, String), Ty>>,
     pub(super) handle_bearing_structs: HashSet<String>,
     /// Set on every type registration; cleared once `ensure_handle_bearing_fresh`
     /// runs the fixpoint refresh. Converts O(N²) per-registration rescans to a
@@ -1766,17 +1796,18 @@ pub struct Checker {
     pub(super) registered_stdlib_hew_sources: HashSet<String>,
     pub(super) generic_ctx: Vec<HashMap<String, Ty>>,
     /// Parallel stack to `generic_ctx`: bounds declared on each generic type
-    /// parameter in the current scope (fn, impl, receive-fn). Keyed by param
-    /// name, value is the list of trait-bound names (e.g. `["Iterator"]` for
-    /// `<I: Iterator>`). Pushed/popped alongside `generic_ctx` by signature
-    /// registration; consulted by the resolver when it encounters `T::Bar`
-    /// projections to find which trait declares `Bar`.
+    /// parameter in the current scope (fn, impl, receive-fn), plus concrete
+    /// associated-type bindings from those bounds (e.g. `Item = i64` for
+    /// `<I: Iterator<Item = i64>>`). Pushed/popped alongside `generic_ctx` by
+    /// signature registration; consulted by the resolver when it encounters
+    /// `T::Bar` projections to find which trait declares `Bar` and whether a
+    /// where-clause binding should collapse the projection immediately.
     ///
     /// Why a separate stack rather than enriching `generic_ctx`: `generic_ctx`
     /// maps name → `Ty` and is consumed by many call sites that only care
     /// about substitution. Bounds are slice-2-specific. Keeping them apart
     /// avoids invalidating every existing reader.
-    pub(super) current_type_param_bounds: Vec<HashMap<String, Vec<String>>>,
+    pub(super) current_type_param_bounds: Vec<TypeParamScope>,
     /// Trait bounds declared on each machine's generic type parameters, keyed
     /// by machine name. Populated during `register_machine_decl` from
     /// `MachineDecl.type_params`. Consulted at the use site by
@@ -1913,8 +1944,6 @@ pub struct Checker {
     pub(super) current_function: Option<String>,
     /// Whether we are currently inside a for-loop binding (suppress shadowing for loop vars).
     pub(super) in_for_binding: bool,
-    /// Whether we are currently inside a `pure` function body.
-    pub(super) in_pure_function: bool,
     /// Whether we are currently inside an actor receive function body.
     /// Used to warn about blocking calls that can starve the scheduler.
     pub(super) in_receive_fn: bool,
@@ -2006,10 +2035,18 @@ pub struct Checker {
     /// enclosing `Stmt::Let` handler to populate `lambda_poly_sig_map`.
     pub(super) last_lambda_generic_sig: Option<GenericLambdaSig>,
     /// Range bounds whose element type is deferred until surrounding inference
-    /// settles. Each entry is (span, element-TypeVar, literal-value-if-any).
+    /// settles. Each entry is:
+    ///   (outer-span, element-TypeVar, literal-value-if-any, inner-operand-span-if-negated)
+    /// The fourth field carries the inner literal span when the bound is a
+    /// negated integer literal (`-5`) so `apply_deferred_range_bound_types`
+    /// can re-record the inner span too.  Without this, the inner literal's
+    /// recorded type remains `IntLiteral` → `I64` (after
+    /// `materialize_literal_defaults`), while the outer span is correctly
+    /// narrowed to the resolved type (e.g. `I32`), causing a
+    /// `UnaryOperatorUnsupportedInMir` width mismatch in HIR.
     /// Processed in `apply_deferred_range_bound_types` after all inference and
     /// literal defaulting is complete.
-    pub(super) deferred_range_bounds: Vec<(Span, TypeVar, Option<i64>)>,
+    pub(super) deferred_range_bounds: Vec<(Span, TypeVar, Option<i64>, Option<Span>)>,
     /// Intrinsic declarations seen during registration: fn name → intrinsic key.
     ///
     /// Populated in `register_fn` for functions with `#[intrinsic("key")]`.
@@ -2146,6 +2183,7 @@ impl Checker {
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            fn_type_param_assoc_bindings: HashMap::new(),
             handle_bearing_structs: HashSet::new(),
             handle_bearing_dirty: false,
             refresh_call_count: 0,
@@ -2198,7 +2236,6 @@ impl Checker {
             call_graph: HashMap::new(),
             current_function: None,
             in_for_binding: false,
-            in_pure_function: false,
             in_receive_fn: false,
             in_actor_handler_context: false,
             in_unsafe: false,

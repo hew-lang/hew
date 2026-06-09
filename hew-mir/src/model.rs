@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use hew_hir::{BindingId, IntentKind, ItemId, SiteId, ValueClass};
+use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
 use hew_types::{NumericWidth, ResolvedTy};
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
@@ -358,36 +358,6 @@ pub struct DynVtableInstance {
     pub vtable_entries: Vec<hew_types::DynVtableEntry>,
 }
 
-/// Sanitize a free-form name (trait names like `Trait1+Trait2`,
-/// concrete-type names like `Vec<i32, String>`) into the subset that
-/// is legal everywhere a vtable / thunk / drop symbol is referenced
-/// (LLVM IR identifiers, ELF/Mach-O symbol tables, debugger maps).
-///
-/// Replaces any character outside `[A-Za-z0-9_]` with `_`. The
-/// result is deterministic per `(input)` and stable across builds
-/// of the same module.
-///
-/// **Collision avoidance.** Two distinct trait or concrete names that
-/// sanitise to the same string (e.g. `A+B` and `A_B`) would alias at
-/// the symbol layer. The `vtable_id` suffix on every symbol family
-/// (see [`mangle_dyn_vtable_symbol`], [`mangle_dyn_thunk_symbol`],
-/// [`mangle_dyn_drop_in_place_symbol`]) is what makes the final name
-/// unique — the trait/concrete substrings are diagnostic
-/// disambiguators that keep `nm` / debugger output legible, not the
-/// primary uniqueness mechanism.
-#[must_use]
-pub fn sanitize_for_symbol(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 /// Stable LLVM symbol name for the vtable static identified by
 /// `vtable_id`. Producer (`build_dyn_vtable_registry`) and consumer
 /// (codegen, later stages) both call this helper so neither side
@@ -528,7 +498,7 @@ pub enum MirConstValue {
 /// `const`, in declaration order, with `const_id` as the 0-based index into
 /// the const-descriptor table (the codegen global-slot index). `item_id` ties
 /// the descriptor back to the `ResolvedRef::Const(item_id)` that const
-/// references carry, so the codegen global-load seam (a later slice) resolves
+/// references carry; the codegen global-load seam (wired in a4656a25) resolves
 /// a reference to its slot without re-reading HIR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MirConst {
@@ -2143,6 +2113,18 @@ pub enum Instr {
     CancellationTokenIsCancelled { dest: Place, token: Place },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
+    /// Explicit checker-admitted numeric `as` cast.
+    ///
+    /// `from_ty` and `to_ty` are carried from HIR so codegen can choose the
+    /// correct truncation, extension, signed/unsigned int-float conversion, or
+    /// bool/integer canonicalization without re-deriving semantics from LLVM
+    /// storage widths alone.
+    NumericCast {
+        dest: Place,
+        src: Place,
+        from_ty: ResolvedTy,
+        to_ty: ResolvedTy,
+    },
     /// Call into a `hew_*` runtime-ABI entry by name. The carried
     /// `symbol` names a `#[no_mangle] extern "C" fn` exported by
     /// `hew-runtime/` (the M2 substrate set is listed in

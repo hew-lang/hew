@@ -249,6 +249,7 @@ fn emit_module(
     module_name: &str,
     emit_dir: &Path,
     emit_target: CompileEmitTarget,
+    link_freestanding_wasm: bool,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     let options = hew_codegen_rs::EmitOptions {
         module_name,
@@ -256,19 +257,15 @@ fn emit_module(
         native: emit_target == CompileEmitTarget::Native,
         wasm: emit_target == CompileEmitTarget::Wasm,
     };
-    match hew_codegen_rs::emit_module(pipeline, &options) {
+    let result = if emit_target == CompileEmitTarget::Wasm && !link_freestanding_wasm {
+        hew_codegen_rs::emit_module_objects(pipeline, &options)
+    } else {
+        hew_codegen_rs::emit_module(pipeline, &options)
+    };
+    match result {
         Ok(artefacts) => Ok(artefacts),
-        Err(hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { symbol }) => {
-            // WASM-TODO(#1451): hew_duplex_* symbols are excluded from wasm32
-            // builds via `hew-runtime/src/duplex.rs:54`. Surface a structured
-            // diagnostic so the user knows to omit the WASM target instead of
-            // seeing a raw `wasm-ld: undefined symbol` linker error.
-            eprintln!(
-                "error: WASM target does not support the duplex concurrency \
-                 substrate (symbol: {symbol}; WASM-TODO(#1451))\n\
-                 hint: remove `--target wasm32-unknown-unknown` to emit a \
-                 native binary instead"
-            );
+        Err(e @ hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. }) => {
+            eprintln!("error: {e}");
             Err(())
         }
         Err(e) => {
@@ -300,7 +297,13 @@ pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(),
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("module");
-    let artefacts = emit_module(&pipeline, module_name, emit_dir, CompileEmitTarget::Native)?;
+    let artefacts = emit_module(
+        &pipeline,
+        module_name,
+        emit_dir,
+        CompileEmitTarget::Native,
+        true,
+    )?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
     })?;
@@ -391,7 +394,7 @@ pub(crate) fn compile_native_from_program(
         }
         CompileEmitTarget::Native
     };
-    let artefacts = emit_module(&pipeline, module_name, emit_dir, emit_target)?;
+    let artefacts = emit_module(&pipeline, module_name, emit_dir, emit_target, false)?;
 
     match emit_target {
         CompileEmitTarget::Native => {
@@ -401,12 +404,18 @@ pub(crate) fn compile_native_from_program(
             link_native_object(obj, output_path)
         }
         CompileEmitTarget::Wasm => {
-            if artefacts.wasm_path.is_some() {
-                Ok(())
-            } else {
-                eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce a module");
-                Err(())
-            }
+            let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
+                eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce an object");
+            })?;
+            let obj_str = obj.to_str().ok_or_else(|| {
+                eprintln!("Error: WASM object path is not valid UTF-8");
+            })?;
+            let output_str = output_path.to_str().ok_or_else(|| {
+                eprintln!("Error: WASM output path is not valid UTF-8");
+            })?;
+            crate::link::link_executable(obj_str, output_str, &target, &[], false).map_err(|e| {
+                eprintln!("{e}");
+            })
         }
     }
 }
@@ -458,8 +467,8 @@ fn cmd_compile(a: &args::CompileArgs) {
         .unwrap_or("module");
 
     let emit_target = resolve_compile_emit_target(a.target.as_deref());
-    let artefacts =
-        emit_module(&pipeline, module_name, emit_dir, emit_target).unwrap_or_else(|()| {
+    let artefacts = emit_module(&pipeline, module_name, emit_dir, emit_target, true)
+        .unwrap_or_else(|()| {
             std::process::exit(1);
         });
 

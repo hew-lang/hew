@@ -18,7 +18,7 @@ actor Counter {
     }
 }
 
-fn drain_batch(counter: ActorRef<Counter>, remaining: i64) -> i64 {
+fn drain_batch(counter: LocalPid<Counter>, remaining: i64) -> i64 {
     if remaining <= 1 {
         await counter.increment()
     } else {
@@ -40,7 +40,6 @@ fn main() {
         let expected_count = (batch_index + 1) * 10;
         if batch_count != expected_count {
             println(f"FAIL: expected {expected_count} messages after batch {batch_index + 1}, got {batch_count}");
-            stop(c);
             return;
         }
     }
@@ -50,5 +49,4 @@ fn main() {
     } else {
         println(f"FAIL: expected 1000 messages, got {final_count}");
     }
-    stop(c);
 }

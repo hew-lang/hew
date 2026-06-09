@@ -52,6 +52,7 @@ members = [
   "hew-mir",
   "hew-codegen-rs",
   "hew-capability-gen",
+  "hew-testutil",
   "xtask",
 ]
 exclude = ["hew-parser/fuzz"]

@@ -21,7 +21,7 @@ actor Logger {
 
 actor Monitor {
     let readings: Vec<i32>;
-    let logger: ActorRef<Logger>;
+    let logger: LocalPid<Logger>;
     let threshold: i32;
     receive fn reading(sensor_id: string, temp: i32) {
         readings.push(temp);
@@ -41,7 +41,7 @@ actor Monitor {
 
 actor Sensor {
     let sensor_id: string;
-    let monitor: ActorRef<Monitor>;
+    let monitor: LocalPid<Monitor>;
     let base_temp: i32;
     receive fn tick(cycle: i32) {
 

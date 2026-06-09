@@ -9,7 +9,6 @@ mod profile;
 
 use bytecode::{Block, Capability, Instruction, Local, Operand, StdlibSymbol, Terminator};
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::prelude::*;
 
 pub use bytecode::SandboxBytecodePackage;
 pub use profile::{canonical_profile, DEFAULT_PROFILE_ALIAS, DEFAULT_PROFILE_CANONICAL};
@@ -162,29 +161,6 @@ pub fn compile_to_sandbox_bytecode(
         diagnostics,
         bytecode: Some(bytecode),
     })
-}
-
-/// WASM-bindgen JSON entry point for browser callers.
-///
-/// JavaScript name: `compileToSandboxBytecode(source, profile)`.
-///
-/// # Errors
-///
-/// Throws only when the Rust result cannot be serialized to JSON or an internal
-/// emitter invariant fails.
-#[wasm_bindgen(js_name = compileToSandboxBytecode)]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "wasm-bindgen optional string arguments are owned at the ABI boundary"
-)]
-pub fn compile_to_sandbox_bytecode_json(
-    source: &str,
-    profile: Option<String>,
-) -> Result<String, JsValue> {
-    let output = compile_to_sandbox_bytecode(source, profile.as_deref())
-        .map_err(|err| JsValue::from_str(&err.message))?;
-    serde_json::to_string(&output)
-        .map_err(|err| JsValue::from_str(&format!("serialize compile output: {err}")))
 }
 
 fn has_error_diagnostics(diagnostics: &[Diagnostic]) -> bool {

@@ -285,7 +285,6 @@ fn parse_errors_fail_the_suite() {
 }
 
 #[test]
-#[ignore = "v0.5 native codegen lacks a supported infinite-loop fixture for this timeout assertion"]
 fn timeout_exit_code_is_non_zero() {
     require_codegen();
 

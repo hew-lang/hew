@@ -21,6 +21,7 @@ hew-types = { path = "../hew-types" }
 inkwell = { version = "0.9", features = ["llvm22-1"] }
 
 [dev-dependencies]
+hew-testutil = { path = "../hew-testutil" }
 hew-runtime = { path = "../hew-runtime", default-features = false }
 hew-parser = { path = "../hew-parser" }
 # Required by jit_trap_bridge.rs: libc::c_int for the sigsetjmp/siglongjmp FFI

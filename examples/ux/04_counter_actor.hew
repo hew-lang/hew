@@ -13,5 +13,6 @@ fn main() {
     let counter = spawn Counter(count: 0);
     counter.increment(5);
     counter.increment(10);
-    println(await counter.get_count());
+    let count = counter.get_count();
+    println(count);
 }

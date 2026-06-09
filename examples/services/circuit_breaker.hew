@@ -42,7 +42,7 @@ actor Backend {
 //   1 = Open     (rejecting all calls)
 //   2 = HalfOpen (allowing one probe)
 actor CircuitBreaker {
-    let backend: ActorRef<Backend>;
+    let backend: LocalPid<Backend>;
     let state: i64; // 0=Closed, 1=Open, 2=HalfOpen
     let failure_count: i64;
     let max_failures: i64; // trip threshold

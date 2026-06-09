@@ -341,7 +341,10 @@ fn mixed_dep_warning_remains_attributed_to_dep_before_deep_gate_failure() {
 
 #[test]
 fn root_hir_diagnostic_rendered_with_source_context() {
-    let fixture = write_fixture(&[("main.hew", "const ANSWER: i64 = 42;\nfn main() {}\n")]);
+    let fixture = write_fixture(&[(
+        "main.hew",
+        "fn main() -> i64 {\n    let x = 1;\n    match x { y => y }\n}\n",
+    )]);
     let main_path = fixture.path().join("main.hew");
 
     let output = Command::new(hew_binary())
@@ -357,11 +360,11 @@ fn root_hir_diagnostic_rendered_with_source_context() {
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        stderr.contains("main.hew:1:1: error: E_NOT_YET_IMPLEMENTED"),
+        stderr.contains("main.hew:3:15: error: E_NOT_YET_IMPLEMENTED"),
         "root HIR diagnostic must include file:line:col; got:\n{stderr}"
     );
     assert!(
-        stderr.contains("const ANSWER: i64 = 42;"),
+        stderr.contains("match x { y => y }"),
         "root HIR diagnostic must render source excerpt; got:\n{stderr}"
     );
     assert!(

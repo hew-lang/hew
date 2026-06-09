@@ -777,7 +777,6 @@ pub struct FnDecl {
     pub is_generator: bool,
     #[serde(default)]
     pub visibility: Visibility,
-    pub is_pure: bool,
     pub name: String,
     pub type_params: Option<Vec<TypeParam>>,
     pub params: Vec<Param>,
@@ -1068,7 +1067,6 @@ pub enum TraitItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitMethod {
     pub name: String,
-    pub is_pure: bool,
     pub type_params: Option<Vec<TypeParam>>,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
@@ -1356,7 +1354,6 @@ pub struct FieldDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReceiveFnDecl {
     pub is_generator: bool,
-    pub is_pure: bool,
     pub name: String,
     pub type_params: Option<Vec<TypeParam>>,
     pub params: Vec<Param>,

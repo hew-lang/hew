@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::Duration;
 
+const HEW_WASI_TRAP_EXIT_PREFIX: &str = "__hew_wasi_trap_exit_code=";
+
 pub(crate) enum WasiRunOutcome {
     Exited(ExitStatus),
     Timeout,
@@ -94,13 +96,40 @@ pub(crate) fn run_module_captured(
             stdout,
             stderr,
             exit_code,
-        } => Ok(WasiCapturedOutcome::Failed {
-            stdout: stdout.replace("\r\n", "\n"),
-            stderr,
-            exit_code,
-        }),
+        } => {
+            let (trap_exit_code, stderr) = extract_hew_wasi_trap_exit(&stderr);
+            Ok(WasiCapturedOutcome::Failed {
+                stdout: stdout.replace("\r\n", "\n"),
+                stderr,
+                exit_code: trap_exit_code.unwrap_or(exit_code),
+            })
+        }
         crate::process::BinaryRunOutcome::Timeout => Ok(WasiCapturedOutcome::Timeout),
     }
+}
+
+fn extract_hew_wasi_trap_exit(stderr: &str) -> (Option<i32>, String) {
+    let mut trap_exit_code = None;
+    let mut filtered = String::new();
+
+    let normalized = stderr.replace("\r\n", "\n");
+    for line_with_terminator in normalized.split_inclusive('\n') {
+        let line = line_with_terminator
+            .strip_suffix('\n')
+            .unwrap_or(line_with_terminator);
+        if trap_exit_code.is_none() {
+            if let Some(raw_code) = line.strip_prefix(HEW_WASI_TRAP_EXIT_PREFIX) {
+                if let Ok(code) = raw_code.parse::<i32>() {
+                    trap_exit_code = Some(code);
+                    continue;
+                }
+            }
+        }
+
+        filtered.push_str(line_with_terminator);
+    }
+
+    (trap_exit_code, filtered)
 }
 
 /// Returns the path to `wasmtime` if it is available, using the same lookup
@@ -129,4 +158,26 @@ fn tool_available(name: &str) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trap_exit_sentinel_overrides_transport_exit_code_and_is_filtered() {
+        let (code, stderr) =
+            extract_hew_wasi_trap_exit("__hew_wasi_trap_exit_code=201\nruntime detail\n");
+
+        assert_eq!(code, Some(201));
+        assert_eq!(stderr, "runtime detail\n");
+    }
+
+    #[test]
+    fn invalid_trap_exit_sentinel_is_preserved() {
+        let (code, stderr) = extract_hew_wasi_trap_exit("__hew_wasi_trap_exit_code=nope\n");
+
+        assert_eq!(code, None);
+        assert_eq!(stderr, "__hew_wasi_trap_exit_code=nope\n");
+    }
 }

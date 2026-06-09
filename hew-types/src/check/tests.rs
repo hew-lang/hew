@@ -20831,6 +20831,37 @@ mod assoc_types_slice2 {
         }
     }
 
+    /// The Windows-ABI-shim supervisor helpers (`hew_supervisor_child_get_raw`
+    /// and `hew_supervisor_nested_get_raw`) are compiler-emitted only — the
+    /// codegen translates MIR `hew_supervisor_child_get` / `_nested_get` calls
+    /// into these `_raw` variants to avoid the Windows x64 MSVC sret ABI
+    /// mismatch.  Both must live in `codegen-stable` so that user `extern "rt"`
+    /// declarations are rejected by the checker.
+    #[test]
+    fn extern_rt_supervisor_raw_shims_rejected() {
+        for sym in [
+            "hew_supervisor_child_get_raw",
+            "hew_supervisor_nested_get_raw",
+        ] {
+            let extern_item = make_extern_rt_block(&[sym]);
+            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+            let output = checker.check_program(&Program {
+                items: vec![(extern_item, 0..60)],
+                module_doc: None,
+                module_graph: None,
+            });
+            assert!(
+                output.errors.iter().any(|e| matches!(&e.kind,
+                    TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                    if symbol_name == sym
+                )),
+                "codegen-stable shim {sym} must be rejected in extern \"rt\"; \
+                 got: {:?}",
+                output.errors
+            );
+        }
+    }
+
     /// `extern "C"` blocks with any symbol name must NOT be validated against
     /// the stable list — that is raw user FFI surface.
     #[test]

@@ -880,6 +880,8 @@ codegen-stable = [
   "hew_ser_push_string",
   "hew_ser_push_u64",
   "hew_ser_push_unit",
+  "hew_supervisor_child_get_raw",
+  "hew_supervisor_nested_get_raw",
   "hew_task_scope_set_current",
   "hew_wasm_register_actor_meta",
   "hew_xnode_register_codec",

@@ -75,7 +75,9 @@ fn target_dir(repo: &Path) -> PathBuf {
 }
 
 fn hew_bin(repo: &Path) -> PathBuf {
-    target_dir(repo).join("debug").join("hew")
+    target_dir(repo)
+        .join("debug")
+        .join(format!("hew{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn hew_command(repo: &Path) -> Command {
@@ -95,7 +97,9 @@ fn hew_command(repo: &Path) -> Command {
 fn ensure_hew_runtime_lib(repo: &Path) {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let lib = target_dir(repo).join("debug").join("libhew.a");
+        // On Windows MSVC the static library is hew.lib; on Unix it is libhew.a.
+        let lib_name = if cfg!(windows) { "hew.lib" } else { "libhew.a" };
+        let lib = target_dir(repo).join("debug").join(lib_name);
         if lib.exists() {
             return;
         }
@@ -259,8 +263,6 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
     }
 }
 
-// WINDOWS-TODO: machine programs hang at startup on Windows; suspected timer/reactor issue.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn run_machine_fixtures_execute_with_expected_stdout() {
     let repo = repo_root();
@@ -290,8 +292,6 @@ fn run_machine_fixtures_execute_with_expected_stdout() {
     }
 }
 
-// WINDOWS-TODO: machine programs hang at startup on Windows; suspected timer/reactor issue.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn counter_machine_example_executes_self_field_increment() {
     let repo = repo_root();

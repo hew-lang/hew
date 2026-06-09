@@ -26,7 +26,9 @@ fn target_dir(repo: &Path) -> PathBuf {
 }
 
 fn hew_command(repo: &Path) -> Command {
-    let bin = target_dir(repo).join("debug").join("hew");
+    let bin = target_dir(repo)
+        .join("debug")
+        .join(format!("hew{}", std::env::consts::EXE_SUFFIX));
     if bin.exists() {
         return Command::new(bin);
     }
@@ -42,7 +44,9 @@ fn hew_command(repo: &Path) -> Command {
 fn ensure_hew_runtime_lib(repo: &Path) {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let lib = target_dir(repo).join("debug").join("libhew.a");
+        // On Windows MSVC the static library is hew.lib; on Unix it is libhew.a.
+        let lib_name = if cfg!(windows) { "hew.lib" } else { "libhew.a" };
+        let lib = target_dir(repo).join("debug").join(lib_name);
         if lib.exists() {
             return;
         }
@@ -60,8 +64,6 @@ fn ensure_hew_runtime_lib(repo: &Path) {
     });
 }
 
-// WINDOWS-TODO: machine programs hang at startup on Windows; suspected timer/reactor issue.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn run_lifecycle_fixture_compiles_and_matches_expected_stdout() {
     let repo = repo_root();

@@ -1978,6 +1978,15 @@ fn intern_runtime_decl<'ctx>(
             let result_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into()], false);
             result_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false)
         }
+        // hew_supervisor_child_get_raw(sup: *mut HewSupervisor, key: u32,
+        //     handle_out: *mut u64) -> u64
+        // (`hew-runtime/src/supervisor.rs`). Decomposed variant that avoids
+        // the Windows x64 MSVC sret ABI mismatch: returns word0 (tag in
+        // bits[7:0], reason in bits[15:8]) as a plain `u64`; writes the actor
+        // handle to `*handle_out`.  Used by codegen on all platforms.
+        "hew_supervisor_child_get_raw" | "hew_supervisor_nested_get_raw" => {
+            i64_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false)
+        }
         // hew_task_new() -> *mut HewTask
         // (`hew-runtime/src/task_scope.rs:214`). Box-allocates a HewTask
         // in the Ready state. Producer calls this to obtain a task handle
@@ -18922,17 +18931,19 @@ fn lower_call_runtime_abi(
         //   args[1]: Place::Local(M)       — i64 slot index (ConstI64 from MIR).
         //   dest:    Place::Local(K)       — __HewChildLookupResult (struct alloca).
         //
-        // ABI bridge:
-        //   The runtime returns `{ i8, i8, [6 x i8], ptr }` by value (SysV
-        //   amd64: two-register return, rdx:rax, 16 bytes total).  The MIR
-        //   dest alloca is typed `{ i64, i64 }` (MIR's 2-field flattening of
-        //   the C struct — see `CHILD_LOOKUP_RESULT_TY_NAME` in lower.rs:394).
-        //   This arm bridges the two shapes:
-        //     field 0 (i8 tag)    → zext to i64 → store into dest struct field 0
-        //     field 3 (ptr handle)→ ptrtoint i64 → store into dest struct field 1
-        //   Fields 1 (reason u8) and 2 ([6 x i8] padding) are discarded; the
-        //   MIR branch-on-tag + Trap(SupervisorChildUnavailable) makes
-        //   per-reason discrimination unnecessary at this layer.
+        // ABI bridge — WHY we call `hew_supervisor_child_get_raw` here:
+        //   On Windows x64 (MSVC ABI), Rust returns `ChildLookupResult` (16 bytes)
+        //   via a hidden sret pointer in RCX.  The previous codegen emitted a
+        //   register-return call site (`call { i64, i64 } @hew_supervisor_child_get`)
+        //   which LLVM lowers to RAX:RDX return — mismatching the Rust callee that
+        //   wrote the result to [RCX=sup] and returned the buffer address in RAX.
+        //   Result: the supervisor struct was silently corrupted and the caller read
+        //   a heap address as the tag word → trap 206 or stale null handle → AV.
+        //
+        //   Fix: call `hew_supervisor_child_get_raw(sup, key, &handle_out)` which
+        //   returns the packed word0 (tag in bits[7:0]) as a plain `u64` — single
+        //   register, no sret on any platform.  The handle is written through an
+        //   output pointer (also no ABI ambiguity).
         //
         //   `key` is `u32` in the runtime (i32 in LLVM); MIR emits i64 for the
         //   slot index (ConstI64). Truncate to i32 before the call.
@@ -18965,37 +18976,38 @@ fn lower_call_runtime_abi(
                 .build_int_truncate(key_i64, i32_ty, "supervisor_child_get key_i32")
                 .llvm_ctx("supervisor_child_get key truncate")?;
 
-            // Call hew_supervisor_child_get — returns { i8, i8, [6 x i8], ptr }.
+            // Alloca a u64 to receive the actor handle from the raw variant.
+            let handle_out = fn_ctx
+                .builder
+                .build_alloca(i64_ty, "child_handle_out")
+                .llvm_ctx("supervisor_child_get handle_out alloca")?;
+
+            // Call hew_supervisor_child_get_raw — returns word0 (tag in low byte)
+            // as i64; writes handle to *handle_out.  Platform-agnostic: no sret.
             let fv = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
                 &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
+                "hew_supervisor_child_get_raw",
             )?;
-            let llvm_args: [BasicMetadataValueEnum; 2] = [sup_ptr.into(), key_i32.into()];
+            let llvm_args: [BasicMetadataValueEnum; 3] =
+                [sup_ptr.into(), key_i32.into(), handle_out.into()];
             let call_site = fn_ctx
                 .builder
-                .build_call(fv, &llvm_args, "hew_supervisor_child_get_call")
-                .llvm_ctx("hew_supervisor_child_get call")?;
-            let struct_val = call_site
+                .build_call(fv, &llvm_args, "hew_supervisor_child_get_raw_call")
+                .llvm_ctx("hew_supervisor_child_get_raw call")?;
+            let word0_i64 = call_site
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
                     CodegenError::FailClosed(
-                        "hew_supervisor_child_get returned void unexpectedly".into(),
+                        "hew_supervisor_child_get_raw returned void unexpectedly".into(),
                     )
                 })?
-                .into_struct_value();
-
-            // Return type is `{ i64, i64 }` (aarch64 reg-return ABI).
-            // Field 0: packed word — tag lives in the low byte; truncate to i8,
-            //          then zext to i64 for the dest alloca's i64-typed slot.
-            // Field 1: handle integer — already i64; use directly.
-            let word0_i64 = fn_ctx
-                .builder
-                .build_extract_value(struct_val, 0, "child_word0_i64")
-                .llvm_ctx("extractvalue word0")?
                 .into_int_value();
+
+            // word0: packed (tag: u8, reason: u8, _pad: [u8; 6]) — tag in low byte.
+            // Truncate to i8 then zext to i64 for the dest alloca's i64-typed slot.
             let tag_i8 = fn_ctx
                 .builder
                 .build_int_truncate(word0_i64, fn_ctx.ctx.i8_type(), "child_tag_i8")
@@ -19005,11 +19017,11 @@ fn lower_call_runtime_abi(
                 .build_int_z_extend(tag_i8, i64_ty, "child_tag_i64")
                 .llvm_ctx("zext tag")?;
 
-            // field 1: handle integer — already i64.
+            // Load handle from the output pointer alloca.
             let handle_i64 = fn_ctx
                 .builder
-                .build_extract_value(struct_val, 1, "child_handle_i64")
-                .llvm_ctx("extractvalue handle")?
+                .build_load(i64_ty, handle_out, "child_handle_i64")
+                .llvm_ctx("load child handle")?
                 .into_int_value();
 
             // The dest alloca has struct type { i64, i64 } (the MIR 2-field

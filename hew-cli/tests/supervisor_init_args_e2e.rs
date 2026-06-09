@@ -18,8 +18,6 @@ fn write_fixture(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 /// Green condition: exit 0 AND stdout contains "worker id=7".
 /// A zero output (worker id=0) would mean the state template was not seeded,
 /// which is the exact bug this feature fixes.
-// WINDOWS-TODO: supervisor programs exit non-zero with no output on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn supervisor_child_init_args_seed_actor_state() {
     require_codegen();
@@ -75,8 +73,6 @@ fn main() {
 /// reversed (`b: 99, a: 7`) — to confirm neither clobbers the other.
 ///
 /// Green condition: both runs exit 0 AND stdout contains "a=7 b=99".
-// WINDOWS-TODO: supervisor programs exit non-zero with no output on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn supervisor_child_i32_fields_reversed_arg_order() {
     require_codegen();
@@ -150,8 +146,6 @@ fn main() {
 /// width-exact as well.
 ///
 /// Green condition: exit 0 AND stdout contains "x=42 y=1234567890123 z=true".
-// WINDOWS-TODO: supervisor programs exit non-zero with no output on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn supervisor_child_mixed_width_fields_reversed_arg_order() {
     require_codegen();
@@ -264,8 +258,6 @@ fn main() {
 /// fields, leaving defaulted fields unwritten in the state template alloca.
 ///
 /// Green condition: exit 0 AND stdout contains "a=7 b=100".
-// WINDOWS-TODO: supervisor programs exit non-zero with no output on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn supervisor_child_declared_default_fills_omitted_field() {
     require_codegen();
@@ -314,8 +306,6 @@ fn main() {
 /// fields with defaults, must receive all default values at runtime.
 ///
 /// Green condition: exit 0 AND stdout contains "x=5 y=9".
-// WINDOWS-TODO: supervisor programs exit non-zero with no output on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn supervisor_child_all_declared_defaults_no_explicit_args() {
     require_codegen();
@@ -365,8 +355,6 @@ fn main() {
 ///
 /// Green condition: exit 0 AND stdout contains "a=1 b=50".
 /// (a=1 from the declared default; b=50 from the explicit override of b=100)
-// WINDOWS-TODO: supervisor programs exit non-zero with no output on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn supervisor_child_explicit_arg_overrides_declared_default() {
     require_codegen();
@@ -469,8 +457,6 @@ fn main() {
 ///
 /// Green condition: exit 0 AND stdout contains "a=42 b=99".
 /// (a=42 from the declared i32 default; b=99 from the explicit i32 arg)
-// WINDOWS-TODO: supervisor programs exit non-zero with no output on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn supervisor_child_i32_field_with_declared_default() {
     require_codegen();

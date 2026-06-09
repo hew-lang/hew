@@ -4,13 +4,20 @@
 //! supervisor source program that accesses a static child field, then
 //! asserts on the emitted textual LLVM IR that:
 //!
-//! - `@hew_supervisor_child_get` is declared with the correct ABI:
-//!   `{ i64, i64 } (ptr, i32)` — the aarch64 reg-return shape.
-//! - A call to `@hew_supervisor_child_get` is present in the emitted
+//! - `@hew_supervisor_child_get_raw` is declared with the platform-portable
+//!   ABI: `i64 (ptr, i32, ptr)` — returns word0 (tag in low byte) as a plain
+//!   u64; writes the handle to a caller-supplied output pointer.
+//! - A call to `@hew_supervisor_child_get_raw` is present in the emitted
 //!   `get_worker` function body.
 //! - The WASM classification guard (`uses_wasm_excluded_symbol`) correctly
 //!   marks `hew_supervisor_child_get` as a WASM-excluded symbol when it
 //!   appears in the MIR.
+//!
+//! WHY `_raw`: on Windows x64 (MSVC ABI) Rust returns `ChildLookupResult`
+//! (16 bytes) via a hidden sret pointer — but the previous codegen emitted a
+//! register-return call site, causing the callee to corrupt the supervisor
+//! struct and return a stale heap address as the tag word.  `_raw` returns a
+//! plain `u64` which has no sret ambiguity on any platform.
 //!
 //! LESSONS applied:
 //! - `boundary-fail-closed` (P0): `intern_runtime_decl` must not silently
@@ -91,40 +98,39 @@ fn emit_child_access_ir(slug: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
-/// The emitted IR must declare `@hew_supervisor_child_get` with the correct
-/// LLVM type: returns `{ i64, i64 }`, takes `(ptr, i32)`.
+/// The emitted IR must declare `@hew_supervisor_child_get_raw` with the
+/// platform-portable ABI: returns `i64` (word0: tag in low byte), takes
+/// `(ptr sup, i32 key, ptr handle_out)`.
 ///
-/// ABI cross-check:
-///   Runtime:  `hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32) -> ChildLookupResult`
-///   Rust emits: `define [2 x i64] @hew_supervisor_child_get(...)` (aarch64 SysV/AAPCS
-///   reg-return: structs ≤ 16 bytes returned in x0:x1, not via sret pointer).
-///   LLVM decl:  `{ i64, i64 } (ptr, i32)` — matches the reg-return aggregate shape.
-///   Field 0: packed word (tag in low byte); field 1: handle integer.
+/// ABI rationale:
+///   Rust emits `define void @hew_supervisor_child_get(ptr sret([16 x i8]), ptr, i32)`
+///   on Windows x64 (MSVC ABI) — a hidden return pointer.  The _raw variant
+///   returns a plain `u64` (no sret on any platform) and writes the handle
+///   through an output pointer, sidestepping the mismatch entirely.
 #[test]
 fn supervisor_child_get_declares_correct_abi() {
     let ir = emit_child_access_ir("declares-abi");
-    // The declaration must be present in the emitted IR.
+    // The raw declaration must be present in the emitted IR.
     assert!(
-        ir.contains("@hew_supervisor_child_get"),
-        "expected @hew_supervisor_child_get declaration in emitted IR;\ngot:\n{ir}"
+        ir.contains("@hew_supervisor_child_get_raw"),
+        "expected @hew_supervisor_child_get_raw declaration in emitted IR;\ngot:\n{ir}"
     );
-    // The return type must be the { i64, i64 } reg-return aggregate.
-    // LLVM textual IR writes the type inline in the declaration:
-    //   declare { i64, i64 } @hew_supervisor_child_get(ptr, i32)
+    // Signature: i64 (ptr, i32, ptr) — single-register return, output pointer.
     assert!(
-        ir.contains("{ i64, i64 } @hew_supervisor_child_get"),
-        "expected return type `{{ i64, i64 }}` in hew_supervisor_child_get declaration;\ngot:\n{ir}"
+        ir.contains("i64 @hew_supervisor_child_get_raw(ptr, i32, ptr)"),
+        "expected `i64 @hew_supervisor_child_get_raw(ptr, i32, ptr)` in declaration;\ngot:\n{ir}"
     );
 }
 
-/// A call to `@hew_supervisor_child_get` must appear in the body of the
-/// compiled `get_worker` function.
+/// A call to `@hew_supervisor_child_get_raw` must appear in the body of the
+/// compiled `get_worker` function — the codegen translates the MIR symbol
+/// `hew_supervisor_child_get` into a call to the raw variant internally.
 #[test]
 fn supervisor_child_get_call_emitted_in_function_body() {
     let ir = emit_child_access_ir("call-in-body");
     assert!(
-        ir.contains("@hew_supervisor_child_get("),
-        "expected a call to @hew_supervisor_child_get in emitted IR;\ngot:\n{ir}"
+        ir.contains("@hew_supervisor_child_get_raw("),
+        "expected a call to @hew_supervisor_child_get_raw in emitted IR;\ngot:\n{ir}"
     );
 }
 

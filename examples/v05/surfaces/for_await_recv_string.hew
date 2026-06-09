@@ -1,0 +1,23 @@
+//! Status: runnable (v0.5 for-await over Receiver<string>)
+//! Description: Drains a channel receiver with `for await`.
+
+import std::channel::channel;
+
+actor DrainStrings {
+    receive fn run(unused: i64) {
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+        tx.send("a");
+        tx.send("b");
+        tx.send("c");
+        tx.close();
+        for await item in rx {
+            println(item);
+        }
+    }
+}
+
+fn main() {
+    let worker = spawn DrainStrings;
+    worker.run(0);
+    sleep_ms(500);
+}

@@ -899,6 +899,14 @@ impl Checker {
                                     &iterable.1,
                                 ) {
                                     Some(validated_inner) => {
+                                        // Stream runtime is native-only in v0.5. Method-call
+                                        // `.recv()` already rejects on wasm; `for await` must
+                                        // mirror that checker gate before HIR desugars it.
+                                        // WASM-TODO(#1451): port stream suspend substrate.
+                                        self.reject_wasm_feature(
+                                            &iterable.1,
+                                            WasmUnsupportedFeature::Streams,
+                                        );
                                         let resolved = self.subst.resolve(&validated_inner);
                                         if Self::runtime_stream_element_name(&resolved).is_none() {
                                             self.report_error(

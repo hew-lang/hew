@@ -1,0 +1,23 @@
+//! Status: runnable (v0.5 for-await over Receiver<i64>)
+//! Description: Drains an integer channel receiver with `for await`.
+
+import std::channel::channel;
+
+actor DrainInts {
+    receive fn run(unused: i64) {
+        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);
+        tx.send(1);
+        tx.send(2);
+        tx.send(3);
+        tx.close();
+        for await item in rx {
+            println(item);
+        }
+    }
+}
+
+fn main() {
+    let worker = spawn DrainInts;
+    worker.run(0);
+    sleep_ms(500);
+}

@@ -1,7 +1,7 @@
 mod support;
 
 use std::io::{BufRead, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -34,6 +34,125 @@ fn assert_no_monomorphic_overload_error(stderr: &str) {
     assert!(
         !stderr.contains("no registered monomorphic overload"),
         "stderr still contains the old auto-print overload error: {stderr}"
+    );
+}
+
+fn surface_fixture(name: &str) -> PathBuf {
+    repo_root()
+        .join("examples")
+        .join("v05")
+        .join("surfaces")
+        .join(name)
+}
+
+fn run_for_await_surface_fixture(name: &str) {
+    require_codegen();
+
+    let source = surface_fixture(&format!("{name}.hew"));
+    let expected = std::fs::read_to_string(surface_fixture(&format!("{name}.expected")))
+        .expect("for-await fixture expected stdout should be readable");
+    assert!(
+        source.is_file(),
+        "for-await fixture missing: {}",
+        source.display()
+    );
+
+    let mut command = Command::new(hew_binary());
+    command
+        .arg("run")
+        .arg(&source)
+        .current_dir(repo_root())
+        .env("HEW_WORKERS", "1");
+    let output = support::run_bounded_command(
+        command,
+        format!("hew run {} (HEW_WORKERS=1)", source.display()),
+    );
+
+    assert!(
+        output.status.success(),
+        "for-await fixture {name} should exit 0; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        expected,
+        "for-await fixture {name} produced unexpected stdout",
+    );
+}
+
+fn for_await_mir_checked_dump(name: &str) -> String {
+    require_codegen();
+
+    let source = surface_fixture(&format!("{name}.hew"));
+    let mut command = Command::new(hew_binary());
+    command
+        .args(["compile", "--dump-mir", "checked"])
+        .arg(&source)
+        .current_dir(repo_root())
+        .env("HEW_WORKERS", "1");
+    let output = support::run_bounded_command(
+        command,
+        format!("hew compile --dump-mir checked {}", source.display()),
+    );
+    assert!(
+        output.status.success(),
+        "MIR dump for {name} should succeed; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn for_await_receiver_string_drains_to_completion_under_single_worker() {
+    run_for_await_surface_fixture("for_await_recv_string");
+}
+
+#[test]
+fn for_await_receiver_int_drains_to_completion_under_single_worker() {
+    run_for_await_surface_fixture("for_await_recv_int");
+}
+
+#[test]
+fn for_await_stream_bytes_drains_to_completion_under_single_worker() {
+    run_for_await_surface_fixture("for_await_stream_bytes");
+}
+
+#[test]
+fn for_await_mir_dump_contains_suspending_recv_terminators() {
+    for name in ["for_await_recv_string", "for_await_recv_int"] {
+        let dump = for_await_mir_checked_dump(name);
+        assert!(
+            dump.contains("SuspendingChannelRecv"),
+            "{name} must lower to a SuspendingChannelRecv terminator:\n{dump}",
+        );
+    }
+
+    let dump = for_await_mir_checked_dump("for_await_stream_bytes");
+    assert!(
+        dump.contains("SuspendingStreamNext"),
+        "for_await_stream_bytes must lower to a SuspendingStreamNext terminator:\n{dump}",
+    );
+}
+
+#[test]
+fn for_await_stream_string_rejects_until_string_stream_recv_is_wired() {
+    let source = surface_fixture("for_await_stream_string_reject.hew");
+    let mut command = Command::new(hew_binary());
+    command.arg("compile").arg(&source).current_dir(repo_root());
+    let output = support::run_bounded_command(command, format!("hew compile {}", source.display()));
+
+    assert!(
+        !output.status.success(),
+        "Stream<string> for-await fixture should fail closed; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("for await over Stream<string>") && stderr.contains("Stream<bytes>"),
+        "Stream<string> reject should name the Stage-1 diagnostic and supported stream element; stderr:\n{stderr}",
     );
 }
 
@@ -1458,13 +1577,16 @@ fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
     );
 }
 
-/// `hew eval --target wasm32-wasi -f -` must reject `for await item in rx`
-/// over a channel receiver during the fast typecheck pass, before codegen can
-/// lower it to the blocking runtime recv that traps on wasm32.
+/// A wasm32 compile must reject `for await item in rx` over a channel receiver
+/// before link/runtime discovery. The `for await` HIR desugar now reaches the
+/// suspending recv carrier on native targets, so this pins the wasm fail-closed
+/// gate directly against the compile path rather than relying on REPL chunking.
 #[test]
-fn eval_wasm_fast_typecheck_rejects_for_await_receiver() {
-    let output = run_eval_with_stdin(
-        &["eval", "--target", "wasm32-wasi", "-f", "-"],
+fn compile_wasm_rejects_for_await_receiver_before_link() {
+    let dir = support::tempdir();
+    let path = dir.path().join("for_await_receiver_wasm.hew");
+    std::fs::write(
+        &path,
         concat!(
             "import std::channel::channel;\n",
             "fn main() {\n",
@@ -1476,7 +1598,15 @@ fn eval_wasm_fast_typecheck_rejects_for_await_receiver() {
             "    }\n",
             "}\n",
         ),
-    );
+    )
+    .expect("write wasm for-await receiver fixture");
+
+    let output = Command::new(hew_binary())
+        .args(["compile", "--target", "wasm32-wasi"])
+        .arg(&path)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
 
     assert!(
         !output.status.success(),

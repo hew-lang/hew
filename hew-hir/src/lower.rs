@@ -168,6 +168,17 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
 enum ForIterNextCall {
     BuiltinVecIter,
     VarSelf(HirVarSelfMethodTarget),
+    /// `for await x in rx` over `Receiver<string|integer>` — each iteration
+    /// borrows the loop's receiver binding and emits a direct runtime recv call.
+    /// MIR's existing `lower_direct_call` suspend flip turns this into
+    /// `Terminator::SuspendingChannelRecv` for execution-context callers.
+    ChannelRecv {
+        elem_is_int: bool,
+    },
+    /// `for await x in stream` over `Stream<bytes>` — each iteration borrows
+    /// the stream binding and emits `hew_stream_next_bytes`, reusing MIR's
+    /// existing `Terminator::SuspendingStreamNext` flip.
+    StreamRecvBytes,
     /// `for x in <generator>` — each iteration consumes one value via the
     /// generator `.next()` consumption seam (`HirExprKind::GeneratorNext`).
     /// The generator handle is the loop's `__hew_for_iter_*` binding; it is
@@ -8913,7 +8924,7 @@ impl LowerCtx {
                 pattern,
                 iterable,
                 body,
-                is_await: _,
+                is_await,
             } => {
                 // Lower `for pat in iterable { body }`.
                 // Only `Range`-typed iterables are supported in this slice:
@@ -9007,9 +9018,13 @@ impl LowerCtx {
                             body: body_block,
                         }
                     }
-                    (_, Pattern::Identifier(_)) => {
-                        self.lower_for_iter_desugar(pattern, iterable, body, span.clone())
-                    }
+                    (_, Pattern::Identifier(_)) => self.lower_for_iter_desugar(
+                        pattern,
+                        iterable,
+                        body,
+                        span.clone(),
+                        *is_await,
+                    ),
                     _ => {
                         // Non-identifier pattern: not supported in this slice.
                         self.unsupported(
@@ -13554,6 +13569,7 @@ impl LowerCtx {
         iterable: &Spanned<Expr>,
         body: &Block,
         span: Span,
+        is_await: bool,
     ) -> HirExprKind {
         let Pattern::Identifier(var_name) = &pattern.0 else {
             unreachable!("lower_for_iter_desugar is only called for identifier patterns");
@@ -13585,6 +13601,97 @@ impl LowerCtx {
                 args[0].clone(),
                 ForIterNextCall::BuiltinVecIter,
             ),
+            ResolvedTy::Named {
+                args,
+                builtin: Some(BuiltinType::Receiver),
+                ..
+            } if is_await && !args.is_empty() => {
+                let elem_ty = args[0].clone();
+                if !matches!(elem_ty, ResolvedTy::String) && !Self::resolved_is_integer(&elem_ty) {
+                    self.unsupported(
+                        iterable.1.clone(),
+                        format!(
+                            "for await over Receiver<{elem_ty}>; only Receiver<string> \
+                             and Receiver<i64> have a suspending recv runtime path"
+                        ),
+                        "for-await-receiver-runtime-dispatch",
+                    );
+                    self.push_scope();
+                    let _ = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
+                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    self.pop_scope();
+                    return HirExprKind::Unsupported(
+                        "for await over unsupported Receiver<T> element type".into(),
+                    );
+                }
+                let elem_is_int = Self::resolved_is_integer(&elem_ty);
+                let iter_ty = lowered_iterable.ty.clone();
+                (
+                    lowered_iterable,
+                    iter_ty,
+                    elem_ty,
+                    ForIterNextCall::ChannelRecv { elem_is_int },
+                )
+            }
+            ResolvedTy::Named {
+                args,
+                builtin: Some(BuiltinType::Stream),
+                ..
+            } if is_await && !args.is_empty() => {
+                let elem_ty = args[0].clone();
+                match elem_ty {
+                    ResolvedTy::Bytes => {
+                        let iter_ty = lowered_iterable.ty.clone();
+                        (
+                            lowered_iterable,
+                            iter_ty,
+                            ResolvedTy::Bytes,
+                            ForIterNextCall::StreamRecvBytes,
+                        )
+                    }
+                    ResolvedTy::String => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::NotYetImplemented {
+                                construct: "for await over Stream<string>".to_string(),
+                                owning_pass: "stream-string-suspending-recv".to_string(),
+                            },
+                            iterable.1.clone(),
+                            "for await currently supports Stream<bytes>; the Stream<string> \
+                             suspending recv runtime path is not wired yet",
+                        ));
+                        self.push_scope();
+                        let _ = self.bind(
+                            var_name.clone(),
+                            ResolvedTy::String,
+                            false,
+                            pattern.1.clone(),
+                        );
+                        let _ = self.lower_block(body, &ResolvedTy::Unit);
+                        self.pop_scope();
+                        return HirExprKind::Unsupported(
+                            "for await over Stream<string> is not wired".into(),
+                        );
+                    }
+                    other => {
+                        self.unsupported(
+                            iterable.1.clone(),
+                            format!(
+                                "for await over Stream<{other}>; only Stream<bytes> has a \
+                                 suspending recv runtime path"
+                            ),
+                            "for-await-stream-runtime-dispatch",
+                        );
+                        self.push_scope();
+                        let _ =
+                            self.bind(var_name.clone(), other.clone(), false, pattern.1.clone());
+                        let _ = self.lower_block(body, &ResolvedTy::Unit);
+                        self.pop_scope();
+                        return HirExprKind::Unsupported(
+                            "for await over unsupported Stream<T> element type".into(),
+                        );
+                    }
+                }
+            }
             // `for x in <generator>`: the generator value IS the iterator. The
             // loop binds it to `__hew_for_iter_*` (consuming it) and drives one
             // `.next()` per iteration; the binding's scope-exit drop frees it.
@@ -13671,6 +13778,54 @@ impl LowerCtx {
                     },
                     option_ty,
                     IntentKind::Read,
+                    iterable.1.clone(),
+                )
+            }
+            ForIterNextCall::ChannelRecv { elem_is_int } => {
+                // Borrow the receiver binding (Read) so the loop binding remains
+                // the single owner and its scope-exit drop closes the handle once.
+                // This is a direct runtime-call HIR shape: no synthesized AST
+                // `await rx.recv()` exists, so checker method side-tables are not
+                // required for this post-check desugar.
+                let receiver = self.make_binding_ref(
+                    iter_binding.name.clone(),
+                    iter_binding.id,
+                    iter_binding.ty.clone(),
+                    IntentKind::Read,
+                    iterable.1.clone(),
+                );
+                let option_ty = Self::resolved_option_ty(elem_ty.clone());
+                self.register_option_layout(&elem_ty, &iterable.1, "Receiver::recv (for await)");
+                let symbol = if elem_is_int {
+                    "hew_channel_recv_int"
+                } else {
+                    "hew_channel_recv"
+                };
+                self.make_direct_method_call(
+                    symbol.to_string(),
+                    receiver,
+                    &option_ty,
+                    iterable.1.clone(),
+                )
+            }
+            ForIterNextCall::StreamRecvBytes => {
+                // Borrow the stream binding (Read) and emit the bytes recv
+                // runtime call directly. MIR's `lower_direct_call` converts this
+                // symbol into `Terminator::SuspendingStreamNext` in actor/task
+                // execution contexts; non-context callers keep the blocking call.
+                let stream = self.make_binding_ref(
+                    iter_binding.name.clone(),
+                    iter_binding.id,
+                    iter_binding.ty.clone(),
+                    IntentKind::Read,
+                    iterable.1.clone(),
+                );
+                let option_ty = Self::resolved_option_ty(elem_ty.clone());
+                self.register_option_layout(&elem_ty, &iterable.1, "Stream::recv (for await)");
+                self.make_direct_method_call(
+                    "hew_stream_next_bytes".to_string(),
+                    stream,
+                    &option_ty,
                     iterable.1.clone(),
                 )
             }
@@ -18392,7 +18547,24 @@ fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut V
             }
         }
         Stmt::Loop { body, .. } => scan_block_for_blocking_recv(body, diagnostics),
-        Stmt::For { iterable, body, .. } => {
+        Stmt::For {
+            iterable,
+            body,
+            is_await,
+            ..
+        } => {
+            if *is_await {
+                diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm {
+                        construct: "for await".to_string(),
+                    },
+                    iterable.1.clone(),
+                    "Blocking channel receive / stream receive operations via \
+                     `for await` lower to native-only suspending recv substrate \
+                     on wasm32. WASM-TODO(#1451)."
+                        .to_string(),
+                ));
+            }
             scan_expr_for_blocking_recv(&iterable.0, diagnostics);
             scan_block_for_blocking_recv(body, diagnostics);
         }

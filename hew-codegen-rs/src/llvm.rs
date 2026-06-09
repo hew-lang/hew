@@ -592,6 +592,14 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                     return Some("hew_channel_poll".to_string());
                 }
             }
+            // NEW-7 worker-free `await stream.recv()` / `for await` stream
+            // carrier: emits `hew_stream_await_next`, also part of the
+            // native-only stream substrate. Surface the structured fail-closed
+            // diagnostic for any direct-MIR stream carrier rather than letting
+            // wasm-ld discover the dangling reference. WASM-TODO(#1451).
+            if let Terminator::SuspendingStreamNext { .. } = &block.terminator {
+                return Some("hew_stream_await_next".to_string());
+            }
             // NEW-4 worker-free `await rx.recv()` carrier: emits
             // `hew_channel_await_recv`, also part of the native-only channel core
             // (`cfg(not(target_arch = "wasm32"))`). Surface the structured
@@ -36539,6 +36547,62 @@ mod tests {
             found, "hew_channel_await_recv",
             "WASM exclusion scan must surface `hew_channel_await_recv` for a \
              `Terminator::SuspendingChannelRecv` carrier; got `{found}`"
+        );
+    }
+
+    /// NEW-7 wasm fail-closed: a direct-MIR `Terminator::SuspendingStreamNext`
+    /// carrier emits `hew_stream_await_next`, part of the native-only stream
+    /// substrate. The wasm-exclusion scan must fail closed with a structured
+    /// `WasmUnsupportedSubstrate("hew_stream_await_next")` rather than a link
+    /// error. LESSONS P0 `boundary-fail-closed`.
+    #[test]
+    fn wasm_exclusion_scan_flags_suspending_stream_next_as_await_next() {
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let body = RawMirFunction {
+            name: "suspending_stream_next_wasm_excl_test".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::SuspendingStreamNext {
+                        stream: Place::Local(0),
+                        result_dest: Place::Local(1),
+                        resume: 1,
+                        cleanup: 2,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+                BasicBlock {
+                    id: 2,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+        };
+        let pipeline = raw_mir_only_pipeline(body);
+        let found = uses_wasm_excluded_symbol(&pipeline)
+            .expect("a SuspendingStreamNext carrier must be flagged as WASM-excluded");
+        assert_eq!(
+            found, "hew_stream_await_next",
+            "WASM exclusion scan must surface `hew_stream_await_next` for a \
+             `Terminator::SuspendingStreamNext` carrier; got `{found}`"
         );
     }
 

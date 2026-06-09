@@ -1,0 +1,21 @@
+//! Status: reject (Stream<string> for-await awaits the follow-on string stream path)
+//! Description: The checker accepts Stream<string>; HIR rejects the for-await lowering until the runtime path is wired.
+
+import std::stream;
+
+actor RejectStringStream {
+    receive fn run(unused: i64) {
+        let (sink, input) = stream.pipe(4);
+        sink.send("a");
+        sink.close();
+        for await item in input {
+            println(item);
+        }
+    }
+}
+
+fn main() {
+    let worker = spawn RejectStringStream;
+    worker.run(0);
+    sleep_ms(500);
+}

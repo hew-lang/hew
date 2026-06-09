@@ -16522,6 +16522,39 @@ mod wasm_rejects {
     }
 
     #[test]
+    fn wasm_rejects_for_await_stream() {
+        let source = concat!(
+            "import std::stream;\n",
+            "fn main() {\n",
+            "    let (sink, input) = stream.bytes_pipe(1);\n",
+            "    sink.close();\n",
+            "    for await item in input {\n",
+            "        println(item.to_string());\n",
+            "    }\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            has_platform_limitation_error(&output),
+            "`for await` over Stream<T> should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "Stream operations"),
+            "error message should mention Stream operations; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn native_for_await_receiver_no_platform_error() {
         let source = concat!(
             "import std::channel::channel;\n",

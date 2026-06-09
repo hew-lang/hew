@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: smtp_client.hew — std::net::smtp usage example
+
 // smtp_client.hew — std::net::smtp usage example
 //
 // This example requires a real SMTP server to run.  It is provided as a
@@ -17,7 +20,7 @@
 // Tracked: see hew-lang/hew#1598
 import std::net::smtp;
 
-fn send_plain(host: String, port: int, username: String, password: String, from: String, to: String) -> Result<int, String> {
+fn send_plain(host: string, port: int, username: string, password: string, from: string, to: string) -> Result<int, string> {
     let conn = smtp.connect(host, port, username, password);
     let result = conn.try_send(from, to, "Hello from Hew", "This is a plain-text test email.");
     conn.close();
@@ -27,7 +30,7 @@ fn send_plain(host: String, port: int, username: String, password: String, from:
     }
 }
 
-fn send_html(host: String, port: int, username: String, password: String, from: String, to: String) -> Result<int, String> {
+fn send_html(host: string, port: int, username: string, password: string, from: string, to: string) -> Result<int, string> {
     let conn = smtp.connect_tls(host, port, username, password);
     let body = "<h1>Hello</h1><p>This is an <b>HTML</b> test email sent from Hew.</p>";
     let result = conn.try_send_html(from, to, "HTML email from Hew", body);

@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Actor-based Fibonacci - Hew language example
+
 // Actor-based Fibonacci - Hew language example
 // Demonstrates actors computing fibonacci via deterministic fan-out
 fn fibonacci(n: int) -> int {

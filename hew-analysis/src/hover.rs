@@ -1122,9 +1122,13 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1142,7 +1146,7 @@ mod tests {
         let sig = make_fn_sig(vec!["x", "y"], vec![Ty::I32, Ty::Bool], Ty::String);
         let line = format_fn_sig_line("greet", &["x: i32".into(), "y: bool".into()], &sig);
         assert!(line.starts_with("fn greet("));
-        assert!(line.contains("-> String"));
+        assert!(line.contains("-> string"));
     }
 
     #[test]
@@ -1273,7 +1277,7 @@ mod tests {
     fn format_fn_signature_inline_includes_param_names() {
         let sig = make_fn_sig(vec!["value"], vec![Ty::String], Ty::Bool);
         let text = format_fn_signature_inline("validate", &sig);
-        assert_eq!(text, "fn validate(value: String) -> bool");
+        assert_eq!(text, "fn validate(value: string) -> bool");
     }
 
     #[test]
@@ -1302,7 +1306,7 @@ mod tests {
         let offset = source.find("msg: string").unwrap();
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
 
-        assert_eq!(result.contents, "```hew\nmsg: String\n```");
+        assert_eq!(result.contents, "```hew\nmsg: string\n```");
         assert_eq!(
             result.span,
             Some(OffsetSpan {
@@ -1379,9 +1383,13 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1458,9 +1466,13 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1497,9 +1509,13 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1591,9 +1607,13 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1734,9 +1754,13 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),

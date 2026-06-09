@@ -48,7 +48,7 @@ fn test_from_json_invalid_returns_empty() {
     testing.assert_eq(packed.len(), 0);
 }
 
-// ── String root round-trip ────────────────────────────────────────────
+// ── string root round-trip ────────────────────────────────────────────
 
 #[test]
 fn test_string_root_round_trip() {

@@ -1,8 +1,0 @@
-import mylib::*;
-
-fn main() {
-    let msg = greet("globe");
-    println(msg);
-    let sum = add(10, 20);
-    println(sum);
-}

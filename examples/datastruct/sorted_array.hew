@@ -75,7 +75,7 @@ fn sa_is_sorted(arr: Vec<int>) -> int {
     1
 }
 
-fn run_test(name: String, passed: int) -> int {
+fn run_test(name: string, passed: int) -> int {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {

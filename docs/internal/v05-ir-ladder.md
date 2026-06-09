@@ -24,10 +24,8 @@ source.hew
   └→ Raw MIR          (hew-mir, CFG)               SSA/places; value-model ops chosen; not yet proven
   └→ Checked MIR      (hew-mir)                    ownership proven; diagnostics emitted; FAIL-CLOSED gate
   └→ Elaborated MIR   (hew-mir)                    explicit Drop edges; DecisionMap; cleanup CFG
-  └→ Hew MLIR dialect (hew-codegen, !hew.*)        first-class types+attrs carry proven facts
-  └→ Mid MLIR         (standard + async + memref)  progressive lowering via dialect conversion
-  └→ LLVM dialect     (mlir::LLVM)                 only after all hew.* ops are gone
-  └→ LLVM IR / WASM   (translateToLLVMIR)          target-specific; no Hew decisions remain
+  └→ LLVM IR          (hew-codegen-rs/Inkwell)     direct emission from proven MIR facts
+  └→ Native/WASM obj  (LLVM TargetMachine/wasm-ld) target-specific; no Hew decisions remain
 ```
 
 ### Why this ladder, not a single IR
@@ -38,17 +36,16 @@ source.hew
 - **THIR exists to retire `Ty::Var`.** The fail-closed gate ("no `Ty::Var`
   survives into codegen") becomes a structural verifier between THIR and
   Raw MIR, not a post-hoc sweep.
-- **Elaborated MIR exists so MLIR consumes proven, not hypothetical, facts.**
-  Drop elaboration changes the CFG; doing it inside MLIR would mean either
-  deferring ownership to MLIR (rejected) or emitting unsafe MLIR and patching
-  it post-hoc (the current bandaid pattern).
-- **A Hew MLIR dialect exists so facts live inside the IR, not side tables.**
-  `OwnershipKind` is a type attribute; cleanup is a cleanup block; provenance
-  is `mlir::Location`.  The MLIR verifier re-checks structurally; it does not
-  re-prove ownership.
-- **No early LLVM dialect emission.** Lowering to `mlir::LLVM` happens only
-  in the LLVM-lowering pass.  Mixed-layer ops in the same pass are a source
-  of bugs (see the yield-of-String `!hew.string_ref` slot bug in v0.4).
+- **Elaborated MIR exists so codegen consumes proven, not hypothetical, facts.**
+  Drop elaboration changes the CFG; doing it in the LLVM emitter would mean
+  either deferring ownership to codegen (rejected) or emitting unsafe IR and
+  patching it post-hoc (the old bandaid pattern).
+- **No semantic re-derivation in codegen-rs.** The Rust/Inkwell backend lowers
+  MIR facts directly into LLVM IR. It verifies LLVM modules, but it does not
+  re-prove ownership, aliasing, or value-model decisions.
+- **No dialect bridge.** The old C++ backend ladder was retired in v0.5; v0.5
+  work now widens the Rust HIR/MIR/codegen-rs path instead of adding dialect
+  conversion passes.
 
 ---
 
@@ -114,7 +111,7 @@ terminators.
 The operations are chosen by the value-model classifier from THIR's ValueClass
 facts.  They have not yet been *proven* correct by analysis.
 
-**Must not own:** proof of uniqueness/aliasing, MLIR lowering, LLVM concerns.
+**Must not own:** proof of uniqueness/aliasing, LLVM emission concerns.
 
 **Verifier:** structural only — every block ends in a terminator, every place
 is dominated by its definition, every site has a chosen value-model operation
@@ -134,7 +131,7 @@ operand.
 **The fail-closed boundary for value semantics.**  Diagnostics fire here in
 value-cost language (see §4.3).
 
-**Must not own:** drop elaboration, cleanup blocks, MLIR.
+**Must not own:** drop elaboration, cleanup blocks, code emission.
 
 **Verifier / diagnostics:** value-cost diagnostics — "value `s` is consumed
 at <span> but read at <span>", "two mutations alias the same value", "affine
@@ -159,7 +156,7 @@ elaborated function and is emitted into IR dumps.  `SiteId` is derived from
 the THIR/MIR structure (function id + canonical CFG path to the operation),
 not from a source span — the table is stable across whitespace and reformat.
 
-**Must not own:** re-running ownership analysis, MLIR ops, span-keyed side
+**Must not own:** re-running ownership analysis, LLVM values, span-keyed side
 tables.
 
 **Verifier:** every owning place has exactly one `Drop` on every exit path;
@@ -171,70 +168,43 @@ and DecisionMap).
 
 ---
 
-### 2.7 Hew MLIR dialect (`hew-codegen`, `!hew.*`)
+### 2.7 LLVM IR emission (`hew-codegen-rs`)
 
-**Owns:** first-class Hew types (`!hew.string`, `!hew.string_ref`,
-`!hew.vec<T>`, `!hew.cow<T>`, `!hew.affine<T>`, `!hew.view<T>`,
-`!hew.coro_state<Y,R>`, `!hew.actor_ref<A>`, `!hew.handle<…>`), and
-first-class ops that carry proven facts (`hew.read`, `hew.move`,
-`hew.cow_share`, `hew.ensure_unique`, `hew.materialize`, `hew.consume`,
-`hew.drop`, `hew.freeze`, `hew.alloc`, `hew.yield`, `hew.actor_send` with
-mode attribute, `hew.actor_ask`, `hew.spawn`, `hew.scope`).
+**Owns:** direct LLVM IR construction from `Elaborated MIR` using Inkwell,
+including function declarations, stack slots for MIR places, value loads and
+stores, arithmetic/control-flow lowering, runtime-symbol references, and
+module verification.
 
-ValueClass / ShareClass / CopyClass / cost class are **type and op
-attributes**.  Cleanup is MLIR cleanup blocks.  Provenance is `mlir::Location`
-(`FusedLoc` with named reasons).  **DecisionFacts are op attributes
-(`hew.site_id`, `hew.value_decision`)** — never side tables.
+DecisionFacts stay attached to MIR inputs. Codegen may carry them into debug
+metadata or comments in dumps, but it must not reinterpret them or synthesize a
+replacement side table.
 
-**Must not own:** re-deriving any value-model fact; choosing ABI from
-`mlir::Value` shape; LLVM dialect emission.
+**Must not own:** re-deriving any value-model fact; inventing ABI shape from
+LLVM value layout; ownership/drop decisions; source-level diagnostics.
 
-**Verifier:** type attributes well-formed; every `hew.consume` of an affine /
-owned place is followed by a `hew.drop` only on a non-consumed exit;
-`hew.yield` operand storage matches coroutine frame-slot type; every
-classifiable op carries a `hew.site_id` matching a DecisionMap entry.
+**Verifier:** `Module::verify()` after emission; fail-closed errors for
+unsupported MIR constructs, missing locals, unresolved runtime symbols, and
+LLVM verifier failures.
 
-**Dump:** MLIR generic + custom assembly; `mlir-opt --hew-print`.
+**Dump:** textual `.ll` plus any requested MIR dump (`hew compile-v05
+--dump-mir raw|checked|elab`).
 
 ---
 
-### 2.8 Mid MLIR (standard + async + memref + scf)
+### 2.8 Native and WASM object emission
 
-**Owns:** progressive lowering of `hew.*` to standard MLIR dialects via
-dialect conversion; `TypeConverter` materialises `!hew.string` → `memref<i8>`
-with ownership-carrying memref attributes; coroutine lowering uses
-`mlir::async` with frame-slot types from elaboration; canonicalisation + CSE.
+**Owns:** target-specific object emission from verified LLVM IR. Native builds
+write a relocatable object and then link it with `libhew.a`; WASM builds write
+a wasm object and link it into a standalone module with `wasm-ld` or
+`rust-lld`.
 
-**Must not own:** Hew-level semantics (gone); LLVM dialect (not yet).
+**Must not own:** Hew-level semantics, ownership/drop decisions, or checker
+diagnostics. Unsupported target substrates must report a named fail-closed
+diagnostic instead of falling back silently.
 
-**Verifier:** conversion partial-then-full verification at each pipeline
-checkpoint; verifier between every pass; no `!hew.*` type may survive past
-the exit of this layer.
+**Verifier:** LLVM target emission errors and linker exit status.
 
----
-
-### 2.9 LLVM dialect (`mlir::LLVM`)
-
-**Owns:** lowering from Mid MLIR to `mlir::LLVM` ops; LLVM intrinsics for
-coroutines; structured exception edges become LLVM unwind edges (or WASM
-equivalent).
-
-**Must not own:** any Hew-level types or attributes (forbidden — verifier
-rejects); deciding ownership / drop / cleanup.
-
-**Verifier:** standard `mlir::LLVM` verifier; "no `!hew.*` types remain"
-guard pass at the entry.
-
----
-
-### 2.10 LLVM IR / WASM (translation)
-
-**Owns:** final code generation, target-specific intrinsic selection, WASM
-exception handling, coroutine intrinsic expansion.
-
-**Must not own:** anything Hew-specific.
-
-**Dump:** `.ll`, `.s`, `.wasm`.
+**Dump:** `.o`, executable, `.wasm.o`, `.wasm`.
 
 ---
 
@@ -465,8 +435,8 @@ conventions.
 
 The checker and lowering work should be introduced as cohesive compiler changes
 against the v0.5 value model, progressing through each layer of the IR ladder
-(Resolved HIR → THIR → Raw MIR → Checked MIR → Elaborated MIR → Hew MLIR
-dialect → Mid MLIR → LLVM dialect → LLVM/WASM).  The corpus fixtures in
+(Resolved HIR → THIR → Raw MIR → Checked MIR → Elaborated MIR → LLVM IR →
+native/WASM emission).  The corpus fixtures in
 `tests/corpus/v05-value-model/` serve as the byte-level acceptance targets for
 the Checked MIR and Elaborated MIR stages.
 
@@ -474,17 +444,13 @@ the Checked MIR and Elaborated MIR stages.
 
 ## 7. Building the v0.5 spine
 
-`hew compile-v05` spawns `hew-emit-v05` as a sibling binary for the
-object-emission step (process isolation avoids a dual-LLVM-load assertion;
-see `hew-codegen-rs/src/llvm.rs`).  Both binaries must be built together:
+`hew compile-v05` runs the v0.5 Rust HIR/MIR/codegen-rs path. The backend is a
+normal Cargo dependency of `hew`; no retired C++ backend build step is involved:
 
 ```
-make hew          # debug: builds hew + hew-emit-v05
-make release      # release: builds hew + hew-emit-v05 + adze + stdlib
+make hew          # debug: builds hew
+make release      # release: builds hew + adze + stdlib
 ```
-
-Running `cargo build -p hew-cli` alone leaves `hew-emit-v05` absent and
-`compile-v05` will fail with `E_CUTOVER_UNSUPPORTED`.
 
 ---
 

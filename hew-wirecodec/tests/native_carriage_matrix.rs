@@ -86,6 +86,7 @@ fn wire_kind_trait_object_produces_nested() {
         traits: vec![ResolvedTraitBound {
             trait_name: "Display".into(),
             args: vec![],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(

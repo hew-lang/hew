@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Concurrent counter with actors
+
 // Concurrent counter with actors
 // Demonstrates spawn, receive handlers, and message passing.
 //

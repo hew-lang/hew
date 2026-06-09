@@ -68,6 +68,125 @@ pub(super) fn cast_is_valid(actual: &Ty, target: &Ty) -> bool {
 }
 
 impl Checker {
+    fn dyn_assoc_bindings_complete(
+        trait_info: &TraitInfo,
+        bound: &crate::ty::TraitObjectBound,
+    ) -> bool {
+        let missing_assoc: Vec<String> = trait_info
+            .associated_types
+            .iter()
+            .filter(|assoc| {
+                !bound
+                    .assoc_bindings
+                    .iter()
+                    .any(|(assoc_name, _)| assoc_name == &assoc.name)
+            })
+            .map(|assoc| assoc.name.clone())
+            .collect();
+        if !missing_assoc.is_empty() {
+            // Resolver-produced trait-object bounds already emitted the typed
+            // MissingAssocTypeBinding diagnostic. The coercion phase gates on
+            // the same invariant without re-reporting it.
+            return false;
+        }
+        true
+    }
+
+    fn validate_dyn_assoc_binding_projections(
+        &mut self,
+        trait_name: &str,
+        bound: &crate::ty::TraitObjectBound,
+        concrete_type: &Ty,
+        span: &Span,
+    ) -> bool {
+        for (assoc_name, binding_ty) in &bound.assoc_bindings {
+            let projected = self.project_assoc_types(&Ty::AssocType {
+                base: Box::new(concrete_type.clone()),
+                trait_name: trait_name.to_string().into_boxed_str(),
+                assoc_name: assoc_name.clone().into_boxed_str(),
+            });
+            if matches!(projected, Ty::AssocType { .. }) {
+                self.report_error(
+                    TypeErrorKind::AssocTypeProjectionFailed {
+                        type_name: concrete_type.user_facing().to_string(),
+                        trait_name: trait_name.to_string(),
+                        assoc_name: assoc_name.clone(),
+                    },
+                    span,
+                    format!(
+                        "could not project associated type `<{} as {trait_name}>::{assoc_name}` while checking `dyn {trait_name}<{assoc_name} = {}>`; ensure the impl for `{}` defines `type {assoc_name} = ...`",
+                        concrete_type.user_facing(),
+                        binding_ty.user_facing(),
+                        concrete_type.user_facing()
+                    ),
+                );
+                return false;
+            }
+            if projected != *binding_ty {
+                self.report_error(
+                    TypeErrorKind::Mismatch {
+                        expected: projected.user_facing().to_string(),
+                        actual: binding_ty.user_facing().to_string(),
+                    },
+                    span,
+                    format!(
+                        "`dyn {trait_name}<{assoc_name} = {}>` does not match `{}`'s impl binding `{trait_name}::{assoc_name} = {}`",
+                        binding_ty.user_facing(),
+                        concrete_type.user_facing(),
+                        projected.user_facing()
+                    ),
+                );
+                return false;
+            }
+        }
+        true
+    }
+
+    fn validate_dyn_object_safety(
+        &mut self,
+        trait_name: &str,
+        trait_info: &TraitInfo,
+        span: &Span,
+    ) -> bool {
+        for method in &trait_info.methods {
+            if method.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
+                self.report_error(
+                    TypeErrorKind::TraitNotObjectSafe {
+                        trait_name: trait_name.to_string(),
+                        method_name: method.name.clone(),
+                        reason: "generic method",
+                    },
+                    span,
+                    format!(
+                        "trait `{}` is not object-safe: method `{}` has generic parameters; \
+                         remove the type parameters or avoid `dyn {}` here",
+                        trait_name, method.name, trait_name
+                    ),
+                );
+                return false;
+            }
+            if let Some(ret) = method.return_type.as_ref() {
+                if type_expr_mentions_self(&ret.0) {
+                    self.report_error(
+                        TypeErrorKind::TraitNotObjectSafe {
+                            trait_name: trait_name.to_string(),
+                            method_name: method.name.clone(),
+                            reason: "Self-returning method",
+                        },
+                        span,
+                        format!(
+                            "trait `{}` is not object-safe: method `{}` returns `Self`; \
+                             v0.5 dyn-dispatch cannot recover the concrete type",
+                            trait_name, method.name
+                        ),
+                    );
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// Check if an expression is a numeric literal or a reference to an untyped const
     /// with a known compile-time value (eligible for coercion).
     pub(super) fn is_coercible_numeric(&self, expr: &Expr) -> bool {
@@ -103,6 +222,13 @@ impl Checker {
     }
 
     pub(super) fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
+        // Re-project any `Ty::AssocType` carriers whose `base` has become
+        // concrete via prior substitution. Carriers with still-abstract
+        // bases pass through unchanged and may collapse on a later call.
+        let expected_projected = self.project_assoc_types(expected);
+        let actual_projected = self.project_assoc_types(actual);
+        let expected = &expected_projected;
+        let actual = &actual_projected;
         // Snapshot substitution so partial bindings are rolled back on failure
         let snapshot = self.subst.snapshot();
         if let Err(_e) = unify(&mut self.subst, expected, actual) {
@@ -118,17 +244,20 @@ impl Checker {
             if can_implicitly_coerce_integer(&actual_resolved, &expected_resolved) {
                 return;
             }
-            // Allow concrete type → dyn Trait coercion when the type implements all traits
+            // Allow concrete type → dyn Trait coercion when the type implements all traits.
+            // Records a `DynCoercion` side-table entry for the downstream MIR and LLVM
+            // vtable emitters, and rejects non-object-safe traits at the coercion site
+            // with `E_TRAIT_NOT_OBJECT_SAFE` (v0.5 predicate: no generic methods, no
+            // `Self`-returning methods).
             if let Ty::TraitObject { traits } = &expected_resolved {
-                if let Ty::Named {
-                    name: type_name, ..
-                } = &actual_resolved
-                {
-                    // Check that the type implements all required traits
-                    if traits
-                        .iter()
-                        .all(|bound| self.type_implements_trait(type_name, &bound.trait_name))
-                    {
+                let defaulted_concrete = actual_resolved.materialize_literal_defaults();
+                if let Some(type_name) = concrete_type_name_for_dyn(&defaulted_concrete) {
+                    if self.try_record_dyn_trait_coercion(
+                        traits,
+                        &type_name,
+                        &defaulted_concrete,
+                        span,
+                    ) {
                         return;
                     }
                 }
@@ -163,5 +292,253 @@ impl Checker {
                 );
             }
         }
+    }
+
+    /// Validate object safety for a single trait used in `dyn` position, and
+    /// build the method-table entries for the (`trait`, `concrete`) pair.
+    ///
+    /// Returns `Some(methods)` when the trait is object-safe AND the concrete
+    /// type implements it (either via a nominal `impl Trait for T` recorded
+    /// in `trait_impls_set` / `primitive_trait_impls`, or via the structural
+    /// `type_structurally_satisfies` path). Returns `None` when the trait is
+    /// not registered, when the concrete type does not implement it, or when
+    /// the trait is not object-safe — in which case a diagnostic is reported.
+    ///
+    /// `concrete_type_name` is the type-name spelling expected by the
+    /// impl registries (e.g. `"i32"` for `Ty::I32` via
+    /// `Ty::canonical_lowering_name`, `"MyStruct"` for user `Ty::Named`).
+    ///
+    /// The returned `method_table` entries are `(method_name, impl_fn_key)`:
+    /// * `impl_fn_key = "<concrete_type_name>::<method_name>"` for user types
+    ///   (matches `fn_sigs` qualified key).
+    /// * `impl_fn_key = "<canonical>::<method_name>"` for primitive /
+    ///   builtin-generic receivers; the impl `FnSig` lives in
+    ///   `primitive_trait_impls`.
+    fn validate_dyn_trait_bound(
+        &mut self,
+        bound: &crate::ty::TraitObjectBound,
+        concrete_type_name: &str,
+        concrete_type: &Ty,
+        span: &Span,
+    ) -> Option<Vec<DynVtableEntry>> {
+        let trait_name = bound.trait_name.as_str();
+        // Resolve the trait declaration; an unregistered trait can never be
+        // object-safe (and the caller's type-implements check would already
+        // have rejected it).
+        let trait_info = self.trait_defs.get(trait_name).cloned()?;
+        if !Self::dyn_assoc_bindings_complete(&trait_info, bound) {
+            return None;
+        }
+
+        // Object-safety predicate (v0.5):
+        //   1. No generic methods.
+        //   2. No `Self`-returning methods.
+        // Both are rejected with `E_TRAIT_NOT_OBJECT_SAFE`.
+        if !self.validate_dyn_object_safety(trait_name, &trait_info, span) {
+            return None;
+        }
+
+        // Build the method-table. Prefer the nominal impl registries; fall
+        // back to the structural match path so bare `impl T { fn ... }` that
+        // structurally satisfies a trait also gets a populated table.
+        let nominal_impl = self
+            .trait_impls_set
+            .contains(&(concrete_type_name.to_string(), trait_name.to_string()));
+
+        let primitive_impl_methods = self
+            .primitive_trait_impls
+            .get(&(concrete_type_name.to_string(), trait_name.to_string()))
+            .cloned();
+
+        let structural_ok = !nominal_impl
+            && primitive_impl_methods.is_none()
+            && self.type_structurally_satisfies(concrete_type_name, trait_name);
+
+        if !nominal_impl && primitive_impl_methods.is_none() && !structural_ok {
+            return None;
+        }
+        if !self.validate_dyn_assoc_binding_projections(trait_name, bound, concrete_type, span) {
+            return None;
+        }
+
+        let mut table: Vec<DynVtableEntry> = Vec::with_capacity(trait_info.methods.len());
+        for method in &trait_info.methods {
+            let impl_fn_key = format!("{concrete_type_name}::{}", method.name);
+            let Some(mut signature) = self.lookup_trait_method(trait_name, &method.name) else {
+                // JUSTIFIED: `trait_info` is cloned from `trait_defs[trait_name]`,
+                // and this loop iterates its own `methods`. If lookup fails,
+                // the checker metadata is internally inconsistent; fabricating
+                // an empty signature would poison the vtable.
+                unreachable!(
+                    "trait method `{trait_name}::{}` is listed in trait_defs but is not resolvable",
+                    method.name
+                );
+            };
+            self.apply_trait_object_bound_substitutions(&mut signature, bound);
+            table.push(DynVtableEntry {
+                trait_name: trait_name.to_string(),
+                method_name: method.name.clone(),
+                impl_fn_key,
+                signature,
+            });
+        }
+        Some(table)
+    }
+
+    /// Validate and record a `T → dyn Trait` coercion at `span`.  Walks every
+    /// trait bound in the target trait-object type; if all bounds are
+    /// satisfied and object-safe, inserts the (possibly multi-bound)
+    /// [`DynCoercion`] into `dyn_trait_coercions` and returns `true`.
+    ///
+    /// Returns `false` when any bound is unsatisfied (caller falls through to
+    /// the regular type-mismatch diagnostic) or when any bound failed
+    /// object-safety (the diagnostic has already been emitted; returning
+    /// `true` here would mask the error, returning `false` falls through to
+    /// the mismatch diagnostic — the caller's outer `if expected != Error
+    /// ...` guard suppresses the second emission when warranted).
+    fn try_record_dyn_trait_coercion(
+        &mut self,
+        traits: &[crate::ty::TraitObjectBound],
+        type_name: &str,
+        concrete_type: &Ty,
+        span: &Span,
+    ) -> bool {
+        // Collect per-bound method tables. Bail (false) if any bound is
+        // unsatisfied or not object-safe.
+        let mut per_bound: Vec<(String, Vec<DynVtableEntry>)> = Vec::with_capacity(traits.len());
+        for bound in traits {
+            let Some(methods) =
+                self.validate_dyn_trait_bound(bound, type_name, concrete_type, span)
+            else {
+                return false;
+            };
+            per_bound.push((bound.trait_name.clone(), methods));
+        }
+
+        // Composite trait_name: `A` for single-bound, `A+B` for multi-bound.
+        let composite_trait_name = if per_bound.len() == 1 {
+            per_bound[0].0.clone()
+        } else {
+            per_bound
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join("+")
+        };
+
+        // Flatten method tables. For multi-bound, prefix each method name with
+        // its originating trait so downstream consumers can route correctly.
+        let multi = per_bound.len() > 1;
+        let assoc_bindings = canonical_dyn_assoc_bindings(traits);
+        let mut method_table: Vec<(String, String)> = Vec::new();
+        let mut vtable_entries: Vec<DynVtableEntry> = Vec::new();
+        for (trait_name, methods) in &per_bound {
+            for entry in methods {
+                let qualified = if multi {
+                    format!("{trait_name}::{}", entry.method_name)
+                } else {
+                    entry.method_name.clone()
+                };
+                method_table.push((qualified, entry.impl_fn_key.clone()));
+                vtable_entries.push(entry.clone());
+            }
+        }
+        let vtable_key = DynVtableKey {
+            trait_name: composite_trait_name.clone(),
+            concrete_type: concrete_type.clone(),
+            assoc_bindings: assoc_bindings.clone(),
+        };
+
+        self.dyn_trait_coercions.insert(
+            SpanKey::from(span),
+            DynCoercion {
+                trait_name: composite_trait_name,
+                concrete_type: concrete_type.clone(),
+                vtable_key,
+                assoc_bindings,
+                vtable_entries,
+                method_table,
+            },
+        );
+        true
+    }
+}
+
+/// Map a resolved concrete `Ty` to the type-name string used by the impl
+/// registries (`trait_impls_set`, `primitive_trait_impls`). Returns `None`
+/// for types that cannot appear as the receiver of a trait impl visible to
+/// the dyn-coercion path (function types, tuples, unresolved variables).
+fn concrete_type_name_for_dyn(ty: &Ty) -> Option<String> {
+    // Default unresolved numeric literals (`<int literal>`/`<float literal>`)
+    // to their concrete kinds so a coercion site sees the same key the impl
+    // registries use (e.g. `42 → dyn Display` looks up `("i64", "Display")`).
+    let defaulted = ty.materialize_literal_defaults();
+    if let Some(canonical) = defaulted.canonical_lowering_name() {
+        return Some(canonical.to_string());
+    }
+    if let Ty::Named { name, .. } = &defaulted {
+        return Some(name.clone());
+    }
+    None
+}
+
+fn canonical_dyn_assoc_bindings(traits: &[crate::ty::TraitObjectBound]) -> Vec<DynAssocBinding> {
+    let mut bindings: Vec<DynAssocBinding> = traits
+        .iter()
+        .flat_map(|bound| {
+            bound
+                .assoc_bindings
+                .iter()
+                .map(|(assoc_name, ty)| DynAssocBinding {
+                    trait_name: bound.trait_name.clone(),
+                    assoc_name: assoc_name.clone(),
+                    ty: ty.clone(),
+                })
+        })
+        .collect();
+    bindings.sort_by(|a, b| {
+        a.trait_name
+            .cmp(&b.trait_name)
+            .then_with(|| a.assoc_name.cmp(&b.assoc_name))
+    });
+    bindings
+}
+
+/// Conservative AST predicate: does this type expression mention `Self`
+/// anywhere? Used by the object-safety check to reject `Self`-returning
+/// trait methods at `dyn Trait` coercion sites.
+fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
+    match expr {
+        TypeExpr::Named { name, type_args } => {
+            if name == "Self" {
+                return true;
+            }
+            type_args
+                .as_ref()
+                .is_some_and(|args| args.iter().any(|a| type_expr_mentions_self(&a.0)))
+        }
+        TypeExpr::Result { ok, err } => {
+            type_expr_mentions_self(&ok.0) || type_expr_mentions_self(&err.0)
+        }
+        TypeExpr::Option(inner) | TypeExpr::Slice(inner) => type_expr_mentions_self(&inner.0),
+        TypeExpr::Tuple(elems) => elems.iter().any(|e| type_expr_mentions_self(&e.0)),
+        TypeExpr::Array { element, .. } => type_expr_mentions_self(&element.0),
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
+            params.iter().any(|p| type_expr_mentions_self(&p.0))
+                || type_expr_mentions_self(&return_type.0)
+        }
+        TypeExpr::Pointer { pointee, .. } => type_expr_mentions_self(&pointee.0),
+        TypeExpr::TraitObject(bounds) => bounds.iter().any(|b| {
+            b.type_args
+                .as_ref()
+                .is_some_and(|args| args.iter().any(|a| type_expr_mentions_self(&a.0)))
+                || b.assoc_type_bindings
+                    .iter()
+                    .any(|binding| type_expr_mentions_self(&binding.ty.0))
+        }),
+        TypeExpr::Infer => false,
     }
 }

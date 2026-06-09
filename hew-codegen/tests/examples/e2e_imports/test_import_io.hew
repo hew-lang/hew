@@ -1,8 +1,0 @@
-import std::io;
-
-fn main() {
-    io.write("hello");
-    io.write(" world\n");
-    io.write_err("stderr test\n");
-    println("done");
-}

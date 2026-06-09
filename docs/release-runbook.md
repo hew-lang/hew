@@ -110,8 +110,8 @@ make pre-release
 
 If your only local arm64 hardware is Debian bookworm (for example pirea51),
 do not treat LLVM 22 apt failures there as a repo regression:
-`apt.llvm.org/bookworm` arm64 does not publish `llvm-22-dev`,
-`libmlir-22-dev`, `mlir-22-tools`, `clang-22`, or `lld-22`. The
+`apt.llvm.org/bookworm` arm64 may not publish the LLVM 22 development packages
+that `llvm-sys` needs (`llvm-22-dev`, `clang-22`, or `lld-22`). The
 authoritative local/CI-compatible path is Ubuntu 24.04 arm64
 (`ubuntu-24.04-arm` in CI, or an Ubuntu 24.04 arm VM/container locally).
 
@@ -127,35 +127,32 @@ WINDOWS_HOST=user@windows-host
 WINDOWS_PROJECT_DIR=P:/path/to/hew
 ```
 
-Windows hosts also need a one-time LLVM/MLIR 22 bootstrap that matches the tag
+Windows hosts also need a one-time LLVM 22 install that matches the tag
 release workflow: install into `C:\llvm-22` and verify
-`C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake` and `C:\llvm-22\bin\clang.exe` exist before running
-`make pre-release`. See
+`C:\llvm-22\bin\clang.exe` exists before running `make pre-release`. See
 [`docs/cross-platform-build-guide.md`](cross-platform-build-guide.md#windows)
 for the exact bootstrap command sequence. The validator defaults to
-`LLVM_PREFIX=C:\llvm-22`, prepends `C:\llvm-22\bin` to `PATH`, sets
-`HEW_EMBED_STATIC=1`, and uses `CC/CXX=cl`; override with
-`HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if that host
-uses a different compiler driver.
+`LLVM_PREFIX=C:\llvm-22` and prepends `C:\llvm-22\bin` to `PATH`; override
+with `HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if
+that host uses a different compiler driver.
 
 What `make pre-release` does:
-1. `make release` — static-link release build of all binaries
+1. `make release` — release build of all binaries
 2. `scripts/pre-release-validate.sh` — per-platform:
      - Build all release artifacts
      - Verify binaries exist and run (`--version`)
      - Smoke test: compile and execute a .hew program
-     - Linux: verify no dynamic LLVM/MLIR deps (`ldd` check)
-     - Linux aarch64 (optional): rsync + SSH build on Ubuntu 24.04 arm64, with
-       LLVM/MLIR 22 provisioned from `apt.llvm.org/noble`
+     - Linux: verify no dynamic LLVM deps (`ldd` check)
+      - Linux aarch64 (optional): rsync + SSH build on Ubuntu 24.04 arm64, with
+        LLVM 22 provisioned from `apt.llvm.org/noble`
      - Remote platforms (macOS/FreeBSD/Windows): rsync + SSH build
-     - Windows: require `C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake`, force
-       `LLVM_PREFIX` + `HEW_EMBED_STATIC=1`, then compile+run a smoke program so
+     - Windows: require `LLVM_PREFIX`, then compile+run a smoke program so
        validation cannot silently pass a frontend-only `hew.exe`
 
 For a local macOS clean-room check of the Homebrew/release binary shape:
 
 ```bash
-HEW_EMBED_STATIC=1 cargo build -p hew-cli --release
+cargo build -p hew-cli --release
 scripts/verify-macos-binary.sh target/release/hew
 cat > hew-smoke.hew <<'EOF'
 fn main() { println("Hello from Hew!"); }
@@ -281,7 +278,7 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 - **FreeBSD**: Nightly plus tag-time packaged-archive smoke, but the tag job is
   still `continue-on-error: true`. Check the last nightly before tagging.
 - **Local Debian bookworm arm64 hosts**: `apt.llvm.org/bookworm` arm64 does not
-  publish the LLVM/MLIR 22 packages the release build uses. Validate linux-aarch64
+  publish the LLVM 22 packages the release build uses. Validate linux-aarch64
   on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04
   arm VM/container / remote host).
 - **TSan (Rust runtime)**: `continue-on-error: true` — upstream Rust/Cargo build-std +

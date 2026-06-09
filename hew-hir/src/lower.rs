@@ -13,7 +13,11 @@ use hew_types::{
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
-use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef};
+use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef, SiteId};
+use crate::monomorph::{
+    contains_recursive_polymorphic_self, substitute_type_params, MonoKey, MonoRegistry,
+    RecordLayoutRegistry, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
+};
 use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
     HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
@@ -39,39 +43,154 @@ struct FnEntry {
     id: ItemId,
     return_ty: ResolvedTy,
     param_tys: Vec<ResolvedTy>,
+    /// Source-declared generic type parameter names, in order. Empty for
+    /// non-generic functions. Consulted at `Expr::Call` lowering sites to
+    /// decide whether the callee is a generic top-level user fn that
+    /// requires a monomorphisation-registry entry.
+    type_params: Vec<String>,
+}
+
+/// Pre-collected shape of a top-level user record or `pub type` item.
+///
+/// Populated in the type-decl / record pre-pass and consulted at
+/// `Expr::StructInit` lowering to (a) decide whether a record-init site
+/// needs a per-instantiation `RecordLayout` and (b) substitute the
+/// type-params with the concrete args from `record_init_type_args` to
+/// produce the layout's field shape.
+///
+/// Tuple-form records are admitted with `fields = vec![]` — their
+/// constructor is reached via `Expr::Call`, not `StructInit`, so they
+/// never hit the record-layout registry. The entry is kept for shape
+/// uniformity with the named-form path.
+#[derive(Debug)]
+struct RecordEntry {
+    id: ItemId,
+    /// Source-declared generic type-parameter names, in order. Empty for
+    /// monomorphic record/type declarations.
+    type_params: Vec<String>,
+    /// Field shape as written in source — types still mention the
+    /// declaration's type params verbatim (no substitution yet). The
+    /// record-layout registry walks these and substitutes per
+    /// instantiation.
+    fields: Vec<(String, ResolvedTy)>,
 }
 
 #[must_use]
 pub fn lower_program(
     program: &Program,
     type_check_output: &TypeCheckOutput,
-    _ctx: &ResolutionCtx,
+    ctx: &ResolutionCtx,
 ) -> LowerOutput {
-    let mut ctx = LowerCtx::new(type_check_output);
+    lower_program_with_mono_cap(
+        program,
+        type_check_output,
+        ctx,
+        MONOMORPHISATION_REGISTRY_CAP,
+    )
+}
+
+/// Variant of [`lower_program`] with an explicit monomorphisation-registry
+/// cap. Intended for tests that exercise the
+/// `MonomorphisationCapExceeded` diagnostic with a small fixture; the
+/// production entry point [`lower_program`] always uses
+/// `MONOMORPHISATION_REGISTRY_CAP`.
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "three structured passes (fn pre-pass, record/type-decl pre-pass, \
+              source-order emit) read more clearly here than across helpers"
+)]
+pub fn lower_program_with_mono_cap(
+    program: &Program,
+    type_check_output: &TypeCheckOutput,
+    _ctx: &ResolutionCtx,
+    mono_cap: usize,
+) -> LowerOutput {
+    let mut ctx = LowerCtx::new(type_check_output, mono_cap);
 
     // First pass: collect all function signatures so that forward and mutual
     // references in call expressions resolve to the correct return type.
     // Diagnostics from this pass are discarded — the same types are re-lowered
     // in the second pass, which is where canonical diagnostics are emitted.
     for (item, _) in &program.items {
-        if let Item::Function(func) = item {
-            let id = ctx.ids.item();
-            let return_ty = func
-                .return_type
-                .as_ref()
-                .map_or(ResolvedTy::Unit, |ty| ctx.lower_type(ty));
-            let param_tys = func.params.iter().map(|p| ctx.lower_type(&p.ty)).collect();
-            ctx.fn_registry.insert(
-                func.name.clone(),
-                FnEntry {
-                    id,
-                    return_ty,
-                    param_tys,
-                },
-            );
+        match item {
+            Item::Function(func) => {
+                ctx.register_fn_entry(&func.name, func);
+            }
+            Item::Impl(impl_decl)
+                if impl_decl
+                    .trait_bound
+                    .as_ref()
+                    .is_some_and(|bound| bound.name == "Index") =>
+            {
+                if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                    for method in &impl_decl.methods {
+                        ctx.register_fn_entry(&format!("{name}::{}", method.name), method);
+                    }
+                }
+            }
+            _ => {}
         }
     }
-    // Discard first-pass diagnostics; the second pass will re-emit any real ones.
+    // Pre-pass: collect record/type-decl shapes so `Expr::StructInit`
+    // lowering in the source-order pass can answer "is this a generic
+    // user record?" regardless of declaration order relative to the
+    // function that uses it. This mirrors the fn pre-pass above and is
+    // the producer half of the record-layout registry.
+    for (item, _) in &program.items {
+        match item {
+            Item::TypeDecl(decl) => {
+                let id = ctx.ids.item();
+                let type_params: Vec<String> = decl
+                    .type_params
+                    .as_ref()
+                    .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
+                let mut fields: Vec<(String, ResolvedTy)> = Vec::new();
+                for body_item in &decl.body {
+                    if let TypeBodyItem::Field { name, ty, .. } = body_item {
+                        fields.push((name.clone(), ctx.lower_type(ty)));
+                    }
+                }
+                ctx.record_registry.insert(
+                    decl.name.clone(),
+                    RecordEntry {
+                        id,
+                        type_params,
+                        fields,
+                    },
+                );
+            }
+            Item::Record(decl) => {
+                let id = ctx.ids.item();
+                let type_params: Vec<String> = decl
+                    .type_params
+                    .as_ref()
+                    .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
+                let fields: Vec<(String, ResolvedTy)> = match &decl.kind {
+                    RecordKind::Named(rfs) => rfs
+                        .iter()
+                        .map(|rf| (rf.name.clone(), ctx.lower_type(&rf.ty)))
+                        .collect(),
+                    // Tuple-form records are reached via Expr::Call, not
+                    // Expr::StructInit, so their record-layout registry
+                    // entry would never be exercised. Record an empty
+                    // field list for shape uniformity.
+                    RecordKind::Tuple(_) => Vec::new(),
+                };
+                ctx.record_registry.insert(
+                    decl.name.clone(),
+                    RecordEntry {
+                        id,
+                        type_params,
+                        fields,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    // Discard pre-pass diagnostics from `lower_type`; the third pass re-emits
+    // any real ones when it produces the canonical HirTypeDecl/HirRecordDecl.
     ctx.diagnostics.clear();
 
     // Second pass: lower type declarations and populate the per-module
@@ -115,6 +234,23 @@ pub fn lower_program(
             Item::Function(func) => {
                 items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
             }
+            Item::Impl(impl_decl)
+                if impl_decl
+                    .trait_bound
+                    .as_ref()
+                    .is_some_and(|bound| bound.name == "Index") =>
+            {
+                if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                    for method in &impl_decl.methods {
+                        let fn_name = format!("{name}::{}", method.name);
+                        items.push(HirItem::Function(ctx.lower_fn_with_name(
+                            method,
+                            &fn_name,
+                            span.clone(),
+                        )));
+                    }
+                }
+            }
             Item::Machine(machine) => {
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
                     items.push(HirItem::Machine(hir_machine));
@@ -135,12 +271,302 @@ pub fn lower_program(
         }
     }
 
+    let mut monomorphisations = ctx.mono_registry.into_vec();
+    let call_site_type_args = ctx.call_site_type_args;
+    let record_layouts = ctx.record_layout_registry.into_vec();
+
+    // Closure under substitution: walk every monomorphisation's origin
+    // body, find inner generic-fn call sites, substitute their recorded
+    // type args via the monomorphisation's substitution map, and add
+    // any newly discovered concrete instantiations to the registry.
+    // Repeat to a fixed point (bounded by the configured cap).
+    closure_under_substitution(
+        &items,
+        &call_site_type_args,
+        &mut monomorphisations,
+        mono_cap,
+        &mut ctx.diagnostics,
+    );
+
     LowerOutput {
         module: HirModule {
             items,
             type_classes: ctx.type_classes,
+            monomorphisations,
+            call_site_type_args,
+            record_layouts,
         },
         diagnostics: ctx.diagnostics,
+    }
+}
+
+/// Walk each monomorphisation's origin fn body, substitute the
+/// per-monomorphisation type-arg map into every inner Call site's
+/// recorded type arguments, and add any newly-discovered concrete
+/// `(origin_fn, Vec<ResolvedTy>)` pairs to the registry. Iterates to a
+/// fixed point.
+///
+/// Emits `MonomorphisationCapExceeded` (at most once) when the cap is
+/// hit. Skips inner calls whose substituted args still contain any
+/// abstract type-parameter symbol (no monomorphisation is possible
+/// without a concrete instantiation).
+fn closure_under_substitution(
+    items: &[HirItem],
+    call_site_type_args: &HashMap<SiteId, Vec<ResolvedTy>>,
+    monomorphisations: &mut Vec<crate::monomorph::MonomorphizedFn>,
+    cap: usize,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    use crate::monomorph::{mangle, MonomorphizedFn};
+
+    // Build origin_id → &HirFn map for body lookup.
+    let mut origin_fns: HashMap<ItemId, &HirFn> = HashMap::new();
+    // Map of fn name → (origin id, type_params) for inner-call resolution.
+    let mut fn_info: HashMap<String, (ItemId, Vec<String>)> = HashMap::new();
+    for item in items {
+        if let HirItem::Function(f) = item {
+            origin_fns.insert(f.id, f);
+            fn_info.insert(f.name.clone(), (f.id, f.type_params.clone()));
+        }
+    }
+
+    let mut seen: HashSet<MonoKey> = monomorphisations.iter().map(|m| m.key.clone()).collect();
+    let mut worklist: Vec<MonoKey> = monomorphisations.iter().map(|m| m.key.clone()).collect();
+    let mut cap_diag_emitted = false;
+
+    while let Some(key) = worklist.pop() {
+        let Some(origin) = origin_fns.get(&key.origin).copied() else {
+            continue;
+        };
+        // Build substitution map: type_param name → concrete arg.
+        let subst: HashMap<String, ResolvedTy> = origin
+            .type_params
+            .iter()
+            .cloned()
+            .zip(key.type_args.iter().cloned())
+            .collect();
+        // Walk the body to discover Call sites.
+        let mut inner_sites: Vec<(String, SiteId)> = Vec::new();
+        collect_call_sites_in_block(&origin.body, &mut inner_sites);
+        for (callee_name, site) in inner_sites {
+            let Some((origin_id, type_params)) = fn_info.get(&callee_name).cloned() else {
+                continue;
+            };
+            if type_params.is_empty() {
+                continue;
+            }
+            let Some(args) = call_site_type_args.get(&site) else {
+                continue;
+            };
+            // Substitute the recorded args.
+            let substituted: Vec<ResolvedTy> =
+                args.iter().map(|t| substitute_ty(t, &subst)).collect();
+            // Skip if still abstract — the surrounding mono is generic
+            // in some symbol that we don't have a concrete value for.
+            if substituted
+                .iter()
+                .any(|t| contains_abstract_symbol(t, &fn_info))
+            {
+                continue;
+            }
+            let new_key = MonoKey {
+                origin: origin_id,
+                origin_name: callee_name.clone(),
+                type_args: substituted.clone(),
+            };
+            if !seen.insert(new_key.clone()) {
+                continue;
+            }
+            if monomorphisations.len() >= cap {
+                if !cap_diag_emitted {
+                    cap_diag_emitted = true;
+                    diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::MonomorphisationCapExceeded { cap },
+                        0..0,
+                        "too many distinct generic-function instantiations discovered \
+                         during inner-call closure; the compiler refuses to \
+                         monomorphise beyond the configured cap",
+                    ));
+                }
+                continue;
+            }
+            let mangled = mangle(&callee_name, &substituted);
+            monomorphisations.push(MonomorphizedFn {
+                key: new_key.clone(),
+                mangled_name: mangled,
+            });
+            worklist.push(new_key);
+        }
+    }
+}
+
+fn collect_call_sites_in_block(block: &HirBlock, out: &mut Vec<(String, SiteId)>) {
+    for stmt in &block.statements {
+        collect_call_sites_in_stmt(stmt, out);
+    }
+    if let Some(tail) = &block.tail {
+        collect_call_sites_in_expr(tail, out);
+    }
+}
+
+fn collect_call_sites_in_stmt(stmt: &HirStmt, out: &mut Vec<(String, SiteId)>) {
+    match &stmt.kind {
+        HirStmtKind::Let(_, Some(e)) | HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
+            collect_call_sites_in_expr(e, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
+    match &expr.kind {
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            // Record the site if callee is a direct BindingRef name.
+            if let HirExprKind::BindingRef { name, .. } = &callee.kind {
+                out.push((name.clone(), expr.site));
+            }
+            collect_call_sites_in_expr(callee, out);
+            for a in args {
+                collect_call_sites_in_expr(a, out);
+            }
+        }
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            collect_call_sites_in_expr(left, out);
+            collect_call_sites_in_expr(right, out);
+        }
+        HirExprKind::Block(b) => collect_call_sites_in_block(b, out),
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_call_sites_in_expr(condition, out);
+            collect_call_sites_in_expr(then_expr, out);
+            if let Some(e) = else_expr {
+                collect_call_sites_in_expr(e, out);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, e) in fields {
+                collect_call_sites_in_expr(e, out);
+            }
+            if let Some(b) = base {
+                collect_call_sites_in_expr(b, out);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => collect_call_sites_in_expr(object, out),
+        HirExprKind::Scope { body } => collect_call_sites_in_block(body, out),
+        HirExprKind::TupleIndex { tuple, .. } => collect_call_sites_in_expr(tuple, out),
+        HirExprKind::Index { container, index } => {
+            collect_call_sites_in_expr(container, out);
+            collect_call_sites_in_expr(index, out);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            collect_call_sites_in_expr(container, out);
+            if let Some(s) = start {
+                collect_call_sites_in_expr(s, out);
+            }
+            if let Some(e) = end {
+                collect_call_sites_in_expr(e, out);
+            }
+        }
+        HirExprKind::SpawnLambdaActor { body, .. } => collect_call_sites_in_expr(body, out),
+        _ => {}
+    }
+}
+
+/// Substitute `ResolvedTy::Named { name, args: [] }` whose `name`
+/// appears in `subst` with the mapped concrete type. Recurses into
+/// composite type constructors. Used by the closure-under-substitution
+/// pass and by MIR-side monomorphisation lowering.
+#[must_use]
+pub fn substitute_ty<S: std::hash::BuildHasher>(
+    ty: &ResolvedTy,
+    subst: &HashMap<String, ResolvedTy, S>,
+) -> ResolvedTy {
+    match ty {
+        ResolvedTy::Named { name, args } if args.is_empty() && subst.contains_key(name) => {
+            subst[name].clone()
+        }
+        ResolvedTy::Named { name, args } => ResolvedTy::Named {
+            name: name.clone(),
+            args: args.iter().map(|a| substitute_ty(a, subst)).collect(),
+        },
+        ResolvedTy::Tuple(items) => {
+            ResolvedTy::Tuple(items.iter().map(|t| substitute_ty(t, subst)).collect())
+        }
+        ResolvedTy::Array(elem, n) => ResolvedTy::Array(Box::new(substitute_ty(elem, subst)), *n),
+        ResolvedTy::Slice(elem) => ResolvedTy::Slice(Box::new(substitute_ty(elem, subst))),
+        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
+            params: params.iter().map(|p| substitute_ty(p, subst)).collect(),
+            ret: Box::new(substitute_ty(ret, subst)),
+        },
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => ResolvedTy::Closure {
+            params: params.iter().map(|p| substitute_ty(p, subst)).collect(),
+            ret: Box::new(substitute_ty(ret, subst)),
+            captures: captures.iter().map(|c| substitute_ty(c, subst)).collect(),
+        },
+        ResolvedTy::Pointer {
+            is_mutable,
+            pointee,
+        } => ResolvedTy::Pointer {
+            is_mutable: *is_mutable,
+            pointee: Box::new(substitute_ty(pointee, subst)),
+        },
+        ResolvedTy::Task(inner) => ResolvedTy::Task(Box::new(substitute_ty(inner, subst))),
+        _ => ty.clone(),
+    }
+}
+
+fn contains_abstract_symbol(
+    ty: &ResolvedTy,
+    fn_info: &HashMap<String, (ItemId, Vec<String>)>,
+) -> bool {
+    // A type contains an abstract symbol if any `Named { args: [] }`
+    // matches a type-parameter name declared on any top-level fn.
+    let is_type_param = |name: &str| {
+        fn_info
+            .values()
+            .any(|(_, params)| params.iter().any(|p| p == name))
+    };
+    match ty {
+        ResolvedTy::Named { name, args } => {
+            if args.is_empty() && is_type_param(name) {
+                return true;
+            }
+            args.iter().any(|a| contains_abstract_symbol(a, fn_info))
+        }
+        ResolvedTy::Tuple(items) => items.iter().any(|t| contains_abstract_symbol(t, fn_info)),
+        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
+            contains_abstract_symbol(elem, fn_info)
+        }
+        ResolvedTy::Function { params, ret } => {
+            params.iter().any(|p| contains_abstract_symbol(p, fn_info))
+                || contains_abstract_symbol(ret, fn_info)
+        }
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            params.iter().any(|p| contains_abstract_symbol(p, fn_info))
+                || contains_abstract_symbol(ret, fn_info)
+                || captures
+                    .iter()
+                    .any(|c| contains_abstract_symbol(c, fn_info))
+        }
+        ResolvedTy::Pointer { pointee, .. } => contains_abstract_symbol(pointee, fn_info),
+        ResolvedTy::Task(inner) => contains_abstract_symbol(inner, fn_info),
+        _ => false,
     }
 }
 
@@ -162,6 +588,19 @@ struct LowerCtx {
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Per-call-site `T → dyn Trait` coercion side-table. Keyed by the
+    /// argument expression span. `lower_expr` consults this at every
+    /// expression's exit; if the just-lowered expression's span has an
+    /// entry, the result is wrapped in `HirExprKind::CoerceToDynTrait`.
+    /// Carries the checker's authoritative method-table resolution.
+    dyn_trait_coercions: HashMap<SpanKey, hew_types::DynCoercion>,
+    /// Per-call-site `dyn Trait` method-dispatch side-table. Keyed by the
+    /// method-call expression span. `lower_method_call` consults this
+    /// before the `method_call_rewrites` branch so that
+    /// `obj.method()` on a `dyn`-typed receiver lowers to
+    /// `HirExprKind::CallDynMethod` (vtable slot index attached) rather
+    /// than failing closed on the missing rewrite entry.
+    dyn_trait_method_calls: HashMap<SpanKey, hew_types::DynMethodCall>,
     /// Checker-inferred types for every expression, keyed by expression span.
     /// Consulted at `Expr::Call` sites to determine the call-result type from
     /// checker authority rather than re-deriving from the callee's HIR type.
@@ -190,17 +629,18 @@ struct LowerCtx {
     /// `mem::replace` so the outer self-binding doesn't leak into an inner
     /// lambda's classification.
     current_actor_self: Option<(BindingId, String)>,
-    /// Checker-resolved type arguments for generic function calls that lack
-    /// explicit type annotations.  Keyed by the call expression span.
+    /// Checker-resolved type arguments for generic function calls that
+    /// lack explicit type annotations. Keyed by the call expression span.
     ///
-    /// Passive pass-through: HIR does not yet lower generic monomorphization.
-    /// Future consumer: generic-call lowering in the MIR elaborator or E4
-    /// codegen once generic stdlib calls appear in v0.5 programs.
+    /// Consumed at `Expr::Call` lowering (G-1.a, producer-bridge wakeup):
+    /// every callsite whose callee is a generic top-level user fn
+    /// (non-empty `FnEntry.type_params`) is paired with the entry here
+    /// and inserted into `mono_registry`. A poisoned entry (failing the
+    /// `ResolvedTy::from_ty` boundary conversion) emits
+    /// `MonomorphisationCallTypeArgsViolation`; a generic callsite with
+    /// no entry at all is treated as the trivially-monomorphic case
+    /// (e.g. a builtin or runtime-symbol call) and skipped.
     /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
-    #[expect(
-        dead_code,
-        reason = "passive pass-through; future consumer is generic-call monomorphization in E4 codegen"
-    )]
     call_type_args: HashMap<SpanKey, Vec<Ty>>,
     /// Checker-authoritative ABI-selector facts for erased runtime types.
     /// Currently covers `HashSet` element-type dispatch (`i64`/`u64`/`str`
@@ -244,10 +684,61 @@ struct LowerCtx {
     /// (refcount-cycle-breaking strategy selection).
     /// (LESSONS: producer-bridge-before-codegen P1)
     cycle_capable_actors: HashSet<String>,
+    /// Distinct concrete instantiations of generic top-level user fns,
+    /// accumulated as `Expr::Call` lowering walks the program. Drained
+    /// into `HirModule.monomorphisations` at the end of `lower_program`.
+    /// Cap is configurable via `lower_program_with_mono_cap` for
+    /// fail-closed-diagnostic tests.
+    mono_registry: MonoRegistry,
+    /// Tracks whether the `MonomorphisationCapExceeded` diagnostic has
+    /// already been emitted for this lowering invocation, to avoid
+    /// spamming one diagnostic per overflowing callsite.
+    mono_cap_diag_emitted: bool,
+    /// Per-call-site recorded concrete type arguments. Populated by
+    /// `record_call_site_type_args` whenever a `HirExprKind::Call` is
+    /// produced for a generic top-level user-fn callee. Drained into
+    /// `HirModule.call_site_type_args` at end of `lower_program`.
+    ///
+    /// Includes "still-abstract" entries (where the callee is generic
+    /// and the call is itself inside a generic body, so the recorded
+    /// args contain the enclosing fn's type-parameter symbols). MIR
+    /// lowering substitutes those symbols via the per-monomorphisation
+    /// substitution map; the registry's closure-under-substitution pass
+    /// uses the same data to discover inner monomorphisations.
+    call_site_type_args: HashMap<SiteId, Vec<ResolvedTy>>,
+    /// Pre-collected record/type-decl shape registry. Populated in the
+    /// type-decl pre-pass before function bodies lower, so that
+    /// `Expr::StructInit` lowering can answer "is this a generic user
+    /// record?" and look up its source field shape. Tuple-form records
+    /// land here with `fields = []`; they never trigger record-layout
+    /// emission (their constructor goes through `Expr::Call`).
+    record_registry: HashMap<String, RecordEntry>,
+    /// Checker-resolved type arguments for generic record-init sites
+    /// (`R { ... }` against a `pub type R<T>` or `record R<T>`),
+    /// keyed by the struct-init expression span.
+    ///
+    /// Consumed at `Expr::StructInit` lowering: every init site whose
+    /// record has non-empty `type_params` is paired with the entry here
+    /// and inserted into `record_layout_registry`. A poisoned entry
+    /// (failing the `ResolvedTy::from_ty` boundary conversion) emits
+    /// `RecordLayoutTypeArgsViolation`; a generic init site with no
+    /// entry at all is skipped (the checker only records sites whose
+    /// args resolved fully concretely).
+    /// (LESSONS: `checker-authority` P0, `producer-bridge-before-codegen` P1)
+    record_init_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Distinct user-record instantiations observed at `StructInit`
+    /// sites, accumulated as expression lowering walks the program.
+    /// Drained into `HirModule.record_layouts` at the end of
+    /// `lower_program`. Cap is configurable via
+    /// `lower_program_with_mono_cap` (shared with the fn registry).
+    record_layout_registry: RecordLayoutRegistry,
+    /// Tracks whether the `RecordLayoutCapExceeded` diagnostic has
+    /// already been emitted for this lowering invocation.
+    record_layout_cap_diag_emitted: bool,
 }
 
 impl LowerCtx {
-    fn new(tc_output: &TypeCheckOutput) -> Self {
+    fn new(tc_output: &TypeCheckOutput, mono_cap: usize) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
         // Seed compiler-known M2 substrate types before source-order TypeDecls.
         // This ensures `ValueClass::of_ty` resolves Duplex/Sink/Stream as
@@ -260,6 +751,8 @@ impl LowerCtx {
             type_classes,
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
+            dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
             scope_depth: 0,
             statement_position: false,
@@ -269,16 +762,380 @@ impl LowerCtx {
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
             assign_target_shapes: tc_output.assign_target_shapes.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
+            mono_registry: MonoRegistry::with_cap(mono_cap),
+            mono_cap_diag_emitted: false,
+            call_site_type_args: HashMap::new(),
+            record_registry: HashMap::new(),
+            record_init_type_args: tc_output.record_init_type_args.clone(),
+            record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
+            record_layout_cap_diag_emitted: false,
         }
+    }
+
+    /// Try to record a generic-fn callsite in the monomorphisation
+    /// registry. Returns silently for non-generic callees, callees not
+    /// in `fn_registry` (builtins/runtime symbols/lambda bindings), and
+    /// callsites with no `call_type_args` entry — the latter being the
+    /// trivially-monomorphic case from the checker's perspective (an
+    /// explicit `<T>` instantiation that already resolved to concrete
+    /// types and was not recorded per `calls.rs:183` `record_call_type_args`).
+    ///
+    /// Emits `MonomorphisationCallTypeArgsViolation` when a recorded
+    /// entry fails the `ResolvedTy::from_ty` boundary conversion, and
+    /// `MonomorphisationCapExceeded` (at most once per invocation) when
+    /// the registry cap is hit.
+    /// Recursive check: does this `ResolvedTy` contain a `Named` whose
+    /// name matches any type parameter declared on any top-level fn in
+    /// this module? If so, the value is "still abstract" — the call
+    /// site we're looking at is inside a generic body and the type-arg
+    /// has not yet been substituted. Such entries must not enter the
+    /// monomorphisation registry; G-1.b's body substitution pass will
+    /// re-walk these callsites with substituted args and produce real
+    /// entries.
+    ///
+    /// The check is a conservative over-approximation: a user-declared
+    /// type with the same name as a type param (e.g. `pub type T { ... }`)
+    /// would also be skipped. This is fine — that's not idiomatic Hew,
+    /// and the checker uses `Named` for both cases; the only correct
+    /// resolution requires bound-symbol metadata the checker side-table
+    /// does not currently expose. Skipping is safe at G-1.a (no false
+    /// emissions); a real `T`-named user type still produces the entry
+    /// at the outer non-generic callsite where `type_args` is `[]`.
+    fn contains_abstract_type_param(&self, ty: &ResolvedTy) -> bool {
+        match ty {
+            ResolvedTy::Named { name, args } => {
+                if self.is_type_param_symbol(name) {
+                    return true;
+                }
+                args.iter().any(|a| self.contains_abstract_type_param(a))
+            }
+            ResolvedTy::Tuple(items) => items.iter().any(|t| self.contains_abstract_type_param(t)),
+            ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
+                self.contains_abstract_type_param(elem)
+            }
+            ResolvedTy::Function { params, ret } => {
+                params.iter().any(|p| self.contains_abstract_type_param(p))
+                    || self.contains_abstract_type_param(ret)
+            }
+            ResolvedTy::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                params.iter().any(|p| self.contains_abstract_type_param(p))
+                    || self.contains_abstract_type_param(ret)
+                    || captures
+                        .iter()
+                        .any(|c| self.contains_abstract_type_param(c))
+            }
+            ResolvedTy::Pointer { pointee, .. } => self.contains_abstract_type_param(pointee),
+            ResolvedTy::TraitObject { traits } => traits
+                .iter()
+                .any(|tb| tb.args.iter().any(|a| self.contains_abstract_type_param(a))),
+            ResolvedTy::Task(inner) => self.contains_abstract_type_param(inner),
+            _ => false,
+        }
+    }
+
+    /// Does `name` match any type-parameter declared on any top-level
+    /// fn in `fn_registry`? Used to filter "still-abstract" type args
+    /// from the monomorphisation registry. See
+    /// `contains_abstract_type_param` for the rationale.
+    fn is_type_param_symbol(&self, name: &str) -> bool {
+        self.fn_registry
+            .values()
+            .any(|entry| entry.type_params.iter().any(|p| p == name))
+    }
+
+    fn record_monomorphisation(
+        &mut self,
+        callee_expr: &hew_parser::ast::Expr,
+        call_span: &std::ops::Range<usize>,
+        call_site: SiteId,
+    ) {
+        let Expr::Identifier(name) = callee_expr else {
+            // Only direct-name callees are candidates for top-level-fn
+            // monomorphisation. Method calls, indirect calls through
+            // bindings, and complex callee expressions are out of scope
+            // for G-1.a.
+            return;
+        };
+        let Some(entry) = self.fn_registry.get(name) else {
+            // Callee is not a top-level user fn — skip (builtin,
+            // runtime-symbol, or unresolved). Filtering on `fn_registry`
+            // membership inherently excludes runtime-symbol callees
+            // since they have no AST `fn` item and therefore no
+            // `fn_registry` insertion (`lower_program` first pass at
+            // line 79).
+            return;
+        };
+        if entry.type_params.is_empty() {
+            // Non-generic callee — nothing to monomorphise.
+            return;
+        }
+        let origin = entry.id;
+        let origin_name = name.clone();
+        let key = SpanKey::from(call_span);
+        let Some(type_args_raw) = self.call_type_args.get(&key).cloned() else {
+            // Generic callee with no recorded type args at this site.
+            // The checker records every callsite whose freshened type
+            // args were resolved to fully concrete `Ty`s
+            // (`calls.rs:78`); the only ways to miss a site are
+            // (a) an explicit `<T>` syntax that doesn't re-record
+            //     (`calls.rs:183`'s `record_call_type_args` guard), or
+            // (b) the call failed to type-check.
+            // In (a) the call is trivially monomorphic at the source
+            // surface but downstream stages still need a registry
+            // entry — that wiring lands in G-1.b once the explicit
+            // type-args path is examined end-to-end.
+            // (Per plan G-1.a: do not re-infer; treat as out of scope.)
+            return;
+        };
+        let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());
+        for ty in &type_args_raw {
+            match ResolvedTy::from_ty(ty) {
+                Ok(resolved) => type_args.push(resolved),
+                Err(err) => {
+                    // Fail-closed: poisoned side-table for this call.
+                    // Emit a diagnostic; skip the registry entry so the
+                    // downstream MIR/LLVM emit doesn't reach an
+                    // unresolved type. (LESSONS: checker-output-boundary P0)
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::MonomorphisationCallTypeArgsViolation {
+                            callee: origin_name.clone(),
+                            reason: err.to_string(),
+                        },
+                        call_span.clone(),
+                        "checker-authoritative call_type_args entry failed boundary conversion",
+                    ));
+                    return;
+                }
+            }
+        }
+        // Record the per-call-site type arguments unconditionally —
+        // including "still-abstract" entries where the args reference
+        // the enclosing fn's type-parameter symbols. MIR lowering of a
+        // specialised body substitutes those symbols via its
+        // per-monomorphisation substitution map; the registry's
+        // closure-under-substitution pass uses the same data to
+        // discover inner monomorphisations.
+        self.call_site_type_args
+            .insert(call_site, type_args.clone());
+        // Skip "still-abstract" entries from the registry — call sites
+        // inside a generic body where the type arg is `T` (the
+        // surrounding fn's own type-param symbol) rather than a
+        // concrete substitution. These appear with
+        // `ResolvedTy::Named { name: "T", args: [] }` because the
+        // checker treats unbound type params as opaque named types for
+        // body-checking purposes. MIR's monomorphisation pass re-walks
+        // these sites with concrete args via substitution.
+        if type_args
+            .iter()
+            .any(|t| self.contains_abstract_type_param(t))
+        {
+            return;
+        }
+        let mono_key = MonoKey {
+            origin,
+            origin_name: origin_name.clone(),
+            type_args,
+        };
+        match self.mono_registry.insert(mono_key) {
+            Ok(_) => {}
+            Err(()) => {
+                if !self.mono_cap_diag_emitted {
+                    self.mono_cap_diag_emitted = true;
+                    let cap = self.mono_registry.cap();
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::MonomorphisationCapExceeded { cap },
+                        call_span.clone(),
+                        "too many distinct generic-function instantiations; the \
+                         compiler refuses to monomorphise beyond the configured \
+                         cap (suspect polymorphic recursion or runaway inference)",
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Try to record a generic record-init site in the record-layout
+    /// registry. Mirrors `record_monomorphisation` for the
+    /// record-type surface.
+    ///
+    /// Skips silently when:
+    /// - the record is not in `record_registry` (builtin Vec/Option/
+    ///   Result/HashMap/Range/channel-handle types are never registered
+    ///   because they have no `Item::TypeDecl`/`Item::Record` AST node),
+    /// - the record has empty `type_params` (monomorphic record — no
+    ///   per-instantiation layout needed; the bare-name layout in MIR
+    ///   suffices),
+    /// - no `record_init_type_args` entry exists for the site (the
+    ///   checker filters out sites whose args still contain inference
+    ///   vars; a missing entry means the init is trivially monomorphic
+    ///   at the checker's seam).
+    ///
+    /// Emits `RecordLayoutTypeArgsViolation` when a recorded entry
+    /// fails the `ResolvedTy::from_ty` boundary conversion;
+    /// `RecursiveGenericTypeUnsupported` when substituted fields name
+    /// the same origin record with different concrete args;
+    /// `RecordLayoutCapExceeded` (at most once per invocation) when the
+    /// registry cap is hit.
+    fn record_record_layout(
+        &mut self,
+        record_name: &str,
+        init_span: &std::ops::Range<usize>,
+    ) -> Option<Vec<ResolvedTy>> {
+        let Some(entry) = self.record_registry.get(record_name) else {
+            // Builtin or unresolved record — not a user-declared
+            // generic type, so it has no record-layout registry entry.
+            return None;
+        };
+        if entry.type_params.is_empty() {
+            // Monomorphic record — bare-name layout (handled by MIR's
+            // existing record-decl emission) is sufficient.
+            return None;
+        }
+        let origin = entry.id;
+        let origin_name = record_name.to_string();
+        let type_params = entry.type_params.clone();
+        let source_fields = entry.fields.clone();
+
+        let key = SpanKey::from(init_span);
+        let Some(type_args_raw) = self.record_init_type_args.get(&key).cloned() else {
+            // Generic record-init with no recorded type args at this
+            // site. Per the checker output contract this can only
+            // happen when the site failed type-checking (and was
+            // pruned at the boundary) or when an explicit type-arg
+            // syntax took a path that doesn't re-record. Either way
+            // there's nothing to monomorphise here.
+            return None;
+        };
+
+        // Boundary conversion: any leaked inference var, error, or
+        // unmaterialised literal is fail-closed per checker-authority.
+        let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());
+        for ty in &type_args_raw {
+            match ResolvedTy::from_ty(ty) {
+                Ok(resolved) => type_args.push(resolved),
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::RecordLayoutTypeArgsViolation {
+                            record: origin_name.clone(),
+                            reason: err.to_string(),
+                        },
+                        init_span.clone(),
+                        "checker-authoritative record_init_type_args entry failed boundary conversion",
+                    ));
+                    return None;
+                }
+            }
+        }
+
+        // Arity guard: the checker enforces matching arity, but be
+        // defensive — substitution panics on a mismatch.
+        if type_args.len() != type_params.len() {
+            return None;
+        }
+
+        // Substitute the type-params with the concrete args to produce
+        // this layout's field shape.
+        let substituted_fields: Vec<(String, ResolvedTy)> = source_fields
+            .iter()
+            .map(|(fname, fty)| {
+                (
+                    fname.clone(),
+                    substitute_type_params(fty, &type_params, &type_args),
+                )
+            })
+            .collect();
+
+        // Recursive polymorphic-self detection: a substituted field
+        // type that names `origin_name` with *different* concrete args
+        // than `type_args` is unbounded (each layer demands another
+        // distinct layout). Same-arg self-reference is fine — that's
+        // an ordinary recursive shape and converges to one layout.
+        for (_, fty) in &substituted_fields {
+            if contains_recursive_polymorphic_self(fty, &origin_name, &type_args) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::RecursiveGenericTypeUnsupported {
+                        name: origin_name.clone(),
+                    },
+                    init_span.clone(),
+                    "recursive generic type definition: a field substitutes to \
+                     a reference to the same record with different concrete \
+                     type arguments, which would force unbounded layout \
+                     expansion (deferred to v0.6)",
+                ));
+                return None;
+            }
+        }
+
+        let returned_type_args = type_args.clone();
+        let key = RecordMonoKey {
+            origin,
+            origin_name,
+            type_args,
+        };
+        if self
+            .record_layout_registry
+            .insert(key, substituted_fields, init_span.clone())
+            .is_err()
+        {
+            if !self.record_layout_cap_diag_emitted {
+                self.record_layout_cap_diag_emitted = true;
+                let cap = self.record_layout_registry.cap();
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::RecordLayoutCapExceeded { cap },
+                    init_span.clone(),
+                    "too many distinct generic-record instantiations; the \
+                     compiler refuses to monomorphise beyond the configured \
+                     cap (suspect polymorphic recursion or runaway inference)",
+                ));
+            }
+            return None;
+        }
+        Some(returned_type_args)
     }
 }
 
 impl LowerCtx {
+    fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
+        let id = self.ids.item();
+        let return_ty = func
+            .return_type
+            .as_ref()
+            .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+        let param_tys = func.params.iter().map(|p| self.lower_type(&p.ty)).collect();
+        let type_params = func
+            .type_params
+            .as_ref()
+            .map(|params| params.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default();
+        self.fn_registry.insert(
+            name.to_string(),
+            FnEntry {
+                id,
+                return_ty,
+                param_tys,
+                type_params,
+            },
+        );
+    }
+
     fn lower_fn(&mut self, func: &FnDecl, span: std::ops::Range<usize>) -> HirFn {
+        self.lower_fn_with_name(func, &func.name, span)
+    }
+
+    fn lower_fn_with_name(
+        &mut self,
+        func: &FnDecl,
+        name: &str,
+        span: std::ops::Range<usize>,
+    ) -> HirFn {
         // Use the stable ItemId pre-allocated during the first pass.
         let id = self
             .fn_registry
-            .get(&func.name)
+            .get(name)
             .map_or_else(|| self.ids.item(), |entry| entry.id);
 
         self.push_scope();
@@ -299,7 +1156,7 @@ impl LowerCtx {
         HirFn {
             id,
             node: self.ids.node(),
-            name: func.name.clone(),
+            name: name.to_string(),
             type_params: func
                 .type_params
                 .as_ref()
@@ -387,12 +1244,24 @@ impl LowerCtx {
             // belongs to enum bodies and is similarly out of slice scope.
         }
 
+        // Reuse the stable ItemId pre-allocated during the record/
+        // type-decl pre-pass. Falling back to a fresh id keeps
+        // the path safe if the pre-pass ever skips a decl.
+        let id = self
+            .record_registry
+            .get(&decl.name)
+            .map_or_else(|| self.ids.item(), |entry| entry.id);
+        let type_params: Vec<String> = decl
+            .type_params
+            .as_ref()
+            .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
         HirTypeDecl {
-            id: self.ids.item(),
+            id,
             node: self.ids.node(),
             name: decl.name.clone(),
             marker: decl.resource_marker,
             consuming_methods: decl.consuming_methods.clone(),
+            type_params,
             fields,
             span,
         }
@@ -428,8 +1297,15 @@ impl LowerCtx {
             RecordKind::Tuple(_) => vec![],
         };
 
+        // Reuse the stable ItemId pre-allocated during the record/
+        // type-decl pre-pass. Falling back to a fresh id keeps
+        // the path safe if the pre-pass ever skips a decl.
+        let id = self
+            .record_registry
+            .get(&decl.name)
+            .map_or_else(|| self.ids.item(), |entry| entry.id);
         HirRecordDecl {
-            id: self.ids.item(),
+            id,
             node: self.ids.node(),
             name: decl.name.clone(),
             type_params,
@@ -451,19 +1327,36 @@ impl LowerCtx {
             SupervisorStrategy::SimpleOneForOne => HirSupervisorStrategy::SimpleOneForOne,
         });
 
+        // Assign slot indices by partitioning children into static and pool spaces.
+        // Each partition uses its own 0-based counter so the indices are disjoint,
+        // matching the runtime layout (children[] for static, pool_slots[] for pool).
+        let mut static_slot = 0u32;
+        let mut pool_slot = 0u32;
         let children = decl
             .children
             .iter()
-            .map(|child| HirSupervisorChild {
-                name: child.name.clone(),
-                ty: child.actor_type.clone(),
-                restart_policy: child.restart.map(|r| match r {
-                    RestartPolicy::Permanent => HirRestartPolicy::Permanent,
-                    RestartPolicy::Transient => HirRestartPolicy::Transient,
-                    RestartPolicy::Temporary => HirRestartPolicy::Temporary,
-                }),
-                wired_to: child.wired_to.clone(),
-                is_pool: child.is_pool,
+            .map(|child| {
+                let slot_index = if child.is_pool {
+                    let idx = pool_slot;
+                    pool_slot += 1;
+                    idx
+                } else {
+                    let idx = static_slot;
+                    static_slot += 1;
+                    idx
+                };
+                HirSupervisorChild {
+                    name: child.name.clone(),
+                    ty: child.actor_type.clone(),
+                    restart_policy: child.restart.map(|r| match r {
+                        RestartPolicy::Permanent => HirRestartPolicy::Permanent,
+                        RestartPolicy::Transient => HirRestartPolicy::Transient,
+                        RestartPolicy::Temporary => HirRestartPolicy::Temporary,
+                    }),
+                    wired_to: child.wired_to.clone(),
+                    is_pool: child.is_pool,
+                    slot_index,
+                }
             })
             .collect();
 
@@ -1279,6 +2172,13 @@ impl LowerCtx {
         // `lower_stmt` sets this to `true` immediately before calling us.
         let in_stmt_position = std::mem::replace(&mut self.statement_position, false);
         let span = expr.1.clone();
+        // Pre-allocate the SiteId for this expression so call-site
+        // side-tables (e.g. `call_site_type_args`) can be keyed
+        // by the eventual HirExpr.site before the wrapping struct is
+        // built. Allocation order: site before node so existing
+        // SiteId counts in tests stay stable (lower_expr previously
+        // allocated node before site at the same call).
+        let site = self.ids.site();
         let (kind, ty) = match &expr.0 {
             Expr::Literal(lit) => Self::lower_literal(lit),
             Expr::Identifier(name) => self.lower_identifier(name, span.clone()),
@@ -1301,6 +2201,21 @@ impl LowerCtx {
                     .iter()
                     .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
                     .collect();
+                // Record the per-instantiation monomorphisation if the
+                // callee is a generic top-level user fn. Direct-name
+                // callees only; `record_monomorphisation` filters out
+                // non-generic callees, non-`fn_registry` callees (builtins,
+                // runtime symbols, local bindings), and callsites the
+                // checker did not record. Fail-closed on poisoned entries
+                // and on registry-cap exhaustion.
+                //
+                // Also threads the resolved `Vec<ResolvedTy>` for this
+                // call site (concrete or symbolic-T) into
+                // `call_site_type_args` keyed by the wrapping HirExpr's
+                // SiteId so MIR lowering can rewrite the call to the
+                // mangled symbol of the right per-monomorphisation MIR
+                // function.
+                self.record_monomorphisation(&function.0, &span, site);
                 // Checker authority takes precedence: consult expr_types at the
                 // full call-expression span.  The checker records the call result
                 // type here — including for checker-registered builtins like
@@ -1389,13 +2304,20 @@ impl LowerCtx {
             Expr::StructInit {
                 name,
                 fields,
-                // The v0.5 vertical-slice HIR lowering does not yet honour
-                // explicit type arguments at struct literal sites; the
-                // slice rejects user types at the MIR boundary anyway, so
-                // dropping the args here cannot widen an accepted program.
+                // Surface-level explicit type arguments (`Box<int> { ... }`).
+                // The HIR-recorded `type_args` below comes from the checker's
+                // `record_init_type_args` side-table (which already reconciled
+                // inferred-vs-explicit and substituted enclosing-fn type-params
+                // where applicable), so we ignore the raw surface args here.
                 type_args: _,
                 base,
             } => {
+                // Record the per-instantiation `RecordLayout` for
+                // generic user records and capture the concrete type-args
+                // for propagation onto this expression's resolved type.
+                // `None` indicates a monomorphic record or builtin; for
+                // those, the resulting `Named` carries `args: []` as before.
+                let resolved_type_args = self.record_record_layout(name, &span).unwrap_or_default();
                 let hir_fields = fields
                     .iter()
                     .map(|(fname, expr)| (fname.clone(), self.lower_expr(expr, IntentKind::Read)))
@@ -1412,13 +2334,13 @@ impl LowerCtx {
                 (
                     HirExprKind::StructInit {
                         name: name.clone(),
-                        type_args: Vec::new(),
+                        type_args: resolved_type_args.clone(),
                         fields: hir_fields,
                         base: hir_base,
                     },
                     ResolvedTy::Named {
                         name: name.clone(),
-                        args: Vec::new(),
+                        args: resolved_type_args,
                     },
                 )
             }
@@ -1637,8 +2559,71 @@ impl LowerCtx {
                         result_ty,
                     )
                 } else {
-                    // C-2 single-element indexing: result type is element type T.
                     let index_expr = self.lower_expr(index, IntentKind::Read);
+                    if let Some(dyn_call) = self
+                        .dyn_trait_method_calls
+                        .get(&SpanKey::from(&span))
+                        .cloned()
+                    {
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site,
+                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                            ty: result_ty.clone(),
+                            intent,
+                            kind: HirExprKind::CallDynMethod {
+                                receiver: Box::new(container),
+                                trait_name: dyn_call.trait_name,
+                                method_name: dyn_call.method_name,
+                                slot: dyn_call.slot,
+                                args: vec![index_expr],
+                                ret_ty: result_ty,
+                            },
+                            span: span.clone(),
+                        };
+                    }
+
+                    if let ResolvedTy::Named { name, .. } = &container.ty {
+                        let callee_name = format!("{name}::at");
+                        if name != "Vec" && self.fn_registry.contains_key(&callee_name) {
+                            let callee_ty = ResolvedTy::Function {
+                                params: vec![container.ty.clone(), index_expr.ty.clone()],
+                                ret: Box::new(result_ty.clone()),
+                            };
+                            let resolved = self
+                                .fn_registry
+                                .get(&callee_name)
+                                .map_or(ResolvedRef::Unresolved, |entry| {
+                                    ResolvedRef::Item(entry.id)
+                                });
+                            let callee = HirExpr {
+                                node: self.ids.node(),
+                                site: self.ids.site(),
+                                value_class: ValueClass::PersistentShare,
+                                ty: callee_ty,
+                                intent: IntentKind::Read,
+                                kind: HirExprKind::BindingRef {
+                                    name: callee_name,
+                                    resolved,
+                                },
+                                span: span.clone(),
+                            };
+                            return HirExpr {
+                                node: self.ids.node(),
+                                site,
+                                value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                                ty: result_ty.clone(),
+                                intent,
+                                kind: HirExprKind::Call {
+                                    callee: Box::new(callee),
+                                    args: vec![container, index_expr],
+                                },
+                                span: span.clone(),
+                            };
+                        }
+                    }
+
+                    // C-2 single-element Vec indexing: result type is element type T.
                     (
                         HirExprKind::Index {
                             container: Box::new(container),
@@ -1715,15 +2700,88 @@ impl LowerCtx {
                 )
             }
         };
-        HirExpr {
+        let inner = HirExpr {
             node: self.ids.node(),
-            site: self.ids.site(),
+            site,
             value_class: ValueClass::of_ty(&ty, &self.type_classes),
             ty,
             intent,
             kind,
-            span,
+            span: span.clone(),
+        };
+        // Checker-authority coercion: if the just-lowered expression sits at
+        // a `T → dyn Trait` coercion site (recorded by the type checker at
+        // the *argument* expression span), wrap the result in
+        // `HirExprKind::CoerceToDynTrait`. MIR lowers this 1:1 to
+        // `Instr::CoerceToDynTrait`. The wrapping ResolvedTy is the
+        // destination trait-object type, which the wrapping HirExpr
+        // carries; the inner expression keeps its concrete type.
+        let coercion_key = SpanKey::from(&span);
+        if let Some(coercion) = self.dyn_trait_coercions.get(&coercion_key).cloned() {
+            let mut resolved_bounds = Vec::new();
+            for name in coercion.trait_name.split('+') {
+                let mut assoc_bindings = Vec::new();
+                for binding in coercion
+                    .assoc_bindings
+                    .iter()
+                    .filter(|binding| binding.trait_name == name)
+                {
+                    let Ok(ty) = hew_types::ResolvedTy::from_ty(&binding.ty) else {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "dyn-trait assoc binding".to_string(),
+                                reason: format!(
+                                    "`{}::{}` failed boundary conversion",
+                                    binding.trait_name, binding.assoc_name
+                                ),
+                            },
+                            span.clone(),
+                            "associated type binding from dyn_trait_coercions failed boundary conversion",
+                        ));
+                        return inner;
+                    };
+                    assoc_bindings.push((binding.assoc_name.clone(), ty));
+                }
+                resolved_bounds.push(hew_types::ResolvedTraitBound {
+                    trait_name: name.to_string(),
+                    args: vec![],
+                    assoc_bindings,
+                });
+            }
+            let dyn_ty = ResolvedTy::TraitObject {
+                traits: resolved_bounds,
+            };
+            let concrete_resolved = match ResolvedTy::from_ty(&coercion.concrete_type) {
+                Ok(r) => r,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "dyn-trait coercion".to_string(),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "concrete type from dyn_trait_coercions failed boundary conversion",
+                    ));
+                    return inner;
+                }
+            };
+            return HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                value_class: ValueClass::of_ty(&dyn_ty, &self.type_classes),
+                ty: dyn_ty,
+                intent,
+                kind: HirExprKind::CoerceToDynTrait {
+                    value: Box::new(inner),
+                    trait_name: coercion.trait_name,
+                    concrete_type: concrete_resolved,
+                    method_table: coercion.method_table,
+                    vtable_entries: coercion.vtable_entries,
+                },
+                span,
+            };
         }
+        inner
     }
 
     /// Lower a parsed `select { ... }` expression to HIR.
@@ -2210,9 +3268,9 @@ impl LowerCtx {
                     "f64" | "float" => ResolvedTy::F64,
                     "bool" | "Bool" => ResolvedTy::Bool,
                     "char" | "Char" => ResolvedTy::Char,
-                    "String" | "str" => ResolvedTy::String,
+                    "string" | "str" => ResolvedTy::String,
+                    "duration" => ResolvedTy::Duration,
                     "Bytes" => ResolvedTy::Bytes,
-                    "Duration" => ResolvedTy::Duration,
                     "Unit" | "()" => ResolvedTy::Unit,
                     // `Task` is a compiler-internal value class with no user-source
                     // syntax. Writing `Task<T>` in any annotation position is a
@@ -2297,6 +3355,13 @@ impl LowerCtx {
     /// symbol from the receiver type.  Only `RewriteToFunction` is recognised here;
     /// other rewrite variants are rejected as unsupported (they target the C++/MLIR
     /// pipeline, not the Rust MIR pipeline).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single linear lowering path with three exclusive branches \
+                  (dyn-method dispatch / dyn-receiver fail-closed / legacy \
+                  rewrite); splitting would scatter related fail-closed \
+                  diagnostics across helpers"
+    )]
     fn lower_method_call(
         &mut self,
         receiver: &Spanned<Expr>,
@@ -2305,6 +3370,60 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         let key = SpanKey::from(&span);
+        // `dyn Trait` receivers take precedence: the checker's
+        // `dyn_trait_method_calls` side-table pins the trait/method/slot
+        // resolution authoritatively, and these calls do NOT have a
+        // `method_call_rewrites` entry (a direct-call rewrite would
+        // collapse the dispatch indirection that the vtable provides).
+        if let Some(dyn_call) = self.dyn_trait_method_calls.get(&key).cloned() {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let lowered_args: Vec<HirExpr> = args
+                .iter()
+                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                .collect();
+            // Result type comes from the checker's expr_types side-table
+            // (the call's full span). Fail-closed if absent or poisoned.
+            let ret_ty = self
+                .expr_types
+                .get(&key)
+                .cloned()
+                .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+                .unwrap_or(ResolvedTy::Unit);
+            return (
+                HirExprKind::CallDynMethod {
+                    receiver: Box::new(lowered_receiver),
+                    trait_name: dyn_call.trait_name,
+                    method_name: dyn_call.method_name,
+                    slot: dyn_call.slot,
+                    args: lowered_args,
+                    ret_ty: ret_ty.clone(),
+                },
+                ret_ty,
+            );
+        }
+        // Receiver typed as `Ty::TraitObject` but no side-table entry:
+        // fail-closed per `checker-output-boundary`. The checker MUST
+        // populate `dyn_trait_method_calls` for every accepted call on
+        // a trait-object receiver; missing entry is a hard diagnostic.
+        if let Some(receiver_ty) = self.expr_types.get(&SpanKey::from(&receiver.1)) {
+            if matches!(receiver_ty, hew_types::Ty::TraitObject { .. }) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::TraitObjectMethodNoSideTableEntry {
+                        method: method.to_string(),
+                    },
+                    span.clone(),
+                    "method call on `dyn Trait` receiver has no \
+                     dyn_trait_method_calls side-table entry; the \
+                     checker must record one before HIR lowering",
+                ));
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "method call `.{method}` on dyn-trait with no side-table entry"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            }
+        }
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
             Some(MethodCallRewrite::RewriteToFunction { c_symbol }) => {
@@ -2816,6 +3935,15 @@ fn collect_captures_walk(
             }
             if let Some(e) = end {
                 collect_captures_walk(e, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_captures_walk(value, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+            for arg in args {
+                collect_captures_walk(arg, param_ids, seen, captures, self_id);
             }
         }
     }

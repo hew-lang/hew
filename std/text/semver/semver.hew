@@ -21,8 +21,8 @@ import std::string;
 
 /// A parsed semantic version.
 type Version {
-    pre_release: String;
-    build_meta: String;
+    pre_release: string;
+    build_meta: string;
     maj: i32;
     min: i32;
     pat: i32;
@@ -40,16 +40,16 @@ trait VersionMethods {
     fn patch(ver: Version) -> int;
 
     /// Return the pre-release label, or an empty string if none.
-    fn pre(ver: Version) -> String;
+    fn pre(ver: Version) -> string;
 
     /// Compare this version to another. Returns -1, 0, or 1.
     fn compare(ver: Version, other: Version) -> int;
 
     /// Test whether this version satisfies a version requirement string.
-    fn matches(ver: Version, req: String) -> bool;
+    fn matches(ver: Version, req: string) -> bool;
 
     /// Return the version as a string.
-    fn to_string(ver: Version) -> String;
+    fn to_string(ver: Version) -> string;
 
     /// No-op for compatibility (struct versions don't need manual freeing).
     fn free(ver: Version);
@@ -69,7 +69,7 @@ impl VersionMethods for Version {
         ver.pat
     }
     /// Return the pre-release label, or an empty string if none.
-    fn pre(ver: Version) -> String {
+    fn pre(ver: Version) -> string {
         ver.pre_release
     }
     /// Compare this version to another. Return -1, 0, or 1.
@@ -80,12 +80,12 @@ impl VersionMethods for Version {
         result
     }
     /// Test whether this version satisfies a version requirement string.
-    fn matches(ver: Version, req: String) -> bool {
+    fn matches(ver: Version, req: string) -> bool {
         let result = matches_req(ver, req);
         result
     }
     /// Return the version as a string.
-    fn to_string(ver: Version) -> String {
+    fn to_string(ver: Version) -> string {
         let result = version_to_string(ver);
         result
     }
@@ -98,8 +98,8 @@ impl VersionMethods for Version {
 // ── Module-level functions ────────────────────────────────────────────
 /// Parse a semantic version string.
 ///
-/// Returns `Err(String)` if the string is not a valid semantic version.
-pub fn try_parse(s: String) -> Result<Version, String> {
+/// Returns `Err(string)` if the string is not a valid semantic version.
+pub fn try_parse(s: string) -> Result<Version, string> {
     // Split off build metadata (+...)
     var main_part = s;
     var build = "";
@@ -138,8 +138,8 @@ pub fn try_parse(s: String) -> Result<Version, String> {
 /// Parse a semantic version string.
 ///
 /// Panics if the string is not a valid semantic version.
-/// Use `try_parse` for a structured `Result<Version, String>` failure surface.
-pub fn parse(s: String) -> Version {
+/// Use `try_parse` for a structured `Result<Version, string>` failure surface.
+pub fn parse(s: string) -> Version {
     match try_parse(s) {
         Ok(v) => v,
         Err(err) => {
@@ -150,7 +150,7 @@ pub fn parse(s: String) -> Version {
 }
 
 /// Format a `Version` as its canonical string representation.
-fn version_to_string(v: Version) -> String {
+fn version_to_string(v: Version) -> string {
     let maj = v.maj;
     let min = v.min;
     let pat = v.pat;
@@ -205,7 +205,7 @@ fn compare_versions(a: Version, b: Version) -> int {
 }
 
 /// Compare two dot-separated pre-release identifier strings.
-fn compare_pre(a: String, b: String) -> int {
+fn compare_pre(a: string, b: string) -> int {
     // Compare dot-separated identifiers
     var a_pos = 0;
     var b_pos = 0;
@@ -244,7 +244,7 @@ fn compare_pre(a: String, b: String) -> int {
 }
 
 /// Compare two individual pre-release identifiers (numeric or alphanumeric).
-fn compare_pre_id(a: String, b: String) -> int {
+fn compare_pre_id(a: string, b: string) -> int {
     let a_num = string.is_numeric(a);
     let b_num = string.is_numeric(b);
     if a_num && b_num {
@@ -277,7 +277,7 @@ fn compare_pre_id(a: String, b: String) -> int {
 
 // ── Requirement matching ──────────────────────────────────────────────
 /// Test whether a version satisfies a comma-separated requirement string.
-fn matches_req(v: Version, req: String) -> bool {
+fn matches_req(v: Version, req: string) -> bool {
     // Process comma-separated constraints
     var pos = 0;
     let rlen = req.len();
@@ -304,7 +304,7 @@ fn matches_req(v: Version, req: String) -> bool {
 }
 
 /// Test whether a version satisfies a single version constraint.
-fn matches_single(v: Version, constraint: String) -> bool {
+fn matches_single(v: Version, constraint: string) -> bool {
     let c = constraint.trim();
     let clen = c.len();
     if clen == 0 {

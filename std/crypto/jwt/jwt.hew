@@ -40,7 +40,7 @@ fn jwt_error_from_i32(code: i32) -> JwtError { // INTERNAL-ABI: C ABI error tag 
 }
 
 /// Return a human-readable message for a [`JwtError`].
-pub fn error_message(err: JwtError) -> String {
+pub fn error_message(err: JwtError) -> string {
     match err {
         JwtError::None => "no error",
         JwtError::AlgorithmUnsupported => "JWT algorithm is not supported",
@@ -54,7 +54,7 @@ pub fn error_message(err: JwtError) -> String {
 
 // ── Algorithm mapping (pure Hew) ─────────────────────────────────────
 /// Map an algorithm name (e.g. "HS256") to its integer code for the FFI layer.
-fn algo_to_i32(algorithm: String) -> i32 { // INTERNAL-ABI: C ABI algorithm code; values 0-2 and sentinel -1 fit i32
+fn algo_to_i32(algorithm: string) -> i32 { // INTERNAL-ABI: C ABI algorithm code; values 0-2 and sentinel -1 fit i32
     match algorithm {
         "HS256" => 0 as i32,
         "HS384" => 1 as i32,
@@ -74,7 +74,7 @@ pub fn last_error() -> JwtError {
 ///
 /// Returns `Err(JwtError)` when the payload, key, algorithm, or allocation
 /// path fails.
-pub fn try_encode(payload: String, secret: String, algorithm: String) -> Result<String, JwtError> {
+pub fn try_encode(payload: string, secret: string, algorithm: string) -> Result<string, JwtError> {
     let algo = algo_to_i32(algorithm);
     let token = unsafe {
         hew_jwt_encode_hew(payload, secret, algo)
@@ -89,7 +89,7 @@ pub fn try_encode(payload: String, secret: String, algorithm: String) -> Result<
 ///
 /// Panics on invalid input or verification setup errors. Use `try_encode` for
 /// structured error handling.
-pub fn encode(payload: String, secret: String, algorithm: String) -> String {
+pub fn encode(payload: string, secret: string, algorithm: string) -> string {
     match try_encode(payload, secret, algorithm) {
         Ok(token) => token,
         Err(err) => {
@@ -103,7 +103,7 @@ pub fn encode(payload: String, secret: String, algorithm: String) -> String {
 ///
 /// Returns `Err(JwtError)` when the token is malformed, expired, signed with a
 /// different key, or cannot be allocated.
-pub fn try_decode(token: String, secret: String, algorithm: String) -> Result<String, JwtError> {
+pub fn try_decode(token: string, secret: string, algorithm: string) -> Result<string, JwtError> {
     let algo = algo_to_i32(algorithm);
     let payload = unsafe {
         hew_jwt_decode_hew(token, secret, algo)
@@ -117,7 +117,7 @@ pub fn try_decode(token: String, secret: String, algorithm: String) -> Result<St
 /// Decode and verify a JWT, returning its payload as a JSON string.
 ///
 /// Panics on invalid tokens. Use `try_decode` for structured error handling.
-pub fn decode(token: String, secret: String, algorithm: String) -> String {
+pub fn decode(token: string, secret: string, algorithm: string) -> string {
     match try_decode(token, secret, algorithm) {
         Ok(payload) => payload,
         Err(err) => {
@@ -137,7 +137,7 @@ pub fn decode(token: String, secret: String, algorithm: String) -> String {
 /// ```
 /// let payload = jwt.decode_insecure(token);
 /// ```
-pub fn decode_insecure(token: String) -> String {
+pub fn decode_insecure(token: string) -> string {
     unsafe {
         hew_jwt_decode_insecure(token)
     }
@@ -154,7 +154,7 @@ pub fn decode_insecure(token: String) -> String {
 ///     println("valid");
 /// }
 /// ```
-pub fn validate(token: String, secret: String, algorithm: String) -> bool {
+pub fn validate(token: string, secret: string, algorithm: string) -> bool {
     let algo = algo_to_i32(algorithm);
     unsafe {
         hew_jwt_validate(token, secret, algo)
@@ -163,9 +163,9 @@ pub fn validate(token: String, secret: String, algorithm: String) -> bool {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_jwt_encode_hew(payload: String, secret: String, algorithm: i32) -> String;
-    fn hew_jwt_decode_hew(token: String, secret: String, algorithm: i32) -> String;
+    fn hew_jwt_encode_hew(payload: string, secret: string, algorithm: i32) -> string;
+    fn hew_jwt_decode_hew(token: string, secret: string, algorithm: i32) -> string;
     fn hew_jwt_last_error_code() -> i32;
-    fn hew_jwt_decode_insecure(token: String) -> String;
-    fn hew_jwt_validate(token: String, secret: String, algorithm: i32) -> i32;
+    fn hew_jwt_decode_insecure(token: string) -> string;
+    fn hew_jwt_validate(token: string, secret: string, algorithm: i32) -> i32;
 }

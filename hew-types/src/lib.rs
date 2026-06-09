@@ -22,7 +22,8 @@ pub mod unify;
 
 pub use check::{
     builtin_function_names, ActorSendAliasing, ActorSendCopyReason, AssignTargetKind,
-    AssignTargetShape, Checker, MethodCallReceiverKind, MethodCallRewrite, SpanKey,
+    AssignTargetShape, Checker, ChildKind, ChildSlot, DynAssocBinding, DynCoercion, DynMethodCall,
+    DynVtableEntry, DynVtableKey, MethodCallReceiverKind, MethodCallRewrite, SpanKey,
     TypeCheckOutput, VariantDef,
 };
 pub use error::TypeError;

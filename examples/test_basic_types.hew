@@ -1,5 +1,8 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Test: Basic Types and Variables
+
 // Test: Basic Types and Variables
-// Exercises: i32, f64, String, bool, let/var, compound assignment, arithmetic
+// Exercises: i32, f64, string, bool, let/var, compound assignment, arithmetic
 fn test_integers() -> i32 {
     let x: i32 = 42;
     let y: i32 = -10;
@@ -41,8 +44,8 @@ fn test_float() -> i32 {
 }
 
 fn test_string() -> i32 {
-    let name: String = "hello";
-    let world: String = "world";
+    let name: string = "hello";
+    let world: string = "world";
     let combined = name + world;
     let len = name.len();
     let eq = name == name;
@@ -110,7 +113,7 @@ fn test_let_immutable() -> i32 {
 
 fn test_type_inference() -> i32 {
     let a = 100; // inferred i32
-    let b = "inferred"; // inferred String
+    let b = "inferred"; // inferred string
     let c = true; // inferred bool
     if a == 100 {
         println("PASS: type inference");

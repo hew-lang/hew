@@ -142,10 +142,10 @@ fn main() {
 
 #[test]
 fn monitor_non_actor_produces_mismatch() {
-    // `monitor` requires `ActorRef<_>`; passing a `String` must be rejected.
+    // `monitor` requires `ActorRef<_>`; passing a `string` must be rejected.
     let src = r#"
 fn main() {
-    let s: String = "hello";
+    let s: string = "hello";
     let _ = monitor(s);
 }
 "#;

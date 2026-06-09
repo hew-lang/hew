@@ -10,26 +10,26 @@
 // call.  This is a hard rule — the implementation does not write `consuming`
 // on these receivers.
 //
-// This fixture is also a regression anchor for the to_string(String) clone
+// This fixture is also a regression anchor for the to_string(string) clone
 // special-case that exists in the current MLIRGen.cpp.  The v0.5 IR ladder
 // replaces that special-case with a `hew.read` against an immutable
-// `!hew.string_ref` / `!hew.cow<String>` view.  The caller's value is
+// `!hew.string_ref` / `!hew.cow<string>` view.  The caller's value is
 // unaffected; no clone, no consume.
 //
 // Value-model rules exercised:
-//   - to_string on a CowValue<String> → borrow_read (not consume_call)
+//   - to_string on a CowValue<string> → borrow_read (not consume_call)
 //   - to_string on a Copy<int> → borrow_read (trivial)
 //   - Display::fmt equivalent (format string) → borrow_read
 //   - caller's value is still valid after the call
 //   - no hidden materialize at stringification sites
 
 struct User {
-    name: String,
+    name: string,
     score: int,
 }
 
 impl Display for User {
-    fn fmt(self, f: Formatter) -> String {
+    fn fmt(self, f: Formatter) -> string {
         // self is an immutable read receiver here (not consuming).
         "User(" + self.name + ", " + self.score.to_string() + ")"
     }

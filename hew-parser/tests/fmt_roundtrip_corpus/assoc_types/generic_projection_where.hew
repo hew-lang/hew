@@ -1,0 +1,14 @@
+trait Display {
+}
+
+trait Iterator {
+    type Item;
+}
+
+fn collect<I: Iterator>(it: I) -> Vec<I::Item> where I::Item: Display {
+    empty()
+}
+
+fn collect_display<I>(it: I) -> Vec<I::Item> where I: Iterator<Item = string>, I::Item: Display {
+    empty()
+}

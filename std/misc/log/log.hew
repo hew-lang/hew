@@ -86,35 +86,35 @@ pub fn get_format() -> int {
 }
 
 /// Log a message at error level (named args handled by compiler).
-pub fn error(msg: String) {
+pub fn error(msg: string) {
     unsafe {
         hew_log_emit(0, msg)
     };
 }
 
 /// Log a message at warn level.
-pub fn warn(msg: String) {
+pub fn warn(msg: string) {
     unsafe {
         hew_log_emit(1, msg)
     };
 }
 
 /// Log a message at info level.
-pub fn info(msg: String) {
+pub fn info(msg: string) {
     unsafe {
         hew_log_emit(2, msg)
     };
 }
 
 /// Log a message at debug level.
-pub fn debug(msg: String) {
+pub fn debug(msg: string) {
     unsafe {
         hew_log_emit(3, msg)
     };
 }
 
 /// Log a message at trace level.
-pub fn trace(msg: String) {
+pub fn trace(msg: string) {
     unsafe {
         hew_log_emit(4, msg)
     };
@@ -122,7 +122,7 @@ pub fn trace(msg: String) {
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
-    fn hew_log_emit(level: i32, msg: String);
+    fn hew_log_emit(level: i32, msg: string);
     fn hew_log_get_level() -> i32;
     fn hew_log_set_level(level: i32);
     fn hew_log_set_format(format: i32);

@@ -29,8 +29,8 @@ fn primitive_satisfies_ord_bound() {
     );
 }
 
-/// Regression: `String` satisfies `Ord`, so a generic function bounded by `Ord` must accept
-/// `String` arguments.  This exercises the non-primitive built-in path (`Ty::String`).
+/// Regression: `string` satisfies `Ord`, so a generic function bounded by `Ord` must accept
+/// `string` arguments.  This exercises the non-primitive built-in path (`Ty::String`).
 #[test]
 fn string_satisfies_ord_bound() {
     let source = r#"
@@ -49,7 +49,7 @@ fn string_satisfies_ord_bound() {
             .errors
             .iter()
             .any(|err| err.kind == TypeErrorKind::BoundsNotSatisfied),
-        "String should satisfy Ord bound; got errors: {:?}",
+        "string should satisfy Ord bound; got errors: {:?}",
         output.errors
     );
 }

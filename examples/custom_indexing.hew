@@ -1,19 +1,24 @@
-// Custom type indexing: obj[key] desugars to obj.get(key)
+//! Status: runs
+//! Description: `obj[k]` desugars to `Index::at(obj, k)` via the Index trait,
+//! mirroring the trait-based pattern used by Iterator (associated-type `Output`).
+//! Requires: Index trait stdlib + checker desugar.
+
 type Grid {
     data: Vec<i32>;
     width: i32;
 }
 
-impl Grid {
-    fn get(g: Grid, index: i32) -> i32 {
+impl Index for Grid {
+    type Output = i32;
+    fn at(g: Grid, index: i32) -> i32 {
         g.data.get(index)
     }
 }
 
 fn main() {
     let g = Grid { data: [10, 20, 30, 40], width: 2 };
-    let val = g[0];
-    let val2 = g[2];
+    let val = g[0]; // desugars to Index::at(g, 0)
+    let val2 = g[2]; // desugars to Index::at(g, 2)
     println(val);
     println(val2);
 }

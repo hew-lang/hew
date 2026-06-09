@@ -231,6 +231,12 @@ impl TraitRegistry {
             // T is a phantom dispatch type, and actor graph cycles are handled
             // separately by cycle.rs.
             Ty::Named { name, .. } if name == "ActorRef" => RcFreeStatus::RcFree,
+            // LocalPid<T> lowers to a pid-shaped scalar with no ref-counted fields;
+            // T is a phantom dispatch type, treated like ActorRef.
+            Ty::Named { name, .. } if name == "LocalPid" => RcFreeStatus::RcFree,
+            // RemotePid<T> lowers to (node_id, serial) scalars; no ref-counted fields,
+            // T is a phantom dispatch type.
+            Ty::Named { name, .. } if name == "RemotePid" => RcFreeStatus::RcFree,
             Ty::Named { name, args } => {
                 match self.combine_rc_free_status(args.iter().cloned(), visiting) {
                     RcFreeStatus::RcFree => {}
@@ -415,6 +421,30 @@ impl TraitRegistry {
                     | MarkerTrait::Debug
             ),
 
+            // LocalPid<T>: process-local actor pid returned by `spawn`.
+            // Same marker set as ActorRef — an opaque identity reference, not a resource.
+            Ty::Named { name, .. } if name == "LocalPid" => matches!(
+                marker,
+                MarkerTrait::Send
+                    | MarkerTrait::Sync
+                    | MarkerTrait::Frozen
+                    | MarkerTrait::Copy
+                    | MarkerTrait::Clone
+                    | MarkerTrait::Debug
+            ),
+
+            // RemotePid<T>: remote actor pid, from peer-discovery or explicit construction.
+            // Same marker set as LocalPid — the pid value itself is an opaque u64.
+            Ty::Named { name, .. } if name == "RemotePid" => matches!(
+                marker,
+                MarkerTrait::Send
+                    | MarkerTrait::Sync
+                    | MarkerTrait::Frozen
+                    | MarkerTrait::Copy
+                    | MarkerTrait::Clone
+                    | MarkerTrait::Debug
+            ),
+
             // Actor<T>: the built-in lambda-actor handle; always Send + Sync + Clone + Debug.
             // Actor references are channel handles — safe to capture in spawned actors.
             Ty::Named { name, .. } if name == "Actor" => matches!(
@@ -576,8 +606,15 @@ impl TraitRegistry {
                 _ => false,
             },
 
-            // Var: NOT Send by default
-            Ty::Var(_) => false,
+            // Var: NOT Send by default.
+            // AssocType { base, .. }: a projection's marker disposition cannot
+            // be decided without seeing the impl-side binding. The projection
+            // is collapsed to a concrete `Ty` before reaching MIR; while still
+            // unresolved (generic-fn signature), no marker query can be
+            // meaningfully answered. Conservatively return `false` — callers
+            // that need a marker on a projection must run projection-collapse
+            // first.
+            Ty::Var(_) | Ty::AssocType { .. } => false,
 
             // Trait objects: check if any of the traits has the bound
             Ty::TraitObject { traits } => traits.iter().any(|bound| {

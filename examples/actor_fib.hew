@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Fibonacci across actors - demonstrates deterministic fan-out with joins
+
 // Fibonacci across actors - demonstrates deterministic fan-out with joins
 fn fib(n: int) -> int {
     if n <= 1 {

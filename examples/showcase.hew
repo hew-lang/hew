@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Language Showcase - All Core Features
+
 // Hew Language Showcase - All Core Features
 // Demonstrates: types, actors, pattern matching, enums, options, interpolation
 type Vec2 {
@@ -37,7 +40,7 @@ fn fib(n: int) -> int {
     }
 }
 
-fn divide(a: int, b: int) -> Result<int, String> {
+fn divide(a: int, b: int) -> Result<int, string> {
     if b == 0 {
         Err("division by zero")
     } else {
@@ -99,8 +102,8 @@ fn main() {
     let r2 = divide(10, 0);
     println("  divide(10,3) and divide(10,0) computed");
 
-    // 7. String interpolation
-    println("7. String interpolation:");
+    // 7. string interpolation
+    println("7. string interpolation:");
     let name = "Hew";
     let version = 1;
     let msg = f"{name} v{version} is running!";

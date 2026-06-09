@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 concurrency surfaces plus codegen-rs parity)
+//! Description: Test simple block without scope
+
 // Test simple block without scope
 fn main() {
     println("Testing basic syntax");

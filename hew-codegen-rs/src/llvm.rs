@@ -60,8 +60,9 @@ use std::path::Path;
 use std::process::Command;
 
 use hew_mir::{
-    CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr, IntArithOp,
-    IntSignedness, IrPipeline, Place, RawMirFunction, RecordLayout, Terminator, TrapKind,
+    CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, ElabDrop, ElaboratedMirFunction,
+    ExitPath, FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, Place,
+    RawMirFunction, RecordLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -414,6 +415,11 @@ type RuntimeDeclMap<'ctx> = HashMap<String, FunctionValue<'ctx>>;
 /// this arm for an unknown symbol is an internal-consistency violation,
 /// not a user error — fail loudly. LESSONS: boundary-fail-closed,
 /// exhaustive-coverage.
+///
+/// If `llvm_mod.get_function(symbol)` finds a pre-existing declaration, this
+/// adopts it without signature verification and relies on `Module::verify()` as
+/// the downstream safety net. WHEN-OBSOLETE: replace this adoption path with an
+/// explicit existing-signature check before caching the declaration.
 fn intern_runtime_decl<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -423,10 +429,20 @@ fn intern_runtime_decl<'ctx>(
     if let Some(fv) = decls.get(symbol) {
         return Ok(*fv);
     }
+    if let Some(fv) = llvm_mod.get_function(symbol) {
+        decls.insert(symbol.to_string(), fv);
+        return Ok(fv);
+    }
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let fn_ty = match symbol {
+        // hew_actor_cooperate() -> c_int
+        // (`hew-runtime/src/scheduler.rs`, `scheduler_wasm.rs`). Decrements
+        // the current actor's reductions budget and yields when exhausted.
+        // The return value is a scheduler signal; cooperate-site injection
+        // discards it.
+        "hew_actor_cooperate" => i32_ty.fn_type(&[], false),
         // hew_actor_link(a: *mut HewActor, b: *mut HewActor) -> void
         // (`hew-runtime/src/link.rs:80`). Establishes a bidirectional link.
         // Actor handles are opaque ptrs on the spine. Return is void — the
@@ -1661,7 +1677,10 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                     CodegenError::FailClosed(format!(
                         "Instr::CallDirect: callee `{callee_symbol}` was not found in fn_symbols; \
                      the MIR producer must only emit CallDirect for functions declared in the \
-                     same module (module_fn_names gate)"
+                     same module (module_fn_names gate). If the callee name is a mangled \
+                     monomorphisation (contains `$$`), the HIR/MIR registry did not emit a \
+                     specialised function for this (fn, type-args) pair — check that the call \
+                     site's concrete type arguments are recorded in HirModule.monomorphisations."
                     ))
                 })?;
             let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
@@ -1707,6 +1726,27 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                     .map_err(|e| CodegenError::Llvm(format!("CallDirect store result: {e:?}")))?;
             }
             let _ = ctx;
+        }
+        // TO-3 lands the MIR shape (`Instr::CoerceToDynTrait`,
+        // `Instr::CallTraitMethod`); TO-4 (runtime-trait-object-abi.md
+        // §D-3 / §D-4) adds the LLVM emission (vtable static + GEP /
+        // load / call). Fail closed until TO-4 wires the arms — better
+        // a deterministic compile error than a silent miscompile.
+        Instr::CoerceToDynTrait { trait_name, .. } => {
+            return Err(CodegenError::Llvm(format!(
+                "Instr::CoerceToDynTrait (trait `{trait_name}`) reached LLVM emission \
+                 before the TO-4 vtable-emission slice landed"
+            )));
+        }
+        Instr::CallTraitMethod {
+            trait_name,
+            method_name,
+            ..
+        } => {
+            return Err(CodegenError::Llvm(format!(
+                "Instr::CallTraitMethod `{trait_name}::{method_name}` reached LLVM emission \
+                 before the TO-4 vtable-dispatch slice landed"
+            )));
         }
     }
     Ok(())
@@ -3141,6 +3181,24 @@ fn lower_terminator<'ctx>(
     Ok(())
 }
 
+fn emit_cooperate_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<()> {
+    let cooperate_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_cooperate",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(cooperate_fn, &[], "")
+        .map_err(|e| CodegenError::Llvm(format!("hew_actor_cooperate call: {e:?}")))?;
+    Ok(())
+}
+
+fn cooperate_site_matches(site: &CooperateSite, block_id: u32, kind: CooperateKind) -> bool {
+    site.bb_id == block_id && site.kind == kind
+}
+
 // ---------------------------------------------------------------------------
 // Per-function declaration + body lowering
 // ---------------------------------------------------------------------------
@@ -3217,12 +3275,18 @@ fn declare_function<'ctx>(
 /// case `emit_elab_drops` receives an empty slice and emits nothing — the
 /// inline `Instr::Drop` path in `lower_instruction` still fires for any
 /// `Instr::Drop` entries baked into `raw_mir.blocks`.
+///
+/// `checked` carries the cooperate-site side table computed by the MIR
+/// dataflow pass. Empty/missing checked MIR means no cooperate injection
+/// for legacy hand-built codegen tests; full lowered pipelines always carry
+/// a matching checked function.
 fn lower_function<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     func: &RawMirFunction,
     fn_symbols: &FnSymbolMap<'ctx>,
     elab: Option<&ElaboratedMirFunction>,
+    checked: Option<&CheckedMirFunction>,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<()> {
     let (llvm_fn, return_ty_llvm) = *fn_symbols.get(&func.name).ok_or_else(|| {
@@ -3233,19 +3297,24 @@ fn lower_function<'ctx>(
     })?;
     let builder = ctx.create_builder();
 
-    // Build every block up front so terminators can name forward targets.
+    let entry_block = func.blocks.first().ok_or_else(|| {
+        CodegenError::FailClosed(format!("function `{}` has zero blocks", func.name))
+    })?;
+
+    // Keep the LLVM entry block predecessor-free even when MIR loops target
+    // bb0. The prologue holds allocas, parameter stores, and the function-entry
+    // cooperate call, then branches into the first MIR block.
+    let prologue_bb = ctx.append_basic_block(llvm_fn, "entry");
+
+    // Build every MIR block up front so terminators can name forward targets.
     let mut blocks = HashMap::new();
     for block in &func.blocks {
         let bb = ctx.append_basic_block(llvm_fn, &format!("bb{}", block.id));
         blocks.insert(block.id, bb);
     }
 
-    // Position in the entry block to emit the alloca prologue.
-    let entry_block = func.blocks.first().ok_or_else(|| {
-        CodegenError::FailClosed(format!("function `{}` has zero blocks", func.name))
-    })?;
     let entry_bb = *blocks.get(&entry_block.id).expect("entry block in map");
-    builder.position_at_end(entry_bb);
+    builder.position_at_end(prologue_bb);
 
     let return_slot = builder
         .build_alloca(return_ty_llvm, "return_slot")
@@ -3316,6 +3385,37 @@ fn lower_function<'ctx>(
     let drop_plans: &[(ExitPath, hew_mir::DropPlan)] = elab
         .map(|e| e.drop_plans.as_slice())
         .unwrap_or(empty_plans.as_slice());
+    let cooperate_sites: &[CooperateSite] =
+        checked.map(|c| c.cooperate_sites.as_slice()).unwrap_or(&[]);
+    if let Some(site) = cooperate_sites
+        .iter()
+        .find(|site| site.kind == CooperateKind::FunctionEntry && site.bb_id != entry_block.id)
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "function `{}` has FunctionEntry cooperate site on bb{}, expected bb{}",
+            func.name, site.bb_id, entry_block.id
+        )));
+    }
+    if let Some(site) = cooperate_sites
+        .iter()
+        .find(|site| site.kind == CooperateKind::LoopBackEdge && !blocks.contains_key(&site.bb_id))
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "function `{}` has LoopBackEdge cooperate site on missing bb{}",
+            func.name, site.bb_id
+        )));
+    }
+
+    if cooperate_sites
+        .iter()
+        .any(|site| cooperate_site_matches(site, entry_block.id, CooperateKind::FunctionEntry))
+    {
+        emit_cooperate_call(&fn_ctx)?;
+    }
+    fn_ctx
+        .builder
+        .build_unconditional_branch(entry_bb)
+        .map_err(|e| CodegenError::Llvm(format!("prologue br: {e:?}")))?;
 
     for block in &func.blocks {
         let bb = *blocks.get(&block.id).expect("block in map");
@@ -3327,6 +3427,12 @@ fn lower_function<'ctx>(
         // terminator so the alloca null-stores precede the ret/br.
         // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
         emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
+        if cooperate_sites
+            .iter()
+            .any(|site| cooperate_site_matches(site, block.id, CooperateKind::LoopBackEdge))
+        {
+            emit_cooperate_call(&fn_ctx)?;
+        }
         lower_terminator(&fn_ctx, fn_symbols, &block.terminator)?;
     }
 
@@ -3337,6 +3443,10 @@ fn lower_function<'ctx>(
 // Module-level orchestration
 // ---------------------------------------------------------------------------
 
+/// Build the LLVM module for a lowered pipeline.
+///
+/// `checked_mir` is all-or-nothing — if non-empty, every `raw_mir` function
+/// MUST have a matching entry. Fails closed at codegen time if violated.
 fn build_module<'ctx>(
     ctx: &'ctx Context,
     pipeline: &IrPipeline,
@@ -3362,7 +3472,31 @@ fn build_module<'ctx>(
         // elaborated_mir empty; `find` returns `None` in that case and
         // `lower_function` falls back to the inline Instr::Drop path.
         let elab = pipeline.elaborated_mir.iter().find(|e| e.name == func.name);
-        lower_function(ctx, &llvm_mod, func, &fn_symbols, elab, &record_layouts)?;
+        let checked = if pipeline.checked_mir.is_empty() {
+            None
+        } else {
+            Some(
+                pipeline
+                    .checked_mir
+                    .iter()
+                    .find(|c| c.name == func.name)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "function `{}` has no matching checked MIR for cooperate-site lowering",
+                            func.name
+                        ))
+                    })?,
+            )
+        };
+        lower_function(
+            ctx,
+            &llvm_mod,
+            func,
+            &fn_symbols,
+            elab,
+            checked,
+            &record_layouts,
+        )?;
     }
     llvm_mod
         .verify()

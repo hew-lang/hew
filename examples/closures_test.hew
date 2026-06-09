@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Closure capture test
+
 // Closure capture test
 // Exercises lambdas that capture variables from enclosing scope
 

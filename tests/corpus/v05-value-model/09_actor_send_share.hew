@@ -16,7 +16,7 @@
 //   - PersistentShare send is always share mode (structurally safe, no refcount needed)
 
 actor Broadcaster {
-    receive fn broadcast(msg: String) {
+    receive fn broadcast(msg: string) {
     }
 }
 

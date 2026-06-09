@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: Profiler demo — run with HEW_PPROF=:6060 to see the dashboard.
+
 // Profiler demo — run with HEW_PPROF=:6060 to see the dashboard.
 //
 // This program spawns an actor that processes messages, giving the

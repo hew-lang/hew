@@ -18,7 +18,7 @@
 /// Encrypt plaintext using AES-256-GCM with the given key.
 ///
 /// Returns the ciphertext (nonce + encrypted data) as bytes.
-pub fn seal(key: bytes, plaintext: String) -> bytes {
+pub fn seal(key: bytes, plaintext: string) -> bytes {
     unsafe {
         hew_encrypt_seal_hew(key, plaintext)
     }
@@ -27,7 +27,7 @@ pub fn seal(key: bytes, plaintext: String) -> bytes {
 /// Decrypt ciphertext using AES-256-GCM with the given key.
 ///
 /// Returns the decrypted plaintext string.
-pub fn open(key: bytes, ciphertext: bytes) -> String {
+pub fn open(key: bytes, ciphertext: bytes) -> string {
     unsafe {
         hew_encrypt_open_hew(key, ciphertext)
     }
@@ -35,6 +35,6 @@ pub fn open(key: bytes, ciphertext: bytes) -> String {
 
 // -- FFI bindings --
 extern "C" {
-    fn hew_encrypt_seal_hew(key: bytes, plaintext: String) -> bytes;
-    fn hew_encrypt_open_hew(key: bytes, ciphertext: bytes) -> String;
+    fn hew_encrypt_seal_hew(key: bytes, plaintext: string) -> bytes;
+    fn hew_encrypt_open_hew(key: bytes, ciphertext: bytes) -> string;
 }

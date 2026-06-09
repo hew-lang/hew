@@ -240,7 +240,7 @@ fn bitcopy_arithmetic_has_no_drop() {
 
 #[test]
 fn checked_mir_rejects_use_after_consume() {
-    let pipeline = pipeline(r#"fn main() -> String { let s = "hello"; let t = s; return s; }"#);
+    let pipeline = pipeline(r#"fn main() -> string { let s = "hello"; let t = s; return s; }"#);
 
     assert!(pipeline.diagnostics.iter().any(|diagnostic| matches!(
         diagnostic.kind,
@@ -253,7 +253,7 @@ fn checked_mir_finding_carries_consume_and_use_sites() {
     // The payload-bearing `MirCheck::UseAfterConsume` shape projects
     // through to the diagnostic so a CLI consumer can point at both
     // ends of the bug, not just the binding name.
-    let pipeline = pipeline(r#"fn main() -> String { let s = "hello"; let t = s; return s; }"#);
+    let pipeline = pipeline(r#"fn main() -> string { let s = "hello"; let t = s; return s; }"#);
     let func = pipeline
         .checked_mir
         .iter()

@@ -12,6 +12,31 @@ enum StructuralMethodStatus {
 }
 
 impl Checker {
+    pub(super) fn apply_trait_object_bound_substitutions(
+        &self,
+        sig: &mut FnSig,
+        bound: &crate::ty::TraitObjectBound,
+    ) {
+        if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
+            let type_params = &trait_info.type_params;
+            if type_params.len() == bound.args.len() {
+                for (param_name, replacement) in type_params.iter().zip(bound.args.iter()) {
+                    for param_ty in &mut sig.params {
+                        *param_ty = param_ty.substitute_named_param(param_name, replacement);
+                    }
+                    sig.return_type = sig
+                        .return_type
+                        .substitute_named_param(param_name, replacement);
+                }
+            }
+        }
+        for param_ty in &mut sig.params {
+            *param_ty = substitute_trait_object_assoc_bindings(param_ty, &bound.trait_name, bound);
+        }
+        sig.return_type =
+            substitute_trait_object_assoc_bindings(&sig.return_type, &bound.trait_name, bound);
+    }
+
     pub(super) fn freshen_inner(&self, ty: &Ty, mapping: &mut HashMap<u32, Ty>) -> Ty {
         match ty {
             Ty::Var(v) => {
@@ -53,6 +78,11 @@ impl Checker {
                             .args
                             .iter()
                             .map(|arg| self.freshen_inner(arg, mapping))
+                            .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), self.freshen_inner(ty, mapping)))
                             .collect(),
                     })
                     .collect(),
@@ -133,6 +163,12 @@ impl Checker {
                     .collect();
                 ret = ret.substitute_named_param(tp, ta);
             }
+            // Collapse any `Ty::AssocType` carriers whose `base` has now
+            // become concrete (e.g. `I::Item` with `I → Counter` and the
+            // impl `Counter: Iterator { type Item = i32 }`). Carriers whose
+            // base is still abstract pass through unchanged.
+            params = params.iter().map(|p| self.project_assoc_types(p)).collect();
+            ret = self.project_assoc_types(&ret);
         }
 
         // For each call, freshen any unresolved type variables in the signature
@@ -385,6 +421,13 @@ impl Checker {
 
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
         match ty {
+            Ty::Named { name, args }
+                if trait_name == "Iterator"
+                    && ((name == "Generator" && !args.is_empty())
+                        || (name == "AsyncGenerator" && args.len() == 1)) =>
+            {
+                true
+            }
             Ty::Named { name, .. } => {
                 let name = name.clone();
                 if self.type_implements_trait(&name, trait_name)
@@ -653,7 +696,12 @@ impl Checker {
     /// * Each non-receiver parameter type matches after substituting `Self` → concrete type.
     /// * Return type matches after the same substitution.
     ///
-    /// `dyn Trait` / vtable / codegen is explicitly out of scope.
+    /// `dyn Trait` coercion is handled by `Checker::try_record_dyn_trait_coercion`
+    /// in `coerce.rs`, which calls this structural-satisfaction predicate as
+    /// part of the fallback path. Vtable static emission itself is owned by
+    /// the LLVM emitter; the checker populates `TypeCheckOutput::dyn_trait_coercions`
+    /// at every accepted coercion site and rejects non-object-safe traits
+    /// (generic methods, `Self`-returning methods) with `E_TRAIT_NOT_OBJECT_SAFE`.
     pub(super) fn type_structurally_satisfies(
         &mut self,
         type_name: &str,
@@ -764,6 +812,11 @@ impl Checker {
             } else {
                 0
             };
+            // Activate `Self::Bar` projection so the resolver materialises
+            // a `Ty::AssocType` carrier for the trait method's signature.
+            let prev_trait_self = self
+                .current_trait_for_self_projection
+                .replace(trait_name.to_string());
             let params: Vec<Ty> = m
                 .params
                 .iter()
@@ -774,6 +827,7 @@ impl Checker {
                 .return_type
                 .as_ref()
                 .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
+            self.current_trait_for_self_projection = prev_trait_self;
             let param_names: Vec<String> =
                 m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
             let type_params = m
@@ -805,5 +859,49 @@ impl Checker {
             }
         }
         None
+    }
+}
+
+fn substitute_trait_object_assoc_bindings(
+    ty: &Ty,
+    trait_name: &str,
+    bound: &crate::ty::TraitObjectBound,
+) -> Ty {
+    match ty {
+        Ty::AssocType {
+            base,
+            trait_name: projected_trait,
+            assoc_name,
+        } if projected_trait.as_ref() == trait_name
+            && matches!(
+                base.as_ref(),
+                Ty::Named { name, args } if name == "Self" && args.is_empty()
+            ) =>
+        {
+            bound
+                .assoc_bindings
+                .iter()
+                .find(|(name, _)| name == assoc_name.as_ref())
+                .map_or_else(
+                    || ty.clone(),
+                    |(_, binding_ty)| {
+                        substitute_trait_object_assoc_bindings(binding_ty, trait_name, bound)
+                    },
+                )
+        }
+        Ty::AssocType {
+            base,
+            trait_name: projected_trait,
+            assoc_name,
+        } => Ty::AssocType {
+            base: Box::new(substitute_trait_object_assoc_bindings(
+                base, trait_name, bound,
+            )),
+            trait_name: projected_trait.clone(),
+            assoc_name: assoc_name.clone(),
+        },
+        _ => ty.map_children_pub(&|child| {
+            substitute_trait_object_assoc_bindings(child, trait_name, bound)
+        }),
     }
 }

@@ -79,41 +79,41 @@ fn test_contains_int_err() {
     testing.assert_false(result.contains_int(x, 42));
 }
 
-// ── String variants ────────────────────────────────────────────────────
+// ── string variants ────────────────────────────────────────────────────
 
 #[test]
 fn test_is_ok_str() {
-    let x: Result<String, String> = Ok("success");
+    let x: Result<string, string> = Ok("success");
     testing.assert_true(result.is_ok_str(x));
 }
 
 #[test]
 fn test_is_err_str() {
-    let x: Result<String, String> = Err("failure");
+    let x: Result<string, string> = Err("failure");
     testing.assert_true(result.is_err_str(x));
 }
 
 #[test]
 fn test_unwrap_or_str_ok() {
-    let x: Result<String, String> = Ok("value");
+    let x: Result<string, string> = Ok("value");
     testing.assert_eq_str(result.unwrap_or_str(x, "default"), "value");
 }
 
 #[test]
 fn test_unwrap_or_str_err() {
-    let x: Result<String, String> = Err("oops");
+    let x: Result<string, string> = Err("oops");
     testing.assert_eq_str(result.unwrap_or_str(x, "fallback"), "fallback");
 }
 
 #[test]
 fn test_contains_str_match() {
-    let x: Result<String, String> = Ok("hello");
+    let x: Result<string, string> = Ok("hello");
     testing.assert_true(result.contains_str(x, "hello"));
 }
 
 #[test]
 fn test_contains_str_err() {
-    let x: Result<String, String> = Err("oops");
+    let x: Result<string, string> = Err("oops");
     testing.assert_false(result.contains_str(x, "hello"));
 }
 
@@ -121,26 +121,26 @@ fn test_contains_str_err() {
 
 #[test]
 fn test_unwrap_str_ok() {
-    let x: Result<String, String> = Ok("value");
+    let x: Result<string, string> = Ok("value");
     testing.assert_eq_str(result.unwrap_str(x), "value");
 }
 
 #[test]
 #[should_panic]
 fn test_unwrap_str_err_panics() {
-    let x: Result<String, String> = Err("oops");
+    let x: Result<string, string> = Err("oops");
     result.unwrap_str(x);
 }
 
 #[test]
 fn test_unwrap_err_str() {
-    let x: Result<String, String> = Err("oops");
+    let x: Result<string, string> = Err("oops");
     testing.assert_eq_str(result.unwrap_err_str(x), "oops");
 }
 
 #[test]
 #[should_panic]
 fn test_unwrap_err_str_ok_panics() {
-    let x: Result<String, String> = Ok("value");
+    let x: Result<string, string> = Ok("value");
     result.unwrap_err_str(x);
 }

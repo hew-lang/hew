@@ -1,5 +1,9 @@
 # Move-checker analysis substrate
 
+> **Status: historical — C++/MLIR was retired in v0.5 (commit 842842bd). Current implementation: hew-codegen-rs direct Rust/Inkwell LLVM emission.**
+> The ownership-analysis vocabulary remains relevant, but the concrete
+> codegen paths and DROP-TODO inventory below describe the retired C++ backend.
+
 **Status:** derived substrate spec for issue #1399. This document defines the
 analysis contract for the ownership-classification substrate that supports the
 `--experimental-handle-safety` prototype.
@@ -83,19 +87,19 @@ Rules:
 Current in-tree reality is reproduced by:
 
 ```text
-$ grep -n "DROP-TODO" hew-codegen/src/mlir/*.cpp
-hew-codegen/src/mlir/MLIRGen.cpp:5268:    // DROP-TODO(D6): BLOCKED — generator coroutines suspend/resume across yield
-hew-codegen/src/mlir/MLIRGenExpr.cpp:1870:    // DROP-TODO(D7): BLOCKED — no move-checker infrastructure exists. Current
-hew-codegen/src/mlir/MLIRGenExpr.cpp:1877:    // DROP-TODO(D8): BLOCKED — String in closure env may alias an outer struct
+$ grep -n "DROP-TODO" retired C++ backend mlir/*.cpp
+retired C++ backend MLIRGen.cpp:5268:    // DROP-TODO(D6): BLOCKED — generator coroutines suspend/resume across yield
+retired C++ backend MLIRGenExpr.cpp:1870:    // DROP-TODO(D7): BLOCKED — no move-checker infrastructure exists. Current
+retired C++ backend MLIRGenExpr.cpp:1877:    // DROP-TODO(D8): BLOCKED — String in closure env may alias an outer struct
 ```
 
 Only three live markers exist in tree:
 
 | Marker | Location | Current blocked condition | Substrate concern |
 | --- | --- | --- | --- |
-| D6 | `hew-codegen/src/mlir/MLIRGen.cpp:5268` | Generator bindings can survive across `yield` and later resume. | `YieldedAcrossSuspend` |
-| D7 | `hew-codegen/src/mlir/MLIRGenExpr.cpp:1870` | Call lowering lacks a move-checker proof, so borrow-semantics exemptions remain conservative. | `Owned` / `Borrowed` / `FieldAlias` |
-| D8 | `hew-codegen/src/mlir/MLIRGenExpr.cpp:1877` | Closure capture can alias outer aggregate storage without tracking. | `ClosureCapture` / `FieldAlias` |
+| D6 | `retired C++ backend MLIRGen.cpp:5268` | Generator bindings can survive across `yield` and later resume. | `YieldedAcrossSuspend` |
+| D7 | `retired C++ backend MLIRGenExpr.cpp:1870` | Call lowering lacks a move-checker proof, so borrow-semantics exemptions remain conservative. | `Owned` / `Borrowed` / `FieldAlias` |
+| D8 | `retired C++ backend MLIRGenExpr.cpp:1877` | Closure capture can alias outer aggregate storage without tracking. | `ClosureCapture` / `FieldAlias` |
 
 ### 4.1 Issue-body numbering reconciliation
 
@@ -259,8 +263,8 @@ ownership-classification wire field across the msgpack boundary — producer
 (`hew-types/src/check/`) → boundary validator
 (`hew-types/src/check/admissibility.rs`) → serializer
 (`hew-serialize/src/msgpack.rs`) → C++ reader
-(`hew-codegen/src/msgpack_reader.cpp`) → codegen consumer
-(`hew-codegen/src/mlir/MLIRGen.cpp`). The producer returns an empty map in
+(`retired C++ backend msgpack_reader.cpp`) → codegen consumer
+(`retired C++ backend MLIRGen.cpp`). The producer returns an empty map in
 this slice; no existing program changes drop-emission shape. The reference
 implementation is the analogous `method_call_receiver_kinds` field. The
 soundness matrix row `handle_ownership_kinds` (`docs/specs/typedprogram-soundness-matrix.md`)

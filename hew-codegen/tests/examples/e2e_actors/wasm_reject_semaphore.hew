@@ -1,6 +1,0 @@
-import std::semaphore;
-
-fn main() {
-    let sem = semaphore.new(1);
-    sem.acquire();
-}

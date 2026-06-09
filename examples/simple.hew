@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Description: Simple Hew test
+
 // Simple Hew test
 fn add(a: i32, b: i32) -> i32 {
     a + b

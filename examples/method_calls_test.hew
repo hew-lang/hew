@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 advanced trait surface plus codegen-rs parity)
+//! Description: Method Calls Test example.
+
 type Point {
     x: f64;
     y: f64;

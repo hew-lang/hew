@@ -53,7 +53,11 @@
 // the substrate-grouping for readability; the binary-search
 // invariant is over the flat ordering.
 const M2_RUNTIME_SYMBOLS: &[&str] = &[
-    // --- Actor link/monitor surface (native-only; WASM-TODO(#1451)) --------
+    // --- Actor cooperate/link/monitor surface -------------------------------
+    // `hew_actor_cooperate() -> c_int` — reduction-budget safepoint injected
+    // by codegen at Checked MIR cooperate sites. Implemented by both native
+    // and WASM schedulers.
+    "hew_actor_cooperate",
     // `hew_actor_link(parent, child)` — bidirectional link; void return. The
     // Hew `link()` builtin wraps the call in `Ok(())` unconditionally because
     // the current runtime does not surface AlreadyLinked as a return code.
@@ -99,6 +103,19 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // --- SendHalf<T> ---------------------------------------------
     "hew_send_half_send",
     "hew_send_half_try_send",
+    // --- Supervisor static-child slot lookup ---------------------------------
+    // `hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32) -> ChildLookupResult`
+    // (`hew-runtime/src/supervisor.rs`). Non-blocking typed slot lookup for
+    // static (non-pool) supervisor children. Returns a 16-byte discriminated
+    // result: tag 0=Live (handle non-null), 1=Transient, 2=Dead. The MIR
+    // producer arm for dotted-access lowering is deferred until the
+    // `Instr::CallRuntimeAbi` emitter shape is established.
+    "hew_supervisor_child_get",
+    // `hew_supervisor_nested_get(sup: *mut HewSupervisor, key: u32) -> ChildLookupResult`
+    // (`hew-runtime/src/supervisor.rs`). Same as hew_supervisor_child_get but
+    // over child_supervisors; the handle field carries a *mut HewSupervisor
+    // bit-pattern for multi-segment dotted access (`app.api.auth`).
+    "hew_supervisor_nested_get",
     // --- Task ABI (scope{}/spawn/await) — Phase 2, rows 2/3/4 ----------------
     // `hew_task_await_blocking(task: *mut HewTask) -> *mut c_void`
     // (`hew-runtime/src/task_scope.rs:411`). Blocks the calling thread until
@@ -157,6 +174,18 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_vec_slice_range_i64",
     "hew_vec_slice_range_ptr",
     "hew_vec_slice_range_str",
+    // --- Trait-object dispatch diagnostics (TO-1) ---------------
+    // `hew_vtable_dispatch_panic_on_oob(slot: u32, max: u32) -> !`
+    // (`hew-runtime/src/trait_object.rs`). Diagnostic trap codegen
+    // wires on the unreachable arm of a vtable-slot match (LESSONS
+    // P0 `exhaustive-coverage`: no wildcard fallthrough in dispatch).
+    // Also the wire target for a null-vtable fail-closed. Lane plan
+    // `runtime-trait-object-abi.md` design D-4 rejects routing the
+    // *actual* dispatch through a runtime helper — codegen emits
+    // GEP+load+call inline — so this is the only trait-object symbol
+    // the runtime exposes today; per-trait dispatch sites name it
+    // only on the OOB / null-vtable arms.
+    "hew_vtable_dispatch_panic_on_oob",
 ];
 
 /// Error returned when a `RuntimeCall` is constructed with a symbol that

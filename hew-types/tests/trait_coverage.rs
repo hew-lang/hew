@@ -222,7 +222,7 @@ fn array_of_string_is_not_copy() {
     let reg = TraitRegistry::new();
     let arr = Ty::Array(Box::new(Ty::String), 5);
     assert!(!reg.implements_marker(&arr, MarkerTrait::Copy));
-    // But should still be Send since String is Send
+    // But should still be Send since string is Send
     assert!(reg.implements_marker(&arr, MarkerTrait::Send));
 }
 
@@ -268,7 +268,7 @@ fn tuple_with_non_copy_element_is_not_copy() {
     let reg = TraitRegistry::new();
     let tuple = Ty::Tuple(vec![Ty::I32, Ty::String]);
     assert!(!reg.implements_marker(&tuple, MarkerTrait::Copy));
-    // But still Send since both I32 and String are Send
+    // But still Send since both I32 and string are Send
     assert!(reg.implements_marker(&tuple, MarkerTrait::Send));
 }
 
@@ -525,6 +525,7 @@ fn trait_object_checks_super_traits() {
         traits: vec![TraitObjectBound {
             trait_name: "Drawable".to_string(),
             args: vec![],
+            assoc_bindings: vec![],
         }],
     };
     assert!(reg.implements_marker(&obj, MarkerTrait::Send));

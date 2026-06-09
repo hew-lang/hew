@@ -440,6 +440,7 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                 .map(|bound| crate::ty::TraitObjectBound {
                     trait_name: bound.name.clone(),
                     args: vec![],
+                    assoc_bindings: vec![],
                 })
                 .collect(),
         },
@@ -1158,10 +1159,8 @@ mod tests {
             ("Bool", Ty::Bool),
             ("Char", Ty::Char),
             ("Bytes", Ty::Bytes),
-            ("Duration", Ty::Duration),
             // canonical names that were already handled — must still work
             ("string", Ty::String),
-            ("String", Ty::String),
             ("i64", Ty::I64),
             ("int", Ty::I64),
             ("Int", Ty::I64),
@@ -1195,7 +1194,6 @@ mod tests {
 
         let aliases = [
             "str", "uint", "usize", "isize", "float", "Float", "byte", "Bool", "Char", "Bytes",
-            "Duration",
         ];
         for alias in aliases {
             let texpr = TypeExpr::Named {

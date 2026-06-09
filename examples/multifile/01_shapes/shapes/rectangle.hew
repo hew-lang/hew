@@ -12,7 +12,7 @@ pub fn make_rectangle(width: int, height: int) -> Rectangle {
 }
 
 impl Drawable for Rectangle {
-    fn draw(r: Rectangle) -> String {
+    fn draw(r: Rectangle) -> string {
         f"Rectangle({r.width}x{r.height})"
     }
 }

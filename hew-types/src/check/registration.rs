@@ -175,7 +175,14 @@ impl Checker {
             // struct field types (there is no surface annotation for Task<T>),
             // so this arm is structurally unreachable today. Explicit rather
             // than wildcard so the sweep stays honest.
-            | Ty::Task(_) => false,
+            | Ty::Task(_)
+            // Ty::AssocType is a projection carrier present only in generic
+            // signatures during checking; field-type validation walks
+            // user-declared struct/record/enum fields, which cannot themselves
+            // be associated-type projections (no `field: T::Item` surface).
+            // If a future surface admits projections in field types, this arm
+            // must descend into `base`.
+            | Ty::AssocType { .. } => false,
         }
     }
 
@@ -285,8 +292,8 @@ impl Checker {
         let close_t = TypeVar::fresh();
         self.register_builtin_fn(
             "close",
-            vec![Ty::actor_ref(Ty::Var(close_t))],
-            Ty::actor_ref(Ty::Var(close_t)),
+            vec![Ty::local_pid(Ty::Var(close_t))],
+            Ty::local_pid(Ty::Var(close_t)),
         );
         self.register_builtin_fn("exit", vec![Ty::I64], Ty::Never);
         self.register_builtin_fn("panic", vec![Ty::String], Ty::Never);
@@ -298,15 +305,15 @@ impl Checker {
         let link_t = TypeVar::fresh();
         self.register_builtin_fn(
             "link",
-            vec![Ty::actor_ref(Ty::Var(link_t))],
+            vec![Ty::local_pid(Ty::Var(link_t))],
             Ty::result(Ty::Unit, Ty::link_error()),
         );
         let unlink_t = TypeVar::fresh();
-        self.register_builtin_fn("unlink", vec![Ty::actor_ref(Ty::Var(unlink_t))], Ty::Unit);
+        self.register_builtin_fn("unlink", vec![Ty::local_pid(Ty::Var(unlink_t))], Ty::Unit);
         let monitor_t = TypeVar::fresh();
         self.register_builtin_fn(
             "monitor",
-            vec![Ty::actor_ref(Ty::Var(monitor_t))],
+            vec![Ty::local_pid(Ty::Var(monitor_t))],
             Ty::monitor_ref(),
         );
 
@@ -315,13 +322,13 @@ impl Checker {
         let sup_child_ret = TypeVar::fresh();
         self.register_builtin_fn(
             "supervisor_child",
-            vec![Ty::actor_ref(Ty::Var(sup_child_t)), Ty::I64],
-            Ty::actor_ref(Ty::Var(sup_child_ret)),
+            vec![Ty::local_pid(Ty::Var(sup_child_t)), Ty::I64],
+            Ty::local_pid(Ty::Var(sup_child_ret)),
         );
         let sup_stop_t = TypeVar::fresh();
         self.register_builtin_fn(
             "supervisor_stop",
-            vec![Ty::actor_ref(Ty::Var(sup_stop_t))],
+            vec![Ty::local_pid(Ty::Var(sup_stop_t))],
             Ty::Unit,
         );
 
@@ -639,8 +646,9 @@ impl Checker {
         if !parsed.errors.is_empty() {
             return;
         }
-        // Pre-register the trait definitions from builtins.hew into
-        // `trait_defs` WITHOUT claiming `type_def_spans` for them.  The
+        // Pre-register the public trait/type definitions from builtins.hew
+        // into `trait_defs` / `type_defs` WITHOUT claiming `type_def_spans`
+        // for them.  The
         // checker output-boundary validator (admissibility.rs:491-505)
         // retains `MethodCallReceiverKind::PrimitiveTraitImpl` entries only
         // when their `trait_name` is present in `trait_defs`; without this
@@ -655,16 +663,19 @@ impl Checker {
         // `x.fmt()` dispatch continues to find the builtins-registered
         // impl regardless of which `trait_defs[Display]` shape is current.
         for (item, _) in &parsed.program.items {
-            if let Item::Trait(tr) = item {
-                if !tr.visibility.is_pub() {
-                    continue;
+            match item {
+                Item::Trait(tr) if tr.visibility.is_pub() => {
+                    let info = Self::trait_info_from_decl(tr);
+                    self.trait_defs
+                        .entry(tr.name.clone())
+                        .or_insert_with(|| info.clone());
+                    let qualified = format!("builtins.{}", tr.name);
+                    self.trait_defs.entry(qualified).or_insert(info);
                 }
-                let info = Self::trait_info_from_decl(tr);
-                self.trait_defs
-                    .entry(tr.name.clone())
-                    .or_insert_with(|| info.clone());
-                let qualified = format!("builtins.{}", tr.name);
-                self.trait_defs.entry(qualified).or_insert(info);
+                Item::TypeDecl(td) if td.visibility.is_pub() => {
+                    self.pre_register_type_decl(td);
+                }
+                _ => {}
             }
         }
         // Now feed only the `Item::Impl` blocks through the existing
@@ -911,7 +922,9 @@ impl Checker {
                     if !self.register_type_namespace_name(&td.name, span) {
                         continue;
                     }
-                    let info = Self::trait_info_from_decl(td);
+                    let mut trait_errors = Vec::new();
+                    let info = Self::trait_info_from_decl_with_diagnostics(td, &mut trait_errors);
+                    self.errors.extend(trait_errors);
                     self.trait_defs.insert(td.name.clone(), info);
                     self.local_trait_defs.insert(td.name.clone());
                     // Record super-trait relationships
@@ -923,12 +936,23 @@ impl Checker {
                 }
                 Item::Supervisor(sd) => {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
-                    let children: Vec<(String, String)> = sd
-                        .children
-                        .iter()
-                        .map(|c| (c.name.clone(), c.actor_type.clone()))
-                        .collect();
-                    self.supervisor_children.insert(sd.name.clone(), children);
+                    // Partition children by kind in source order. Slot index for each
+                    // child is its 0-based position within its own partition, matching
+                    // the runtime layout (children[] for static, pool_slots[] for pool).
+                    let mut statics = Vec::new();
+                    let mut pools = Vec::new();
+                    for c in &sd.children {
+                        let entry = (c.name.clone(), c.actor_type.clone());
+                        if c.is_pool {
+                            pools.push(entry);
+                        } else {
+                            statics.push(entry);
+                        }
+                    }
+                    self.supervisor_children.insert(
+                        sd.name.clone(),
+                        crate::check::types::SupervisorChildren { statics, pools },
+                    );
                 }
                 Item::Machine(md) => {
                     if !self.register_machine_type_namespace_names(&md.name, span) {
@@ -966,6 +990,7 @@ impl Checker {
     /// checking can construct local values. The import path's later
     /// `register_type_decl` call overwrites those signatures for `pub` types
     /// with the fully side-effected version.
+    #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     fn pre_register_type_decl(&mut self, td: &TypeDecl) {
         if self.type_defs.contains_key(&td.name) {
             return;
@@ -977,6 +1002,23 @@ impl Checker {
         let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
+
+        // Reject duplicate type parameter names — same check as `register_type_decl`.
+        {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for name in &type_param_names {
+                if !seen.insert(name.as_str()) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::DuplicateDefinition,
+                        0..0,
+                        format!(
+                            "type parameter `{name}` is defined more than once in `{}`",
+                            td.name
+                        ),
+                    ));
+                }
+            }
+        }
 
         let mut fields = HashMap::new();
         let mut variants = HashMap::new();
@@ -1130,6 +1172,26 @@ impl Checker {
         let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
+
+        // Reject duplicate type parameter names within the same declaration.
+        // The parser cannot catch this because `parse_type_params` has no
+        // seen-name accumulator; the checker is the authoritative gatekeeper.
+        {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for name in &type_param_names {
+                if !seen.insert(name.as_str()) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::DuplicateDefinition,
+                        0..0,
+                        format!(
+                            "type parameter `{name}` is defined more than once in `{}`",
+                            td.name
+                        ),
+                    ));
+                }
+            }
+        }
+
         let type_param_bounds =
             self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
         let enum_return_args: Vec<Ty> = type_param_names
@@ -2010,15 +2072,41 @@ impl Checker {
     }
 
     pub(super) fn trait_info_from_decl(tr: &TraitDecl) -> TraitInfo {
+        Self::trait_info_from_decl_with_diagnostics(tr, &mut Vec::new())
+    }
+
+    /// Build `TraitInfo` and surface trait-body diagnostics. Duplicate
+    /// `type Bar; type Bar;` declarations are reported here (the impl-side
+    /// duplicate-detection is handled separately in `build_impl_alias_entries`).
+    pub(super) fn trait_info_from_decl_with_diagnostics(
+        tr: &TraitDecl,
+        errors: &mut Vec<TypeError>,
+    ) -> TraitInfo {
         let mut methods = Vec::new();
-        let mut associated_types = Vec::new();
+        let mut associated_types: Vec<TraitAssociatedTypeInfo> = Vec::new();
+        let mut seen_assoc: HashMap<String, Span> = HashMap::new();
         for item in &tr.items {
             match item {
                 TraitItem::Method(m) => methods.push(m.clone()),
-                TraitItem::AssociatedType { name, default, .. } => {
+                TraitItem::AssociatedType {
+                    name,
+                    bounds,
+                    default,
+                    span,
+                } => {
+                    if let Some(prev_span) = seen_assoc.insert(name.clone(), span.clone()) {
+                        errors.push(TypeError::duplicate_definition(
+                            span.clone(),
+                            name,
+                            prev_span,
+                        ));
+                        continue;
+                    }
                     associated_types.push(TraitAssociatedTypeInfo {
                         name: name.clone(),
+                        bounds: bounds.clone(),
                         default: default.clone(),
+                        span: span.clone(),
                     });
                 }
             }
@@ -2092,28 +2180,89 @@ impl Checker {
             return false;
         };
         let entries = self.build_impl_alias_entries(id);
-        if enforce {
-            if let Some(tb) = &id.trait_bound {
-                if let Some(info) = self.trait_defs.get(&tb.name) {
-                    let missing: Vec<String> = info
-                        .associated_types
+        let impl_bounds_map = self.collect_type_param_scope_with_bounds(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+        );
+        let pushed_impl_bounds = !impl_bounds_map.is_empty();
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.push(impl_bounds_map);
+        }
+        // Populate impl_assoc_type_bindings on every enter (not gated on
+        // `enforce`) so projection collapse can find bindings during
+        // call-site monomorphisation even when this scope was entered by
+        // a non-enforcing registration sweep. The first writer wins;
+        // subsequent calls with the same impl idempotently re-resolve.
+        if let Some(tb) = &id.trait_bound {
+            // Snapshot trait-side assoc-type list to avoid double-borrow
+            // of trait_defs while we call resolve_type_expr.
+            let assoc_names: Vec<String> = self
+                .trait_defs
+                .get(&tb.name)
+                .map(|info| {
+                    info.associated_types
                         .iter()
-                        .filter(|assoc| !entries.contains_key(&assoc.name))
-                        .map(|assoc| assoc.name.clone())
-                        .collect();
-                    let target_name = target_name.to_string();
-                    let tb_name = tb.name.clone();
-                    for name in missing {
-                        self.report_error(
-                            TypeErrorKind::UndefinedType,
-                            span,
-                            format!(
-                                "impl `{tb_name}` for `{target_name}` must define associated type `{name}`"
-                            ),
-                        );
+                        .map(|a| a.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let tb_name = tb.name.clone();
+            let target_owned = target_name.to_string();
+            for assoc_name in assoc_names {
+                let key = (target_owned.clone(), tb_name.clone(), assoc_name.clone());
+                if self.impl_assoc_type_bindings.contains_key(&key) {
+                    continue;
+                }
+                if let Some(entry) = entries.get(&assoc_name) {
+                    let expr = entry.expr.clone();
+                    let resolved = self.resolve_type_expr(&expr);
+                    if !matches!(resolved, Ty::Error) {
+                        self.impl_assoc_type_bindings.insert(key, resolved);
                     }
                 }
             }
+        }
+        if enforce {
+            if let Some(tb) = &id.trait_bound {
+                // Snapshot trait-side data we need; cloned so we can release
+                // the borrow on `self.trait_defs` before calling into the
+                // resolver / bound-checker which need `&mut self`.
+                let trait_snapshot = self
+                    .trait_defs
+                    .get(&tb.name)
+                    .map(|info| info.associated_types.clone());
+                if let Some(associated_types) = trait_snapshot {
+                    let missing: Vec<TraitAssociatedTypeInfo> = associated_types
+                        .iter()
+                        .filter(|assoc| !entries.contains_key(&assoc.name))
+                        .cloned()
+                        .collect();
+                    let target_name_owned = target_name.to_string();
+                    let tb_name = tb.name.clone();
+                    for assoc in missing {
+                        self.report_error_with_note(
+                            TypeErrorKind::UndefinedType,
+                            span,
+                            format!(
+                                "impl `{tb_name}` for `{target_name_owned}` must define associated type `{}`",
+                                assoc.name
+                            ),
+                            &assoc.span,
+                            "required associated type declared here".to_string(),
+                        );
+                    }
+                    self.check_assoc_type_bounds(
+                        &associated_types,
+                        &entries,
+                        &tb_name,
+                        &target_name_owned,
+                        id,
+                    );
+                }
+            }
+        }
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.pop();
         }
         self.impl_alias_scopes.push(ImplAliasScope {
             span: span.clone(),
@@ -2126,6 +2275,88 @@ impl Checker {
 
     pub(super) fn exit_impl_scope(&mut self) {
         self.impl_alias_scopes.pop();
+    }
+
+    /// Enforce trait-side bounds on each impl-side associated-type binding.
+    ///
+    /// For `trait Foo { type Out: Display; }` and `impl Foo for X { type Out = Y; }`,
+    /// verifies `Y: Display`. Handles two distinct shapes for the chosen `Y`:
+    ///
+    /// - **Concrete type** (`Ty::Named { name, .. }` where `name` is a known
+    ///   type-def): consult `type_satisfies_trait_bound` directly.
+    /// - **Impl type-param** (`Ty::Named { name, .. }` where `name` is one of
+    ///   the impl's declared type params, e.g. `impl<T: Display> Foo for X { type Out = T; }`):
+    ///   consult the impl's own `collect_type_param_bounds` map, because at
+    ///   impl-registration time `current_function` is not set and
+    ///   `type_satisfies_trait_bound`'s `type_param_carries_bound` fallback
+    ///   would return false-negative.
+    fn check_assoc_type_bounds(
+        &mut self,
+        associated_types: &[TraitAssociatedTypeInfo],
+        entries: &HashMap<String, ImplAliasEntry>,
+        trait_name: &str,
+        target_name: &str,
+        id: &ImplDecl,
+    ) {
+        // Pre-collect impl-side type-param bounds. Keys are param names
+        // (e.g. `T`), values are bound trait names. Reused across all assoc
+        // types in this impl.
+        let impl_param_bounds: HashMap<String, Vec<String>> =
+            self.collect_type_param_bounds(id.type_params.as_ref(), id.where_clause.as_ref());
+        let impl_param_names: HashSet<String> = id
+            .type_params
+            .as_ref()
+            .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
+            .unwrap_or_default();
+
+        for assoc in associated_types {
+            if assoc.bounds.is_empty() {
+                continue;
+            }
+            let Some(entry) = entries.get(&assoc.name) else {
+                continue;
+            };
+            let expr = entry.expr.clone();
+            let entry_span = expr.1.clone();
+            let resolved = self.resolve_type_expr(&expr);
+            // Skip bounds checking when the RHS itself failed to resolve.
+            // `resolve_type_expr` already emitted the primary diagnostic;
+            // running `type_satisfies_trait_bound(&Ty::Error, _)` here would
+            // produce a spurious cascading `BoundsNotSatisfied` on top of it.
+            if matches!(resolved, Ty::Error) {
+                continue;
+            }
+            for bound in &assoc.bounds {
+                let bound_name = &bound.name;
+                let satisfied = match &resolved {
+                    Ty::Named { name, .. } if impl_param_names.contains(name) => {
+                        // Impl type-param: check the impl's own bounds map.
+                        impl_param_bounds.get(name).is_some_and(|bs| {
+                            bs.iter()
+                                .any(|b| b == bound_name || self.trait_extends(b, bound_name))
+                        })
+                    }
+                    _ => self.type_satisfies_trait_bound(&resolved, bound_name),
+                };
+                if satisfied {
+                    continue;
+                }
+                self.report_error(
+                    TypeErrorKind::BoundsNotSatisfied,
+                    &entry_span,
+                    format!(
+                        "associated type `{}::{}` in impl for `{}` is bound by trait \
+                         `{}` but `{}` does not implement `{}`",
+                        trait_name,
+                        assoc.name,
+                        target_name,
+                        bound_name,
+                        resolved.user_facing(),
+                        bound_name,
+                    ),
+                );
+            }
+        }
     }
 
     pub(super) fn resolve_impl_associated_type(&mut self, alias: &str) -> Option<Ty> {
@@ -2510,6 +2741,12 @@ impl Checker {
         if self.fn_sigs.contains_key(&method_key) {
             return;
         }
+        // Activate trait-body `Self::Bar` projection while resolving this
+        // method's signature, so `Self::Item` in the return type becomes a
+        // deferred `Ty::AssocType` carrier instead of an opaque named type.
+        let prev_trait_self = self
+            .current_trait_for_self_projection
+            .replace(trait_name.to_string());
         self.register_fn_sig_with_name(
             &method_key,
             &FnDecl {
@@ -2532,6 +2769,35 @@ impl Checker {
                 fn_span: 0..0,
             },
         );
+        self.current_trait_for_self_projection = prev_trait_self;
+    }
+
+    /// Like `collect_type_param_bounds` but always includes a key for every
+    /// declared type param, with an empty `Vec` when no bounds are
+    /// declared. Used by the resolver to distinguish "type param in scope
+    /// with no bounds" (emit missing-bound diagnostic) from "name is not a
+    /// type param at all" (fall through to other resolution paths).
+    pub(super) fn collect_type_param_scope_with_bounds(
+        &self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+    ) -> HashMap<String, Vec<String>> {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        if let Some(params) = type_params {
+            for param in params {
+                map.entry(param.name.clone()).or_default();
+            }
+        }
+        let with_bounds = self.collect_type_param_bounds(type_params, where_clause);
+        for (k, v) in with_bounds {
+            let entry = map.entry(k).or_default();
+            for b in v {
+                if !entry.iter().any(|existing| existing == &b) {
+                    entry.push(b);
+                }
+            }
+        }
+        map
     }
 
     #[expect(
@@ -2628,6 +2894,19 @@ impl Checker {
         } else {
             0
         };
+        // Push the type-param bounds map BEFORE resolving the signature so
+        // the resolver can validate `T::Bar` projections that appear in
+        // param/return types. Includes type params with no bounds so the
+        // resolver can distinguish "in scope with no bounds" (emit
+        // missing-bound diagnostic) from "not in scope" (fall through).
+        let fn_bounds = self.collect_type_param_scope_with_bounds(
+            fd.type_params.as_ref(),
+            fd.where_clause.as_ref(),
+        );
+        let pushed_bounds = !fn_bounds.is_empty();
+        if pushed_bounds {
+            self.current_type_param_bounds.push(fn_bounds);
+        }
         let mut hole_vars = Vec::new();
         let param_names = fd
             .params
@@ -2644,6 +2923,9 @@ impl Checker {
         let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
             self.resolve_registered_annotation_ty(ret, &mut hole_vars)
         });
+        if pushed_bounds {
+            self.current_type_param_bounds.pop();
+        }
         // Wrap return type for generator functions
         let return_type = if fd.is_generator && fd.is_async {
             Ty::async_generator(declared_return)
@@ -2697,7 +2979,19 @@ impl Checker {
         impl_where_clause: Option<&WhereClause>,
     ) -> FnSig {
         let method_key = format!("{type_name}::{}", method.name);
+        // Push impl-level bounds onto the resolver's stack so the method
+        // signature can reference `T::Bar` where `T` is an impl type param
+        // (e.g. `impl<I: Iterator> Foo for X { fn next() -> I::Item }`).
+        let impl_bounds_map =
+            self.collect_type_param_scope_with_bounds(impl_type_params, impl_where_clause);
+        let pushed_impl_bounds = !impl_bounds_map.is_empty();
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.push(impl_bounds_map);
+        }
         self.register_fn_sig_with_name(&method_key, method);
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.pop();
+        }
 
         // Patch the fn_sigs entry to include impl-level type params and their
         // bounds. `register_fn_sig_with_name` only records method-level params,
@@ -2722,6 +3016,12 @@ impl Checker {
             }
         }
 
+        let impl_bounds_map =
+            self.collect_type_param_scope_with_bounds(impl_type_params, impl_where_clause);
+        let pushed_impl_bounds = !impl_bounds_map.is_empty();
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.push(impl_bounds_map);
+        }
         let skip = usize::from(
             method
                 .params
@@ -2737,6 +3037,9 @@ impl Checker {
         let return_type = method.return_type.as_ref().map_or(Ty::Unit, |ret| {
             self.resolve_registered_annotation_ty_no_holes(ret)
         });
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.pop();
+        }
         let param_names: Vec<String> = method
             .params
             .iter()
@@ -2826,7 +3129,7 @@ impl Checker {
 
     /// Same as [`Self::canonical_primitive_or_builtin_key`] but accepts the
     /// raw type-name string seen at impl-block registration (e.g. `"int"`,
-    /// `"String"`, `"Vec"`).  Returns `None` for names that aren't primitive
+    /// `"string"`, `"Vec"`).  Returns `None` for names that aren't primitive
     /// aliases or compiler-builtin generics.
     #[must_use]
     pub(super) fn canonical_primitive_or_builtin_key_from_name(name: &str) -> Option<String> {
@@ -2898,6 +3201,15 @@ impl Checker {
             self.generic_ctx.push(generic_bindings);
         }
 
+        let rf_scope = self.collect_type_param_scope_with_bounds(
+            rf.type_params.as_ref(),
+            rf.where_clause.as_ref(),
+        );
+        let pushed_rf_bounds = !rf_scope.is_empty();
+        if pushed_rf_bounds {
+            self.current_type_param_bounds.push(rf_scope);
+        }
+
         let mut hole_vars = Vec::new();
         let param_names = rf.params.iter().map(|p| p.name.clone()).collect();
         let params = rf
@@ -2914,6 +3226,9 @@ impl Checker {
             declared_return_type
         };
 
+        if pushed_rf_bounds {
+            self.current_type_param_bounds.pop();
+        }
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
             self.generic_ctx.pop();
         }

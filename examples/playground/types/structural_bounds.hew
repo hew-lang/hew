@@ -3,29 +3,29 @@
 
 // A trait that requires a single method.
 trait Named {
-    fn name(val: Self) -> String;
+    fn name(val: Self) -> string;
 }
 
 // Two unrelated types — no explicit "impl Named for ..." needed.
 type User {
-    name: String;
+    name: string;
     age: int;
 }
 
 type Product {
-    name: String;
+    name: string;
     price: int;
 }
 
 // Bare impl blocks provide the method, satisfying Named structurally.
 impl User {
-    fn name(u: User) -> String {
+    fn name(u: User) -> string {
         u.name
     }
 }
 
 impl Product {
-    fn name(p: Product) -> String {
+    fn name(p: Product) -> string {
         p.name
     }
 }

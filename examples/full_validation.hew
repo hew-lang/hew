@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 closures with captured environment plus codegen-rs parity)
+//! Description: Full validation test - exercises all implemented features
+
 // Full validation test - exercises all implemented features
 
 // 1. Boolean operators
@@ -44,7 +47,7 @@ fn test_loops() {
     }
 }
 
-// 5. String operations
+// 5. string operations
 fn test_strings() {
     println("PASS: strings")
 }

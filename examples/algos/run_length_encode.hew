@@ -1,5 +1,5 @@
 // Run-length encoding
-fn rle_encode(s: String) -> String {
+fn rle_encode(s: string) -> string {
     let n = s.len();
     if n == 0 {
         return "";

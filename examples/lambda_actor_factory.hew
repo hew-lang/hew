@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Lambda Actor Factory Pattern Example
+
 // Lambda Actor Factory Pattern Example
 // Demonstrates creating lambda actors from functions
 fn main() {

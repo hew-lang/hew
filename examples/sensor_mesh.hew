@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Description: Sensor mesh — distributed actor service pattern
+
 // Sensor mesh — distributed actor service pattern
 //
 // A temperature monitoring system with three actor types:
@@ -10,7 +13,7 @@
 // (for example Node::connect/load_keys/allow_peer) are runtime-only for now.
 actor Logger {
     let count: i32;
-    receive fn log_event(source: String, msg: String) {
+    receive fn log_event(source: string, msg: string) {
         count = count + 1;
         println(f"[log #{count}] {source}: {msg}");
     }
@@ -20,7 +23,7 @@ actor Monitor {
     let readings: Vec<i32>;
     let logger: ActorRef<Logger>;
     let threshold: i32;
-    receive fn reading(sensor_id: String, temp: i32) {
+    receive fn reading(sensor_id: string, temp: i32) {
         readings.push(temp);
         if temp > threshold {
             logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {threshold}");
@@ -37,7 +40,7 @@ actor Monitor {
 }
 
 actor Sensor {
-    let sensor_id: String;
+    let sensor_id: string;
     let monitor: ActorRef<Monitor>;
     let base_temp: i32;
     receive fn tick(cycle: i32) {

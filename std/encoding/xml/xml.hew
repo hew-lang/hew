@@ -28,13 +28,13 @@ type Node {
 /// Methods available on an XML `Node`.
 trait NodeMethods {
     /// Serialize the node tree back to an XML string.
-    fn to_string(node: Node) -> String;
+    fn to_string(node: Node) -> string;
 
     /// Get the tag name of an element node. Returns empty for text nodes.
-    fn get_tag(node: Node) -> String;
+    fn get_tag(node: Node) -> string;
 
     /// Get an attribute value by name. Returns empty string if not found.
-    fn get_attribute(node: Node, name: String) -> String;
+    fn get_attribute(node: Node, name: string) -> string;
 
     /// Get the number of child nodes.
     fn children_count(node: Node) -> int;
@@ -43,7 +43,7 @@ trait NodeMethods {
     fn get_child(node: Node, index: int) -> Node;
 
     /// Get the concatenated text content of this node and its descendants.
-    fn get_text(node: Node) -> String;
+    fn get_text(node: Node) -> string;
 
     /// Return 1 if this is an element node, 0 if text, -1 if null.
     fn is_element(node: Node) -> i32; // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
@@ -52,17 +52,17 @@ trait NodeMethods {
 }
 
 impl NodeMethods for Node {
-    fn to_string(node: Node) -> String {
+    fn to_string(node: Node) -> string {
         unsafe {
             hew_xml_to_string(node)
         }
     }
-    fn get_tag(node: Node) -> String {
+    fn get_tag(node: Node) -> string {
         unsafe {
             hew_xml_get_tag(node)
         }
     }
-    fn get_attribute(node: Node, name: String) -> String {
+    fn get_attribute(node: Node, name: string) -> string {
         unsafe {
             hew_xml_get_attribute(node, name)
         }
@@ -77,7 +77,7 @@ impl NodeMethods for Node {
             hew_xml_get_child(node, index as i32)
         }
     } // INTERNAL-ABI: C ABI index is i32
-    fn get_text(node: Node) -> String {
+    fn get_text(node: Node) -> string {
         unsafe {
             hew_xml_get_text(node)
         }
@@ -96,28 +96,28 @@ impl NodeMethods for Node {
 
 // ── Module-level functions ────────────────────────────────────────────
 /// Parse an XML string into a `Node` tree.
-pub fn parse(s: String) -> Node {
+pub fn parse(s: string) -> Node {
     unsafe {
         hew_xml_parse(s)
     }
 }
 
 /// Serialize a `Node` tree back to an XML string.
-pub fn to_string(node: Node) -> String {
+pub fn to_string(node: Node) -> string {
     unsafe {
         hew_xml_to_string(node)
     }
 }
 
 /// Get an attribute value from a node. Returns empty string if not found.
-pub fn get_attribute(node: Node, name: String) -> String {
+pub fn get_attribute(node: Node, name: string) -> string {
     unsafe {
         hew_xml_get_attribute(node, name)
     }
 }
 
 /// Get the concatenated text content of a node and its descendants.
-pub fn get_text(node: Node) -> String {
+pub fn get_text(node: Node) -> string {
     unsafe {
         hew_xml_get_text(node)
     }
@@ -125,13 +125,13 @@ pub fn get_text(node: Node) -> String {
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
-    fn hew_xml_parse(xml_str: String) -> Node;
-    fn hew_xml_to_string(node: Node) -> String;
-    fn hew_xml_get_tag(node: Node) -> String;
-    fn hew_xml_get_attribute(node: Node, name: String) -> String;
+    fn hew_xml_parse(xml_str: string) -> Node;
+    fn hew_xml_to_string(node: Node) -> string;
+    fn hew_xml_get_tag(node: Node) -> string;
+    fn hew_xml_get_attribute(node: Node, name: string) -> string;
     fn hew_xml_children_count(node: Node) -> i32;
     fn hew_xml_get_child(node: Node, index: i32) -> Node;
-    fn hew_xml_get_text(node: Node) -> String;
+    fn hew_xml_get_text(node: Node) -> string;
     fn hew_xml_is_element(node: Node) -> i32;
     fn hew_xml_free(node: Node);
 }

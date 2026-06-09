@@ -653,9 +653,13 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -850,7 +854,7 @@ fn main() {
                     !type_hints.is_empty(),
                     "unannotated let should get type hint"
                 );
-                assert!(type_hints[0].contains("String"));
+                assert!(type_hints[0].contains("string"));
             } else {
                 panic!("expected let statement with value");
             }

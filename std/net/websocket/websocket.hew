@@ -53,10 +53,10 @@ type Message {
 /// Methods available on a WebSocket `Conn`.
 trait ConnMethods {
     /// Send a text message over the connection. Return 0 on success.
-    fn send_text(conn: Conn, msg: String) -> int;
+    fn send_text(conn: Conn, msg: string) -> int;
 
     /// Send a text message over the connection.
-    fn try_send_text(conn: Conn, msg: String) -> Result<(), fs.IoError>;
+    fn try_send_text(conn: Conn, msg: string) -> Result<(), fs.IoError>;
 
     /// Block until a message is received and return it.
     fn recv(conn: Conn) -> Message;
@@ -85,12 +85,12 @@ trait ConnMethods {
 }
 
 impl ConnMethods for Conn {
-    fn send_text(conn: Conn, msg: String) -> int {
+    fn send_text(conn: Conn, msg: string) -> int {
         unsafe {
             hew_ws_send_text(conn, msg)
         }
     }
-    fn try_send_text(conn: Conn, msg: String) -> Result<(), fs.IoError> {
+    fn try_send_text(conn: Conn, msg: string) -> Result<(), fs.IoError> {
         let n: int = unsafe {
             hew_ws_send_text(conn, msg)
         };
@@ -141,7 +141,7 @@ trait MessageMethods {
     /// Get the message type (0=text, 1=binary, 2=ping, 3=pong, 4=close, -1=error).
     fn msg_type(msg: Message) -> i32; // INTERNAL-ABI: opaque frame-type enum; planned enum migration
     /// Extract the text content of a text message.
-    fn text(msg: Message) -> String;
+    fn text(msg: Message) -> string;
 
     /// Release the message resources.
     fn free(msg: Message);
@@ -153,7 +153,7 @@ impl MessageMethods for Message {
             hew_ws_message_type(msg)
         }
     }
-    fn text(msg: Message) -> String {
+    fn text(msg: Message) -> string {
         unsafe {
             hew_ws_message_text(msg)
         }
@@ -217,7 +217,7 @@ impl ServerMethods for Server {
 /// ```
 /// actor Echo {
 ///     let conn: Conn;
-///     receive fn on_message(text: String) {
+///     receive fn on_message(text: string) {
 ///         conn.send_text("echo: " + text);
 ///     }
 ///     receive fn on_close() {
@@ -227,7 +227,7 @@ impl ServerMethods for Server {
 /// ```
 trait WebSocketHandler {
     /// Called when a text frame arrives from the client.
-    fn on_message(text: String);
+    fn on_message(text: string);
 
     /// Called when the connection closes or errors.
     fn on_close();
@@ -235,7 +235,7 @@ trait WebSocketHandler {
 
 // ── Module-level functions ────────────────────────────────────────────
 /// Open a WebSocket connection to the given URL (client).
-pub fn connect(url: String) -> Conn {
+pub fn connect(url: string) -> Conn {
     unsafe {
         hew_ws_connect(url)
     }
@@ -249,7 +249,7 @@ pub fn connect(url: String) -> Conn {
 /// let server = websocket.listen("0.0.0.0:8080");
 /// let conn = server.accept();
 /// ```
-pub fn listen(addr: String) -> Server {
+pub fn listen(addr: string) -> Server {
     unsafe {
         hew_ws_server_new(addr)
     }
@@ -257,17 +257,17 @@ pub fn listen(addr: String) -> Server {
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
-    fn hew_ws_connect(url: String) -> Conn;
-    fn hew_ws_send_text(ws: Conn, msg: String) -> i32;
+    fn hew_ws_connect(url: string) -> Conn;
+    fn hew_ws_send_text(ws: Conn, msg: string) -> i32;
     fn hew_ws_recv(ws: Conn) -> Message;
     fn hew_ws_recv_timeout(ws: Conn, deadline_ms: i32) -> Message;
     fn hew_ws_recv_last_timed_out() -> i32; // INTERNAL-ABI: thread-local timeout sentinel; 1=timeout, 0=ok-or-error
     fn hew_ws_message_is_valid(msg: Message) -> bool;
     fn hew_ws_close(ws: Conn);
     fn hew_ws_message_type(msg: Message) -> i32;
-    fn hew_ws_message_text(msg: Message) -> String;
+    fn hew_ws_message_text(msg: Message) -> string;
     fn hew_ws_message_free(msg: Message);
-    fn hew_ws_server_new(addr: String) -> Server;
+    fn hew_ws_server_new(addr: string) -> Server;
     fn hew_ws_server_port(server: Server) -> i32;
     fn hew_ws_server_accept(server: Server) -> Conn;
     fn hew_ws_server_close(server: Server);

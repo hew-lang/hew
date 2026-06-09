@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: File reader via message-passing actors
+
 // File reader via message-passing actors
 // Reads an input file and prints contents to console via actor messages
 actor Printer {

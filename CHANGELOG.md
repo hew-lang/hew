@@ -2,14 +2,22 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **`hew-codegen` C++/MLIR subtree retired.** The previous C++ MLIR-based
+  code generator, its generated msgpack reader, and the `hew-astgen` helper
+  crate have been deleted from the workspace. `hew-codegen-rs` (LLVM via
+  inkwell) is now the sole compiler backend and is linked into the `hew`
+  binary as a normal Cargo dependency; the old CMake/Ninja/build-script path
+  and C++ codegen sanitizer lane are gone.
+
 ### Notice
 
 - **v0.5 compiler-foundation cutover in progress:** The workspace version has
   advanced to `0.5.0-pre`. The new typed HIR/MIR/value-model foundation is
-  under active development. Compiler internals (MLIRGen walker,
-  wrapper-shape registry, `expr_types`-keyed side tables) are frozen on
-  `main` pending cutover. See `BREAKING.md` for freeze rules and
-  bridge-fix admission criteria.
+  under active development. Retired C++ backend internals are historical
+  only; new compiler work lands in the Rust HIR/MIR/codegen-rs ladder. See
+  `BREAKING.md` for freeze rules and bridge-fix admission criteria.
 
 ### Failure model
 
@@ -59,6 +67,16 @@
   `Eq` and `Hash` when all its fields do. Using a record as a `HashMap` key
   or in an equality check without qualifying fields is a compile error rather
   than a silent runtime failure.
+- **Split actor identity types — `LocalPid<T>` and `RemotePid<T>`:** Builtins
+  now distinguish local process identifiers from remote process identifiers
+  instead of treating all actor identities as one unqualified handle shape.
+  The split makes remote dispatch, serialization, and same-node fast paths
+  explicit in the type surface.
+- **Associated types slice 1:** Edition 2026 now admits the bounded associated
+  type surface: one associated type per trait, `type Item;` declarations in
+  traits, concrete `type Item = ...;` definitions in impls, and `Self::Item`
+  references in type position. Associated-type bounds and multi-type trait
+  families remain deferred to `HEW-FUTURE.md` §2.2.
 
 ### Changed
 
@@ -280,8 +298,8 @@ See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.
 
 ### Known Limitations
 
-- **Nightly C++ sanitizer advisory:** the nightly `Codegen C++ ASan+UBSan` lane still reports an
-  MLIR/container-overflow false-positive candidate in `mlirgen` teardown. It is tracked as #774
+- **Nightly C++ sanitizer advisory:** the nightly `Codegen C++ ASan+UBSan` lane still reports a
+  retired-backend container-overflow false-positive candidate in teardown. It is tracked as #774
   and carried as an explicit advisory for v0.3.0; ordinary release builds and focused validation
   are otherwise green.
 

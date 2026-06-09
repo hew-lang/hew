@@ -232,6 +232,7 @@ impl Checker {
         type_defs: &mut HashMap<String, TypeDef>,
         fn_sigs: &mut HashMap<String, FnSig>,
         call_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
+        record_init_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
     ) {
         let covered_inference_vars = self.collect_output_contract_tracked_inference_vars();
         self.validate_expr_output_contract(expr_types, &covered_inference_vars);
@@ -255,6 +256,7 @@ impl Checker {
                 && !signature_contains_error_type(&sig.params, &sig.return_type)
         });
         Self::validate_call_type_args_output_contract(call_type_args, expr_types);
+        Self::validate_record_init_type_args_output_contract(record_init_type_args, expr_types);
         self.validate_assign_target_output_contract();
         self.validate_method_call_output_contract(expr_types);
         self.validate_method_call_receiver_kinds_output_contract(type_defs, fn_sigs);
@@ -423,6 +425,27 @@ impl Checker {
         });
     }
 
+    /// Validates `record_init_type_args` at the checker output boundary.
+    ///
+    /// Mirrors `validate_call_type_args_output_contract` for the record-init
+    /// monomorphisation surface:
+    ///
+    /// 1. **Orphaned span** — the `SpanKey` is absent from the post-validation
+    ///    `expr_types` map (the initialiser expression was pruned for leaked
+    ///    inference vars or cascading errors). The associated type arguments
+    ///    must not cross into HIR / MIR.
+    /// 2. **Leaked inference variable** — any type argument still contains an
+    ///    unresolved `Ty::Var`.  Downstream HIR monomorphisation requires
+    ///    every arg to be fully concrete.
+    fn validate_record_init_type_args_output_contract(
+        record_init_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
+        expr_types: &HashMap<SpanKey, Ty>,
+    ) {
+        record_init_type_args.retain(|key, args| {
+            expr_types.contains_key(key) && args.iter().all(|ty| !ty.has_inference_var())
+        });
+    }
+
     /// Prune `method_call_receiver_kinds` and `method_call_rewrites` entries
     /// whose `SpanKey` is absent from the validated `expr_types` map.
     ///
@@ -566,7 +589,7 @@ impl Checker {
                 span,
                 format!(
                     "`{type_name}<{}>` is not supported; \
-                     {type_name}<T> is currently only implemented for String and bytes",
+                     {type_name}<T> is currently only implemented for string and bytes",
                     inner.user_facing()
                 ),
             );
@@ -677,8 +700,8 @@ impl Checker {
             span,
             format!(
                 "HashMap<{}, {}> is not supported; HashMap currently requires \
-                 String keys and scalar/string values (bool, char, integer, \
-                 float, duration, or String)",
+                 string keys and scalar/string values (bool, char, integer, \
+                 float, duration, or string)",
                 resolved_key.user_facing(),
                 resolved_val.user_facing()
             ),
@@ -1048,11 +1071,13 @@ mod tests {
         let mut expr_types = HashMap::new();
         let mut type_defs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1129,11 +1154,13 @@ mod tests {
         let mut expr_types = HashMap::new();
         let mut type_defs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1257,11 +1284,13 @@ mod tests {
         let mut expr_types = HashMap::new();
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1366,11 +1395,13 @@ mod tests {
             HashMap::from([(known_key.clone(), Ty::I64), (unknown_key.clone(), Ty::I64)]);
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1405,11 +1436,13 @@ mod tests {
         let mut expr_types = HashMap::from([(handle_key.clone(), Ty::I64)]);
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1462,11 +1495,13 @@ mod tests {
         ]);
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1526,11 +1561,13 @@ mod tests {
                                             // the entry before validate_method_call_receiver_kinds_output_contract runs.
         let mut expr_types = HashMap::from([(param_key.clone(), Ty::I64)]);
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1924,11 +1961,13 @@ mod tests {
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
 
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         // Both qualified key and bare-name twin must be pruned from type_defs

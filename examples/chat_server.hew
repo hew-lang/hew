@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Description: TCP Chat Server — idiomatic Hew actor-based design.
+
 // TCP Chat Server — idiomatic Hew actor-based design.
 //
 // Architecture:
@@ -15,15 +18,15 @@ import std::os;
 
 actor ChatRoom {
     let handlers: Vec<ActorRef<ClientHandler>>;
-    let names: Vec<String>;
-    receive fn register(handler: ActorRef<ClientHandler>, name: String) {
+    let names: Vec<string>;
+    receive fn register(handler: ActorRef<ClientHandler>, name: string) {
         handlers.push(handler);
         names.push(name);
         println(f"{name} joined the chat");
     }
-    receive fn unregister(name: String) {
+    receive fn unregister(name: string) {
         var new_handlers: Vec<ActorRef<ClientHandler>> = Vec::new();
-        var new_names: Vec<String> = Vec::new();
+        var new_names: Vec<string> = Vec::new();
         for i in 0 .. names.len() {
             if names.get(i) != name {
                 new_handlers.push(handlers.get(i));
@@ -34,7 +37,7 @@ actor ChatRoom {
         names = new_names;
         println(f"{name} left the chat");
     }
-    receive fn broadcast(sender_name: String, msg: String) {
+    receive fn broadcast(sender_name: string, msg: string) {
         for i in 0 .. names.len() {
             if names.get(i) != sender_name {
                 handlers.get(i).deliver(msg);
@@ -45,7 +48,7 @@ actor ChatRoom {
 
 actor ClientHandler {
     let conn: Connection;
-    let name: String;
+    let name: string;
     let room: ActorRef<ChatRoom>;
     receive fn start(unused: i32) {
         conn.write_string(f"[server] welcome {name}");
@@ -63,13 +66,13 @@ actor ClientHandler {
             }
         }
     }
-    receive fn deliver(msg: String) {
+    receive fn deliver(msg: string) {
         conn.write_string(msg);
     }
 }
 
 fn main() {
-    var port: String = "9000";
+    var port: string = "9000";
     let argc = os.args_count();
     if argc > 1 {
         port = os.args(1);
@@ -79,7 +82,7 @@ fn main() {
     println("=== Hew TCP Chat Server ===");
     println(f"Listening on {addr}");
     let handlers: Vec<ActorRef<ClientHandler>> = Vec::new();
-    let names: Vec<String> = Vec::new();
+    let names: Vec<string> = Vec::new();
     let room = spawn ChatRoom(handlers: handlers, names: names);
     var next_id: i32 = 1;
     var accepting = 1;

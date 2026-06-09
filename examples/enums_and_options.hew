@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Description: Enum and Option/Result type test
+
 // Enum and Option/Result type test
 enum Colour {
     Red;
@@ -49,7 +52,7 @@ fn test_option_match() {
 }
 
 fn test_result_match() {
-    let ok_val: Result<int, String> = Ok(99);
+    let ok_val: Result<int, string> = Ok(99);
     match ok_val {
         Ok(val) => {
             println("PASS: Ok pattern");
@@ -59,7 +62,7 @@ fn test_result_match() {
             println("FAIL: expected Ok")
         },
     }
-    let err_val: Result<int, String> = Err("something went wrong");
+    let err_val: Result<int, string> = Err("something went wrong");
     match err_val {
         Ok(val) => {
             println("FAIL: expected Err")

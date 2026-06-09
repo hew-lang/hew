@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 advanced trait surface plus codegen-rs parity)
+//! Description: Types, traits, and dynamic dispatch in Hew.
+
 // Types, traits, and dynamic dispatch in Hew.
 //
 // Run:  hew run examples/types_and_traits.hew
@@ -25,7 +28,7 @@ fn point_sum(p: Point) -> int {
 // A trait declares a named contract.
 // impl blocks provide the concrete implementation for each type.
 trait Describe {
-    fn describe(val: Self) -> String;
+    fn describe(val: Self) -> string;
 }
 
 type Circle {
@@ -38,13 +41,13 @@ type Rectangle {
 }
 
 impl Describe for Circle {
-    fn describe(c: Circle) -> String {
+    fn describe(c: Circle) -> string {
         "Circle"
     }
 }
 
 impl Describe for Rectangle {
-    fn describe(r: Rectangle) -> String {
+    fn describe(r: Rectangle) -> string {
         "Rectangle"
     }
 }

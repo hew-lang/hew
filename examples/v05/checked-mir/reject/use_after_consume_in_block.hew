@@ -1,7 +1,7 @@
 // Reject fixture for `MirCheck::UseAfterConsume` inside a block
 // expression.
 //
-// The nested block consumes `s` via `let t = s` (String is a
+// The nested block consumes `s` via `let t = s` (string is a
 // non-`BitCopy` value class). The trailing `let _u = s` then reads
 // `s` after the move. Before nested-statement lowering reached the
 // move-checker, the program emitted a binary that exited 42; now

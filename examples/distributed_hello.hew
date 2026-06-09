@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Description: Distributed actors example — demonstrates the Node API.
+
 // Distributed actors example — demonstrates the Node API.
 // This currently compiles as a local actor demo. The Node API
 // functions are available in the runtime but not yet wired into

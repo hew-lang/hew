@@ -1,5 +1,0 @@
-// Negative test: using an undefined variable must produce a compile error.
-fn main() -> int {
-    println(undefined_var);
-    0
-}

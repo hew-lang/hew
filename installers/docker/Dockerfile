@@ -30,7 +30,8 @@ RUN curl -fsSL \
 FROM alpine:3.23
 
 # gcompat: glibc ABI shim for Rust binaries (linked glibc) on Alpine musl.
-# libgcc + libstdc++: needed by hew-codegen (C++/LLVM).
+# libgcc + libstdc++: pulled in transitively by the statically-linked LLVM
+# bundled with hew-codegen-rs (inkwell).
 RUN apk add --no-cache \
       gcompat \
       libgcc \

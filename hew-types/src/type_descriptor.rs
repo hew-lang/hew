@@ -125,11 +125,16 @@ impl ResolvedTy {
                 let bound_strs: Vec<String> = traits
                     .iter()
                     .map(|b| {
-                        if b.args.is_empty() {
+                        if b.args.is_empty() && b.assoc_bindings.is_empty() {
                             b.trait_name.clone()
                         } else {
-                            let arg_strs: Vec<String> =
+                            let mut arg_strs: Vec<String> =
                                 b.args.iter().map(Self::canonical_string).collect();
+                            arg_strs.extend(
+                                b.assoc_bindings
+                                    .iter()
+                                    .map(|(name, ty)| format!("{name}={}", ty.canonical_string())),
+                            );
                             format!("{}<{}>", b.trait_name, arg_strs.join(","))
                         }
                     })

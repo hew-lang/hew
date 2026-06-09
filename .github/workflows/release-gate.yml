@@ -11,9 +11,7 @@
 # Coverage vs. ci.yml:
 #   - Builds ALL release artifacts (hew-cli, adze-cli, hew-lsp, hew-lib)
 #   - Runs full Rust workspace tests (matching ci.yml scope)
-#   - Runs codegen E2E tests on Linux and macOS (where LLVM is available)
 #   - Smoke-tests the compile+run pipeline with a trivial .hew program
-#   - Windows: Rust workspace tests only (no codegen — LLVM not yet provisioned)
 #
 # NOT covered here (run separately before tagging):
 #   - FreeBSD (nightly via freebsd.yml or local `make pre-release PLATFORMS=freebsd`)
@@ -46,8 +44,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }} + MLIR
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
         run: |
+          # hew-codegen-rs (inkwell -> llvm-sys-221) requires LLVM 22's
+          # headers and libraries during cargo build.
           sudo mkdir -p /etc/apt/keyrings
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
@@ -55,10 +55,7 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            cmake ninja-build \
             llvm-${{ env.LLVM_VERSION }}-dev \
-            libmlir-${{ env.LLVM_VERSION }}-dev \
-            mlir-${{ env.LLVM_VERSION }}-tools \
             clang-${{ env.LLVM_VERSION }} \
             lld-${{ env.LLVM_VERSION }} \
             libssl-dev pkg-config \
@@ -81,19 +78,8 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: release-gate-linux-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt') }}
+          key: release-gate-linux-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: release-gate-linux-
-
-      - name: Configure hew-codegen
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
-            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
-
-      - name: Build hew-codegen
-        run: cmake --build hew-codegen/build -j"$(nproc)"
 
       - name: Build all release crates
         run: |
@@ -132,26 +118,8 @@ jobs:
       - name: Run Rust workspace tests
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
-      - name: Run codegen unit tests
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure
-          -R "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (native)
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure
-          -j"$(nproc)" -LE wasm -E "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (WASM)
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure
-          -j"$(nproc)" -L wasm
-
   # ─────────────────────────────────────────────────────────────────────────
-  # Linux aarch64 — full build + codegen E2E + WASM (mirrors gate-linux)
+  # Linux aarch64 — full Rust build + workspace tests + WASM
   # ─────────────────────────────────────────────────────────────────────────
   gate-linux-aarch64:
     name: Release Gate — Linux aarch64
@@ -160,10 +128,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }} + MLIR
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
         run: |
           # Keep Linux arm64 on Noble / ubuntu-24.04-arm to match release.yml.
-          # apt.llvm.org/bookworm arm64 does not publish the LLVM/MLIR 22 packages
+          # apt.llvm.org/bookworm arm64 does not publish the LLVM 22 packages
           # this gate needs.
           sudo mkdir -p /etc/apt/keyrings
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -172,10 +140,7 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            cmake ninja-build \
             llvm-${{ env.LLVM_VERSION }}-dev \
-            libmlir-${{ env.LLVM_VERSION }}-dev \
-            mlir-${{ env.LLVM_VERSION }}-tools \
             clang-${{ env.LLVM_VERSION }} \
             lld-${{ env.LLVM_VERSION }} \
             libssl-dev pkg-config \
@@ -198,19 +163,8 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: release-gate-linux-aarch64-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt') }}
+          key: release-gate-linux-aarch64-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: release-gate-linux-aarch64-
-
-      - name: Configure hew-codegen
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
-            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
-
-      - name: Build hew-codegen
-        run: cmake --build hew-codegen/build -j"$(nproc)"
 
       - name: Build all release crates
         run: |
@@ -249,26 +203,8 @@ jobs:
       - name: Run Rust workspace tests
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
-      - name: Run codegen unit tests
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure
-          -R "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (native)
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure
-          -j"$(nproc)" -LE wasm -E "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (WASM)
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure
-          -j"$(nproc)" -L wasm
-
   # ─────────────────────────────────────────────────────────────────────────
-  # macOS arm64 — full build + codegen E2E (matches ci.yml)
+  # macOS arm64 — full Rust build + workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-macos:
     name: Release Gate — macOS arm64
@@ -282,9 +218,11 @@ jobs:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: taiki-e/install-action@nextest
 
-      - name: Install LLVM/MLIR
+      - name: Install LLVM
         run: |
-          brew install llvm@${{ env.LLVM_VERSION }} lld@${{ env.LLVM_VERSION }} ninja
+          # hew-codegen-rs (inkwell -> llvm-sys-221) needs LLVM 22's static
+          # libraries during cargo build.
+          brew install llvm@${{ env.LLVM_VERSION }} lld@${{ env.LLVM_VERSION }}
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
           LLD_PREFIX="$(brew --prefix lld@${{ env.LLVM_VERSION }})"
           {
@@ -303,24 +241,8 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: release-gate-macos-arm64-macos13-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt') }}
+          key: release-gate-macos-arm64-macos13-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: release-gate-macos-arm64-macos13-
-
-      - name: Configure hew-codegen
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER="${LLVM_PREFIX}/bin/clang" \
-            -DCMAKE_CXX_COMPILER="${LLVM_PREFIX}/bin/clang++" \
-            -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)" \
-            -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,${LLVM_PREFIX}/lib/c++" \
-            -DHEW_STATIC_LINK=ON \
-            -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
-            -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
-
-      - name: Build hew-codegen
-        run: cmake --build hew-codegen/build -j"$(sysctl -n hw.ncpu)"
 
       - name: Build all release crates
         run: |
@@ -358,20 +280,8 @@ jobs:
       - name: Run Rust workspace tests
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
-      - name: Run codegen unit tests
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure
-          -R "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (native)
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure
-          -j"$(sysctl -n hw.ncpu)" -LE wasm -E "^(mlir_dialect|translate)$"
-
   # ─────────────────────────────────────────────────────────────────────────
-  # Windows x86_64 — Rust workspace tests (no codegen — LLVM not provisioned)
+  # Windows x86_64 — Rust workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-windows:
     name: Release Gate — Windows x86_64
@@ -392,21 +302,24 @@ jobs:
           key: release-gate-windows-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: release-gate-windows-
 
-      - name: Build release crates (no codegen)
+      - name: Install LLVM 22
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: 22.1.5
+
+      - name: Build release crates
         run: |
-          cargo check -p hew-cli --release
-          cargo build -p adze-cli -p hew-lsp --release
+          cargo build -p adze-cli -p hew-lsp -p hew-cli --release
 
       - name: Verify binaries
         shell: bash
         run: |
-          target/release/adze.exe --version && echo "✅ adze runs"
-          target/release/hew-lsp.exe --version && echo "✅ hew-lsp runs"
+          target/release/adze.exe --version && echo "adze runs"
+          target/release/hew-lsp.exe --version && echo "hew-lsp runs"
 
       - name: Run Rust workspace tests
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
           --exclude hew-cabi
-          --exclude hew-cli
           --profile ci

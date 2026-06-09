@@ -76,15 +76,6 @@ fn typecheck_all_examples() {
 }
 
 #[test]
-fn typecheck_all_codegen_examples() {
-    let dir = repo_root()
-        .join("hew-codegen")
-        .join("tests")
-        .join("examples");
-    test_directory(&dir, "hew-codegen/tests/examples");
-}
-
-#[test]
 fn typecheck_top_level_networking_demos() {
     for relative in ["examples/http_server.hew", "examples/static_server.hew"] {
         assert_typechecks(&repo_root().join(relative), relative);
@@ -117,7 +108,7 @@ fn hashmap_remove_typechecks_as_bool() {
     assert_inline_typechecks_cleanly(
         r#"
 fn main() {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     m.insert("a", 1);
     let removed: bool = m.remove("a");
     let missing: bool = m.remove("a");
@@ -135,7 +126,7 @@ fn hashmap_remove_no_longer_typechecks_as_option() {
     let output = typecheck_inline(
         r#"
 fn main() {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     m.insert("a", 1);
     let removed: Option<int> = m.remove("a");
 }
@@ -166,7 +157,7 @@ fn main() {
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::InvalidOperation
                 && e.message.contains("HashMap<int, int> is not supported")
-                && e.message.contains("String keys and scalar/string values")
+                && e.message.contains("string keys and scalar/string values")
         }),
         "expected HashMap<i64, i64>::remove to fail before lowering, got: {:#?}",
         output.errors
@@ -216,20 +207,20 @@ fn method_call_receiver_kinds_record_trait_object_dispatch() {
     let output = typecheck_inline(
         r"
 trait Greeter {
-    fn greet(g: Self) -> String;
+    fn greet(g: Self) -> string;
 }
 
 type Bot {
-    name: String;
+    name: string;
 }
 
 impl Greeter for Bot {
-    fn greet(bot: Bot) -> String {
+    fn greet(bot: Bot) -> string {
         bot.name
     }
 }
 
-fn use_greeter(g: dyn Greeter) -> String {
+fn use_greeter(g: dyn Greeter) -> string {
     g.greet()
 }
 ",
@@ -287,7 +278,7 @@ fn close_conn(conn: net.Connection) {
 fn method_call_rewrites_record_builtin_runtime_dispatch() {
     let output = typecheck_inline(
         r"
-fn consume(s: Stream<String>) {
+fn consume(s: Stream<string>) {
     let _ = s.recv();
 }
 ",
@@ -336,7 +327,7 @@ fn consume(s: Stream<bytes>) {
 fn method_call_receiver_kinds_record_string_stream_dispatch() {
     let output = typecheck_inline(
         r"
-fn consume(s: Stream<String>) {
+fn consume(s: Stream<string>) {
     let _ = s.map((item) => item);
 }
 ",
@@ -703,14 +694,14 @@ fn test_directory(dir: &Path, label: &str) {
 
 #[test]
 fn stream_dot_sink_annotation_typechecks() {
-    // A function whose parameter is explicitly spelled `stream.Sink<String>`.
-    // Proves: the qualified spelling resolves to the canonical Sink<String>
+    // A function whose parameter is explicitly spelled `stream.Sink<string>`.
+    // Proves: the qualified spelling resolves to the canonical Sink<string>
     // type and its send/close methods are available.
     let output = typecheck_inline(
         r"
         import std::stream;
 
-        fn flush_and_close(s: stream.Sink<String>, msg: String) {
+        fn flush_and_close(s: stream.Sink<string>, msg: string) {
             s.send(msg);
             s.close();
         }
@@ -718,7 +709,7 @@ fn stream_dot_sink_annotation_typechecks() {
     );
     assert!(
         output.errors.is_empty(),
-        "stream.Sink<String> annotation should typecheck cleanly, got: {:#?}",
+        "stream.Sink<string> annotation should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -798,14 +789,14 @@ fn sink_encode_fails_closed_before_codegen() {
 
 #[test]
 fn channel_dot_receiver_annotation_typechecks() {
-    // A function whose parameter is explicitly spelled `channel.Receiver<String>`.
-    // Proves: the qualified spelling resolves to the canonical Receiver<String>
+    // A function whose parameter is explicitly spelled `channel.Receiver<string>`.
+    // Proves: the qualified spelling resolves to the canonical Receiver<string>
     // type and its recv/close methods are available.
     let output = typecheck_inline(
         r"
         import std::channel;
 
-        fn take_one(rx: channel.Receiver<String>) -> Option<String> {
+        fn take_one(rx: channel.Receiver<string>) -> Option<string> {
             let v = rx.recv();
             rx.close();
             v
@@ -814,7 +805,7 @@ fn channel_dot_receiver_annotation_typechecks() {
     );
     assert!(
         output.errors.is_empty(),
-        "channel.Receiver<String> annotation should typecheck cleanly, got: {:#?}",
+        "channel.Receiver<string> annotation should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -824,7 +815,7 @@ fn channel_dot_receiver_annotation_typechecks() {
 // These cover the typechecker's new is_await validation in Stmt::For.
 // ===========================================================================
 
-/// `for await item in rx` over `Receiver<String>` must typecheck cleanly.
+/// `for await item in rx` over `Receiver<string>` must typecheck cleanly.
 #[test]
 fn for_await_receiver_string_ok() {
     let output = typecheck_inline(
@@ -843,7 +834,7 @@ fn for_await_receiver_string_ok() {
     );
     assert!(
         output.errors.is_empty(),
-        "for await over Receiver<String> should typecheck cleanly, got: {:#?}",
+        "for await over Receiver<string> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -1055,10 +1046,10 @@ fn for_await_receive_generator_int_stream_typechecks() {
 fn for_await_actor_method_stream_requires_receive_gen() {
     let output = typecheck_inline(
         r#"
-        extern "C" { fn fake_stream() -> Stream<String>; }
+        extern "C" { fn fake_stream() -> Stream<string>; }
 
         actor Reader {
-            receive fn lines() -> Stream<String> {
+            receive fn lines() -> Stream<string> {
                 unsafe { fake_stream() }
             }
         }
@@ -1134,7 +1125,7 @@ fn for_no_await_over_receiver_no_for_await_error() {
         r"
         import std::channel;
 
-        fn consume(rx: channel.Receiver<String>) {
+        fn consume(rx: channel.Receiver<string>) {
             for msg in rx {
                 println(msg);
             }
@@ -1502,13 +1493,13 @@ fn lambda_actor_dot_send_now_accepted_via_duplex_method() {
     );
 }
 
-/// Accept path for tell-shaped lambda actor: `actor |s: String| { ... }` + `log("x")`.
+/// Accept path for tell-shaped lambda actor: `actor |s: string| { ... }` + `log("x")`.
 #[test]
 fn tell_shaped_actor_typechecks() {
     let output = typecheck_inline(
         r#"
         fn main() {
-            let log = actor |s: String| {
+            let log = actor |s: string| {
                 println(s);
             };
             log("x");
@@ -1544,9 +1535,9 @@ fn ask_shaped_actor_typechecks() {
 /// `Rc::get()` must be rejected when `T` is not `Copy` (`LoadOp` semantics).
 #[test]
 fn rc_non_copy_construction_ok() {
-    // String is non-Copy; Rc::new should accept it (codegen will pass a real
+    // string is non-Copy; Rc::new should accept it (codegen will pass a real
     // drop function instead of null).
-    let output = typecheck_inline(r#"fn main() { let _rc: Rc<String> = Rc::new("hello"); }"#);
+    let output = typecheck_inline(r#"fn main() { let _rc: Rc<string> = Rc::new("hello"); }"#);
     assert!(
         output.errors.is_empty(),
         "Rc::new with a non-Copy inner type should succeed; got errors: {:#?}",
@@ -1578,7 +1569,7 @@ fn rc_copy_struct_construction_ok() {
 #[test]
 fn rc_nested_payload_construction_ok() {
     let output =
-        typecheck_inline(r#"fn main() { let _rc: Rc<Rc<String>> = Rc::new(Rc::new("hello")); }"#);
+        typecheck_inline(r#"fn main() { let _rc: Rc<Rc<string>> = Rc::new(Rc::new("hello")); }"#);
     assert!(
         output.errors.is_empty(),
         "Rc::new with nested supported Rc payloads should succeed; got errors: {:#?}",
@@ -1595,7 +1586,7 @@ fn rc_owned_option_payload_rejected() {
                 && e.message
                     .contains("does not recursively drop owned contents")
         }),
-        "Rc::new with Option<String> should fail closed, got: {:#?}",
+        "Rc::new with Option<string> should fail closed, got: {:#?}",
         output.errors
     );
 }
@@ -1605,7 +1596,7 @@ fn rc_owned_struct_payload_rejected() {
     let output = typecheck_inline(
         r#"
         type Labelled {
-            name: String
+            name: string
         }
 
         fn main() {
@@ -1655,14 +1646,14 @@ fn rc_user_drop_payload_rejected() {
 
 #[test]
 fn rc_owned_payload_annotation_rejected() {
-    let output = typecheck_inline(r"fn borrow(_r: Rc<Option<String>>) {}");
+    let output = typecheck_inline(r"fn borrow(_r: Rc<Option<string>>) {}");
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message
                     .contains("does not recursively drop owned contents")
         }),
-        "Rc<Option<String>> annotations should fail closed, got: {:#?}",
+        "Rc<Option<string>> annotations should fail closed, got: {:#?}",
         output.errors
     );
 }
@@ -1672,7 +1663,7 @@ fn rc_generic_wrapper_payload_rejected() {
     let output = typecheck_inline(
         r#"
         type Labelled {
-            name: String
+            name: string
         }
 
         fn wrap<T>(val: T) -> Rc<T> {
@@ -1699,7 +1690,7 @@ fn rc_generic_lambda_payload_rejected() {
     let output = typecheck_inline(
         r#"
         type Labelled {
-            name: String
+            name: string
         }
 
         fn main() {
@@ -1721,9 +1712,9 @@ fn rc_generic_lambda_payload_rejected() {
 #[test]
 fn rc_get_non_copy_rejected() {
     // `rc.get()` performs a bitwise copy (LoadOp) which is only sound for
-    // Copy types.  Calling it on Rc<String> must be rejected.
+    // Copy types.  Calling it on Rc<string> must be rejected.
     let output = typecheck_inline(
-        r#"fn main() { let rc: Rc<String> = Rc::new("hello"); let _ = rc.get(); }"#,
+        r#"fn main() { let rc: Rc<string> = Rc::new("hello"); let _ = rc.get(); }"#,
     );
     assert!(
         output
@@ -1789,7 +1780,7 @@ fn wasm_http_server_surface_rejected_before_codegen() {
         r#"
         import std::net::http;
 
-        fn inspect(server: http.Server, req: http.Request) -> String {
+        fn inspect(server: http.Server, req: http.Request) -> string {
             let _next = server.accept();
             req.respond_text(200, "ok");
             server.close();
@@ -1900,7 +1891,7 @@ fn http_request_body_encoding_arg_checked_via_fallback() {
     assert!(
         output.errors.iter().any(|error| matches!(
             &error.kind,
-            TypeErrorKind::Mismatch { expected, .. } if expected == "String"
+            TypeErrorKind::Mismatch { expected, .. } if expected == "string"
         )),
         "expected http.Request::body encoding arg to be checked via fallback, got: {:#?}",
         output.errors
@@ -2129,7 +2120,7 @@ fn http_client_module_helpers_typecheck_natively() {
         import std::net::http::http_client;
 
         fn main() {
-            let headers: Vec<(String, String)> = Vec::new();
+            let headers: Vec<(string, string)> = Vec::new();
             http_client.set_timeout(250);
             let _body = http_client.request_string("GET", "https://example.com", "", headers);
         }
@@ -2149,7 +2140,7 @@ fn http_client_module_helpers_rejected_on_wasm() {
         import std::net::http::http_client;
 
         fn main() {
-            let headers: Vec<(String, String)> = Vec::new();
+            let headers: Vec<(string, string)> = Vec::new();
             http_client.set_timeout(250);
             let _body = http_client.request_string("GET", "https://example.com", "", headers);
         }
@@ -3249,11 +3240,11 @@ fn vec_result_wrapper_array_annotation_rejected() {
     assert_invalid_operation_contains(
         r"
         fn main() {
-            let v: Vec<Result<[int; 2], String>> = Vec::new();
+            let v: Vec<Result<[int; 2], string>> = Vec::new();
             println(v.len());
         }",
-        "Vec<Result<[int; 2], String>> is not supported",
-        "annotated Vec<Result<[int; 2], String>>",
+        "Vec<Result<[int; 2], string>> is not supported",
+        "annotated Vec<Result<[int; 2], string>>",
     );
 }
 
@@ -3432,12 +3423,12 @@ fn rc_hashmap_get_value_rejected() {
     assert_unsafe_collection_element(
         r#"
         type Holder {
-            items: HashMap<String, Rc<int>>
+            items: HashMap<string, Rc<int>>
         }
         fn leak(h: Holder) -> Option<Rc<int>> {
             h.items.get("key")
         }"#,
-        "HashMap.get() on HashMap<String, Rc<int>>",
+        "HashMap.get() on HashMap<string, Rc<int>>",
     );
 }
 
@@ -3446,12 +3437,12 @@ fn rc_hashmap_remove_value_rejected() {
     assert_unsafe_collection_element(
         r#"
         type Holder {
-            items: HashMap<String, Rc<int>>
+            items: HashMap<string, Rc<int>>
         }
         fn remove_key(h: Holder) -> bool {
             h.items.remove("key")
         }"#,
-        "HashMap.remove() on HashMap<String, Rc<int>>",
+        "HashMap.remove() on HashMap<string, Rc<int>>",
     );
 }
 
@@ -3460,12 +3451,12 @@ fn rc_hashmap_keys_rejected_when_value_type_is_rc() {
     assert_unsafe_collection_element(
         r"
         type Holder {
-            items: HashMap<String, Rc<int>>
+            items: HashMap<string, Rc<int>>
         }
-        fn leak(h: Holder) -> Vec<String> {
+        fn leak(h: Holder) -> Vec<string> {
             h.items.keys()
         }",
-        "HashMap.keys() on HashMap<String, Rc<int>>",
+        "HashMap.keys() on HashMap<string, Rc<int>>",
     );
 }
 
@@ -3474,12 +3465,12 @@ fn rc_hashmap_values_rejected() {
     assert_unsafe_collection_element(
         r"
         type Holder {
-            items: HashMap<String, Rc<int>>
+            items: HashMap<string, Rc<int>>
         }
         fn leak(h: Holder) -> Vec<Rc<int>> {
             h.items.values()
         }",
-        "HashMap.values() on HashMap<String, Rc<int>>",
+        "HashMap.values() on HashMap<string, Rc<int>>",
     );
 }
 
@@ -3544,7 +3535,7 @@ fn vec_string_push_ok() {
             var v = Vec::new();
             v.push("hello");
         }"#,
-        "Vec<String> push should be fine",
+        "Vec<string> push should be fine",
     );
 }
 
@@ -3556,7 +3547,7 @@ fn hashmap_string_string_insert_ok() {
             var m = HashMap::new();
             m.insert("key", "value");
         }"#,
-        "HashMap<String, String> insert should be fine",
+        "HashMap<string, string> insert should be fine",
     );
 }
 
@@ -3866,7 +3857,7 @@ fn hashset_i32_nested_in_option_param_rejected_before_codegen() {
 fn hashset_bool_nested_in_result_return_rejected_before_codegen() {
     let output = typecheck_inline(
         r#"
-        fn make() -> Result<HashSet<bool>, String> {
+        fn make() -> Result<HashSet<bool>, string> {
             Err("nope")
         }
 
@@ -3879,7 +3870,7 @@ fn hashset_bool_nested_in_result_return_rejected_before_codegen() {
             |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("HashSet<bool> is not supported")
         ),
-        "expected Result<HashSet<bool>, String> return annotation to fail before lowering, got: {:#?}",
+        "expected Result<HashSet<bool>, string> return annotation to fail before lowering, got: {:#?}",
         output.errors
     );
 }
@@ -3889,7 +3880,7 @@ fn hashset_i32_nested_in_type_field_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
         type Config {
-            flags: HashMap<String, HashSet<i32>>;
+            flags: HashMap<string, HashSet<i32>>;
         }
 
         fn main() {}",
@@ -3899,7 +3890,7 @@ fn hashset_i32_nested_in_type_field_rejected_before_codegen() {
             |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("HashSet<i32> is not supported")
         ),
-        "expected HashMap<String, HashSet<i32>> field annotation to fail before lowering, got: {:#?}",
+        "expected HashMap<string, HashSet<i32>> field annotation to fail before lowering, got: {:#?}",
         output.errors
     );
 }
@@ -3993,11 +3984,11 @@ fn hashmap_string_i64_annotation_typechecks_before_codegen() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let m: HashMap<String, i64> = HashMap::new();
+            let m: HashMap<string, i64> = HashMap::new();
             m.insert("answer", 42);
             println(m.len());
         }"#,
-        "HashMap<String, i64> should stay within the current ABI",
+        "HashMap<string, i64> should stay within the current ABI",
     );
 }
 
@@ -4009,7 +4000,7 @@ fn inferred_hashmap_string_string_map_literal_typechecks_before_codegen() {
             let env = {"HOST": "localhost", "PORT": "8080"};
             println(env.contains_key("HOST"));
         }"#,
-        "inferred HashMap<String, String> map literal should stay within the current ABI",
+        "inferred HashMap<string, string> map literal should stay within the current ABI",
     );
 }
 
@@ -4026,7 +4017,7 @@ fn hashmap_i64_key_len_rejected_before_codegen() {
         output.errors.iter().any(
             |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("HashMap<int, int> is not supported")
-                && e.message.contains("String keys and scalar/string values")
+                && e.message.contains("string keys and scalar/string values")
         ),
         "expected HashMap<i64, i64> to fail before lowering, got: {:#?}",
         output.errors
@@ -4038,7 +4029,7 @@ fn hashmap_tuple_value_annotation_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
         type Config {
-            points: HashMap<String, (i32, i32)>;
+            points: HashMap<string, (i32, i32)>;
         }
 
         fn main() {}",
@@ -4047,9 +4038,9 @@ fn hashmap_tuple_value_annotation_rejected_before_codegen() {
         output.errors.iter().any(
             |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message
-                    .contains("HashMap<String, (i32, i32)> is not supported")
+                    .contains("HashMap<string, (i32, i32)> is not supported")
         ),
-        "expected HashMap<String, (i32, i32)> field annotation to fail before lowering, got: {:#?}",
+        "expected HashMap<string, (i32, i32)> field annotation to fail before lowering, got: {:#?}",
         output.errors
     );
 }
@@ -4069,9 +4060,9 @@ fn inferred_hashmap_tuple_value_map_literal_rejected_before_codegen() {
         output.errors.iter().any(
             |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message
-                    .contains("HashMap<String, (i32, i32)> is not supported")
+                    .contains("HashMap<string, (i32, i32)> is not supported")
         ),
-        "expected inferred HashMap<String, (i32, i32)> literal to fail before lowering, got: {:#?}",
+        "expected inferred HashMap<string, (i32, i32)> literal to fail before lowering, got: {:#?}",
         output.errors
     );
 }
@@ -4095,7 +4086,7 @@ fn hashmap_clone_method_typechecks_and_returns_hashmap() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let m: HashMap<String, int> = HashMap::new();
+            let m: HashMap<string, int> = HashMap::new();
             let c = m.clone();
             c.insert("key", 7);
             println(c.contains_key("key"));
@@ -4109,7 +4100,7 @@ fn hashset_clone_method_typechecks_and_returns_hashset() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let s: HashSet<String> = HashSet::new();
+            let s: HashSet<string> = HashSet::new();
             let c = s.clone();
             c.insert("value");
             println(c.contains("value"));
@@ -4348,7 +4339,7 @@ fn rc_param_iflet_shadow_only_suppresses_inner_scope() {
 // are explicitly deferred to a future escape-analysis pass:
 //
 // 1. Generic passthrough: `fn id<T>(x: T) -> T { x }` is safe when called
-//    with value types (int, String, String, structs) but unsound when `T = Rc<U>`.
+//    with value types (int, string, string, structs) but unsound when `T = Rc<U>`.
 //    Definition-site checking was removed because it rejects all generic
 //    identity patterns.  Needs call-site / monomorphisation-time checking.
 //
@@ -4388,7 +4379,7 @@ fn hashmap_unresolved_key_type_fails_closed_at_boundary() {
 
 #[test]
 fn hashmap_unresolved_val_type_fails_closed_at_boundary() {
-    // Key is constrained (String), value is not.
+    // Key is constrained (string), value is not.
     let output = typecheck_inline(
         r"
         fn main() {
@@ -4448,7 +4439,7 @@ fn hashmap_valid_string_key_int_val_not_rejected() {
     );
     assert!(
         output.errors.is_empty(),
-        "expected no errors for HashMap<String, int>, got: {:#?}",
+        "expected no errors for HashMap<string, int>, got: {:#?}",
         output.errors
     );
 }
@@ -4460,12 +4451,12 @@ fn hashmap_annotation_with_infer_hole_key_fails_closed() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let m: HashMap<_, String> = HashMap::new();
+            let m: HashMap<_, string> = HashMap::new();
         }",
     );
     assert!(
         !output.errors.is_empty(),
-        "expected error for HashMap<_, String> with unresolved key, got no errors"
+        "expected error for HashMap<_, string> with unresolved key, got no errors"
     );
 }
 
@@ -4571,7 +4562,7 @@ fn hashset_valid_string_element_not_rejected() {
     );
     assert!(
         output.errors.is_empty(),
-        "expected no errors for HashSet<String>, got: {:#?}",
+        "expected no errors for HashSet<string>, got: {:#?}",
         output.errors
     );
 }
@@ -4715,18 +4706,18 @@ fn hashset_annotation_only_unresolved_fails_closed_without_lowering_fact() {
 
 #[test]
 fn hashmap_annotation_key_hole_no_duplicate_inference_failed() {
-    // HashMap<_, String> with an unresolved key hole must produce at most one
+    // HashMap<_, string> with an unresolved key hole must produce at most one
     // InferenceFailed per span.  finalize_hashmap_admission must not add a
     // second error on top of the inference-holes diagnostic.
     let output = typecheck_inline(
         r"
         fn main() {
-            let m: HashMap<_, String> = HashMap::new();
+            let m: HashMap<_, string> = HashMap::new();
         }",
     );
     assert!(
         !output.errors.is_empty(),
-        "expected error for HashMap<_, String> with unresolved key, got no errors"
+        "expected error for HashMap<_, string> with unresolved key, got no errors"
     );
     let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
     for e in output
@@ -4737,7 +4728,7 @@ fn hashmap_annotation_key_hole_no_duplicate_inference_failed() {
         let key = format!("{:?}", e.span);
         assert!(
             seen_spans.insert(key.clone()),
-            "duplicate InferenceFailed at span {key} for HashMap<_, String>: {errors:#?}",
+            "duplicate InferenceFailed at span {key} for HashMap<_, string>: {errors:#?}",
             errors = output.errors
         );
     }
@@ -4745,17 +4736,17 @@ fn hashmap_annotation_key_hole_no_duplicate_inference_failed() {
 
 #[test]
 fn hashmap_annotation_val_hole_no_duplicate_inference_failed() {
-    // HashMap<String, _> with an unresolved value hole must produce at most one
+    // HashMap<string, _> with an unresolved value hole must produce at most one
     // InferenceFailed per span.
     let output = typecheck_inline(
         r"
         fn main() {
-            let m: HashMap<String, _> = HashMap::new();
+            let m: HashMap<string, _> = HashMap::new();
         }",
     );
     assert!(
         !output.errors.is_empty(),
-        "expected error for HashMap<String, _> with unresolved value, got no errors"
+        "expected error for HashMap<string, _> with unresolved value, got no errors"
     );
     let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
     for e in output
@@ -4766,7 +4757,7 @@ fn hashmap_annotation_val_hole_no_duplicate_inference_failed() {
         let key = format!("{:?}", e.span);
         assert!(
             seen_spans.insert(key.clone()),
-            "duplicate InferenceFailed at span {key} for HashMap<String, _>: {errors:#?}",
+            "duplicate InferenceFailed at span {key} for HashMap<string, _>: {errors:#?}",
             errors = output.errors
         );
     }
@@ -4805,8 +4796,8 @@ fn registration_fn_param_hashset_hole_single_error() {
 
 #[test]
 fn registration_fn_param_hashmap_key_hole_single_error() {
-    // `fn f(x: HashMap<_, String>) {}` must produce exactly one InferenceFailed.
-    let output = typecheck_inline("fn f(x: HashMap<_, String>) {}");
+    // `fn f(x: HashMap<_, string>) {}` must produce exactly one InferenceFailed.
+    let output = typecheck_inline("fn f(x: HashMap<_, string>) {}");
     let inference_failed: Vec<_> = output
         .errors
         .iter()
@@ -4815,7 +4806,7 @@ fn registration_fn_param_hashmap_key_hole_single_error() {
     assert_eq!(
         inference_failed.len(),
         1,
-        "expected exactly one InferenceFailed for fn f(x: HashMap<_, String>), \
+        "expected exactly one InferenceFailed for fn f(x: HashMap<_, string>), \
          got {}: {:#?}",
         inference_failed.len(),
         output.errors
@@ -4824,8 +4815,8 @@ fn registration_fn_param_hashmap_key_hole_single_error() {
 
 #[test]
 fn registration_fn_param_hashmap_val_hole_single_error() {
-    // `fn f(x: HashMap<String, _>) {}` must produce exactly one InferenceFailed.
-    let output = typecheck_inline("fn f(x: HashMap<String, _>) {}");
+    // `fn f(x: HashMap<string, _>) {}` must produce exactly one InferenceFailed.
+    let output = typecheck_inline("fn f(x: HashMap<string, _>) {}");
     let inference_failed: Vec<_> = output
         .errors
         .iter()
@@ -4834,7 +4825,7 @@ fn registration_fn_param_hashmap_val_hole_single_error() {
     assert_eq!(
         inference_failed.len(),
         1,
-        "expected exactly one InferenceFailed for fn f(x: HashMap<String, _>), \
+        "expected exactly one InferenceFailed for fn f(x: HashMap<string, _>), \
          got {}: {:#?}",
         inference_failed.len(),
         output.errors
@@ -5130,7 +5121,7 @@ fn deferred_channel_recv_int_constrained_after_call() {
     );
 }
 
-/// `recv()` on a `Receiver<String>` channel where the element type is inferred
+/// `recv()` on a `Receiver<string>` channel where the element type is inferred
 /// from the usage of the received value must emit `hew_channel_recv`.
 #[test]
 fn deferred_channel_recv_string_constrained_after_call() {
@@ -5138,9 +5129,9 @@ fn deferred_channel_recv_string_constrained_after_call() {
         r"
         import std::channel::channel;
 
-        fn take_one() -> Option<String> {
+        fn take_one() -> Option<string> {
             let (tx, rx) = channel.new(4);
-            let v: Option<String> = rx.recv();
+            let v: Option<string> = rx.recv();
             tx.close();
             v
         }
@@ -5272,10 +5263,10 @@ fn let_propagate_sugar_valid_in_result_fn() {
     // must have type T (the Ok-payload), not Result<T,E>.
     let output = typecheck_inline(
         r"
-        fn make_result(x: int) -> Result<int, String> {
+        fn make_result(x: int) -> Result<int, string> {
             Ok(x * 2)
         }
-        fn use_sugar(x: int) -> Result<int, String> {
+        fn use_sugar(x: int) -> Result<int, string> {
             let r? = make_result(x);
             Ok(r + 1)
         }
@@ -5296,10 +5287,10 @@ fn let_propagate_sugar_typed_annotation_accepted() {
     // bind `r` as type T.
     let output = typecheck_inline(
         r"
-        fn make_result(x: int) -> Result<int, String> {
+        fn make_result(x: int) -> Result<int, string> {
             Ok(x)
         }
-        fn use_typed_sugar(x: int) -> Result<int, String> {
+        fn use_typed_sugar(x: int) -> Result<int, string> {
             let r?: int = make_result(x);
             Ok(r)
         }

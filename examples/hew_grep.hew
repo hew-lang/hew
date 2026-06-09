@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Description: hew_grep.hew — A grep-like search tool
+
 // hew_grep.hew — A grep-like search tool
 // Searches for a pattern in files and prints matching lines.
 //
@@ -8,7 +11,7 @@ import std::fs;
 
 import std::string;
 
-fn search_file(filename: String, pattern: String, nl: String) -> i32 {
+fn search_file(filename: string, pattern: string, nl: string) -> i32 {
     if !fs.exists(filename) {
         println(f"hew_grep: {filename}: No such file");
         return 0;

@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: HTTP + JSON pipeline demo.
+
 // HTTP + JSON pipeline demo.
 //
 // Demonstrates `std::net::http::http_client` and `std::encoding::json`
@@ -30,14 +33,14 @@ import std::net::http::http_client;
 import std::encoding::json;
 
 // Fetch a URL and return the body string, or None on transport failure.
-fn fetch(url: String) -> Option<String> {
+fn fetch(url: string) -> Option<string> {
     http_client.get_string(url)
 }
 
 // Extract a string field from a JSON object, print it, and free the child handle.
 // Ownership: `obj` is borrowed — the caller owns and must free it.
 // The child Value returned by `get_field` is owned by this function and freed here.
-fn print_field(obj: Value, key: String) {
+fn print_field(obj: Value, key: string) {
     let child = obj.get_field(key); // owned heap clone — must free
     let val = child.get_string();
     println(f"{key}:  {val}");

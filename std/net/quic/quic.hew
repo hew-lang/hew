@@ -129,22 +129,22 @@ type QUICEvent {
 
 /// Non-destructive endpoint observation.
 pub type QUICEndpointObservation {
-    local_addr: String;
+    local_addr: string;
     accepted_connections: i64;
-    last_error: String;
+    last_error: string;
 }
 
 /// Non-destructive connection observation.
 pub type QUICConnectionObservation {
-    local_addr: String;
-    peer_addr: String;
+    local_addr: string;
+    peer_addr: string;
     opened_streams: i64;
     accepted_streams: i64;
     rtt_ms: int;
     bytes_sent: i64;
     bytes_received: i64;
     closed: bool;
-    last_error: String;
+    last_error: string;
 }
 
 /// Non-destructive stream observation.
@@ -153,7 +153,7 @@ pub type QUICStreamObservation {
     bytes_received: i64;
     send_closed: bool;
     recv_closed: bool;
-    last_error: String;
+    last_error: string;
 }
 
 // ── QUICEndpoint methods ──────────────────────────────────────────────
@@ -165,7 +165,7 @@ trait QUICEndpointMethods {
     /// used to verify the server's certificate.
     ///
     /// Returns an established `QUICConnection` or a zero-value on failure.
-    fn connect(ep: QUICEndpoint, addr: String, server_name: String) -> QUICConnection;
+    fn connect(ep: QUICEndpoint, addr: string, server_name: string) -> QUICConnection;
 
     /// Block until a remote peer opens an incoming connection (server side).
     ///
@@ -186,7 +186,7 @@ trait QUICEndpointMethods {
 }
 
 impl QUICEndpointMethods for QUICEndpoint {
-    fn connect(ep: QUICEndpoint, addr: String, server_name: String) -> QUICConnection {
+    fn connect(ep: QUICEndpoint, addr: string, server_name: string) -> QUICConnection {
         unsafe {
             hew_quic_endpoint_connect(ep, addr, server_name)
         }
@@ -312,13 +312,13 @@ trait QUICStreamMethods {
     ///
     /// Convenience wrapper around `send` that converts `msg` to bytes first.
     /// Returns `Ok(())` on success or `Err(fs.IoError)` on failure.
-    fn send_string(strm: QUICStream, msg: String) -> Result<(), fs.IoError>;
+    fn send_string(strm: QUICStream, msg: string) -> Result<(), fs.IoError>;
 
     /// Block until data arrives and return it as a UTF-8 string.
     ///
     /// Convenience wrapper around `recv` that converts the received bytes to
-    /// a `String`.  Returns an empty string on stream close or error.
-    fn recv_string(strm: QUICStream) -> String;
+    /// a `string`.  Returns an empty string on stream close or error.
+    fn recv_string(strm: QUICStream) -> string;
 
     /// Return a non-destructive snapshot of stream state.
     fn observe(strm: QUICStream) -> QUICStreamObservation;
@@ -350,10 +350,10 @@ impl QUICStreamMethods for QUICStream {
             hew_quic_stream_close(strm)
         };
     }
-    fn send_string(strm: QUICStream, msg: String) -> Result<(), fs.IoError> {
+    fn send_string(strm: QUICStream, msg: string) -> Result<(), fs.IoError> {
         stream_send_string(strm, msg)
     }
-    fn recv_string(strm: QUICStream) -> String {
+    fn recv_string(strm: QUICStream) -> string {
         stream_recv_string(strm)
     }
     fn observe(strm: QUICStream) -> QUICStreamObservation {
@@ -408,7 +408,7 @@ pub fn new_client() -> QUICEndpoint {
 /// Create a QUIC client endpoint that trusts the given CA bundle.
 ///
 /// `ca_pem` must contain one or more PEM-encoded certificates.
-pub fn new_client_with_ca(ca_pem: String) -> QUICEndpoint {
+pub fn new_client_with_ca(ca_pem: string) -> QUICEndpoint {
     unsafe {
         hew_quic_new_client_with_ca(ca_pem)
     }
@@ -425,7 +425,7 @@ pub fn new_client_with_ca(ca_pem: String) -> QUICEndpoint {
 /// let ep = quic.new_server(":4433");
 /// let conn = ep.accept();
 /// ```
-pub fn new_server(addr: String) -> QUICEndpoint {
+pub fn new_server(addr: string) -> QUICEndpoint {
     unsafe {
         hew_quic_new_server(addr)
     }
@@ -435,7 +435,7 @@ pub fn new_server(addr: String) -> QUICEndpoint {
 ///
 /// `cert_pem` may contain a PEM-encoded certificate chain; `key_pem` must
 /// contain the matching PEM-encoded private key.
-pub fn new_server_with_tls(addr: String, cert_pem: String, key_pem: String) -> QUICEndpoint {
+pub fn new_server_with_tls(addr: string, cert_pem: string, key_pem: string) -> QUICEndpoint {
     unsafe {
         hew_quic_new_server_with_tls(addr, cert_pem, key_pem)
     }
@@ -445,7 +445,7 @@ pub fn new_server_with_tls(addr: String, cert_pem: String, key_pem: String) -> Q
 ///
 /// Failed calls to `new_client*()` and `new_server*()` update this string.
 /// Successful constructors clear it.
-pub fn last_error() -> String {
+pub fn last_error() -> string {
     unsafe {
         hew_quic_last_error()
     }
@@ -640,7 +640,7 @@ pub fn stream_stop(strm: QUICStream, error_code: int) -> Result<(), fs.IoError> 
 ///
 /// Converts `msg` to bytes using the runtime string helper, then delegates
 /// to the underlying `hew_quic_stream_send` FFI.
-pub fn stream_send_string(strm: QUICStream, msg: String) -> Result<(), fs.IoError> {
+pub fn stream_send_string(strm: QUICStream, msg: string) -> Result<(), fs.IoError> {
     unsafe {
         let payload = hew_string_to_bytes(msg);
         stream_send(strm, payload)
@@ -650,8 +650,8 @@ pub fn stream_send_string(strm: QUICStream, msg: String) -> Result<(), fs.IoErro
 /// Receive a UTF-8 string from a QUIC stream.
 ///
 /// Delegates to `hew_quic_stream_recv` and converts the resulting bytes to a
-/// `String` using the runtime string helper.
-pub fn stream_recv_string(strm: QUICStream) -> String {
+/// `string` using the runtime string helper.
+pub fn stream_recv_string(strm: QUICStream) -> string {
     unsafe {
         let payload = hew_quic_stream_recv(strm);
         hew_bytes_to_string(payload)
@@ -662,34 +662,34 @@ pub fn stream_recv_string(strm: QUICStream) -> String {
 extern "C" {
     // Endpoint constructors
     fn hew_quic_new_client() -> QUICEndpoint;
-    fn hew_quic_new_client_with_ca(ca_pem: String) -> QUICEndpoint;
-    fn hew_quic_new_server(addr: String) -> QUICEndpoint;
-    fn hew_quic_new_server_with_tls(addr: String, cert_pem: String, key_pem: String) -> QUICEndpoint;
-    fn hew_quic_last_error() -> String;
+    fn hew_quic_new_client_with_ca(ca_pem: string) -> QUICEndpoint;
+    fn hew_quic_new_server(addr: string) -> QUICEndpoint;
+    fn hew_quic_new_server_with_tls(addr: string, cert_pem: string, key_pem: string) -> QUICEndpoint;
+    fn hew_quic_last_error() -> string;
 
     // Endpoint methods
-    fn hew_quic_endpoint_connect(ep: QUICEndpoint, addr: String, server_name: String) -> QUICConnection;
+    fn hew_quic_endpoint_connect(ep: QUICEndpoint, addr: string, server_name: string) -> QUICConnection;
     fn hew_quic_endpoint_accept(ep: QUICEndpoint) -> QUICConnection;
     fn hew_quic_endpoint_close(ep: QUICEndpoint);
     fn hew_quic_endpoint_on_event(ep: QUICEndpoint) -> QUICEvent;
-    fn hew_quic_endpoint_local_addr(ep: QUICEndpoint) -> String;
+    fn hew_quic_endpoint_local_addr(ep: QUICEndpoint) -> string;
     fn hew_quic_endpoint_accepted_connections(ep: QUICEndpoint) -> i64;
-    fn hew_quic_endpoint_last_error(ep: QUICEndpoint) -> String;
+    fn hew_quic_endpoint_last_error(ep: QUICEndpoint) -> string;
 
     // Connection methods
     fn hew_quic_conn_open_stream(conn: QUICConnection) -> QUICStream;
     fn hew_quic_conn_accept_stream(conn: QUICConnection) -> QUICStream;
     fn hew_quic_conn_disconnect(conn: QUICConnection) -> i32;
     fn hew_quic_conn_on_event(conn: QUICConnection) -> QUICEvent;
-    fn hew_quic_conn_local_addr(conn: QUICConnection) -> String;
-    fn hew_quic_conn_peer_addr(conn: QUICConnection) -> String;
+    fn hew_quic_conn_local_addr(conn: QUICConnection) -> string;
+    fn hew_quic_conn_peer_addr(conn: QUICConnection) -> string;
     fn hew_quic_conn_opened_streams(conn: QUICConnection) -> i64;
     fn hew_quic_conn_accepted_streams(conn: QUICConnection) -> i64;
     fn hew_quic_conn_rtt_ms(conn: QUICConnection) -> i32;
     fn hew_quic_conn_bytes_sent(conn: QUICConnection) -> i64;
     fn hew_quic_conn_bytes_received(conn: QUICConnection) -> i64;
     fn hew_quic_conn_is_closed(conn: QUICConnection) -> bool;
-    fn hew_quic_conn_last_error(conn: QUICConnection) -> String;
+    fn hew_quic_conn_last_error(conn: QUICConnection) -> string;
 
     // Stream methods
     fn hew_quic_stream_send(stream: QUICStream, data: bytes) -> i32;
@@ -704,13 +704,13 @@ extern "C" {
     fn hew_quic_stream_bytes_received(stream: QUICStream) -> i64;
     fn hew_quic_stream_send_closed(stream: QUICStream) -> bool;
     fn hew_quic_stream_recv_closed(stream: QUICStream) -> bool;
-    fn hew_quic_stream_last_error(stream: QUICStream) -> String;
+    fn hew_quic_stream_last_error(stream: QUICStream) -> string;
 
     // Event methods
     fn hew_quic_event_kind(event: QUICEvent) -> i32;
     fn hew_quic_event_free(event: QUICEvent);
 
-    // String conversion helpers (shared runtime builtins)
-    fn hew_string_to_bytes(s: String) -> bytes;
-    fn hew_bytes_to_string(data: bytes) -> String;
+    // string conversion helpers (shared runtime builtins)
+    fn hew_string_to_bytes(s: string) -> bytes;
+    fn hew_bytes_to_string(data: bytes) -> string;
 }

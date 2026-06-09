@@ -20,19 +20,19 @@
 //! ```
 
 /// Encode binary data to a standard Base64 string.
-pub fn encode(data: bytes) -> String {
+pub fn encode(data: bytes) -> string {
     encode_impl(data, false)
 }
 
 /// Encode binary data to a URL-safe Base64 string.
-pub fn encode_url(data: bytes) -> String {
+pub fn encode_url(data: bytes) -> string {
     encode_impl(data, true)
 }
 
 /// Decode a Base64 string to binary data.
 ///
 /// Returns an empty `bytes` buffer if the input is not valid Base64.
-pub fn decode(s: String) -> bytes {
+pub fn decode(s: string) -> bytes {
     let slen = s.len();
     let out: bytes = bytes::new();
     if slen == 0 {
@@ -113,7 +113,7 @@ fn b64_char(idx: i32, url_safe: bool) -> i32 { // INTERNAL-ABI: byte-level 6-bit
 }
 
 /// Encode binary data to a Base64 string using the standard or URL-safe alphabet.
-fn encode_impl(data: bytes, url_safe: bool) -> String {
+fn encode_impl(data: bytes, url_safe: bool) -> string {
     let dlen = data.len();
     let out: bytes = bytes::new();
     var i = 0;
@@ -149,7 +149,7 @@ fn encode_impl(data: bytes, url_safe: bool) -> String {
 
 /// Map a single-character string to its 6-bit Base64 value.
 /// Returns -1 for invalid characters.
-fn decode_char(ch: String) -> i32 { // INTERNAL-ABI: 6-bit lookup values 0-63 and sentinel -1; byte-level helper
+fn decode_char(ch: string) -> i32 { // INTERNAL-ABI: 6-bit lookup values 0-63 and sentinel -1; byte-level helper
     match ch {
         "A" => 0 as i32,
         "B" => 1 as i32,

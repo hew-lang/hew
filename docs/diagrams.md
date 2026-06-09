@@ -1,14 +1,22 @@
 # Hew Compiler & Runtime Diagrams
 
-Visual documentation of the Hew compilation pipeline, runtime architecture, and protocol formats using Mermaid diagrams. These diagrams reflect the actual codebase structure — function names, module names, constants, and data types are taken directly from source.
+Visual documentation of Hew runtime architecture and protocol formats using
+Mermaid diagrams. The runtime diagrams reflect the current codebase; the
+compilation-pipeline diagrams below are retained as historical context and are
+not current architecture.
+
+> **Status: historical — C++/MLIR was retired in v0.5 (commit 842842bd). Current implementation: hew-codegen-rs direct Rust/Inkwell LLVM emission.**
+> Sections 1 and 3 describe the retired v0.4 compilation pipeline. The runtime,
+> capability, and stdlib sections are unaffected.
 
 > **Rendering:** These diagrams use [Mermaid](https://mermaid.js.org/) syntax. GitHub renders them natively in Markdown. For local viewing, use a Mermaid-compatible Markdown previewer or the [Mermaid Live Editor](https://mermaid.live/).
 
 ---
 
-## 1. Compilation Pipeline
+## 1. Historical compilation pipeline
 
-The compiler keeps the Rust frontend (lexer → parser → type checker → serializer) and C++ backend (MLIR generation → lowering → LLVM → native code), but the backend is now embedded inside the `hew` process. The Rust frontend serializes the typed program to MessagePack and hands it to the C++ layer through the embedded C API.
+This sequence documents the retired C++ backend. Current v0.5 builds lower
+through Rust HIR/MIR and emit LLVM directly through `hew-codegen-rs`.
 
 ```mermaid
 sequenceDiagram
@@ -45,7 +53,7 @@ sequenceDiagram
     Note over Linker: native executable
 ```
 
-**Compiler flags for partial pipeline:**
+**Historical compiler flags for that pipeline:**
 
 - `--no-typecheck` — skip type checking
 - `--emit-mlir` — stop after MLIR generation
@@ -93,9 +101,10 @@ void (*dispatch)(void* state, int msg_type, void* data, size_t data_size);
 
 ---
 
-## 3. MLIR Lowering Pipeline
+## 3. Historical MLIR lowering pipeline
 
-The codegen pipeline in `hew-codegen/src/codegen.cpp` performs progressive lowering through multiple stages. The Hew dialect defines ~50 custom operations across actor, collection, generator, scope, and trait categories.
+This pipeline lived in the retired C++ backend and is kept only to explain old
+design notes and release archaeology.
 
 ```mermaid
 flowchart TD
@@ -442,5 +451,5 @@ stateDiagram-v2
 
 - **Language specification:** [`docs/specs/HEW-SPEC.md`](specs/HEW-SPEC.md) — §8 (Compilation Model), §9 (Runtime Model)
 - **Runtime source:** [`hew-runtime/src/`](../hew-runtime/src/)
-- **Codegen source:** [`hew-codegen/src/`](../hew-codegen/src/)
+- **Codegen source:** [`hew-codegen-rs/src/`](../hew-codegen-rs/src/)
 - **Wire format spec:** HEW-SPEC.md §7.3.1 (HBF encoding)

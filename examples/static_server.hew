@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: Static Content Web Server in Hew
+
 // Static Content Web Server in Hew
 //
 // An actor-based HTTP server: the accept loop dispatches each request
@@ -13,7 +16,7 @@ import std::os;
 
 import std::net::mime;
 
-fn resolve_path(root: String, url_path: String) -> String {
+fn resolve_path(root: string, url_path: string) -> string {
     let path = root + url_path;
     if url_path.ends_with("/") {
         return path + "index.html";
@@ -30,8 +33,8 @@ fn resolve_path(root: String, url_path: String) -> String {
 
 // Each request is handled by this actor, decoupling accept from serve.
 actor Handler {
-    let root: String;
-    receive fn handle(req: Request, request_path: String) {
+    let root: string;
+    receive fn handle(req: Request, request_path: string) {
         if request_path.contains("..") {
             req.respond_text(403, "403 Forbidden");
         } else {

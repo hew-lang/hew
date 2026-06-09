@@ -334,6 +334,25 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                 for (a_arg, b_arg) in a_bound.args.iter().zip(b_bound.args.iter()) {
                     unify(subst, a_arg, b_arg)?;
                 }
+                if a_bound.assoc_bindings.len() != b_bound.assoc_bindings.len() {
+                    return Err(UnifyError::ArityMismatch {
+                        expected: a_bound.assoc_bindings.len(),
+                        actual: b_bound.assoc_bindings.len(),
+                    });
+                }
+                for (a_assoc_name, a_assoc_ty) in &a_bound.assoc_bindings {
+                    let Some((_, b_assoc_ty)) = b_bound
+                        .assoc_bindings
+                        .iter()
+                        .find(|(name, _)| name == a_assoc_name)
+                    else {
+                        return Err(UnifyError::Mismatch {
+                            expected: a.clone(),
+                            actual: b.clone(),
+                        });
+                    };
+                    unify(subst, a_assoc_ty, b_assoc_ty)?;
+                }
             }
             Ok(())
         }

@@ -31,28 +31,28 @@ type Url {
 /// Methods available on a parsed `Url`.
 trait UrlMethods {
     /// Return the URL scheme (e.g. `"https"`).
-    fn scheme(u: Url) -> String;
+    fn scheme(u: Url) -> string;
 
     /// Return the host name.
-    fn host(u: Url) -> String;
+    fn host(u: Url) -> string;
 
     /// Return the explicit port number, if specified.
     fn port(u: Url) -> Option<int>;
 
     /// Return the path component.
-    fn path(u: Url) -> String;
+    fn path(u: Url) -> string;
 
     /// Return the query string (without the leading `?`).
-    fn query(u: Url) -> String;
+    fn query(u: Url) -> string;
 
     /// Return the fragment (without the leading `#`).
-    fn fragment(u: Url) -> String;
+    fn fragment(u: Url) -> string;
 
     /// Return the full URL as a string.
-    fn to_string(u: Url) -> String;
+    fn to_string(u: Url) -> string;
 
     /// Resolve a relative path onto this URL, returning a new `Url`.
-    fn resolve(u: Url, path: String) -> Url;
+    fn resolve(u: Url, path: string) -> Url;
 
     /// Release the parsed URL resources.
     fn free(u: Url);
@@ -60,13 +60,13 @@ trait UrlMethods {
 
 impl UrlMethods for Url {
     /// Return the URL scheme (e.g. `"https"`).
-    fn scheme(u: Url) -> String {
+    fn scheme(u: Url) -> string {
         unsafe {
             hew_url_scheme(u)
         }
     }
     /// Return the host name.
-    fn host(u: Url) -> String {
+    fn host(u: Url) -> string {
         unsafe {
             hew_url_host(u)
         }
@@ -83,31 +83,31 @@ impl UrlMethods for Url {
         }
     }
     /// Return the path component.
-    fn path(u: Url) -> String {
+    fn path(u: Url) -> string {
         unsafe {
             hew_url_path(u)
         }
     }
     /// Return the query string (without the leading `?`).
-    fn query(u: Url) -> String {
+    fn query(u: Url) -> string {
         unsafe {
             hew_url_query(u)
         }
     }
     /// Return the fragment (without the leading `#`).
-    fn fragment(u: Url) -> String {
+    fn fragment(u: Url) -> string {
         unsafe {
             hew_url_fragment(u)
         }
     }
     /// Return the full URL as a string.
-    fn to_string(u: Url) -> String {
+    fn to_string(u: Url) -> string {
         unsafe {
             hew_url_to_string(u)
         }
     }
     /// Resolve a relative path onto this URL, returning a new `Url`.
-    fn resolve(u: Url, path: String) -> Url {
+    fn resolve(u: Url, path: string) -> Url {
         unsafe {
             hew_url_join(u, path)
         }
@@ -130,7 +130,7 @@ impl UrlMethods for Url {
 /// ```
 /// let u = url.parse("https://example.com/api/v1");
 /// ```
-pub fn parse(s: String) -> Url {
+pub fn parse(s: string) -> Url {
     unsafe {
         hew_url_parse(s)
     }
@@ -146,11 +146,11 @@ pub fn parse(s: String) -> Url {
 ///
 /// let encoded = url.encode("hello world");  // "hello%20world"
 /// ```
-pub fn encode(s: String) -> String {
+pub fn encode(s: string) -> string {
     encode_impl(s)
 }
 
-fn encode_impl(s: String) -> String {
+fn encode_impl(s: string) -> string {
     var out = "";
     for i in 0 .. s.len() {
         let ch = string_char_at(s, i);
@@ -174,11 +174,11 @@ fn encode_impl(s: String) -> String {
 ///
 /// let decoded = url.decode("hello%20world");  // "hello world"
 /// ```
-pub fn decode(s: String) -> String {
+pub fn decode(s: string) -> string {
     decode_impl(s)
 }
 
-fn decode_impl(s: String) -> String {
+fn decode_impl(s: string) -> string {
     var out = "";
     var pending: bytes = bytes::new();
     var literal_start = 0;
@@ -320,12 +320,12 @@ fn decode_impl(s: String) -> String {
 /// let qs = url.encode_query("name=hello world\npage=1");
 /// // "name=hello%20world&page=1"
 /// ```
-pub fn encode_query(params: String) -> String {
+pub fn encode_query(params: string) -> string {
     encode_query_impl(params)
 }
 
-fn encode_query_impl(params: String) -> String {
-    let encoded: Vec<String> = Vec::new();
+fn encode_query_impl(params: string) -> string {
+    let encoded: Vec<string> = Vec::new();
     let lines = string.lines(params);
     for i in 0 .. lines.len() {
         let line = lines.get(i);
@@ -347,7 +347,7 @@ fn byte_char(code: i32) -> char { // INTERNAL-ABI: byte-level ASCII code 0-127; 
     string_char_at(string.from_char(code), 0)
 }
 
-fn percent_encode_byte(ch: char) -> String {
+fn percent_encode_byte(ch: char) -> string {
     let ascii = percent_encode_ascii_byte(ch);
     if ascii != "" {
         return ascii;
@@ -355,7 +355,7 @@ fn percent_encode_byte(ch: char) -> String {
     percent_encode_high_byte(ch)
 }
 
-fn percent_encode_ascii_byte(ch: char) -> String {
+fn percent_encode_ascii_byte(ch: char) -> string {
     var encoded = "";
     if ch == '\0' {
         encoded = "%00";
@@ -549,7 +549,7 @@ fn percent_encode_ascii_byte(ch: char) -> String {
     encoded
 }
 
-fn percent_encode_high_byte(ch: char) -> String {
+fn percent_encode_high_byte(ch: char) -> string {
     match ch {
         ' ' => "%A0",
         '¡' => "%A1",
@@ -700,14 +700,14 @@ fn prefix_len_before_nul(data: bytes) -> i32 { // INTERNAL-ABI: byte-offset resu
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_url_parse(s: String) -> Url;
-    fn hew_url_scheme(url: Url) -> String;
-    fn hew_url_host(url: Url) -> String;
+    fn hew_url_parse(s: string) -> Url;
+    fn hew_url_scheme(url: Url) -> string;
+    fn hew_url_host(url: Url) -> string;
     fn hew_url_port(url: Url) -> i32;
-    fn hew_url_path(url: Url) -> String;
-    fn hew_url_query(url: Url) -> String;
-    fn hew_url_fragment(url: Url) -> String;
-    fn hew_url_to_string(url: Url) -> String;
-    fn hew_url_join(base: Url, path: String) -> Url;
+    fn hew_url_path(url: Url) -> string;
+    fn hew_url_query(url: Url) -> string;
+    fn hew_url_fragment(url: Url) -> string;
+    fn hew_url_to_string(url: Url) -> string;
+    fn hew_url_join(base: Url, path: string) -> Url;
     fn hew_url_free(url: Url);
 }

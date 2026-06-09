@@ -17,9 +17,9 @@
 
 // Subscriber actor — receives messages on topics it cares about.
 actor Subscriber {
-    let name: String;
+    let name: string;
     let received: int;
-    receive fn on_message(topic: String, payload: String) {
+    receive fn on_message(topic: string, payload: string) {
         received = received + 1;
         println(f"  [{name}] #{received} topic={topic}: {payload}");
     }
@@ -34,19 +34,19 @@ actor Subscriber {
 // Parallel arrays: sub_topics[i] corresponds to sub_actors[i].
 // A subscriber can register for multiple topics (one entry per topic).
 actor Broker {
-    let sub_topics: Vec<String>;
+    let sub_topics: Vec<string>;
     let sub_actors: Vec<ActorRef<Subscriber>>;
     let published: int;
 
     // Register a subscriber for a topic.
-    receive fn subscribe(topic: String, subscriber: ActorRef<Subscriber>) {
+    receive fn subscribe(topic: string, subscriber: ActorRef<Subscriber>) {
         sub_topics.push(topic);
         sub_actors.push(subscriber);
         println(f"[broker] subscription added: topic={topic}");
     }
 
     // Publish a message to all subscribers of the given topic.
-    receive fn publish(topic: String, payload: String) {
+    receive fn publish(topic: string, payload: string) {
         published = published + 1;
         var delivered = 0;
         for i in 0 .. sub_topics.len() {
@@ -69,7 +69,7 @@ fn main() {
     println("");
 
     // Create broker
-    let empty_topics: Vec<String> = Vec::new();
+    let empty_topics: Vec<string> = Vec::new();
     let empty_actors: Vec<ActorRef<Subscriber>> = Vec::new();
     let broker = spawn Broker(sub_topics: empty_topics, sub_actors: empty_actors, published: 0);
     // Create subscribers

@@ -20,7 +20,7 @@ import std::time::datetime;
 // ── Types ─────────────────────────────────────────────────────────────
 /// A single benchmark result containing timing statistics.
 pub type BenchResult {
-    name: String;
+    name: string;
     iterations: int;
     avg_ns: int;
     min_ns: int;
@@ -30,13 +30,13 @@ pub type BenchResult {
 
 /// A collection of benchmark results.
 pub type Suite {
-    name: String;
+    name: string;
     results: Vec<BenchResult>;
 }
 
 // ── Constructor ───────────────────────────────────────────────────────
 /// Create a new benchmark suite.
-pub fn suite(name: String) -> Suite {
+pub fn suite(name: string) -> Suite {
     let results: Vec<BenchResult> = Vec::new();
     Suite { name: name, results: results }
 }
@@ -49,7 +49,7 @@ trait SuiteMethods {
     /// Executes `f` for `iterations` times after a warmup phase
     /// (10% of iterations, minimum 1). Records min, max, avg, and total
     /// timing in nanoseconds.
-    fn add(suite: Suite, name: String, iterations: int, f: fn());
+    fn add(suite: Suite, name: string, iterations: int, f: fn());
 
     /// Print results as a human-readable table.
     fn report(suite: Suite);
@@ -60,7 +60,7 @@ trait SuiteMethods {
 
 impl SuiteMethods for Suite {
     /// Run a benchmark and record the result.
-    fn add(suite: Suite, name: String, iterations: int, f: fn()) {
+    fn add(suite: Suite, name: string, iterations: int, f: fn()) {
 
         // Warmup: 10% of iterations, minimum 1
         var warmup = iterations / 10;
@@ -128,7 +128,7 @@ impl SuiteMethods for Suite {
 
 // ── Time formatting helpers ───────────────────────────────────────────
 /// Format a nanosecond duration as a human-readable string with appropriate units.
-fn format_time(ns: int) -> String {
+fn format_time(ns: int) -> string {
     if ns < 1000 {
         f"{ns} ns"
     } else if ns < 1000000 {
@@ -150,7 +150,7 @@ fn format_time(ns: int) -> String {
 }
 
 /// Format an average nanosecond duration as an operations-per-second string.
-fn format_ops(avg_ns: int) -> String {
+fn format_ops(avg_ns: int) -> string {
     if avg_ns <= 0 {
         "inf ops/sec"
     } else if avg_ns < 1000 {
@@ -172,7 +172,7 @@ fn format_ops(avg_ns: int) -> String {
 }
 
 /// Pad a number to two digits with a leading zero if needed.
-fn pad_two(n: int) -> String {
+fn pad_two(n: int) -> string {
     if n < 10 {
         f"0{n}"
     } else {

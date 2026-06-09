@@ -1,4 +1,0 @@
-fn main() {
-    let number: i32 = true;
-    println(number);
-}

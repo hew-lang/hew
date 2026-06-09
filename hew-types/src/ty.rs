@@ -44,6 +44,11 @@ pub struct TraitObjectBound {
     pub trait_name: String,
     /// Type arguments
     pub args: Vec<Ty>,
+    /// Associated-type bindings projected on this trait object bound.
+    ///
+    /// Stored sorted by associated-type name at type-resolution boundaries so
+    /// equality, hashing, display, and vtable-key construction are canonical.
+    pub assoc_bindings: Vec<(String, Ty)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +168,32 @@ pub enum Ty {
     /// Display: `<task<T>>` (angle brackets signal compiler-internal origin).
     Task(Box<Ty>),
 
+    /// Deferred associated-type projection: `T::Bar` where `T` is a generic
+    /// type parameter with a trait bound that declares `type Bar`.
+    ///
+    /// Produced by the resolver when it sees `T::Bar` in a type expression and
+    /// `T` is a known type parameter whose bounds include a trait declaring
+    /// `Bar`. The variant carries the trait name (disambiguating when `T` has
+    /// multiple bounds) plus the assoc-type name. Substitution collapses this
+    /// to the impl's binding once `base` becomes concrete (see
+    /// `Checker::project_assoc_types`).
+    ///
+    /// Display: `<base>::<assoc>` (e.g. `I::Item`).
+    ///
+    /// Strings are boxed to keep the variant under the `result_large_err`
+    /// clippy threshold (Ty appears as both arms of `UnifyError::Mismatch`).
+    AssocType {
+        /// Carrier of the type parameter (`Ty::Named { name: "I", args: [] }`
+        /// at registration time; may become a concrete `Ty` after
+        /// monomorphisation substitutes the type-arg).
+        base: Box<Ty>,
+        /// Trait that declares the associated type. Required for
+        /// disambiguation when `base` has multiple bounds.
+        trait_name: Box<str>,
+        /// Associated type name (e.g. `"Item"`).
+        assoc_name: Box<str>,
+    },
+
     /// Error recovery — a type that unifies with anything
     Error,
 }
@@ -272,9 +303,9 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("f64", &["f64", "float", "Float"]),
     ("bool", &["bool", "Bool"]),
     ("char", &["char", "Char"]),
-    ("string", &["string", "String", "str"]),
+    ("string", &["string", "str"]),
     ("bytes", &["bytes", "Bytes"]),
-    ("duration", &["duration", "Duration"]),
+    ("duration", &["duration"]),
     // Unit's type-system spelling is `()`, while wirecodec also accepts `unit`.
     ("()", &["()"]),
     // Not in wirecodec: Never has no wire representation.
@@ -430,7 +461,7 @@ impl Ty {
             Ty::FloatLiteral => write!(f, "<float literal>"),
             Ty::Bool => write!(f, "bool"),
             Ty::Char => write!(f, "char"),
-            Ty::String => write!(f, "String"),
+            Ty::String => write!(f, "string"),
             Ty::Bytes => write!(f, "bytes"),
             Ty::Duration => write!(f, "duration"),
             Ty::Unit => write!(f, "()"),
@@ -497,13 +528,23 @@ impl Ty {
                 if traits.len() == 1 {
                     let bound = &traits[0];
                     write!(f, "{}", bound.trait_name)?;
-                    if !bound.args.is_empty() {
+                    if !bound.args.is_empty() || !bound.assoc_bindings.is_empty() {
                         write!(f, "<")?;
-                        for (i, arg) in bound.args.iter().enumerate() {
-                            if i > 0 {
+                        let mut needs_comma = false;
+                        for arg in &bound.args {
+                            if needs_comma {
                                 write!(f, ", ")?;
                             }
                             arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                            needs_comma = true;
+                        }
+                        for (assoc_name, assoc_ty) in &bound.assoc_bindings {
+                            if needs_comma {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{assoc_name} = ")?;
+                            assoc_ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                            needs_comma = true;
                         }
                         write!(f, ">")?;
                     }
@@ -514,13 +555,23 @@ impl Ty {
                             write!(f, " + ")?;
                         }
                         write!(f, "{}", bound.trait_name)?;
-                        if !bound.args.is_empty() {
+                        if !bound.args.is_empty() || !bound.assoc_bindings.is_empty() {
                             write!(f, "<")?;
-                            for (j, arg) in bound.args.iter().enumerate() {
-                                if j > 0 {
+                            let mut needs_comma = false;
+                            for arg in &bound.args {
+                                if needs_comma {
                                     write!(f, ", ")?;
                                 }
                                 arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                                needs_comma = true;
+                            }
+                            for (assoc_name, assoc_ty) in &bound.assoc_bindings {
+                                if needs_comma {
+                                    write!(f, ", ")?;
+                                }
+                                write!(f, "{assoc_name} = ")?;
+                                assoc_ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                                needs_comma = true;
                             }
                             write!(f, ">")?;
                         }
@@ -533,6 +584,12 @@ impl Ty {
                 write!(f, "<task<")?;
                 inner.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, ">>")
+            }
+            Ty::AssocType {
+                base, assoc_name, ..
+            } => {
+                base.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                write!(f, "::{assoc_name}")
             }
             Ty::Error => write!(f, "<error>"),
         }
@@ -639,10 +696,15 @@ impl Ty {
                     || captures.iter().any(Ty::has_inference_var)
             }
             Ty::Pointer { pointee, .. } => pointee.has_inference_var(),
-            Ty::TraitObject { traits } => traits
-                .iter()
-                .any(|bound| bound.args.iter().any(Ty::has_inference_var)),
+            Ty::TraitObject { traits } => traits.iter().any(|bound| {
+                bound.args.iter().any(Ty::has_inference_var)
+                    || bound
+                        .assoc_bindings
+                        .iter()
+                        .any(|(_, ty)| ty.has_inference_var())
+            }),
             Ty::Task(inner) => inner.has_inference_var(),
+            Ty::AssocType { base, .. } => base.has_inference_var(),
             _ => false,
         }
     }
@@ -665,6 +727,18 @@ impl Ty {
     #[must_use]
     pub fn actor_ref(inner: Ty) -> Ty {
         Self::normalize_named("ActorRef".to_string(), vec![inner])
+    }
+
+    /// Construct `LocalPid<inner>` — actor pid in this process, returned by `spawn`.
+    #[must_use]
+    pub fn local_pid(inner: Ty) -> Ty {
+        Self::normalize_named("LocalPid".to_string(), vec![inner])
+    }
+
+    /// Construct `RemotePid<inner>` — actor pid on a remote node.
+    #[must_use]
+    pub fn remote_pid(inner: Ty) -> Ty {
+        Self::normalize_named("RemotePid".to_string(), vec![inner])
     }
 
     /// Construct `Sender<inner>`.
@@ -911,12 +985,36 @@ impl Ty {
         }
     }
 
-    /// If this is an actor handle (`ActorRef<T>` or `Actor<T>`), return `Some(&T)`.
+    /// If this is `LocalPid<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_local_pid(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "LocalPid" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is `RemotePid<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_remote_pid(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "RemotePid" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is a local actor handle (`ActorRef<T>`, `Actor<T>`, or `LocalPid<T>`), return `Some(&T)`.
+    ///
+    /// `LocalPid<T>` is the default spawn-return type. `ActorRef<T>` remains
+    /// recognized for legacy local references. `RemotePid<T>` is intentionally
+    /// excluded — it is a distinct type that does not participate in the local
+    /// supervisor graph.
     #[must_use]
     pub fn as_actor_handle(&self) -> Option<&Ty> {
         match self {
             Ty::Named { name, args }
-                if (name == "ActorRef" || name == "Actor") && args.len() == 1 =>
+                if (name == "ActorRef" || name == "Actor" || name == "LocalPid")
+                    && args.len() == 1 =>
             {
                 Some(&args[0])
             }
@@ -1218,12 +1316,35 @@ impl Ty {
                             .iter()
                             .map(|arg| arg.apply_subst_inner(subst, visited))
                             .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), ty.apply_subst_inner(subst, visited)))
+                            .collect(),
                     })
                     .collect(),
             },
             Ty::Task(inner) => Ty::Task(Box::new(inner.apply_subst_inner(subst, visited))),
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(base.apply_subst_inner(subst, visited)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
             _ => self.clone(),
         }
+    }
+
+    /// Public counterpart to `map_children`: apply `f` to each child type
+    /// and reconstruct the composite. Intended for cross-module walkers
+    /// (e.g. the checker's projection-collapse) that need structural
+    /// recursion without re-implementing every variant.
+    #[must_use]
+    pub fn map_children_pub(&self, f: &impl Fn(&Ty) -> Ty) -> Ty {
+        self.map_children(f)
     }
 
     /// Apply a function to each child type, reconstructing the composite.
@@ -1263,10 +1384,24 @@ impl Ty {
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
                         args: bound.args.iter().map(f).collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), f(ty)))
+                            .collect(),
                     })
                     .collect(),
             },
             Ty::Task(inner) => Ty::Task(Box::new(f(inner))),
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(f(base)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
             _ => self.clone(),
         }
     }
@@ -1284,8 +1419,11 @@ impl Ty {
                 captures,
             } => params.iter().any(f) || f(ret) || captures.iter().any(f),
             Ty::Pointer { pointee, .. } => f(pointee),
-            Ty::TraitObject { traits } => traits.iter().any(|bound| bound.args.iter().any(f)),
+            Ty::TraitObject { traits } => traits.iter().any(|bound| {
+                bound.args.iter().any(f) || bound.assoc_bindings.iter().any(|(_, ty)| f(ty))
+            }),
             Ty::Task(inner) => f(inner),
+            Ty::AssocType { base, .. } => f(base),
             _ => false,
         }
     }
@@ -1357,6 +1495,16 @@ impl Ty {
                             .iter()
                             .map(|arg| arg.substitute_named_param(param_name, replacement))
                             .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| {
+                                (
+                                    name.clone(),
+                                    ty.substitute_named_param(param_name, replacement),
+                                )
+                            })
+                            .collect(),
                     })
                     .collect(),
             },
@@ -1366,6 +1514,18 @@ impl Ty {
             Ty::Task(inner) => Ty::Task(Box::new(
                 inner.substitute_named_param(param_name, replacement),
             )),
+            // AssocType { base: T, trait, name }: when `T` is the type param
+            // being substituted, recurse into `base` so a later projection-
+            // collapse pass can resolve the assoc binding from the impl.
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(base.substitute_named_param(param_name, replacement)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
             _ => self.clone(),
         }
     }
@@ -1489,7 +1649,7 @@ mod tests {
                     ret: Box::new(Ty::String),
                 }
             ),
-            "fn(i32, bool) -> String"
+            "fn(i32, bool) -> string"
         );
         assert_eq!(
             format!(
@@ -1542,11 +1702,11 @@ mod tests {
 
         assert_eq!(
             ty.user_facing().to_string(),
-            "fn(Vec<int>, (bool, int)) -> Result<int, HashMap<String, int>>"
+            "fn(Vec<int>, (bool, int)) -> Result<int, HashMap<string, int>>"
         );
         assert_eq!(
             ty.to_string(),
-            "fn(Vec<i64>, (bool, i64)) -> Result<i64, HashMap<String, i64>>"
+            "fn(Vec<i64>, (bool, i64)) -> Result<i64, HashMap<string, i64>>"
         );
     }
 
@@ -1605,7 +1765,7 @@ mod tests {
     fn test_display_result() {
         assert_eq!(
             format!("{}", Ty::result(Ty::I32, Ty::String)),
-            "Result<i32, String>"
+            "Result<i32, string>"
         );
     }
 
@@ -1613,7 +1773,7 @@ mod tests {
     fn test_display_tuple() {
         assert_eq!(
             format!("{}", Ty::Tuple(vec![Ty::I32, Ty::Bool, Ty::String])),
-            "(i32, bool, String)"
+            "(i32, bool, string)"
         );
     }
 

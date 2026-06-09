@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: MQTT 3.1.1 broker — pure Hew actor implementation
+
 // MQTT 3.1.1 broker — pure Hew actor implementation
 // Listens on port 1883. Uses bytes type for all TCP I/O.
 //
@@ -71,7 +74,7 @@ fn read_varint_len(data: bytes, offset: i32) -> i32 {
 }
 
 // Push length-prefixed MQTT string.
-fn push_mqtt_str(buf: bytes, s: String) {
+fn push_mqtt_str(buf: bytes, s: string) {
     push_u16(buf, string_length(s) as i32);
     for i in 0 .. string_length(s) {
         buf.push(s.char_at(i) as i32);
@@ -79,7 +82,7 @@ fn push_mqtt_str(buf: bytes, s: String) {
 }
 
 // Read length-prefixed MQTT string at offset.
-fn read_mqtt_str(data: bytes, offset: i32) -> String {
+fn read_mqtt_str(data: bytes, offset: i32) -> string {
     let len = read_u16(data, offset);
     let s = bytes::new();
     let start = offset + 2;
@@ -121,7 +124,7 @@ fn build_pingresp() -> _ {
 }
 
 // Build a PUBLISH packet. payload is raw bytes (not a string).
-fn build_publish(topic: String, payload: bytes, qos: i32, packet_id: i32) -> bytes {
+fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> bytes {
     let body: bytes = bytes::new();
     push_mqtt_str(body, topic);
     if qos > 0 {
@@ -140,7 +143,7 @@ fn build_publish(topic: String, payload: bytes, qos: i32, packet_id: i32) -> byt
 // ClientHandler — one per TCP connection.
 actor ClientHandler {
     let conn: Connection;
-    let client_id: String;
+    let client_id: string;
     let router: ActorRef<Router>;
     receive fn start() {
         var buf = bytes::new();
@@ -266,7 +269,7 @@ actor ClientHandler {
 actor Router {
     let client_conns: Vec<Connection>;
     let client_actors: Vec<ActorRef<ClientHandler>>;
-    let sub_topics: Vec<String>;
+    let sub_topics: Vec<string>;
     let sub_conns: Vec<Connection>;
     let sub_qos: Vec<i32>;
     receive fn register_client(conn: Connection, handler: ActorRef<ClientHandler>) {
@@ -274,13 +277,13 @@ actor Router {
         client_actors.push(handler);
         println("[router] client registered");
     }
-    receive fn subscribe(topic: String, conn: Connection, qos: i32) {
+    receive fn subscribe(topic: string, conn: Connection, qos: i32) {
         sub_topics.push(topic);
         sub_conns.push(conn);
         sub_qos.push(qos);
         println(f"[router] subscribed qos={qos}");
     }
-    receive fn publish(topic: String, payload: bytes, qos: i32, packet_id: i32) {
+    receive fn publish(topic: string, payload: bytes, qos: i32, packet_id: i32) {
         // Fan out to all matching subscribers. Inline build_publish so the
         // expressions passed to deliver() are Expr::Call (not Identifier),
         // which avoids the move-at-actor-boundary rule.
@@ -299,8 +302,8 @@ actor Router {
         }
         println(f"[router] publish topic={topic}");
     }
-    receive fn unsubscribe(topic: String, conn: Connection) {
-        var new_topics: Vec<String> = Vec::new();
+    receive fn unsubscribe(topic: string, conn: Connection) {
+        var new_topics: Vec<string> = Vec::new();
         var new_conns: Vec<Connection> = Vec::new();
         var new_qos: Vec<i32> = Vec::new();
         for i in 0 .. sub_topics.len() {
@@ -331,7 +334,7 @@ actor Router {
         client_conns = new_conns;
         client_actors = new_actors;
         // Remove subscriptions for this conn
-        var new_sub_topics: Vec<String> = Vec::new();
+        var new_sub_topics: Vec<string> = Vec::new();
         var new_sub_conns: Vec<Connection> = Vec::new();
         var new_sub_qos: Vec<i32> = Vec::new();
         for j in 0 .. sub_conns.len() {
@@ -356,7 +359,7 @@ actor Listener {
         println("[listener] MQTT broker ready on :1883");
         loop {
             let conn = lst.accept();
-            let pending_id: String = "__pending__";
+            let pending_id: string = "__pending__";
             let handler = spawn ClientHandler(conn: conn, name: pending_id, room: router);
             router.register_client(conn, handler);
             handler.start();
@@ -367,7 +370,7 @@ actor Listener {
 fn main() {
     let empty_conns: Vec<Connection> = Vec::new();
     let empty_actors: Vec<ActorRef<ClientHandler>> = Vec::new();
-    let empty_sub_topics: Vec<String> = Vec::new();
+    let empty_sub_topics: Vec<string> = Vec::new();
     let empty_sub_conns: Vec<Connection> = Vec::new();
     let empty_sub_qos: Vec<i32> = Vec::new();
     let router = spawn Router(client_conns: empty_conns, client_actors: empty_actors, sub_topics: empty_sub_topics, sub_conns: empty_sub_conns, sub_qos: empty_sub_qos);

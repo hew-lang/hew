@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
 use hew_types::ResolvedTy;
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
+use crate::monomorph::{MonomorphizedFn, RecordLayout};
 use crate::value_class::TypeClassTable;
 use crate::{IntentKind, ValueClass};
 
@@ -20,6 +23,55 @@ pub struct HirModule {
     /// reads from here. No phase re-derives the answer by walking the parser
     /// AST. LESSONS: `type-info-survival`.
     pub type_classes: TypeClassTable,
+    /// Distinct generic-function instantiations observed at call sites in
+    /// this module. Populated from the checker's `call_type_args`
+    /// side-table during HIR lowering (G-1.a). Each entry pairs a
+    /// generic origin `ItemId` with a concrete `Vec<ResolvedTy>` and a
+    /// downstream-stable mangled symbol name. Insertion-ordered for
+    /// deterministic codegen.
+    ///
+    /// Empty when no generic-fn callsites exist (a fully monomorphic
+    /// program). Downstream MIR (G-1.b) and LLVM (G-1.c) iterate this
+    /// list to emit one specialised function per entry.
+    ///
+    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// `checker-authority` (P0).
+    pub monomorphisations: Vec<MonomorphizedFn>,
+    /// Per-call-site type arguments observed at generic function calls.
+    /// Keyed by the `SiteId` of the `HirExpr` whose `kind` is
+    /// `HirExprKind::Call` and whose callee is a generic top-level user
+    /// function.
+    ///
+    /// The recorded `ResolvedTy`s mirror the checker's `call_type_args`
+    /// side-table, with one important nuance: when a call appears
+    /// inside a generic function body, its recorded type arguments may
+    /// reference the enclosing function's type-parameter symbols as
+    /// `ResolvedTy::Named { name: "T", args: [] }`. MIR lowering of a
+    /// specialised body substitutes those symbols with concrete types
+    /// via the per-monomorphisation substitution map, producing the
+    /// concrete mangled callee for the inner call.
+    ///
+    /// Empty when no generic-fn call sites exist (a fully monomorphic
+    /// program).
+    pub call_site_type_args: HashMap<SiteId, Vec<ResolvedTy>>,
+    /// Distinct record-type instantiations observed at user struct-init
+    /// sites against a generic `pub type` / `record`. Populated from the
+    /// checker's `record_init_type_args` side-table during HIR lowering.
+    /// Each entry pairs a generic origin `ItemId` with a concrete
+    /// `Vec<ResolvedTy>`, a mangled symbol name, and the field shape after
+    /// type-parameter substitution. Insertion-ordered for deterministic
+    /// codegen.
+    ///
+    /// Empty when no user generic record-init sites exist. Downstream MIR
+    /// and LLVM consumers iterate this list to emit one `RecordLayout` per
+    /// entry under the mangled name. Builtin-injected generic types (`Vec`,
+    /// `Option`, `Result`, `HashMap`, channel / stream handles) never enter
+    /// this list — they remain compiler-injected for v0.5 by the generics
+    /// scoping decision.
+    ///
+    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// `checker-authority` (P0).
+    pub record_layouts: Vec<RecordLayout>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -297,6 +349,15 @@ pub struct HirSupervisorChild {
     pub wired_to: Option<std::collections::HashMap<String, String>>,
     /// `true` when declared with `pool name: Type`; `false` for `child name: Type`.
     pub is_pool: bool,
+    /// Compile-time-assigned slot index within the child's own slot space.
+    ///
+    /// Static children (`is_pool = false`) are indexed into `HewSupervisor.children[]`.
+    /// Pool children (`is_pool = true`) are indexed into `HewSupervisor.pool_slots[]`.
+    /// Both spaces start at 0 and are disjoint.
+    ///
+    /// Assigned by the HIR lowering pass by counting each partition in source order.
+    /// MIR lowering reads this field to emit the correct runtime ABI call.
+    pub slot_index: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,6 +391,12 @@ pub struct HirTypeDecl {
     /// Names of methods declared with a `consuming self` receiver in the
     /// type body. Lifted verbatim from `TypeDecl.consuming_methods`.
     pub consuming_methods: Vec<String>,
+    /// Source-declared generic type-parameter names, in order. Empty for
+    /// non-generic type decls. Consumed by the record-layout
+    /// registry to (a) decide whether a `StructInit` site needs a
+    /// per-instantiation layout and (b) substitute field types when
+    /// constructing one.
+    pub type_params: Vec<String>,
     pub fields: Vec<HirField>,
     pub span: Span,
 }
@@ -580,6 +647,40 @@ pub enum HirExprKind {
     IdentityCompare {
         left: Box<HirExpr>,
         right: Box<HirExpr>,
+    },
+    /// Wrap a concrete value in a `dyn Trait` fat pointer. Emitted at
+    /// every accepted `T → dyn Trait` coercion site (the checker's
+    /// `TypeCheckOutput::dyn_trait_coercions` side table). MIR lowers
+    /// 1:1 to `Instr::CoerceToDynTrait`.
+    ///
+    /// The carried `method_table` mirrors `DynCoercion::method_table` —
+    /// codegen consumes it to materialise per-trait vtable statics.
+    /// `concrete_type` is the resolved `Self` type at the coercion site
+    /// (after `materialize_literal_defaults`), which doubles as the
+    /// `(Trait, ImplType)` dedup key for the vtable static.
+    CoerceToDynTrait {
+        value: Box<HirExpr>,
+        trait_name: String,
+        concrete_type: ResolvedTy,
+        method_table: Vec<(String, String)>,
+        vtable_entries: Vec<hew_types::DynVtableEntry>,
+    },
+    /// Dispatch a method call through a `dyn Trait` fat pointer's
+    /// vtable. Emitted in place of an `HirExprKind::Call` whenever
+    /// the receiver typed as `Ty::TraitObject` (the checker's
+    /// `TypeCheckOutput::dyn_trait_method_calls` side table). MIR
+    /// lowers 1:1 to `Instr::CallTraitMethod`.
+    ///
+    /// `slot` is the pre-computed vtable index
+    /// (`3 + method_decl_order` for the originating trait — see
+    /// `DynMethodCall::slot`). HIR/MIR never re-derive the slot.
+    CallDynMethod {
+        receiver: Box<HirExpr>,
+        trait_name: String,
+        method_name: String,
+        slot: u32,
+        args: Vec<HirExpr>,
+        ret_ty: ResolvedTy,
     },
     Unsupported(String),
 }

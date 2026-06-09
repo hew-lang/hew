@@ -876,6 +876,89 @@ pub enum Instr {
         rhs: Place,
         width: FloatWidth,
     },
+    /// Construct a `dyn Trait` fat pointer from a concrete value.
+    ///
+    /// Produced from `HirExprKind::CoerceToDynTrait` at every accepted
+    /// `T → dyn Trait` coercion site (the checker's
+    /// `TypeCheckOutput::dyn_trait_coercions` side table — see
+    /// `hew-types/src/check/coerce.rs::try_record_dyn_trait_coercion`).
+    /// Codegen (TO-4) lowers this to a `(data_ptr, vtable_ptr)` pair
+    /// where `vtable_ptr` references the LLVM private constant for the
+    /// `(trait_name, concrete_type)` pair: the value is stack-allocated /
+    /// pointer-taken into `data_ptr` and the vtable symbol is materialised
+    /// from the codegen-side `(Trait, ImplType)` registry.
+    ///
+    /// The carried `method_table` is the checker-authoritative
+    /// `(trait_method_name, impl_fn_key)` resolution: codegen emits one
+    /// function-pointer slot per entry, in declaration order, starting at
+    /// vtable slot 3 (after the runtime-fixed prefix triple
+    /// `drop_in_place`/`size_of`/`align_of`). For multi-bound coercions the
+    /// method names are prefixed by their originating trait (`Trait::method`).
+    ///
+    /// LESSONS: `checker-authority` (P0) — the trait/concrete/method
+    /// resolution lives entirely in the checker side table; MIR and codegen
+    /// never re-derive impl functions from the type system.
+    CoerceToDynTrait {
+        /// Source place holding the concrete `Self` value to wrap.
+        value: Place,
+        /// Destination place that receives the constructed `dyn Trait`
+        /// fat pointer.
+        dest: Place,
+        /// Trait name (or `Trait1+Trait2` for multi-bound coercions) the
+        /// fat pointer represents.
+        trait_name: String,
+        /// Resolved concrete `Self` type at the coercion site. Codegen
+        /// keys the vtable static on `(trait_name, concrete_type)`.
+        concrete_type: ResolvedTy,
+        /// Ordered `(method_name, impl_fn_key)` pairs naming the impl-side
+        /// resolution for each trait method. Order matches the trait
+        /// declaration order; multi-bound coercions prefix each method
+        /// name with `Trait::`.
+        method_table: Vec<(String, String)>,
+        /// Ordered vtable entries with checker-substituted method signatures.
+        vtable_entries: Vec<hew_types::DynVtableEntry>,
+    },
+    /// Dispatch a method call through a `dyn Trait` fat pointer's vtable.
+    ///
+    /// Produced from `HirExprKind::CallDynMethod` at every accepted
+    /// method-call on a `Ty::TraitObject` receiver (the checker's
+    /// `TypeCheckOutput::dyn_trait_method_calls` side table — see
+    /// `hew-types/src/check/methods.rs` `TraitObject` arm). Codegen
+    /// (TO-4) lowers this to:
+    ///
+    /// 1. Load `vtable_ptr` from the fat pointer's second word.
+    /// 2. GEP to `slot` (the precomputed vtable index).
+    /// 3. Load the function pointer at that slot.
+    /// 4. Call the function pointer with `fat_pointer.data` as the
+    ///    receiver, followed by `args`.
+    ///
+    /// `slot` is precomputed by the checker (`3 + method_decl_order` for
+    /// the originating trait — see `DynMethodCall::slot`) so MIR and
+    /// codegen carry no trait-method-order knowledge of their own.
+    ///
+    /// `dest = None` denotes a discarded return value; `dest = Some(place)`
+    /// writes the return into `place`.
+    ///
+    /// LESSONS: `checker-authority` (P0) — slot index is the checker's
+    /// authority, not MIR's; `boundary-fail-closed` (P0) — HIR rejects
+    /// a missing side-table entry before MIR sees the call.
+    CallTraitMethod {
+        /// Fat-pointer place holding the `dyn Trait` receiver
+        /// (constructed by `CoerceToDynTrait` or bound from a parameter
+        /// of declared type `dyn Trait`).
+        fat_pointer: Place,
+        /// Destination for the return value, or `None` if discarded.
+        dest: Option<Place>,
+        /// Trait name from which the method was resolved.
+        trait_name: String,
+        /// Trait method name being dispatched.
+        method_name: String,
+        /// Pre-computed vtable slot index (`3 + method_decl_order`).
+        slot: u32,
+        /// Argument Places in source order (the implicit receiver is
+        /// `fat_pointer.data` and is NOT included here).
+        args: Vec<Place>,
+    },
 }
 
 /// 0-based declaration-order index of a field within a `record` type.
@@ -900,6 +983,48 @@ pub enum Instr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FieldOffset(pub u32);
 
+/// Discriminates the two kinds of yield-check site the cooperate-site
+/// analysis identifies. Consumed by codegen to select the injection point
+/// within the LLVM function.
+///
+/// - `FunctionEntry`: cooperate call emitted in the function prologue,
+///   after alloca slots are set up and before the first user instruction.
+///   Present for every non-leaf function. Ensures that calling into a
+///   non-trivial function always decrements the reductions counter.
+///
+/// - `LoopBackEdge`: cooperate call emitted in the back-edge block —
+///   the block whose terminator is `Goto { target }` where `target` is
+///   an ancestor block in the CFG. Armed but dormant in v0.5 because the
+///   current MIR lowering only produces acyclic CFGs (loop lowering is
+///   deferred). The field is populated by the analysis when synthetic
+///   back-edge CFGs are constructed in tests and fires automatically once
+///   loop lowering lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CooperateKind {
+    /// Inject cooperate at function entry (prologue).
+    FunctionEntry,
+    /// Inject cooperate at the loop back-edge block (before the `Goto`
+    /// terminator that returns control to the loop header).
+    LoopBackEdge,
+}
+
+/// One cooperate-check site identified by the cooperate-site analysis.
+/// Carried by `CheckedMirFunction::cooperate_sites` for codegen to consume.
+///
+/// `bb_id` identifies the block where the cooperate call must be injected;
+/// `kind` tells codegen whether this is a function-entry or loop-back-edge
+/// site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CooperateSite {
+    /// Basic-block id in the owning function's `blocks` vec. For
+    /// `FunctionEntry`, this is always block 0 (the entry block). For
+    /// `LoopBackEdge`, this is the id of the block whose `Goto`
+    /// terminator targets an earlier block.
+    pub bb_id: u32,
+    /// Injection kind — function-entry prologue or loop back-edge.
+    pub kind: CooperateKind,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedMirFunction {
     pub name: String,
@@ -914,6 +1039,22 @@ pub struct CheckedMirFunction {
     pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
     pub checks: Vec<MirCheck>,
+    /// Yield-check injection sites identified by the cooperate-site analysis.
+    ///
+    /// Codegen iterates this vec to decide where to emit
+    /// `call @hew_actor_cooperate()`. Empty means the function is a leaf
+    /// (< 10 MIR statements, no calls, no loops) or has a yield-equivalent
+    /// entry terminator (receive handler) — no cooperate call is emitted.
+    ///
+    /// WHY here and not on `ElaboratedMirFunction`: cooperate-site injection
+    /// is a pure analysis result with no effect on drop elaboration or
+    /// type-checker decisions. Placing it on `CheckedMirFunction` lets
+    /// codegen read it without threading through the elaboration pass.
+    ///
+    /// WHEN-OBSOLETE: if a future change decides cooperate injection interacts
+    /// with drop elaboration (e.g. a cooperate inside a cleanup block), the
+    /// field can be migrated to `ElaboratedMirFunction` at that time.
+    pub cooperate_sites: Vec<CooperateSite>,
 }
 
 /// Per-function legality findings produced by Checked MIR. A
@@ -1244,6 +1385,13 @@ pub enum DropKind {
     /// runtime call (slice 5); the runtime decides whether this
     /// drop is the last-handle case (slice 4).
     LambdaActorRelease,
+    /// `dyn Trait` fat-pointer drop: dispatch through vtable slot 0
+    /// (`drop_in_place`) on the pointer's `data` word, then release the
+    /// fat-pointer storage. Codegen (TO-4) emits the GEP-to-slot-0 +
+    /// load + call sequence — no runtime helper, matching the inline
+    /// dispatch shape of `Instr::CallTraitMethod` (plan §D-6). The
+    /// vtable static itself has program lifetime and is never freed.
+    TraitObject,
 }
 
 /// Direction selector for `DropKind::DuplexHalfClose`. Mirrors the

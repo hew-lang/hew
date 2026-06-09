@@ -656,6 +656,7 @@ impl<'a> Formatter<'a> {
                     name,
                     bounds,
                     default,
+                    ..
                 } => {
                     let pos = if self.has_comments() {
                         self.find_keyword_after(&format!("type {name}"), self.prev_source_pos)
@@ -1408,9 +1409,27 @@ impl<'a> Formatter<'a> {
 
     fn format_trait_bound(&mut self, bound: &TraitBound) {
         self.write(&bound.name);
-        if let Some(args) = &bound.type_args {
+        if bound.type_args.is_some() || !bound.assoc_type_bindings.is_empty() {
             self.write("<");
-            self.comma_sep(args, |f, arg| f.format_type_expr(&arg.0));
+            let mut needs_comma = false;
+            if let Some(args) = &bound.type_args {
+                for arg in args {
+                    if needs_comma {
+                        self.write(", ");
+                    }
+                    self.format_type_expr(&arg.0);
+                    needs_comma = true;
+                }
+            }
+            for binding in &bound.assoc_type_bindings {
+                if needs_comma {
+                    self.write(", ");
+                }
+                self.write(&binding.name);
+                self.write(" = ");
+                self.format_type_expr(&binding.ty.0);
+                needs_comma = true;
+            }
             self.write(">");
         }
     }
@@ -1437,6 +1456,18 @@ impl<'a> Formatter<'a> {
 
     fn format_params(&mut self, params: &[Param]) {
         self.comma_sep(params, |f, p| {
+            if p.name == "self"
+                && matches!(
+                    &p.ty.0,
+                    TypeExpr::Named {
+                        name,
+                        type_args: None,
+                    } if name == "Self"
+                )
+            {
+                f.write("self");
+                return;
+            }
             if p.is_mutable {
                 f.write("var ");
             }
@@ -2788,6 +2819,19 @@ enum Colour {
 extern \"C\" {
     fn puts(s: string) -> i32;
     fn exit(code: i32);
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn extern_rt_block_roundtrip() {
+        let src = "\
+extern \"rt\" {
+    fn println(s: string);
+    fn print(s: string);
+    fn assert(cond: bool);
 }
 ";
         let formatted = roundtrip(src);

@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Service Architecture with Supervision
+
 // Service Architecture with Supervision
 //
 // Models a real-world service: a cache, a database connection, and an API

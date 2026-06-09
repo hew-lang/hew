@@ -26,7 +26,7 @@ pub fn assert_eq(actual: int, expected: int) {
 
 /// Assert that two strings are equal.  Panics with a message showing
 /// the expected and actual values when they differ.
-pub fn assert_eq_str(actual: String, expected: String) {
+pub fn assert_eq_str(actual: string, expected: string) {
     if actual != expected {
         panic(f"assertion failed: expected \"{expected}\", got \"{actual}\"");
     }

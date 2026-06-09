@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Description: Distributed chat service — idiomatic Hew networked actors
+
 // Distributed chat service — idiomatic Hew networked actors
 //
 // Architecture:
@@ -8,18 +11,18 @@
 // Node::start/shutdown/register/lookup typecheck today. Node::connect is
 // runtime-only for now (not a typechecker builtin yet).
 actor ChatRoom {
-    let users: Vec<String>;
-    let messages: Vec<String>;
-    receive fn enter(username: String) {
+    let users: Vec<string>;
+    let messages: Vec<string>;
+    receive fn enter(username: string) {
         users.push(username);
         println(f"[room] {username} entered ({users.len()} online)");
     }
-    receive fn say(username: String, text: String) {
+    receive fn say(username: string, text: string) {
         let msg = f"{username}: {text}";
         messages.push(msg);
         println(f"[room] {msg}");
     }
-    receive fn exit_room(username: String) {
+    receive fn exit_room(username: string) {
         println(f"[room] {username} left");
     }
     receive fn history() -> int {
@@ -37,8 +40,8 @@ actor ChatRoom {
 fn main() {
     // ── Server side ──────────────────────────────────────────
     // Node::start("0.0.0.0:9000");
-    let empty_users: Vec<String> = Vec::new();
-    let empty_msgs: Vec<String> = Vec::new();
+    let empty_users: Vec<string> = Vec::new();
+    let empty_msgs: Vec<string> = Vec::new();
     let room = spawn ChatRoom(users: empty_users, messages: empty_msgs);
     // Node::register("room", room);
 

@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 concurrency surfaces plus codegen-rs parity)
+//! Description: Async Demo example.
+
 fn compute(n: i32) -> i32 {
     let result = fib(n);
     result

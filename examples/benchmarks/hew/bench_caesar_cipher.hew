@@ -1,4 +1,4 @@
-fn caesar_checksum(s: String, lower: String, table: Vec<int>) -> int {
+fn caesar_checksum(s: string, lower: string, table: Vec<int>) -> int {
     let n = s.len();
     var checksum = 0;
     for i in 0 .. n {

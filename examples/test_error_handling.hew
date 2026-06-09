@@ -1,6 +1,9 @@
+//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Description: Test: Error Handling
+
 // Test: Error Handling
 // Exercises: Result<T,E>, Ok/Err, Option<T>, Some/None, ? operator, match
-fn divide(a: i64, b: i64) -> Result<i64, String> {
+fn divide(a: i64, b: i64) -> Result<i64, string> {
     if b == 0 {
         Err("division by zero")
     } else {
@@ -68,7 +71,7 @@ fn test_option_none() -> i32 {
 }
 
 // ? operator propagation
-fn try_divide(a: i64, b: i64) -> Result<i64, String> {
+fn try_divide(a: i64, b: i64) -> Result<i64, string> {
     let x = divide(a, b)?;
     Ok(x * 2)
 }
@@ -102,7 +105,7 @@ fn test_try_err() -> i32 {
 }
 
 // Chained ? operator
-fn chain_divide(a: i64, b: i64, c: i64) -> Result<i64, String> {
+fn chain_divide(a: i64, b: i64, c: i64) -> Result<i64, string> {
     let x = divide(a, b)?;
     let y = divide(x, c)?;
     Ok(y)

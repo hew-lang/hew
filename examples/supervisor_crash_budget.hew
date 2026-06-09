@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Crash Cascade Prevention
+
 // Crash Cascade Prevention
 //
 // The supervisor's (max_restarts, window) setting prevents infinite restart

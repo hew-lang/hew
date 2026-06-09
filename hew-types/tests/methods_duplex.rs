@@ -415,19 +415,19 @@ fn recv_half_try_recv_resolves() {
 // Accept fixtures — try_recv on Stream / try_send on Sink
 // ---------------------------------------------------------------------------
 
-/// `s.try_recv()` on `Stream<String>` returns `Option<String>` and records
+/// `s.try_recv()` on `Stream<string>` returns `Option<string>` and records
 /// `hew_stream_try_next` in the rewrite table.
 #[test]
 fn stream_try_recv_resolves() {
     let source = r"
-        fn probe(s: Stream<String>) {
-            let _: Option<String> = s.try_recv();
+        fn probe(s: Stream<string>) {
+            let _: Option<string> = s.try_recv();
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "s.try_recv() on Stream<String> should typecheck; got: {:#?}",
+        "s.try_recv() on Stream<string> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(
@@ -437,19 +437,19 @@ fn stream_try_recv_resolves() {
     );
 }
 
-/// `s.send(v)` on `Sink<String>` typechecks; `s.try_send(v)` must also
+/// `s.send(v)` on `Sink<string>` typechecks; `s.try_send(v)` must also
 /// typecheck and record `hew_sink_try_write_string` in the rewrite table.
 #[test]
 fn sink_try_send_resolves() {
     let source = r#"
-        fn probe(s: Sink<String>) {
+        fn probe(s: Sink<string>) {
             s.try_send("hello");
         }
     "#;
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "s.try_send(\"hello\") on Sink<String> should typecheck; got: {:#?}",
+        "s.try_send(\"hello\") on Sink<string> should typecheck; got: {:#?}",
         output.errors
     );
     assert!(

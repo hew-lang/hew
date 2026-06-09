@@ -129,6 +129,8 @@ pub struct ResolvedTraitBound {
     pub trait_name: String,
     /// Resolved type arguments
     pub args: Vec<ResolvedTy>,
+    /// Resolved associated-type bindings, sorted by associated-type name.
+    pub assoc_bindings: Vec<(String, ResolvedTy)>,
 }
 
 /// Reasons a checker-internal [`Ty`] cannot cross the boundary as a
@@ -161,6 +163,16 @@ pub enum BoundaryError {
         /// Number of type arguments that were actually present.
         got: usize,
     },
+    /// A [`Ty::AssocType`] projection survived past type-checking. Such a
+    /// projection must be collapsed (via the impl's `type Bar = X` binding)
+    /// before crossing the checker→HIR boundary; reaching this point means
+    /// monomorphisation did not resolve the projection.
+    UnresolvedAssocProjection {
+        /// Trait that declares the associated type.
+        trait_name: String,
+        /// Associated-type name (e.g. `"Item"`).
+        assoc_name: String,
+    },
 }
 
 impl fmt::Display for BoundaryError {
@@ -182,6 +194,15 @@ impl fmt::Display for BoundaryError {
                 write!(
                     f,
                     "generic arity mismatch: expected {expected} type argument(s), got {got}"
+                )
+            }
+            BoundaryError::UnresolvedAssocProjection {
+                trait_name,
+                assoc_name,
+            } => {
+                write!(
+                    f,
+                    "unresolved associated-type projection `{trait_name}::{assoc_name}` leaked to boundary"
                 )
             }
         }
@@ -272,6 +293,14 @@ impl ResolvedTy {
                     .collect::<Result<Vec<_>, _>>()?,
             }),
             Ty::Task(inner) => Ok(ResolvedTy::Task(Box::new(Self::from_ty(inner)?))),
+            Ty::AssocType {
+                trait_name,
+                assoc_name,
+                ..
+            } => Err(BoundaryError::UnresolvedAssocProjection {
+                trait_name: trait_name.to_string(),
+                assoc_name: assoc_name.to_string(),
+            }),
         }
     }
 
@@ -283,6 +312,11 @@ impl ResolvedTy {
         Ok(ResolvedTraitBound {
             trait_name: bound.trait_name.clone(),
             args: Self::convert_vec(&bound.args)?,
+            assoc_bindings: bound
+                .assoc_bindings
+                .iter()
+                .map(|(name, ty)| Ok((name.clone(), Self::from_ty(ty)?)))
+                .collect::<Result<Vec<_>, BoundaryError>>()?,
         })
     }
 
@@ -345,6 +379,11 @@ impl ResolvedTy {
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
                         args: bound.args.iter().map(Self::to_ty).collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), ty.to_ty()))
+                            .collect(),
                     })
                     .collect(),
             },
@@ -525,12 +564,14 @@ mod tests {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
                 args: vec![Ty::I32],
+                assoc_bindings: vec![],
             }],
         };
         let expected = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Iterator".into(),
                 args: vec![ResolvedTy::I32],
+                assoc_bindings: vec![],
             }],
         };
         assert_eq!(ResolvedTy::from_ty(&ty), Ok(expected));
@@ -543,6 +584,7 @@ mod tests {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
                 args: vec![Ty::Var(var)],
+                assoc_bindings: vec![],
             }],
         };
         assert_eq!(

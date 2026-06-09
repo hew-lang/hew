@@ -36,8 +36,9 @@ mod util;
 
 pub use self::types::{
     ActorSendAliasing, ActorSendCopyReason, AllocationClass, AssignTargetKind, AssignTargetShape,
-    Checker, FnSig, MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint, TypeCheckOutput,
-    TypeDef, TypeDefKind, VariantDef,
+    Checker, ChildKind, ChildSlot, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry,
+    DynVtableKey, FnSig, MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint,
+    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
@@ -268,6 +269,21 @@ impl Checker {
                 })
                 .collect();
 
+        // Same boundary resolution for record-init type args.
+        // Mirrors `resolved_call_type_args` so downstream consumers see
+        // fully-resolved, literal-defaulted `Ty` values.
+        let mut resolved_record_init_type_args: HashMap<SpanKey, Vec<Ty>> =
+            std::mem::take(&mut self.record_init_type_args)
+                .into_iter()
+                .map(|(k, args)| {
+                    let resolved: Vec<Ty> = args
+                        .iter()
+                        .map(|a| self.subst.resolve(a).materialize_literal_defaults())
+                        .collect();
+                    (k, resolved)
+                })
+                .collect();
+
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the
         // substitution so the enrichment layer sees concrete types, then
@@ -304,6 +320,7 @@ impl Checker {
             &mut resolved_type_defs,
             &mut resolved_fn_sigs,
             &mut resolved_call_type_args,
+            &mut resolved_record_init_type_args,
         );
         let mut resolved_lowering_facts = self.finalize_lowering_facts();
         admissibility::validate_lowering_facts_output_contract(
@@ -324,6 +341,7 @@ impl Checker {
             method_call_consumes_receiver: std::mem::take(&mut self.method_call_consumes_receiver),
             actor_send_aliasing: std::mem::take(&mut self.actor_send_aliasing),
             actor_max_heap: std::mem::take(&mut self.actor_max_heap),
+            supervisor_child_slots: std::mem::take(&mut self.supervisor_child_slots),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
@@ -341,7 +359,10 @@ impl Checker {
             cycle_capable_actors: HashSet::new(),
             user_modules: std::mem::take(&mut self.user_modules),
             call_type_args: resolved_call_type_args,
+            record_init_type_args: resolved_record_init_type_args,
             stack_hints: std::mem::take(&mut self.stack_hints),
+            dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
+            dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
         };
 
         // Detect actor reference cycles and emit warnings.

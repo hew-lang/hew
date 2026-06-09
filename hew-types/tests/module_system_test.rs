@@ -326,26 +326,26 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
     let root_source = r#"
         import myapp::widgets::*;
 
-        fn main() -> String {
+        fn main() -> string {
             describe(Label { text: "hello" })
         }
     "#;
     let module_source = r"
         pub trait Describable {
-            fn describe(val: Self) -> String;
+            fn describe(val: Self) -> string;
         }
 
         pub type Label {
-            text: String;
+            text: string;
         }
 
         impl Describable for Label {
-            fn describe(label: Label) -> String {
+            fn describe(label: Label) -> string {
                 label.text
             }
         }
 
-        pub fn describe<T: Describable>(item: T) -> String {
+        pub fn describe<T: Describable>(item: T) -> string {
             item.describe()
         }
     ";
@@ -719,7 +719,7 @@ fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> Re
 #[test]
 fn test_actor_bare_import_registers_type_and_methods() {
     // `import mymod;` with an actor → should register qualified type + methods
-    let recv_ping = make_receive_fn("ping", &[("msg", "String")], Some("String"));
+    let recv_ping = make_receive_fn("ping", &[("msg", "string")], Some("string"));
     let actor = make_actor("MyActor", vec![recv_ping]);
 
     let import = make_user_import(
@@ -770,7 +770,7 @@ fn test_actor_bare_import_registers_type_and_methods() {
 #[test]
 fn test_actor_glob_import_registers_unqualified() {
     // `import mymod::*;` → actor should be accessible unqualified
-    let recv_greet = make_receive_fn("greet", &[("name", "String")], Some("String"));
+    let recv_greet = make_receive_fn("greet", &[("name", "string")], Some("string"));
     let actor = make_actor("Greeter", vec![recv_greet]);
 
     let import = make_user_import(
@@ -845,9 +845,9 @@ fn test_actor_named_import_selective() {
 #[test]
 fn test_actor_multiple_receive_fns() {
     // Actor with multiple receive fns — all should be registered
-    let recv_get = make_receive_fn("get", &[("key", "String")], Some("String"));
-    let recv_set = make_receive_fn("set", &[("key", "String"), ("val", "String")], None);
-    let recv_del = make_receive_fn("delete", &[("key", "String")], Some("bool"));
+    let recv_get = make_receive_fn("get", &[("key", "string")], Some("string"));
+    let recv_set = make_receive_fn("set", &[("key", "string"), ("val", "string")], None);
+    let recv_del = make_receive_fn("delete", &[("key", "string")], Some("bool"));
     let actor = make_actor("Cache", vec![recv_get, recv_set, recv_del]);
 
     let import = make_user_import(

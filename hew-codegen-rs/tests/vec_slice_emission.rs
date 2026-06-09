@@ -176,6 +176,7 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
             blocks: blocks.clone(),
             decisions: vec![],
             checks: vec![],
+            cooperate_sites: vec![],
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),

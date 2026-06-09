@@ -1,8 +1,11 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: selfhost_lexer_v2.hew - Enhanced Hew lexer using string methods
+
 // selfhost_lexer_v2.hew - Enhanced Hew lexer using string methods
 // Uses: s.len(), s.char_at(), == operator, while, break, continue, var
 
 // Token type constants
-// 0 = EOF, 1 = Identifier, 2 = Integer, 3 = String
+// 0 = EOF, 1 = Identifier, 2 = Integer, 3 = string
 // 4 = Plus, 5 = Minus, 6 = Star, 7 = Slash
 // 8 = LeftParen, 9 = RightParen, 10 = LeftBrace, 11 = RightBrace
 // 12 = Semicolon, 13 = Comma, 14 = Equal, 15 = Colon
@@ -85,7 +88,7 @@ fn is_whitespace(ch: i32) -> i32 {
 }
 
 // --- Keyword matching using == operator ---
-fn classify_keyword_str(word: String) -> i32 {
+fn classify_keyword_str(word: string) -> i32 {
     if word == "fn" {
         30
     } else if word == "let" {
@@ -279,7 +282,7 @@ fn print_token_name(t: i32) -> i32 {
 // Returns the number of tokens found.
 // Prints each token as "TYPE value" on its own line.
 // Uses global-ish state via var for position tracking.
-fn lex(source: String) -> i32 {
+fn lex(source: string) -> i32 {
     var pos = 0;
     var token_count: i32 = 0;
     let len = source.len();
@@ -499,7 +502,7 @@ fn lex(source: String) -> i32 {
             token_count = token_count + 1;
             continue;
         }
-        // String literals (double-quoted)
+        // string literals (double-quoted)
         if ch == 34 {
             pos = pos + 1;
             var str_val = "";
@@ -902,8 +905,8 @@ fn main() {
     print(t1);
     println(" / 13");
 
-    // Test 2: String builtins (11 tests)
-    println("--- Test: String Builtins ---");
+    // Test 2: string builtins (11 tests)
+    println("--- Test: string Builtins ---");
     let t2 = test_string_builtins();
     print("Passed: ");
     print(t2);

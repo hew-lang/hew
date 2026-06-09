@@ -629,9 +629,17 @@ pub struct TypeParam {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssocTypeBinding {
+    pub name: String,
+    pub ty: Spanned<TypeExpr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitBound {
     pub name: String,
     pub type_args: Option<Vec<Spanned<TypeExpr>>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assoc_type_bindings: Vec<AssocTypeBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -929,6 +937,8 @@ pub enum TraitItem {
         name: String,
         bounds: Vec<TraitBound>,
         default: Option<Spanned<TypeExpr>>,
+        #[serde(default)]
+        span: Span,
     },
 }
 
@@ -1286,7 +1296,7 @@ mod tests {
                 },
                 WireFieldDecl {
                     name: "added".to_string(),
-                    ty: "String".to_string(),
+                    ty: "string".to_string(),
                     field_number: 2,
                     is_optional: true,
                     is_repeated: false,

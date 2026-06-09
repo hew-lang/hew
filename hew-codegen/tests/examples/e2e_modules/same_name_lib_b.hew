@@ -1,1 +1,0 @@
-pub fn greet() -> String { "hello from B" }

@@ -5,15 +5,15 @@
 // word-level utilities.  Importing `text_stats` does NOT
 // automatically import `text_stats::words`; callers must request
 // both explicitly when they want both.
-pub fn char_count(text: String) -> int {
+pub fn char_count(text: string) -> int {
     text.len()
 }
 
-pub fn is_empty(text: String) -> bool {
+pub fn is_empty(text: string) -> bool {
     text.len() == 0
 }
 
-pub fn truncate(text: String, max_len: int) -> String {
+pub fn truncate(text: string, max_len: int) -> string {
     if text.len() <= max_len {
         text
     } else {

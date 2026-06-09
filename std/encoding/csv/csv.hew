@@ -18,8 +18,8 @@
 
 /// A parsed CSV table with headers and data rows.
 type Table {
-    hdrs: Vec<String>;
-    data: Vec<Vec<String>>;
+    hdrs: Vec<string>;
+    data: Vec<Vec<string>>;
 }
 
 /// Methods available on a CSV `Table`.
@@ -31,13 +31,13 @@ trait TableMethods {
     fn cols(tbl: Table) -> int;
 
     /// Return the header name for the given column index.
-    fn header(tbl: Table, col: int) -> String;
+    fn header(tbl: Table, col: int) -> string;
 
     /// Return the cell value at the given row and column index.
-    fn get(tbl: Table, row: int, col: int) -> String;
+    fn get(tbl: Table, row: int, col: int) -> string;
 
     /// Return the cell value at the given row for the named column.
-    fn get_by_name(tbl: Table, row: int, col_name: String) -> String;
+    fn get_by_name(tbl: Table, row: int, col_name: string) -> string;
 
     /// No-op for compatibility (struct tables don't need manual freeing).
     fn free(tbl: Table);
@@ -53,14 +53,14 @@ impl TableMethods for Table {
         tbl.hdrs.len()
     }
     /// Return the header name for the given column index.
-    fn header(tbl: Table, col: int) -> String {
+    fn header(tbl: Table, col: int) -> string {
         if col < 0 || col >= tbl.hdrs.len() {
             return "";
         }
         tbl.hdrs.get(col)
     }
     /// Return the cell value at the given row and column index.
-    fn get(tbl: Table, row: int, col: int) -> String {
+    fn get(tbl: Table, row: int, col: int) -> string {
         if row < 0 || row >= tbl.data.len() {
             return "";
         }
@@ -71,7 +71,7 @@ impl TableMethods for Table {
         r.get(col)
     }
     /// Return the cell value at the given row for the named column.
-    fn get_by_name(tbl: Table, row: int, col_name: String) -> String {
+    fn get_by_name(tbl: Table, row: int, col_name: string) -> string {
         let col = find_header(tbl.hdrs, col_name);
         if col < 0 {
             return "";
@@ -86,19 +86,19 @@ impl TableMethods for Table {
 
 // ── Module-level functions ────────────────────────────────────────────
 /// Parse CSV data from a string (first row is treated as headers).
-pub fn parse(data: String) -> Table {
+pub fn parse(data: string) -> Table {
     parse_impl(data, true)
 }
 
 /// Parse CSV data from a string without treating the first row as headers.
-pub fn parse_no_headers(data: String) -> Table {
+pub fn parse_no_headers(data: string) -> Table {
     parse_impl(data, false)
 }
 
 /// Parse CSV data from a file path (first row is treated as headers).
 ///
 /// Panics if the file cannot be read.
-pub fn parse_file(path: String) -> Table {
+pub fn parse_file(path: string) -> Table {
     let content = read_file(path);
     parse_impl(content, true)
 }
@@ -117,15 +117,15 @@ pub fn parse_file(path: String) -> Table {
 /// peeking at the character after '\r' inside the loop — both characters are
 /// consumed before advancing to the next field. Inside a quoted field
 /// (state 2), '\r\n' is preserved verbatim in the field value per RFC 4180 §2.6.
-fn parse_impl(data: String, has_headers: bool) -> Table {
-    let headers: Vec<String> = Vec::new();
-    let rows: Vec<Vec<String>> = Vec::new();
+fn parse_impl(data: string, has_headers: bool) -> Table {
+    let headers: Vec<string> = Vec::new();
+    let rows: Vec<Vec<string>> = Vec::new();
     let ilen = data.len();
     if ilen == 0 {
         return Table { hdrs: headers, data: rows };
     }
     // Current row accumulator and field accumulator.
-    let cur_row: Vec<String> = Vec::new();
+    let cur_row: Vec<string> = Vec::new();
     var cur_field = "";
     // state: 0=Outside, 1=InUnquoted, 2=InQuoted, 3=AfterClosingQuote
     var state = 0;
@@ -235,15 +235,15 @@ fn parse_impl(data: String, has_headers: bool) -> Table {
     Table { hdrs: headers, data: rows }
 }
 
-/// Copy a `Vec<String>` into a new `Vec<String>`.
+/// Copy a `Vec<string>` into a new `Vec<string>`.
 ///
 /// Returning the copy from a function rather than building it inline avoids a
-/// Hew runtime lifetime issue where a `Vec<String>` created inside a block
-/// scope and pushed into a `Vec<Vec<String>>` loses its contents when the
+/// Hew runtime lifetime issue where a `Vec<string>` created inside a block
+/// scope and pushed into a `Vec<Vec<string>>` loses its contents when the
 /// inner scope exits.  Returning from a function correctly extends the
 /// lifetime of the contained strings through the ownership transfer.
-fn copy_str_vec(src: Vec<String>) -> Vec<String> {
-    let dst: Vec<String> = Vec::new();
+fn copy_str_vec(src: Vec<string>) -> Vec<string> {
+    let dst: Vec<string> = Vec::new();
     for i in 0 .. src.len() {
         dst.push(src.get(i));
     }
@@ -251,7 +251,7 @@ fn copy_str_vec(src: Vec<String>) -> Vec<String> {
 }
 
 /// Find the column index for a header name. Returns -1 if not found.
-fn find_header(headers: Vec<String>, name: String) -> i32 { // INTERNAL-ABI: sentinel -1 for not-found; used only by get_by_name impl
+fn find_header(headers: Vec<string>, name: string) -> i32 { // INTERNAL-ABI: sentinel -1 for not-found; used only by get_by_name impl
     for i in 0 .. headers.len() {
         if headers.get(i) == name {
             return i as i32;

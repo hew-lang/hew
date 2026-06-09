@@ -6,8 +6,8 @@
 //! can consume without its own type inference.
 
 use hew_parser::ast::{
-    ActorDecl, Block, CallArg, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param, Program, Span,
-    Spanned, Stmt, TraitBound, TypeExpr,
+    ActorDecl, AssocTypeBinding, Block, CallArg, Expr, ExternBlock, ExternFnDecl, FnDecl, Item,
+    Param, Program, Span, Spanned, Stmt, TraitBound, TypeExpr,
 };
 use hew_types::builtin_names::{
     QUALIFIED_RECEIVER, QUALIFIED_SENDER, QUALIFIED_SINK, QUALIFIED_STREAM, RECEIVER, SENDER, SINK,
@@ -230,7 +230,7 @@ fn ty_has_ownership_sensitive_bindings(
         // but explicit here so the sweep is honest.
         Ty::String | Ty::Bytes | Ty::Task(_) => true,
         Ty::Named { name, args } => {
-            matches!(name.as_str(), "String" | "string" | "bytes")
+            matches!(name.as_str(), "string" | "bytes")
                 || registry.is_drop_type(name)
                 || registry.is_handle_type(name)
                 || registry.qualify_handle_type(name).is_some()
@@ -269,6 +269,11 @@ fn ty_has_ownership_sensitive_bindings(
         Ty::Closure { captures, .. } => captures
             .iter()
             .any(|capture| ty_has_ownership_sensitive_bindings(capture, registry)),
+        // AssocType { base, .. }: projection carriers should be collapsed to
+        // their concrete impl binding before serialize/enrich runs. Conservatively
+        // descend into `base` so a partially-collapsed projection still reports
+        // its carrier's ownership sensitivity.
+        Ty::AssocType { base, .. } => ty_has_ownership_sensitive_bindings(base, registry),
     }
 }
 
@@ -300,13 +305,13 @@ fn convert_callable_type(
 
 /// Extract a short element-type name from a `Ty` for stream method dispatch.
 ///
-/// Returns `"bytes"` for `Ty::Bytes`, `"String"` for `Ty::String`, or the
+/// Returns `"bytes"` for `Ty::Bytes`, `"string"` for `Ty::String`, or the
 /// `name` for `Ty::Named`.  Used by the enricher to select the correct
 /// runtime C symbol (e.g. `hew_stream_next` vs `hew_stream_next_bytes`).
 fn ty_element_name(ty: &Ty) -> Option<&str> {
     match ty {
         Ty::Bytes => Some("bytes"),
-        Ty::String => Some("String"),
+        Ty::String => Some("string"),
         Ty::Named { name, .. } => Some(name),
         _ => None,
     }
@@ -551,6 +556,23 @@ pub(crate) fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConv
                                     .collect::<Result<Vec<_>, _>>()?,
                             )
                         },
+                        assoc_type_bindings: b
+                            .assoc_bindings
+                            .iter()
+                            .enumerate()
+                            .map(|(binding_index, (name, ty))| {
+                                Ok(AssocTypeBinding {
+                                    name: name.clone(),
+                                    ty: require_converted(
+                                        ty,
+                                        format!(
+                                            "trait object bound {bound_index} (`{}`) associated type binding {binding_index} (`{name}`)",
+                                            b.trait_name
+                                        ),
+                                    )?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, TypeExprConversionError>>()?,
                     })
                 })
                 .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
@@ -3928,30 +3950,8 @@ mod tests {
     // User module call rewriting tests
     // -----------------------------------------------------------------------
 
-    /// Helper: create a `TypeCheckOutput` with `user_modules` set.
-    use std::collections::{HashMap, HashSet};
-
     fn empty_tco() -> TypeCheckOutput {
-        TypeCheckOutput {
-            expr_types: HashMap::new(),
-            lowering_facts: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            errors: vec![],
-            warnings: vec![],
-            type_defs: HashMap::new(),
-            fn_sigs: HashMap::new(),
-            handle_bearing_structs: std::collections::HashSet::new(),
-            cycle_capable_actors: HashSet::new(),
-            user_modules: HashSet::new(),
-            call_type_args: HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_send_aliasing: HashMap::new(),
-            actor_max_heap: HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            method_call_consumes_receiver: HashSet::new(),
-            method_call_rewrites: HashMap::new(),
-        }
+        TypeCheckOutput::default()
     }
 
     fn make_tco_with_user_modules(modules: Vec<&str>) -> TypeCheckOutput {
@@ -5355,6 +5355,7 @@ mod tests {
             traits: vec![TraitObjectBound {
                 trait_name: "Display".into(),
                 args: vec![],
+                assoc_bindings: vec![],
             }],
         };
         let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
@@ -5375,6 +5376,7 @@ mod tests {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
                 args: vec![Ty::I32],
+                assoc_bindings: vec![],
             }],
         };
         let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
@@ -5851,6 +5853,7 @@ mod tests {
                             },
                             0..0,
                         )),
+                        span: 0..0,
                     },
                 ],
                 doc_comment: None,
@@ -7495,6 +7498,7 @@ mod tests {
                 },
                 0..0,
             )]),
+            assoc_type_bindings: vec![],
         }]);
         normalize_type_expr(&mut te, &registry);
         if let TypeExpr::TraitObject(bounds) = &te {

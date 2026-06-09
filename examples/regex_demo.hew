@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: Regex Demo — showcases Hew's stdlib regex support.
+
 // Regex Demo — showcases Hew's stdlib regex support.
 //
 // Features demonstrated:

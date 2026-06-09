@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Backpressure test - bounded mailbox demo
+
 // Backpressure test - bounded mailbox demo
 // Demonstrates that actors with bounded mailboxes apply backpressure
 actor SlowWorker {

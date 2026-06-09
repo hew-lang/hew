@@ -1,7 +1,10 @@
-// String operations test
+//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Description: string operations test
+
+// string operations test
 // Exercises string methods and operators
 fn main() {
-    println("=== String Basics ===");
+    println("=== string Basics ===");
     let s = "hello world";
     let len = s.len();
     println(len); // 11

@@ -28,10 +28,10 @@ are wire-rejected or handled as composites.
 
 ## Stage 9 API
 
-Stage 9 (Rust-side MLIR emitter) should call
+Stage 9 (`hew-codegen-rs` Rust/Inkwell emitter) should call
 `TypeDescriptorWireExt::wire_kind()` for every wire field instead of ad-hoc
 type-name string matching. See `hew-wirecodec::wire_boundary`.
 
 ## Source of truth
 
-`.tmp/plans/lane-v05-type-wire-native-values.md`
+`hew-types/src/type_descriptor.rs` and `hew-wirecodec::wire_boundary`

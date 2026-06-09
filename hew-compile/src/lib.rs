@@ -2340,9 +2340,13 @@ mod tests {
             cycle_capable_actors: std::collections::HashSet::new(),
             user_modules: std::collections::HashSet::new(),
             call_type_args: std::collections::HashMap::new(),
+            record_init_type_args: std::collections::HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: std::collections::HashMap::new(),
             actor_max_heap: std::collections::HashMap::new(),
+            supervisor_child_slots: std::collections::HashMap::new(),
+            dyn_trait_coercions: std::collections::HashMap::new(),
+            dyn_trait_method_calls: std::collections::HashMap::new(),
         };
 
         let err = enrich_program_ast(
@@ -2453,7 +2457,7 @@ mod tests {
         write_source(
             dir.path(),
             "helper.hew",
-            "fn helper() -> String { let value = \"ok\"; value }\n",
+            "fn helper() -> string { let value = \"ok\"; value }\n",
         );
 
         let source = fs::read_to_string(&root_input).expect("read root source");

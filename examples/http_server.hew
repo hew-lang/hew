@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: HTTP static file server in Hew
+
 // HTTP static file server in Hew
 //
 // Accepts connections in main, dispatches each request to a Handler
@@ -14,8 +17,8 @@ import std::os;
 import std::net::mime;
 
 actor Handler {
-    let root: String;
-    receive fn serve(req: Request, request_path: String) {
+    let root: string;
+    receive fn serve(req: Request, request_path: string) {
         if request_path.contains("..") {
             req.respond_text(403, "403 Forbidden");
         } else {
@@ -43,8 +46,8 @@ actor Handler {
 }
 
 fn main() {
-    var port: String = "8080";
-    var root: String = ".";
+    var port: string = "8080";
+    var root: string = ".";
     let argc = os.args_count();
     if argc > 1 {
         port = os.args(1);

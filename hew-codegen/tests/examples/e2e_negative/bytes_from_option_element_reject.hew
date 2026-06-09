@@ -1,4 +1,0 @@
-// Negative test: bytes::from must reject elements that do not coerce to byte.
-fn main() {
-    bytes::from([Some(1)]);
-}

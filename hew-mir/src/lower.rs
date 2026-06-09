@@ -164,6 +164,12 @@ fn check_function(
 }
 
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "two-phase orchestration: per-fn lowering + per-monomorphisation lowering live \
+              in the same function so the producers share record_field_orders, type_classes, \
+              and module_fn_names construction"
+)]
 pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut thir = Vec::new();
     let mut raw_mir = Vec::new();
@@ -181,57 +187,129 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
     let mut record_layouts: Vec<crate::model::RecordLayout> = Vec::new();
     for item in &module.items {
-        if let HirItem::Record(decl) = item {
-            let fields: Vec<(String, ResolvedTy)> = decl
-                .fields
-                .iter()
-                .map(|f| (f.name.clone(), f.ty.clone()))
-                .collect();
-            // Named-form records have a non-empty `fields` list; tuple-form
-            // records have an empty list (their positional layout lives on
-            // the parser's `RecordKind::Tuple` discriminator and is not
-            // promoted into HIR fields). Tuple records construct via
-            // `Expr::Call`, never via `StructInit`, so they need no layout
-            // descriptor in this slice — codegen will fail-closed on any
-            // `ResolvedTy::Named` reach-through that names a tuple record.
-            if !fields.is_empty() {
-                record_layouts.push(crate::model::RecordLayout {
-                    name: decl.name.clone(),
-                    field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
-                });
+        match item {
+            HirItem::Record(decl) => {
+                // Generic record decls (`record Box<T> { ... }`) emit zero
+                // bare-name layouts: their per-instantiation layouts come
+                // from `module.record_layouts` under mangled names. Only
+                // monomorphic records register a bare-name field order.
+                if !decl.type_params.is_empty() {
+                    continue;
+                }
+                let fields: Vec<(String, ResolvedTy)> = decl
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.clone()))
+                    .collect();
+                // Named-form records have a non-empty `fields` list;
+                // tuple-form records have an empty list (their positional
+                // layout lives on the parser's `RecordKind::Tuple`
+                // discriminator and is not promoted into HIR fields). Tuple
+                // records construct via `Expr::Call`, never via
+                // `StructInit`, so they need no layout descriptor in this
+                // slice — codegen will fail-closed on any
+                // `ResolvedTy::Named` reach-through that names a tuple
+                // record.
+                if !fields.is_empty() {
+                    record_layouts.push(crate::model::RecordLayout {
+                        name: decl.name.clone(),
+                        field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                    });
+                }
+                record_field_orders.insert(decl.name.clone(), fields);
             }
-            record_field_orders.insert(decl.name.clone(), fields);
+            HirItem::TypeDecl(decl) => {
+                // `pub type Foo { ... }` and `pub type Foo<T> { ... }` are
+                // structurally the named-record substrate that
+                // `Expr::StructInit` targets. Generic `pub type Foo<T>`
+                // declarations emit zero bare-name layouts (same rule as
+                // generic records); their per-instantiation layouts come
+                // from `module.record_layouts` under mangled names.
+                if !decl.type_params.is_empty() {
+                    continue;
+                }
+                let fields: Vec<(String, ResolvedTy)> = decl
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.clone()))
+                    .collect();
+                if !fields.is_empty() {
+                    record_layouts.push(crate::model::RecordLayout {
+                        name: decl.name.clone(),
+                        field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                    });
+                    record_field_orders.insert(decl.name.clone(), fields);
+                }
+            }
+            _ => {}
         }
     }
 
-    // Collect the names of every user-defined function in the module.
-    // This set is threaded into each function's Builder so the `Call`
-    // lowering arm can distinguish user-fn callees (→ `Instr::CallDirect`)
-    // from runtime-ABI callees (→ `Instr::CallRuntimeAbi`) and from
-    // indirect/unknown callees (→ `CutoverUnsupported`). Name-string
-    // matching is the right discriminator here because the HIR bridge
-    // does not yet emit `ResolvedRef::Item` for function callees (see
-    // the SHIM comment at `lower_value` HirExprKind::Call).
-    let module_fn_names: HashSet<String> = module
-        .items
-        .iter()
-        .filter_map(|item| {
-            if let HirItem::Function(f) = item {
-                Some(f.name.clone())
-            } else {
-                None
+    // Emit one MIR `RecordLayout` per HIR `record_layouts` entry under the
+    // mangled symbol name. The HIR registry has already substituted the
+    // type-parameter symbols with concrete `ResolvedTy`s, so the MIR layer
+    // can read the field list verbatim. Insertion-ordered to keep codegen
+    // deterministic; per-instantiation field_orders are keyed by the
+    // mangled name so `StructInit` / `FieldAccess` lowering can find them
+    // by mangling `(record_name, type_args)` from the expression's type.
+    for layout in &module.record_layouts {
+        let fields: Vec<(String, ResolvedTy)> = layout.fields.clone();
+        record_layouts.push(crate::model::RecordLayout {
+            name: layout.mangled_name.clone(),
+            field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+        });
+        record_field_orders.insert(layout.mangled_name.clone(), fields);
+    }
+
+    // Collect the names every user-defined function will use as its
+    // emitted MIR symbol. For non-generic functions this is the
+    // source-declared name. For generic functions this is the set of
+    // mangled per-monomorphisation names; the unspecialised generic
+    // body is not emitted (it would carry symbolic type-parameter
+    // names through to LLVM and could not be linked).
+    //
+    // The Call lowering arm dispatches on this set: a callee name in
+    // this set → `Instr::CallDirect`; otherwise the runtime-ABI/indirect
+    // fail-closed paths apply.
+    let mut module_fn_names: HashSet<String> = HashSet::new();
+    for item in &module.items {
+        if let HirItem::Function(f) = item {
+            if f.type_params.is_empty() {
+                module_fn_names.insert(f.name.clone());
             }
-        })
-        .collect();
+        }
+    }
+    for mono in &module.monomorphisations {
+        module_fn_names.insert(mono.mangled_name.clone());
+    }
+
+    // Build origin lookup: ItemId → &HirFn. Each monomorphisation's
+    // `key.origin` resolves to the generic origin fn whose body is
+    // lowered under per-monomorphisation substitution.
+    let mut origin_fns: HashMap<hew_hir::ItemId, &HirFn> = HashMap::new();
+    for item in &module.items {
+        if let HirItem::Function(f) = item {
+            origin_fns.insert(f.id, f);
+        }
+    }
 
     for item in &module.items {
         match item {
             HirItem::Function(func) => {
+                // Skip unspecialised generic origins. Their bodies are
+                // emitted via the monomorphisations loop below, once
+                // per concrete instantiation.
+                if !func.type_params.is_empty() {
+                    continue;
+                }
                 let lowered = lower_function(
                     func,
+                    func.name.clone(),
+                    HashMap::new(),
                     &module.type_classes,
                     &record_field_orders,
                     &module_fn_names,
+                    &module.call_site_type_args,
                 );
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
@@ -251,6 +329,52 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 // M6 slice; supervisor lowering is S-C (separate slice).
             }
         }
+    }
+
+    // Emit one MIR function per monomorphisation. Each instantiation
+    // re-lowers the generic origin's body with a substitution map
+    // mapping origin type-parameter symbols to the concrete arg types
+    // declared by the MonoKey. The emitted function name is the
+    // mangled symbol the registry assigned.
+    for mono in &module.monomorphisations {
+        let Some(origin) = origin_fns.get(&mono.key.origin).copied() else {
+            // Origin fn missing from module.items. The registry was
+            // populated against a fn that does not appear here —
+            // fail-closed by emitting a diagnostic and skipping.
+            diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: format!(
+                        "monomorphisation `{}` references unknown origin fn id {:?}",
+                        mono.mangled_name, mono.key.origin
+                    ),
+                },
+                note: "the HIR monomorphisation registry referenced an origin \
+                       ItemId not present in module.items"
+                    .to_string(),
+            });
+            continue;
+        };
+        // Substitution map: type-parameter name → concrete ResolvedTy.
+        let subst: HashMap<String, ResolvedTy> = origin
+            .type_params
+            .iter()
+            .cloned()
+            .zip(mono.key.type_args.iter().cloned())
+            .collect();
+        let lowered = lower_function(
+            origin,
+            mono.mangled_name.clone(),
+            subst,
+            &module.type_classes,
+            &record_field_orders,
+            &module_fn_names,
+            &module.call_site_type_args,
+        );
+        thir.push(lowered.thir);
+        raw_mir.push(lowered.raw);
+        checked_mir.push(lowered.checked);
+        elaborated_mir.push(lowered.elaborated);
+        diagnostics.extend(lowered.diagnostics);
     }
 
     IrPipeline {
@@ -274,14 +398,19 @@ struct LoweredFunction {
 
 fn lower_function(
     func: &HirFn,
+    emit_name: String,
+    subst: HashMap<String, ResolvedTy>,
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     module_fn_names: &HashSet<String>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
 ) -> LoweredFunction {
     let mut builder = Builder {
         type_classes: type_classes.clone(),
         record_field_orders: record_field_orders.clone(),
         module_fn_names: module_fn_names.clone(),
+        subst,
+        call_site_type_args: call_site_type_args.clone(),
         ..Builder::default()
     };
     // Allocate parameter locals BEFORE lowering the function body so
@@ -295,6 +424,9 @@ fn lower_function(
     // argument into the corresponding alloca slot before the first instruction.
     builder.lower_params(func);
     builder.function_body(func);
+
+    // Effective return type after type-parameter substitution.
+    let return_ty = builder.subst_ty(&func.return_ty);
 
     // Drain the in-flight current block into a sealed `BasicBlock` with
     // a `Terminator::Return`. Slice 1's flat lowering always produces a
@@ -313,8 +445,8 @@ fn lower_function(
         .flat_map(|b| b.statements.iter().cloned())
         .collect();
     let thir = ThirFunction {
-        name: func.name.clone(),
-        return_ty: func.return_ty.clone(),
+        name: emit_name.clone(),
+        return_ty: return_ty.clone(),
         statements: thir_statements,
     };
     // `CheckedMirFunction` mirrors `RawMirFunction.blocks` directly
@@ -322,9 +454,13 @@ fn lower_function(
     // elaborator + check_function consume the block vec; legacy
     // single-block tests still see `blocks[0]` as the entry block.
     let raw = RawMirFunction {
-        name: func.name.clone(),
-        return_ty: func.return_ty.clone(),
-        params: func.params.iter().map(|p| p.ty.clone()).collect(),
+        name: emit_name.clone(),
+        return_ty: return_ty.clone(),
+        params: func
+            .params
+            .iter()
+            .map(|p| builder.subst_ty(&p.ty))
+            .collect(),
         locals: builder.locals.clone(),
         blocks,
         decisions: builder.decisions.clone(),
@@ -346,12 +482,18 @@ fn lower_function(
 
     collect_unknown_type_diagnostics(func, &builder, &mut diagnostics);
 
+    // Compute cooperate-check sites from the CFG. Empty for leaf functions
+    // (< 10 MIR statements, no calls, no loops). Codegen reads
+    // `cooperate_sites` to inject `call @hew_actor_cooperate()`.
+    let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+
     let checked = CheckedMirFunction {
-        name: func.name.clone(),
-        return_ty: func.return_ty.clone(),
+        name: emit_name,
+        return_ty: return_ty.clone(),
         blocks: raw.blocks.clone(),
         decisions: builder.decisions.clone(),
         checks: dataflow_result.checks.clone(),
+        cooperate_sites,
     };
     // Drop-elaboration pass. Consumes the CheckedMirFunction we just
     // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
@@ -597,9 +739,33 @@ struct Builder {
     /// references (calling a function declared later in the file) are
     /// handled correctly.
     module_fn_names: HashSet<String>,
+    /// Substitution map from origin-fn type-parameter symbols to
+    /// concrete `ResolvedTy`s, populated only when this Builder is
+    /// lowering a generic function under a specific monomorphisation.
+    /// Empty for non-generic fn bodies.
+    ///
+    /// Every type observed during body lowering is substituted via
+    /// `subst_ty` before reaching the backend Instr stream so symbolic
+    /// type-parameter `Named` types never escape into MIR/codegen.
+    subst: HashMap<String, ResolvedTy>,
+    /// Per-call-site `Vec<ResolvedTy>` recorded by HIR lowering for
+    /// generic top-level user-fn callees. Cloned from
+    /// `HirModule.call_site_type_args`. The Call lowering arm
+    /// substitutes these via `subst_ty` and dispatches to the
+    /// per-monomorphisation mangled symbol.
+    call_site_type_args: HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
 }
 
 impl Builder {
+    /// Apply the per-monomorphisation substitution map to a type.
+    /// Returns the input unchanged when `subst` is empty (the
+    /// non-generic-function case).
+    fn subst_ty(&self, ty: &ResolvedTy) -> ResolvedTy {
+        if self.subst.is_empty() {
+            return ty.clone();
+        }
+        hew_hir::lower::substitute_ty(ty, &self.subst)
+    }
     /// Allocate one `Place::Local` per function parameter and register each
     /// in `binding_locals` so that `BindingRef` expressions in the function
     /// body resolve to a real slot.
@@ -615,13 +781,25 @@ impl Builder {
         }
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "alloc_local takes ty by value historically; substitution \
+                  applies via subst_ty(&ty) without forcing every call site to \
+                  introduce a borrow"
+    )]
     fn alloc_local(&mut self, ty: ResolvedTy) -> Place {
         // u32::MAX locals per function is well beyond any realistic Hew
         // function size; the cast is bounded by `locals.len()` growing one
         // entry at a time within a single function-body walk.
         let id = u32::try_from(self.locals.len())
             .expect("function exceeds u32::MAX locals — impossible in Hew");
-        self.locals.push(ty);
+        // Substitute origin type-parameter symbols via the
+        // per-monomorphisation substitution map before recording the
+        // local's `ResolvedTy`. A no-op when `subst` is empty (non-
+        // generic origin functions take this path with an identity
+        // map).
+        let resolved = self.subst_ty(&ty);
+        self.locals.push(resolved);
         Place::Local(id)
     }
 
@@ -725,7 +903,7 @@ impl Builder {
             self.mark_returned_binding_moved(tail);
             self.statements.push(MirStatement::Return {
                 site: Some(tail.site),
-                ty: tail.ty.clone(),
+                ty: self.subst_ty(&tail.ty),
             });
             // Backend stream: write the tail's value into the return slot.
             // If `lower_value` declined to produce a Place (an unsupported
@@ -773,15 +951,16 @@ impl Builder {
                     self.pending_lambda_actor_handle = None;
                 }
                 self.decide(value);
+                let binding_ty = self.subst_ty(&binding.ty);
                 self.statements.push(MirStatement::Bind {
                     binding: binding.id,
                     name: binding.name.clone(),
                     site: value.site,
-                    ty: binding.ty.clone(),
+                    ty: binding_ty.clone(),
                 });
-                if ValueClass::of_ty(&binding.ty, &self.type_classes) != ValueClass::BitCopy {
+                if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
                     self.owned_locals
-                        .push((binding.id, binding.name.clone(), binding.ty.clone()));
+                        .push((binding.id, binding.name.clone(), binding_ty.clone()));
                 }
                 // Backend stream: the binding owns a fresh local that the
                 // initialiser's value is moved into. The pre-allocated
@@ -830,7 +1009,7 @@ impl Builder {
                 let _ = self.lower_value(expr);
                 self.statements.push(MirStatement::Evaluate {
                     site: expr.site,
-                    ty: expr.ty.clone(),
+                    ty: self.subst_ty(&expr.ty),
                 });
             }
             HirStmtKind::Return(Some(expr)) => {
@@ -839,7 +1018,7 @@ impl Builder {
                 self.mark_returned_binding_moved(expr);
                 self.statements.push(MirStatement::Return {
                     site: Some(expr.site),
-                    ty: expr.ty.clone(),
+                    ty: self.subst_ty(&expr.ty),
                 });
                 if let Some(src) = value_place {
                     self.instructions.push(Instr::Move {
@@ -874,15 +1053,16 @@ impl Builder {
                 name,
                 resolved: ResolvedRef::Binding(id),
             } => {
+                let use_ty = self.subst_ty(&expr.ty);
                 self.statements.push(MirStatement::Use {
                     binding: *id,
                     name: name.clone(),
                     site: expr.site,
-                    ty: expr.ty.clone(),
+                    ty: use_ty.clone(),
                     intent: expr.intent,
                 });
                 if expr.intent == IntentKind::Consume
-                    && ValueClass::of_ty(&expr.ty, &self.type_classes) != ValueClass::BitCopy
+                    && ValueClass::of_ty(&use_ty, &self.type_classes) != ValueClass::BitCopy
                 {
                     self.mark_binding_moved(*id);
                 }
@@ -957,6 +1137,32 @@ impl Builder {
                     if let Some(c_sym) = crate::runtime_symbols::user_name_to_c_symbol(name) {
                         return self.lower_runtime_call(c_sym, args, expr.site);
                     }
+                    // Generic top-level user fn: HIR recorded
+                    // `call_site_type_args[expr.site]` with the type
+                    // arguments observed at this call site (possibly
+                    // including the enclosing fn's type-parameter
+                    // symbols when this call is inside a generic
+                    // body). Substitute via this Builder's monomorph
+                    // substitution map and dispatch to the
+                    // per-instantiation mangled symbol.
+                    if let Some(type_args) = self.call_site_type_args.get(&expr.site).cloned() {
+                        let substituted: Vec<ResolvedTy> =
+                            type_args.iter().map(|t| self.subst_ty(t)).collect();
+                        let mangled = hew_hir::monomorph::mangle(name, &substituted);
+                        // If the mangled symbol is in `module_fn_names`,
+                        // a per-instantiation MIR function was emitted
+                        // by `lower_hir_module`; dispatch to it
+                        // directly. Otherwise fall through to the
+                        // unmangled lookup — the unspecialised origin
+                        // is being lowered in a context where no
+                        // monomorphisation was registered (e.g. when
+                        // tests directly invoke `lower_hir_module`
+                        // with a HirModule that bypassed the producer).
+                        if self.module_fn_names.contains(&mangled) {
+                            let ret_ty = self.subst_ty(&expr.ty);
+                            return self.lower_direct_call(&mangled, args, &ret_ty, expr.site);
+                        }
+                    }
                     // User-defined function in the same module: emit CallDirect.
                     // The callee symbol is the bare function name as declared;
                     // codegen resolves it against the module's fn_symbols table.
@@ -1010,33 +1216,45 @@ impl Builder {
             HirExprKind::StructInit {
                 name, fields, base, ..
             } => {
+                // Resolve the record-key for the field-order table. For a
+                // generic record instantiation the HIR-recorded `expr.ty`
+                // is `Named { name, args: <concrete> }` and the layout was
+                // registered under the mangled name; for a monomorphic
+                // record `args` is empty and the bare name is the key.
+                let record_key = match &expr.ty {
+                    ResolvedTy::Named { name: tname, args } if !args.is_empty() => {
+                        hew_hir::mangle(tname, args)
+                    }
+                    _ => name.clone(),
+                };
                 // Look up the declaration-order field list for this record.
                 // If it's missing, the checker allowed a type that was never
                 // registered — fail closed rather than silently producing
                 // malformed MIR.
-                let field_order = if let Some(order) = self.record_field_orders.get(name.as_str()) {
-                    order.clone()
-                } else {
-                    // Walk sub-expressions for checker-stream coverage.
-                    for (_, fexpr) in fields {
-                        let _ = self.lower_value(fexpr);
-                    }
-                    if let Some(base_expr) = base {
-                        let _ = self.lower_value(base_expr);
-                    }
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::CutoverUnsupported {
-                            construct: format!(
-                                "record type `{name}` (not registered in field-order table)"
-                            ),
-                            site: expr.site,
-                        },
-                        note: "record type was not found in the field-order table; \
+                let field_order =
+                    if let Some(order) = self.record_field_orders.get(record_key.as_str()) {
+                        order.clone()
+                    } else {
+                        // Walk sub-expressions for checker-stream coverage.
+                        for (_, fexpr) in fields {
+                            let _ = self.lower_value(fexpr);
+                        }
+                        if let Some(base_expr) = base {
+                            let _ = self.lower_value(base_expr);
+                        }
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: format!(
+                                    "record type `{name}` (not registered in field-order table)"
+                                ),
+                                site: expr.site,
+                            },
+                            note: "record type was not found in the field-order table; \
                                this is a checker bug (the type must be declared before use)"
-                            .to_string(),
-                    });
-                    return None;
-                };
+                                .to_string(),
+                        });
+                        return None;
+                    };
 
                 // Lower each explicit field value to a Place, keyed by name.
                 let mut explicit: HashMap<String, Place> = HashMap::new();
@@ -1101,9 +1319,15 @@ impl Builder {
                 Some(dest)
             }
             HirExprKind::FieldAccess { object, field } => {
-                // Resolve the record type name from the object's type so we can
-                // look up the field offset in the field-order table.
+                // Resolve the record type key from the object's type so we
+                // can look up the field offset in the field-order table.
+                // For a generic record instantiation (`b: Box<int>` reading
+                // `b.value`) the key is the mangled name `Box$$i64`; for a
+                // monomorphic record the key is the bare name.
                 let type_name = match &object.ty {
+                    ResolvedTy::Named { name, args } if !args.is_empty() => {
+                        hew_hir::mangle(name, args)
+                    }
                     ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
                         let _ = self.lower_value(object);
@@ -1374,6 +1598,64 @@ impl Builder {
                 self.instructions
                     .push(Instr::IdentityCompare { dest, lhs, rhs });
                 Some(dest)
+            }
+            HirExprKind::CoerceToDynTrait {
+                value,
+                trait_name,
+                concrete_type,
+                method_table,
+                vtable_entries,
+            } => {
+                // Materialise the concrete value into a Place, then emit
+                // `Instr::CoerceToDynTrait` to construct the fat pointer.
+                // The dest is typed `ResolvedTy::TraitObject` (inherited
+                // from `expr.ty`), so codegen can pick the 2-word layout.
+                let value_place = self.lower_value(value)?;
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions.push(Instr::CoerceToDynTrait {
+                    value: value_place,
+                    dest,
+                    trait_name: trait_name.clone(),
+                    concrete_type: concrete_type.clone(),
+                    method_table: method_table.clone(),
+                    vtable_entries: vtable_entries.clone(),
+                });
+                Some(dest)
+            }
+            HirExprKind::CallDynMethod {
+                receiver,
+                trait_name,
+                method_name,
+                slot,
+                args,
+                ret_ty,
+            } => {
+                // Lower the receiver (a `dyn Trait` fat pointer) and the
+                // ordinary args. `Instr::CallTraitMethod` GEPs into the
+                // vtable at `slot`, loads the function pointer, and calls
+                // it with `fat_pointer.data` as the implicit receiver —
+                // codegen materialises the data-ptr argument from the
+                // fat pointer, so the args list here is the source-level
+                // args without the synthetic receiver entry.
+                let fat_pointer = self.lower_value(receiver)?;
+                let mut lowered_args: Vec<Place> = Vec::with_capacity(args.len());
+                for arg in args {
+                    lowered_args.push(self.lower_value(arg)?);
+                }
+                let dest = if matches!(ret_ty, ResolvedTy::Unit) {
+                    None
+                } else {
+                    Some(self.alloc_local(ret_ty.clone()))
+                };
+                self.instructions.push(Instr::CallTraitMethod {
+                    fat_pointer,
+                    dest,
+                    trait_name: trait_name.clone(),
+                    method_name: method_name.clone(),
+                    slot: *slot,
+                    args: lowered_args,
+                });
+                dest
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
@@ -3026,7 +3308,7 @@ impl Builder {
         };
         self.decisions.push(DecisionFact {
             site: expr.site,
-            ty: expr.ty.clone(),
+            ty: self.subst_ty(&expr.ty),
             value_class: expr.value_class,
             intent: expr.intent,
             strategy,
@@ -3975,6 +4257,20 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             }
             places
         }
+        Instr::CoerceToDynTrait { value, dest, .. } => vec![*value, *dest],
+        Instr::CallTraitMethod {
+            fat_pointer,
+            dest,
+            args,
+            ..
+        } => {
+            let mut places: Vec<Place> = vec![*fat_pointer];
+            places.extend(args.iter().copied());
+            if let Some(d) = dest {
+                places.push(*d);
+            }
+            places
+        }
     }
 }
 
@@ -3998,13 +4294,31 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
 /// boundary-fail-closed (kind is selected by Place; mismatching
 /// Place + `DropKind` is structurally impossible because this function
 /// is the single source of truth).
+/// Test-only re-export: forwards to the private `drop_kind_for`.
+/// Lives in this module so the function-private invariants stay
+/// non-public while still being exercisable from the integration
+/// test that pins the `dyn Trait` → `DropKind::TraitObject` contract.
+#[doc(hidden)]
 #[must_use]
-fn drop_kind_for(place: Place, _ty: &ResolvedTy) -> DropKind {
+pub fn drop_kind_for_test_only(place: Place, ty: &ResolvedTy) -> DropKind {
+    drop_kind_for(place, ty)
+}
+
+#[must_use]
+fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
     match place {
         Place::DuplexHandle(_) => DropKind::DuplexClose,
         Place::LambdaActorHandle(_) => DropKind::LambdaActorRelease,
         Place::SendHalf(_) => DropKind::DuplexHalfClose(crate::model::Direction::Send),
         Place::RecvHalf(_) => DropKind::DuplexHalfClose(crate::model::Direction::Recv),
+        // `dyn Trait` locals carry their drop ritual in the vtable's slot 0
+        // (`drop_in_place`); codegen emits the GEP-to-slot-0 dispatch.
+        // Discriminated by `ResolvedTy::TraitObject` rather than a Place
+        // variant because trait objects share `Place::Local` storage with
+        // every other by-value owned binding.
+        Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::TraitObject { .. }) => {
+            DropKind::TraitObject
+        }
         Place::Local(_) | Place::ReturnSlot => DropKind::Resource,
     }
 }
@@ -4704,7 +5018,7 @@ mod slice3_invariants {
                     }
                     DropKind::DuplexHalfClose(Direction::Send) => s_count += 1,
                     DropKind::DuplexHalfClose(Direction::Recv) => r_count += 1,
-                    DropKind::Resource | DropKind::LambdaActorRelease => {}
+                    DropKind::Resource | DropKind::LambdaActorRelease | DropKind::TraitObject => {}
                 }
             }
             assert!(

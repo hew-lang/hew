@@ -45,7 +45,7 @@ fn pq_is_empty(pq: Vec<int>) -> int {
     }
 }
 
-fn run_test(name: String, passed: int) -> int {
+fn run_test(name: string, passed: int) -> int {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {

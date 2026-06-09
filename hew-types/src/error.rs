@@ -398,6 +398,8 @@ pub enum TypeErrorKind {
     OrphanImpl,
     /// Feature is not available on the selected compilation target
     PlatformLimitation,
+    /// `#[on(upgrade)]` is parsed but rejected until the runtime invokes it.
+    OnUpgradeNotYetWired,
     /// Machine state × event exhaustiveness violation
     MachineExhaustivenessError,
     /// Import cannot be resolved: module not found or failed to parse
@@ -433,6 +435,44 @@ pub enum TypeErrorKind {
     UnsafeOperationRequiresBlock {
         /// Short identifier for the unsafe operation, e.g. `"raw pointer dereference"`.
         operation: String,
+    },
+    /// A trait is used in `dyn` position but violates the v0.5 object-safety
+    /// predicate.  Object safety in v0.5 rejects traits with generic methods
+    /// (`fn foo<U>(self, u: U)`) and traits with `Self`-returning methods
+    /// (`fn clone(self) -> Self`) at every `T → dyn Trait` coercion site.
+    ///
+    /// Envelope code: `E_TRAIT_NOT_OBJECT_SAFE`.
+    TraitNotObjectSafe {
+        /// Trait whose dyn-coercion was rejected.
+        trait_name: String,
+        /// Method name that broke object safety.
+        method_name: String,
+        /// Short reason: `"generic method"` or `"Self-returning method"`.
+        reason: &'static str,
+    },
+    /// A trait object omits required associated-type bindings.
+    ///
+    /// Rust-aligned object safety requires every associated type declared by a
+    /// trait to be fully projected in `dyn Trait` position, e.g.
+    /// `dyn Iterator<Item = int>` instead of bare `dyn Iterator`.
+    ///
+    /// Envelope code: `E_MISSING_ASSOC_TYPE_BINDING`.
+    MissingAssocTypeBinding {
+        /// Trait whose dyn-object projection was incomplete.
+        trait_name: String,
+        /// Associated type names missing from the projection.
+        missing: Vec<String>,
+    },
+    /// A dyn associated-type binding could not be projected from the concrete impl.
+    ///
+    /// Envelope code: `E_ASSOC_TYPE_PROJECTION_FAILED`.
+    AssocTypeProjectionFailed {
+        /// Concrete type being coerced into a dyn trait object.
+        type_name: String,
+        /// Trait whose associated type projection failed.
+        trait_name: String,
+        /// Associated type name that failed to project.
+        assoc_name: String,
     },
 }
 
@@ -472,6 +512,7 @@ impl TypeErrorKind {
             Self::PurityViolation => "PurityViolation",
             Self::OrphanImpl => "OrphanImpl",
             Self::PlatformLimitation => "PlatformLimitation",
+            Self::OnUpgradeNotYetWired => "OnUpgradeNotYetWired",
             Self::MachineExhaustivenessError => "MachineExhaustivenessError",
             Self::UnresolvedImport => "UnresolvedImport",
             Self::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",
@@ -480,6 +521,9 @@ impl TypeErrorKind {
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
             Self::TaskNotNameable => "TaskNotNameable",
             Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
+            Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",
+            Self::MissingAssocTypeBinding { .. } => "MissingAssocTypeBinding",
+            Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
         }
     }
 }
@@ -807,7 +851,7 @@ mod tests {
         let err = TypeError::return_type_mismatch(0..10, &Ty::String, &Ty::I32);
         assert_eq!(
             err.to_string(),
-            "return type mismatch: expected `String`, found `i32`"
+            "return type mismatch: expected `string`, found `i32`"
         );
         assert_eq!(err.kind, TypeErrorKind::ReturnTypeMismatch);
     }
@@ -991,7 +1035,7 @@ mod tests {
         let err = TypeError::mismatch(0..20, &expected, &actual);
         assert!(err
             .to_string()
-            .contains("expected `fn(i32, bool) -> String`"));
+            .contains("expected `fn(i32, bool) -> string`"));
         assert!(err.to_string().contains("found `(i32, bool)`"));
     }
 
@@ -1017,7 +1061,7 @@ mod tests {
         let err = TypeError::undefined_field(0..10, &ty, "colour");
         assert_eq!(
             err.to_string(),
-            "no field `colour` on type `HashMap<String, i32>`"
+            "no field `colour` on type `HashMap<string, i32>`"
         );
     }
 }

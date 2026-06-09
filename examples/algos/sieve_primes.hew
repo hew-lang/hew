@@ -36,7 +36,7 @@ fn count_primes(flags: Vec<int>) -> int {
     count
 }
 
-fn check(name: String, got: int, expected: int) -> int {
+fn check(name: string, got: int, expected: int) -> int {
     if got == expected {
         println("PASS: " + name);
         1

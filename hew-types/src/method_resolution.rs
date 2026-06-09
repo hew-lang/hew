@@ -62,6 +62,17 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
         Ty::Named { name, args } if name == "ActorRef" && args.len() == 1 => {
             named_receiver_parts(&args[0])
         }
+        // LocalPid<T> wraps an actor type T — unwrap to dispatch methods on T.
+        // RemotePid<T> is intentionally NOT unwrapped here: its methods are
+        // resolved against RemotePid itself, not T.
+        // TODO: named_receiver_parts LocalPid own-methods (M3-S2 followup) —
+        // unwrapping to T means callers of this helper (e.g. the LSP path
+        // via `lookup_method_sig`) silently omit LocalPid's own impl methods
+        // (`tell`, `to_remote_via`). The checker's explicit LocalPid arm in
+        // methods.rs handles dispatch correctly, but LSP completion does not.
+        Ty::Named { name, args } if name == "LocalPid" && args.len() == 1 => {
+            named_receiver_parts(&args[0])
+        }
         Ty::Named { name, args } => Some((name.as_str(), args.as_slice())),
         _ => None,
     }

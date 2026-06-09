@@ -131,6 +131,25 @@ impl Checker {
         });
     }
 
+    pub(super) fn report_error_with_note(
+        &mut self,
+        kind: TypeErrorKind,
+        span: &Span,
+        message: String,
+        note_span: &Span,
+        note: String,
+    ) {
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind,
+            span: span.clone(),
+            message,
+            notes: vec![(note_span.clone(), note)],
+            suggestions: vec![],
+            source_module: self.current_module.clone(),
+        });
+    }
+
     pub(super) fn check_arity(
         &mut self,
         args: &[CallArg],

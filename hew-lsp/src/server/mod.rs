@@ -1042,7 +1042,7 @@ mod tests {
     #[test]
     fn dot_completions_for_builtin_stream() {
         // Stream<T> uses channel-family naming: .recv() not .next()
-        let source = "fn probe(s: Stream<String>) { s.recv(); }";
+        let source = "fn probe(s: Stream<string>) { s.recv(); }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1101,8 +1101,8 @@ mod tests {
             recv_item
                 .detail
                 .as_deref()
-                .is_some_and(|detail| detail.contains("String")),
-            "expected Stream<String> detail for recv(), got: {:?}",
+                .is_some_and(|detail| detail.contains("string")),
+            "expected Stream<string> detail for recv(), got: {:?}",
             recv_item.detail
         );
     }
@@ -1591,7 +1591,7 @@ impl Worker {
 
     #[test]
     fn hover_on_builtin_type_name() {
-        let source = "fn drain(rx: Receiver<String>) { rx.close(); }";
+        let source = "fn drain(rx: Receiver<string>) { rx.close(); }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -2267,6 +2267,7 @@ machine Traffic {
             TypeErrorKind::PurityViolation,
             TypeErrorKind::OrphanImpl,
             TypeErrorKind::PlatformLimitation,
+            TypeErrorKind::OnUpgradeNotYetWired,
             TypeErrorKind::MachineExhaustivenessError,
         ];
         for kind in &kinds {

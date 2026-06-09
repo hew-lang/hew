@@ -78,6 +78,16 @@ impl Checker {
                             .iter()
                             .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
                             .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| {
+                                (
+                                    name.clone(),
+                                    Self::lambda_generic_schema_ty(ty, generic_param_names),
+                                )
+                            })
+                            .collect(),
                     })
                     .collect(),
             },
@@ -362,10 +372,10 @@ impl Checker {
             // Cooperate
             Expr::Cooperate => Ty::Unit,
 
-            // Actor self-reference handle — returns ActorRef<Self>, not the actor type itself
+            // Actor self-reference handle — returns LocalPid<Self>, not the actor type itself
             Expr::This => {
                 if let Some(actor_ty) = &self.current_actor_type {
-                    Ty::actor_ref(actor_ty.clone())
+                    Ty::local_pid(actor_ty.clone())
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -886,6 +896,10 @@ impl Checker {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "index checking covers range slices, Vec runtime indexing, user Index impls, and dyn Index dispatch"
+    )]
     pub(super) fn synthesize_index(
         &mut self,
         object: &Spanned<Expr>,
@@ -932,11 +946,72 @@ impl Checker {
             };
         }
 
-        self.check_against(&index.0, &index.1, &Ty::I64);
-        match &obj_ty {
-            Ty::Array(elem, _) | Ty::Slice(elem) => (**elem).clone(),
-            Ty::Named { name, args } if name == "Vec" && !args.is_empty() => args[0].clone(),
+        let resolved_obj = self.subst.resolve(&obj_ty);
+        if let Ty::TraitObject { traits } = &resolved_obj {
+            for bound in traits {
+                if bound.trait_name != "Index" {
+                    continue;
+                }
+                self.check_against(&index.0, &index.1, &Ty::I32);
+                if let Some((_, output_ty)) = bound
+                    .assoc_bindings
+                    .iter()
+                    .find(|(name, _)| name == "Output")
+                {
+                    self.record_dyn_index_method_call(&bound.trait_name, span);
+                    return output_ty.clone();
+                }
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`[]` over `dyn Index` requires an `Output` associated-type binding"
+                        .to_string(),
+                );
+                return Ty::Error;
+            }
+        }
+
+        match &resolved_obj {
+            // Vec keeps the existing runtime-backed indexing ABI. The std
+            // `Index` impl exposes the trait surface, but MIR still owns the
+            // bounds-check + hew_vec_get_T lowering and that ABI takes i64.
+            Ty::Named { name, args } if name == "Vec" && !args.is_empty() => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                args[0].clone()
+            }
             Ty::Named { name, args } => {
+                if self.type_satisfies_trait_bound(&resolved_obj, "Index") {
+                    let expected_key = self
+                        .lookup_named_method_sig(name, args, "at")
+                        .and_then(|sig| sig.params.first().cloned())
+                        .unwrap_or(Ty::I32);
+                    self.check_against(&index.0, &index.1, &expected_key);
+                    let output = self.project_assoc_types(&Ty::AssocType {
+                        base: Box::new(resolved_obj.clone()),
+                        trait_name: "Index".into(),
+                        assoc_name: "Output".into(),
+                    });
+                    if matches!(output, Ty::AssocType { .. }) {
+                        self.report_error(
+                            TypeErrorKind::AssocTypeProjectionFailed {
+                                type_name: resolved_obj.user_facing().to_string(),
+                                trait_name: "Index".to_string(),
+                                assoc_name: "Output".to_string(),
+                            },
+                            span,
+                            format!(
+                                "could not project associated type `<{} as Index>::Output` \
+                                 while checking `[]`; ensure the impl defines \
+                                 `type Output = ...`",
+                                resolved_obj.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    return output;
+                }
+
+                self.check_against(&index.0, &index.1, &Ty::I64);
                 // Bracket indexing via a named type's `.get()` method is no longer
                 // supported. Use the explicit method call instead.
                 if self.lookup_named_method_sig(name, args, "get").is_some() {
@@ -945,28 +1020,61 @@ impl Checker {
                         span,
                         format!(
                             "cannot index into `{}` with `[]`; use `.get(k)` instead",
-                            obj_ty.user_facing()
+                            resolved_obj.user_facing()
                         ),
-                        vec![format!("use `.get(k)` on `{}`", obj_ty.user_facing())],
+                        vec![format!("use `.get(k)` on `{}`", resolved_obj.user_facing())],
                     );
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        format!("cannot index into `{}`", obj_ty.user_facing()),
+                        format!("cannot index into `{}`", resolved_obj.user_facing()),
                     );
                 }
                 Ty::Error
             }
-            _ => {
+            Ty::Array(elem, _) | Ty::Slice(elem) => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                (**elem).clone()
+            }
+            other => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    format!("cannot index into `{}`", obj_ty.user_facing()),
+                    format!("cannot index into `{}`", other.user_facing()),
                 );
                 Ty::Error
             }
         }
+    }
+
+    fn record_dyn_index_method_call(&mut self, trait_name: &str, span: &Span) {
+        let Some(trait_info) = self.trait_defs.get(trait_name) else {
+            return;
+        };
+        let Some(method_idx) = trait_info
+            .methods
+            .iter()
+            .position(|method| method.name == "at")
+        else {
+            return;
+        };
+        let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
+        self.dyn_trait_method_calls.insert(
+            SpanKey::from(span),
+            crate::check::types::DynMethodCall {
+                trait_name: trait_name.to_string(),
+                method_name: "at".to_string(),
+                slot,
+            },
+        );
+        self.record_method_call_receiver_kind(
+            span,
+            crate::check::types::MethodCallReceiverKind::TraitObject {
+                trait_name: trait_name.to_string(),
+            },
+        );
     }
 
     #[expect(
@@ -1693,6 +1801,25 @@ impl Checker {
                             }
                         }
 
+                        // Also record the inferred / annotation-bound type args
+                        // from this coercion arm.  Without this,
+                        // `let b: Box<int> = Box { value: 1 }` would bypass
+                        // `check_struct_init` entirely and the side-table would
+                        // miss the instantiation.  Emits unconditionally;
+                        // `validate_record_init_type_args_output_contract` in
+                        // `admissibility.rs` prunes any entry whose args still
+                        // carry a `Ty::Var` after substitution settles.
+                        let resolved_args: Vec<Ty> = td
+                            .type_params
+                            .iter()
+                            .map(|tp| {
+                                type_arg_map
+                                    .get(tp)
+                                    .cloned()
+                                    .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
+                            })
+                            .collect();
+                        self.record_concrete_record_init_type_args(span, &resolved_args);
                         self.record_type(span, expected);
                         return expected.clone();
                     }
@@ -1819,6 +1946,18 @@ impl Checker {
                                         );
                                     }
                                 }
+                                // Emit unconditionally; see the struct coercion
+                                // arm above for the boundary-prune rationale.
+                                let resolved_args: Vec<Ty> = type_params
+                                    .iter()
+                                    .map(|tp| {
+                                        type_arg_map
+                                            .get(tp)
+                                            .cloned()
+                                            .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
+                                    })
+                                    .collect();
+                                self.record_concrete_record_init_type_args(span, &resolved_args);
                                 self.record_type(span, expected);
                             }
                         }
@@ -3059,17 +3198,82 @@ impl Checker {
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {
             Ty::Named { name, args } => {
-                // Named supervisor child access: sup.child_name → ActorRef<ChildType>
-                if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_ref() {
-                    if let Some(children) = self.supervisor_children.get(sup_name) {
-                        if let Some((_child_name, child_type)) =
-                            children.iter().find(|(cn, _)| cn == field)
-                        {
-                            return Ty::actor_ref(Ty::Named {
-                                name: child_type.clone(),
+                // Named supervisor child access: sup.child_name → LocalPid<ChildType>
+                // Accepts local actor handles via as_actor_handle().
+                if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_handle() {
+                    if let Some(sup_children) = self.supervisor_children.get(sup_name) {
+                        // Check static children first, then pool children.
+                        let resolved_slot =
+                            sup_children
+                                .statics
+                                .iter()
+                                .enumerate()
+                                .find_map(|(idx, (cn, ty))| {
+                                    (cn == field).then(|| {
+                                    (
+                                        crate::check::types::ChildSlot {
+                                            kind: crate::check::types::ChildKind::Static,
+                                            #[expect(
+                                                clippy::cast_possible_truncation,
+                                                reason = "supervisor child count is always small; \
+                                                          u32 is the ABI type"
+                                            )]
+                                            index: idx as u32,
+                                            child_ty: ty.clone(),
+                                        },
+                                        ty.clone(),
+                                    )
+                                })
+                                });
+                        let resolved_slot = resolved_slot.or_else(|| {
+                            sup_children
+                                .pools
+                                .iter()
+                                .enumerate()
+                                .find_map(|(idx, (cn, ty))| {
+                                    (cn == field).then(|| {
+                                    (
+                                        crate::check::types::ChildSlot {
+                                            kind: crate::check::types::ChildKind::Pool,
+                                            #[expect(
+                                                clippy::cast_possible_truncation,
+                                                reason = "supervisor child count is always small; \
+                                                          u32 is the ABI type"
+                                            )]
+                                            index: idx as u32,
+                                            child_ty: ty.clone(),
+                                        },
+                                        ty.clone(),
+                                    )
+                                })
+                                })
+                        });
+                        if let Some((slot, child_type)) = resolved_slot {
+                            self.supervisor_child_slots
+                                .insert(SpanKey::from(span), slot);
+                            return Ty::local_pid(Ty::Named {
+                                name: child_type,
                                 args: vec![],
                             });
                         }
+                        // The supervisor is known but this child name is not declared.
+                        // Emit a clear diagnostic and stop — the fallthrough branch
+                        // would silently return Ty::Error because the handle has no type
+                        // definition in the checker's type_defs map.
+                        let all_names: Vec<&str> = sup_children
+                            .statics
+                            .iter()
+                            .chain(sup_children.pools.iter())
+                            .map(|(cn, _)| cn.as_str())
+                            .collect();
+                        let similar = crate::error::find_similar(field, all_names.iter().copied());
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!("supervisor `{sup_name}` has no child named `{field}`"),
+                            similar,
+                        );
+                        return Ty::Error;
                     }
                 }
                 if let Some(td) = self.lookup_type_def(name) {
@@ -3535,6 +3739,18 @@ impl Checker {
                         .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
                 })
                 .collect();
+            // Record the resolved type arguments for downstream monomorphisation
+            // (HIR registry, MIR per-instantiation RecordLayout).
+            //
+            // Emit unconditionally: a record-init's type args may only become
+            // fully concrete *after* `check_struct_init` returns (e.g. via an
+            // outer annotation `let b: Box<int> = Box { value: 1 }`), so
+            // eagerly rejecting at emission time would drop entries that the
+            // post-inference boundary resolve in `check_program` would have made
+            // concrete.  The fail-closed contract (no `Ty::Var` crosses into HIR)
+            // is enforced at the output boundary by
+            // `validate_record_init_type_args_output_contract` in `admissibility.rs`.
+            self.record_concrete_record_init_type_args(span, &type_args);
             Ty::Named {
                 name: name.to_string(),
                 args: type_args,
@@ -3652,6 +3868,9 @@ impl Checker {
                         .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
                 })
                 .collect();
+            // Emit unconditionally; see the struct-init branch above for the
+            // boundary-prune rationale and validator location.
+            self.record_concrete_record_init_type_args(span, &type_args);
             Ty::Named {
                 name: enum_name,
                 args: type_args,
@@ -3706,9 +3925,9 @@ impl Checker {
                 let ty_raw = self.synthesize(arg, as_);
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
             }
-            Ty::actor_ref(Ty::Named { name, args: vec![] })
+            Ty::local_pid(Ty::Named { name, args: vec![] })
         } else {
-            Ty::actor_ref(Ty::Error)
+            Ty::local_pid(Ty::Error)
         }
     }
 
@@ -3932,9 +4151,9 @@ impl Checker {
 
     fn classify_ty(ty: &Ty) -> AllocationClass {
         match ty {
+            Ty::String => AllocationClass::String,
             Ty::Named { name, .. } => match name.as_str() {
                 "Vec" => AllocationClass::Vec,
-                "String" => AllocationClass::String,
                 "HashMap" => AllocationClass::HashMap,
                 "HashSet" => AllocationClass::HashSet,
                 "Rc" => AllocationClass::Rc,

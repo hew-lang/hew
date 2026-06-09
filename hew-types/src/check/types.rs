@@ -4,7 +4,7 @@ use crate::lowering_facts::LoweringFact;
 use crate::module_registry::ModuleRegistry;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
-use hew_parser::ast::{Span, Spanned, TraitMethod, TypeExpr};
+use hew_parser::ast::{Span, Spanned, TraitBound, TraitMethod, TypeExpr};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -85,6 +85,26 @@ pub struct TypeCheckOutput {
     /// Inferred type arguments for generic function calls that lack explicit
     /// type annotations.  Keyed by the call expression's span.
     pub call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Inferred or explicit type arguments for record / enum-struct-variant
+    /// initialiser sites on user-defined generic types.  Keyed by the
+    /// initialiser expression's span.
+    ///
+    /// Populated for every accepted `StructInit` against a user `TypeDef` whose
+    /// `type_params` is non-empty.  Monomorphic record inits produce no entry.
+    ///
+    /// Entries are emitted unconditionally at the call site (args may still
+    /// carry a `Ty::Var` when an outer annotation such as
+    /// `let b: Box<int> = Box { value: 1 }` makes them concrete only after
+    /// `check_struct_init` returns).  The fail-closed contract (no `Ty::Var`
+    /// crosses into HIR) is *established*, not re-asserted, by
+    /// `validate_record_init_type_args_output_contract` (`admissibility.rs`)
+    /// at the output boundary, after `subst.resolve` and
+    /// `materialize_literal_defaults` have settled.
+    ///
+    /// The downstream HIR monomorphisation registry reads this map to build
+    /// per-instantiation record layouts.  Until that consumer lands the
+    /// side-table is dormant.
+    pub record_init_type_args: HashMap<SpanKey, Vec<Ty>>,
     /// Diagnostic-only escape-analysis hints produced by the stack-hint walker.
     ///
     /// One entry per `let` / `var` binding whose right-hand side resolves to a
@@ -120,6 +140,201 @@ pub struct TypeCheckOutput {
     /// Codegen reads this map to decide whether to call `hew_arena_new_with_cap`
     /// or `hew_arena_new` when spawning an actor.
     pub actor_max_heap: HashMap<String, u64>,
+    /// Compile-time slot assignment for supervisor child accesses.
+    ///
+    /// Keyed by the `SpanKey` of the field-access expression (e.g. the span of
+    /// `app.cache` in `app.cache.query(req)`). Populated during type-checking
+    /// of field-access expressions whose object resolves to an `ActorRef<S>`
+    /// where `S` is a known supervisor type.
+    ///
+    /// The `index` field is the position of the child within its own slot space:
+    /// - `Static` children index into `HewSupervisor.children[]` (0-based, source order).
+    /// - `Pool` children index into `HewSupervisor.pool_slots[]` (0-based, source order).
+    ///
+    /// Missing entry means the checker could not resolve the child (e.g. unknown
+    /// field); MIR lowering must fail closed on a missing entry.
+    pub supervisor_child_slots: HashMap<SpanKey, ChildSlot>,
+    /// Per-call-site `T → dyn Trait` coercion metadata used by the MIR
+    /// trait-object lowering and the LLVM vtable emitter.
+    ///
+    /// Keyed by the `SpanKey` of the argument expression coerced into a
+    /// trait-object position. Each entry names the trait the coercion targets,
+    /// the resolved concrete `Self` type at that site, and the per-impl
+    /// method resolution that codegen will turn into vtable slots. Object
+    /// safety is enforced at insertion time: traits with generic methods or
+    /// `Self`-returning methods produce a [`TypeErrorKind::TraitNotObjectSafe`]
+    /// diagnostic and no entry is inserted for that site.
+    ///
+    /// Multi-bound `dyn (A + B)` coercion sites flatten into a single
+    /// [`DynCoercion`] whose `trait_name` joins the bound names with `+` and
+    /// whose `method_table` concatenates the per-bound entries in declaration
+    /// order; each entry's method name is prefixed by the originating trait
+    /// (`Trait::method`) so downstream consumers can recover the binding.
+    pub dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+    /// Per-method-call-site resolution for `obj.method()` where `obj` has
+    /// resolved type `Ty::TraitObject`. Each entry pins the originating trait,
+    /// the method name, and the vtable slot index (`3 + method_decl_order` —
+    /// see [`DynMethodCall::slot`] for the prefix-triple convention).
+    ///
+    /// Populated alongside [`MethodCallReceiverKind::TraitObject`] at every
+    /// accepted method-call on a trait-object receiver. Downstream HIR / MIR
+    /// lowering consume this fail-closed: a method-call whose receiver typed
+    /// as a trait object but whose span is absent from this map is a HIR
+    /// diagnostic, not a runtime panic.
+    pub dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
+}
+
+/// Checker-resolved metadata for a `T → dyn Trait` coercion call site.
+///
+/// Populated by the checker for every accepted coercion of a concrete
+/// receiver into a trait-object argument. Downstream MIR construction and
+/// LLVM vtable emission consume this fail-closed: missing entry at a known
+/// coercion span is a hard error during lowering.
+///
+/// The `method_table` is ordered: vtable slot index `i` (after the
+/// runtime-fixed `drop_in_place`/`size_of`/`align_of` prefix triple defined
+/// in `hew-runtime/src/trait_object.rs`) maps to the i-th entry in
+/// `method_table`. For multi-bound coercions the order is the trait bounds'
+/// declaration order, with each bound contributing its trait's methods in
+/// the trait declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynAssocBinding {
+    /// Originating trait name; qualifies `assoc_name` for multi-bound objects.
+    pub trait_name: String,
+    /// Associated type declared by `trait_name`.
+    pub assoc_name: String,
+    /// Fully projected binding type.
+    pub ty: Ty,
+}
+
+/// Canonical vtable intern key for a concrete-to-dyn coercion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynVtableKey {
+    /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
+    pub trait_name: String,
+    /// Resolved concrete `Self` type at the coercion site.
+    pub concrete_type: Ty,
+    /// Canonical associated-type bindings sorted by `(trait_name, assoc_name)`.
+    pub assoc_bindings: Vec<DynAssocBinding>,
+}
+
+/// Checker-authored vtable slot entry with substituted method signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynVtableEntry {
+    /// Originating trait name for this slot.
+    pub trait_name: String,
+    /// Trait method name as declared in the trait.
+    pub method_name: String,
+    /// Implementer-side function key (`Type::method`).
+    pub impl_fn_key: String,
+    /// Caller-side signature after substituting trait type parameters and
+    /// associated-type bindings (e.g. `Self::Item` -> `int`).
+    pub signature: FnSig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynCoercion {
+    /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
+    pub trait_name: String,
+    /// Resolved concrete `Self` type at the coercion site.
+    pub concrete_type: Ty,
+    /// Canonical vtable key used to distinguish projections such as
+    /// `dyn Iterator<Item = int>` from `dyn Iterator<Item = string>`.
+    pub vtable_key: DynVtableKey,
+    /// Canonical associated-type binding side-table entries, qualified by
+    /// originating trait and sorted by `(trait_name, assoc_name)`.
+    pub assoc_bindings: Vec<DynAssocBinding>,
+    /// Ordered vtable entries. Each entry carries the substituted caller-side
+    /// method signature at the trait-object boundary.
+    pub vtable_entries: Vec<DynVtableEntry>,
+    /// Ordered `(method_name, impl_fn_key)` pairs naming the impl-side
+    /// resolution for each trait method.
+    ///
+    /// * `method_name` is the trait method's declared name. For multi-bound
+    ///   coercions it is prefixed by `Trait::` so the originating trait is
+    ///   recoverable.
+    /// * `impl_fn_key` is the implementer-side identifier in the shape
+    ///   `<Type>::<method>` for user types (matches the key under which
+    ///   the impl method is registered in [`Checker::fn_sigs`]). For
+    ///   primitive and compiler-builtin receivers the key is
+    ///   `<canonical>::<method>` where `<canonical>` is
+    ///   [`Ty::canonical_lowering_name`] / the builtin-generic name; the
+    ///   impl signature itself lives in
+    ///   [`Checker::primitive_trait_impls`].
+    pub method_table: Vec<(String, String)>,
+}
+
+/// Checker-resolved metadata for a method call on a `dyn Trait` receiver.
+///
+/// Populated by the checker at every accepted `obj.method(args)` where
+/// `obj`'s resolved type is [`Ty::TraitObject`]. The MIR producer reads
+/// this side-table to emit `Instr::CallTraitMethod` with a pre-computed
+/// vtable slot; HIR lowering reads it to choose `HirExprKind::CallDynMethod`
+/// over the `method_call_rewrites` direct-call path.
+///
+/// The slot convention follows
+/// `hew-runtime/src/trait_object.rs::HewVtable`:
+///
+/// | Slot | Contents              |
+/// |------|-----------------------|
+/// | 0    | `drop_in_place`       |
+/// | 1    | `size_of` (data)      |
+/// | 2    | `align_of` (data)     |
+/// | 3..N | trait method slots, in trait declaration order |
+///
+/// `slot` is therefore `3 + method_decl_order` for the originating trait.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynMethodCall {
+    /// Originating trait name (resolved from the receiver's `Ty::TraitObject`
+    /// bound that defined the called method).
+    pub trait_name: String,
+    /// Trait method name as declared in the trait body.
+    pub method_name: String,
+    /// Vtable slot index: `3 + 0-based method declaration order` within
+    /// the originating trait.
+    pub slot: u32,
+}
+
+/// Compile-time slot descriptor for a supervisor child access.
+///
+/// Produced by the checker at every `supervisor.child_name` field-access site.
+/// MIR lowering reads this to emit the correct `hew_supervisor_child_get` (for
+/// `Static`) or `hew_supervisor_pool_route` (for `Pool`) ABI call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildSlot {
+    /// Whether this child occupies a static slot or a pool slot.
+    pub kind: ChildKind,
+    /// 0-based index within the child's slot space (static or pool, disjoint).
+    pub index: u32,
+    /// Declared actor type of the child (e.g. `"CacheActor"`).
+    pub child_ty: String,
+}
+
+/// Discriminates a static child slot from a pool child slot.
+///
+/// Static and pool indices live in disjoint spaces, matching the runtime layout
+/// (`HewSupervisor.children[]` for static, `HewSupervisor.pool_slots[]` for pool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildKind {
+    /// Child declared with `child name: Type`. Indexed in `HewSupervisor.children[]`.
+    Static,
+    /// Child declared with `pool name: Type`. Indexed in `HewSupervisor.pool_slots[]`.
+    Pool,
+}
+
+/// Partitioned child lists for a supervisor declaration.
+///
+/// Static and pool children occupy disjoint slot spaces. The slot index for each
+/// child is its 0-based position within its own list (`statics` or `pools`).
+/// Supervisor names map to this type via `Checker::supervisor_children`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SupervisorChildren {
+    /// Children declared with `child name: Type`, in source order.
+    /// Slot index = position in this vec.
+    pub(crate) statics: Vec<(String, String)>,
+    /// Children declared with `pool name: Type`, in source order.
+    /// Slot index = position in this vec.
+    pub(crate) pools: Vec<(String, String)>,
 }
 
 impl Default for TypeCheckOutput {
@@ -144,9 +359,13 @@ impl Default for TypeCheckOutput {
             cycle_capable_actors: HashSet::default(),
             user_modules: HashSet::default(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         }
     }
 }
@@ -614,7 +833,16 @@ pub(super) struct TraitInfo {
 #[derive(Debug, Clone)]
 pub(super) struct TraitAssociatedTypeInfo {
     pub(super) name: String,
+    /// Trait bounds declared on this associated type
+    /// (e.g. `type Out: Display` → one `TraitBound { name: "Display", .. }`).
+    /// Enforced at impl-registration time: an impl's `type Out = X` must
+    /// supply a type `X` that satisfies every bound in this list.
+    /// Stored as the full `TraitBound` (with `type_args`) so slice 2 of the
+    /// associated-types lane can read `type_args` without a schema migration.
+    pub(super) bounds: Vec<TraitBound>,
     pub(super) default: Option<Spanned<TypeExpr>>,
+    /// Span of the `type Bar` declaration in the trait body.
+    pub(super) span: Span,
 }
 
 #[derive(Debug)]
@@ -653,7 +881,7 @@ pub enum TypeDefKind {
     Record,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnSig {
     pub type_params: Vec<String>,
     pub type_param_bounds: HashMap<String, Vec<String>>,
@@ -822,6 +1050,18 @@ pub struct Checker {
     /// module path for callers that only populate `resolved_items`.
     pub(super) registered_stdlib_hew_sources: HashSet<String>,
     pub(super) generic_ctx: Vec<HashMap<String, Ty>>,
+    /// Parallel stack to `generic_ctx`: bounds declared on each generic type
+    /// parameter in the current scope (fn, impl, receive-fn). Keyed by param
+    /// name, value is the list of trait-bound names (e.g. `["Iterator"]` for
+    /// `<I: Iterator>`). Pushed/popped alongside `generic_ctx` by signature
+    /// registration; consulted by the resolver when it encounters `T::Bar`
+    /// projections to find which trait declares `Bar`.
+    ///
+    /// Why a separate stack rather than enriching `generic_ctx`: `generic_ctx`
+    /// maps name → `Ty` and is consumed by many call sites that only care
+    /// about substitution. Bounds are slice-2-specific. Keeping them apart
+    /// avoids invalidating every existing reader.
+    pub(super) current_type_param_bounds: Vec<HashMap<String, Vec<String>>>,
     pub(super) current_return_type: Option<Ty>,
     pub(super) in_generator: bool,
     pub(super) loop_depth: u32,
@@ -844,8 +1084,30 @@ pub struct Checker {
     /// Outer key: (`canonical_primitive_or_builtin_name`, `trait_name`).
     /// Inner: method name → resolved `FnSig` (receiver already filtered).
     pub(super) primitive_trait_impls: HashMap<(String, String), HashMap<String, FnSig>>,
-    /// Maps supervisor name to `(child_name, actor_type)` pairs for `supervisor_child`
-    pub(super) supervisor_children: HashMap<String, Vec<(String, String)>>,
+    /// Maps supervisor name to its partitioned child lists.
+    ///
+    /// Static children (declared with `child name: Type`) are in `statics`,
+    /// pool children (declared with `pool name: Type`) are in `pools`.
+    /// The slot index for each child is its 0-based position within its own list,
+    /// matching the runtime layout (`HewSupervisor.children[]` for static,
+    /// `HewSupervisor.pool_slots[]` for pool).
+    pub(super) supervisor_children: HashMap<String, SupervisorChildren>,
+    /// Side-table populated during field-access type-checking for supervisor children.
+    ///
+    /// Keyed by the `SpanKey` of the field-access expression. Moved into
+    /// `TypeCheckOutput::supervisor_child_slots` at the end of `check_program`.
+    pub(super) supervisor_child_slots: HashMap<SpanKey, ChildSlot>,
+    /// Side-table populated during `T → dyn Trait` coercion checking.
+    ///
+    /// Keyed by the `SpanKey` of the call-site argument expression. Moved
+    /// into `TypeCheckOutput::dyn_trait_coercions` at the end of
+    /// `check_program`.
+    pub(super) dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+    /// Side-table populated during method-call type-checking on a `dyn Trait`
+    /// receiver. Keyed by the `SpanKey` of the method-call expression. Moved
+    /// into `TypeCheckOutput::dyn_trait_method_calls` at the end of
+    /// `check_program`.
+    pub(super) dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
     /// Maps actor name to its `init()` parameter list: `(param_name, outer_type, first_type_arg)`.
     ///
     /// `outer_type` is the outermost named type (e.g. `"ActorRef"` for `ActorRef<WorkerPool>`).
@@ -899,6 +1161,22 @@ pub struct Checker {
     /// Field names of the current actor (for purity checks on bare field assignment).
     pub(super) current_actor_fields: Vec<String>,
     pub(super) impl_alias_scopes: Vec<ImplAliasScope>,
+    /// When set, the resolver is inside a trait-body context that gives
+    /// meaning to `Self::Bar` as a projection into this trait's associated
+    /// types. Used to materialise a deferred `Ty::AssocType { base: Self,
+    /// trait_name, assoc_name }` when no impl scope is active (e.g.
+    /// registering a trait method signature). The carrier is collapsed at
+    /// call sites where `Self` is substituted by a concrete type.
+    pub(super) current_trait_for_self_projection: Option<String>,
+    /// Resolved impl-side `type Bar = X` bindings, keyed by
+    /// `(impl_type_name, trait_name, assoc_name)`. Populated at impl
+    /// registration so that downstream projection-collapse
+    /// (`project_assoc_types`) can substitute `Ty::AssocType` carriers once
+    /// their `base` becomes concrete.
+    ///
+    /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
+    /// stack used for `Self::Bar` lookup during impl-body checking.
+    pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), Ty>,
     /// Names of functions that require an unsafe block to call.
     pub(super) unsafe_functions: HashSet<String>,
     /// Whether warnings for WASM-only builds should be emitted.
@@ -918,6 +1196,16 @@ pub struct Checker {
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
     pub(super) call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Inferred or explicit type arguments for record / enum-struct-variant
+    /// initialiser sites on user-defined generic types. Populated by
+    /// `record_concrete_record_init_type_args` at each emission site.
+    ///
+    /// Entries are emitted unconditionally (args may still carry a `Ty::Var`
+    /// when a coercion arm resolves them only after `check_struct_init`
+    /// returns). The fail-closed contract (no `Ty::Var` crosses into HIR) is
+    /// enforced at the output boundary by
+    /// `validate_record_init_type_args_output_contract` in `admissibility.rs`.
+    pub(super) record_init_type_args: HashMap<SpanKey, Vec<Ty>>,
     /// Builtin `Ok`/`Err` constructor calls whose output type may need
     /// checked-output fallback when one side remains unconstrained.
     pub(super) builtin_result_output_type_args: HashMap<SpanKey, (Ty, Ty)>,
@@ -995,6 +1283,7 @@ impl Checker {
             registered_flat_file_import_sources: HashSet::new(),
             registered_stdlib_hew_sources: HashSet::new(),
             generic_ctx: Vec::new(),
+            current_type_param_bounds: Vec::new(),
             current_return_type: None,
             in_generator: false,
             loop_depth: 0,
@@ -1007,6 +1296,9 @@ impl Checker {
             trait_impls_set: HashSet::new(),
             primitive_trait_impls: HashMap::new(),
             supervisor_children: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),
@@ -1028,6 +1320,8 @@ impl Checker {
             current_actor_type: None,
             current_actor_fields: Vec::new(),
             impl_alias_scopes: Vec::new(),
+            current_trait_for_self_projection: None,
+            impl_assoc_type_bindings: HashMap::new(),
             unsafe_functions: HashSet::new(),
             wasm_target: false,
             wasm_warning_spans: HashSet::new(),
@@ -1036,6 +1330,7 @@ impl Checker {
             current_machine_transition: None,
             const_values: HashMap::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             builtin_result_output_type_args: HashMap::new(),
             deferred_bound_checks: Vec::new(),
             lambda_poly_sig_map: HashMap::new(),

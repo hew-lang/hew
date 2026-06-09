@@ -156,6 +156,15 @@ fn trait_bound(name: &str, args: Vec<Ty>) -> TraitObjectBound {
     TraitObjectBound {
         trait_name: name.to_string(),
         args,
+        assoc_bindings: vec![],
+    }
+}
+
+fn trait_bound_with_assoc(name: &str, assoc_name: &str, assoc_ty: Ty) -> TraitObjectBound {
+    TraitObjectBound {
+        trait_name: name.to_string(),
+        args: vec![],
+        assoc_bindings: vec![(assoc_name.to_string(), assoc_ty)],
     }
 }
 
@@ -228,6 +237,21 @@ fn unify_trait_objects_arg_arity_mismatch() {
     assert!(matches!(
         unify(&mut subst, &a, &b),
         Err(UnifyError::ArityMismatch { .. })
+    ));
+}
+
+#[test]
+fn unify_trait_objects_different_assoc_bindings_rejects() {
+    let mut subst = fresh_subst();
+    let a = Ty::TraitObject {
+        traits: vec![trait_bound_with_assoc("Iterator", "Item", Ty::I32)],
+    };
+    let b = Ty::TraitObject {
+        traits: vec![trait_bound_with_assoc("Iterator", "Item", Ty::String)],
+    };
+    assert!(matches!(
+        unify(&mut subst, &a, &b),
+        Err(UnifyError::Mismatch { .. })
     ));
 }
 
@@ -580,7 +604,7 @@ fn resolve_three_var_chain() {
     let v1 = TypeVar::fresh();
     let v2 = TypeVar::fresh();
     let v3 = TypeVar::fresh();
-    // v1 -> v2 -> v3 -> String
+    // v1 -> v2 -> v3 -> string
     subst.insert(v1, &Ty::Var(v2)).unwrap();
     subst.insert(v2, &Ty::Var(v3)).unwrap();
     subst.insert(v3, &Ty::String).unwrap();

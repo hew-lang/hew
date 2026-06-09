@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6 stdlib/data-structure port plus codegen-rs parity)
+//! Description: Vec and HashMap test
+
 // Vec and HashMap test
 // Exercises the core collection types from Hew programs
 fn test_vec() -> i32 {
@@ -21,7 +24,7 @@ fn test_vec() -> i32 {
 }
 
 fn test_hashmap() -> i32 {
-    let m: HashMap<String, i32> = HashMap::new();
+    let m: HashMap<string, i32> = HashMap::new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);

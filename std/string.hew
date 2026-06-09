@@ -1,4 +1,4 @@
-//! String conversion and manipulation utilities.
+//! string conversion and manipulation utilities.
 //!
 //! Most string operations (`.find()`, `.slice()`, `.trim()`, etc.)
 //! are built-in methods available on all strings. This module provides
@@ -26,17 +26,17 @@
 /// ```
 /// let s = string.from_int(42);  // "42"
 /// ```
-pub fn from_int(n: int) -> String {
+pub fn from_int(n: int) -> string {
     f"{n}"
 }
 
 /// Convert a float to its string representation.
-pub fn from_float(f: f64) -> String {
+pub fn from_float(f: f64) -> string {
     f"{f}"
 }
 
 /// Convert a bool to `"true"` or `"false"`.
-pub fn from_bool(b: bool) -> String {
+pub fn from_bool(b: bool) -> string {
     if b {
         "true"
     } else {
@@ -51,7 +51,7 @@ pub fn from_bool(b: bool) -> String {
 /// ```
 /// let newline = string.from_char(10);
 /// ```
-pub fn from_char(code: int) -> String {
+pub fn from_char(code: int) -> string {
     unsafe {
         hew_char_to_string(code as i32)
     }
@@ -73,7 +73,7 @@ pub fn from_char(code: int) -> String {
 /// let m = string.to_int("42abc");  // 0 — partial numbers return 0
 /// let z = string.to_int("");       // 0 — empty string returns 0
 /// ```
-pub fn to_int(s: String) -> int {
+pub fn to_int(s: string) -> int {
     match try_to_int(s) {
         Ok(value) => value,
         Err(_) => 0,
@@ -81,7 +81,7 @@ pub fn to_int(s: String) -> int {
 }
 
 /// Parse a string as an integer, returning a structured error on failure.
-pub fn try_to_int(s: String) -> Result<int, String> {
+pub fn try_to_int(s: string) -> Result<int, string> {
     let slen = s.len();
     if slen == 0 {
         return Err("string.try_to_int: invalid integer literal");
@@ -142,7 +142,7 @@ pub fn try_to_int(s: String) -> Result<int, String> {
 /// let n = string.to_float("-2e3");    // -2000.0
 /// let z = string.to_float("3.14x");   // 0.0
 /// ```
-pub fn to_float(s: String) -> f64 {
+pub fn to_float(s: string) -> f64 {
     match try_to_float(s) {
         Ok(value) => value,
         Err(_) => 0.0,
@@ -150,7 +150,7 @@ pub fn to_float(s: String) -> f64 {
 }
 
 /// Parse a string as a float, returning a structured error on failure.
-pub fn try_to_float(s: String) -> Result<f64, String> {
+pub fn try_to_float(s: string) -> Result<f64, string> {
     if is_valid_float_literal(s) {
         Ok(parse_valid_float_literal(s))
     } else {
@@ -158,7 +158,7 @@ pub fn try_to_float(s: String) -> Result<f64, String> {
     }
 }
 
-fn is_valid_float_literal(s: String) -> bool {
+fn is_valid_float_literal(s: string) -> bool {
     let slen = s.len();
     if slen == 0 {
         return false;
@@ -185,7 +185,7 @@ fn is_valid_float_literal(s: String) -> bool {
     true
 }
 
-fn float_parse_start(s: String, slen: int) -> int {
+fn float_parse_start(s: string, slen: int) -> int {
     var start = 0;
     if s.slice(0, 1) == "-" || s.slice(0, 1) == "+" {
         start = 1;
@@ -196,7 +196,7 @@ fn float_parse_start(s: String, slen: int) -> int {
     start
 }
 
-fn parse_valid_float_literal(s: String) -> f64 {
+fn parse_valid_float_literal(s: string) -> f64 {
     let slen = s.len();
     let start = float_parse_start(s, slen);
     let negative = s.slice(0, 1) == "-";
@@ -219,7 +219,7 @@ fn parse_valid_float_literal(s: String) -> f64 {
 }
 
 /// Return the numeric value of a single-character digit string, or `-1` if not a digit.
-fn digit_value(ch: String) -> int {
+fn digit_value(ch: string) -> int {
     match ch {
         "0" => 0,
         "1" => 1,
@@ -235,7 +235,7 @@ fn digit_value(ch: String) -> int {
     }
 }
 
-fn find_exponent_index(s: String, start: int, end: int) -> int {
+fn find_exponent_index(s: string, start: int, end: int) -> int {
     var exponent_index = -1;
     for i in start .. end {
         let ch = s.slice(i, i + 1);
@@ -249,7 +249,7 @@ fn find_exponent_index(s: String, start: int, end: int) -> int {
     exponent_index
 }
 
-fn is_valid_float_significand(s: String, start: int, end: int) -> bool {
+fn is_valid_float_significand(s: string, start: int, end: int) -> bool {
     if start >= end {
         return false;
     }
@@ -272,7 +272,7 @@ fn is_valid_float_significand(s: String, start: int, end: int) -> bool {
     saw_digit
 }
 
-fn is_valid_float_exponent(s: String, start: int, end: int) -> bool {
+fn is_valid_float_exponent(s: string, start: int, end: int) -> bool {
     if start >= end {
         return false;
     }
@@ -292,7 +292,7 @@ fn is_valid_float_exponent(s: String, start: int, end: int) -> bool {
     true
 }
 
-fn parse_float_significand(s: String, start: int, end: int) -> f64 {
+fn parse_float_significand(s: string, start: int, end: int) -> f64 {
     var whole = 0.0;
     var fraction = 0.0;
     var fraction_scale = 1.0;
@@ -314,7 +314,7 @@ fn parse_float_significand(s: String, start: int, end: int) -> f64 {
     whole + fraction / fraction_scale
 }
 
-fn parse_float_exponent(s: String, start: int, end: int) -> int {
+fn parse_float_exponent(s: string, start: int, end: int) -> int {
     var index = start;
     var negative = false;
     if s.slice(start, start + 1) == "-" {
@@ -377,7 +377,7 @@ fn digit_to_float(digit: int) -> f64 {
 /// string.is_empty("")    // true
 /// string.is_empty("hi")  // false
 /// ```
-pub fn is_empty(s: String) -> bool {
+pub fn is_empty(s: string) -> bool {
     s.is_empty()
 }
 
@@ -388,7 +388,7 @@ pub fn is_empty(s: String) -> bool {
 /// ```
 /// let stars = string.repeat("*", 5);  // "*****"
 /// ```
-pub fn repeat(s: String, n: int) -> String {
+pub fn repeat(s: string, n: int) -> string {
     s.repeat(n)
 }
 
@@ -402,7 +402,7 @@ pub fn repeat(s: String, n: int) -> String {
 /// string.pad_left("42", 5, " ")   // "   42"
 /// string.pad_left("42", 5, "0")   // "00042"
 /// ```
-pub fn pad_left(s: String, width: int, pad: String) -> String {
+pub fn pad_left(s: string, width: int, pad: string) -> string {
     let slen = s.len();
     if slen >= width {
         return s;
@@ -419,7 +419,7 @@ pub fn pad_left(s: String, width: int, pad: String) -> String {
 /// ```
 /// string.pad_right("hi", 5, " ")  // "hi   "
 /// ```
-pub fn pad_right(s: String, width: int, pad: String) -> String {
+pub fn pad_right(s: string, width: int, pad: string) -> string {
     let slen = s.len();
     if slen >= width {
         return s;
@@ -438,7 +438,7 @@ pub fn pad_right(s: String, width: int, pad: String) -> String {
 /// string.is_numeric("12a")   // false
 /// string.is_numeric("")      // false
 /// ```
-pub fn is_numeric(s: String) -> bool {
+pub fn is_numeric(s: string) -> bool {
     let slen = s.len();
     if slen == 0 {
         return false;
@@ -460,7 +460,7 @@ pub fn is_numeric(s: String) -> bool {
 /// string.count("abcabc", "abc")  // 2
 /// string.count("hello", "x")     // 0
 /// ```
-pub fn count(haystack: String, needle: String) -> int {
+pub fn count(haystack: string, needle: string) -> int {
     let nlen = needle.len();
     if nlen == 0 {
         return 0;
@@ -488,7 +488,7 @@ pub fn count(haystack: String, needle: String) -> int {
 /// string.starts_with("hello", "he")   // true
 /// string.starts_with("hello", "lo")   // false
 /// ```
-pub fn starts_with(s: String, prefix: String) -> bool {
+pub fn starts_with(s: string, prefix: string) -> bool {
     s.starts_with(prefix)
 }
 
@@ -500,7 +500,7 @@ pub fn starts_with(s: String, prefix: String) -> bool {
 /// string.ends_with("hello", "lo")   // true
 /// string.ends_with("hello", "he")   // false
 /// ```
-pub fn ends_with(s: String, suffix: String) -> bool {
+pub fn ends_with(s: string, suffix: string) -> bool {
     s.ends_with(suffix)
 }
 
@@ -512,7 +512,7 @@ pub fn ends_with(s: String, suffix: String) -> bool {
 /// string.contains("hello world", "world")  // true
 /// string.contains("hello", "xyz")          // false
 /// ```
-pub fn contains(s: String, sub: String) -> bool {
+pub fn contains(s: string, sub: string) -> bool {
     s.contains(sub)
 }
 
@@ -524,7 +524,7 @@ pub fn contains(s: String, sub: String) -> bool {
 /// string.is_ascii("hello")  // true
 /// string.is_ascii("héllo")  // false
 /// ```
-pub fn is_ascii(s: String) -> bool {
+pub fn is_ascii(s: string) -> bool {
     let len = s.len();
     var i = 0;
     while i < len {
@@ -538,22 +538,22 @@ pub fn is_ascii(s: String) -> bool {
 }
 
 /// Convert a string to lowercase.
-pub fn to_lower(s: String) -> String {
+pub fn to_lower(s: string) -> string {
     s.to_lowercase()
 }
 
 /// Convert a string to uppercase.
-pub fn to_upper(s: String) -> String {
+pub fn to_upper(s: string) -> string {
     s.to_uppercase()
 }
 
 /// Trim leading and trailing whitespace from a string.
-pub fn trim(s: String) -> String {
+pub fn trim(s: string) -> string {
     s.trim()
 }
 
 /// Replace all occurrences of `old` in `s` with `new_val`.
-pub fn replace(s: String, old: String, new_val: String) -> String {
+pub fn replace(s: string, old: string, new_val: string) -> string {
     s.replace(old, new_val)
 }
 
@@ -572,8 +572,8 @@ pub fn replace(s: String, old: String, new_val: String) -> String {
 /// let trail = string.split("a,b,", ",");   // ["a", "b", ""]
 /// let empty = string.split("x", "");       // ["x"]
 /// ```
-pub fn split(s: String, sep: String) -> Vec<String> {
-    let result: Vec<String> = Vec::new();
+pub fn split(s: string, sep: string) -> Vec<string> {
+    let result: Vec<string> = Vec::new();
     let slen = s.len();
     let dlen = sep.len();
     if dlen == 0 {
@@ -609,8 +609,8 @@ pub fn split(s: String, sep: String) -> Vec<String> {
 /// let crlf  = string.lines("a\r\nb");    // ["a", "b"]
 /// let trail = string.lines("foo\n");     // ["foo", ""]
 /// ```
-pub fn lines(s: String) -> Vec<String> {
-    let result: Vec<String> = Vec::new();
+pub fn lines(s: string) -> Vec<string> {
+    let result: Vec<string> = Vec::new();
     let slen = s.len();
     var start = 0;
     while start < slen {
@@ -647,7 +647,7 @@ pub fn lines(s: String) -> Vec<String> {
 /// let s = string.join(["a", "b", "c"], ", ");  // "a, b, c"
 /// let e = string.join([], ",");                // ""
 /// ```
-pub fn join(parts: Vec<String>, sep: String) -> String {
+pub fn join(parts: Vec<string>, sep: string) -> string {
     let n = parts.len();
     if n == 0 {
         return "";
@@ -671,15 +671,15 @@ pub fn join(parts: Vec<String>, sep: String) -> String {
 ///
 /// // Implement for custom types:
 /// // impl ToString for MyType {
-/// //     fn to_str(m: MyType) -> String { ... }
+/// //     fn to_str(m: MyType) -> string { ... }
 /// // }
 /// ```
 pub trait ToString {
     /// Convert this value to its string representation.
-    fn to_str(val: Self) -> String;
+    fn to_str(val: Self) -> string;
 }
 
 // ── FFI binding (char-code-to-string has no builtin equivalent) ─────
 extern "C" {
-    fn hew_char_to_string(code: i32) -> String;
+    fn hew_char_to_string(code: i32) -> string;
 }

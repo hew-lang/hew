@@ -1,0 +1,16 @@
+trait Display {
+}
+
+trait AssocForms {
+    type Plain;
+
+    fn make(value: Self) -> Self::Plain;
+
+    type Bounded: Display;
+
+    type Defaulted = i32;
+
+    fn show(value: Self) -> Self::Bounded;
+
+    type BoundedDefault: Display = string;
+}

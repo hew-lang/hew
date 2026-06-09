@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: Simple HTTP downloader (curl-like client) in Hew
+
 // Simple HTTP downloader (curl-like client) in Hew
 //
 // Demonstrates: TCP networking, string manipulation, file I/O,
@@ -16,12 +19,12 @@ import std::fs;
 import std::os;
 
 extern "C" {
-    fn hew_bytes_to_string(data: bytes) -> String;
+    fn hew_bytes_to_string(data: bytes) -> string;
 }
 
 // Parse host and path from an http:// URL.
 // Returns "host" via the first call, "path" via the second.
-fn parse_host(url: String) -> String {
+fn parse_host(url: string) -> string {
     // Strip "http://"
     var s = url;
     let prefix_pos = s.find("http://");
@@ -41,7 +44,7 @@ fn parse_host(url: String) -> String {
     s
 }
 
-fn parse_port(url: String) -> String {
+fn parse_port(url: string) -> string {
     var s = url;
     let prefix_pos = s.find("http://");
     if prefix_pos == 0 {
@@ -59,7 +62,7 @@ fn parse_port(url: String) -> String {
     }
 }
 
-fn parse_path(url: String) -> String {
+fn parse_path(url: string) -> string {
     var s = url;
     let prefix_pos = s.find("http://");
     if prefix_pos == 0 {
@@ -129,7 +132,7 @@ Connection: close
     };
     // Read response in chunks
     var total_bytes: i64 = 0;
-    var full_response: String = "";
+    var full_response: string = "";
     var reading = true;
     while reading {
         let chunk_bytes = conn.read();

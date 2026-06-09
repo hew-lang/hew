@@ -80,6 +80,34 @@ impl Checker {
         }
     }
 
+    /// Record the resolved type arguments for a record (or enum-struct-variant)
+    /// initialiser site on a user-defined generic type.
+    ///
+    /// Mirrors [`record_concrete_call_type_args`] for the record-init
+    /// monomorphisation surface, with one structural difference: a
+    /// record-init's type args may only become fully concrete *after*
+    /// `check_struct_init` returns — via an outer annotation
+    /// (`let x: Box<int> = Box { value: 1 }`) or an enclosing return-type
+    /// unification.  Eagerly rejecting at emission time when an arg still
+    /// carries a `Ty::Var` would drop entries the post-inference boundary
+    /// resolve in `check_program` would have made fully concrete.
+    ///
+    /// Discipline: snapshot through `subst.resolve` here so later updates to
+    /// the substitution propagate at the boundary; rely on
+    /// [`Self::validate_record_init_type_args_output_contract`] to prune
+    /// entries that are still partial after `materialize_literal_defaults`
+    /// settles.  The fail-closed invariant (no `Ty::Var` crosses into HIR)
+    /// is preserved — it is just enforced at the output boundary rather
+    /// than at emission, parallel to how `expr_types` works.
+    pub(super) fn record_concrete_record_init_type_args(&mut self, span: &Span, type_args: &[Ty]) {
+        if type_args.is_empty() {
+            return;
+        }
+        let snapshot: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
+        self.record_init_type_args
+            .insert(SpanKey::from(span), snapshot);
+    }
+
     fn record_builtin_result_output_type_args(&mut self, span: &Span, ok_ty: &Ty, err_ty: &Ty) {
         self.builtin_result_output_type_args
             .insert(SpanKey::from(span), (ok_ty.clone(), err_ty.clone()));
@@ -539,15 +567,18 @@ impl Checker {
                 return self.make_vec_type(elem, span);
             }
             "supervisor_child" if args.len() == 2 => {
-                // supervisor_child(sup, index) → typed ActorRef based on supervisor decl
+                // supervisor_child(sup, index) → typed LocalPid based on supervisor decl
                 let (sup_expr, sup_sp) = args[0].expr();
                 let sup_ty = self.synthesize(sup_expr, sup_sp);
                 let sup_ty_resolved = self.subst.resolve(&sup_ty);
                 let (idx_expr, idx_sp) = args[1].expr();
                 self.check_against(idx_expr, idx_sp, &Ty::I64);
 
-                if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_ref() {
-                    if let Some(children) = self.supervisor_children.get(sup_name) {
+                // Accept local actor handles as supervisor handles.
+                if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_handle() {
+                    if let Some(sup_children) = self.supervisor_children.get(sup_name) {
+                        // `supervisor_child` builtin indexes into the static slot space.
+                        let statics = &sup_children.statics;
                         if let Expr::Literal(hew_parser::ast::Literal::Integer {
                             value: idx, ..
                         }) = idx_expr
@@ -558,19 +589,19 @@ impl Checker {
                                 reason = "supervisor child index is always non-negative and small"
                             )]
                             let i = *idx as usize;
-                            if i < children.len() {
-                                let child_type = &children[i].1;
-                                return Ty::actor_ref(Ty::Named {
+                            if i < statics.len() {
+                                let child_type = &statics[i].1;
+                                return Ty::local_pid(Ty::Named {
                                     name: child_type.clone(),
                                     args: vec![],
                                 });
                             }
                         }
                         // Non-constant index: fresh type var
-                        return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
+                        return Ty::local_pid(Ty::Var(TypeVar::fresh()));
                     }
                 }
-                return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
+                return Ty::local_pid(Ty::Var(TypeVar::fresh()));
             }
             _ => {}
         }
@@ -902,7 +933,7 @@ impl Checker {
                 span,
                 format!(
                     "Channel<{resolved}> is not supported in `for await`; \
-                     only Channel<String> and Channel<int> are currently supported"
+                     only Channel<string> and Channel<int> are currently supported"
                 ),
             );
             return;

@@ -28,7 +28,7 @@ pub fn resolve_channel_method(
 /// Resolves a method call on a first-class `Stream<T>` or `Sink<T>` to its C symbol.
 ///
 /// The `element_type` parameter carries the resolved inner type name (e.g.
-/// `"bytes"` or `"String"`). Element-type-sensitive methods now fail closed:
+/// `"bytes"` or `"string"`). Element-type-sensitive methods now fail closed:
 /// when the inner type is missing or not one of the lowerable runtime ABIs,
 /// the resolver returns `None` instead of silently falling back to the string
 /// entry point.
@@ -115,7 +115,7 @@ mod tests {
     fn stream_methods_resolve() {
         // Channel-family naming: .recv() is the fundamental recv surface.
         assert_eq!(
-            resolve_stream_method(STREAM, "recv", Some("String")),
+            resolve_stream_method(STREAM, "recv", Some("string")),
             Some("hew_stream_next")
         );
         assert_eq!(
@@ -128,7 +128,7 @@ mod tests {
         );
         // Iterator-style aliases (.next, .collect, .lines) no longer resolve
         // via the fundamental method table.
-        assert_eq!(resolve_stream_method(STREAM, "next", Some("String")), None);
+        assert_eq!(resolve_stream_method(STREAM, "next", Some("string")), None);
         assert_eq!(resolve_stream_method(STREAM, "collect", None), None);
         assert_eq!(resolve_stream_method(STREAM, "lines", None), None);
         assert_eq!(
@@ -145,7 +145,7 @@ mod tests {
     fn sink_methods_resolve() {
         // Channel-family naming: .send() is the fundamental send surface.
         assert_eq!(
-            resolve_stream_method(SINK, "send", Some("String")),
+            resolve_stream_method(SINK, "send", Some("string")),
             Some("hew_sink_write_string")
         );
         assert_eq!(
@@ -153,7 +153,7 @@ mod tests {
             Some("hew_sink_write_bytes")
         );
         // .write and .flush no longer resolve via the fundamental method table.
-        assert_eq!(resolve_stream_method(SINK, "write", Some("String")), None);
+        assert_eq!(resolve_stream_method(SINK, "write", Some("string")), None);
         assert_eq!(resolve_stream_method(SINK, "flush", None), None);
         assert_eq!(
             resolve_stream_method(SINK, "close", None),
@@ -172,11 +172,19 @@ mod tests {
         // Element-sensitive methods return None for non-lowerable types.
         assert_eq!(resolve_stream_method(STREAM, "recv", None), None);
         assert_eq!(resolve_stream_method(STREAM, "recv", Some("Row")), None);
-        assert_eq!(resolve_stream_method(STREAM, "recv", Some("string")), None);
+        // "string" is now canonical (Q57/R14) and must resolve.
+        assert_eq!(
+            resolve_stream_method(STREAM, "recv", Some("string")),
+            Some("hew_stream_next")
+        );
         assert_eq!(resolve_stream_method(STREAM, "recv", Some("str")), None);
         assert_eq!(resolve_stream_method(SINK, "send", None), None);
         assert_eq!(resolve_stream_method(SINK, "send", Some("Row")), None);
-        assert_eq!(resolve_stream_method(SINK, "send", Some("string")), None);
+        // "string" is now canonical and must resolve.
+        assert_eq!(
+            resolve_stream_method(SINK, "send", Some("string")),
+            Some("hew_sink_write_string")
+        );
         assert_eq!(resolve_stream_method(SINK, "send", Some("str")), None);
     }
 

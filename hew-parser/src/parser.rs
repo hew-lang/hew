@@ -1,20 +1,22 @@
 //! Hand-written recursive-descent parser with Pratt precedence for operator expressions.
 
 use crate::ast::{
-    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
-    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
-    ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam,
-    Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase,
-    OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
-    RecordDecl, RecordField, RecordKind, ResourceMarker, RestartPolicy, SelectArm, Span, Spanned,
-    Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
-    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
-    WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
+    ActorDecl, ActorInit, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block, CallArg,
+    ChildSpec, CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl,
+    FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item,
+    LambdaParam, Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm,
+    NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program,
+    ReceiveFnDecl, RecordDecl, RecordField, RecordKind, ResourceMarker, RestartPolicy, SelectArm,
+    Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
+    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause,
+    WherePredicate, WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
 use std::cell::Cell;
+
+type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
 
 /// Parse an integer literal string, returning both value and radix.
 ///
@@ -392,6 +394,9 @@ pub struct Parser<'src> {
     /// Stack of token mutations performed by `eat_closing_angle`, so they can
     /// be rolled back on speculative-parse backtrack.
     angle_mutations: Vec<(usize, (Token<'src>, Span))>,
+    /// True while parsing an impl-method parameter list that accepts bare
+    /// `self` as sugar for a `Self` receiver parameter.
+    allow_implicit_self_params: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -492,6 +497,7 @@ impl<'src> Parser<'src> {
             errors,
             depth: Cell::new(0),
             angle_mutations: Vec::new(),
+            allow_implicit_self_params: false,
         }
     }
 
@@ -1219,9 +1225,9 @@ impl<'src> Parser<'src> {
                 }
                 let _ = self.expect(&Token::RightParen);
             }
-            let end = self.peek_span().start;
-            let _ = self.expect(&Token::RightBracket);
-            let end = self.peek_span().start.max(end);
+            let end = self
+                .expect(&Token::RightBracket)
+                .map_or_else(|| self.peek_span().start, |span| span.end);
             attrs.push(Attribute {
                 name,
                 args,
@@ -1621,7 +1627,7 @@ impl<'src> Parser<'src> {
         let type_params = self.parse_opt_type_params()?;
 
         self.expect(&Token::LeftParen)?;
-        let params = self.parse_params();
+        let params = self.parse_params_with_implicit_self(self.allow_implicit_self_params);
         self.expect(&Token::RightParen)?;
 
         let return_type = self.parse_opt_return_type()?;
@@ -2142,7 +2148,7 @@ impl<'src> Parser<'src> {
                 let type_params = self.parse_opt_type_params()?;
 
                 self.expect(&Token::LeftParen)?;
-                let params = self.parse_params();
+                let params = self.parse_params_with_implicit_self(true);
                 self.expect(&Token::RightParen)?;
 
                 let return_type = self.parse_opt_return_type()?;
@@ -2169,6 +2175,7 @@ impl<'src> Parser<'src> {
                 }))
             }
             Some(Token::Type) => {
+                let type_start = self.peek_span().start;
                 self.advance();
                 let name = self.expect_ident()?;
 
@@ -2184,11 +2191,12 @@ impl<'src> Parser<'src> {
                     None
                 };
 
-                self.expect(&Token::Semicolon)?;
+                let semi_span = self.expect(&Token::Semicolon)?;
                 Some(TraitItem::AssociatedType {
                     name,
                     bounds,
                     default,
+                    span: type_start..semi_span.end,
                 })
             }
             _ => {
@@ -2255,9 +2263,12 @@ impl<'src> Parser<'src> {
                 Some(Token::Fn) => {
                     let fn_start = self.peek_span().start;
                     self.advance();
-                    if let Some(mut method) =
-                        self.parse_function(fn_start, false, false, vis, is_pure, Vec::new())
-                    {
+                    let prev_allow_implicit_self =
+                        std::mem::replace(&mut self.allow_implicit_self_params, true);
+                    let parsed_method =
+                        self.parse_function(fn_start, false, false, vis, is_pure, Vec::new());
+                    self.allow_implicit_self_params = prev_allow_implicit_self;
+                    if let Some(mut method) = parsed_method {
                         if let Some(doc) = doc_comment {
                             method.doc_comment = Some(doc);
                         }
@@ -3355,9 +3366,9 @@ impl<'src> Parser<'src> {
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let raw_ty = self.expect_ident()?;
-                    // Normalize legacy lowercase aliases to canonical type names
+                    // Normalize legacy aliases to canonical lowercase type names
                     let ty = match raw_ty.as_str() {
-                        "string" | "str" => "String".to_string(),
+                        "str" => "string".to_string(),
                         _ => raw_ty,
                     };
 
@@ -3650,12 +3661,16 @@ impl<'src> Parser<'src> {
                     let mut bounds = Vec::new();
                     loop {
                         let name = self.expect_ident()?;
-                        let type_args = if self.eat(&Token::Less) {
-                            Some(self.parse_type_args()?)
+                        let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
+                            self.parse_trait_bound_args()?
                         } else {
-                            None
+                            (None, Vec::new())
                         };
-                        bounds.push(TraitBound { name, type_args });
+                        bounds.push(TraitBound {
+                            name,
+                            type_args,
+                            assoc_type_bindings,
+                        });
 
                         if !self.eat(&Token::Plus) {
                             break;
@@ -3666,12 +3681,16 @@ impl<'src> Parser<'src> {
                 } else {
                     // Single trait: dyn TraitName
                     let name = self.expect_ident()?;
-                    let type_args = if self.eat(&Token::Less) {
-                        Some(self.parse_type_args()?)
+                    let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
+                        self.parse_trait_bound_args()?
                     } else {
-                        None
+                        (None, Vec::new())
                     };
-                    vec![TraitBound { name, type_args }]
+                    vec![TraitBound {
+                        name,
+                        type_args,
+                        assoc_type_bindings,
+                    }]
                 };
                 TypeExpr::TraitObject(bounds)
             }
@@ -3736,6 +3755,18 @@ impl<'src> Parser<'src> {
 
     fn parse_type_params(&mut self) -> Option<Vec<TypeParam>> {
         let mut params = Vec::new();
+
+        // Detect and reject empty `<>` immediately — a declaration like
+        // `pub type Box<>` has no meaningful semantics; the author almost
+        // certainly forgot to name the type parameter.
+        if self.at_closing_angle() {
+            self.error(
+                "empty type parameter list: add at least one type parameter, e.g. `<T>`"
+                    .to_string(),
+            );
+            self.eat_closing_angle();
+            return None;
+        }
 
         while !self.at_end() && !self.at_closing_angle() {
             let name = self.expect_ident()?;
@@ -3817,16 +3848,53 @@ impl<'src> Parser<'src> {
         Some(args)
     }
 
+    fn parse_trait_bound_args(&mut self) -> Option<ParsedTraitBoundArgs> {
+        let mut type_args = Vec::new();
+        let mut assoc_type_bindings = Vec::new();
+
+        while !self.at_end() && !self.at_closing_angle() {
+            if matches!(self.peek(), Some(Token::Identifier(_)))
+                && self.peek_at(self.pos + 1) == Some(&Token::Equal)
+            {
+                let name = self.expect_ident()?;
+                self.expect(&Token::Equal)?;
+                let ty = self.parse_type()?;
+                assoc_type_bindings.push(AssocTypeBinding { name, ty });
+            } else {
+                type_args.push(self.parse_type()?);
+            }
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+
+        if !self.eat_closing_angle() {
+            self.error("expected '>'".to_string());
+            return None;
+        }
+        let type_args = if type_args.is_empty() {
+            None
+        } else {
+            Some(type_args)
+        };
+        Some((type_args, assoc_type_bindings))
+    }
+
     fn parse_trait_bound(&mut self) -> Option<TraitBound> {
         let name = self.expect_ident()?;
 
-        let type_args = if self.eat(&Token::Less) {
-            Some(self.parse_type_args()?)
+        let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
+            self.parse_trait_bound_args()?
         } else {
-            None
+            (None, Vec::new())
         };
 
-        Some(TraitBound { name, type_args })
+        Some(TraitBound {
+            name,
+            type_args,
+            assoc_type_bindings,
+        })
     }
 
     #[allow(
@@ -3880,6 +3948,10 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_params(&mut self) -> Vec<Param> {
+        self.parse_params_with_implicit_self(false)
+    }
+
+    fn parse_params_with_implicit_self(&mut self, allow_implicit_self: bool) -> Vec<Param> {
         let mut params = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightParen) {
@@ -3888,16 +3960,36 @@ impl<'src> Parser<'src> {
                 break;
             };
 
-            // `self` is not a valid parameter name in Hew — neither bare nor typed.
-            // Users must use named receivers: fn method(val: Self) or fn method(p: Point)
             if name == "self" {
                 let span = self
                     .tokens
                     .get(self.pos.wrapping_sub(1))
                     .map_or(self.peek_span(), |(_, s)| s.clone());
+                if allow_implicit_self
+                    && params.is_empty()
+                    && !is_mutable
+                    && self.peek() != Some(&Token::Colon)
+                {
+                    params.push(Param {
+                        name,
+                        ty: (
+                            TypeExpr::Named {
+                                name: "Self".to_string(),
+                                type_args: None,
+                            },
+                            span,
+                        ),
+                        is_mutable: false,
+                    });
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                    continue;
+                }
                 self.errors.push(ParseError {
                     message: "`self` is not a valid parameter name in Hew; \
-                              use a named receiver with explicit type instead: \
+                              use bare `self` as the first parameter of a trait/impl method, \
+                              or use a named receiver with explicit type: \
                               `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
                         .to_string(),
                     span,
@@ -7108,18 +7200,18 @@ fn demo() {}
 
     #[test]
     fn parse_trait_declaration() {
-        let source = "trait Printable { fn print(val: Self); }";
+        let source = "trait Printable { fn print(self); }";
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
     #[test]
-    fn parse_bare_self_is_error() {
-        let source = "trait Printable { fn print(self); }";
+    fn parse_bare_self_in_free_fn_is_error() {
+        let source = "fn print(self) {}";
         let result = parse(source);
         assert!(
             !result.errors.is_empty(),
-            "expected parse error for bare `self` parameter"
+            "expected parse error for bare `self` in free function"
         );
         assert!(
             result.errors[0]
@@ -7145,6 +7237,13 @@ fn demo() {}
             "error message should mention self is not a valid parameter name, got: {}",
             result.errors[0].message,
         );
+    }
+
+    #[test]
+    fn parse_impl_method_bare_self_receiver() {
+        let source = "type Foo { x: int } impl Foo { fn bar(self) -> int { self.x } }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
     #[test]
@@ -7234,6 +7333,80 @@ fn demo() {}
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         assert_eq!(result.program.items.len(), 1);
+    }
+
+    // ── extern "rt" block tests ──────────────────────────────────────────
+
+    #[test]
+    fn extern_rt_block_empty() {
+        let result = parse("extern \"rt\" { }");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.program.items.len(), 1);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "rt");
+        assert!(block.functions.is_empty());
+    }
+
+    #[test]
+    fn extern_rt_block_single_fn() {
+        let result = parse("extern \"rt\" { fn println(s: string); }");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.program.items.len(), 1);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "rt");
+        assert_eq!(block.functions.len(), 1);
+        assert_eq!(block.functions[0].name, "println");
+        assert_eq!(block.functions[0].params.len(), 1);
+        assert_eq!(block.functions[0].params[0].name, "s");
+    }
+
+    #[test]
+    fn extern_rt_block_multiple_fns() {
+        let result = parse(
+            "extern \"rt\" { fn println(s: string); fn print(s: string); fn assert(cond: bool); }",
+        );
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "rt");
+        assert_eq!(block.functions.len(), 3);
+        assert_eq!(block.functions[0].name, "println");
+        assert_eq!(block.functions[1].name, "print");
+        assert_eq!(block.functions[2].name, "assert");
+    }
+
+    #[test]
+    fn extern_rt_block_fn_with_body_rejected() {
+        // Bodies are forbidden in extern blocks (any ABI): the parser expects `;`
+        // after the parameter list. A `{` in its place produces a parse error.
+        let result = parse("extern \"rt\" { fn println(s: string) { todo() } }");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("expected `;`")),
+            "expected a 'expected `;`' error, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_unknown_abi_accepted_at_parse_level() {
+        // The parser is ABI-agnostic; unknown ABI strings parse successfully.
+        // Rejection of unsupported ABIs is deferred to the type-checker.
+        let result = parse("extern \"xyz\" { fn foo(); }");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "xyz");
+        assert_eq!(block.functions.len(), 1);
+        assert_eq!(block.functions[0].name, "foo");
     }
 
     #[test]
@@ -7945,7 +8118,7 @@ wire type Msg {
     fn struct_init_explicit_single_type_arg_parses() {
         let src = r#"
             type Wrapper<T> { value: T }
-            fn main() { let w = Wrapper<String> { value: "hello" }; }
+            fn main() { let w = Wrapper<string> { value: "hello" }; }
         "#;
         let result = parse(src);
         assert!(
@@ -7975,8 +8148,8 @@ wire type Msg {
         let args = type_args.as_ref().expect("type_args should be Some");
         assert_eq!(args.len(), 1, "expected one type arg");
         assert!(
-            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "String"),
-            "expected String type arg, got {:?}",
+            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "string"),
+            "expected string type arg, got {:?}",
             args[0].0
         );
     }
@@ -8014,7 +8187,7 @@ wire type Msg {
     fn struct_init_explicit_multi_type_arg_parses() {
         let src = r#"
             type Pair<A, B> { first: A, second: B }
-            fn main() { let p = Pair<int, String> { first: 1, second: "x" }; }
+            fn main() { let p = Pair<int, string> { first: 1, second: "x" }; }
         "#;
         let result = parse(src);
         assert!(
@@ -8043,8 +8216,8 @@ wire type Msg {
             "first type arg should be int"
         );
         assert!(
-            matches!(&args[1].0, TypeExpr::Named { name, .. } if name == "String"),
-            "second type arg should be String"
+            matches!(&args[1].0, TypeExpr::Named { name, .. } if name == "string"),
+            "second type arg should be string"
         );
     }
 

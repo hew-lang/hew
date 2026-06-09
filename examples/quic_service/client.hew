@@ -25,7 +25,7 @@ fn assert_ok(result: Result<(), fs.IoError>) {
     }
 }
 
-fn service_port() -> String {
+fn service_port() -> string {
     var port = "4433";
     if os.has_env("HEW_QUIC_SERVICE_PORT") {
         port = os.env("HEW_QUIC_SERVICE_PORT");

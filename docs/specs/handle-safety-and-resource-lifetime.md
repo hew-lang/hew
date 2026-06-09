@@ -210,11 +210,10 @@ The checker is the authority. Codegen consumes pre-validated facts.
   YieldedAcrossSuspend / Temporary). These are the categories LESSONS row
   `exhaustive-traversal-and-lowering` requires; the spec mandates their
   exhaustive presence with no wildcard fallthrough.
-- `TypedProgram` carries these facts across the msgpack boundary into MLIR
-  codegen exactly the way `expr_types`, `assign_target_kinds`,
-  `assign_target_shapes`, and `lowering_facts` carry their facts today
-  (`docs/specs/typedprogram-soundness-matrix.md`). A new row
-  `handle_ownership_kinds` is added to that matrix in this same change.
+- The v0.5 HIR/MIR pipeline carries these facts into `hew-codegen-rs` as
+  validated MIR metadata. The retired `TypedProgram`/MessagePack/C++ backend
+  seam is documented only as historical certification context in
+  `docs/specs/typedprogram-soundness-matrix.md`.
 - Codegen's role is fail-closed consumption only: missing classification at
   lowering is an invariant diagnostic (LESSONS `assignment-target-authority`,
   `checker-codegen-pattern-contract`), never a fall-back inference, and never
@@ -321,7 +320,7 @@ hook, sanitiser test), not just *what* the failure is.
 | FM-9 | WASM parity gap (native target gets the cleanup, WASM target does not) | `make test-wasm` per per-handle PR | LESSONS `native-wasm-parity`; either parity green or named `WASM-TODO` (§10). |
 | FM-10 | Field-alias double-free (struct field passed as call arg whose callee drops it) | Checker pre-scan (LESSONS `field-alias-fail-closed`) | Reject at compile time before call IR is emitted; `errorCount_` incremented alongside `emitError`. |
 | FM-11 | Closure-capture leak (handle captured by long-lived closure that is never invoked) | Checker move-classification (`ClosureCapture`) | The move-checker substrate (issue #1399) publishes the classification; codegen emits a drop on closure deallocation. Reject if the captured handle's affine semantics cannot be satisfied. |
-| FM-12 | Generator suspend/resume use-after-free (DROP-TODO D6 at `MLIRGen.cpp:5268`) | Checker move-classification (`YieldedAcrossSuspend`) | The move-checker substrate (issue #1399) must publish this category before any per-handle migration that touches a generator. Until then, generators that hold handle bindings are checker-rejected. |
+| FM-12 | Generator suspend/resume use-after-free (retired-backend DROP-TODO D6) | Checker move-classification (`YieldedAcrossSuspend`) | The move-checker substrate (issue #1399) must publish this category before any per-handle migration that touches a generator. Until then, generators that hold handle bindings are checker-rejected. |
 | FM-13 | C ABI consumer double-free with **address reuse** — a C caller invokes `hew_*_free` after Hew already released, the underlying allocator hands the same address back to a *different* live allocation, and the second free corrupts the new allocation (the failure mode that drove rejection of mechanism F in §3) | C ABI test harness in `hew-cabi/tests/` | Calibration-milestone deliverable; release functions guarded by an FFI-side `closed` flag *only when proven idempotent and regression-tested* (LESSONS `ffi-ownership-contracts`). |
 
 ---
@@ -354,9 +353,9 @@ Per LESSONS `native-wasm-parity`: any handle-lifecycle behaviour that lands in
 
 For this lane specifically:
 
-- The **codegen drop emission table** (H) is target-independent — it lives in
-  MLIR generation and is emitted before the target backend split. WASM parity
-  is automatic for tier 1.
+- The **codegen drop emission table** (H) is target-independent — it is derived
+  before native/WASM target emission in the Rust HIR/MIR/codegen-rs path. WASM
+  parity is automatic for tier 1 once the shared MIR facts are accepted.
 - The **actor cleanup hook** (I) is duplicated across the two scheduler files.
   The runtime-scope cleanup milestone explicitly touches both. A per-handle
   migration PR that introduces a new hook entry must update both schedulers
@@ -376,9 +375,8 @@ For this lane specifically:
 ## 11. Per-handle migration table (work breakdown)
 
 For every entry in §7, the per-handle migration PR records what changes for
-the user, the
-stdlib, and codegen. The full content of each row is finalised by the PR
-itself; this spec fixes the *shape*.
+the user, the stdlib, and codegen-rs. The full content of each row is finalised
+by the PR itself; this spec fixes the *shape*.
 
 | Handle | User-facing change | Stdlib-internal change | Codegen change |
 | --- | --- | --- | --- |
@@ -469,15 +467,14 @@ behind a flag, the following rules apply:
   `json.Value` manual-release migration).
 - Soundness matrix: `docs/specs/typedprogram-soundness-matrix.md` (extended
   in the same change to add a `handle_ownership_kinds` row).
-- Substrate paths cited in this spec: `hew-codegen/src/mlir/MLIRGen.cpp`,
-  `hew-codegen/src/mlir/MLIRGenExpr.cpp`, `hew-runtime/src/scheduler.rs`,
-  `hew-runtime/src/scheduler_wasm.rs`, `hew-runtime/src/session.rs`,
-  `hew-cabi/tests/`.
+- Substrate paths cited in this spec: `hew-mir/`, `hew-codegen-rs/`,
+  `hew-runtime/src/scheduler.rs`, `hew-runtime/src/scheduler_wasm.rs`,
+  `hew-runtime/src/session.rs`, `hew-cabi/tests/`.
 - LESSONS rows: `ffi-ownership-contracts`, `raii-null-after-move`,
   `field-alias-fail-closed`, `cleanup-all-exits`, `checker-output-boundary`,
   `checker-codegen-pattern-contract`, `serializer-fail-closed`,
   `assignment-target-authority`, `exhaustive-traversal-and-lowering`,
-  `native-wasm-parity`, `mlir-local-type-hints`,
+  `native-wasm-parity`, historical retired-backend local type hints,
   `static-cpp-object-libcxx-boundary`, `error-count-exit-code`,
   `preflight-perf-discipline`, `check-pass-does-not-imply-run-pass`,
   `network-smoke-readiness`.

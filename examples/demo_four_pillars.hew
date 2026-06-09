@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
+//! Description: demo_four_pillars.hew — Overview of Hew's four pillars
+
 // demo_four_pillars.hew — Overview of Hew's four pillars
 // Demonstrates functions, actors, wire types, and supervision.
 actor Counter {
@@ -14,7 +17,7 @@ actor Counter {
 struct StatusUpdate {
     actor_id: u32 @1,
     count: i32 @2,
-    message: String @3,
+    message: string @3,
 }
 
 supervisor CounterPool {
@@ -46,7 +49,7 @@ fn main() {
     println("4. Supervision trees:");
     println("   CounterPool supervises Counter actors");
     println("   strategy: one_for_one, max_restarts: 5");
-    println("5. String operations:");
+    println("5. string operations:");
     let greeting = "Hello, " + "Hew!";
     println(f"   {greeting}");
     let len = greeting.len();

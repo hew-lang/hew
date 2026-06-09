@@ -20,19 +20,19 @@
 //! ```
 
 /// Encode binary data to a lowercase hex string.
-pub fn encode(data: bytes) -> String {
+pub fn encode(data: bytes) -> string {
     encode_impl(data, false)
 }
 
 /// Encode binary data to an uppercase hex string.
-pub fn encode_upper(data: bytes) -> String {
+pub fn encode_upper(data: bytes) -> string {
     encode_impl(data, true)
 }
 
 /// Decode a hex string to binary data.
 ///
 /// Returns an empty `bytes` buffer if the input is not valid hex.
-pub fn decode(s: String) -> bytes {
+pub fn decode(s: string) -> bytes {
     let slen = s.len();
     let out: bytes = bytes::new();
     if slen == 0 {
@@ -58,7 +58,7 @@ pub fn decode(s: String) -> bytes {
 }
 
 /// Encode binary data to a hex string, optionally uppercase.
-fn encode_impl(data: bytes, upper: bool) -> String {
+fn encode_impl(data: bytes, upper: bool) -> string {
     let out: bytes = bytes::new();
     for i in 0 .. data.len() {
         let b = data.get(i);
@@ -84,7 +84,7 @@ fn nibble_to_char(n: i32, upper: bool) -> i32 { // INTERNAL-ABI: byte-level nibb
 }
 
 /// Convert a single hex character to its 4-bit nibble value, or -1 if invalid.
-fn hex_char_to_nibble(ch: String) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; byte-level helper
+fn hex_char_to_nibble(ch: string) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; byte-level helper
     if ch == "0" {
         0 as i32
     } else if ch == "1" {

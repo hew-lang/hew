@@ -15,7 +15,7 @@
 
 // Service actor — responds to health checks. Can be made unhealthy.
 actor Service {
-    let name: String;
+    let name: string;
     let healthy: int; // 1 = healthy, 0 = unhealthy
     let requests: int;
     receive fn health_check() -> int {
@@ -38,11 +38,11 @@ actor Service {
 
 // Health monitor — checks registered services and reports status.
 actor HealthMonitor {
-    let svc_names: Vec<String>;
+    let svc_names: Vec<string>;
     let svc_refs: Vec<ActorRef<Service>>;
     let svc_status: Vec<int>; // 1=healthy, 0=unhealthy per service
     let check_count: int;
-    receive fn register(name: String, svc: ActorRef<Service>) {
+    receive fn register(name: string, svc: ActorRef<Service>) {
         svc_names.push(name);
         svc_refs.push(svc);
         svc_status.push(1);
@@ -100,7 +100,7 @@ fn main() {
     let api = spawn Service(name: "api", healthy: 1, requests: 0);
     let cache = spawn Service(name: "cache", healthy: 1, requests: 0);
     // Create monitor
-    let empty_names: Vec<String> = Vec::new();
+    let empty_names: Vec<string> = Vec::new();
     let empty_refs: Vec<ActorRef<Service>> = Vec::new();
     let empty_status: Vec<int> = Vec::new();
     let monitor = spawn HealthMonitor(svc_names: empty_names, svc_refs: empty_refs, svc_status: empty_status, check_count: 0);

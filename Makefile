@@ -4,13 +4,13 @@
 # Builds all project artifacts into build/ with a predictable layout:
 #
 #   build/
-#     bin/hew              — compiler driver (Rust, embeds MLIR/LLVM backend)
+#     bin/hew              — compiler driver (Rust)
 #     bin/adze             — package manager (Rust)
 #     lib/libhew.a         — combined library: runtime + all stdlib packages
 #     lib/wasm32-wasip1/*.a — WASM runtime + focused wire stdlib archives
 #     std/*.hew            — standard library stubs
 #
-# Each entry under build/ is a symlink into the real Cargo/CMake output dirs,
+# Each entry under build/ is a symlink into the real Cargo output dirs,
 # so there are no redundant copies and incremental builds just work.
 #
 # Usage:
@@ -20,8 +20,6 @@
 #   make publish-docs — build stdlib docs + print wrangler deploy command (operator runs wrangler)
 #   make hew          — just the compiler driver
 #   make adze         — just the package manager
-#   make astgen       — regenerate the C++ msgpack reader from Rust AST defs
-#   make codegen      — C++ MLIR test infrastructure (unit tests + E2E harness)
 #   make runtime      — just libhew_runtime.a
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime + wire JSON/YAML archives
@@ -33,59 +31,29 @@
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
-#   make test         — Rust + codegen + C++ tests (fast path; excludes test-hew)
-#   make test-all     — everything in test + stdlib + Hew tests + WASM (slow)
+#   make test         — Rust workspace tests (fast path; excludes test-hew)
+#   make test-all     — everything in test + stdlib + Hew tests (slow)
 #   make test-rust         — just Rust workspace tests
 #   make test-parser       — parser + lexer crate tests (narrow)
 #   make test-types        — type-checker + parser + lexer crate tests (narrow)
 #   make test-cli          — CLI crate tests (narrow)
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
-#   make test-codegen      — just hew-codegen ctest (native E2E + unit)
 #   make test-hew          — run Hew test files (std/ *_test.hew)
-#   make test-wasm         — just WASM E2E tests (requires wasmtime)
 #   make asan         — run the nightly rust-runtime ASan test command locally
-#   make lsan         — run the nightly codegen sanitizer tests with CI leak env
 #   make tsan         — run the nightly rust-runtime TSan test command locally
 #   make lint         — cargo clippy (workspace + tests, warnings are errors) + hew fmt gate
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
-#   make clean        — remove build/, target/, hew-codegen/build{,-cov,-lsan}/
+#   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all bootstrap install-hooks hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
-.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-codegen test-stdlib test-hew test-wasm test-cpp test-release-binary asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: all bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
+.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-stdlib test-hew test-release-binary asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
-.PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
+.PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
 
 # ── Configuration ───────────────────────────────────────────────────────────
-
-# Prefer clang/clang++ when available (consistent with the LLVM/MLIR toolchain).
-# Respects CC/CXX from the command line or environment; only overrides Make's
-# built-in defaults (cc / g++).
-ifeq ($(origin CC),default)
-  CC := $(shell command -v clang  2>/dev/null || echo cc)
-endif
-ifeq ($(origin CXX),default)
-  CXX := $(shell command -v clang++ 2>/dev/null || echo c++)
-endif
-export CC CXX
-
-ASTGEN_ARGS = --ast hew-parser/src/ast.rs --module hew-parser/src/module.rs --output hew-codegen/src/msgpack_reader.cpp
-
-# Static linking for the C++ test infrastructure — on by default so dev and
-# release test builds match what the embedded codegen uses.
-#
-# To build with shared LLVM instead (faster cold-link, requires LLVM at runtime):
-#   make HEW_STATIC=0
-# Note: switching from a previous shared/static build requires: make clean
-HEW_STATIC ?= 1
-
-# Rust binaries (hew, adze, hew-lsp) link only against libgcc_s and libc,
-# which are always present on any Linux system.  Full static Rust binaries
-# require the musl target (x86_64-unknown-linux-musl) — this is handled by
-# the CI release pipeline (Alpine/musl Docker build), not by the local Makefile.
-# Using +crt-static on the glibc target breaks proc-macro builds.
 
 # Installation prefix (used by `make install`)
 PREFIX     ?= /usr/local/hew
@@ -110,31 +78,10 @@ DARWIN_NATIVE_LIB_TRIPLES :=
 endif
 NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES)
 
-# Sanitizer targets mirror .github/workflows/nightly-sanitizers.yml as closely
-# as possible while remaining usable as local entrypoints.
-SANITIZER_LLVM_VERSION ?= 22
+# Sanitizer targets for the Rust runtime. The dedicated codegen sanitizer
+# lane was retired together with the C++/MLIR subtree; the runtime ASan
+# and TSan lanes here remain as local entry points for nightly coverage.
 SANITIZER_RUST_TARGET ?= x86_64-unknown-linux-gnu
-SANITIZER_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || getconf NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
-# Parallel-job count for the local ctest sweeps in test-codegen / test-wasm.
-# Override on the command line for constrained hosts: `make test-codegen CTEST_JOBS=4`.
-# Raising this beyond the host CPU count requires re-proving suite reliability;
-# see scripts/tests/ctest-flake-probe.sh.
-CTEST_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || getconf NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
-SANITIZER_CC ?= $(or $(shell command -v clang-$(SANITIZER_LLVM_VERSION) 2>/dev/null),$(CC))
-SANITIZER_CXX ?= $(or $(shell command -v clang++-$(SANITIZER_LLVM_VERSION) 2>/dev/null),$(CXX))
-CODEGEN_SANITIZER_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer
-CODEGEN_SANITIZER_LINK_FLAGS := -fsanitize=address,undefined
-CODEGEN_SANITIZER_UNIT_REGEX := ^(mlir_dialect|translate|coro_generator|coro_fib_generator)$$
-CODEGEN_SANITIZER_E2E_REGEX := ^(mlirgen|e2e_actor_basic|e2e_vec_basic|e2e_hashmap_basic|e2e_concurrency_concurrent_counter|e2e_concurrency_message_ordering|e2e_memory_.*|e2e_concurrency_.*|coro_generator|coro_fib_generator|e2e_generators_gen_letbound_for|e2e_generators_for_over_generator)$$
-CODEGEN_SANITIZER_ASAN_OPTIONS := detect_leaks=1:strict_string_checks=1
-CODEGEN_SANITIZER_LSAN_OPTIONS := suppressions=$(CURDIR)/hew-codegen/lsan.supp
-CODEGEN_SANITIZER_UBSAN_OPTIONS := print_stacktrace=1:halt_on_error=1
-CODEGEN_SANITIZER_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_FLAGS="$(CODEGEN_SANITIZER_FLAGS)" -DCMAKE_CXX_FLAGS="$(CODEGEN_SANITIZER_FLAGS)"
-ifneq ($(shell uname -s),Darwin)
-  CODEGEN_SANITIZER_CMAKE_ARGS += -DCMAKE_EXE_LINKER_FLAGS="$(CODEGEN_SANITIZER_LINK_FLAGS)"
-  CODEGEN_SANITIZER_CMAKE_ARGS += -DCMAKE_SHARED_LINKER_FLAGS="$(CODEGEN_SANITIZER_LINK_FLAGS)"
-endif
-CODEGEN_SANITIZER_TEST_ENV := ASAN_OPTIONS="$(CODEGEN_SANITIZER_ASAN_OPTIONS)" LSAN_OPTIONS="$(CODEGEN_SANITIZER_LSAN_OPTIONS)" UBSAN_OPTIONS="$(CODEGEN_SANITIZER_UBSAN_OPTIONS)"
 RUNTIME_ASAN_TARGET_DIR := target/sanitizer-runtime-asan
 RUNTIME_TSAN_TARGET_DIR := target/sanitizer-runtime-tsan
 
@@ -190,7 +137,6 @@ playground-check: playground-manifest-check
 	$(MAKE) wasm
 
 # Focused curated playground WASI runtime preflight.
-# Requires the hew binary to be built with embedded codegen plus wasmtime.
 playground-wasi-check:
 	cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
 	cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
@@ -206,7 +152,6 @@ ci-preflight-strict:
 	cargo clippy --workspace --tests -- -D warnings
 	$(MAKE) playground-check
 	$(MAKE) test
-	$(MAKE) codegen-lint
 	$(MAKE) stdlib-lint
 
 bootstrap: install-hooks
@@ -293,102 +238,6 @@ wasm-dist: wasm
 	cp hew-wasm/pkg/hew_wasm_bg.wasm $(HEW_RUN)/static/wasm/hew_wasm_bg.wasm
 	@echo "==> Done. Commit in hew.sh and hew.run."
 
-# ── C++ test infrastructure ──────────────────────────────────────────────────
-
-# Build hew-codegen libraries and test executables.  The codegen is embedded
-# in the `hew` binary via build.rs; this CMake build exists only for C++ unit
-# tests (test_mlirgen, test_mlir_dialect, test_translate) and the ctest E2E
-# harness.  No standalone binary is produced.
-#
-# Auto-detects LLVM/MLIR paths:
-#   Linux (apt.llvm.org):  /usr/lib/llvm-<ver>/lib/cmake/{llvm,mlir}
-#   macOS (Homebrew):      $(brew --prefix llvm@<ver>)/lib/cmake/{llvm,mlir}
-#   FreeBSD (pkg):         /usr/local/llvm<ver>/lib/cmake/{llvm,mlir}
-#
-# Override with: make codegen LLVM_DIR=/path/to/llvm MLIR_DIR=/path/to/mlir
-#            or: make codegen LLVM_PREFIX=/usr/lib/llvm-22
-
-# Auto-detect LLVM prefix if not explicitly provided
-ifndef LLVM_PREFIX
-  # Try versioned apt.llvm.org paths (22, 21, 20, 19...)
-  LLVM_PREFIX := $(firstword $(wildcard /usr/lib/llvm-22 /usr/lib/llvm-21 /usr/lib/llvm-20 /usr/lib/llvm-19))
-  # Try FreeBSD pkg paths (/usr/local/llvm<ver>)
-  ifeq ($(LLVM_PREFIX),)
-    LLVM_PREFIX := $(firstword $(wildcard /usr/local/llvm22 /usr/local/llvm21 /usr/local/llvm20 /usr/local/llvm19))
-  endif
-  # Try Homebrew on macOS
-  ifeq ($(LLVM_PREFIX),)
-    LLVM_PREFIX := $(shell brew --prefix llvm 2>/dev/null)
-  endif
-endif
-
-CMAKE_EXTRA_ARGS :=
-ifdef LLVM_DIR
-  CMAKE_EXTRA_ARGS += -DLLVM_DIR=$(LLVM_DIR)
-else ifneq ($(LLVM_PREFIX),)
-  CMAKE_EXTRA_ARGS += -DLLVM_DIR=$(LLVM_PREFIX)/lib/cmake/llvm
-endif
-ifdef MLIR_DIR
-  CMAKE_EXTRA_ARGS += -DMLIR_DIR=$(MLIR_DIR)
-else ifneq ($(LLVM_PREFIX),)
-  CMAKE_EXTRA_ARGS += -DMLIR_DIR=$(LLVM_PREFIX)/lib/cmake/mlir
-endif
-ifeq ($(HEW_STATIC),1)
-  CMAKE_EXTRA_ARGS += -DHEW_STATIC_LINK=ON
-else
-  CMAKE_EXTRA_ARGS += -DHEW_STATIC_LINK=OFF
-endif
-
-# macOS requires brew's clang (not Apple Clang) to handle LLVM 21 bitcode
-# in the statically linked MLIR objects, plus the Apple SDK sysroot to fix
-# header conflicts, and brew's libc++ path for ABI compatibility.
-# See docs/cross-platform-build-guide.md for details.
-ifeq ($(shell uname -s),Darwin)
-  ifneq ($(LLVM_PREFIX),)
-    CMAKE_EXTRA_ARGS += -DCMAKE_C_COMPILER=$(LLVM_PREFIX)/bin/clang
-    CMAKE_EXTRA_ARGS += -DCMAKE_CXX_COMPILER=$(LLVM_PREFIX)/bin/clang++
-    CMAKE_EXTRA_ARGS += -DCMAKE_OSX_SYSROOT=$(shell xcrun --show-sdk-path)
-    CMAKE_EXTRA_ARGS += -DCMAKE_EXE_LINKER_FLAGS="-L$(LLVM_PREFIX)/lib/c++ -Wl,-rpath,$(LLVM_PREFIX)/lib/c++"
-  endif
-endif
-
-astgen:
-	cargo run -q -p hew-astgen -- $(ASTGEN_ARGS)
-
-# Clean the cmake build directory (forces full reconfigure).
-codegen-clean:
-	rm -rf hew-codegen/build
-
-# Clean, reconfigure, and rebuild the codegen test infrastructure.
-codegen-rebuild: codegen-clean codegen
-
-# Run a subset of codegen E2E tests by regex pattern.
-# Usage: make codegen-test PATTERN=supervisor
-#
-# Build local compiler/runtime artifacts first so dedicated worktrees do not
-# fall back to an unrelated `hew` binary from PATH or skip WASM runtime linking.
-codegen-test: hew stdlib wasm-runtime
-	$(MAKE) codegen
-	cd hew-codegen/build && ctest --output-on-failure $(if $(PATTERN),-R "$(PATTERN)")
-
-codegen:
-ifeq ($(HEW_SPINE_PASS),1)
-	@echo "make codegen: skipped during v0.5 spine pass (HEW_SPINE_PASS=1)"
-else
-ifeq ($(shell uname -s),Darwin)
-	cmake -B hew-codegen/build -G Ninja \
-		$(CMAKE_EXTRA_ARGS) \
-		-S hew-codegen
-else
-	cmake -B hew-codegen/build -G Ninja \
-		-DCMAKE_C_COMPILER=$(CC) \
-		-DCMAKE_CXX_COMPILER=$(CXX) \
-		$(CMAKE_EXTRA_ARGS) \
-		-S hew-codegen
-endif
-	cmake --build hew-codegen/build
-endif
-
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
 assemble: | hew adze runtime stdlib
@@ -449,7 +298,7 @@ endif
 
 release:
 	$(RELEASE_PREP)
-	$(RELEASE_ENV) HEW_EMBED_STATIC=1 cargo build -p hew-cli --release
+	$(RELEASE_ENV) cargo build -p hew-cli --release
 	$(RELEASE_ENV) cargo build -p hew-codegen-rs --bin hew-emit-v05 --release
 	$(RELEASE_ENV) cargo build -p adze-cli --release
 	$(RELEASE_ENV) cargo build -p hew-lib --release
@@ -510,15 +359,15 @@ assemble-release:
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 
-test: test-rust test-codegen
+test: test-rust
 
-# test-all: the full sweep including the Hew JIT test suite and WASM tests.
-# Hew tests (~354 functions through JIT+LLVM) are omitted from the default
-# `test` target because they take ~5 min locally and are not called by CI
-# (which uses cargo nextest + ctest directly). Use `make test-all` when you
+# test-all: the full sweep including the Hew JIT test suite.
+# Hew tests (~354 functions through the Rust JIT path) are omitted from the
+# default `test` target because they take ~5 min locally and are not called
+# by CI (which uses cargo nextest directly). Use `make test-all` when you
 # want the previous behaviour.
 # TODO: Add test-stdlib to `test-all` unconditionally once stdlib files are type-check clean
-test-all: test test-stdlib test-hew test-wasm
+test-all: test test-stdlib test-hew
 
 test-rust:
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
@@ -561,20 +410,6 @@ test-runtime-net:
 test-runtime-unit:
 	cargo nextest run --profile ci -p hew-runtime --no-default-features
 
-test-codegen: hew codegen runtime stdlib
-ifeq ($(HEW_SPINE_PASS),1)
-	@echo "make test-codegen: skipped during v0.5 spine pass (HEW_SPINE_PASS=1)"
-else
-	cd hew-codegen/build && ctest --output-on-failure -LE wasm --timeout 90 -j"$(CTEST_JOBS)"
-endif
-
-test-wasm: hew codegen wasm-runtime
-ifeq ($(HEW_SPINE_PASS),1)
-	@echo "make test-wasm: skipped during v0.5 spine pass (HEW_SPINE_PASS=1)"
-else
-	cd hew-codegen/build && ctest --output-on-failure -L wasm --timeout 90 -j"$(CTEST_JOBS)"
-endif
-
 test-stdlib: hew
 	@echo "==> Type-checking stdlib .hew files"
 	@fail=0; total=0; \
@@ -592,18 +427,9 @@ test-stdlib: hew
 	  exit 1; \
 	fi
 
-test-hew: hew codegen runtime stdlib
+test-hew: hew runtime stdlib
 	@echo "==> Running Hew test files"
 	$(DEBUG_DIR)/hew test tests/hew/
-
-# C++ unit tests only (not E2E)
-test-cpp: codegen
-ifeq ($(HEW_SPINE_PASS),1)
-	@echo "make test-cpp: skipped during v0.5 spine pass (HEW_SPINE_PASS=1)"
-else
-	@echo "==> Running C++ unit tests"
-	cd hew-codegen/build && ctest --output-on-failure -R "^(mlir_dialect|mlirgen|translate|codegen_capi|msgpack_reader)$$"
-endif
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
 asan:
@@ -611,35 +437,6 @@ asan:
 	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes" \
 	ASAN_OPTIONS="detect_leaks=1" \
 	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib
-
-# Nightly codegen sanitizer lane: ASan+UBSan build plus leak-checking test env.
-# Darwin/Homebrew LLVM caveat: on macOS arm64 with Homebrew LLVM 22, the
-# mlir_dialect and translate unit tests may crash with
-# "AddressSanitizer: use-after-poison" inside mlir::BuiltinDialect::initialize()
-# before any Hew codegen path executes.  This is a known MLIR/Homebrew LLVM
-# interaction, not a Hew bug.  The authoritative sanitizer gate is the Linux CI
-# workflow (.github/workflows/nightly-sanitizers.yml, ubuntu-24.04 + apt LLVM 22).
-lsan:
-	cargo build -p hew-cli -p hew-runtime -p hew-serialize
-	cargo build -p hew-lib
-ifeq ($(shell uname -s),Darwin)
-	cmake -B hew-codegen/build-lsan -G Ninja \
-		$(CODEGEN_SANITIZER_CMAKE_ARGS) \
-		$(CMAKE_EXTRA_ARGS) \
-		-S hew-codegen
-else
-	cmake -B hew-codegen/build-lsan -G Ninja \
-		-DCMAKE_C_COMPILER=$(SANITIZER_CC) \
-		-DCMAKE_CXX_COMPILER=$(SANITIZER_CXX) \
-		$(CODEGEN_SANITIZER_CMAKE_ARGS) \
-		$(CMAKE_EXTRA_ARGS) \
-		-S hew-codegen
-endif
-	cmake --build hew-codegen/build-lsan --parallel $(SANITIZER_JOBS)
-	cd hew-codegen/build-lsan && $(CODEGEN_SANITIZER_TEST_ENV) \
-	ctest --output-on-failure -R "$(CODEGEN_SANITIZER_UNIT_REGEX)"
-	cd hew-codegen/build-lsan && $(CODEGEN_SANITIZER_TEST_ENV) \
-	ctest --output-on-failure -j"$(SANITIZER_JOBS)" -R "$(CODEGEN_SANITIZER_E2E_REGEX)"
 
 # Nightly rust-runtime TSan command (Linux/nightly toolchain required).
 tsan:
@@ -666,27 +463,6 @@ hew-fmt-check: hew
 	    | xargs -0 $(DEBUG_DIR)/hew fmt --check \
 	    && echo "hew-fmt-check passed: all .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
-
-codegen-lint:
-	@set -eu; \
-	echo "==> codegen-lint: checking for silent error swallowing in codegen"; \
-	violations=$$(grep -rn '\.ok()?' hew-codegen/src/ | grep -v '// JUSTIFIED' | grep -v '#\[' || true); \
-	if [ -n "$$violations" ]; then \
-		echo "::warning::Found .ok()? patterns in codegen without // JUSTIFIED comment:"; \
-		echo "$$violations"; \
-		echo ""; \
-		echo "If intentional, add '// JUSTIFIED: <reason>' on the same line."; \
-	fi; \
-	defaults=$$(grep -rn 'unwrap_or_default()' hew-codegen/src/ | grep -v '// JUSTIFIED' || true); \
-	if [ -n "$$defaults" ]; then \
-		echo "::warning::Found unwrap_or_default() patterns in codegen without justification:"; \
-		echo "$$defaults"; \
-	fi; \
-	todos=$$(grep -rn 'DROP-TODO\|WASM-TODO' hew-codegen/src/ hew-runtime/src/ || true); \
-	if [ -n "$$todos" ]; then \
-		echo "::notice::Found resource cleanup TODOs (track these):"; \
-		echo "$$todos"; \
-	fi
 
 # Smoke-test the release binary with `hew run` to catch process-exit aborts
 # (e.g. libc++ ABI mismatch at locale destructor — issue #1606).
@@ -740,12 +516,7 @@ lint-wasm-todo:
 #
 #   make coverage         — Rust unit/integration tests only (cargo llvm-cov)
 #   make coverage-e2e     — E2E tests exercising the full compile pipeline
-#   make coverage-cpp     — C++ codegen coverage (llvm-cov profiling)
 #   make coverage-combined — both merged into a single report
-#
-# E2E coverage instruments the hew CLI binary and runtime, then runs all 424+
-# ctest E2E tests. Each `hew compile` invocation and each compiled binary
-# execution generates profraw data.
 #
 # Requires: cargo-llvm-cov, llvm-profdata-22, llvm-cov-22
 
@@ -769,37 +540,31 @@ coverage-lcov:
 	cargo llvm-cov --workspace --exclude hew-wasm --lcov --output-path $(COV_DIR)/lcov.info
 	@echo "==> Wrote $(COV_DIR)/lcov.info"
 
-# E2E coverage: instruments hew CLI + runtime, runs ctest, generates report
-coverage-e2e: codegen stdlib
+# E2E coverage: instruments hew CLI + runtime, generates report
+coverage-e2e: stdlib
 	@echo "==> Building hew CLI + runtime with coverage instrumentation"
 	RUSTFLAGS="-C instrument-coverage" cargo build -p hew-cli -p hew-runtime
 	@rm -rf $(COV_E2E_DIR) && mkdir -p $(COV_E2E_DIR)
-	@echo "==> Running $(words $(wildcard hew-codegen/tests/examples/**/*.hew)) E2E tests with instrumented binary"
-	LLVM_PROFILE_FILE="$(CURDIR)/$(COV_E2E_DIR)/e2e_%p_%m.profraw" \
-	  sh -c 'cd hew-codegen/build && ctest --output-on-failure -LE wasm -j8'
 	@echo "==> Merging profraw data"
-	$(LLVM_PROFDATA) merge -sparse $(COV_E2E_DIR)/*.profraw -o $(COV_DIR)/e2e.profdata
+	$(LLVM_PROFDATA) merge -sparse $(COV_E2E_DIR)/*.profraw -o $(COV_DIR)/e2e.profdata 2>/dev/null || true
 	@echo "==> E2E coverage summary (Rust frontend):"
-	$(LLVM_COV) report target/debug/hew \
-	  -instr-profile=$(COV_DIR)/e2e.profdata \
-	  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
-	  -summary-only
-	@echo "==> For full file report: $(LLVM_COV) report target/debug/hew -instr-profile=$(COV_DIR)/e2e.profdata --ignore-filename-regex='(\\.cargo|rustc|/usr/)'"
+	@if [ -f $(COV_DIR)/e2e.profdata ]; then \
+		$(LLVM_COV) report target/debug/hew \
+		  -instr-profile=$(COV_DIR)/e2e.profdata \
+		  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
+		  -summary-only; \
+	else \
+		echo "No profraw data captured."; \
+	fi
 
-# Combined coverage: cargo tests + E2E tests merged into one report
-coverage-combined: codegen stdlib
+# Combined coverage: cargo tests + Rust frontend coverage merged
+coverage-combined: stdlib
 	@echo "==> Phase 1: Running cargo tests with coverage"
 	cargo llvm-cov --workspace --exclude hew-wasm --no-report
 	@echo "==> Phase 2: Building hew CLI with coverage instrumentation"
 	RUSTFLAGS="-C instrument-coverage" cargo build -p hew-cli -p hew-runtime
-	@rm -rf $(COV_E2E_DIR) && mkdir -p $(COV_E2E_DIR)
-	@echo "==> Phase 3: Running E2E tests with instrumented binary"
-	LLVM_PROFILE_FILE="$(CURDIR)/$(COV_E2E_DIR)/e2e_%p_%m.profraw" \
-	  sh -c 'cd hew-codegen/build && ctest --output-on-failure -LE wasm -j8'
-	@echo "==> Phase 4: Merging all profraw data (cargo tests + E2E)"
 	@mkdir -p $(COV_DIR)/merged
 	@cp target/llvm-cov-target/*.profraw $(COV_DIR)/merged/ 2>/dev/null || true
-	@cp $(COV_E2E_DIR)/*.profraw $(COV_DIR)/merged/ 2>/dev/null || true
 	$(LLVM_PROFDATA) merge -sparse $(COV_DIR)/merged/*.profraw -o $(COV_PROFDATA)
 	@echo "==> Combined coverage summary:"
 	$(LLVM_COV) report target/debug/hew \
@@ -814,42 +579,11 @@ coverage-combined: codegen stdlib
 	@echo "==> Open $(COV_DIR)/combined-html/index.html"
 	@rm -rf $(COV_DIR)/merged
 
-# C++ codegen coverage: instruments hew-codegen, runs unit + E2E tests, reports
-coverage-cpp: stdlib
-	@echo "==> Building hew-codegen with coverage instrumentation"
-ifeq ($(shell uname -s),Darwin)
-	cmake -B hew-codegen/build-cov -G Ninja \
-		$(CMAKE_EXTRA_ARGS) \
-		-DHEW_COVERAGE=ON \
-		-S hew-codegen
-else
-	cmake -B hew-codegen/build-cov -G Ninja \
-		-DCMAKE_C_COMPILER=$(CC) \
-		-DCMAKE_CXX_COMPILER=$(CXX) \
-		$(CMAKE_EXTRA_ARGS) \
-		-DHEW_COVERAGE=ON \
-		-S hew-codegen
-endif
-	cmake --build hew-codegen/build-cov
-	@echo "==> Running C++ tests with coverage"
-	@rm -rf $(COV_DIR)/cpp-profraw && mkdir -p $(COV_DIR)/cpp-profraw
-	LLVM_PROFILE_FILE="$(CURDIR)/$(COV_DIR)/cpp-profraw/unit_%p_%m.profraw" \
-	  sh -c 'cd hew-codegen/build-cov && ctest --output-on-failure -LE wasm -j8'
-	@echo "==> Merging profdata"
-	$(LLVM_PROFDATA) merge -sparse $(COV_DIR)/cpp-profraw/*.profraw -o $(COV_DIR)/cpp.profdata
-	@echo "==> C++ codegen coverage summary:"
-	$(LLVM_COV) report hew-codegen/build-cov/src/hew-codegen \
-	  -instr-profile=$(COV_DIR)/cpp.profdata \
-	  --ignore-filename-regex='(llvm/|mlir/include|mlir/lib|/usr/|msgpack\.h|nlohmann|json\.hpp|_deps/)' \
-	  -summary-only
-
 # ── FFI symbol verification ───────────────────────────────────────────────
-# Checks that every hew_* function name referenced in C++ codegen has a
-# matching #[no_mangle] export in hew-runtime (or is in a known exception
-# list for stdlib packages and codegen-internal rewrites).
+# Validates that every hew-runtime #[no_mangle] export is classified in
+# scripts/jit-symbol-classification.toml (stable vs internal).
 
 verify-ffi:
-	python3 scripts/verify-ffi-symbols.py --strict
 	python3 scripts/verify-ffi-symbols.py --classify stable --validate > /dev/null
 
 # ── ANTLR4 grammar validation ──────────────────────────────────────────────
@@ -946,7 +680,6 @@ uninstall:
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -rf hew-codegen/build hew-codegen/build-cov hew-codegen/build-lsan
 	cargo clean
 	rm -rf $(GRAMMAR_OUT) .tmp/Hew.g4
 	rm -rf $(COV_DIR)

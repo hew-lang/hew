@@ -1,5 +1,5 @@
 // Caesar cipher: shift ASCII letters by N positions using lookup
-fn find_in(alphabet: String, ch: String) -> i32 {
+fn find_in(alphabet: string, ch: string) -> i32 {
     var pos: i32 = 0;
     while pos < alphabet.len() {
         if alphabet.char_at(pos) == ch.char_at(0) {
@@ -10,7 +10,7 @@ fn find_in(alphabet: String, ch: String) -> i32 {
     0 - 1
 }
 
-fn caesar_encode(s: String, shift: i32) -> String {
+fn caesar_encode(s: string, shift: i32) -> string {
     let lower = "abcdefghijklmnopqrstuvwxyz";
     let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     var result = "";

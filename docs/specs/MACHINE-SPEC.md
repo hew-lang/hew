@@ -481,7 +481,7 @@ Within transition bodies, event constructors are not used (the event is destruct
 
 ### §8.1 Pipeline integration
 
-Machine declarations are parsed by the Rust frontend (`hew-parser`), type-checked by `hew-types`, serialized to MessagePack by `hew-serialize`, and lowered to MLIR by Hew's embedded C++ codegen (`hew-codegen`).
+Machine declarations are parsed by the Rust frontend (`hew-parser`), type-checked by `hew-types`, lowered through the Rust HIR/MIR ladder, and emitted through `hew-codegen-rs`'s direct Rust/Inkwell LLVM backend.
 
 ### §8.2 Representation
 

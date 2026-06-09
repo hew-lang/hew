@@ -52,6 +52,7 @@ fn pipeline_with_call_runtime_abi(symbol: &str) -> IrPipeline {
             blocks: raw_blocks.clone(),
             decisions: vec![],
             checks: vec![],
+            cooperate_sites: vec![],
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "probe".to_string(),

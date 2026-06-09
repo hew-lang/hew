@@ -1538,14 +1538,70 @@ fn fmt_trait_object_type_roundtrip() {
 }
 
 #[test]
+fn fmt_trait_object_assoc_binding_roundtrip() {
+    exact_roundtrip("fn use_iter(iter: dyn Iterator<Item = i32>) {\n}\n");
+}
+
+#[test]
+fn fmt_trait_implicit_self_roundtrip() {
+    exact_roundtrip(
+        "trait Iterator {\n    type Item;\n\n    fn next(self) -> Option<Self::Item>;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_trait_object_multiple_assoc_bindings_roundtrip() {
+    exact_roundtrip("fn use_pair(pair: dyn Pair<Left = i32, Right = string>) {\n}\n");
+}
+
+#[test]
+fn fmt_trait_object_type_args_and_assoc_bindings_roundtrip() {
+    exact_roundtrip(
+        "fn use_mapper(mapper: dyn Mapper<i32, string, Key = i32, Value = string>) {\n}\n",
+    );
+}
+
+#[test]
 fn fmt_trait_associated_type_roundtrip() {
     exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(c: Self) -> Self::Item;\n}\n");
+}
+
+#[test]
+fn fmt_trait_associated_type_bound_default_and_interleaved_fns_roundtrip() {
+    exact_roundtrip(
+        "trait AssocForms {\n    type Plain;\n\n    fn make(c: Self) -> Self::Plain;\n\n    type Bounded: Display;\n\n    type Defaulted = i32;\n\n    fn show(c: Self) -> Self::Bounded;\n\n    type BoundedDefault: Display = string;\n}\n",
+    );
 }
 
 #[test]
 fn fmt_impl_associated_type_binding_roundtrip() {
     exact_roundtrip(
         "impl Container for Vec<i32> {\n    type Item = i32;\n\n    fn get(c: Vec<i32>) -> i32 {\n        c[0]\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_impl_associated_type_bindings_before_methods_roundtrip() {
+    let formatted = roundtrip_no_comments(
+        "impl Container for Widget {\n    fn get(c: Widget) -> Self::Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
+    );
+    assert_eq!(
+        formatted,
+        "impl Container for Widget {\n    type Item = i32;\n\n    fn get(c: Widget) -> Self::Item {\n        1\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_projection_in_generic_where_position_roundtrip() {
+    exact_roundtrip(
+        "fn collect<I: Iterator>(it: I) -> Vec<I::Item> where I::Item: Display {\n    empty()\n}\n",
+    );
+}
+
+#[test]
+fn fmt_assoc_binding_in_where_trait_bound_roundtrip() {
+    exact_roundtrip(
+        "fn collect_display<I>(it: I) -> Vec<I::Item> where I: Iterator<Item = string>, I::Item: Display {\n    empty()\n}\n",
     );
 }
 

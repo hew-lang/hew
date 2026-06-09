@@ -81,11 +81,11 @@ ARG LLVM_MAJOR=22
 
 COPY --from=builder /opt/llvm-${LLVM_MAJOR} /opt/llvm-${LLVM_MAJOR}
 
-# Install only the tools needed to build hew-codegen (not LLVM)
+# Install the tools needed for downstream cargo builds against this LLVM
 RUN apk add --no-cache \
     cmake samurai build-base clang \
     zlib-dev zlib-static zstd-dev zstd-static \
     libffi-dev linux-headers
 
 LABEL org.opencontainers.image.source="https://github.com/hew-lang/hew"
-LABEL org.opencontainers.image.description="Pre-built LLVM ${LLVM_MAJOR} + MLIR for Alpine (musl) — used by hew-codegen CI"
+LABEL org.opencontainers.image.description="Pre-built LLVM ${LLVM_MAJOR} for Alpine (musl) — used by hew-codegen-rs CI"

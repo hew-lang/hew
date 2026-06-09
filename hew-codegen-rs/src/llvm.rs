@@ -14758,16 +14758,21 @@ fn is_bytes_by_pointer_consumer(symbol: &str) -> bool {
 /// return type (reconstructed into the `{ptr,i32,i32}` dest at the call's
 /// return-store).
 ///
-/// SCOPED ALLOWLIST, not "every `bytes`-returning extern": the crypto / encoding
-/// / fs / quic / tls bytes runtime entries still return a legacy `*mut HewVec`
-/// (their migration to BytesTriple is separate, follow-on work). Declaring those
-/// with a `[2 x i64]` return would silently reinterpret a `HewVec` pointer as a
-/// triple — turning a loud fail-closed codegen error into wrong runtime output.
-/// Only the symbols whose Rust impl actually returns `BytesTriple` belong here.
+/// SCOPED ALLOWLIST, not "every `bytes`-returning extern": encoding / fs / quic
+/// / tls bytes runtime entries still return a legacy `*mut HewVec` (their
+/// migration to BytesTriple is separate, follow-on work). Declaring those with a
+/// `[2 x i64]` return would silently reinterpret a `HewVec` pointer as a triple
+/// — turning a loud fail-closed codegen error into wrong runtime output. Only
+/// the symbols whose Rust impl actually returns `BytesTriple` belong here.
 fn is_bytes_triple_return_producer(symbol: &str) -> bool {
     matches!(
         symbol,
         "hew_tcp_read"
+            | "hew_sha256_hew"
+            | "hew_sha384_hew"
+            | "hew_sha512_hew"
+            | "hew_hmac_sha256_hew"
+            | "hew_random_bytes_hew"
             | "hew_string_to_bytes"
             | "hew_bytes_from_str"
             | "hew_bytes_from_static"

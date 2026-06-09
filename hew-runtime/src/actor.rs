@@ -913,6 +913,44 @@ pub struct HewActor {
     /// reset after each dispatch cycle, and freed during actor teardown.
     #[cfg(target_arch = "wasm32")]
     pub arena: *mut c_void,
+
+    // ── Slice-4 suspend/resume executor (appended to preserve C ABI layout) ──
+    //
+    // These two fields are NOT codegen-mirrored: only `id` and `state` have
+    // offset literals in `hew-codegen-rs/src/llvm.rs`, and both precede this
+    // append point, so adding these fields keeps every mirrored offset fixed
+    // (verified by `abi_offset_parity`). They are appended at the very end of
+    // the struct, mirroring how `prof_*` and `arena` were appended.
+    /// The continuation handle parked on this actor while it is `Suspended`,
+    /// or null when no dispatch is suspended.
+    ///
+    /// SINGLE-OWNER CONTRACT (FG1): the executor is the sole owner of this
+    /// handle's teardown. It is written exactly once per suspend (the FG3
+    /// two-phase park stores it after publishing the `Resuming`→`Parked`
+    /// intent), read by the resume re-entry, and nulled in the SAME critical
+    /// section as the `ContTag::Destroyed` transition so no later activation
+    /// dereferences a destroyed frame (FG4: no use-after-destroy).
+    pub suspended_cont: AtomicPtr<c_void>,
+
+    /// The [`crate::internal::types::ContTag`] lifecycle tag (as a raw i32)
+    /// serializing resume vs destroy on [`Self::suspended_cont`] (FG1/FG2/FG4).
+    ///
+    /// Zero-init is `ContTag::Empty`. The executor CAS-transitions it; an
+    /// unexpected current tag fails closed (the operation refuses) rather than
+    /// double-resuming or double-destroying. Because the per-actor state lock
+    /// is released while `Suspended`, THIS tag — not the lock — is the
+    /// serialization point for the handle's lifecycle.
+    pub cont_tag: AtomicI32,
+
+    /// FG3 two-phase park: a wake (`enqueue_resume`) that fires in the window
+    /// between the suspend returning to the executor and the park completing
+    /// sets this flag instead of being lost. The executor re-checks it after
+    /// publishing the park and, if set, immediately re-enqueues the actor so
+    /// the wake is observed exactly once rather than dropped.
+    ///
+    /// Go's runtime calls this the `pdNil→pdWait→pdReady` race; this flag is
+    /// the `pdReady`-arrived-early signal the parker drains.
+    pub pending_wake: AtomicBool,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -1837,6 +1875,9 @@ fn build_spawned_actor(
         arena,
         #[cfg(target_arch = "wasm32")]
         arena: arena.cast::<c_void>(),
+        suspended_cont: AtomicPtr::new(ptr::null_mut()),
+        cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+        pending_wake: AtomicBool::new(false),
     })
 }
 
@@ -2813,6 +2854,26 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
     // `finalize_quiescent_actor_cleanup_with_options`, which runs the terminate
     // callback exactly once for `Stopped` (== the old `Idle` behaviour) and skips
     // it for `Crashed`.
+    //
+    // SHIM (NEW-6 abandonment/cancellation flow):
+    // WHY: A `Suspended` actor (cont_tag `Parked`) holds a live continuation frame
+    //      in `suspended_cont`. The quiescence wait below spins through `Suspended`
+    //      because `actor_free_state_is_quiescent` rightly excludes it — safety
+    //      holds (no UAF, no double-free; the CAS guards in `coro_exec` serialise
+    //      any concurrent resume/destroy). However, if the actor's readiness source
+    //      is never delivered (the actor is abandoned mid-await), the spin reaches
+    //      the 2 s deadline, returns `-2`, and the continuation frame AND the actor
+    //      box both LEAK. The leak is bounded and fail-safe but is observable in
+    //      long-running processes that cancel actors mid-await.
+    // WHEN: Remove this note and implement the wiring once NEW-6 lands the actor
+    //       cancellation/abandonment flow.
+    // WHAT: When NEW-6 lands, the free path must: (a) check
+    //       `crate::coro_exec::has_live_parked_cont(a)`, and (b) when true, call
+    //       `crate::coro_exec::destroy_parked(a)` to tear down the frame exactly
+    //       once BEFORE untracking and freeing the actor box. The CAS inside
+    //       `destroy_parked` serialises against any concurrent resume that might
+    //       be waking the actor at the same instant (FG1/FG2), so the wiring is
+    //       safe to add unconditionally here once the cancellation signal exists.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let state = loop {
         // Step 1: wait until the actor first looks quiescent (bounded).
@@ -5041,6 +5102,39 @@ mod tests {
     /// and drain returns `Drained` instead of `Incomplete { crashed }`.
     static DRAIN_TRAP_ON_STOP_RELEASE: AtomicBool = AtomicBool::new(false);
 
+    /// `Suspended` is non-quiescent: a suspended actor owns a live continuation
+    /// frame, so a `hew_actor_free` caller spinning on the state must block
+    /// through the `Suspended` window rather than freeing the box out from
+    /// under the parked continuation (R7 / `cleanup-all-exits`). The only
+    /// quiescent states are the truly idle/terminal ones.
+    #[test]
+    fn suspended_state_is_not_quiescent() {
+        assert!(
+            !actor_free_state_is_quiescent(HewActorState::Suspended as i32),
+            "Suspended owns a live frame and must block actor_free, like Sleeping/Crashing"
+        );
+        // The quiescent set is exactly Idle/Stopped/Crashed; no live-frame or
+        // in-flight state may leak into it.
+        assert!(actor_free_state_is_quiescent(HewActorState::Idle as i32));
+        assert!(actor_free_state_is_quiescent(HewActorState::Stopped as i32));
+        assert!(actor_free_state_is_quiescent(HewActorState::Crashed as i32));
+        assert!(!actor_free_state_is_quiescent(
+            HewActorState::Running as i32
+        ));
+        assert!(!actor_free_state_is_quiescent(
+            HewActorState::Runnable as i32
+        ));
+        assert!(!actor_free_state_is_quiescent(
+            HewActorState::Sleeping as i32
+        ));
+        assert!(!actor_free_state_is_quiescent(
+            HewActorState::Crashing as i32
+        ));
+        assert!(!actor_free_state_is_quiescent(
+            HewActorState::Stopping as i32
+        ));
+    }
+
     struct NativeSchedulerGuard;
 
     impl NativeSchedulerGuard {
@@ -5310,6 +5404,9 @@ mod tests {
                 prof_messages_processed: AtomicU64::new(0),
                 prof_processing_time_ns: AtomicU64::new(0),
                 arena: ptr::null_mut(),
+                suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+                cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+                pending_wake: AtomicBool::new(false),
             }));
             (actor, mailbox)
         }
@@ -5345,6 +5442,9 @@ mod tests {
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),
             arena: ptr::null_mut(),
+            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+            pending_wake: AtomicBool::new(false),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };
@@ -8143,6 +8243,9 @@ mod tests {
             prof_processing_time_ns: AtomicU64::new(0),
             // Wire up the real arena — same assignment as spawn_actor_internal (WASM).
             arena,
+            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+            pending_wake: AtomicBool::new(false),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };

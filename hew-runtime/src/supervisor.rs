@@ -47,6 +47,8 @@ fn actor_state_name(actor: *mut HewActor) -> &'static str {
         "Runnable"
     } else if state == HewActorState::Running as i32 {
         "Running"
+    } else if state == HewActorState::Suspended as i32 {
+        "Suspended"
     } else if state == HewActorState::Stopping as i32 {
         "Stopping"
     } else if state == HewActorState::Crashed as i32 {

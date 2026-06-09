@@ -254,6 +254,16 @@ pub use auto_mutex::{
     HewAutoMutex,
 };
 pub mod cabi;
+/// Stackless continuation substrate: `HewCont` heap-frame + C ABI (W6.007).
+/// The runtime side of the unified suspension representation — the coro frame
+/// allocator and the resume/done/poll/destroy verbs the poll/resume executor
+/// drives. Target-agnostic (routes through `mem`); no wasm cfg gate.
+pub mod cont;
+/// Slice-4 poll/resume executor guards: the per-continuation lifecycle tag
+/// transitions (FG1/FG2/FG4) and the two-phase park (FG3) that serialize
+/// resume vs destroy on a parked `HewCont`. Target-agnostic; drives the
+/// `cont` ABI, holds no scheduler queue state.
+pub mod coro_exec;
 pub mod hashmap;
 pub mod hashset;
 pub mod layout_intrinsics;

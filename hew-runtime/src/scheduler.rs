@@ -572,6 +572,74 @@ pub fn sched_enqueue(actor: *mut HewActor) {
     sched_try_wake();
 }
 
+/// Wake a `Suspended` actor whose parked continuation has become resumable.
+///
+/// This is the SINGLE resume edge every readiness source feeds: the seed/test
+/// source today, and post-slice-4 the reactor (NEW-1), reply slot (NEW-3),
+/// channels (NEW-4), and wire reply (NEW-5). It is the dual of `sched_enqueue`
+/// for a parked-then-woken actor and is structurally identical to the
+/// `Sleeping → Runnable` re-enqueue the wasm sleeper-drain already proves.
+///
+/// `cont` is the continuation the source has made resumable. If the actor's
+/// resume slot is empty (the park has not finished publishing — the FG3
+/// lost-wake window), the wake is RECORDED via `mark_pending_wake` and the
+/// suspend edge drains it; the wake is never lost.
+///
+/// CAS discipline (fail-closed): the wake only enqueues on a successful
+/// `Suspended → Runnable` CAS. If the actor is terminal (`Stopped`/`Crashed`)
+/// or not yet `Suspended`, the CAS fails and the actor is NOT enqueued —
+/// mirroring the `Idle → Runnable` waker discipline in `activate_actor`, which
+/// closes the use-after-free window against a freed actor.
+///
+/// # Safety
+///
+/// `actor`, if non-null, must reference a live `HewActor`. `cont`, if non-null,
+/// must be the continuation parked on `actor` (a `coro.begin` frame). The
+/// caller (a readiness source) owns the wake edge; the executor owns teardown.
+pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
+    if actor.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `actor` references a live HewActor.
+    let a = unsafe { &*actor };
+
+    // If the park has not yet stored a handle, the suspend edge is mid-park
+    // (the FG3 window). Record the wake so the suspend edge re-enqueues; do NOT
+    // store the handle ourselves (the suspend edge owns the slot write).
+    let parked = a.suspended_cont.load(Ordering::Acquire);
+    if parked.is_null() {
+        crate::coro_exec::mark_pending_wake(a);
+        // The actor is not yet `Suspended`; the CAS below would fail anyway.
+        // Re-check after marking: if the park JUST finished publishing
+        // `Suspended` between our load and the mark, fall through to the CAS so
+        // the wake is delivered now rather than waiting on the suspend edge's
+        // pending-wake drain. (Two-phase park, both directions covered.)
+        if a.actor_state.load(Ordering::Acquire) != HewActorState::Suspended as i32 {
+            let _ = cont; // handle is owned by the suspend edge; nothing to store.
+            return;
+        }
+    }
+
+    // CAS Suspended → Runnable; only enqueue on success (fail-closed against a
+    // terminal or not-yet-parked actor).
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Suspended as i32,
+            HewActorState::Runnable as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        sched_enqueue(actor);
+    } else {
+        // The actor was not `Suspended` yet (park still completing) — record
+        // the wake so the suspend edge observes it. Terminal actors also land
+        // here; marking is harmless (the actor will never park again).
+        crate::coro_exec::mark_pending_wake(a);
+    }
+}
+
 /// Wake one parked worker.
 ///
 /// Uses a round-robin counter to distribute wake-ups across workers,
@@ -665,6 +733,256 @@ fn try_steal_from_peers(
     None
 }
 
+// ── Slice-4 suspend/resume executor edges ───────────────────────────────
+
+/// The SUSPEND edge: park the actor's current continuation against a readiness
+/// source and return to the worker WITHOUT re-enqueuing, freeing the worker to
+/// run someone else. This is the executor's third dispatch outcome.
+///
+/// Ordering is load-bearing (the four footguns):
+/// 1. Release the per-actor state lock (FG2 / R2 P0) so senders do not
+///    deadlock while the actor is suspended. The lock is held across each
+///    message dispatch; a suspend that returns between acquire and release MUST
+///    release it here, exactly as the panic path releases on its crash edge.
+/// 2. `begin_park` publishes the `Parked` tag and clears any stale wake (FG3
+///    phase 1), BEFORE the handle is stored.
+/// 3. `finish_park` stores the handle (FG3 phase 2).
+/// 4. CAS `Running → Suspended` so wakes can find the parked actor.
+/// 5. Drain the FG3 lost-wake flag: a wake that fired in the park window
+///    (between phase 1 and the published `Suspended`) set `pending_wake`; if so
+///    we re-enqueue ourselves (the wake's own `Suspended → Runnable` CAS lost
+///    the race), so the wake is observed exactly once and never lost.
+///
+/// # Safety
+///
+/// `actor` is owned by the calling activation frame (the Running CAS is held),
+/// `cont` is the live, suspended continuation handle the dispatch produced.
+/// `lock_ctx`, if non-null, is the dispatch execution context whose per-actor
+/// state lock must be released on this suspend edge.
+#[cfg(test)]
+unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut c_void) -> bool {
+    // SAFETY: caller owns `actor` via the Running CAS.
+    let a = unsafe { &*actor };
+
+    // (1) Lock release is the caller's responsibility on the real dispatch
+    // path (it holds the execution context); the seed/test path holds no lock.
+
+    // (2) FG3 phase 1: publish the park intent before storing the handle.
+    if !crate::coro_exec::begin_park(a).is_ok() {
+        return false;
+    }
+    // (3) FG3 phase 2: store the handle.
+    // SAFETY: `cont` is a live suspended continuation per the fn contract.
+    unsafe { crate::coro_exec::finish_park(a, cont) };
+
+    // (4) Publish `Suspended` so wakes can find us. CAS from Running; if it
+    // fails the actor was concurrently stopped/crashed — undo the park.
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Running as i32,
+            HewActorState::Suspended as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        // The actor left Running underneath us (stop/crash). Destroy the parked
+        // continuation exactly once rather than leaking the frame.
+        // SAFETY: we still own the parked handle (no concurrent resume could
+        // have started — the actor never reached Suspended).
+        let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+        return false;
+    }
+
+    // (5) FG3: drain a wake that fired in the park window. If present, the
+    // wake's own `Suspended → Runnable` CAS lost the race (we had not yet
+    // published Suspended), so we re-enqueue ourselves to deliver it once.
+    if crate::coro_exec::take_pending_wake(a)
+        && a.actor_state
+            .compare_exchange(
+                HewActorState::Suspended as i32,
+                HewActorState::Runnable as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    {
+        sched_enqueue(actor);
+    }
+    true
+}
+
+/// The RESUME re-entry: drive the actor's parked continuation to its next
+/// suspend (or completion) and settle the activation.
+///
+/// - `ResumePoll::Pending` → the continuation suspended again. Re-park: CAS
+///   `Running → Suspended` (the handle stays parked, tag already back to
+///   `Parked`), and if a wake fired in the meantime drain it and re-enqueue.
+///   The actor is left `Suspended`, awaiting the next wake.
+/// - `ResumePoll::Ready` → the continuation completed. Destroy it exactly once
+///   (FG1) — which nulls the slot in the same critical section (FG4) — then
+///   fall through to the standard idle/requeue settle so queued messages are
+///   still served.
+/// - refused (`None`) → the slot was null or the tag was not resumable
+///   (FG2/FG4). Treat as completed (nothing live to drive) and settle to idle.
+///
+/// # Safety
+///
+/// `actor` is owned by the calling activation frame (the Running CAS is held).
+unsafe fn resume_suspended_activation(actor: *mut HewActor) {
+    // SAFETY: caller owns `actor` via the Running CAS.
+    let a = unsafe { &*actor };
+
+    // SAFETY: the parked handle is the executor-owned frame; `resume_park`
+    // enforces FG2/FG4 internally (refuses a null slot or non-Parked tag).
+    let poll = unsafe { crate::coro_exec::resume_park(a) };
+
+    match poll {
+        Some(crate::cont::ResumePoll::Pending) => {
+            // Re-park: the continuation suspended again. CAS back to Suspended.
+            if a.actor_state
+                .compare_exchange(
+                    HewActorState::Running as i32,
+                    HewActorState::Suspended as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                // FG3: a wake during the resume window must not be lost.
+                if crate::coro_exec::take_pending_wake(a)
+                    && a.actor_state
+                        .compare_exchange(
+                            HewActorState::Suspended as i32,
+                            HewActorState::Runnable as i32,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                {
+                    sched_enqueue(actor);
+                }
+            } else {
+                // Stopped/crashed under us — destroy the parked frame once.
+                // SAFETY: no concurrent resume; we just observed Pending.
+                let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+            }
+        }
+        Some(crate::cont::ResumePoll::Ready) | None => {
+            // Completed (or refused: nothing live). Destroy exactly once (FG1),
+            // which nulls the slot in the same critical section (FG4).
+            // SAFETY: the tag is `Done` (Ready) or already terminal (None);
+            // destroy_parked refuses a second teardown.
+            let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+            // Settle: the resumed dispatch is finished. Mirror the post-loop
+            // idle/requeue CAS so queued messages are served. Reset the arena
+            // for the completed activation.
+            if !a.arena.is_null() {
+                // SAFETY: arena was created at spawn; no references survive.
+                unsafe { crate::arena::hew_arena_reset(a.arena) };
+            }
+            settle_after_activation(actor, 0);
+        }
+    }
+}
+
+/// Shared post-activation settle: CAS `Running → Runnable` (re-enqueue) when
+/// the mailbox still has work, else `Running → Idle` with the standard
+/// idle→runnable / idle→stopped rechecks. Factored out so the resume re-entry
+/// and the message loop share one settle path.
+fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
+    // SAFETY: caller owns `actor` via the Running CAS.
+    let a = unsafe { &*actor };
+    let mailbox = a.mailbox.cast::<HewMailbox>();
+
+    let cur_state = a.actor_state.load(Ordering::Acquire);
+    if cur_state == HewActorState::Stopping as i32 {
+        if a.actor_state
+            .compare_exchange(
+                HewActorState::Stopping as i32,
+                HewActorState::Stopped as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+            crate::actor_group::notify_actor_death(a.id);
+            // SAFETY: actor just transitioned to Stopped; dispatch is finished.
+            unsafe { crate::actor::call_terminate_fn(actor) };
+        }
+        return;
+    }
+    if cur_state == HewActorState::Stopped as i32 || cur_state == HewActorState::Crashed as i32 {
+        return;
+    }
+
+    actor::update_hibernation_state(a, msgs_processed);
+
+    let has_more = if mailbox.is_null() {
+        false
+    } else {
+        // SAFETY: mailbox pointer is valid for the actor's lifetime.
+        unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+    };
+
+    if has_more {
+        if a.actor_state
+            .compare_exchange(
+                HewActorState::Running as i32,
+                HewActorState::Runnable as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            sched_enqueue(actor);
+        }
+    } else if a
+        .actor_state
+        .compare_exchange(
+            HewActorState::Running as i32,
+            HewActorState::Idle as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        if !mailbox.is_null()
+            // SAFETY: mailbox pointer is valid for the actor's lifetime.
+            && unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+        {
+            if a.actor_state
+                .compare_exchange(
+                    HewActorState::Idle as i32,
+                    HewActorState::Runnable as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                sched_enqueue(actor);
+            }
+        } else if !mailbox.is_null()
+            // SAFETY: mailbox pointer is valid for the actor's lifetime.
+            && unsafe { mailbox::mailbox_is_closed(mailbox) }
+            && a.actor_state
+                .compare_exchange(
+                    HewActorState::Idle as i32,
+                    HewActorState::Stopped as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        {
+            crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+            crate::actor_group::notify_actor_death(a.id);
+            // SAFETY: actor just transitioned to Stopped; dispatch is finished.
+            unsafe { crate::actor::call_terminate_fn(actor) };
+        }
+    }
+}
+
 // ── Actor activation ────────────────────────────────────────────────────
 
 /// Activate an actor: CAS state to `Running`, drain messages up to budget,
@@ -705,6 +1023,28 @@ fn activate_actor(actor: *mut HewActor) {
         )
         .is_err()
     {
+        return;
+    }
+
+    // Resume re-entry (slice-4 executor). This activation may be a resumed
+    // continuation rather than a fresh message dispatch. The discriminator —
+    // carried by the suspend edge (commit 2/3) and verified before any branch
+    // keys off it (R2) — is a live parked continuation: `cont_tag == Parked`
+    // AND a non-null `suspended_cont` slot. `enqueue_resume` woke us
+    // (Suspended → Runnable) and we just CAS'd Runnable → Running, so if the
+    // discriminator is present this is a resume. Drive the continuation to its
+    // next suspend (or completion) instead of draining the mailbox from
+    // scratch; on completion destroy it exactly once and fall through to the
+    // normal requeue/idle CAS so any queued messages are still served.
+    if crate::coro_exec::has_live_parked_cont(a) {
+        // SAFETY: `actor` is owned by this frame (we hold the Running CAS); the
+        // parked handle is the executor-owned frame the suspend edge stored.
+        unsafe { resume_suspended_activation(actor) };
+        // After a resume we fall through to the standard post-loop requeue/idle
+        // logic below (which reads `cur_state` etc.). A still-suspended
+        // continuation re-parked itself inside `resume_suspended_activation`
+        // and already returned the actor to `Suspended` + broke out — handled
+        // by the early return there.
         return;
     }
 
@@ -1652,6 +1992,9 @@ mod tests {
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),
             arena: std::ptr::null_mut(),
+            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+            pending_wake: AtomicBool::new(false),
         }
     }
 
@@ -1703,6 +2046,297 @@ mod tests {
             actor.actor_state.load(Ordering::Acquire),
             HewActorState::Idle as i32
         );
+    }
+
+    /// `enqueue_resume` on a `Suspended` actor CASes it to `Runnable` and
+    /// pushes it onto the global queue — the wake edge for a parked
+    /// continuation, structurally the dual of the `Sleeping → Runnable`
+    /// sleeper-drain re-enqueue.
+    #[test]
+    fn enqueue_resume_wakes_suspended_actor() {
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = stub_actor();
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        // Park a (non-null sentinel) handle so the wake edge sees a published
+        // slot rather than the FG3 mid-park window. A bare sentinel is fine:
+        // enqueue_resume only reads the slot for null-ness, it never resumes.
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        // SAFETY: actor is live for this scope; sentinel handle is never resumed.
+        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32,
+            "enqueue_resume must CAS Suspended -> Runnable"
+        );
+        assert_eq!(
+            sched.pop_global(),
+            Some(actor_ptr),
+            "the woken actor must be enqueued exactly once"
+        );
+    }
+
+    /// `enqueue_resume` is fail-closed: a terminal (`Stopped`) actor is never
+    /// enqueued — the CAS fails and the actor stays terminal, mirroring the
+    /// `Idle → Runnable` waker discipline that closes the use-after-free window.
+    #[test]
+    fn enqueue_resume_fail_closed_on_terminal_actor() {
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = stub_actor();
+        actor
+            .actor_state
+            .store(HewActorState::Stopped as i32, Ordering::Release);
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        // SAFETY: actor is live; terminal so it is never resumed/enqueued.
+        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Stopped as i32,
+            "a terminal actor must not be revived by a wake"
+        );
+        assert_eq!(
+            sched.pop_global(),
+            None,
+            "a terminal actor must never be enqueued"
+        );
+    }
+
+    /// FG3: a wake that fires before the park publishes a handle (the
+    /// `suspended_cont` slot is still null) is RECORDED via `pending_wake`
+    /// rather than lost, so the suspend edge can re-enqueue it.
+    #[test]
+    fn enqueue_resume_mid_park_records_pending_wake() {
+        let _sched = NoWorkerSchedulerForTest::install();
+        let actor = stub_actor();
+        // Park not yet published: state not Suspended, slot null.
+        actor
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        // SAFETY: actor is live; null slot means no handle is ever resumed.
+        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+
+        assert!(
+            crate::coro_exec::take_pending_wake(&actor),
+            "a wake in the park window must be recorded, not lost (FG3)"
+        );
+    }
+
+    /// The SUSPEND edge parks a scratch continuation, publishes `Suspended`,
+    /// and does NOT re-enqueue (no pending wake) — the worker is freed. The
+    /// per-cont tag is `Parked` and the slot carries the handle (the resume
+    /// re-entry discriminator).
+    #[test]
+    fn park_suspended_activation_publishes_suspended_and_parks_cont() {
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = stub_actor();
+        actor
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(2));
+        let handle = (&raw mut *frame).cast::<std::ffi::c_void>();
+
+        // SAFETY: actor owned by this frame; scratch handle is live.
+        let parked = unsafe { park_suspended_activation(actor_ptr, handle) };
+        assert!(parked, "park must succeed from Running with an Empty tag");
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "suspend edge publishes Suspended"
+        );
+        assert_eq!(
+            actor.suspended_cont.load(Ordering::Acquire),
+            handle,
+            "the handle is parked for the resume re-entry"
+        );
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Acquire),
+            crate::internal::types::ContTag::Parked as i32
+        );
+        assert!(
+            sched.pop_global().is_none(),
+            "no pending wake -> the worker is freed without re-enqueue"
+        );
+
+        // Clean up the parked scratch frame.
+        // SAFETY: parked handle is live and not yet destroyed.
+        assert!(unsafe { crate::coro_exec::destroy_parked(&actor) }.is_ok());
+    }
+
+    /// Full seed round-trip through `activate_actor`: park a scratch cont that
+    /// completes on its 2nd resume, wake it twice, and assert the resume
+    /// re-entry drives it to Ready and destroys it exactly once — the actor
+    /// settles to Idle and the slot is nulled (FG1/FG4).
+    #[test]
+    fn activate_resumes_parked_cont_to_ready_and_destroys_once() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let actor = stub_actor();
+        actor
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        // Scratch frame: Ready on the 2nd resume.
+        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(2));
+        let handle = (&raw mut *frame).cast::<std::ffi::c_void>();
+
+        // SAFETY: actor owned; scratch handle live.
+        assert!(unsafe { park_suspended_activation(actor_ptr, handle) });
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32
+        );
+
+        // First wake + activate: resume #1 -> Pending -> re-parked Suspended.
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        activate_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "Pending resume re-parks the actor as Suspended"
+        );
+        assert_eq!(
+            frame.resumes.load(Ordering::Acquire),
+            1,
+            "exactly one resume on the first activation"
+        );
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Acquire),
+            crate::internal::types::ContTag::Parked as i32
+        );
+
+        // Second wake + activate: resume #2 -> Ready -> destroy once -> Idle.
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        activate_actor(actor_ptr);
+        assert_eq!(
+            frame.resumes.load(Ordering::Acquire),
+            2,
+            "second activation drove the continuation to completion"
+        );
+        assert_eq!(
+            frame.destroyed.load(Ordering::Acquire),
+            1,
+            "FG1: the Ready continuation is destroyed exactly once"
+        );
+        assert!(
+            actor.suspended_cont.load(Ordering::Acquire).is_null(),
+            "FG4: the slot is nulled in the Destroyed critical section"
+        );
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Acquire),
+            crate::internal::types::ContTag::Destroyed as i32
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Idle as i32,
+            "a completed resume with an empty mailbox settles to Idle"
+        );
+    }
+
+    /// R2 (P0) deadlock-avoidance: the suspend/resume executor edges hold NO
+    /// per-actor state lock, so a sender is never blocked by a suspended actor.
+    /// A message enqueued while the actor is parked in `Suspended` lands in the
+    /// mailbox without blocking, and the resume re-entry then settles to
+    /// `Runnable` (re-enqueued) so the queued message is served.
+    ///
+    /// The per-message lock RELEASE on the production suspend edge (between
+    /// `hew_actor_state_lock_acquire_for_context` and the matching release)
+    /// lands with the Slice-5 trampoline rewrite that routes real `await`
+    /// through this seam; the seed driver here holds no lock, and the invariant
+    /// this slice enforces is that the executor edges themselves are lock-free.
+    #[test]
+    fn suspended_actor_accepts_sends_without_blocking() {
+        // The worker-less scheduler holds SCHED_TEST_MUTEX for us AND lets the
+        // settle path call `sched_enqueue` without a draining worker.
+        let _sched = NoWorkerSchedulerForTest::install();
+        // SAFETY: fresh mailbox, no preconditions.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+
+        let mut actor = stub_actor();
+        actor.mailbox = mailbox.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        // Park a scratch cont (completes on the 1st resume).
+        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
+        let handle = (&raw mut *frame).cast::<std::ffi::c_void>();
+        // SAFETY: actor owned; scratch handle live.
+        assert!(unsafe { park_suspended_activation(actor_ptr, handle) });
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32
+        );
+
+        // A sender enqueues while the actor is Suspended — must not block and
+        // must land in the mailbox (no lock held against it).
+        assert_eq!(
+            // SAFETY: mailbox is live; null payload of size 0 is valid.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 5, ptr::null_mut(), 0) },
+            0,
+            "a send to a Suspended actor must not block or fail"
+        );
+        assert!(
+            // SAFETY: mailbox is live.
+            unsafe { hew_mailbox_has_messages(mailbox.cast::<HewMailbox>()) != 0 },
+            "the message landed in the mailbox"
+        );
+
+        // Wake + activate: resume #1 -> Ready -> destroy once. The pending
+        // mailbox message means the settle re-enqueues as Runnable.
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        activate_actor(actor_ptr);
+        assert_eq!(
+            frame.destroyed.load(Ordering::Acquire),
+            1,
+            "the resumed continuation is destroyed exactly once"
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32,
+            "a queued message after a completed resume re-enqueues the actor"
+        );
+
+        // Teardown: drain the queued message + free the mailbox safely.
+        // SAFETY: single-threaded test; nothing else references the mailbox.
+        unsafe {
+            let msg = hew_mailbox_try_recv(mailbox.cast::<HewMailbox>());
+            if !msg.is_null() {
+                hew_msg_node_free(msg);
+            }
+            mailbox::hew_mailbox_free(mailbox);
+        }
     }
 
     #[test]
@@ -1777,6 +2411,9 @@ mod tests {
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),
             arena: ptr::null_mut(),
+            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+            pending_wake: AtomicBool::new(false),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -2290,6 +2927,9 @@ mod tests {
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),
             arena: ptr::null_mut(),
+            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+            pending_wake: AtomicBool::new(false),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

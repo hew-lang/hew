@@ -65,17 +65,41 @@ pub enum HewOverflowPolicy {
 
 /// Actor state CAS machine.
 ///
-/// Discriminant `3` is intentionally unused: it was previously assigned to a
-/// `Blocked` variant that the v0.5 actor model never transitions into.  The
-/// gap is preserved so that any cached integer state value coming back from
-/// a stale profiler snapshot maps to the catch-all "unknown" label rather
-/// than silently aliasing onto a different state.
+/// Discriminant `3` is the `Suspended` state: an actor whose current dispatch
+/// suspended at a non-final `coro.suspend` and is parked against a readiness
+/// source with a live continuation frame in [`crate::actor::HewActor`]'s
+/// resume slot.  It is driven by the slice-4 poll/resume executor.
+///
+/// `3` was previously assigned to a `Blocked` variant that the v0.5 actor
+/// model never transitioned into; the gap was preserved so that a cached
+/// integer state value coming back from a stale profiler snapshot would map
+/// to the catch-all "unknown" label rather than silently aliasing onto a
+/// different state.  The slice-4 executor repurposes the gap (no other
+/// discriminant moves, the `#[repr(i32)]` width is unchanged), so every
+/// profiler / state-name decode now maps `3` to "Suspended" rather than
+/// "unknown".  A stale snapshot that genuinely predates this repurpose can no
+/// longer occur within one process: the value is only ever written by this
+/// executor, which also owns the decode.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HewActorState {
     Idle = 0,
     Runnable = 1,
     Running = 2,
+    /// Actor dispatch suspended at a non-final `coro.suspend` and is parked
+    /// against a readiness source.  The actor owns a live continuation frame
+    /// (the [`crate::actor::HewActor::suspended_cont`] slot is non-null) and a
+    /// per-continuation state tag that serializes resume/destroy.
+    ///
+    /// `Suspended` is deliberately **not** quiescent
+    /// (`actor_free_state_is_quiescent` excludes it): a suspended actor holds a
+    /// live frame and possibly a held resource, so a `hew_actor_free` caller
+    /// must block through the `Suspended` window (destroying the parked
+    /// continuation exactly once before freeing) rather than treating the
+    /// actor as terminal.  Mirrors the `Sleeping`/`Crashing` non-quiescent
+    /// discipline; see `LESSONS.md` rows `cleanup-all-exits` and
+    /// `raii-null-after-move`.  Only the slice-4 executor sets/clears it.
+    Suspended = 3,
     Stopping = 4,
     Crashed = 5,
     Stopped = 6,
@@ -100,6 +124,78 @@ pub enum HewActorState {
     /// from under the worker.  See `LESSONS.md` rows `cleanup-all-exits`
     /// and `raii-null-after-move`.
     Crashing = 8,
+}
+
+/// Per-continuation lifecycle tag the slice-4 executor CAS-transitions to
+/// serialize resume and destroy against a single parked `HewCont` handle.
+///
+/// The continuation REPRESENTATION (`cont.rs`) is fail-closed on a NULL handle
+/// but has no scheduler state, so it cannot detect a *double-resume*, a
+/// *destroy-after-destroy*, or a *concurrent resume+destroy* on a non-null
+/// dangling handle — those are exactly the executor's job (FG1, FG2, FG4).
+/// This tag is the executor's serialization point: every transition is a CAS
+/// from a single expected current tag, so an unexpected current tag fails
+/// closed (the caller refuses the operation) rather than corrupting memory.
+///
+/// The per-actor lock (`hew_actor_state_lock_*`) is RELEASED while an actor is
+/// `Suspended` (the suspend edge must release it so senders do not deadlock),
+/// so this tag — not the actor lock — is what serializes resume vs destroy on
+/// the handle.
+///
+/// Lifecycle (the only legal transitions):
+/// ```text
+///   (slot empty) --park--> Parked
+///   Parked --resume--> Resuming --(Pending)--> Parked   (suspended again)
+///   Parked --resume--> Resuming --(Ready)----> Done --destroy--> Destroyed
+///   Parked --abandon--> Destroyed                    (cancel — skips Done)
+///   Done   --destroy--> Destroyed
+/// ```
+/// A second `resume` (tag already `Resuming`/`Done`/`Destroyed`) refuses; a
+/// second `destroy` (tag already `Destroyed`) refuses. `Destroyed` is terminal
+/// and the slot is nulled in the same critical section (FG4: no use-after-
+/// destroy).
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContTag {
+    /// No continuation is parked on the actor (the slot is null). This is the
+    /// initial / quiescent tag and the value a fresh `HewActor` zero-inits to.
+    Empty = 0,
+    /// A continuation is parked against a readiness source, suspended at a
+    /// non-final `coro.suspend`, awaiting resume. The handle is live and
+    /// `resume` may transition it to `Resuming`.
+    Parked = 1,
+    /// The executor is currently driving `hew_cont_resume` on the handle. No
+    /// concurrent `resume` or `destroy` may proceed; both refuse against this
+    /// tag (FG2). Returns to `Parked` on `Pending` or advances to `Done` on
+    /// `Ready`.
+    Resuming = 2,
+    /// The continuation reached its final suspend (`ResumePoll::Ready`). It
+    /// awaits exactly one `destroy`. `resume` refuses against this tag.
+    /// Abandoned continuations skip this state and go directly to `Destroyed`
+    /// via a `Parked → Destroyed` CAS in `destroy_parked`.
+    Done = 3,
+    /// The continuation has been destroyed exactly once (FG1). Terminal:
+    /// every further `resume` and `destroy` refuses (FG2/FG4), and the actor's
+    /// `suspended_cont` slot was nulled in the same critical section as this
+    /// transition so no later activation reads the freed handle.
+    Destroyed = 4,
+}
+
+impl ContTag {
+    /// Convert from the raw `i32` representation. Returns `None` for any value
+    /// outside the legal tag range — a fail-closed decode for the executor's
+    /// CAS, which only ever compares against a known-good expected tag.
+    #[must_use]
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            0 => Some(Self::Empty),
+            1 => Some(Self::Parked),
+            2 => Some(Self::Resuming),
+            3 => Some(Self::Done),
+            4 => Some(Self::Destroyed),
+            _ => None,
+        }
+    }
 }
 
 /// Error codes returned by runtime functions.

@@ -104,6 +104,10 @@ pub struct HewActor {
     pub prof_messages_processed: AtomicU64,
     pub prof_processing_time_ns: AtomicU64,
     pub arena: *mut c_void,
+    // ── Slice-4 suspend/resume executor (appended; matches native exactly) ──
+    pub suspended_cont: AtomicPtr<c_void>,
+    pub cont_tag: AtomicI32,
+    pub pending_wake: AtomicBool,
 }
 
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
@@ -158,6 +162,9 @@ const _: () = {
     assert!(offset_of!(W, prof_messages_processed) == offset_of!(N, prof_messages_processed));
     assert!(offset_of!(W, prof_processing_time_ns) == offset_of!(N, prof_processing_time_ns));
     assert!(offset_of!(W, arena) == offset_of!(N, arena));
+    assert!(offset_of!(W, suspended_cont) == offset_of!(N, suspended_cont));
+    assert!(offset_of!(W, cont_tag) == offset_of!(N, cont_tag));
+    assert!(offset_of!(W, pending_wake) == offset_of!(N, pending_wake));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -776,6 +783,41 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
     unsafe { sched_enqueue(actor.cast::<HewActor>()) };
 }
 
+/// Wake a `Suspended` actor whose parked continuation became resumable (wasm
+/// cooperative half). The single resume edge every wasm readiness source feeds,
+/// mirroring the native `scheduler::enqueue_resume` over the same ABI. Stores
+/// `Suspended -> Runnable` and re-enqueues; records a pending wake when the
+/// park has not yet published a handle (FG3 window).
+///
+/// # Safety
+///
+/// `actor`, if non-null, must reference a live `HewActor`. `cont`, if non-null,
+/// is the continuation parked on `actor`.
+pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
+    if actor.is_null() {
+        return;
+    }
+    let a = as_native_actor(actor);
+    // SAFETY: single-threaded; actor valid.
+    let state = unsafe { (*actor).actor_state.load(Ordering::Relaxed) };
+    let parked = a.suspended_cont.load(Ordering::Relaxed);
+    if parked.is_null() || state != HewActorState::Suspended as i32 {
+        // Park not yet published (or actor not Suspended): record the wake so
+        // the suspend edge drains it. Fail-closed on a terminal actor (it will
+        // never park again, so the mark is harmless).
+        let _ = cont; // handle owned by the suspend edge.
+        crate::coro_exec::mark_pending_wake(a);
+        return;
+    }
+    // SAFETY: single-threaded; actor valid.
+    unsafe {
+        (*actor)
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        sched_enqueue(actor);
+    }
+}
+
 /// Tick-based scheduler: run up to `max_activations` actor activations,
 /// then return the number of actors still in the run queue.
 ///
@@ -882,6 +924,128 @@ pub extern "C" fn hew_wasm_sleeping_count() -> i32 {
     }
 }
 
+// ── Slice-4 suspend/resume executor edges (wasm cooperative half) ────────
+
+/// Cast a wasm `*mut HewActor` to the byte-identical native `HewActor` the
+/// target-agnostic `coro_exec` guards operate on. The layouts are asserted
+/// equal at compile time (see the `const _` block above), so this is sound.
+#[inline]
+fn as_native_actor<'a>(actor: *mut HewActor) -> &'a crate::actor::HewActor {
+    // SAFETY: wasm and native HewActor have identical layout (compile-time
+    // asserted); `actor` is a live actor owned by the cooperative scheduler.
+    unsafe { &*(actor.cast::<crate::actor::HewActor>()) }
+}
+
+/// The SUSPEND edge (wasm): park the current continuation and publish
+/// `Suspended`. Single-threaded, so the two-phase park reduces to a store
+/// ordering, but it goes through the SAME `coro_exec` guards as native for
+/// parity. Returns `true` on a successful park.
+///
+/// # Safety
+///
+/// `actor` is owned by the calling activation (Running on this single thread);
+/// `cont` is the live, suspended continuation handle the dispatch produced.
+///
+/// Test-only until Slice 5 routes the production wasm suspend edge through it
+/// (the trampoline returns `ResumePoll`); mirrors the native
+/// `park_suspended_activation` `#[cfg(test)]` gating under D-A.1.
+#[cfg(test)]
+unsafe fn park_suspended_activation_wasm(actor: *mut HewActor, cont: *mut c_void) -> bool {
+    let a = as_native_actor(actor);
+    if !crate::coro_exec::begin_park(a).is_ok() {
+        return false;
+    }
+    // SAFETY: `cont` is a live suspended continuation per the fn contract.
+    unsafe { crate::coro_exec::finish_park(a, cont) };
+    // SAFETY: wasm HewActor; single-threaded store.
+    unsafe {
+        (*actor)
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Relaxed);
+    }
+    // Drain a wake that fired during the park (FG3): re-enqueue if so.
+    if crate::coro_exec::take_pending_wake(a) {
+        // SAFETY: single-threaded; actor valid.
+        unsafe {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+            sched_enqueue(actor);
+        }
+    }
+    true
+}
+
+/// The RESUME re-entry (wasm): drive the parked continuation to its next
+/// suspend or completion, mirroring the native `resume_suspended_activation`.
+///
+/// # Safety
+///
+/// `actor` is owned by the calling activation (Running on this single thread).
+unsafe fn resume_suspended_activation_wasm(actor: *mut HewActor) {
+    let a = as_native_actor(actor);
+    // SAFETY: parked handle is the executor-owned frame; resume_park enforces
+    // FG2/FG4 internally.
+    let poll = unsafe { crate::coro_exec::resume_park(a) };
+    match poll {
+        Some(crate::cont::ResumePoll::Pending) => {
+            // Re-park: suspended again.
+            // SAFETY: single-threaded; actor valid.
+            unsafe {
+                (*actor)
+                    .actor_state
+                    .store(HewActorState::Suspended as i32, Ordering::Relaxed);
+            }
+            if crate::coro_exec::take_pending_wake(a) {
+                // SAFETY: single-threaded; actor valid.
+                unsafe {
+                    (*actor)
+                        .actor_state
+                        .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+                    sched_enqueue(actor);
+                }
+            }
+        }
+        Some(crate::cont::ResumePoll::Ready) | None => {
+            // Completed (or refused): destroy exactly once (FG1) — which nulls
+            // the slot (FG4) — then settle.
+            // SAFETY: tag is Done or terminal; destroy_parked refuses a second
+            // teardown.
+            let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+            // SAFETY: single-threaded; actor valid.
+            unsafe { settle_after_activation_wasm(actor) };
+        }
+    }
+}
+
+/// Shared wasm post-activation settle for a completed resume: mirror the
+/// run-to-completion drain's RUNNING -> RUNNABLE / IDLE transition so a queued
+/// message is still served.
+///
+/// # Safety
+///
+/// `actor` is owned by the calling activation (Running on this single thread).
+unsafe fn settle_after_activation_wasm(actor: *mut HewActor) {
+    // SAFETY: single-threaded; actor valid.
+    let a = unsafe { &*actor };
+    let mailbox = a.mailbox;
+    let has_more = if mailbox.is_null() {
+        false
+    } else {
+        // SAFETY: mailbox pointer is valid for the actor's lifetime.
+        unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+    };
+    if has_more {
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        // SAFETY: actor valid; re-enqueue to serve the queued message.
+        unsafe { sched_enqueue(actor) };
+    } else {
+        a.actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+    }
+}
+
 // ── Actor activation ────────────────────────────────────────────────────
 
 /// Activate an actor: drain messages up to budget, then transition to
@@ -918,6 +1082,20 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     }
     a.actor_state
         .store(HewActorState::Running as i32, Ordering::Relaxed);
+
+    // Resume re-entry (slice-4 executor, wasm cooperative half). Same ABI and
+    // discriminator as native (`scheduler.rs`): a live parked continuation
+    // (`cont_tag == Parked` AND a non-null `suspended_cont` slot) means this
+    // activation is a resumed continuation, not a fresh message dispatch.
+    // Single-threaded, so no CAS race — but the SAME coro_exec guards (FG1-FG4)
+    // drive resume/destroy through one ABI.
+    //
+    if crate::coro_exec::has_live_parked_cont(as_native_actor(actor)) {
+        // SAFETY: actor is Running and exclusively owned on this single thread;
+        // the parked handle is the executor-owned frame.
+        unsafe { resume_suspended_activation_wasm(actor) };
+        return;
+    }
 
     // Compute budget with priority scaling.
     let raw_budget = a.budget.load(Ordering::Relaxed);
@@ -1597,6 +1775,9 @@ mod tests {
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),
             arena: ptr::null_mut(),
+            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+            pending_wake: AtomicBool::new(false),
         }
     }
 
@@ -2178,6 +2359,122 @@ mod tests {
             HewActorState::Idle as i32,
             "idle actor should remain idle"
         );
+
+        hew_sched_shutdown();
+    }
+
+    /// Wasm parity with the native suspend/resume executor: the cooperative
+    /// `activate_actor_wasm` resume re-entry drives a parked scratch
+    /// continuation to completion across two ticks, destroying it exactly once
+    /// (FG1/FG4) and settling the actor to Idle. Same ABI, single-threaded.
+    #[test]
+    fn wasm_activate_resumes_parked_cont_to_ready_and_destroys_once() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let actor = stub_actor();
+        actor
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Relaxed);
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        // Scratch frame: Ready on the 2nd resume.
+        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(2));
+        let handle = (&raw mut *frame).cast::<c_void>();
+
+        // SAFETY: actor owned on this single thread; scratch handle live.
+        assert!(unsafe { park_suspended_activation_wasm(actor_ptr, handle) });
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Suspended as i32,
+            "suspend edge publishes Suspended"
+        );
+
+        // Tick 1: resume #1 -> Pending -> re-parked Suspended.
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        // SAFETY: actor valid.
+        unsafe { activate_actor_wasm(actor_ptr) };
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Suspended as i32,
+            "Pending resume re-parks as Suspended on wasm too"
+        );
+        assert_eq!(frame.resumes.load(Ordering::Relaxed), 1);
+
+        // Tick 2: resume #2 -> Ready -> destroy once -> Idle.
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        // SAFETY: actor valid.
+        unsafe { activate_actor_wasm(actor_ptr) };
+        assert_eq!(frame.resumes.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            frame.destroyed.load(Ordering::Relaxed),
+            1,
+            "FG1: the Ready continuation is destroyed exactly once on wasm"
+        );
+        assert!(
+            actor.suspended_cont.load(Ordering::Relaxed).is_null(),
+            "FG4: slot nulled in the Destroyed critical section"
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Idle as i32,
+            "a completed resume with an empty mailbox settles to Idle"
+        );
+
+        hew_sched_shutdown();
+    }
+
+    /// Wasm `enqueue_resume` wakes a Suspended actor (Suspended -> Runnable)
+    /// and re-enqueues it — the cooperative dual of the native wake edge.
+    #[test]
+    fn wasm_enqueue_resume_wakes_suspended_actor() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let actor = stub_actor();
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Relaxed);
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Relaxed,
+        );
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Relaxed,
+        );
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        // SAFETY: actor valid; sentinel handle is never resumed by the wake.
+        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32,
+            "wasm enqueue_resume CASes Suspended -> Runnable"
+        );
+
+        // Clear the parked sentinel + tag so shutdown's run-queue drain does
+        // not try to resume the (never-real) sentinel handle. enqueue_resume
+        // only performs the wake; the actual resume is the activation's job and
+        // is covered by the round-trip test above with a real scratch frame.
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Empty as i32,
+            Ordering::Relaxed,
+        );
+        actor
+            .suspended_cont
+            .store(ptr::null_mut(), Ordering::Relaxed);
+        actor
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
 
         hew_sched_shutdown();
     }
@@ -4114,6 +4411,9 @@ mod tests {
             prof_processing_time_ns: AtomicU64::new(0),
             // Assign the arena just as spawn_actor_internal now does.
             arena: arena.cast::<c_void>(),
+            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+            pending_wake: AtomicBool::new(false),
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

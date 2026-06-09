@@ -280,6 +280,8 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
                 "runnable"
             } else if state_int == HewActorState::Running as i32 {
                 "running"
+            } else if state_int == HewActorState::Suspended as i32 {
+                "suspended"
             } else if state_int == HewActorState::Stopping as i32 {
                 "stopping"
             } else if state_int == HewActorState::Crashing as i32 {
@@ -567,19 +569,21 @@ mod tests {
         // SAFETY: actor_ptr is valid for the duration of this test.
         unsafe { register(actor_ptr) };
 
-        // Every state the runtime is allowed to transition into, plus the
-        // stale legacy `3` discriminant that used to mean Blocked.  The
-        // probe asserts that none of these states stringify to "blocked".
+        // Every state the runtime is allowed to transition into, including the
+        // repurposed `3` discriminant (formerly the dead `Blocked` variant,
+        // now `Suspended`).  The probe asserts that none of these states
+        // stringify to "blocked".
         let states: &[(i32, &str)] = &[
             (HewActorState::Idle as i32, "idle"),
             (HewActorState::Runnable as i32, "runnable"),
             (HewActorState::Running as i32, "running"),
+            (HewActorState::Suspended as i32, "suspended"),
             (HewActorState::Stopping as i32, "stopping"),
             (HewActorState::Crashing as i32, "crashing"),
             (HewActorState::Crashed as i32, "crashed"),
             (HewActorState::Stopped as i32, "stopped"),
-            // Legacy Blocked discriminant — must now be "unknown".
-            (3, "unknown"),
+            // Repurposed discriminant — `3` is now Suspended, never "blocked".
+            (3, "suspended"),
             // Out-of-range value — catch-all.
             (999, "unknown"),
         ];

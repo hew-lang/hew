@@ -207,7 +207,7 @@ impl From<std::io::Error> for CodegenError {
     }
 }
 
-type CodegenResult<T> = Result<T, CodegenError>;
+pub(crate) type CodegenResult<T> = Result<T, CodegenError>;
 
 // ---------------------------------------------------------------------------
 // Error-wrapping helpers (crate-private)
@@ -647,6 +647,14 @@ fn emit_object_in_process(
     let machine = target_machine_for_triple(triple)?;
     let ctx = Context::create();
     let llvm_mod = build_module_for_target(&ctx, pipeline, module_name, Some(&machine))?;
+    // Run LLVM's coroutine lowering (CoroSplit et al.) before instruction
+    // selection. `write_to_file` does NOT run the module optimization pipeline,
+    // so a `presplitcoroutine` function would otherwise reach the backend
+    // un-split and fail to lower its `llvm.coro.*` intrinsics. Gated on a
+    // coroutine actually being present, so non-suspending programs pay nothing.
+    if crate::coro::module_has_coroutines(&llvm_mod) {
+        crate::coro::run_coro_passes(&llvm_mod, &machine)?;
+    }
     machine
         .write_to_file(&llvm_mod, FileType::Object, out_path)
         .llvm_ctx_with(|| {
@@ -764,6 +772,19 @@ struct FnCtx<'a, 'ctx> {
     /// the lowerer, so the drain is part of the program's control-flow graph
     /// rather than a codegen epilogue injection.
     emit_drain_epilogue: bool,
+    /// Emit `hew_sched_run()` before the `Terminator::Return` of the wasm32
+    /// program entry point of an actor-using program — the wasm analogue of
+    /// `emit_drain_epilogue`.
+    ///
+    /// `true` ONLY when ALL of: `func.name == "main"`, the module has at least
+    /// one actor layout, the target is wasm32 (`emit_wasm_entry_alias`), and
+    /// there are no supervisors. The native epilogue uses a thread-backed
+    /// `hew_shutdown_initiate`/`_wait`; on the wasm32 cooperative scheduler
+    /// that has no driver, the standalone-WASM `hew_sched_run()` runs all
+    /// runnable actors to completion synchronously so fire-and-forget messages
+    /// are processed before the program exits. Without it the mailbox never
+    /// drains and the program produces no output.
+    emit_wasm_sched_drain: bool,
     /// ABI layout authority for the module target. Native textual emission
     /// carries host data; cross-target emission carries the target machine data.
     target_data: &'a TargetData,
@@ -1003,15 +1024,42 @@ fn math_builtin_intrinsic(callee: &str) -> Option<MathBuiltinIntrinsic> {
     }
 }
 
+/// The C `size_t`/`usize` integer type for the module's target.
+///
+/// `intern_runtime_decl` declares runtime FFI symbols whose parameters are
+/// `usize`/`size_t` in the Rust runtime (`hew_actor_spawn(state_size: usize)`,
+/// `hew_actor_send_by_id(size: usize)`, …). `size_t` is 64-bit on the native
+/// targets (x86_64/aarch64) but 32-bit on wasm32. The IR is rebuilt per target
+/// by `build_module_for_target`, which sets the module triple before any body
+/// fill triggers an FFI declaration, so the module triple is the authority for
+/// the pointer/`size_t` width at declaration time.
+///
+/// Declaring these params at the wrong width produces a `wasm-ld` signature
+/// mismatch against the wasm32 runtime archive (codegen `i64` vs runtime
+/// `i32`), and the resulting `signature_mismatch:hew_actor_spawn` stub traps
+/// `unreachable` at runtime. This helper returns the target-correct width so
+/// the codegen declaration matches the runtime's real C ABI.
+fn runtime_size_ty<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+) -> inkwell::types::IntType<'ctx> {
+    let triple = llvm_mod.get_triple();
+    if triple.as_str().to_string_lossy().starts_with("wasm32") {
+        ctx.i32_type()
+    } else {
+        ctx.i64_type()
+    }
+}
+
 /// Intern a runtime-ABI function declaration for `symbol` in `llvm_mod`.
 ///
 /// Returns the cached `FunctionValue` on repeat lookups so multiple
 /// `Instr::CallRuntimeAbi` sites share one `declare` line. The signature
 /// table is hard-coded from `hew-runtime/src/duplex.rs` and pinned by the
-/// E4 plan §D1-D3 (revised 2026-05-15). All three signatures use 64-bit
-/// integer widths for `usize`-typed args; the spine subset is 64-bit-only
-/// by design and wasm32 surfaces a width mismatch handled at the E5c
-/// CLI target-selection seam, not here.
+/// E4 plan §D1-D3 (revised 2026-05-15). Most signatures use 64-bit integer
+/// widths for `usize`-typed args; the `usize`/`size_t` params of the actor
+/// FFI surface (spawn/send) use the target-correct width via `runtime_size_ty`
+/// so wasm32 (`size_t = i32`) links and runs against the wasm32 runtime.
 ///
 /// Unknown symbols return `FailClosed`. The `RuntimeCall::new` allowlist
 /// guard ensures construction-time rejection of unknown names, so reaching
@@ -1040,6 +1088,10 @@ fn intern_runtime_decl<'ctx>(
     let i64_ty = ctx.i64_type();
     let i8_ty = ctx.i8_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    // Target-correct `size_t`/`usize` width: i32 on wasm32, i64 on native.
+    // Used for the actor FFI `usize` size params so the codegen declaration
+    // matches the runtime's real C ABI (see `runtime_size_ty`).
+    let size_ty = runtime_size_ty(ctx, llvm_mod);
     let fn_ty = match symbol {
         // hew_actor_cooperate() -> c_int
         // (`hew-runtime/src/scheduler.rs`, `scheduler_wasm.rs`). Decrements
@@ -1121,8 +1173,11 @@ fn intern_runtime_decl<'ctx>(
         // null inputs. Actor handles are opaque ptrs. The u64 is wrapped into
         // MonitorRef { ref_id } in Cluster 2.
         "hew_actor_monitor" => i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_actor_send_by_id(actor_id: u64, msg_type: i32, data: *mut c_void,
+        //                      size: usize) -> c_int (`hew-runtime/src/actor.rs:2489`).
+        // `size` is `usize`/`size_t` → target-correct width (i32 on wasm32).
         "hew_actor_send_by_id" => i32_ty.fn_type(
-            &[i64_ty.into(), i32_ty.into(), ptr_ty.into(), i64_ty.into()],
+            &[i64_ty.into(), i32_ty.into(), ptr_ty.into(), size_ty.into()],
             false,
         ),
         // hew_tcp_attach_local(conn: c_int, actor: *mut HewActor,
@@ -1159,7 +1214,11 @@ fn intern_runtime_decl<'ctx>(
         "hew_actor_ask_take_last_error" => i32_ty.fn_type(&[], false),
         "hew_actor_state_lock_acquire" => i32_ty.fn_type(&[ptr_ty.into()], false),
         "hew_actor_state_lock_release" => i32_ty.fn_type(&[ptr_ty.into()], false),
-        "hew_actor_spawn" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        // hew_actor_spawn(state: *mut c_void, state_size: usize,
+        //                 dispatch: HewDispatchFn) -> *mut HewActor
+        // (`hew-runtime/src/actor.rs:1968`). `state_size` is `usize`/`size_t`
+        // → target-correct width (i32 on wasm32).
+        "hew_actor_spawn" => ptr_ty.fn_type(&[ptr_ty.into(), size_ty.into(), ptr_ty.into()], false),
         // hew_auto_mutex_alloc() -> *mut HewAutoMutex
         // (`hew-runtime/src/auto_mutex.rs`). Allocates one opaque
         // mutex handle the compiler stashes in the closure-env (or
@@ -1194,6 +1253,14 @@ fn intern_runtime_decl<'ctx>(
             .bool_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
         "hew_sched_init" => i32_ty.fn_type(&[], false),
+        // hew_sched_run() -> void (`hew-runtime/src/scheduler_wasm.rs:676`).
+        // The standalone-WASM cooperative drain: runs all runnable actors to
+        // completion. Emitted by the wasm32 actor main-exit drain (the wasm
+        // analogue of the native `hew_shutdown_initiate`/`_wait` epilogue),
+        // because nothing else drives the cooperative scheduler when a
+        // standalone `hew run --target wasm32-wasi` program reaches `main`'s
+        // return without the program itself calling into the scheduler.
+        "hew_sched_run" => ctx.void_type().fn_type(&[], false),
         // hew_shutdown_initiate(drain_timeout_ms: i64) -> void
         // (`hew-runtime/src/shutdown.rs:183`). Non-blocking — sets the
         // shutdown phase to QUIESCE and spawns an orchestrator thread that
@@ -4983,13 +5050,23 @@ fn emit_spawn_actor(
             &mut fn_ctx.runtime_decls.borrow_mut(),
             "hew_actor_spawn",
         )?;
+        // `state_size` is built as i64; `hew_actor_spawn`'s `state_size`
+        // param is `usize`/`size_t` (i32 on wasm32). Reconcile the value to
+        // the target-correct width so the call matches the declaration.
+        let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+        let spawn_state_size = reconcile_int_width_signed(
+            fn_ctx,
+            state_size.into(),
+            size_ty.into(),
+            "spawn state_size",
+        )?;
         fn_ctx
             .builder
             .build_call(
                 spawn,
                 &[
                     state_ptr.into(),
-                    state_size.into(),
+                    spawn_state_size.into(),
                     dispatch.as_global_value().as_pointer_value().into(),
                 ],
                 "hew_actor_spawn_call",
@@ -5522,10 +5599,22 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             // pointer would be safe. However, heap allocation makes ownership
             // explicit and avoids any LLVM lifetime reasoning across the C call.
             let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
+            // `malloc`'s size param is `size_t` (i32 on wasm32, i64 native).
+            // Supervisors are HIR-gated off wasm32 so this path is unreachable
+            // there, but keep the call width-correct: truncate i64 → size_ty
+            // when the target is narrower. On native, size_ty == i64 → no-op.
+            let malloc_size_ty = runtime_size_ty(ctx, llvm_mod);
+            let child_state_size = if malloc_size_ty == i64_ty {
+                state_size_i64
+            } else {
+                builder
+                    .build_int_truncate(state_size_i64, malloc_size_ty, "child_state_size_trunc")
+                    .llvm_ctx("child state size trunc")?
+            };
             let heap_ptr = builder
                 .build_call(
                     malloc_fn,
-                    &[state_size_i64.into()],
+                    &[child_state_size.into()],
                     &format!("child_state_heap_{idx}"),
                 )
                 .llvm_ctx("child state malloc")?
@@ -5708,10 +5797,14 @@ fn get_or_declare_libc_malloc<'ctx>(
         return fv;
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i64_ty = ctx.i64_type();
+    // `malloc(size: size_t)`: size_t is i32 on wasm32, i64 on native. Declaring
+    // the wrong width mismatches libc's wasm32 archive (`malloc(i32)`), which
+    // routes the call through a `signature_mismatch` stub that returns null —
+    // the actor state clone/spawn then silently fails. See `runtime_size_ty`.
+    let size_ty = runtime_size_ty(ctx, llvm_mod);
     llvm_mod.add_function(
         "malloc",
-        ptr_ty.fn_type(&[i64_ty.into()], false),
+        ptr_ty.fn_type(&[size_ty.into()], false),
         Some(Linkage::External),
     )
 }
@@ -6434,10 +6527,13 @@ fn emit_actor_state_clone_body<'ctx>(
         .map(|st| struct_abi_size(st, target_data))
         .unwrap_or(0);
     let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
+    // `malloc`'s size param is `size_t` (i32 on wasm32, i64 native): build the
+    // const at the target-correct width so the call matches the declaration.
+    let malloc_size_ty = runtime_size_ty(ctx, llvm_mod);
     let dst = builder
         .build_call(
             malloc_fn,
-            &[i64_ty.const_int(size_bytes, false).into()],
+            &[malloc_size_ty.const_int(size_bytes, false).into()],
             "state_wrapper",
         )
         .llvm_ctx("clone malloc")?
@@ -19396,6 +19492,15 @@ fn emit_remote_pid_tell_call<'ctx>(
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_actor_send_by_id",
     )?;
+    // `payload_size` is built as i64; the `size` param is `usize`/`size_t`
+    // (i32 on wasm32). Reconcile to the target-correct width.
+    let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+    let payload_size = reconcile_int_width_signed(
+        fn_ctx,
+        payload_size.into(),
+        size_ty.into(),
+        "send payload size",
+    )?;
     let rc_basic = fn_ctx
         .builder
         .build_call(
@@ -20709,6 +20814,21 @@ fn lower_terminator<'ctx>(
                     .build_call(shutdown_wait, &[], "hew_shutdown_wait_call")
                     .llvm_ctx("hew_shutdown_wait call")?;
             }
+            // wasm32 cooperative-scheduler drain: run all runnable actors to
+            // completion before `main` returns. The standalone-WASM analogue of
+            // the native drain epilogue above; see `emit_wasm_sched_drain`.
+            if fn_ctx.emit_wasm_sched_drain {
+                let sched_run = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_sched_run",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(sched_run, &[], "hew_sched_run_call")
+                    .llvm_ctx("hew_sched_run call")?;
+            }
             if matches!(fn_ctx.return_resolved_ty, ResolvedTy::Unit) {
                 fn_ctx
                     .builder
@@ -21509,6 +21629,15 @@ fn lower_terminator<'ctx>(
                 fn_ctx.llvm_mod,
                 &mut fn_ctx.runtime_decls.borrow_mut(),
                 "hew_actor_send_by_id",
+            )?;
+            // `payload_size` is built as i64; the `size` param is `usize`/
+            // `size_t` (i32 on wasm32). Reconcile to the target-correct width.
+            let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+            let payload_size = reconcile_int_width_signed(
+                fn_ctx,
+                payload_size.into(),
+                size_ty.into(),
+                "actor send payload size",
             )?;
             let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
             // Bind the i32 return value. A nonzero status means the recipient
@@ -23789,10 +23918,22 @@ fn lower_function<'ctx>(
         && !has_supervisors
         && !emit_wasm_entry_alias;
 
+    // The wasm32 analogue: a standalone `hew run --target wasm32-wasi` actor
+    // program has no scheduler driver, so `main` must drain the cooperative
+    // scheduler itself via `hew_sched_run()`. Same gate as the native epilogue
+    // but for the wasm target (`emit_wasm_entry_alias`). Supervisors are
+    // HIR-gated off wasm32, so `!has_supervisors` is always true here; it is
+    // kept for symmetry with the native condition.
+    let emit_wasm_sched_drain = func.name == "main"
+        && !actor_layouts.is_empty()
+        && !has_supervisors
+        && emit_wasm_entry_alias;
+
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
         emit_drain_epilogue,
+        emit_wasm_sched_drain,
         target_data,
         builder,
         return_slot,
@@ -24120,6 +24261,12 @@ fn emit_actor_dispatch_trampoline<'ctx>(
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
+    // `data_size` is `usize` in `HewDispatchFn` (i32 on wasm32, i64 native).
+    // The scheduler registers this trampoline as the actor's dispatch fn
+    // pointer and invokes it via the wasm function table; a width mismatch
+    // here surfaces as a wasm `indirect call type mismatch` trap. Match the
+    // runtime ABI width. See `runtime_size_ty`.
+    let size_ty = runtime_size_ty(ctx, llvm_mod);
     let dispatch_name = format!("__hew_actor_dispatch_{}", layout.name);
     let fn_ty = ctx.void_type().fn_type(
         &[
@@ -24127,7 +24274,7 @@ fn emit_actor_dispatch_trampoline<'ctx>(
             ptr_ty.into(),
             i32_ty.into(),
             ptr_ty.into(),
-            i64_ty.into(),
+            size_ty.into(),
             // P5-RX sub-stage 1: borrow_mode receipt discriminant. Must match
             // `HewDispatchFn` (hew-runtime/src/internal/types.rs) — the runtime
             // scheduler is the sole caller and registers this trampoline as the
@@ -28877,6 +29024,7 @@ mod tests {
             // the flag off so the test builder's block does not attempt to
             // intern shutdown symbols that are absent from the minimal fixture.
             emit_drain_epilogue: false,
+            emit_wasm_sched_drain: false,
             target_data: &harness.target_data,
             builder,
             return_slot,

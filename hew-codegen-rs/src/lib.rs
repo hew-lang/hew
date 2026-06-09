@@ -26,6 +26,10 @@
 //! - [`EmitArtefacts`] — paths of emitted files.
 //! - [`CodegenError`] — failure variants for diagnostic mapping.
 
+/// LLVM switched-resume coroutine emission — the codegen side of Hew's
+/// stackless continuation substrate (W6.007). The `llvm.coro.*` token-call
+/// helper, the switched-resume skeleton emitter, and the coro-pass runner.
+pub mod coro;
 pub mod llvm;
 
 pub use llvm::{

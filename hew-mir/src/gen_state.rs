@@ -153,6 +153,11 @@ fn terminator_reads(term: &Terminator) -> Vec<Place> {
         // `SuspendingRead` reads `conn` (the read source); `result_dest` is a
         // write slot bound on the resume edge, not a read.
         Terminator::SuspendingRead { conn, .. } => vec![*conn],
+        // `SuspendingStreamNext` reads `stream` (the recv source); `result_dest`
+        // is a write slot bound on the resume edge, not a read.
+        Terminator::SuspendingStreamNext { stream, .. } => vec![*stream],
+        // `SuspendingStreamSend` reads `sink` + `value` (the send sources).
+        Terminator::SuspendingStreamSend { sink, value, .. } => vec![*sink, *value],
         // The suspendable-callee driver reads the closure pair + forwarded args;
         // `result_dest` is a write slot bound on the completion edge, not a read.
         Terminator::SuspendingCallClosure { callee, args, .. } => {

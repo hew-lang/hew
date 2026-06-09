@@ -1825,6 +1825,17 @@ impl BasicBlock {
             // exits to the executor; resume + cleanup are the in-CFG successors.
             | Terminator::SuspendingCallClosure {
                 resume, cleanup, ..
+            }
+            // The suspending stream-recv ramp parks the consumer continuation on
+            // a `coro.suspend` exactly like the read/ask ramps: the default edge
+            // exits to the executor; resume + cleanup are the in-CFG successors.
+            | Terminator::SuspendingStreamNext {
+                resume, cleanup, ..
+            }
+            // The suspending stream-send ramp parks the producer continuation on
+            // a full ring; resume + cleanup are the in-CFG successors.
+            | Terminator::SuspendingStreamSend {
+                resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
     }
@@ -2123,6 +2134,80 @@ pub enum Terminator {
         /// frame's teardown when the parked continuation is abandoned
         /// (`coro.destroy`); the child handle + driver channel are destroyed
         /// there.
+        cleanup: u32,
+    },
+    /// Non-blocking `await stream.recv()` from a SUSPENDABLE caller (NEW-7). The
+    /// channel-readiness analogue of [`Terminator::SuspendingRead`]: instead of
+    /// blocking an OS worker in `hew_stream_next_bytes`, codegen lowers this as a
+    /// `coro.suspend` source — it creates a read slot, registers the parked
+    /// continuation + the slot with the stream's channel core
+    /// (`hew_stream_await_next`), suspends (freeing the worker), and on the
+    /// resume edge pops the now-available item from the queue
+    /// (`hew_stream_pop_bytes`) and binds it as `Option<bytes>` (`None` on EOF /
+    /// a present zero-length item, mirroring the blocking recv narrowing). The
+    /// item travels through the channel queue held across the suspend (NOT a
+    /// terminator operand), exactly as `SuspendingRead`'s bytes travel through
+    /// its read slot — which is why the resume binding lives ON the terminator.
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` / `is_coroutine`: any function whose CFG contains this
+    /// terminator is lowered as a `presplitcoroutine`. Emitted ONLY when the
+    /// lowering function carries the execution context
+    /// (`FunctionCallConv::carries_execution_context` — actor handler / closure
+    /// / task entry); a `FunctionCallConv::Default` caller (`main`, free fns)
+    /// runs on a foreign thread with no parkable continuation and keeps the
+    /// blocking `hew_stream_next_bytes` FFI call.
+    SuspendingStreamNext {
+        /// The stream handle the recv is registered against (the receiver of
+        /// `stream.recv()`). Read by codegen to register the parked continuation
+        /// with the channel core and to pop the item on resume.
+        stream: Place,
+        /// The `Option<bytes>` slot bound on the resume edge after the producer
+        /// deposited an item (or closed → `None`). Identical role to
+        /// [`Terminator::SuspendingRead::result_dest`].
+        result_dest: Place,
+        /// Block reached on the coro switch resume edge (case 0) — the body
+        /// continues here after `enqueue_resume` woke the parked continuation and
+        /// the item is bound. This is the `next` block of the original recv.
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the frame's
+        /// teardown when the parked continuation is abandoned (`coro.destroy`);
+        /// the read slot is cancelled, the channel-await registration detached,
+        /// and the slot freed there.
+        cleanup: u32,
+    },
+    /// Non-blocking `await sink.send(x)` from a SUSPENDABLE caller (NEW-7). The
+    /// backpressure analogue of [`Terminator::SuspendingStreamNext`]: instead of
+    /// blocking an OS worker in `hew_sink_write_bytes` when the bounded ring is
+    /// full, codegen lowers this as a `coro.suspend` source — it creates a read
+    /// slot, hands the item + the parked continuation to the sink's channel core
+    /// (`hew_stream_await_send`), and either binds immediately (the ring had
+    /// space, or the consumer is gone) or suspends (the ring was full) until the
+    /// consumer's drain re-enqueues the item and wakes the producer. The item is
+    /// OWNED by the runtime across the suspend (copied out of `value`), so the
+    /// send resume edge binds nothing (`send` is unit).
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` / `is_coroutine`. Emitted ONLY when the lowering function
+    /// carries the execution context
+    /// (`FunctionCallConv::carries_execution_context`); a
+    /// `FunctionCallConv::Default` caller keeps the blocking `hew_sink_write_bytes`
+    /// FFI call.
+    SuspendingStreamSend {
+        /// The sink handle the send is registered against (the receiver of
+        /// `sink.send(x)`). Read by codegen to reach the channel core.
+        sink: Place,
+        /// The `bytes` value to send. Read by codegen (passed by pointer) and
+        /// copied into the channel queue / the parked producer's waiter.
+        value: Place,
+        /// Block reached on the coro switch resume edge (case 0) — the body
+        /// continues here after the ring had space (immediate) or the consumer's
+        /// drain woke the parked producer. `send` is unit, so nothing is bound.
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the frame's
+        /// teardown when the parked continuation is abandoned (`coro.destroy`);
+        /// the read slot is cancelled, the channel-await registration detached
+        /// (dropping the pending item), and the slot freed there.
         cleanup: u32,
     },
     /// Remote actor ask: send `value` to a `RemotePid<T>` and construct

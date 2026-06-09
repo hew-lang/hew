@@ -46,15 +46,15 @@ use std::io::{BufReader, Read};
 use std::net::TcpStream;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
 // ── Re-export sink types from hew-cabi ────────────────────────────────────────
 // These are the shared ABI types that native packages (e.g. HTTP) also use.
 // Defining them in hew-cabi avoids pulling the full runtime into stdlib packages.
 
 pub use hew_cabi::sink::{
-    into_channel_sink_ptr, into_sink_ptr, into_write_sink_ptr, set_last_error,
-    set_last_error_with_errno, take_last_error, HewSink,
+    into_sink_ptr, into_write_sink_ptr, set_last_error, set_last_error_with_errno, take_last_error,
+    HewSink,
 };
 
 // hew_stream_last_error is defined in hew-cabi::sink (with #[no_mangle])
@@ -129,6 +129,12 @@ pub struct HewStream {
     /// park-thread generation rather than sleeping (§5.7).
     #[cfg(test)]
     park_exit_gen: Arc<(Mutex<u64>, std::sync::Condvar)>,
+    /// The suspending channel core (NEW-7) when this stream is the read half of
+    /// an in-memory pipe; `None` for every other backing. Shared by `Arc` with
+    /// the paired sink so `await stream.recv()` can park + be woken by the
+    /// producer's `await sink.send()`. Non-channel backings keep the blocking
+    /// read path (no parkable producer to wake).
+    channel: Option<Arc<crate::channel_core::ChannelCore>>,
 }
 
 impl Drop for HewStream {
@@ -195,24 +201,24 @@ unsafe impl Send for HewStreamPair {}
 
 #[derive(Debug)]
 struct ChannelStream {
-    rx: mpsc::Receiver<Item>,
+    core: Arc<crate::channel_core::ChannelCore>,
 }
 
 impl StreamBacking for ChannelStream {
     fn next(&mut self) -> Option<Item> {
-        self.rx.recv().ok()
+        // Default (non-suspending) callers block the foreign thread on the core
+        // condvar. Suspending callers never reach here — they go through
+        // `hew_stream_await_next` + `hew_stream_pop_bytes`.
+        self.core.blocking_recv()
     }
 
     fn try_next(&mut self) -> Option<Item> {
-        self.rx.try_recv().ok()
+        self.core.try_recv()
     }
 
     fn close(&mut self) {
-        // Drain the channel so the sender is unblocked and can observe disconnect.
-        while self.rx.try_recv().is_ok() {}
-        // Dropping `rx` here signals the sender-side that the channel is gone,
-        // but we can't drop `self` from a method.  The struct will be dropped
-        // when the HewStream is freed.
+        // Consumer-side close: local cancel/discard. Wakes parked producers.
+        self.core.close_stream();
     }
 
     fn is_closed(&self) -> bool {
@@ -503,6 +509,7 @@ fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
         pending_state: Mutex::new(None),
         #[cfg(test)]
         park_exit_gen: Arc::new((Mutex::new(0u64), std::sync::Condvar::new())),
+        channel: None,
     }))
 }
 
@@ -516,6 +523,7 @@ fn into_stream_ptr_dyn(backing: Box<dyn StreamBacking>) -> *mut HewStream {
         pending_state: Mutex::new(None),
         #[cfg(test)]
         park_exit_gen: Arc::new((Mutex::new(0u64), std::sync::Condvar::new())),
+        channel: None,
     }))
 }
 
@@ -540,6 +548,7 @@ unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking>
         let _ = ptr::read(&raw const (*stream).closed);
         let _ = ptr::read(&raw const (*stream).pending_read);
         drop(ptr::read(&raw const (*stream).pending_state));
+        drop(ptr::read(&raw const (*stream).channel));
     }
     // SAFETY: stream was allocated via Box::into_raw(Box::new(HewStream { .. })),
     // so deallocating with Layout::new::<HewStream>() is correct. We use dealloc
@@ -818,18 +827,57 @@ unsafe fn rc_drop_env(env_ptr: *const c_void) {
 /// handles have been extracted.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair {
+    use crate::channel_core::ChannelCore;
     let cap = usize::try_from(capacity.max(1)).unwrap_or(1);
-    let (tx, rx) = mpsc::sync_channel::<Item>(cap);
+    let core = Arc::new(ChannelCore::new(cap));
+    // Borrow the allocation address before the Arc clones move; the address is
+    // stable and stays valid while either handle (each holding an Arc clone)
+    // is alive.
+    let core_raw = Arc::as_ptr(&core).cast::<c_void>();
 
-    let stream_ptr = into_stream_ptr(ChannelStream { rx });
-    // Use into_channel_sink_ptr so the sink supports try_write_item (non-blocking).
-    let sink_ptr = into_channel_sink_ptr(tx);
+    // Read half: a channel-backed stream that also carries an Arc clone so the
+    // suspending `await stream.recv()` path can reach the shared queue.
+    let stream_ptr = into_stream_ptr(ChannelStream {
+        core: Arc::clone(&core),
+    });
+    // SAFETY: stream_ptr was just allocated by into_stream_ptr.
+    unsafe {
+        (*stream_ptr).channel = Some(Arc::clone(&core));
+    }
+
+    // Write half: a callback sink owning the last Arc clone; the opaque core
+    // borrow lets `hew_stream_await_send` reach the queue + parked consumer.
+    let sink_ptr = into_sink_ptr(
+        core,
+        channel_sink_write,
+        channel_sink_flush,
+        channel_sink_close,
+    );
+    // SAFETY: sink_ptr was just allocated by into_sink_ptr.
+    unsafe {
+        (*sink_ptr).set_channel_core(core_raw);
+    }
 
     Box::into_raw(Box::new(HewStreamPair {
         // ALLOCATOR-PAIRING: GlobalAlloc
         sink: sink_ptr,
         stream: stream_ptr,
     }))
+}
+
+/// Channel-sink callback: blocking write (default callers). Suspending callers
+/// route through `hew_stream_await_send` instead.
+fn channel_sink_write(core: &mut Arc<crate::channel_core::ChannelCore>, data: &[u8]) {
+    core.blocking_send(data.to_vec());
+}
+
+/// Channel-sink callback: flush is a no-op (the core is not write-buffered).
+fn channel_sink_flush(_core: &mut Arc<crate::channel_core::ChannelCore>) {}
+
+/// Channel-sink callback: producer EOF. Wakes a parked consumer so its
+/// `await stream.recv()` resume binds `None`.
+fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
+    core.close_sink();
 }
 
 /// Bridge a live TCP connection into a `(Stream<bytes>, Sink<bytes>)` pair.
@@ -2080,6 +2128,193 @@ pub unsafe extern "C" fn hew_sink_write_bytes(
     }
 }
 
+// ── Suspending stream consumer / producer (NEW-7) ─────────────────────────────
+//
+// These entries flip `await stream.recv()` / `await sink.send(x)` from a
+// worker-blocking call onto the read-slot / `enqueue_resume` substrate when the
+// caller carries an execution context (actor handler / closure / task entry).
+// The codegen suspend ramp calls `*_await_*` to register, suspends, and on the
+// resume edge binds the result (`hew_stream_pop_bytes` for the consumer; unit
+// for the producer). Non-channel backings (file/TCP/adapters) keep the blocking
+// path: the await entry returns `STREAM_AWAIT_READY` and the bind reads through
+// the existing blocking FFI. See `crate::channel_core` for the wake discipline.
+
+/// Register a suspending consumer for `await stream.recv()`.
+///
+/// Returns [`crate::channel_core::STREAM_AWAIT_READY`] when the bind can proceed
+/// immediately (an item is queued, the producer closed, or this is a
+/// non-channel backing), or [`crate::channel_core::STREAM_AWAIT_SUSPEND`] after
+/// parking the consumer's continuation on `slot`.
+///
+/// # Safety
+///
+/// `stream` is a live stream handle; `actor` is the awaiting actor
+/// (`hew_actor_self`); `slot` is a live read slot the caller created.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_await_next(
+    stream: *mut HewStream,
+    actor: *mut crate::actor::HewActor,
+    slot: *mut crate::read_slot::HewReadSlot,
+) -> i32 {
+    if stream.is_null() {
+        return crate::channel_core::STREAM_AWAIT_READY;
+    }
+    // SAFETY: stream is a valid HewStream per caller contract.
+    let channel = unsafe { (*stream).channel.as_ref() };
+    match channel {
+        // SAFETY: the core is alive (the stream holds an Arc clone); `actor` /
+        // `slot` validity is the caller's contract.
+        Some(core) => unsafe { core.await_next(actor, slot) },
+        None => crate::channel_core::STREAM_AWAIT_READY,
+    }
+}
+
+/// Pop one item on the consumer resume / immediate bind edge, as a `bytes`
+/// value (empty triple = `None`). Channel streams pop from the shared queue
+/// (draining a parked producer); non-channel streams fall back to the blocking
+/// `hew_stream_next_bytes`.
+///
+/// # Safety
+///
+/// `stream` must be a valid stream handle.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_pop_bytes(stream: *mut HewStream) -> crate::bytes::BytesTriple {
+    let empty = crate::bytes::BytesTriple {
+        ptr: std::ptr::null_mut(),
+        offset: 0,
+        len: 0,
+    };
+    if stream.is_null() {
+        return empty;
+    }
+    // SAFETY: stream is valid per caller contract.
+    let channel = unsafe { (*stream).channel.as_ref() };
+    match channel {
+        Some(core) => match core.pop() {
+            Some(item) if !item.is_empty() => {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "stream item lengths carry the u32 bytes-ABI width"
+                )]
+                let len = item.len() as u32;
+                // SAFETY: item is valid for len bytes; from_static copies it into
+                // a fresh refcount-1 buffer the caller (the Option) owns.
+                unsafe { crate::bytes::hew_bytes_from_static(item.as_ptr(), len) }
+            }
+            // EOF (None) or a present zero-length item both collapse to the empty
+            // triple → `None` (the documented recv narrowing the blocking path
+            // also applies, `hew_stream_next_bytes`).
+            _ => empty,
+        },
+        // SAFETY: stream is valid; the blocking read is the status-quo path for
+        // non-channel backings.
+        None => unsafe { hew_stream_next_bytes(stream) },
+    }
+}
+
+/// Detach an abandoned suspending consumer (the codegen abandon edge). Releases
+/// the channel core's in-flight ref on `slot` if it is still registered.
+///
+/// # Safety
+///
+/// `stream` is a valid stream handle; `slot` is the consumer's read slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_detach_await(
+    stream: *mut HewStream,
+    slot: *mut crate::read_slot::HewReadSlot,
+) {
+    if stream.is_null() {
+        return;
+    }
+    // SAFETY: stream is valid per caller contract.
+    if let Some(core) = unsafe { (*stream).channel.as_ref() } {
+        // SAFETY: the core is alive (stream holds an Arc clone); slot is the
+        // consumer's read slot.
+        unsafe { core.detach_consumer(slot) };
+    }
+}
+
+/// Register a suspending producer for `await sink.send(x)`.
+///
+/// Returns [`crate::channel_core::STREAM_AWAIT_READY`] when the write completed
+/// immediately (the ring had space, the consumer is gone, or this is a
+/// non-channel sink), or [`crate::channel_core::STREAM_AWAIT_SUSPEND`] after
+/// parking the producer (the ring was full; its item is owned by the runtime
+/// across the suspend and enqueued by the consumer's drain).
+///
+/// # Safety
+///
+/// `sink` is a live sink handle; `actor` is the sending actor; `slot` is a live
+/// read slot; `data` points to the caller's `BytesTriple` (borrowed — the
+/// runtime copies it).
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_await_send(
+    sink: *mut HewSink,
+    actor: *mut crate::actor::HewActor,
+    slot: *mut crate::read_slot::HewReadSlot,
+    data: *const crate::bytes::BytesTriple,
+) -> i32 {
+    if sink.is_null() {
+        return crate::channel_core::STREAM_AWAIT_READY;
+    }
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        // Non-channel sink: blocking write (status quo).
+        // SAFETY: sink + data validity is the caller's contract.
+        unsafe { hew_sink_write_bytes(sink, data) };
+        return crate::channel_core::STREAM_AWAIT_READY;
+    }
+    // Copy the item out of the borrowed triple (the runtime owns it across the
+    // suspend / hand-off).
+    let item: Vec<u8> = if data.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: data points to the caller's valid BytesTriple slot.
+        let d = unsafe { &*data };
+        if d.ptr.is_null() || d.len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: `d.ptr + d.offset` is valid for `d.len` bytes per the
+            // BytesTriple contract; read-only borrow.
+            unsafe {
+                std::slice::from_raw_parts(d.ptr.add(d.offset as usize), d.len as usize).to_vec()
+            }
+        }
+    };
+    // SAFETY: core_raw borrows the live `Arc<ChannelCore>` owned by the sink
+    // backing (alive for the duration of this call); actor / slot validity is
+    // the caller's contract.
+    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+    // SAFETY: see above.
+    unsafe { core.await_send(actor, slot, item) }
+}
+
+/// Detach an abandoned suspending producer (the codegen abandon edge). Releases
+/// the channel core's in-flight ref on `slot` and drops the parked item.
+///
+/// # Safety
+///
+/// `sink` is a valid sink handle; `slot` is the producer's read slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_detach_await(
+    sink: *mut HewSink,
+    slot: *mut crate::read_slot::HewReadSlot,
+) {
+    if sink.is_null() {
+        return;
+    }
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        return;
+    }
+    // SAFETY: core_raw borrows the sink's live `Arc<ChannelCore>`.
+    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+    // SAFETY: slot is the producer's read slot.
+    unsafe { core.detach_producer(slot) };
+}
+
 // ── Non-blocking stream read / sink write ─────────────────────────────────────
 
 /// Non-blocking variant of [`hew_stream_next`].
@@ -2269,6 +2504,11 @@ pub unsafe extern "C" fn hew_sink_try_write_string(sink: *mut HewSink, data: *co
     //   Failure mode: violation (missing NUL or invalid ptr) is UB — documented at fn level.
     let s = unsafe { CStr::from_ptr(data) };
     let bytes = s.to_bytes();
+    // Channel-backed sinks use the core's genuine non-blocking `try_send`.
+    // SAFETY: sink is valid per the guard above.
+    if let Some(core) = unsafe { sink_channel_core(sink) } {
+        return if core.try_send(bytes.to_vec()) { 0 } else { 2 };
+    }
     // SAFETY:
     //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
     //   Type tag: cast to `*mut HewSink` matches declared type.
@@ -2282,6 +2522,28 @@ pub unsafe extern "C" fn hew_sink_try_write_string(sink: *mut HewSink, data: *co
     } else {
         2
     } // 0 = Ok, 2 = Full
+}
+
+/// If `sink` is a channel-backed (NEW-7) sink, return a borrow of its core.
+///
+/// # Safety
+///
+/// `sink` must be a valid `HewSink` pointer; the returned borrow is valid for
+/// as long as the sink is alive (it owns an `Arc<ChannelCore>` clone).
+unsafe fn sink_channel_core<'a>(
+    sink: *mut HewSink,
+) -> Option<&'a crate::channel_core::ChannelCore> {
+    if sink.is_null() {
+        return None;
+    }
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        None
+    } else {
+        // SAFETY: core_raw borrows the sink's live Arc<ChannelCore>.
+        Some(unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() })
+    }
 }
 
 /// Non-blocking variant of [`hew_sink_write_bytes`].
@@ -2335,6 +2597,12 @@ pub unsafe extern "C" fn hew_sink_try_write_bytes(
         // the BytesTriple contract; read-only borrow (no mutation, no free).
         unsafe { std::slice::from_raw_parts(data.ptr.add(data.offset as usize), data.len as usize) }
     };
+    // Channel-backed sinks use the core's genuine non-blocking `try_send`
+    // (the CallbackSink default would block).
+    // SAFETY: sink is valid per caller contract.
+    if let Some(core) = unsafe { sink_channel_core(sink) } {
+        return if core.try_send(bytes.to_vec()) { 0 } else { 2 };
+    }
     // SAFETY:
     //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
     //   Type tag: cast to `*mut HewSink` matches declared type.

@@ -2079,6 +2079,70 @@ fn returned_match_tail_tuple_callee_does_not_drop_members() {
     );
 }
 
+/// Return the `--dump-mir checked` text for `source`.
+fn mir_checked_dump(source: &str) -> String {
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("oracle.hew");
+    std::fs::write(&hew_src, source).unwrap();
+    let out = support::run_hew_in(
+        dir.path(),
+        &[
+            "compile",
+            "--dump-mir",
+            "checked",
+            hew_src.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "dump-mir checked must succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// NEW-7 oracle: `await stream.recv()` / `await sink.send(x)` over a
+/// `Stream<bytes>` / `Sink<bytes>` in an actor handler (an execution-context
+/// caller) flip to the suspending terminators; a context-free caller (`main`,
+/// free fn) keeps the blocking `hew_stream_next_bytes` / `hew_sink_write_bytes`
+/// call.
+#[test]
+fn suspending_stream_recv_send_flip_in_execution_context() {
+    let dump = mir_checked_dump(
+        "import std::stream;\n\
+         #[opaque]\n\
+         type Pair {}\n\
+         extern \"C\" {\n\
+         \x20   fn hew_stream_channel(capacity: i64) -> Pair;\n\
+         \x20   fn hew_stream_pair_sink_bytes(pair: Pair) -> Sink<bytes>;\n\
+         \x20   fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n\
+         \x20   fn hew_stream_pair_free(pair: Pair);\n\
+         \x20   fn hew_string_to_bytes(s: string) -> bytes;\n\
+         }\n\
+         actor Runner {\n\
+         \x20   receive fn go(unused: i64) {\n\
+         \x20       let pair = unsafe { hew_stream_channel(4) };\n\
+         \x20       let sink = unsafe { hew_stream_pair_sink_bytes(pair) };\n\
+         \x20       let input = unsafe { hew_stream_pair_stream_bytes(pair) };\n\
+         \x20       unsafe { hew_stream_pair_free(pair); }\n\
+         \x20       await sink.send(unsafe { hew_string_to_bytes(\"a\") });\n\
+         \x20       sink.close();\n\
+         \x20       let item = await input.recv();\n\
+         \x20       match item { Some(v) => {}, None => {}, }\n\
+         \x20   }\n\
+         }\n\
+         fn main() { let r = spawn Runner(); r.go(0); }\n",
+    );
+    assert!(
+        dump.contains("SuspendingStreamNext"),
+        "actor `await stream.recv()` must flip to SuspendingStreamNext:\n{dump}"
+    );
+    assert!(
+        dump.contains("SuspendingStreamSend"),
+        "actor `await sink.send()` must flip to SuspendingStreamSend:\n{dump}"
+    );
+}
+
 /// Oracle: a NESTED owned aggregate `((Sink,), Stream)` returned by name. The
 /// value-flow decomposition must recurse through the inner `TupleConstruct`.
 #[test]

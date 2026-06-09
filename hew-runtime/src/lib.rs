@@ -567,6 +567,8 @@ pub mod transport;
 pub mod sim_transport;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod channel_core;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod cluster;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod connection;

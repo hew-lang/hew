@@ -1288,6 +1288,45 @@ fn intern_runtime_decl<'ctx>(
         // (`hew-runtime/src/read_slot.rs`). Releases one ref; frees the slot when
         // the last ref drops (and releases a still-present Data buffer).
         "hew_read_slot_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // ── NEW-7 suspending typed-stream consumer ───────────────────────────
+        // hew_stream_await_next(stream: *mut HewStream, actor: *mut HewActor,
+        //                       slot: *mut HewReadSlot) -> i32
+        // (`hew-runtime/src/stream.rs`). Registers the parked consumer
+        // continuation + slot with the stream's channel core. Returns
+        // STREAM_AWAIT_READY (1, bind immediately) or STREAM_AWAIT_SUSPEND (0,
+        // park). Handles are opaque ptrs on the spine.
+        "hew_stream_await_next" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
+        }
+        // hew_stream_pop_bytes(stream: *mut HewStream) -> BytesTriple
+        // (`hew-runtime/src/stream.rs`). Pops one queued item on the resume /
+        // immediate bind edge (empty triple → None). Returns the AAPCS/SysV
+        // two-eightbyte `[2 x i64]` like `hew_read_slot_take`.
+        "hew_stream_pop_bytes" => i64_ty.array_type(2).fn_type(&[ptr_ty.into()], false),
+        // hew_stream_detach_await(stream: *mut HewStream, slot: *mut HewReadSlot)
+        //   -> void (`hew-runtime/src/stream.rs`). The abandon edge: releases the
+        // channel core's in-flight ref on the slot.
+        "hew_stream_detach_await" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // ── NEW-7 suspending typed-stream producer ───────────────────────────
+        // hew_stream_await_send(sink: *mut HewSink, actor: *mut HewActor,
+        //                       slot: *mut HewReadSlot, data: *const BytesTriple)
+        //   -> i32 (`hew-runtime/src/stream.rs`). Registers the parked producer
+        // continuation + slot with the sink's channel core (or pushes + binds
+        // immediately). `data` is passed by pointer (the bytes-triple alloca
+        // address), like `hew_sink_write_bytes`. Returns STREAM_AWAIT_READY (1)
+        // or STREAM_AWAIT_SUSPEND (0).
+        "hew_stream_await_send" => i32_ty.fn_type(
+            &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        ),
+        // hew_sink_detach_await(sink: *mut HewSink, slot: *mut HewReadSlot) ->
+        //   void (`hew-runtime/src/stream.rs`). The abandon edge for a parked
+        // producer: releases the core's in-flight ref + drops the pending item.
+        "hew_sink_detach_await" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // hew_select_first(channels: *mut *mut HewReplyChannel, count: i32,
         //                  timeout_ms: i32) -> i32
         // (`hew-runtime/src/reply_channel.rs:484`). Returns the winning
@@ -20748,6 +20787,24 @@ struct SuspendingReadEmit {
     cleanup: u32,
 }
 
+/// Carrier for [`emit_suspending_stream_next_terminator`] — the suspending
+/// `await stream.recv()` ramp (`Terminator::SuspendingStreamNext`).
+struct SuspendingStreamNextEmit {
+    stream: Place,
+    result_dest: Place,
+    resume: u32,
+    cleanup: u32,
+}
+
+/// Carrier for [`emit_suspending_stream_send_terminator`] — the suspending
+/// `await sink.send(x)` ramp (`Terminator::SuspendingStreamSend`).
+struct SuspendingStreamSendEmit {
+    sink: Place,
+    value: Place,
+    resume: u32,
+    cleanup: u32,
+}
+
 /// Carrier for [`emit_suspending_call_closure_terminator`] — the
 /// suspendable-callee driver (`Terminator::SuspendingCallClosure`).
 struct SuspendingCallClosureEmit<'a> {
@@ -21035,6 +21092,491 @@ fn emit_suspending_read_terminator<'ctx>(
         .builder
         .build_unconditional_branch(resume_bb)
         .llvm_ctx("suspending read ok br")?;
+
+    Ok(())
+}
+
+/// Emit the caller-side non-blocking `await stream.recv()` (NEW-7
+/// `Terminator::SuspendingStreamNext`). The channel-readiness analogue of
+/// [`emit_suspending_read_terminator`].
+///
+/// Shape (the suspending stream-recv ramp):
+/// ```text
+///   self    = hew_actor_self()                       ; the parked-cont actor
+///   stream  = <load stream handle>                   ; pointer-shaped (opaque)
+///   slot    = hew_read_slot_new()
+///   rc      = hew_stream_await_next(stream, self, slot)
+///   br (rc == 0) -> do_suspend, bind                 ; 0 = parked, 1 = ready-now
+/// do_suspend:                                        ; coro.suspend (non-final)
+///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
+/// abandon:                                           ; parked cont destroyed
+///   hew_read_slot_cancel(slot)
+///   hew_stream_detach_await(stream, slot)            ; release the core ref
+///   hew_read_slot_free(slot); br shared cleanup
+/// bind:                                              ; ready-now OR resumed
+///   triple = hew_stream_pop_bytes(stream)            ; pop the queued item
+///   <store triple as Option<bytes> into result_dest> ; null -> None, else Some
+///   hew_read_slot_free(slot)                         ; release the creator ref
+///   br resume_bb
+/// ```
+/// The item travels through the channel QUEUE across the suspend (NOT the slot —
+/// the slot is a pure readiness signal); on resume `hew_stream_pop_bytes` pops
+/// it exactly once on the consumer's own edge. Slot refs: `new` (+1 creator);
+/// `hew_stream_await_next` takes the channel core's in-flight ref only on the
+/// park path; the single `hew_read_slot_free` on each terminal edge releases the
+/// creator ref. The abandon edge cancels + detaches before freeing so a racing
+/// producer deposit drops its signal and a freed consumer is never woken.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the full caller-side recv ramp — registration + suspend + the \
+              resume-edge Option<bytes> binding — is kept in one place so the \
+              suspend point and the value routing it depends on are read together"
+)]
+fn emit_suspending_stream_next_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingStreamNextEmit,
+) -> CodegenResult<()> {
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Terminator::SuspendingStreamNext reached codegen but the function \
+             carries no coro prologue state — lower_function must detect the \
+             suspend carrier (has_suspend) and emit the prologue before the body"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingStreamNext resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingStreamNext cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+
+    // self = the awaiting actor (the live thread-local context, NOT a spilled
+    // param) — the same single-authority accessor the SuspendingRead/Ask ramps
+    // use across a suspend.
+    let actor_self_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let self_actor = fn_ctx
+        .builder
+        .build_call(actor_self_fn, &[], "suspending_stream_next_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+    let stream_ptr = load_duplex_handle(fn_ctx, term.stream, "suspending_stream_next stream")?;
+
+    let slot_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_new",
+    )?;
+    let slot = fn_ctx
+        .builder
+        .build_call(slot_new, &[], "suspending_stream_next_slot")
+        .llvm_ctx("hew_read_slot_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
+        .into_pointer_value();
+
+    let await_next = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_stream_await_next",
+    )?;
+    let rc = fn_ctx
+        .builder
+        .build_call(
+            await_next,
+            &[stream_ptr.into(), self_actor.into(), slot.into()],
+            "suspending_stream_next_register",
+        )
+        .llvm_ctx("hew_stream_await_next call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_stream_await_next returned void".into()))?
+        .into_int_value();
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending stream-next block has no parent function".into())
+        })?;
+    let do_suspend_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_stream_next_suspend");
+    let bind_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_stream_next_bind");
+    // rc == 0 (STREAM_AWAIT_SUSPEND) → park; else (READY) bind immediately.
+    let is_suspend = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            rc,
+            rc.get_type().const_zero(),
+            "suspending_stream_next_is_suspend",
+        )
+        .llvm_ctx("suspending stream-next suspend compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_suspend, do_suspend_bb, bind_bb)
+        .llvm_ctx("suspending stream-next register branch")?;
+
+    let slot_cancel = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_cancel",
+    )?;
+    let slot_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_free",
+    )?;
+    let detach_await = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_stream_detach_await",
+    )?;
+
+    // ── do_suspend: park the continuation (non-final). Default → return the coro
+    // handle to the trampoline; case 0 → bind; case 1 → abandon teardown. ──────
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    let abandon_cleanup_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_stream_next_abandon_cleanup");
+    let cc = crate::coro::CoroContext {
+        ctx: fn_ctx.ctx,
+        llvm_mod: fn_ctx.llvm_mod,
+        builder: &fn_ctx.builder,
+        function: parent,
+        handle: coro.handle,
+        id_token: coro.id_token,
+    };
+    cc.emit_suspend(
+        bind_bb,
+        abandon_cleanup_bb,
+        coro.suspend_return_block,
+        false,
+        "suspending_stream_next",
+    )?;
+
+    // ── abandon_cleanup: cancel the slot (a racing producer deposit drops its
+    // signal + skips the wake), detach the channel-await registration (release
+    // the core's in-flight ref), free the creator ref, then join shared cleanup.
+    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
+    fn_ctx
+        .builder
+        .build_call(
+            slot_cancel,
+            &[slot.into()],
+            "suspending_stream_next_abandon_cancel",
+        )
+        .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_call(
+            detach_await,
+            &[stream_ptr.into(), slot.into()],
+            "suspending_stream_next_abandon_detach",
+        )
+        .llvm_ctx("hew_stream_detach_await (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_call(
+            slot_free,
+            &[slot.into()],
+            "suspending_stream_next_abandon_free",
+        )
+        .llvm_ctx("hew_read_slot_free (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(coro.cleanup_block)
+        .llvm_ctx("suspending stream-next abandon -> shared cleanup br")?;
+
+    // ── bind: ready-now OR resumed. Pop the queued item, map it into the
+    // Option<bytes> dest, release the creator ref, branch to the MIR resume. ───
+    fn_ctx.builder.position_at_end(bind_bb);
+    let pop_bytes = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_stream_pop_bytes",
+    )?;
+    let triple_val = fn_ctx
+        .builder
+        .build_call(
+            pop_bytes,
+            &[stream_ptr.into()],
+            "suspending_stream_next_pop",
+        )
+        .llvm_ctx("hew_stream_pop_bytes call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_stream_pop_bytes returned void".into()))?;
+    let Place::Local(dest_local) = term.result_dest else {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingStreamNext result_dest must be a local Option<bytes> slot, got {:?}",
+            term.result_dest
+        )));
+    };
+    store_recv_triple_as_option(fn_ctx, triple_val, dest_local, "hew_stream_pop_bytes")?;
+    fn_ctx
+        .builder
+        .build_call(
+            slot_free,
+            &[slot.into()],
+            "suspending_stream_next_bind_free",
+        )
+        .llvm_ctx("hew_read_slot_free (bind) call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(resume_bb)
+        .llvm_ctx("suspending stream-next bind -> resume br")?;
+
+    Ok(())
+}
+
+/// Emit the caller-side non-blocking `await sink.send(x)` (NEW-7
+/// `Terminator::SuspendingStreamSend`). The backpressure analogue of
+/// [`emit_suspending_stream_next_terminator`].
+///
+/// Shape (the suspending stream-send ramp):
+/// ```text
+///   self    = hew_actor_self()
+///   sink    = <load sink handle>
+///   value   = <address of the bytes-triple alloca>      ; passed by pointer
+///   slot    = hew_read_slot_new()
+///   rc      = hew_stream_await_send(sink, self, slot, value)
+///   br (rc == 0) -> do_suspend, bind                     ; 0 = parked (full ring)
+/// do_suspend:                                            ; coro.suspend (non-final)
+///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
+/// abandon:                                               ; parked cont destroyed
+///   hew_read_slot_cancel(slot)
+///   hew_sink_detach_await(sink, slot)                    ; drop pending item + ref
+///   hew_read_slot_free(slot); br shared cleanup
+/// bind:                                                  ; ready-now OR resumed
+///   hew_read_slot_free(slot); br resume_bb               ; send is unit, no bind
+/// ```
+/// The item is copied into the channel queue / the parked producer's waiter by
+/// `hew_stream_await_send`, so it is owned by the runtime across the suspend and
+/// re-enqueued exactly once by the consumer's drain. Slot ref discipline matches
+/// the recv ramp; the abandon edge cancels + detaches before freeing.
+fn emit_suspending_stream_send_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingStreamSendEmit,
+) -> CodegenResult<()> {
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Terminator::SuspendingStreamSend reached codegen but the function \
+             carries no coro prologue state — lower_function must detect the \
+             suspend carrier (has_suspend) and emit the prologue before the body"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingStreamSend resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingStreamSend cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+
+    let actor_self_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let self_actor = fn_ctx
+        .builder
+        .build_call(actor_self_fn, &[], "suspending_stream_send_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+    let sink_ptr = load_duplex_handle(fn_ctx, term.sink, "suspending_stream_send sink")?;
+    // The bytes value is passed BY POINTER (the triple alloca address), exactly
+    // like the blocking `hew_sink_write_bytes` consumer.
+    let (value_ptr, _value_ty) = place_pointer(fn_ctx, term.value)?;
+
+    let slot_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_new",
+    )?;
+    let slot = fn_ctx
+        .builder
+        .build_call(slot_new, &[], "suspending_stream_send_slot")
+        .llvm_ctx("hew_read_slot_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
+        .into_pointer_value();
+
+    let await_send = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_stream_await_send",
+    )?;
+    let rc = fn_ctx
+        .builder
+        .build_call(
+            await_send,
+            &[
+                sink_ptr.into(),
+                self_actor.into(),
+                slot.into(),
+                value_ptr.into(),
+            ],
+            "suspending_stream_send_register",
+        )
+        .llvm_ctx("hew_stream_await_send call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_stream_await_send returned void".into()))?
+        .into_int_value();
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending stream-send block has no parent function".into())
+        })?;
+    let do_suspend_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_stream_send_suspend");
+    let bind_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_stream_send_bind");
+    let is_suspend = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            rc,
+            rc.get_type().const_zero(),
+            "suspending_stream_send_is_suspend",
+        )
+        .llvm_ctx("suspending stream-send suspend compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_suspend, do_suspend_bb, bind_bb)
+        .llvm_ctx("suspending stream-send register branch")?;
+
+    let slot_cancel = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_cancel",
+    )?;
+    let slot_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_free",
+    )?;
+    let detach_await = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_sink_detach_await",
+    )?;
+
+    // ── do_suspend: park the producer (non-final). ────────────────────────────
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    let abandon_cleanup_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_stream_send_abandon_cleanup");
+    let cc = crate::coro::CoroContext {
+        ctx: fn_ctx.ctx,
+        llvm_mod: fn_ctx.llvm_mod,
+        builder: &fn_ctx.builder,
+        function: parent,
+        handle: coro.handle,
+        id_token: coro.id_token,
+    };
+    cc.emit_suspend(
+        bind_bb,
+        abandon_cleanup_bb,
+        coro.suspend_return_block,
+        false,
+        "suspending_stream_send",
+    )?;
+
+    // ── abandon_cleanup: cancel + detach (drop the pending item + release the
+    // core ref) + free, then join shared cleanup. ─────────────────────────────
+    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
+    fn_ctx
+        .builder
+        .build_call(
+            slot_cancel,
+            &[slot.into()],
+            "suspending_stream_send_abandon_cancel",
+        )
+        .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_call(
+            detach_await,
+            &[sink_ptr.into(), slot.into()],
+            "suspending_stream_send_abandon_detach",
+        )
+        .llvm_ctx("hew_sink_detach_await (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_call(
+            slot_free,
+            &[slot.into()],
+            "suspending_stream_send_abandon_free",
+        )
+        .llvm_ctx("hew_read_slot_free (abandon) call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(coro.cleanup_block)
+        .llvm_ctx("suspending stream-send abandon -> shared cleanup br")?;
+
+    // ── bind: ready-now OR resumed. `send` is unit — just release the creator
+    // ref and branch to the MIR resume block. ────────────────────────────────
+    fn_ctx.builder.position_at_end(bind_bb);
+    fn_ctx
+        .builder
+        .build_call(
+            slot_free,
+            &[slot.into()],
+            "suspending_stream_send_bind_free",
+        )
+        .llvm_ctx("hew_read_slot_free (bind) call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(resume_bb)
+        .llvm_ctx("suspending stream-send bind -> resume br")?;
 
     Ok(())
 }
@@ -22215,6 +22757,36 @@ fn emit_bytes_stream_recv_call<'ctx>(
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed(format!("{callee} returned void")))?;
+    // Unbox the returned `[2 x i64]` bytes triple into the `Option<bytes>` dest
+    // (null data pointer → `None` tag 1; else `Some` tag 0 + the triple).
+    store_recv_triple_as_option(fn_ctx, triple_val, *dest_local, callee)?;
+
+    // ── Continue into the call's `next` block. ──
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx_with(|| format!("{callee} cont br next"))?;
+    Ok(())
+}
+
+/// Unbox a `[2 x i64]` bytes triple (the recv/pop runtime return) into an
+/// `Option<bytes>` dest local. A null data pointer (eightbyte0 == 0) means
+/// EOF / not-ready / a present zero-length item → `None` (tag 1); a present
+/// triple → `Some` (tag 0) with the reconstructed `{ptr,i32,i32}` payload.
+///
+/// On return the builder is positioned at the merge (`cont`) block so the
+/// caller can branch to its own continuation (the recv call's `next`, or the
+/// suspending-recv resume edge).
+fn store_recv_triple_as_option<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    triple_val: BasicValueEnum<'ctx>,
+    dest_local: u32,
+    callee: &str,
+) -> CodegenResult<()> {
     // The boundary return is `[2 x i64]` (the two BytesTriple eightbytes:
     // word0 = data pointer, word1 = offset (low 32) | len (high 32)).
     let triple_array = triple_val.into_array_value();
@@ -22290,7 +22862,7 @@ fn emit_bytes_stream_recv_call<'ctx>(
         .into_struct_value();
 
     // Resolve the Option tag + Some-payload slots before branching.
-    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(*dest_local))?;
+    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
     let tag_int = match tag_ty {
         BasicTypeEnum::IntType(t) => t,
         other => {
@@ -22300,7 +22872,7 @@ fn emit_bytes_stream_recv_call<'ctx>(
         }
     };
     let some_payload = Place::EnumVariant {
-        local: *dest_local,
+        local: dest_local,
         variant_idx: 0,
         field_idx: 0,
     };
@@ -22345,16 +22917,9 @@ fn emit_bytes_stream_recv_call<'ctx>(
         .build_unconditional_branch(cont_bb)
         .llvm_ctx_with(|| format!("{callee} Some br"))?;
 
-    // ── Continue into the call's `next` block. ──
+    // ── Continue: leave the builder positioned at the merge block so the
+    // caller branches to its own continuation. ──
     fn_ctx.builder.position_at_end(cont_bb);
-    let next_bb = *fn_ctx
-        .blocks
-        .get(&next)
-        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} next bb{next} missing")))?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(next_bb)
-        .llvm_ctx_with(|| format!("{callee} cont br next"))?;
     Ok(())
 }
 
@@ -24018,6 +24583,34 @@ fn lower_terminator<'ctx>(
                 cleanup: *cleanup,
             },
         )?,
+        Terminator::SuspendingStreamNext {
+            stream,
+            result_dest,
+            resume,
+            cleanup,
+        } => emit_suspending_stream_next_terminator(
+            fn_ctx,
+            SuspendingStreamNextEmit {
+                stream: *stream,
+                result_dest: *result_dest,
+                resume: *resume,
+                cleanup: *cleanup,
+            },
+        )?,
+        Terminator::SuspendingStreamSend {
+            sink,
+            value,
+            resume,
+            cleanup,
+        } => emit_suspending_stream_send_terminator(
+            fn_ctx,
+            SuspendingStreamSendEmit {
+                sink: *sink,
+                value: *value,
+                resume: *resume,
+                cleanup: *cleanup,
+            },
+        )?,
         Terminator::SuspendingCallClosure {
             callee,
             args,
@@ -25572,6 +26165,8 @@ fn declare_function<'ctx>(
                 | Terminator::SuspendingAsk { .. }
                 | Terminator::SuspendingRead { .. }
                 | Terminator::SuspendingCallClosure { .. }
+                | Terminator::SuspendingStreamNext { .. }
+                | Terminator::SuspendingStreamSend { .. }
         )
     });
     let return_ty_llvm = if is_coroutine {
@@ -26004,6 +26599,8 @@ fn lower_function<'ctx>(
                 | Terminator::SuspendingAsk { .. }
                 | Terminator::SuspendingRead { .. }
                 | Terminator::SuspendingCallClosure { .. }
+                | Terminator::SuspendingStreamNext { .. }
+                | Terminator::SuspendingStreamSend { .. }
         )
     });
 
@@ -27471,6 +28068,8 @@ fn build_module_for_target<'ctx>(
                                     | Terminator::SuspendingAsk { .. }
                                     | Terminator::SuspendingRead { .. }
                                     | Terminator::SuspendingCallClosure { .. }
+                                    | Terminator::SuspendingStreamNext { .. }
+                                    | Terminator::SuspendingStreamSend { .. }
                             )
                         })
                     })

@@ -131,6 +131,13 @@ impl<T: Send> SinkOps for CallbackSink<T> {
 /// Opaque writable sink handle.
 pub struct HewSink {
     inner: Option<Box<dyn SinkOps>>,
+    /// Opaque borrow of the suspending channel core (`ChannelCore`) when this
+    /// sink is the write half of an in-memory pipe (NEW-7). Null for every
+    /// other sink kind. The runtime sets this so `hew_stream_await_send` can
+    /// reach the shared queue + the parked-consumer wake without downcasting
+    /// the `dyn SinkOps` backing. The pointer borrows the `Arc<ChannelCore>`
+    /// owned by the backing, so it stays valid for the lifetime of the sink.
+    channel_core: *const std::ffi::c_void,
 }
 
 impl std::fmt::Debug for HewSink {
@@ -140,6 +147,19 @@ impl std::fmt::Debug for HewSink {
 }
 
 impl HewSink {
+    /// Attach an opaque suspending-channel-core borrow (NEW-7). Called by the
+    /// runtime pipe constructor after building the channel sink backing.
+    pub fn set_channel_core(&mut self, core: *const std::ffi::c_void) {
+        self.channel_core = core;
+    }
+
+    /// The opaque suspending-channel-core borrow, or null when this sink is not
+    /// the write half of an in-memory pipe.
+    #[must_use]
+    pub fn channel_core_ptr(&self) -> *const std::ffi::c_void {
+        self.channel_core
+    }
+
     /// Write one item (exact bytes). Blocks if the backing buffer is full.
     pub fn write_item(&mut self, data: &[u8]) {
         let Some(inner) = self.inner.as_mut() else {
@@ -172,6 +192,12 @@ impl HewSink {
 
     /// Signal EOF to the reader and release the backing resource.
     pub fn close(&mut self) {
+        // Drop the suspending-channel-core borrow BEFORE releasing the backing:
+        // closing dethrones this sink's `Arc<ChannelCore>` clone, so the raw
+        // borrow could dangle once the peer (stream) half is also dropped.
+        // Nulling it forces a later `hew_stream_await_send` onto the closed-sink
+        // (fail-closed) path instead of dereferencing a possibly-freed core.
+        self.channel_core = std::ptr::null();
         let Some(mut inner) = self.inner.take() else {
             return;
         };
@@ -200,6 +226,7 @@ pub fn into_sink_ptr<T: Send + 'static>(
             flush,
             close,
         })),
+        channel_core: std::ptr::null(),
     }))
 }
 
@@ -236,6 +263,7 @@ pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink
             flush: flush_via_write::<_>,
             close: close_via_write::<_>,
         })),
+        channel_core: std::ptr::null(),
     }))
 }
 
@@ -294,6 +322,7 @@ pub fn into_channel_sink_ptr(tx: std::sync::mpsc::SyncSender<Vec<u8>>) -> *mut H
     Box::into_raw(Box::new(HewSink {
         // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Some(Box::new(ChannelSinkBacking { tx })),
+        channel_core: std::ptr::null(),
     }))
 }
 
@@ -688,6 +717,27 @@ mod tests {
         let items = written.lock().unwrap();
         assert_eq!(items.len(), 1);
         assert!(items[0].is_empty(), "empty write should produce empty vec");
+    }
+
+    #[test]
+    fn close_clears_channel_core_ptr_to_remove_stale_deref_window() {
+        let (mock, _written, _flush_count, _close_count) = MockSink::new();
+        let ptr = into_write_sink_ptr(mock);
+        // SAFETY: ptr was just created by into_write_sink_ptr.
+        unsafe {
+            // Simulate the pipe constructor attaching a channel-core borrow.
+            let fake_core = 0xdead_beef_usize as *const std::ffi::c_void;
+            (*ptr).set_channel_core(fake_core);
+            assert_eq!((*ptr).channel_core_ptr(), fake_core);
+            // close() must null the borrow so a later suspending send cannot
+            // dereference a (now possibly stale) channel core.
+            (*ptr).close();
+            assert!(
+                (*ptr).channel_core_ptr().is_null(),
+                "close() must clear the channel_core borrow (no stale deref)"
+            );
+            let _ = Box::from_raw(ptr); // ALLOCATOR-PAIRING: GlobalAlloc
+        }
     }
 
     #[test]

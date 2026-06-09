@@ -9871,6 +9871,8 @@ impl Builder {
                     | Terminator::SuspendingAsk { .. }
                     | Terminator::SuspendingRead { .. }
                     | Terminator::SuspendingCallClosure { .. }
+                    | Terminator::SuspendingStreamNext { .. }
+                    | Terminator::SuspendingStreamSend { .. }
                     | Terminator::Select { .. } => false,
                 }
             }
@@ -13769,6 +13771,56 @@ impl Builder {
             Some(self.alloc_local(ret_ty.clone()))
         };
 
+        // Suspendable-caller flip (NEW-7): `await stream.recv()` over a
+        // `Stream<bytes>` resolves to the extern `hew_stream_next_bytes`. In a
+        // caller that carries the execution context (actor handler / closure /
+        // task entry) the recv SUSPENDS over the channel-await substrate instead
+        // of blocking the worker — emit `Terminator::SuspendingStreamNext`. A
+        // `FunctionCallConv::Default` caller (`main`, free fn) has no parkable
+        // continuation and keeps the blocking `hew_stream_next_bytes` call. This
+        // reuses the SAME `carries_execution_context` discriminator as
+        // `lower_conn_await_read` (DI-019/DI-020) — not a parallel predicate.
+        if callee_symbol == "hew_stream_next_bytes"
+            && self.current_function_call_conv.carries_execution_context()
+        {
+            if let (Some(result_dest), [stream]) = (dest, arg_places.as_slice()) {
+                let next = self.alloc_block();
+                // `SuspendingStreamNext` carries no separate MIR cleanup block —
+                // it rides the multi-suspend epilogue, so `cleanup` reuses `next`
+                // exactly as `SuspendingRead`/`SuspendingAsk` do.
+                self.finish_current_block(Terminator::SuspendingStreamNext {
+                    stream: *stream,
+                    result_dest,
+                    resume: next,
+                    cleanup: next,
+                });
+                self.start_block(next);
+                return dest;
+            }
+        }
+
+        // Suspendable-caller flip (NEW-7, producer): `sink.send(x)` over a
+        // `Sink<bytes>` resolves to `hew_sink_write_bytes`. In an execution-
+        // context caller the send SUSPENDS on a full ring (backpressure-aware)
+        // instead of blocking the worker — emit
+        // `Terminator::SuspendingStreamSend`. A non-full ring binds immediately
+        // (fast path, no suspend). Context-free callers keep the blocking call.
+        if callee_symbol == "hew_sink_write_bytes"
+            && self.current_function_call_conv.carries_execution_context()
+        {
+            if let [sink, value] = arg_places.as_slice() {
+                let next = self.alloc_block();
+                self.finish_current_block(Terminator::SuspendingStreamSend {
+                    sink: *sink,
+                    value: *value,
+                    resume: next,
+                    cleanup: next,
+                });
+                self.start_block(next);
+                return dest;
+            }
+        }
+
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
@@ -17494,6 +17546,12 @@ fn validate_cross_block_split_consume(
             }
             | Terminator::SuspendingCallClosure {
                 resume, cleanup, ..
+            }
+            | Terminator::SuspendingStreamNext {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingStreamSend {
+                resume, cleanup, ..
             } => {
                 emit(*resume);
                 emit(*cleanup);
@@ -17529,6 +17587,12 @@ fn validate_cross_block_split_consume(
                 resume, cleanup, ..
             }
             | Terminator::SuspendingCallClosure {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingStreamNext {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingStreamSend {
                 resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
@@ -18099,6 +18163,8 @@ pub fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
             | Terminator::SuspendingAsk { .. }
             | Terminator::SuspendingRead { .. }
             | Terminator::SuspendingCallClosure { .. }
+            | Terminator::SuspendingStreamNext { .. }
+            | Terminator::SuspendingStreamSend { .. }
     )
 }
 
@@ -18136,6 +18202,11 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // `SuspendingRead` reads `conn` (the read source); `result_dest` is a
         // write slot bound on the resume edge, not a source.
         Terminator::SuspendingRead { conn, .. } => vec![*conn],
+        // `SuspendingStreamNext` reads `stream` (the recv source); `result_dest`
+        // is a write slot bound on the resume edge, not a source.
+        Terminator::SuspendingStreamNext { stream, .. } => vec![*stream],
+        // `SuspendingStreamSend` reads `sink` + `value` (the send sources).
+        Terminator::SuspendingStreamSend { sink, value, .. } => vec![*sink, *value],
         // The suspendable-callee driver reads the closure pair (`callee`) and
         // its forwarded `args`; `result_dest` is a write slot bound on the
         // completion edge, not a source.
@@ -18363,6 +18434,9 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         // `SuspendingRead` carries only `conn` (a connection handle read), never
         // a generator-yielded `local`, so it never escapes one.
         | Terminator::SuspendingRead { .. }
+        // `SuspendingStreamNext` carries only `stream` (a stream handle read),
+        // never a generator-yielded `local`, so it never escapes one.
+        | Terminator::SuspendingStreamNext { .. }
         // The suspendable-callee driver's `args` are borrows (same posture as
         // `Call`/`Instr::Call*`); the closure callee does not retain a fresh
         // yielded value, so this terminator never escapes `local`.
@@ -18375,7 +18449,8 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         Terminator::Yield { value, .. } => place_refs_local(*value, local),
         Terminator::Send { value, .. }
         | Terminator::Ask { value, .. }
-        | Terminator::SuspendingAsk { value, .. } => place_refs_local(*value, local),
+        | Terminator::SuspendingAsk { value, .. }
+        | Terminator::SuspendingStreamSend { value, .. } => place_refs_local(*value, local),
         Terminator::RemoteAsk { value, .. } => place_refs_local(*value, local),
         Terminator::Select { .. } => terminator_source_places(term)
             .into_iter()
@@ -21597,6 +21672,22 @@ fn enumerate_exits(
             // abandon edge additionally destroys the child handle + frees the
             // channel), never at the suspend site.
             | Terminator::SuspendingCallClosure {
+                resume, cleanup, ..
+            }
+            // `SuspendingStreamNext` has the identical drop posture: the read
+            // slot + the live-across-suspend stream handle ride the coro frame,
+            // dropped exactly once by the `cleanup` outline on `coro.destroy`
+            // (the abandon edge additionally detaches the channel-await
+            // registration + cancels/frees the slot), never at the suspend site.
+            | Terminator::SuspendingStreamNext {
+                resume, cleanup, ..
+            }
+            // `SuspendingStreamSend` has the identical drop posture: the read
+            // slot + the live-across-suspend sink handle ride the coro frame,
+            // dropped exactly once by the `cleanup` outline (the abandon edge
+            // detaches the channel-await registration, dropping the pending
+            // item, + cancels/frees the slot), never at the suspend site.
+            | Terminator::SuspendingStreamSend {
                 resume, cleanup, ..
             } => (
                 ExitPath::Suspend {

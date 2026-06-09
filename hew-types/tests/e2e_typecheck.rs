@@ -5025,3 +5025,70 @@ fn let_propagate_sugar_typed_annotation_accepted() {
         output.errors
     );
 }
+
+/// NEW-7: `await stream.recv()` over a `Stream<bytes>` typechecks cleanly — the
+/// canonical suspending consumer surface.
+#[test]
+fn await_stream_recv_bytes_typechecks() {
+    let output = typecheck_inline(
+        "import std::stream;\n\
+         #[opaque]\n\
+         type Pair {}\n\
+         extern \"C\" {\n\
+         \x20   fn hew_stream_channel(capacity: i64) -> Pair;\n\
+         \x20   fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n\
+         \x20   fn hew_stream_pair_free(pair: Pair);\n\
+         }\n\
+         actor Runner {\n\
+         \x20   receive fn go(unused: i64) {\n\
+         \x20       let pair = unsafe { hew_stream_channel(4) };\n\
+         \x20       let input = unsafe { hew_stream_pair_stream_bytes(pair) };\n\
+         \x20       unsafe { hew_stream_pair_free(pair); }\n\
+         \x20       let item = await input.recv();\n\
+         \x20       match item { Some(v) => {}, None => {}, }\n\
+         \x20   }\n\
+         }\n\
+         fn main() { let r = spawn Runner(); r.go(0); }\n",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "await stream.recv() over Stream<bytes> should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// NEW-7: a non-ABI element type (`Stream<i64>`) fails closed at the checker
+/// gate with a named diagnostic and no cascade — the suspend lowering is bound
+/// to string/bytes (S7).
+#[test]
+fn await_stream_recv_non_abi_element_rejected() {
+    let output = typecheck_inline(
+        "import std::stream;\n\
+         #[opaque]\n\
+         type Pair {}\n\
+         extern \"C\" {\n\
+         \x20   fn hew_stream_channel(capacity: i64) -> Pair;\n\
+         \x20   fn hew_stream_pair_stream_i64(pair: Pair) -> Stream<i64>;\n\
+         \x20   fn hew_stream_pair_free(pair: Pair);\n\
+         }\n\
+         actor Runner {\n\
+         \x20   receive fn go(unused: i64) {\n\
+         \x20       let pair = unsafe { hew_stream_channel(4) };\n\
+         \x20       let input = unsafe { hew_stream_pair_stream_i64(pair) };\n\
+         \x20       unsafe { hew_stream_pair_free(pair); }\n\
+         \x20       let item = await input.recv();\n\
+         \x20       match item { Some(v) => {}, None => {}, }\n\
+         \x20   }\n\
+         }\n\
+         fn main() { let r = spawn Runner(); r.go(0); }\n",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("string and bytes")),
+        "Stream<i64> recv must fail closed with the named string/bytes-only \
+         diagnostic, got: {:#?}",
+        output.errors
+    );
+}

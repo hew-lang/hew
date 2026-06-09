@@ -8230,6 +8230,34 @@ impl LowerCtx {
         }
     }
 
+    /// True when the `await`'s inner expression is a suspending typed-stream
+    /// `recv()` over a `Stream<bytes>` — i.e. the checker wired the method call
+    /// to the `hew_stream_next_bytes` runtime symbol. `await stream.recv()` is a
+    /// bindable, value-producing await (NEW-7): it lowers to the inner recv call
+    /// whose Option<bytes> result the MIR `SuspendingStreamNext` resume edge
+    /// binds. (Only the canonical bytes surface suspends; `Stream<string>` recv
+    /// keeps the blocking path and is not an awaitable here.)
+    fn is_stream_recv_await(&self, inner_key: &SpanKey) -> bool {
+        matches!(
+            self.method_call_rewrites.get(inner_key),
+            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
+                if c_symbol == "hew_stream_next_bytes"
+        )
+    }
+
+    /// True when the `await`'s inner expression is a suspending typed-stream
+    /// `send()` over a `Sink<bytes>` — i.e. the checker wired the method call to
+    /// the `hew_sink_write_bytes` runtime symbol. `await sink.send(x)` is a
+    /// unit-returning statement-position await (NEW-7): it lowers to the inner
+    /// send call whose MIR `SuspendingStreamSend` suspends on a full ring.
+    fn is_stream_send_await(&self, inner_key: &SpanKey) -> bool {
+        matches!(
+            self.method_call_rewrites.get(inner_key),
+            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
+                if c_symbol == "hew_sink_write_bytes"
+        )
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single large match on stmt variants; splitting would hurt readability"
@@ -8258,6 +8286,7 @@ impl LowerCtx {
                                 self.actor_method_dispatch.get(&inner_key),
                                 Some(ActorMethodKind::Ask(_, _))
                             ) || self.conn_await_reads.contains_key(&inner_key)
+                                || self.is_stream_recv_await(&inner_key)
                         }
                         _ => false,
                     };
@@ -9831,6 +9860,42 @@ impl LowerCtx {
                             span: span.clone(),
                         };
                     }
+                }
+                // NEW-7: `await stream.recv()` over a `Stream<bytes>` — the
+                // checker wired the inner method call to `hew_stream_next_bytes`.
+                // Strip the `await` and lower the inner recv directly; its
+                // `Option<bytes>` result is bound on the resume edge of the MIR
+                // `SuspendingStreamNext` (the suspendable-caller flip in
+                // `lower_direct_call`), or the blocking call for a context-free
+                // caller. Mirrors the actor-ask / conn-read bindable-await paths.
+                if self.is_stream_recv_await(&SpanKey::from(&inner.1)) {
+                    return self.lower_expr(inner, intent);
+                }
+                // NEW-7: `await sink.send(x)` over a `Sink<bytes>` — the checker
+                // wired the inner method call to `hew_sink_write_bytes`. Strip the
+                // `await` and lower the inner send directly (unit); the MIR
+                // `SuspendingStreamSend` suspends on a full ring. Statement
+                // position only (unit value), like `await actor.close()`.
+                if self.is_stream_send_await(&SpanKey::from(&inner.1)) {
+                    if !in_stmt_position {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::AwaitOutOfPosition,
+                            span.clone(),
+                            "`await sink.send(x)` is only legal as a statement-expression in v0.5",
+                        ));
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site: self.ids.site(),
+                            value_class: ValueClass::BitCopy,
+                            ty: ResolvedTy::Unit,
+                            intent,
+                            kind: HirExprKind::Unsupported(
+                                "`await sink.send(x)` out of position".to_string(),
+                            ),
+                            span,
+                        };
+                    }
+                    return self.lower_expr(inner, intent);
                 }
                 if let Some(ActorMethodKind::Ask(_, reply_ty)) = self
                     .actor_method_dispatch

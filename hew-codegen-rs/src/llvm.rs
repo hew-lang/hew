@@ -7630,6 +7630,131 @@ fn emit_field_drop_step<'ctx>(
                 .llvm_ctx_with(|| format!("drop enum call f{field_idx}"))?;
             Ok(())
         }
+        // Bytes: a `bytes` field is a `BytesTriple { ptr, i32, i32 }` embedded
+        // in the parent struct (record field, enum variant payload field, or
+        // actor state field). The data buffer's sole release is
+        // `hew_bytes_drop(data_ptr)` — `data_ptr` is the FIRST field of the
+        // triple (`hew-runtime/src/bytes.rs`'s refcount-decrement-and-free-at-
+        // zero entry, null-tolerant).
+        //
+        // Explicit triple-aware GEP (not the generic single-`ptr`-load fall-
+        // through): the generic `_` arm happens to load the correct 8 bytes
+        // for the Bytes layout today because `BytesTriple`'s first field IS
+        // the data pointer, but that is a coincidence of the current ABI, not
+        // a guarantee. Wiring an explicit GEP to triple-field-0 makes the
+        // load-bearing offset/layout assumption visible at the use site, so a
+        // future BytesTriple reshuffle breaks loudly here instead of silently
+        // freeing the wrong eightbyte. Also: null-store field 0 after the
+        // call so any structurally-reachable second drop (cancel-into-trap
+        // after a normal exit, etc.) lands on `null` and short-circuits, the
+        // same idempotency posture `emit_cow_heap_drop` / `emit_bytes_inplace_
+        // drop` use (LESSONS: raii-null-after-move, lifecycle-symmetry,
+        // dedup-semantic-boundary).
+        //
+        // Layout validation: opaque pointers hide the pointee type from the
+        // LLVM IR alone, so a `StateFieldCloneKind::Bytes` field whose parent
+        // struct's slot is NOT actually the `{ ptr, i32, i32 }` BytesTriple
+        // shape would silently GEP a fabricated triple over the wrong bytes
+        // and free whatever eightbyte sits at offset 0. Inspect the parent
+        // struct's field type at `field_idx`, validate it is a 3-field struct
+        // with `(ptr, i32, i32)` exactly, and use THAT validated struct type
+        // for the inner GEP — never the locally-fabricated `triple_ty`
+        // assumption. Any drift in `primitive_to_llvm`'s Bytes arm, in the
+        // state-record layout, or in the producer that fed this kind/field
+        // pair surfaces here with a targeted FailClosed instead of a silent
+        // bad free (LESSONS: boundary-fail-closed, dedup-semantic-boundary).
+        StateFieldCloneKind::Bytes => {
+            let parent_field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "bytes field drop: parent struct {st_ty:?} has no field at index \
+                     {field_idx}; the `StateFieldCloneKind::Bytes` kind was attached \
+                     to a field index outside the struct's layout"
+                ))
+            })?;
+            let triple_ty = match parent_field_ty {
+                BasicTypeEnum::StructType(st) => {
+                    let fields = st.get_field_types();
+                    if fields.len() != 3 {
+                        return Err(CodegenError::FailClosed(format!(
+                            "bytes field drop: parent struct field {field_idx} is a struct \
+                             with {} fields; the `{{ ptr, i32, i32 }}` BytesTriple ABI \
+                             requires exactly 3 fields (got types {fields:?})",
+                            fields.len()
+                        )));
+                    }
+                    let f0_is_ptr = matches!(fields[0], BasicTypeEnum::PointerType(_));
+                    let f1_is_i32 =
+                        matches!(fields[1], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32);
+                    let f2_is_i32 =
+                        matches!(fields[2], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32);
+                    if !(f0_is_ptr && f1_is_i32 && f2_is_i32) {
+                        return Err(CodegenError::FailClosed(format!(
+                            "bytes field drop: parent struct field {field_idx} is a 3-field \
+                             struct but not the `{{ ptr, i32, i32 }}` BytesTriple shape \
+                             (got {fields:?}); `primitive_to_llvm`'s Bytes arm and the parent \
+                             struct's bytes-field layout have drifted"
+                        )));
+                    }
+                    st
+                }
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "bytes field drop: parent struct field {field_idx} is {other:?}, \
+                         not a struct; `StateFieldCloneKind::Bytes` requires a \
+                         `BytesTriple {{ ptr, i32, i32 }}` slot at the field index"
+                    )));
+                }
+            };
+            let field_ptr = builder
+                .build_struct_gep(
+                    st_ty,
+                    state,
+                    field_idx,
+                    &format!("drop_bytes_f{field_idx}_triple_ptr"),
+                )
+                .llvm_ctx_with(|| format!("drop bytes triple gep f{field_idx}"))?;
+            // Inner GEP uses the VALIDATED field struct type, not a locally-
+            // fabricated `{ptr, i32, i32}`. Under opaque pointers the GEP only
+            // emits offsets — but using the wrong `pointee_ty` to a GEP is a
+            // verifier error in the IR, and using a layout-equivalent-but-not-
+            // identical type would diverge from the parent struct's declared
+            // field shape (the very drift this arm now guards against).
+            let data_ptr_slot = builder
+                .build_struct_gep(
+                    triple_ty,
+                    field_ptr,
+                    0,
+                    &format!("drop_bytes_f{field_idx}_data_slot"),
+                )
+                .llvm_ctx_with(|| format!("drop bytes data-slot gep f{field_idx}"))?;
+            let data_ptr = builder
+                .build_load(
+                    ptr_ty,
+                    data_ptr_slot,
+                    &format!("drop_bytes_f{field_idx}_data"),
+                )
+                .llvm_ctx_with(|| format!("drop bytes data load f{field_idx}"))?
+                .into_pointer_value();
+            let helper_fn = get_or_declare_drop_helper(
+                ctx,
+                llvm_mod,
+                &DropHelper {
+                    name: "hew_bytes_drop",
+                },
+            );
+            builder
+                .build_call(
+                    helper_fn,
+                    &[data_ptr.into()],
+                    &format!("drop_bytes_call_f{field_idx}"),
+                )
+                .llvm_ctx_with(|| format!("drop bytes call f{field_idx}"))?;
+            let null_ptr = ptr_ty.const_null();
+            builder
+                .build_store(data_ptr_slot, null_ptr)
+                .llvm_ctx_with(|| format!("drop bytes post-call null-store f{field_idx}"))?;
+            Ok(())
+        }
         _ => {
             // Collections (Vec/HashMap/HashSet) derive their drop symbol from
             // the single layout-witness descriptor (W5.001 F0a) — the sole
@@ -19384,6 +19509,36 @@ fn lower_inline_drop(
     ty: &ResolvedTy,
     drop_fn: &str,
 ) -> CodegenResult<()> {
+    // Bytes ABI: a native `bytes` value is a stack-resident `BytesTriple
+    // { ptr, i32, i32 }`, NOT a single owned pointer. The data buffer's sole
+    // release is `hew_bytes_drop(data_ptr)` (`hew-runtime/src/bytes.rs`'s
+    // refcount-decrement-and-free-at-zero entry), where `data_ptr` is the
+    // FIRST field of the triple. The generic `cow_heap_release_symbol` path
+    // (single-`ptr`-load → call) does not fit this shape, so Bytes is
+    // deliberately absent from that table; intercept here BEFORE the cow_heap
+    // congruence check and route to the triple-field-0 emitter.
+    //
+    // Symbol authority: the MIR-side `generator_yield_drop_symbol`
+    // (`hew-mir/src/lower.rs`) is the SINGLE source for the Bytes inline-drop
+    // symbol (`"hew_bytes_drop"`). Refusing any other Bytes inline-drop symbol
+    // here keeps the two ends from drifting (`dedup-semantic-boundary`,
+    // `lifecycle-symmetry`): a fabricated symbol would land at the generic
+    // `lower_drop_runtime` path's `load_duplex_handle`, which (correctly)
+    // fail-closes on a non-ptr slot — surfacing the drift, but with a less
+    // direct diagnostic than this arm's targeted message.
+    if matches!(ty, ResolvedTy::Bytes) {
+        if drop_fn != "hew_bytes_drop" {
+            return Err(CodegenError::FailClosed(format!(
+                "inline Instr::Drop @ {place:?} on type Bytes carries drop_fn \
+                 {drop_fn:?}; the only admissible Bytes inline-drop symbol is \
+                 `hew_bytes_drop` (the MIR `generator_yield_drop_symbol` authority \
+                 — `hew-mir/src/lower.rs`). Refusing to route a Bytes value through \
+                 the generic single-ptr-load drop dispatcher (LESSONS: \
+                 boundary-fail-closed, dedup-semantic-boundary)."
+            )));
+        }
+        return emit_bytes_inplace_drop(fn_ctx, place);
+    }
     if let Some(symbol) = cow_heap_release_symbol(fn_ctx, ty) {
         if drop_fn == symbol {
             return emit_cow_heap_drop(fn_ctx, place, symbol);
@@ -19398,6 +19553,100 @@ fn lower_inline_drop(
         )));
     }
     lower_drop(fn_ctx, place, drop_fn)
+}
+
+/// In-place release of a stack-resident `BytesTriple { ptr, i32, i32 }` at
+/// `place`. The data buffer is refcounted; the triple itself lives in the
+/// place's alloca. The release sequence is:
+///
+///   1. GEP to field 0 of the triple (the data pointer slot).
+///   2. Load the data pointer.
+///   3. `hew_bytes_drop(data_ptr)` — `hew-runtime/src/bytes.rs`'s refcount-
+///      decrement-and-free-at-zero entry; null-tolerant.
+///   4. Null-store field 0 so any structurally-reachable second drop lands on
+///      `null` and short-circuits at the runtime's null guard (same posture
+///      as `emit_cow_heap_drop`'s post-drop null-store —
+///      `raii-null-after-move`, `lifecycle-symmetry`).
+///
+/// `place` MUST address a `bytes`-typed slot: the alloca's LLVM type is the
+/// `{ ptr, i32, i32 }` BytesTriple struct (`primitive_to_llvm`'s Bytes arm).
+/// `place_pointer` returns `(slot_ptr, slot_ty)` where `slot_ty` is the
+/// struct type; we re-derive the BytesTriple LLVM type here so the GEP type
+/// matches the alloca's exact shape (and so a future Place that addresses a
+/// triple held at a non-Local position — e.g. a future `Place::BytesSlot` —
+/// also lands on a consistent type, not on the place's declared `ResolvedTy`
+/// resolved through `resolve_ty` which is identical but indirect).
+fn emit_bytes_inplace_drop(fn_ctx: &FnCtx<'_, '_>, place: Place) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let triple_ty = ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+
+    let (slot, slot_ty) = place_pointer(fn_ctx, place)?;
+    // The slot must already be the BytesTriple struct shape. Anything else is
+    // a producer/elaborator drift (a non-Bytes `Place` reached this arm).
+    // Fail closed rather than emitting a bogus GEP against the wrong layout.
+    match slot_ty {
+        BasicTypeEnum::StructType(st) if st.get_field_types().len() == 3 => {
+            // Best-effort sanity check on the triple shape. Field 0 must be
+            // `ptr`; the two trailing fields are `i32` per BytesTriple's ABI.
+            // A divergent layout here means `primitive_to_llvm` and codegen
+            // disagree on the bytes ABI — surface it loudly.
+            let fields = st.get_field_types();
+            let f0_is_ptr = matches!(fields[0], BasicTypeEnum::PointerType(_));
+            let f1_is_i32 =
+                matches!(fields[1], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32);
+            let f2_is_i32 =
+                matches!(fields[2], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32);
+            if !(f0_is_ptr && f1_is_i32 && f2_is_i32) {
+                return Err(CodegenError::FailClosed(format!(
+                    "bytes inline-drop: place {place:?} slot is a struct but not the \
+                     `{{ ptr, i32, i32 }}` BytesTriple shape (got {fields:?}); the \
+                     `primitive_to_llvm` Bytes arm and the BytesTriple ABI have drifted"
+                )));
+            }
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "bytes inline-drop: place {place:?} resolves to non-BytesTriple slot \
+                 type {other:?}; the producer must address a `bytes`-typed local whose \
+                 alloca is the `{{ ptr, i32, i32 }}` triple (LESSONS: boundary-fail-closed)"
+            )));
+        }
+    }
+
+    let data_ptr_slot = fn_ctx
+        .builder
+        .build_struct_gep(triple_ty, slot, 0, "bytes_drop_ptr_slot")
+        .llvm_ctx("bytes inline-drop: ptr-field GEP")?;
+    let data_ptr = fn_ctx
+        .builder
+        .build_load(ptr_ty, data_ptr_slot, "bytes_drop_ptr")
+        .llvm_ctx("bytes inline-drop: ptr-field load")?
+        .into_pointer_value();
+    let helper = get_or_declare_drop_helper(
+        ctx,
+        fn_ctx.llvm_mod,
+        &DropHelper {
+            name: "hew_bytes_drop",
+        },
+    );
+    fn_ctx
+        .builder
+        .build_call(helper, &[data_ptr.into()], "hew_bytes_drop_call")
+        .llvm_ctx("bytes inline-drop: hew_bytes_drop call")?;
+    // Null the data-ptr slot so any structurally-reachable second drop fires
+    // `hew_bytes_drop(null)` — a no-op (`hew-runtime/src/bytes.rs`'s null
+    // guard). Same idempotency posture as `emit_cow_heap_drop`. We leave the
+    // offset/len fields untouched: a Bytes value with a null data ptr is by
+    // convention empty (offset/len are read only when the ptr is non-null),
+    // so the trailing two i32s carrying their previous bits is harmless.
+    let null_ptr = ptr_ty.const_null();
+    fn_ctx
+        .builder
+        .build_store(data_ptr_slot, null_ptr)
+        .llvm_ctx("bytes inline-drop: post-drop null-store")?;
+    Ok(())
 }
 
 /// `DropDispatch::RuntimeSymbol` arm: the pre-W3.030 runtime close path.
@@ -41799,6 +42048,228 @@ fn main() {
             !native_ir.contains("call ptr @malloc(i32"),
             "native deserialize thunk must NOT call malloc with i32 size arg;\n{native_ir}"
         );
+    }
+
+    // ── emit_field_drop_step Bytes-field layout validation ────────────────
+    //
+    // `StateFieldCloneKind::Bytes` field drop hard-codes a triple-field-0
+    // GEP + `hew_bytes_drop` call. Under opaque pointers a wrong-layout
+    // parent struct field would silently GEP a fabricated `{ ptr, i32, i32 }`
+    // over whatever bits sit at that field offset and free the wrong word.
+    // The arm validates the parent struct's field-at-`field_idx` is exactly
+    // a 3-field `(ptr, i32, i32)` struct and fail-closes otherwise. These
+    // tests pin both directions:
+    //
+    //   * happy path: a parent struct whose field IS `{ ptr, i32, i32 }`
+    //     succeeds and emits a GEP + `call @hew_bytes_drop` + null-store
+    //     sequence into the entry block.
+    //   * fail-closed: parent fields that are NOT BytesTriple-shaped
+    //     return `CodegenError::FailClosed` with a layout-citation
+    //     message (and emit no half-finished IR before failing).
+
+    /// Set up the boilerplate `emit_field_drop_step` needs: a Context,
+    /// Module, an `i32` host function with one basic block, a positioned
+    /// Builder, and an alloca of `parent_st` as the slot. Returns the
+    /// pieces in a tuple. The host function is parameter-less and returns
+    /// `i32 0` so the module verifies cleanly after the field-drop emit.
+    fn bytes_field_drop_test_harness<'ctx>(
+        ctx: &'ctx Context,
+        parent_st: StructType<'ctx>,
+        fn_name: &str,
+    ) -> (
+        LlvmModule<'ctx>,
+        Builder<'ctx>,
+        PointerValue<'ctx>,
+        inkwell::values::FunctionValue<'ctx>,
+    ) {
+        let llvm_mod = ctx.create_module(fn_name);
+        let i32_ty = ctx.i32_type();
+        let fn_ty = i32_ty.fn_type(&[], false);
+        let host_fn = llvm_mod.add_function(fn_name, fn_ty, None);
+        let entry = ctx.append_basic_block(host_fn, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        let slot = builder
+            .build_alloca(parent_st, "parent_slot")
+            .expect("alloca parent_slot");
+        (llvm_mod, builder, slot, host_fn)
+    }
+
+    /// Happy path: parent struct field 0 IS the `{ ptr, i32, i32 }` Bytes-
+    /// Triple shape. `emit_field_drop_step(Bytes)` must succeed and the
+    /// emitted IR must contain a load + `hew_bytes_drop` call + null
+    /// store-back so the slot is idempotent against re-drop.
+    #[test]
+    fn emit_field_drop_step_bytes_ok_on_valid_bytestriple_field() {
+        let ctx = Context::create();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let i32_ty = ctx.i32_type();
+        let triple_ty = ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+        // Parent: a struct holding a BytesTriple at field 0 and a trailing
+        // i64 (so field 0 is NOT the whole struct — exercises the inner GEP).
+        let parent_st = ctx.struct_type(&[triple_ty.into(), ctx.i64_type().into()], false);
+
+        let (llvm_mod, builder, slot, host_fn) =
+            bytes_field_drop_test_harness(&ctx, parent_st, "bytes_field_drop_ok");
+
+        emit_field_drop_step(
+            &ctx,
+            &llvm_mod,
+            &builder,
+            Some(parent_st),
+            slot,
+            0,
+            &StateFieldCloneKind::Bytes,
+        )
+        .expect("Bytes field drop on a valid `{ ptr, i32, i32 }` field must succeed");
+
+        // Terminate the block so verify accepts it.
+        builder
+            .build_return(Some(&i32_ty.const_int(0, false)))
+            .expect("ret void");
+        assert!(
+            llvm_mod.verify().is_ok(),
+            "module must verify after a valid Bytes-field drop emit; verify error:\n{}",
+            llvm_mod.verify().unwrap_err().to_string()
+        );
+
+        let ir = llvm_mod.print_to_string().to_string();
+        assert!(
+            ir.contains("call void @hew_bytes_drop"),
+            "valid Bytes field drop must emit `call void @hew_bytes_drop(...)`; IR:\n{ir}"
+        );
+        assert!(
+            ir.contains("store ptr null"),
+            "valid Bytes field drop must null-store the data-ptr slot for idempotency; IR:\n{ir}"
+        );
+        // Defence-in-depth: confirm the host function exists and the GEP
+        // lands at the right indices (field 0 of parent, then field 0 of
+        // the BytesTriple). The exact `getelementptr` syntax inkwell emits
+        // varies by version, so match the load/call/store witness instead.
+        let _ = host_fn;
+    }
+
+    /// Fail-closed: parent struct field 0 is a 3-field struct but field 1
+    /// is `i64` (not `i32`) — a layout drift between
+    /// `primitive_to_llvm`'s Bytes arm and the parent struct's field at
+    /// `StateFieldCloneKind::Bytes`. The arm must refuse to emit a GEP
+    /// against the wrong shape and return `CodegenError::FailClosed` with
+    /// a layout-citation message.
+    #[test]
+    fn emit_field_drop_step_bytes_fail_closed_on_wrong_int_width() {
+        let ctx = Context::create();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let i32_ty = ctx.i32_type();
+        let i64_ty = ctx.i64_type();
+        // 3 fields but field 1 is i64, not i32 — layout drift.
+        let triple_wrong = ctx.struct_type(&[ptr_ty.into(), i64_ty.into(), i32_ty.into()], false);
+        let parent_st = ctx.struct_type(&[triple_wrong.into()], false);
+
+        let (llvm_mod, builder, slot, _) =
+            bytes_field_drop_test_harness(&ctx, parent_st, "bytes_field_drop_wrong_width");
+
+        let err = emit_field_drop_step(
+            &ctx,
+            &llvm_mod,
+            &builder,
+            Some(parent_st),
+            slot,
+            0,
+            &StateFieldCloneKind::Bytes,
+        )
+        .expect_err("Bytes field drop must reject a 3-field struct with non-i32 inner width");
+
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("BytesTriple"),
+                    "fail-closed message must cite the BytesTriple ABI; got: {msg}"
+                );
+                assert!(
+                    msg.contains("field"),
+                    "fail-closed message must cite the failing field index; got: {msg}"
+                );
+            }
+            other => panic!("expected CodegenError::FailClosed on layout drift, got: {other:?}"),
+        }
+    }
+
+    /// Fail-closed: parent struct field 0 is a struct of the WRONG arity
+    /// (4 fields instead of 3). A non-3-field struct cannot be a Bytes-
+    /// Triple regardless of field types; the arm refuses early.
+    #[test]
+    fn emit_field_drop_step_bytes_fail_closed_on_wrong_field_arity() {
+        let ctx = Context::create();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let i32_ty = ctx.i32_type();
+        let wrong_arity = ctx.struct_type(
+            &[ptr_ty.into(), i32_ty.into(), i32_ty.into(), i32_ty.into()],
+            false,
+        );
+        let parent_st = ctx.struct_type(&[wrong_arity.into()], false);
+
+        let (llvm_mod, builder, slot, _) =
+            bytes_field_drop_test_harness(&ctx, parent_st, "bytes_field_drop_wrong_arity");
+
+        let err = emit_field_drop_step(
+            &ctx,
+            &llvm_mod,
+            &builder,
+            Some(parent_st),
+            slot,
+            0,
+            &StateFieldCloneKind::Bytes,
+        )
+        .expect_err("Bytes field drop must reject a 4-field struct");
+
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("3 fields") || msg.contains("BytesTriple"),
+                    "fail-closed message must cite the BytesTriple field-count requirement; \
+                     got: {msg}"
+                );
+            }
+            other => panic!("expected CodegenError::FailClosed on arity mismatch, got: {other:?}"),
+        }
+    }
+
+    /// Fail-closed: parent struct field 0 is NOT a struct at all — a
+    /// scalar (e.g. an `i64`). The arm refuses before any GEP attempt
+    /// and the message cites the non-struct kind it observed so a
+    /// future producer drift surfaces with a targeted diagnostic.
+    #[test]
+    fn emit_field_drop_step_bytes_fail_closed_on_non_struct_field() {
+        let ctx = Context::create();
+        let i64_ty = ctx.i64_type();
+        let parent_st = ctx.struct_type(&[i64_ty.into()], false);
+
+        let (llvm_mod, builder, slot, _) =
+            bytes_field_drop_test_harness(&ctx, parent_st, "bytes_field_drop_non_struct");
+
+        let err = emit_field_drop_step(
+            &ctx,
+            &llvm_mod,
+            &builder,
+            Some(parent_st),
+            slot,
+            0,
+            &StateFieldCloneKind::Bytes,
+        )
+        .expect_err("Bytes field drop must reject a scalar (non-struct) field");
+
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("not a struct") || msg.contains("BytesTriple"),
+                    "fail-closed message must cite that the field is not a BytesTriple struct; \
+                     got: {msg}"
+                );
+            }
+            other => {
+                panic!("expected CodegenError::FailClosed on non-struct field, got: {other:?}")
+            }
+        }
     }
 }
 

@@ -395,11 +395,15 @@ fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
     let report = String::from_utf8_lossy(&output.stdout);
     let mut parsed: Option<usize> = None;
     for line in report.lines() {
-        // "Process <pid>: N leaks for B total leaked bytes." — the
-        // canonical summary line. Reject the "Process <pid>: N nodes
-        // malloced for B KB" line that appears AHEAD of the leak summary
-        // (it counts total allocations, not leaks).
-        if !line.contains(" leaks for ") {
+        // Two canonical summary lines (plural for N≠1, singular for N=1):
+        //   "Process <pid>: N leaks for B total leaked bytes."
+        //   "Process <pid>: 1 leak for B total leaked bytes."
+        // Reject the "Process <pid>: N nodes malloced for B KB" line that
+        // appears AHEAD of the leak summary (it counts total allocations,
+        // not leaks). The Stream<bytes> oracle holds at 1 producer-side
+        // leak (singular form) post-fix, so handling both forms is load-
+        // bearing for the bytes slope tests.
+        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
             continue;
         }
         if let Some(rest) = line.strip_prefix("Process ") {
@@ -419,7 +423,7 @@ fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
     }
     if parsed.is_none() {
         eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leaks for B total leaked bytes.` \
+            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
              summary for {}: stderr=\n{}",
             bin.display(),
             String::from_utf8_lossy(&output.stderr)
@@ -574,6 +578,204 @@ fn try_recv_continue_loop_no_per_frame_leak_slope() {
 #[test]
 fn await_recv_continue_loop_no_per_frame_leak_slope() {
     assert_per_frame_slope_below_tolerance("await_recv_continue", await_recv_continue_source);
+}
+
+// ── Stream<bytes> per-frame leak oracle ───────────────────────────────────
+//
+// The string oracle covers `Option<string>` (single-`ptr` slot). `bytes`
+// is the WIDER ABI variant: a native `bytes` value is a stack-resident
+// `BytesTriple { ptr, i32, i32 }`, not a single owned pointer. The
+// matching recv surface today is `for await frame in <Stream<bytes>>`
+// (`hew_stream_pop_bytes` hands the consumer a fresh refcounted triple
+// per frame). Pre-fix, the per-iteration Some-arm payload was overwritten
+// on the back-edge with no `hew_bytes_drop` call (the codegen-side cow_
+// heap_release table only handles single-ptr slot shapes, so the inline-
+// drop path skipped Bytes entirely); the consumer leaked one refcounted
+// allocation per frame (`hew_bytes_from_str` stack — 1.0 leak/frame
+// trunk slope, same shape as the original string bug class).
+//
+// The fix is two-ended:
+//
+//   * MIR `generator_yield_drop_symbol` adds a `ResolvedTy::Bytes =>
+//     Some("hew_bytes_drop")` arm so the recv-scrutinee Some-arm payload
+//     binding receives an inline `Instr::Drop` (the same registration
+//     mechanism the String arm uses).
+//   * Codegen `lower_inline_drop` intercepts `(ty=Bytes,
+//     drop_fn="hew_bytes_drop")` BEFORE the cow_heap_release_symbol
+//     congruence check (Bytes is deliberately absent from that table —
+//     its slot shape is not single-ptr) and routes to
+//     `emit_bytes_inplace_drop`: GEP triple-field-0 → load data ptr →
+//     `hew_bytes_drop(data_ptr)` → null-store field 0 for idempotency.
+//     A defensive explicit `StateFieldCloneKind::Bytes` arm in
+//     `emit_field_drop_step` mirrors the same triple-aware path for
+//     embedded Bytes fields (enum/record payload drop helpers) so the
+//     pre-existing generic single-`ptr`-load fall-through is replaced by
+//     a layout-explicit emitter: a future BytesTriple field reshuffle
+//     breaks loudly instead of silently freeing the wrong eightbyte.
+//
+// Probe shape rationale: the producer pre-allocates ONE `bytes` value
+// (`let b = "...".to_bytes()`) outside the loop and reuses it every
+// frame via `await sink.send(b)`. `hew_sink_write_bytes` BORROWS the
+// buffer (caller retains ownership — `hew-runtime/src/stream.rs` doc
+// on `hew_sink_write_bytes`), and `hew_stream_pop_bytes` returns a
+// FRESH refcounted triple on the consumer side, so per-iteration
+// allocation happens at pop time (the consumer side — what this oracle
+// covers). The producer holds a single function-scope `b` whose
+// function-scope drop is a separate concern (`cow_value_leaf_drop_
+// symbol` does not yet handle `Bytes`; deferred until the retain-on-
+// share spine lands — see comment on `cow_value_leaf_drop_symbol` in
+// `hew-mir/src/lower.rs`). That single producer leak is a CONSTANT
+// (one node, independent of frame count), so the slope check sees
+// the same 1-node baseline at LOW and HIGH probes; the slope tolerance
+// of 5 absorbs it with headroom.
+
+/// `for await frame in <Stream<bytes>>`: the canonical recv-scrutinee
+/// payload-binding shape for the Bytes ABI variant. `frames` controls
+/// the number of `sink.send(b)` calls before `sink.close()`; the
+/// consumer drains via `for await`. Pre-fix the per-iteration triple
+/// from `hew_stream_pop_bytes` is overwritten on the back-edge with
+/// no `hew_bytes_drop` — 1.0 leak/frame (consumer-side). Post-fix the
+/// Some-arm payload binding's `Instr::Drop { ty: Bytes, drop_fn:
+/// Some("hew_bytes_drop") }` registration releases the triple's data
+/// buffer on every body-end edge.
+fn for_await_stream_bytes_source(frames: usize) -> String {
+    use std::fmt::Write as _;
+    let sends = (0..frames).fold(String::new(), |mut acc, _| {
+        // Reuse a single pre-allocated `bytes` value per send so the
+        // producer side does not introduce per-frame allocation noise.
+        // `await sink.send(b)` borrows; `b`'s refcount stays at 1 for
+        // the lifetime of the actor.
+        let _ = writeln!(acc, "            await sink.send(b);");
+        acc
+    });
+    format!(
+        "import std::stream;\n\
+         \n\
+         actor ForAwaitStreamBytes {{\n\
+         \x20   receive fn run(unused: i64) {{\n\
+         \x20       let (sink, input) = stream.bytes_pipe({CHANNEL_CAPACITY});\n\
+         \x20       let b = \"frame-some-long-data\".to_bytes();\n\
+         \x20       var i: i64 = 0;\n\
+         \x20       while i < {frames} {{\n\
+         {sends}\
+         \x20           i = i + 1;\n\
+         \x20       }}\n\
+         \x20       sink.close();\n\
+         \x20       for await frame in input {{\n\
+         \x20           println(\"got\");\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() {{\n\
+         \x20   let w = spawn ForAwaitStreamBytes;\n\
+         \x20   w.run(0);\n\
+         \x20   sleep_ms(3000);\n\
+         }}\n"
+    )
+}
+
+/// `for await frame in <Stream<bytes>>` per-frame leak-slope oracle.
+///
+/// Trunk PRE-FIX leak counts on this exact probe (50-frame, reuse-one-
+/// `bytes` producer):
+///   * LOW (3 frames):  ~4   leaks (consumer-side per-frame + 1 constant)
+///   * HIGH (50 frames): ~51 leaks (consumer-side per-frame + 1 constant)
+///   * slope ≈ 1.0 leak/frame → +47 over the +5 tolerance → loud
+///     failure.
+///
+/// POST-FIX leak counts on the same probe:
+///   * LOW: 1, HIGH: 1 — slope = 0 (the producer's single pre-
+///     allocated `b` is the only leak; consumer-side per-frame leak
+///     is now zero).
+///
+/// Without the MIR `generator_yield_drop_symbol` Bytes arm + codegen
+/// `lower_inline_drop` Bytes interceptor, the for-await body emits no
+/// `hew_bytes_drop` call per iteration (IR-verified: pre-fix `grep -c
+/// hew_bytes_drop <ir>` returns 0 inside the body block; post-fix
+/// returns 1, calling against `%bytes_drop_ptr`). This test fails
+/// trunk-style by a factor of ~10× if either end is reverted.
+#[test]
+fn for_await_stream_bytes_loop_no_per_frame_leak_slope() {
+    assert_per_frame_slope_below_tolerance("for_await_stream_bytes", for_await_stream_bytes_source);
+}
+
+// ── Stream<bytes> payload-escape UAF probe ────────────────────────────────
+//
+// Mirrors the carry_*_payload_escape_no_uaf string probes but with the
+// Bytes ABI variant. An outer-scope `var carry` aliasing the per-frame
+// payload via `carry = frame` would, if the back-edge inline-drop fires
+// anyway, free the carried triple's data buffer while `carry` still
+// aliases it; `MallocScribble + MallocPreScribble` poisons the freed
+// buffer in place; the post-loop `println(carry.to_string())` would
+// read either poisoned bytes (printed as garbage or empty) or trip a
+// `MallocGuardEdges` page guard (process abort, non-zero exit).
+//
+// The string-side fix lives in `derive_enum_composite_drop_allowed`'s
+// payload-binder forward-propagation (refusing to mark Move destinations
+// in OUTER scopes as benign onward hand-offs); the same gate fires for
+// Bytes because it is keyed on the local and binding scope, not the
+// type. This probe asserts the gate does fire for Bytes (no UAF on
+// `carry` after the back-edge).
+//
+// Stream<bytes> sends ONE frame so there is exactly one back-edge to
+// exercise. The carried frame is round-tripped through `.to_string()`
+// at print time (Bytes → String for the println call); a poisoned
+// or freed underlying buffer would surface as empty/garbage output
+// or a crash.
+
+/// `var carry; for await frame in <Stream<bytes>>(1 frame) { carry =
+/// frame; }; println(carry.to_string())`. With the back-edge inline-
+/// drop for Bytes wired AND the escape-scan gate honouring scope
+/// boundaries (the same type-agnostic local-based gate that protects
+/// String payload escapes), the carried frame's buffer must survive
+/// past the loop body for the post-loop print to read it intact. A
+/// regression in the escape-scan that admitted the back-edge drop for
+/// Bytes would print empty / poisoned bytes here.
+fn carry_for_await_bytes_escape_source() -> String {
+    "import std::stream;\n\
+     \n\
+     actor CarryStreamBytesEscape {\n\
+     \x20   receive fn run(unused: i64) {\n\
+     \x20       let (sink, input) = stream.bytes_pipe(4);\n\
+     \x20       let b = \"escaped-bytes-payload\".to_bytes();\n\
+     \x20       await sink.send(b);\n\
+     \x20       sink.close();\n\
+     \x20       var carry = \"init\".to_bytes();\n\
+     \x20       println(\"before\");\n\
+     \x20       for await frame in input {\n\
+     \x20           carry = frame;\n\
+     \x20       }\n\
+     \x20       println(carry.to_string());\n\
+     \x20       println(\"after\");\n\
+     \x20   }\n\
+     }\n\
+     \n\
+     fn main() {\n\
+     \x20   let w = spawn CarryStreamBytesEscape;\n\
+     \x20   w.run(0);\n\
+     \x20   sleep_ms(200);\n\
+     }\n"
+    .to_string()
+}
+
+/// `for await frame in <Stream<bytes>>` with outer-scope `carry =
+/// frame`: must print `before / escaped-bytes-payload / after`. If
+/// the Bytes back-edge inline-drop ever became scope-blind and freed
+/// `frame` while `carry` aliased it, the middle line would be empty
+/// or garbage under `MallocScribble + MallocPreScribble`, or the
+/// process would abort under `MallocGuardEdges`. Either is a UAF
+/// and this assertion catches it. The escape gate is local-based
+/// (not type-keyed) so the same gate that protects String payload
+/// escapes protects Bytes payload escapes; this probe asserts the
+/// cross-type invariant directly.
+#[test]
+fn carry_for_await_bytes_payload_escape_no_uaf() {
+    assert_payload_escape_prints(
+        "carry_for_await_bytes_escape",
+        &carry_for_await_bytes_escape_source(),
+        &["before", "escaped-bytes-payload", "after"],
+    );
 }
 //
 // The leak oracle above only asserts "no per-iteration cstring leak".

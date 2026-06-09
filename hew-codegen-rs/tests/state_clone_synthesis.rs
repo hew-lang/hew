@@ -28,7 +28,7 @@
 //! LESSONS: boundary-fail-closed (P0) — every synthesised body is a
 //! fail-closed seam against the runtime restart-with-state contract.
 
-use hew_codegen_rs::{emit_module, EmitOptions};
+use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
     ActorLayout, BasicBlock, FunctionCallConv, IoHandleKind, IrPipeline, RawMirFunction,
     RecordLayout, StateFieldCloneKind, Terminator,
@@ -121,7 +121,7 @@ fn pipeline_with(actors: Vec<ActorLayout>, records: Vec<RecordLayout>) -> IrPipe
     }
 }
 
-fn emit_to_string(pipeline: &IrPipeline, slug: &str) -> String {
+fn try_emit_to_string(pipeline: &IrPipeline, slug: &str) -> Result<String, CodegenError> {
     let tmp = std::env::temp_dir().join(format!("hew-state-clone-synthesis-{slug}"));
     // Recreate to avoid stale-file confusion between runs.
     let _ = std::fs::remove_dir_all(&tmp);
@@ -132,9 +132,13 @@ fn emit_to_string(pipeline: &IrPipeline, slug: &str) -> String {
         wasm: false,
         target_triple: None,
     };
-    emit_module(pipeline, &options).expect("emit_module should succeed");
+    emit_module(pipeline, &options)?;
     let ll = tmp.join("probe.ll");
-    std::fs::read_to_string(&ll).unwrap_or_else(|e| panic!("could not read {}: {e}", ll.display()))
+    std::fs::read_to_string(&ll).map_err(CodegenError::Io)
+}
+
+fn emit_to_string(pipeline: &IrPipeline, slug: &str) -> String {
+    try_emit_to_string(pipeline, slug).expect("emit_module should succeed")
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────
@@ -639,21 +643,20 @@ fn state_clone_alloc_fail_per_field_rollback_cardinality_and_order() {
 /// field calls `hew_bytes_clone_ref` with void return and falls through
 /// without a null check on the call result.
 ///
-/// Storage type substitution: `ResolvedTy::Bytes` is not yet supported
-/// by `resolve_ty` (Cluster 2 pending). We use `String` (ptr-typed) as
-/// the storage stand-in; synthesis dispatches on `StateFieldCloneKind`,
-/// not on the storage `ResolvedTy`.
+/// The storage slot must be the real `ResolvedTy::Bytes` lowering:
+/// `BytesTriple { ptr, i32, i32 }`. Pointer-shaped stand-ins are a producer
+/// bug and must fail closed before the drop path can GEP field 0.
 #[test]
 fn state_clone_bytes_refcount_bump_has_no_failure_path() {
     let actor = classified_actor(
         "BytesHolder",
         vec!["payload"],
-        vec![ResolvedTy::String],
+        vec![ResolvedTy::Bytes],
         vec![StateFieldCloneKind::Bytes],
     );
     let record = RecordLayout {
         name: "BytesHolder".into(),
-        field_tys: vec![ResolvedTy::String],
+        field_tys: vec![ResolvedTy::Bytes],
     };
     let ir = emit_to_string(&pipeline_with(vec![actor], vec![record]), "bytes-refcount");
 
@@ -680,6 +683,50 @@ fn state_clone_bytes_refcount_bump_has_no_failure_path() {
         body.contains("call void @hew_bytes_clone_ref"),
         "Bytes refcount-bump call must appear with void return type; body:\n{body}"
     );
+}
+
+/// A `StateFieldCloneKind::Bytes` classification on a pointer-shaped storage
+/// slot is invalid. Bytes drop emits an explicit inner GEP through
+/// `BytesTriple { ptr, i32, i32 }`; accepting a raw pointer field would make the
+/// drop path free whichever word happens to sit at offset 0.
+#[test]
+fn state_clone_bytes_pointer_shaped_field_fails_closed() {
+    let actor = classified_actor(
+        "PointerBackedBytes",
+        vec!["payload"],
+        vec![ResolvedTy::String],
+        vec![StateFieldCloneKind::Bytes],
+    );
+    let record = RecordLayout {
+        name: "PointerBackedBytes".into(),
+        field_tys: vec![ResolvedTy::String],
+    };
+
+    let err = try_emit_to_string(
+        &pipeline_with(vec![actor], vec![record]),
+        "bytes-pointer-field-fail-closed",
+    )
+    .expect_err("pointer-shaped storage must not satisfy StateFieldCloneKind::Bytes");
+
+    match err {
+        CodegenError::FailClosed(msg) => {
+            assert!(
+                msg.contains("parent struct field 0"),
+                "diagnostic must identify the bytes field index; got: {msg}"
+            );
+            assert!(
+                msg.contains("PointerType") || msg.contains("not a struct"),
+                "diagnostic must identify the pointer-shaped field; got: {msg}"
+            );
+            assert!(
+                msg.contains("BytesTriple"),
+                "diagnostic must cite the required BytesTriple ABI; got: {msg}"
+            );
+        }
+        other => {
+            panic!("expected CodegenError::FailClosed for pointer-shaped bytes slot, got {other:?}")
+        }
+    }
 }
 
 /// HashMap and HashSet — string-element collections route to the layout ABI.

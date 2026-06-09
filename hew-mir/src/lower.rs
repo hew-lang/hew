@@ -9982,7 +9982,8 @@ impl Builder {
     /// scope-exit release symbol the consumer-body drop can emit. Restricted to
     /// the proven leak shapes: a heap-owning `string` and any builtin `Vec<T>`
     /// (whose buffer — plus, for an owned-element Vec, its elements — must be
-    /// freed). HashMap/HashSet/Bytes yields are NOT covered here (no validated
+    /// freed). Bytes yields are covered by a codegen-side `BytesTriple` drop
+    /// interceptor; HashMap/HashSet yields are NOT covered here (no validated
     /// consumer-drop path yet); they leak as before rather than risk a
     /// double-free, matching the conservative posture of the function-scope
     /// `CoW` drop allow-set.
@@ -9996,9 +9997,36 @@ impl Builder {
     /// `cow_heap_release_symbol` so the inline-drop validator
     /// (`lower_inline_drop` → congruence check) accepts the emitted symbol
     /// (`dedup-semantic-boundary`).
+    ///
+    /// `Bytes` does NOT appear in `cow_heap_release_symbol` (a native `bytes`
+    /// value is a stack-resident `BytesTriple { ptr, i32, i32 }`, not a single
+    /// owned pointer, so the generic single-`ptr`-load release shape that
+    /// `cow_heap_release_symbol` describes does not apply). The inline-drop
+    /// dispatcher (`lower_inline_drop`) intercepts the
+    /// `(ty == Bytes, drop_fn == "hew_bytes_drop")` pair BEFORE the
+    /// `cow_heap_release_symbol` congruence check and routes it through the
+    /// `BytesTriple`-aware emitter (`emit_bytes_inplace_drop`): GEP field 0,
+    /// load the data ptr, call `hew_bytes_drop(data_ptr)`, null-store the
+    /// field to make a structurally-reachable second drop a no-op against
+    /// `hew_bytes_drop(null)`. This is the SAME triple-field-0 release shape
+    /// the wirecodec decoder's bytes-drop emitter uses
+    /// (`hew-codegen-rs/src/llvm.rs`, "Bytes: stored as a `{ ptr, i32, i32 }`
+    /// triple"), kept in sync so the two cannot drift on which byte of the
+    /// triple owns the heap allocation.
     fn generator_yield_drop_symbol(&self, ty: &ResolvedTy) -> Option<&'static str> {
         match ty {
             ResolvedTy::String => Some("hew_string_drop"),
+            // Per-iteration release for a `for await frame in <Stream<bytes>>`
+            // binding (and any analogous Some-arm `bytes` payload on a recv-call
+            // scrutinee). `hew_stream_pop_bytes` hands the consumer a fresh,
+            // refcounted `BytesTriple` per frame: a body that does not move the
+            // value out is the sole owner and must release exactly one reference
+            // on every exit edge. Without this arm the per-frame triple's data
+            // buffer is overwritten on the next iteration with no preceding
+            // `hew_bytes_drop`, leaking one refcounted allocation per frame
+            // (observed at 1.0 leak / frame on the `for await stream<bytes>`
+            // oracle before this arm was added).
+            ResolvedTy::Bytes => Some("hew_bytes_drop"),
             ResolvedTy::Named {
                 builtin: Some(hew_types::BuiltinType::Vec),
                 args,

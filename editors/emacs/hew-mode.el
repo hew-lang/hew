@@ -65,7 +65,7 @@
 (defconst hew-keywords
   '("if" "else" "is" "match" "loop" "for" "in" "while"
     "break" "continue" "return"
-    "let" "var" "const" "fn" "gen" "type" "struct" "indirect" "enum"
+    "let" "var" "const" "fn" "gen" "type" "struct" "record" "indirect" "enum"
     "trait" "impl" "import" "pub" "super" "where"
     "actor" "fork" "link" "monitor" "receive" "init" "spawn" "async" "move" "await" "this"
     "supervisor" "child" "restart" "budget" "strategy"
@@ -151,6 +151,9 @@
 
       ;; Format strings: f"..."
       ("\\<f\"" . font-lock-string-face)
+
+      ;; @reenter decorator (machine state-transition re-entry)
+      ("@reenter\\>" . font-lock-builtin-face)
 
       ;; Labels: @label
       ("@\\([a-zA-Z_][a-zA-Z0-9_]*\\)" 1 font-lock-constant-face)))

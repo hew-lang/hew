@@ -16,7 +16,12 @@ use hew_types::TypeCheckOutput;
 fn pipeline(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let verify = verify_hir(&output.module);
     assert!(verify.is_empty(), "{verify:?}");

@@ -219,7 +219,7 @@ unsafe fn resize(m: *mut HewHashMap) {
                 map.len += 1;
             }
         }
-        libc::free(old_entries.cast());
+        libc::free(old_entries.cast()); // ALLOCATOR-PAIRING: libc
     }
 }
 
@@ -236,14 +236,14 @@ unsafe fn resize(m: *mut HewHashMap) {
 pub unsafe extern "C" fn hew_hashmap_new_impl() -> *mut HewHashMap {
     // SAFETY: allocating with libc::malloc/calloc.
     unsafe {
-        let m: *mut HewHashMap = libc::malloc(core::mem::size_of::<HewHashMap>()).cast();
+        let m: *mut HewHashMap = libc::malloc(core::mem::size_of::<HewHashMap>()).cast(); // ALLOCATOR-PAIRING: libc
         if m.is_null() {
             libc::abort();
         }
         let entries: *mut HewMapEntry =
             libc::calloc(INIT_CAP, core::mem::size_of::<HewMapEntry>()).cast();
         if entries.is_null() {
-            libc::free(m.cast());
+            libc::free(m.cast()); // ALLOCATOR-PAIRING: libc
             libc::abort();
         }
         (*m).entries = entries;
@@ -280,7 +280,7 @@ pub unsafe extern "C" fn hew_hashmap_insert_impl(
             // Update existing entry.
             entry.value_i32 = val_i32;
             if !entry.value_str.is_null() {
-                libc::free(entry.value_str.cast());
+                libc::free(entry.value_str.cast()); // ALLOCATOR-PAIRING: libc
             }
             entry.value_str = if val_str.is_null() {
                 ptr::null_mut()
@@ -488,9 +488,9 @@ pub unsafe extern "C" fn hew_hashmap_remove(m: *mut HewHashMap, key: *const c_ch
             return false;
         }
         let entry = &mut *(*m).entries.add(idx as usize);
-        libc::free(entry.key.cast());
+        libc::free(entry.key.cast()); // ALLOCATOR-PAIRING: libc
         if !entry.value_str.is_null() {
-            libc::free(entry.value_str.cast());
+            libc::free(entry.value_str.cast()); // ALLOCATOR-PAIRING: libc
         }
         entry.state = TOMBSTONE;
         entry.key = ptr::null_mut();
@@ -609,9 +609,9 @@ pub unsafe extern "C" fn hew_hashmap_clear(m: *mut HewHashMap) {
         for i in 0..map.cap {
             let entry = &mut *map.entries.add(i);
             if entry.state == OCCUPIED {
-                libc::free(entry.key.cast());
+                libc::free(entry.key.cast()); // ALLOCATOR-PAIRING: libc
                 if !entry.value_str.is_null() {
-                    libc::free(entry.value_str.cast());
+                    libc::free(entry.value_str.cast()); // ALLOCATOR-PAIRING: libc
                 }
             }
             entry.state = EMPTY;
@@ -656,14 +656,14 @@ pub unsafe extern "C" fn hew_hashmap_clone_impl(m: *const HewHashMap) -> *mut He
     // SAFETY: caller guarantees `m` is valid.
     unsafe {
         let src = &*m;
-        let cloned: *mut HewHashMap = libc::malloc(core::mem::size_of::<HewHashMap>()).cast();
+        let cloned: *mut HewHashMap = libc::malloc(core::mem::size_of::<HewHashMap>()).cast(); // ALLOCATOR-PAIRING: libc
         if cloned.is_null() {
             libc::abort();
         }
         let entries: *mut HewMapEntry =
             libc::calloc(src.cap, core::mem::size_of::<HewMapEntry>()).cast();
         if entries.is_null() {
-            libc::free(cloned.cast());
+            libc::free(cloned.cast()); // ALLOCATOR-PAIRING: libc
             libc::abort();
         }
         (*cloned).entries = entries;
@@ -715,14 +715,14 @@ pub unsafe extern "C" fn hew_hashmap_free_impl(m: *mut HewHashMap) {
         for i in 0..(*m).cap {
             let entry = &*(*m).entries.add(i);
             if entry.state == OCCUPIED {
-                libc::free(entry.key.cast());
+                libc::free(entry.key.cast()); // ALLOCATOR-PAIRING: libc
                 if !entry.value_str.is_null() {
-                    libc::free(entry.value_str.cast());
+                    libc::free(entry.value_str.cast()); // ALLOCATOR-PAIRING: libc
                 }
             }
         }
-        libc::free((*m).entries.cast());
-        libc::free(m.cast());
+        libc::free((*m).entries.cast()); // ALLOCATOR-PAIRING: libc
+        libc::free(m.cast()); // ALLOCATOR-PAIRING: libc
     }
 }
 

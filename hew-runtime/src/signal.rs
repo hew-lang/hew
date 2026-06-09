@@ -427,7 +427,7 @@ mod platform {
     unsafe extern "C" fn recovery_ctx_dtor(ptr: *mut c_void) {
         if !ptr.is_null() {
             // SAFETY: ptr was created via Box::into_raw in init_worker_recovery.
-            drop(unsafe { Box::from_raw(ptr.cast::<WorkerRecoveryCtx>()) });
+            drop(unsafe { Box::from_raw(ptr.cast::<WorkerRecoveryCtx>()) }); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -613,7 +613,7 @@ mod platform {
 
         // Allocate and install per-thread recovery context.
         let ctx = WorkerRecoveryCtx::new_boxed(worker_id);
-        let ctx_ptr = Box::into_raw(ctx);
+        let ctx_ptr = Box::into_raw(ctx); // ALLOCATOR-PAIRING: GlobalAlloc
         let key = *RECOVERY_KEY
             .get()
             .expect("init_crash_handling must be called before init_worker_recovery");
@@ -1038,7 +1038,7 @@ mod platform {
 
     pub(crate) fn init_worker_recovery(worker_id: u32) {
         let ctx = WorkerRecoveryCtx::new_boxed(worker_id);
-        let ctx_ptr = Box::into_raw(ctx);
+        let ctx_ptr = Box::into_raw(ctx); // ALLOCATOR-PAIRING: GlobalAlloc
         let key = *TLS_KEY
             .get()
             .expect("init_crash_handling must be called before init_worker_recovery");

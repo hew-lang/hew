@@ -732,7 +732,7 @@ unsafe extern "C" fn tcp_close_conn(impl_ptr: *mut c_void, conn: c_int) {
 unsafe extern "C" fn tcp_destroy(impl_ptr: *mut c_void) {
     cabi_guard!(impl_ptr.is_null());
     // SAFETY: impl_ptr was created by Box::into_raw in hew_transport_tcp_new.
-    let _ = unsafe { Box::from_raw(impl_ptr.cast::<TcpTransport>()) };
+    let _ = unsafe { Box::from_raw(impl_ptr.cast::<TcpTransport>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 static TCP_OPS: HewTransportOps = HewTransportOps {
@@ -775,9 +775,9 @@ pub unsafe extern "C" fn hew_transport_tcp_new() -> *mut HewTransport {
     let tcp = Box::new(TcpTransport::new());
     let transport = Box::new(HewTransport {
         ops: &raw const TCP_OPS,
-        r#impl: Box::into_raw(tcp).cast::<c_void>(),
+        r#impl: Box::into_raw(tcp).cast::<c_void>(), // ALLOCATOR-PAIRING: GlobalAlloc
     });
-    Box::into_raw(transport)
+    Box::into_raw(transport) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 // ===========================================================================
@@ -2253,7 +2253,7 @@ mod unix_transport {
     unsafe extern "C" fn unix_destroy(impl_ptr: *mut c_void) {
         cabi_guard!(impl_ptr.is_null());
         // SAFETY: impl_ptr was created by Box::into_raw in hew_transport_unix_new.
-        let _ = unsafe { Box::from_raw(impl_ptr.cast::<UnixTransport>()) };
+        let _ = unsafe { Box::from_raw(impl_ptr.cast::<UnixTransport>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     static UNIX_OPS: HewTransportOps = HewTransportOps {
@@ -2276,9 +2276,9 @@ mod unix_transport {
         let ut = Box::new(UnixTransport::new());
         let transport = Box::new(HewTransport {
             ops: &raw const UNIX_OPS,
-            r#impl: Box::into_raw(ut).cast::<c_void>(),
+            r#impl: Box::into_raw(ut).cast::<c_void>(), // ALLOCATOR-PAIRING: GlobalAlloc
         });
-        Box::into_raw(transport)
+        Box::into_raw(transport) // ALLOCATOR-PAIRING: GlobalAlloc
     }
 }
 

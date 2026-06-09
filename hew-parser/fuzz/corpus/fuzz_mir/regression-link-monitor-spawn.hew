@@ -1,0 +1,17 @@
+// Discarded link()/monitor() calls lower to CallRuntimeAbi with dest=None.
+//
+// The local declarations provide the current two-handle checker shape while
+// MIR's runtime-symbol bridge still routes the recognised names to
+// hew_actor_link / hew_actor_mon
+fn link(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {}
+fn monitor(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {}
+
+fn main() -> i64 {
+    let p = spawn Probe;
+    let q = spawn Probe;
+    let r = spawn Probe;
+    let s = spawn Probe;
+    link(p, q);
+    monitor(r, s);
+    0
+}

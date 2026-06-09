@@ -50,6 +50,63 @@ impl Checker {
 
         // ── 4. Dependency cycle detection ────────────────────────────────────
         self.check_supervisor_wired_to_cycles(sd, span);
+
+        // ── 5. Permanent children must not have owned-heap state fields ──────
+        self.check_supervisor_permanent_owned_heap(sd, span);
+    }
+
+    /// Guard against C1 UAF: a supervisor with a permanent restart policy will
+    /// byte-copy `spec.init_state` into the fresh actor on restart.  If the
+    /// actor's state contains an owned-heap field (Vec, String, `HashMap`,
+    /// `HashSet`, Bytes), that byte-copy aliases the pointer from the crashed
+    /// actor, and the next `state_drop_fn` call produces a use-after-free.
+    ///
+    /// This check is a hard compile error per R89 ("stop the compile until we
+    /// can address it").  Full fix (`init_state_clone_fn`) is tracked as
+    /// v0.5.0.1 P0.
+    fn check_supervisor_permanent_owned_heap(&mut self, sd: &SupervisorDecl, span: &Span) {
+        for child in &sd.children {
+            // Pool children are dynamically spawned, not restarted from a
+            // fixed spec, so they are exempt from this check.
+            if child.is_pool {
+                continue;
+            }
+
+            // RestartPolicy::None defaults to permanent per llvm.rs:3013.
+            let is_permanent = child.restart.is_none_or(|p| p == RestartPolicy::Permanent);
+            if !is_permanent {
+                continue;
+            }
+
+            // Look up the actor's TypeDef.  If the type is unknown or is not
+            // an actor, a separate diagnostic already covers it.
+            let Some(type_def) = self.type_defs.get(&child.actor_type).cloned() else {
+                continue;
+            };
+            if type_def.kind != TypeDefKind::Actor {
+                continue;
+            }
+
+            for (field_name, field_ty) in &type_def.fields {
+                if ty_is_known_owned_heap(field_ty) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        span.clone(),
+                        format!(
+                            "E_SUPERVISOR_PERMANENT_OWNED_HEAP: supervisor `{}` child `{}` \
+                             (actor `{}`) has field `{}` of type `{}` which is an owned-heap \
+                             type; restarting a permanent child byte-copies init_state, \
+                             aliasing the heap pointer from the crashed actor and causing a \
+                             use-after-free on the next state_drop_fn call — use \
+                             `restart: transient` or `restart: temporary`, or remove owned-heap \
+                             fields from the actor state; full fix (init_state_clone_fn) tracked \
+                             as v0.5.0.1 P0",
+                            sd.name, child.name, child.actor_type, field_name, field_ty
+                        ),
+                    ));
+                }
+            }
+        }
     }
 
     fn check_supervisor_duplicate_children(&mut self, sd: &SupervisorDecl, span: &Span) {
@@ -1431,4 +1488,28 @@ impl Checker {
             }
         }
     }
+}
+
+/// Returns `true` for types that carry owned heap allocations and therefore
+/// cannot be safely byte-copied as `init_state` for a permanent supervisor
+/// child restart (C1 UAF guard — v0.5.0.1 P0).
+///
+/// Covers `String`, `Bytes`, and the three generic collections `Vec<_>`,
+/// `HashMap<_,_>`, `HashSet<_>`.  Nested ownership (e.g. `Vec<Vec<i64>>`) is
+/// detected at the outer level.  Fields typed as user-defined records that
+/// *contain* owned-heap types are a known residual gap; see the
+/// `KNOWN-RESIDUAL` test in check/tests.rs.
+fn ty_is_known_owned_heap(ty: &Ty) -> bool {
+    matches!(ty, Ty::String | Ty::Bytes)
+        || matches!(
+            ty,
+            Ty::Named {
+                builtin: Some(
+                    crate::BuiltinType::Vec
+                        | crate::BuiltinType::HashMap
+                        | crate::BuiltinType::HashSet
+                ),
+                ..
+            }
+        )
 }

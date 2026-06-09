@@ -3131,6 +3131,24 @@ impl Checker {
                         );
                         if method == "tell" {
                             self.enforce_actor_method_send_args(args);
+                            // S5: real RemotePid<T>::tell lowering. Record a
+                            // direct-call rewrite so HIR/MIR lower the call
+                            // to `hew_remote_pid_tell`, which codegen
+                            // intercepts and lowers to the
+                            // `hew_actor_send_by_id` runtime ABI plus a
+                            // `Result<(), SendError>` construction. The
+                            // catalog entry registers the FFI shape; the
+                            // codegen Terminator::Call branch consumes the
+                            // resolved receiver + msg arg types from the
+                            // checker output (no re-inference in codegen
+                            // per the `checker-authority` invariant).
+                            self.method_call_rewrites.insert(
+                                SpanKey::from(span),
+                                MethodCallRewrite::RewriteToFunction {
+                                    c_symbol: "hew_remote_pid_tell".to_string(),
+                                    elem_ty: None,
+                                },
+                            );
                         }
                         return applied_sig.return_type;
                     }

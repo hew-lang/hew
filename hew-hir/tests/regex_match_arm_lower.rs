@@ -28,7 +28,12 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
         "type errors: {:?}",
         tc_output.errors
     );
-    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 /// Find the first `HirExprKind::Match` expression in the given function body.

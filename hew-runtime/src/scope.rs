@@ -1,13 +1,8 @@
-//! Hew runtime: structured concurrency scope (legacy, fixed-capacity).
-//!
-//! [`HewScope`] is a `#[repr(C)]` actor container allocated on the stack in
-//! generated code. It holds up to [`HEW_SCOPE_MAX_ACTORS`] actor pointers
-//! and a pthread mutex for thread-safe access.
-//!
-//! New structured-concurrency integrations should target
-//! [`super::actor_group::HewActorGroup`]. [`HewScope`] remains in place for
-//! existing compiler-generated stack ABI until codegen can migrate without
-//! breaking the fixed-size by-value layout.
+//! DEPRECATED: This module is legacy dead code. The compiler has migrated to
+//! [`super::task_scope::HewTaskScope`] for structured concurrency. `HewScope` is
+//! retained only for historical reference and will be removed in v0.5.1+. Do
+//! not use in new code.
+#![allow(deprecated, reason = "Deprecated module retained for reference")]
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -111,6 +106,7 @@ pub const HEW_SCOPE_MAX_ACTORS: usize = 64;
 /// structured-concurrency entry points and any path that may exceed
 /// [`HEW_SCOPE_MAX_ACTORS`].
 #[repr(C)]
+#[deprecated(since = "0.5.0", note = "Use HewTaskScope instead")]
 pub struct HewScope {
     /// Pointers to owned actors (`*mut HewActor`).
     pub actors: [*mut c_void; HEW_SCOPE_MAX_ACTORS],
@@ -339,7 +335,7 @@ pub unsafe extern "C" fn hew_scope_is_cancelled(scope: *mut HewScope) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_scope_create() -> *mut HewScope {
     // SAFETY: malloc with correct size.
-    let ptr = unsafe { libc::malloc(std::mem::size_of::<HewScope>()) }.cast::<HewScope>();
+    let ptr = unsafe { libc::malloc(std::mem::size_of::<HewScope>()) }.cast::<HewScope>(); // ALLOCATOR-PAIRING: libc
     if ptr.is_null() {
         return std::ptr::null_mut();
     }
@@ -363,7 +359,7 @@ pub unsafe extern "C" fn hew_scope_free(scope: *mut HewScope) {
     // SAFETY: Caller guarantees scope was heap-allocated by hew_scope_create.
     unsafe {
         hew_scope_destroy(scope);
-        libc::free(scope.cast());
+        libc::free(scope.cast()); // ALLOCATOR-PAIRING: libc
     }
 }
 

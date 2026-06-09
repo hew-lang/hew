@@ -17,7 +17,12 @@ fn pipeline(source: &str) -> IrPipeline {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tco = checker.check_program(&parsed.program);
     assert!(tco.errors.is_empty(), "typecheck: {:#?}", tco.errors);
-    let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx);
+    let lowered = lower_program(
+        &parsed.program,
+        &tco,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR: {:#?}",

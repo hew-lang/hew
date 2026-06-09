@@ -25,7 +25,12 @@ fn pipeline(source: &str) -> IrPipeline {
         "parse errors: {:?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         output.diagnostics.is_empty(),
         "HIR diagnostics: {:?}",
@@ -53,7 +58,12 @@ fn checked_pipeline(source: &str) -> IrPipeline {
         "type errors: {:?}",
         tc_output.errors
     );
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         output.diagnostics.is_empty(),
         "HIR diagnostics: {:?}",

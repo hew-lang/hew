@@ -149,6 +149,7 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         coalesce_key_fn: None,
         terminate_fn: None,
         state_drop_fn: None,
+        state_clone_fn: None,
         terminate_called: AtomicBool::new(false),
         terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
@@ -265,7 +266,7 @@ unsafe extern "C" fn wasm_parity_drop_glue(_payload: *mut c_void) {
 fn alloc_bytes(bytes: &[u8]) -> *mut c_void {
     // SAFETY: standard malloc + memcpy.
     unsafe {
-        let buf = libc::malloc(bytes.len());
+        let buf = libc::malloc(bytes.len()); // ALLOCATOR-PAIRING: libc
         assert!(!buf.is_null(), "alloc_bytes: OOM");
         libc::memcpy(buf, bytes.as_ptr().cast(), bytes.len());
         buf
@@ -816,13 +817,13 @@ fn native_dispatch_context_snapshots() -> Vec<DispatchContextSnapshot> {
         );
 
         let actor = stub_dispatch_actor(mailbox, native_dispatch_context_probe);
-        let actor_ptr = Box::into_raw(actor);
+        let actor_ptr = Box::into_raw(actor); // ALLOCATOR-PAIRING: GlobalAlloc
         crate::scheduler::activate_actor_for_test(actor_ptr);
 
         let snapshots = wait_for_dispatch_context_snapshots(2);
         wait_for_actor_idle(&*actor_ptr);
         crate::mailbox::hew_mailbox_free(mailbox.cast());
-        drop(Box::from_raw(actor_ptr));
+        drop(Box::from_raw(actor_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
         snapshots
     }
 }
@@ -847,14 +848,14 @@ fn wasm_dispatch_context_snapshots() -> Vec<DispatchContextSnapshot> {
         );
 
         let actor = stub_dispatch_actor(mailbox, wasm_dispatch_context_probe);
-        let actor_ptr = Box::into_raw(actor);
+        let actor_ptr = Box::into_raw(actor); // ALLOCATOR-PAIRING: GlobalAlloc
         crate::scheduler_wasm::sched_enqueue(actor_ptr.cast::<crate::scheduler_wasm::HewActor>());
         crate::scheduler_wasm::hew_sched_run();
 
         let snapshots = wait_for_dispatch_context_snapshots(2);
         wait_for_actor_idle(&*actor_ptr);
         crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
-        drop(Box::from_raw(actor_ptr));
+        drop(Box::from_raw(actor_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
         crate::scheduler_wasm::hew_sched_shutdown();
         snapshots
     }
@@ -925,12 +926,12 @@ fn wasm_on_stop_emits_stop_lifecycle_trace_before_terminate_completes() {
         );
 
         let terminate_seen = Box::new(AtomicBool::new(false));
-        let terminate_state = Box::into_raw(terminate_seen).cast::<c_void>();
+        let terminate_state = Box::into_raw(terminate_seen).cast::<c_void>(); // ALLOCATOR-PAIRING: GlobalAlloc
         let mut actor = stub_dispatch_actor(mailbox, request_wasm_stop_dispatch);
         actor.id = 37;
         actor.state = terminate_state;
         actor.terminate_fn = Some(mark_terminate_state);
-        let actor_ptr = Box::into_raw(actor);
+        let actor_ptr = Box::into_raw(actor); // ALLOCATOR-PAIRING: GlobalAlloc
 
         crate::scheduler_wasm::sched_enqueue(actor_ptr.cast::<crate::scheduler_wasm::HewActor>());
         crate::scheduler_wasm::hew_sched_run();
@@ -981,8 +982,8 @@ fn wasm_on_stop_emits_stop_lifecycle_trace_before_terminate_completes() {
         );
 
         crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
-        drop(Box::from_raw(terminate_state.cast::<AtomicBool>()));
-        drop(Box::from_raw(actor_ptr));
+        drop(Box::from_raw(terminate_state.cast::<AtomicBool>())); // ALLOCATOR-PAIRING: GlobalAlloc
+        drop(Box::from_raw(actor_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     crate::tracing::hew_trace_reset();
@@ -1123,7 +1124,7 @@ fn wasm_bridge_send_failure_does_not_wake_actor() {
             0
         );
 
-        let actor = Box::into_raw(stub_wasm_actor(mailbox));
+        let actor = Box::into_raw(stub_wasm_actor(mailbox)); // ALLOCATOR-PAIRING: GlobalAlloc
         let name = std::ffi::CString::new("bridge-full-mailbox").unwrap();
         assert_eq!(
             crate::registry::hew_registry_register(name.as_ptr(), actor.cast()),
@@ -1148,7 +1149,7 @@ fn wasm_bridge_send_failure_does_not_wake_actor() {
         );
 
         assert_eq!(crate::registry::hew_registry_unregister(name.as_ptr()), 0);
-        drop(Box::from_raw(actor));
+        drop(Box::from_raw(actor)); // ALLOCATOR-PAIRING: GlobalAlloc
         crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
     }
 
@@ -1175,7 +1176,7 @@ fn wasm_cooperate_returns_cancel_when_actor_state_is_terminal() {
     let _guard = crate::runtime_test_guard();
 
     let actor = stub_wasm_actor(std::ptr::null_mut());
-    let actor_ptr: *mut HewActor = Box::into_raw(actor);
+    let actor_ptr: *mut HewActor = Box::into_raw(actor); // ALLOCATOR-PAIRING: GlobalAlloc
 
     // SAFETY: test owns `actor_ptr` for the duration of the scenario.
     unsafe {
@@ -1207,7 +1208,7 @@ fn wasm_cooperate_returns_cancel_when_actor_state_is_terminal() {
             );
         }
 
-        let _ = Box::from_raw(actor_ptr);
+        let _ = Box::from_raw(actor_ptr); // ALLOCATOR-PAIRING: GlobalAlloc
     }
 }
 
@@ -1217,7 +1218,7 @@ fn wasm_cooperate_returns_zero_when_actor_state_is_running() {
     let _guard = crate::runtime_test_guard();
 
     let actor = stub_wasm_actor(std::ptr::null_mut());
-    let actor_ptr: *mut HewActor = Box::into_raw(actor);
+    let actor_ptr: *mut HewActor = Box::into_raw(actor); // ALLOCATOR-PAIRING: GlobalAlloc
 
     // SAFETY: test owns `actor_ptr` for the duration of the scenario.
     unsafe {
@@ -1238,7 +1239,7 @@ fn wasm_cooperate_returns_zero_when_actor_state_is_running() {
         // Running actor with budget remaining must return 0 (continue).
         assert_eq!(crate::scheduler_wasm::hew_actor_cooperate(), 0);
 
-        let _ = Box::from_raw(actor_ptr);
+        let _ = Box::from_raw(actor_ptr); // ALLOCATOR-PAIRING: GlobalAlloc
     }
 }
 
@@ -1259,7 +1260,7 @@ fn wasm_cooperate_returns_cancel_when_mailbox_closes_during_dispatch() {
         );
 
         let actor = stub_dispatch_actor(mailbox, close_wasm_mailbox_then_cooperate_dispatch);
-        let actor_ptr = Box::into_raw(actor);
+        let actor_ptr = Box::into_raw(actor); // ALLOCATOR-PAIRING: GlobalAlloc
         crate::scheduler_wasm::sched_enqueue(actor_ptr.cast::<crate::scheduler_wasm::HewActor>());
         crate::scheduler_wasm::hew_sched_run();
 
@@ -1276,7 +1277,7 @@ fn wasm_cooperate_returns_cancel_when_mailbox_closes_during_dispatch() {
         );
 
         crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
-        drop(Box::from_raw(actor_ptr));
+        drop(Box::from_raw(actor_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     crate::scheduler_wasm::hew_sched_shutdown();
@@ -1489,7 +1490,7 @@ fn wasm_activation_transitions_actor_to_crashed_when_dispatch_stamps_error_code(
         assert!(!mailbox.is_null());
 
         let actor = stub_dispatch_actor(mailbox.cast(), stamp_then_panic_dispatch);
-        let actor_ptr: *mut HewActor = Box::into_raw(actor);
+        let actor_ptr: *mut HewActor = Box::into_raw(actor); // ALLOCATOR-PAIRING: GlobalAlloc
 
         let payload: i32 = 0;
         let rc = crate::mailbox_wasm::hew_mailbox_send(
@@ -1522,7 +1523,7 @@ fn wasm_activation_transitions_actor_to_crashed_when_dispatch_stamps_error_code(
              the dispatch unwind comes with a non-zero error_code"
         );
 
-        let _ = Box::from_raw(actor_ptr);
+        let _ = Box::from_raw(actor_ptr); // ALLOCATOR-PAIRING: GlobalAlloc
         crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
     }
 
@@ -1541,7 +1542,7 @@ fn wasm_actor_panic_stamps_101_and_unwinds_to_scheduler() {
         assert!(!mailbox.is_null());
 
         let actor = stub_dispatch_actor(mailbox.cast(), hew_panic_wasm_actor_dispatch);
-        let actor_ptr: *mut HewActor = Box::into_raw(actor);
+        let actor_ptr: *mut HewActor = Box::into_raw(actor); // ALLOCATOR-PAIRING: GlobalAlloc
 
         let payload: i32 = 0;
         let rc = crate::mailbox_wasm::hew_mailbox_send(
@@ -1572,7 +1573,7 @@ fn wasm_actor_panic_stamps_101_and_unwinds_to_scheduler() {
             "WASM activation must catch actor panic unwinds instead of terminating the process"
         );
 
-        let _ = Box::from_raw(actor_ptr);
+        let _ = Box::from_raw(actor_ptr); // ALLOCATOR-PAIRING: GlobalAlloc
         crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
     }
 
@@ -1591,7 +1592,7 @@ fn wasm_heaps_exceeded_uses_trap_with_code_bridge_to_crash_actor() {
         assert!(!mailbox.is_null());
 
         let actor = stub_dispatch_actor(mailbox.cast(), hew_trap_with_code_dispatch);
-        let actor_ptr: *mut HewActor = Box::into_raw(actor);
+        let actor_ptr: *mut HewActor = Box::into_raw(actor); // ALLOCATOR-PAIRING: GlobalAlloc
 
         let payload: i32 = 0;
         let rc = crate::mailbox_wasm::hew_mailbox_send(
@@ -1619,7 +1620,7 @@ fn wasm_heaps_exceeded_uses_trap_with_code_bridge_to_crash_actor() {
         );
         assert_eq!(state, HewActorState::Crashed as i32);
 
-        let _ = Box::from_raw(actor_ptr);
+        let _ = Box::from_raw(actor_ptr); // ALLOCATOR-PAIRING: GlobalAlloc
         crate::mailbox_wasm::hew_mailbox_free(mailbox.cast());
     }
 

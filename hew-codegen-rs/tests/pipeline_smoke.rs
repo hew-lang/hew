@@ -19,7 +19,12 @@ fn emit_ll_for_source(src: &str, module_name: &str) -> String {
         "type-check errors: {:#?}",
         tc_output.errors
     );
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         output.diagnostics.is_empty(),
         "hir diagnostics: {:?}",
@@ -52,7 +57,12 @@ fn pipeline_rejects_nested_named_type_before_codegen() {
     let parsed = hew_parser::parse("fn f(x: (Foo, i64)) -> (Foo, i64) { return x; }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 
     let verify = verify_hir(&output.module);
@@ -80,7 +90,12 @@ fn pipeline_accepts_bool_literal_return() {
     let parsed = hew_parser::parse("fn main() -> bool { true }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let verify = verify_hir(&output.module);
     assert!(
         output.diagnostics.is_empty() && verify.is_empty(),
@@ -105,7 +120,12 @@ fn pipeline_accepts_float_literal_in_mir() {
     let parsed = hew_parser::parse("fn main() -> f64 { 1.5 }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let verify = verify_hir(&output.module);
     assert!(
         output.diagnostics.is_empty() && verify.is_empty(),
@@ -134,7 +154,12 @@ fn pipeline_accepts_user_fn_call_via_call_terminator() {
     );
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let verify = verify_hir(&output.module);
     assert!(
         output.diagnostics.is_empty() && verify.is_empty(),

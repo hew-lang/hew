@@ -74,7 +74,12 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
         std::process::exit(1);
     }
 
-    let lowered = lower_program(&result.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let lowered = lower_program(
+        &result.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
 
     // Filter out NotYetImplemented diagnostics from non-machine items —
     // Lane A only lowers machines; functions are also lowered if present.
@@ -252,7 +257,7 @@ fn print_mermaid_hir(machine: &HirMachineDecl) {
             } else {
                 &tr.target_state
             };
-            let label = if tr.has_guard {
+            let label = if tr.guard.is_some() {
                 format!("{} [guard]", tr.event_name)
             } else {
                 tr.event_name.clone()
@@ -347,7 +352,7 @@ fn print_dot_hir(machine: &HirMachineDecl) {
             } else {
                 &tr.target_state
             };
-            let label = if tr.has_guard {
+            let label = if tr.guard.is_some() {
                 format!("{} [guard]", tr.event_name)
             } else {
                 tr.event_name.clone()

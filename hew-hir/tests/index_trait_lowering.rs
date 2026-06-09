@@ -15,7 +15,12 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
         "type errors: {:?}",
         tc_output.errors
     );
-    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 fn function_tail<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a hew_hir::HirExpr {

@@ -49,7 +49,12 @@ fn emit_ll_with_checker(source: &str, module_name: &str) -> String {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let pipeline = hew_mir::lower_hir_module(&output.module);
     let tmp = std::env::temp_dir().join(format!("hew-a7-{module_name}"));
     std::fs::create_dir_all(&tmp).expect("create out_dir");
@@ -79,7 +84,12 @@ fn try_emit_ll(source: &str, module_name: &str) -> Result<String, String> {
     }
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let pipeline = hew_mir::lower_hir_module(&output.module);
     let tmp = std::env::temp_dir().join(format!("hew-a7-{module_name}"));
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;

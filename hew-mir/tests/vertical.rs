@@ -53,7 +53,12 @@ fn linear_unconsumed_single_exit_fires_must_consume() {
         "parse errors: {:?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     // No HIR-validation diagnostics: `Txn` has a consuming method.
     assert!(
         !output.diagnostics.iter().any(|d| matches!(
@@ -113,7 +118,12 @@ fn linear_no_consuming_methods_declared_fires_hir_diagnostic() {
         "parse errors: {:?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let diag = output.diagnostics.iter().find(|d| {
         matches!(d.kind, HirDiagnosticKind::LinearNoConsumingMethods { ref name } if name == "Bad")
     });
@@ -141,7 +151,12 @@ fn linear_with_consuming_method_emits_no_diagnostic() {
         "parse errors: {:?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         !output
             .diagnostics
@@ -169,7 +184,12 @@ fn resource_missing_close_method_fires_hir_diagnostic() {
         "parse errors: {:?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let diag = output.diagnostics.iter().find(|d| {
         matches!(d.kind, HirDiagnosticKind::ResourceMissingClose { ref name } if name == "Sock")
     });
@@ -197,7 +217,12 @@ fn resource_with_close_method_emits_no_diagnostic() {
         "parse errors: {:?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         !output
             .diagnostics
@@ -211,7 +236,12 @@ fn resource_with_close_method_emits_no_diagnostic() {
 fn pipeline(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let verify = verify_hir(&output.module);
     assert!(verify.is_empty(), "{verify:?}");
@@ -432,7 +462,12 @@ fn unknown_user_type_rejected_at_mir_boundary() {
     // MIR boundary so they cannot reach the backend.
     let parsed = hew_parser::parse("fn f(x: Foo) -> Foo { return x; }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     // HIR has no error — type annotations resolve to Named for any identifier.
     // The fail-closed boundary is MIR.
     assert!(
@@ -455,7 +490,12 @@ fn unknown_user_type_rejected_at_mir_boundary() {
 fn nested_tuple_user_type_rejected_at_mir_boundary() {
     let parsed = hew_parser::parse("fn f(x: (Foo, i64)) -> (Foo, i64) { return x; }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 
     let pipeline = lower_hir_module(&output.module);
@@ -473,7 +513,12 @@ fn nested_tuple_user_type_rejected_at_mir_boundary() {
 fn nested_array_user_type_rejected_at_mir_boundary() {
     let parsed = hew_parser::parse("fn f(x: [Foo; 2]) -> [Foo; 2] { return x; }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 
     let pipeline = lower_hir_module(&output.module);
@@ -609,7 +654,12 @@ fn lower_unsupported_binop_fails_closed_with_diagnostic() {
     ] {
         let parsed = hew_parser::parse(src);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        let output = lower_program(
+            &parsed.program,
+            &TypeCheckOutput::default(),
+            &ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
         assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
         let pipeline = lower_hir_module(&output.module);
         assert!(
@@ -627,7 +677,12 @@ fn divide_lowers_cleanly_with_trap_edges() {
     // NotYetImplemented diagnostic and produce a DivideByZero trap edge.
     let parsed = hew_parser::parse("fn main() -> i64 { let r = 1 / 2; 0 }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         output.diagnostics.is_empty(),
         "Divide should parse + lower cleanly through HIR: {:?}",
@@ -997,7 +1052,12 @@ fn linear_consumed_in_both_branches_accepted() {
     ";
     let parsed = hew_parser::parse(src);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         !output.diagnostics.iter().any(|d| matches!(
             d.kind,
@@ -1046,7 +1106,12 @@ fn linear_consumed_only_in_then_branch_rejects() {
     ";
     let parsed = hew_parser::parse(src);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let p = lower_hir_module(&output.module);
     let func = p
         .checked_mir

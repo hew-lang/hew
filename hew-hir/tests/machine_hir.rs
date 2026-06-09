@@ -13,7 +13,12 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
         "parse errors: {:?}",
         parsed.errors
     );
-    lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 fn first_machine_emit(expr: &HirExpr) -> Option<(usize, &[(String, HirExpr)])> {

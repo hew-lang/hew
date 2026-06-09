@@ -42,7 +42,12 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         "type-check errors: {:#?}",
         tc_output.errors
     );
-    let lowered = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let lowered = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",

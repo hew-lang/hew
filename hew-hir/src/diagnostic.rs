@@ -286,6 +286,18 @@ pub enum HirDiagnosticKind {
         /// registry).
         cap: usize,
     },
+    /// A generic record init site has no `record_init_type_args` entry
+    /// despite the checker having accepted the expression (the span
+    /// appears in `expr_types`).  This signals a missed re-record path
+    /// in the checker: the type arguments exist at the source level but
+    /// were never written to the side-table.  Fail-closed:
+    /// `unwrap_or_default()` on the missing layout would silently
+    /// produce `Named { args: [] }` — an under-instantiated shape that
+    /// downstream MIR/codegen would treat as monomorphic.
+    RecordLayoutMissing {
+        /// The user-declared record name at the offending init site.
+        record: String,
+    },
     /// A generic record's substituted field shape mentions the same
     /// origin record with *different* concrete type arguments — e.g.
     /// `pub type Node<T> { next: Box<Node<int>> }` instantiated at
@@ -317,5 +329,211 @@ pub enum HirDiagnosticKind {
         fn_name: String,
         /// The intrinsic key that was not found in the catalog.
         intrinsic_key: String,
+    },
+    /// An imported `impl` block's method body calls a private helper function
+    /// defined in the same module as the impl. Private functions are not
+    /// exported across module boundaries, so the body cannot be lowered.
+    /// The dependency chain must be resolved (e.g. by making the helper `pub`,
+    /// moving the logic inline, or restructuring the module) before cross-module
+    /// dispatch on this method will work.
+    ///
+    /// Emitted instead of a bare `UnresolvedSymbol` so the diagnostic
+    /// identifies the root cause at the module boundary.
+    ImportedImplBodyMissingPrivateHelper {
+        /// Short name of the module that owns the impl block (e.g. `"shapes"`).
+        module: String,
+        /// Name of the private function that the method body calls.
+        helper_fn: String,
+    },
+    /// Target architecture does not support coroutines (actors/tasks). The
+    /// program uses a coroutine-dependent construct (actor decl, task spawn,
+    /// fork, async block, await) but the target arch is not in the set
+    /// `{x86_64, aarch64}` where `coro_switch`/`coro_init` are implemented.
+    /// Fail-closed per slepp A222: compile-time diagnostic instead of
+    /// runtime panic at `hew-runtime/src/coro.rs:391` or `:492`.
+    TargetCoroutineUnsupported {
+        /// Target architecture name (e.g. `"riscv64"`).
+        target_arch: String,
+        /// User-visible construct name (e.g. `"actor decl"`, `"task spawn"`).
+        construct: String,
+    },
+    /// Blocking channel recv is not supported on wasm32. The program calls
+    /// `.recv()` on a channel (or the builtin `hew_channel_recv*`) with target
+    /// `wasm32`, which would reach `unreachable!` at
+    /// `hew-runtime/src/lib.rs:378` or `:391`. Fail-closed per slepp A222:
+    /// compile-time diagnostic instead of runtime panic. Non-blocking
+    /// `.try_recv()` is allowed on wasm32.
+    BlockingChannelRecvUnsupportedOnWasm {
+        /// User-visible construct name (e.g. `".recv()"`).
+        construct: String,
+    },
+    /// Spawned task/fork callee has non-unit signature. The spawned
+    /// function must have zero args and unit return type because task result
+    /// propagation is not yet wired. Fail-closed per FC-P1-A1 audit.
+    TaskSpawnSignatureUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+    },
+    /// Spawned task/fork callee is not a direct module function or supported
+    /// closure. The spawned expression must be a direct function call or
+    /// zero-arg unit closure. Fail-closed per FC-P1-A1 audit.
+    TaskSpawnCalleeUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+    },
+    /// Spawned closure has params, args, or non-unit result. The spawned
+    /// closure must be zero-arg and return unit because value/result task
+    /// propagation remains fail-closed. Fail-closed per FC-P1-A1 audit.
+    SpawnedClosureSignatureUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+    },
+    /// Spawned closure captures non-Send value. All captured values must be
+    /// Send for safe task migration. Fail-closed per FC-P1-A1 audit.
+    SpawnedClosureNonSendCapture {
+        /// Site identifier for error reporting.
+        site: SiteId,
+        /// Name of the non-Send captured value.
+        capture_name: String,
+    },
+    /// Fork block body is not supported shape. The fork block must contain
+    /// exactly one statement that is a direct function call with zero args
+    /// and unit return. Fail-closed per FC-P1-A1 audit.
+    ForkBlockBodyUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+        /// Human-readable reason for rejection (e.g. "empty", "multi-statement").
+        reason: String,
+    },
+    /// Deadline has non-empty body. The `after(...)` deadline must have an
+    /// empty body in v0.5; deadline body execution is not yet wired.
+    /// Fail-closed per FC-P1-A1 audit.
+    DeadlineBodyUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+    },
+    /// Awaiting non-unit task result. The awaited task must return unit
+    /// because task result value propagation is not yet wired. Fail-closed
+    /// per FC-P1-A1 audit.
+    AwaitTaskResultUnsupported {
+        /// Site identifier for error reporting.
+        site: SiteId,
+    },
+    /// Pool supervisor child accessor is not yet implemented. The program
+    /// performs a field access on a supervisor-typed handle (`sup.child_name`)
+    /// where the named child is declared with `pool name: Type` rather than
+    /// `child name: Type`. Routing pool slots requires the
+    /// `hew_supervisor_pool_route` ABI call which is scheduled for v0.6;
+    /// reaching the MIR fail-closed arm at `hew-mir/src/lower.rs:4413` from
+    /// the runtime would mean a compile that should have rejected the program.
+    /// Fail-closed per slepp A222: compile-time diagnostic instead of
+    /// `unreachable`/`NotYetImplemented` trap at MIR lowering.
+    SupervisorPoolChildAccessorUnsupported {
+        /// Supervisor type name (e.g. `"Pool"`).
+        supervisor: String,
+        /// Pool child name being accessed (e.g. `"worker"`).
+        child: String,
+    },
+    /// Nested supervisor child accessor is not yet implemented. The program
+    /// performs a field access on a supervisor-typed handle (`root.sub`)
+    /// where the named child is itself a supervisor (rather than an actor).
+    /// Multi-segment supervisor dotted access requires the
+    /// `hew_supervisor_nested_get` ABI call which is scheduled for v0.6;
+    /// reaching the MIR fail-closed arm at `hew-mir/src/lower.rs:4443` from
+    /// the runtime would mean a compile that should have rejected the program.
+    /// Fail-closed per slepp A222: compile-time diagnostic instead of
+    /// `unreachable`/`NotYetImplemented` trap at MIR lowering.
+    NestedSupervisorAccessorUnsupported {
+        /// Outer supervisor type name (e.g. `"RootSupervisor"`).
+        supervisor: String,
+        /// Nested-supervisor child name being accessed (e.g. `"sub"`).
+        child: String,
+        /// Inner supervisor type name (e.g. `"SubSupervisor"`).
+        nested_supervisor: String,
+    },
+    /// Fire-and-forget actor send (`actor.send(msg)`) targeted a receive
+    /// handler that returns a non-unit type. Bare `.send()` discards any
+    /// reply value; non-unit handlers therefore require the request/reply
+    /// form (`await actor.ask(msg)` or call-syntax with `await`).
+    ///
+    /// Fail-closed per slepp A222: surfaced at HIR pre-pass instead of the
+    /// MIR defense-in-depth diagnostic at `hew-mir/src/lower.rs:8477`
+    /// (`ActorSendRequiresUnitHandler`). Mirrors the FC-P0 target-gate
+    /// pattern.
+    ActorSendRequiresUnitHandler {
+        /// Actor type name (e.g. `"Counter"`).
+        actor_name: String,
+        /// Receive handler name (e.g. `"compute"`).
+        method_name: String,
+        /// Handler return type, rendered for the diagnostic note.
+        return_ty: String,
+    },
+    /// A binary operator was used in value position but the MIR backend has
+    /// no lowering for it. Currently covers `..` and `..=` range operators
+    /// outside of `for` loops or slice indexing. Closed at HIR pre-pass per
+    /// FC-P1-D (audit site `hew-mir/src/lower.rs:5336`) so users see a
+    /// compile-time diagnostic instead of MIR's `NotYetImplemented`
+    /// late-stage surprise. LESSONS `boundary-fail-closed`.
+    BinaryOperatorUnsupportedInMir {
+        /// Source-form operator (e.g. `".."`, `"..="`).
+        op: String,
+    },
+    /// Division (`/`) or modulo (`%`) on a platform-sized signed integer
+    /// (`isize`). The `signed-MIN / -1` trap guard requires emitting the
+    /// MIN constant for the target's pointer width, which the current MIR
+    /// pipeline cannot produce because it does not yet carry a
+    /// `TargetSpec`. Closed at HIR pre-pass per FC-P1-D (audit site
+    /// `hew-mir/src/lower.rs:5564`). When MIR gains target threading the
+    /// gate can be lifted. LESSONS `boundary-fail-closed`.
+    PlatformSizedDivRemUnsupported {
+        /// Source-form operator (`"/"` or `"%"`).
+        op: String,
+    },
+    /// Shift (`<<` / `>>`) on a platform-sized integer (`isize` / `usize`).
+    /// The out-of-range trap requires emitting the bit-width constant for
+    /// the target's pointer width, which the current MIR pipeline cannot
+    /// produce (no `TargetSpec`). Closed at HIR pre-pass per FC-P1-D
+    /// (audit site `hew-mir/src/lower.rs:5696`). LESSONS
+    /// `boundary-fail-closed`.
+    PlatformSizedShiftUnsupported {
+        /// Source-form operator (`"<<"` or `">>"`).
+        op: String,
+    },
+    /// Call expression resolves to an item that has no MIR body and no
+    /// runtime-ABI lowering. Lifted from MIR `hew-mir/src/lower.rs:4194`
+    /// per the FC-P1-B audit so the diagnostic surfaces during HIR lowering
+    /// instead of after the MIR producer has already begun emitting
+    /// instructions for the surrounding function.
+    ///
+    /// Fires when a `HirExprKind::Call` callee is
+    /// `BindingRef { resolved: ResolvedRef::Item(_), name }` and `name`
+    /// is not in the module's callable set
+    /// (stdlib catalog + monomorphic + generic user functions + extern fns +
+    /// monomorphisation mangled names + recognised runtime-ABI bridges
+    /// such as `supervisor_stop` and `hew_duplex_*`). In practice this is
+    /// defense-in-depth: the upstream fn-registry seeding usually keeps
+    /// `Item`-resolved callees inside that set. A surface program that
+    /// reaches this gate is one where the producer-bridge between checker
+    /// and MIR has drifted.
+    CallableUnsupportedInMir {
+        /// The unresolved callee name as it appeared at the call site.
+        name: String,
+    },
+    /// Call expression with an indirect / higher-order / unresolved callee
+    /// whose static type is callable (`ResolvedTy::Function` or
+    /// `ResolvedTy::Closure`) but for which no MIR dispatch path exists.
+    /// Lifted from MIR `hew-mir/src/lower.rs:4236` per the FC-P1-B audit.
+    ///
+    /// Predicate (intentionally narrow to avoid blocking valid programs
+    /// such as closure-binding invocations `let f = |x| x + 1; f(2)`):
+    /// callee is `BindingRef { resolved: ResolvedRef::Unresolved, .. }`
+    /// and `callee.ty` is `Function` / `Closure`. Valid closure-binding
+    /// calls reach `BindingRef { resolved: Binding(_), .. }` and are
+    /// lowered by MIR's `CallClosure` arm, so they do not trip this gate.
+    IndirectCallUnsupported {
+        /// User-visible callee description (e.g. `"unresolved binding `foo`"`).
+        callee: String,
+        /// Rendered callee type for the diagnostic message.
+        callee_ty: String,
     },
 }

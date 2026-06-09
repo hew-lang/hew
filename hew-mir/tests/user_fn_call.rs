@@ -22,7 +22,12 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     lower_hir_module(&output.module)
 }
 
@@ -173,7 +178,12 @@ fn unresolved_call_emits_not_yet_implemented_not_call_terminator() {
         "parse errors: {:#?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let pipeline = hew_mir::lower_hir_module(&output.module);
 
     // Must produce NotYetImplemented for the unresolved call.

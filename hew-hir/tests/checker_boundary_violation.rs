@@ -69,7 +69,12 @@ fn poisoned_expr_types_emits_checker_boundary_violation() {
     let mut tc = TypeCheckOutput::default();
     tc.expr_types.insert(span_key, Ty::Var(TypeVar(0)));
 
-    let lower_output = lower_program(&parsed.program, &tc, &ResolutionCtx);
+    let lower_output = lower_program(
+        &parsed.program,
+        &tc,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
 
     // The boundary violation diagnostic must be present.
     let violations: Vec<_> = lower_output
@@ -96,7 +101,12 @@ fn poisoned_expr_types_emits_checker_boundary_violation() {
 
     // into_result() must return Err: a CheckerBoundaryViolation must not be
     // silently swallowed at the public boundary.
-    let lower_output2 = lower_program(&parsed.program, &tc, &ResolutionCtx);
+    let lower_output2 = lower_program(
+        &parsed.program,
+        &tc,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         lower_output2.into_result().is_err(),
         "into_result() must return Err when CheckerBoundaryViolation is present"

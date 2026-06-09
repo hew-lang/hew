@@ -208,7 +208,7 @@ fn monotonic_time_ns() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_crash_stats_new() -> *mut CrashStats {
     let stats = Box::new(CrashStats::new());
-    Box::into_raw(stats)
+    Box::into_raw(stats) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Record a crash in the statistics, updating counters and timestamps.
@@ -269,7 +269,7 @@ pub unsafe extern "C" fn hew_crash_stats_free(stats: *mut CrashStats) {
     }
 
     // SAFETY: Caller guarantees stats was created by hew_crash_stats_new.
-    drop(unsafe { Box::from_raw(stats) });
+    drop(unsafe { Box::from_raw(stats) }); // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Add a crash report to the global crash log.

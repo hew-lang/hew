@@ -5,6 +5,7 @@
 //! and exhaustive pattern match checking.
 
 pub mod actor_protocol;
+pub mod builtin_enums;
 pub mod builtin_names;
 pub mod builtin_type;
 pub mod check;

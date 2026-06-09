@@ -21,7 +21,12 @@ fn pipeline_for(path: &str) -> hew_mir::IrPipeline {
         "parse errors for {path}: {:?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     lower_hir_module(&output.module)
 }
 

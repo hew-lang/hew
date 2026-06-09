@@ -157,7 +157,12 @@ fn lower_file_to_mir(
         );
     })?;
 
-    let lower_output = hew_hir::lower_program(&state.program, &tco, &hew_hir::ResolutionCtx);
+    let lower_output = hew_hir::lower_program(
+        &state.program,
+        &tco,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let mut hir_diagnostics = lower_output.diagnostics;
     // Defense-in-depth: the verifier may emit a second `NotYetImplemented`
     // for any `Unsupported` placeholder that lacked a prior lowerer
@@ -285,7 +290,12 @@ pub(crate) fn compile_native_from_program(
         );
     })?;
 
-    let lower_output = hew_hir::lower_program(&state.program, &tco, &hew_hir::ResolutionCtx);
+    let lower_output = hew_hir::lower_program(
+        &state.program,
+        &tco,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let mut hir_diagnostics = lower_output.diagnostics;
     let verifier_diags = hew_hir::verify_hir(&lower_output.module);
     for diag in verifier_diags {

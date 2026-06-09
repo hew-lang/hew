@@ -23,7 +23,12 @@ use hew_types::TypeCheckOutput;
 fn emit_ll(source: &str, module_name: &str) -> String {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         output.diagnostics.is_empty() && verify_hir(&output.module).is_empty(),
         "hir: {:?} verify: {:?}",

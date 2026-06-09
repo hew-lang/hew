@@ -290,6 +290,26 @@ pub struct HewTask {
     detached_on_cancel: bool,
     /// Captured environment pointer (Rc-allocated) for scope tasks.
     pub env_ptr: *mut c_void,
+    /// Compiler-generated cleanup function invoked when a `Ready` or
+    /// `Suspended` task is cancelled before its `task_fn` body can run drop
+    /// elaboration. Called with `env_ptr` as argument before
+    /// `mark_done(Cancelled)`. If null, cancellation skips user-level cleanup
+    /// (`env_ptr` deallocation still occurs via `hew_task_free → hew_rc_drop`).
+    ///
+    /// # Contract
+    ///
+    /// The callback receives a **borrowed** `env_ptr`; it must NOT release the
+    /// Rc allocation itself — that is done by `hew_task_free`. The callback
+    /// runs at most once: `run_cancel_cleanup` clears the field before invoking
+    /// it to prevent re-entrancy on double-cancel.
+    ///
+    /// The `"C-unwind"` ABI allows Rust panics originating inside the callback
+    /// to propagate through the boundary and be caught by the
+    /// `std::panic::catch_unwind` in `run_cancel_cleanup`. If the callback
+    /// panics, the panic payload is logged via `set_last_error` (with prefix
+    /// `"task_scope cancel_cleanup_fn panicked:"`) and cancellation continues
+    /// — the panic is **not** re-raised.
+    pub cancel_cleanup_fn: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
 }
 
 struct HewTaskScopeDeadline {
@@ -471,6 +491,49 @@ impl HewTask {
         };
         self.mark_done(error);
     }
+
+    /// Invoke and clear `cancel_cleanup_fn`, if registered and `env_ptr` is non-null.
+    ///
+    /// Clears the field **before** calling the function to prevent re-entrancy
+    /// on double-cancel. Safe to call when `env_ptr` is null — the call is
+    /// skipped in that case.
+    ///
+    /// If the callback panics, the panic payload is extracted and logged via
+    /// `set_last_error` (prefix `"task_scope cancel_cleanup_fn panicked:"`).
+    /// The panic is caught and **not** re-raised; cancellation continues.
+    fn run_cancel_cleanup(&mut self) {
+        if let Some(f) = self.cancel_cleanup_fn.take() {
+            if !self.env_ptr.is_null() {
+                let env_ptr = self.env_ptr;
+                // Wrapped in `catch_unwind` so that a panic in `cancel_cleanup_fn`
+                // cannot abort the process or propagate through the cancel path.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // SAFETY: env_ptr is valid while the task is live; cancel_cleanup_fn
+                    // is a valid extern "C-unwind" fn pointer (set at registration,
+                    // cleared above); receives a borrowed reference and must not free
+                    // the Rc allocation (that happens in hew_task_free → hew_rc_drop).
+                    unsafe { f(env_ptr) };
+                }));
+                if let Err(panic_payload) = result {
+                    let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "non-string panic payload".to_string()
+                    };
+                    let error_msg = format!("task_scope cancel_cleanup_fn panicked: {msg}");
+                    crate::set_last_error(error_msg.clone());
+                    #[cfg(test)]
+                    {
+                        *LAST_CANCEL_CLEANUP_PANIC_MSG
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error_msg);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn take_detached_task_handles(scope: &mut HewTaskScope) -> Vec<std::thread::JoinHandle<()>> {
@@ -542,6 +605,7 @@ pub unsafe extern "C" fn hew_task_new() -> *mut HewTask {
         thread_handle: None,
         detached_on_cancel: false,
         env_ptr: ptr::null_mut(),
+        cancel_cleanup_fn: None,
     });
     Box::into_raw(task)
 }
@@ -581,6 +645,41 @@ pub unsafe extern "C" fn hew_task_set_env(task: *mut HewTask, env: *mut c_void) 
     // SAFETY: caller guarantees `task` is a valid, non-null pointer.
     let t = unsafe { &mut *task };
     t.env_ptr = env;
+}
+
+/// Register a cancel-cleanup function for a task.
+///
+/// When the task is in `Ready` or `Suspended` state and is cancelled (via
+/// [`hew_task_scope_cancel`] or [`hew_task_scope_cancel_one`]), the runtime
+/// calls `cleanup_fn(env_ptr)` before transitioning the task to `Done`.
+/// This lets compiler-generated code run drop elaboration for `@resource` and
+/// `@linear` captures that would otherwise only execute inside `task_fn`.
+///
+/// Pass `null` to clear a previously registered function.
+///
+/// # Contract
+///
+/// - The callback receives a **borrowed** `env_ptr`; it must not release the
+///   Rc allocation (that is done by `hew_task_free → hew_rc_drop`).
+/// - The callback is invoked at most once (the field is cleared before the
+///   call) even under double-cancel.
+/// - The callback is skipped if `env_ptr` is null at cancellation time.
+/// - The `"C-unwind"` ABI is required so that Rust panics from the callback
+///   can be caught by the `catch_unwind` inside `run_cancel_cleanup`. If the
+///   callback panics, the payload is logged via `set_last_error` (prefix
+///   `"task_scope cancel_cleanup_fn panicked:"`) and cancellation continues.
+///
+/// # Safety
+///
+/// `task` must be a valid pointer returned by [`hew_task_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_set_cancel_cleanup_fn(
+    task: *mut HewTask,
+    cleanup_fn: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+) {
+    cabi_guard!(task.is_null());
+    // SAFETY: caller guarantees `task` is a valid, non-null pointer.
+    unsafe { (*task).cancel_cleanup_fn = cleanup_fn };
 }
 
 /// Fetch the environment pointer associated with a task.
@@ -1254,6 +1353,7 @@ pub unsafe extern "C" fn hew_task_scope_cancel(scope: *mut HewTaskScope) {
         let t = unsafe { &mut *cur };
         let cur_state = t.load_state();
         if cur_state == HewTaskState::Ready || cur_state == HewTaskState::Suspended {
+            t.run_cancel_cleanup();
             t.mark_done(HewTaskError::Cancelled);
             s.completed_count += 1;
         }
@@ -1365,6 +1465,7 @@ pub unsafe extern "C" fn hew_task_scope_cancel_one(
             unsafe {
                 cancel_token_cancel_if_present(t.cancel_token, HewTaskError::Cancelled as i32);
             };
+            t.run_cancel_cleanup();
             t.mark_done(HewTaskError::Cancelled);
             s.completed_count += 1;
         }
@@ -1566,6 +1667,13 @@ fn should_fail_task_reaper_spawn() -> bool {
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
+
+/// Test-only: captures the message passed to `set_last_error` when
+/// `cancel_cleanup_fn` panics. Written by `run_cancel_cleanup` on panic;
+/// read by `cancel_cleanup_fn_panic_does_not_abort_process`.
+#[cfg(test)]
+static LAST_CANCEL_CLEANUP_PANIC_MSG: std::sync::Mutex<Option<String>> =
+    std::sync::Mutex::new(None);
 
 #[cfg(test)]
 mod tests {
@@ -2062,11 +2170,9 @@ mod tests {
         // cancel-reachable exits don't pass through a consume site (see
         // LinearCaptureCancellable, HEW-SPEC-2026 §4.3); @resource close
         // semantics rely on the task body reaching its drop elaboration.
-        // The deeper fix (running per-task drop dispatch on the cancel
-        // path) is tracked alongside the broader cancellation-token
-        // vocabulary in HEW-FUTURE §1.2; this regression test pins the
-        // current contract so a future change either upgrades it or has
-        // to acknowledge it.
+        // When cancel_cleanup_fn IS registered (see the companion tests
+        // below), cleanup fires at cancel time. When it is NOT registered
+        // (this test), only the Rc deallocation fires at destroy time.
         use std::sync::atomic::AtomicUsize;
 
         static ENV_DROPS: AtomicUsize = AtomicUsize::new(0);
@@ -2107,6 +2213,232 @@ mod tests {
                 "env_ptr drop must fire exactly once when the scope reclaims the cancelled task"
             );
         }
+    }
+
+    /// Regression test: when `cancel_cleanup_fn` is registered, scope-wide
+    /// cancel fires it for every Ready and Suspended task before transitioning
+    /// them to `Done(Cancelled)`. This exercises the resource-reclamation path
+    /// described in the `cleanup-all-exits` LESSONS row.
+    ///
+    /// Shape: each `cleanup_fn` simulates dropping a Vec by incrementing a static
+    /// counter, matching the "assert `Vec::drop` ran" contract in the brief.
+    #[test]
+    fn scope_cancel_fires_cancel_cleanup_fn_for_ready_and_suspended_tasks() {
+        use std::sync::atomic::AtomicUsize;
+
+        static CLEANUPS: AtomicUsize = AtomicUsize::new(0);
+        static ENV_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        /// Simulates the compiler-generated cancel-cleanup: drops a
+        /// heap-allocated resource (represented here as a counter bump).
+        unsafe extern "C-unwind" fn resource_cleanup(_env: *mut c_void) {
+            CLEANUPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        unsafe extern "C" fn count_env_drop(_: *mut u8) {
+            ENV_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        CLEANUPS.store(0, Ordering::SeqCst);
+        ENV_DROPS.store(0, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+
+            // Task 1: Ready (never dispatched to a thread).
+            let t_ready = hew_task_new();
+            hew_task_set_env(
+                t_ready,
+                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+            );
+            hew_task_set_cancel_cleanup_fn(t_ready, Some(resource_cleanup));
+            hew_task_scope_spawn(scope, t_ready);
+
+            // Task 2: Suspended (simulates a cooperatively-suspended task).
+            let t_suspended = hew_task_new();
+            hew_task_set_env(
+                t_suspended,
+                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+            );
+            hew_task_set_cancel_cleanup_fn(t_suspended, Some(resource_cleanup));
+            hew_task_scope_spawn(scope, t_suspended);
+            (*t_suspended).store_state(HewTaskState::Suspended, Ordering::Release);
+
+            // Scope cancel must call cleanup before marking tasks Done.
+            hew_task_scope_cancel(scope);
+
+            assert_eq!(
+                CLEANUPS.load(Ordering::SeqCst),
+                2,
+                "cancel_cleanup_fn must fire once per Ready/Suspended task on scope cancel"
+            );
+            assert_eq!((*t_ready).load_state(), HewTaskState::Done);
+            assert_eq!((*t_ready).error, HewTaskError::Cancelled);
+            assert_eq!((*t_suspended).load_state(), HewTaskState::Done);
+            assert_eq!((*t_suspended).error, HewTaskError::Cancelled);
+
+            // env_ptr Rc drop fires at destroy time (not at cancel time).
+            assert_eq!(ENV_DROPS.load(Ordering::SeqCst), 0);
+            hew_task_scope_destroy(scope);
+            assert_eq!(
+                ENV_DROPS.load(Ordering::SeqCst),
+                2,
+                "env_ptr must be reclaimed for both tasks at destroy time"
+            );
+        }
+    }
+
+    /// `cancel_cleanup_fn` fires on per-task cancel via `cancel_one`.
+    #[test]
+    fn cancel_one_fires_cancel_cleanup_fn_for_ready_task() {
+        use std::sync::atomic::AtomicUsize;
+
+        static CLEANUPS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C-unwind" fn resource_cleanup_one(_env: *mut c_void) {
+            CLEANUPS.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn noop_drop(_: *mut u8) {}
+
+        CLEANUPS.store(0, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_set_cancel_cleanup_fn(task, Some(resource_cleanup_one));
+            // env_ptr with a non-null pointer so cleanup_fn is invoked.
+            hew_task_set_env(
+                task,
+                crate::rc::hew_rc_new(ptr::null(), 0, Some(noop_drop)).cast(),
+            );
+            hew_task_scope_spawn(scope, task);
+
+            let ret = hew_task_scope_cancel_one(scope, task);
+            assert_eq!(ret, 0);
+            assert_eq!((*task).load_state(), HewTaskState::Done);
+            assert_eq!((*task).error, HewTaskError::Cancelled);
+            assert_eq!(
+                CLEANUPS.load(Ordering::SeqCst),
+                1,
+                "cancel_cleanup_fn must fire on cancel_one of a Ready task"
+            );
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    /// Double-cancel must not invoke `cancel_cleanup_fn` twice (idempotence).
+    #[test]
+    fn cancel_cleanup_fn_fires_at_most_once_on_double_cancel() {
+        use std::sync::atomic::AtomicUsize;
+
+        static CLEANUPS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C-unwind" fn resource_cleanup_double(_env: *mut c_void) {
+            CLEANUPS.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn noop_drop2(_: *mut u8) {}
+
+        CLEANUPS.store(0, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_set_cancel_cleanup_fn(task, Some(resource_cleanup_double));
+            hew_task_set_env(
+                task,
+                crate::rc::hew_rc_new(ptr::null(), 0, Some(noop_drop2)).cast(),
+            );
+            hew_task_scope_spawn(scope, task);
+
+            // First cancel: fires cleanup.
+            hew_task_scope_cancel(scope);
+            assert_eq!(CLEANUPS.load(Ordering::SeqCst), 1);
+
+            // Second cancel: task is already Done — cleanup must not fire again.
+            hew_task_scope_cancel(scope);
+            assert_eq!(
+                CLEANUPS.load(Ordering::SeqCst),
+                1,
+                "cancel_cleanup_fn must not fire on double-cancel"
+            );
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    /// Regression: a panicking `cancel_cleanup_fn` must not abort the process.
+    ///
+    /// The `catch_unwind` in `run_cancel_cleanup` must:
+    /// - Survive the panic (test completes = process did not abort).
+    /// - Log the panic message via `set_last_error` (readable via
+    ///   `LAST_CANCEL_CLEANUP_PANIC_MSG`).
+    /// - Still transition the task to `Done(Cancelled)` — no state skip.
+    #[test]
+    fn cancel_cleanup_fn_panic_does_not_abort_process() {
+        use std::sync::atomic::AtomicUsize;
+
+        static SCOPE_CANCEL_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C-unwind" fn panicking_cleanup(_env: *mut c_void) {
+            SCOPE_CANCEL_CALLS.fetch_add(1, Ordering::SeqCst);
+            panic!("cancel_cleanup intentional panic");
+        }
+        unsafe extern "C" fn noop_drop_panic(_: *mut u8) {}
+
+        // Reset the shared panic-message capture.
+        *LAST_CANCEL_CLEANUP_PANIC_MSG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        SCOPE_CANCEL_CALLS.store(0, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_set_cancel_cleanup_fn(task, Some(panicking_cleanup));
+            hew_task_set_env(
+                task,
+                crate::rc::hew_rc_new(ptr::null(), 0, Some(noop_drop_panic)).cast(),
+            );
+            hew_task_scope_spawn(scope, task);
+
+            // This must not abort the process despite the panicking callback.
+            hew_task_scope_cancel(scope);
+
+            // The callback ran (exactly once).
+            assert_eq!(
+                SCOPE_CANCEL_CALLS.load(Ordering::SeqCst),
+                1,
+                "panicking cancel_cleanup_fn must still be invoked"
+            );
+
+            // Task must have transitioned to Done(Cancelled) — no state skip.
+            assert_eq!(
+                (*task).load_state(),
+                HewTaskState::Done,
+                "task must be Done(Cancelled) even when cancel_cleanup_fn panicked"
+            );
+            assert_eq!((*task).error, HewTaskError::Cancelled);
+
+            hew_task_scope_destroy(scope);
+        }
+
+        // Panic message must be captured in the test-only static.
+        let captured = LAST_CANCEL_CLEANUP_PANIC_MSG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let msg = captured.expect("set_last_error must have been called on panic");
+        assert!(
+            msg.contains("task_scope cancel_cleanup_fn panicked:"),
+            "error message must carry the runtime prefix; got: {msg:?}"
+        );
+        assert!(
+            msg.contains("cancel_cleanup intentional panic"),
+            "error message must contain the original panic payload; got: {msg:?}"
+        );
     }
 
     #[test]

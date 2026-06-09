@@ -635,7 +635,7 @@ pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
         let raw = (&raw mut *boxed).cast::<crate::execution_context::HewExecutionContext>();
         let installed_prev = crate::execution_context::set_current_context(raw);
         debug_assert_eq!(installed_prev, current);
-        let _ = Box::into_raw(boxed);
+        let _ = Box::into_raw(boxed); // ALLOCATOR-PAIRING: GlobalAlloc
         Some(HewTraceContext::default())
     } else {
         // SAFETY: current is the installed canonical context for this thread.
@@ -672,7 +672,7 @@ pub(crate) fn io_recv_span_end(saved_ctx: HewTraceContext) {
         debug_assert_eq!(restored, current);
         // SAFETY: current came from Box::into_raw in io_recv_span_begin.
         unsafe {
-            drop(Box::from_raw(current));
+            drop(Box::from_raw(current)); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     } else {
         // SAFETY: current is non-null and mutable through the TLS boundary.

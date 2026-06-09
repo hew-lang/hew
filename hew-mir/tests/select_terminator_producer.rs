@@ -33,7 +33,12 @@ fn lower_checked(source: &str) -> IrPipeline {
         "type-check errors: {:?}",
         tc_output.errors
     );
-    let hir = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         hir.diagnostics.is_empty(),
         "HIR diagnostics: {:?}",
@@ -53,6 +58,7 @@ fn lower_hir_without_typecheck(source: &str) -> IrPipeline {
         &parsed.program,
         &hew_types::TypeCheckOutput::default(),
         &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
     );
     hew_mir::lower_hir_module(&hir.module)
 }

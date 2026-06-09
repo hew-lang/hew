@@ -29,7 +29,12 @@ fn pipeline(source: &str) -> IrPipeline {
         "type errors: {:#?}",
         tc_output.errors
     );
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     lower_hir_module(&output.module)
 }
 
@@ -273,7 +278,12 @@ fn missing_dyn_method_side_table_entry_emits_hir_diagnostic() {
     for span in call_spans {
         tc_output.method_call_rewrites.remove(&span);
     }
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let fail_closed = output
         .diagnostics
         .iter()
@@ -391,7 +401,12 @@ fn structural_impl_lowers_through_to_3_identically_to_nominal() {
     // the nominal `impl Named for Widget` path produces. MIR lowering of
     // this HIR node is identical 1:1 — the per-concrete branching lives
     // entirely in codegen (TO-4) keyed on `concrete_type`.
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let mut found_coerce = false;
     for item in &output.module.items {
         if let hew_hir::HirItem::Function(f) = item {

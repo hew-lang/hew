@@ -388,6 +388,10 @@ pub enum TypeErrorKind {
     StyleSuggestion,
     /// Imported module never referenced
     UnusedImport,
+    /// `is TypeName` where the static LHS type already equals the RHS type
+    /// pattern, so the comparison is a compile-time tautology that lowers
+    /// to `true` and silently dead-codes the `else` branch.
+    RedundantIs,
     /// Code after a `return`, `break`, or `continue` is never executed
     UnreachableCode,
     /// A variable binding shadows a binding from an outer scope
@@ -634,6 +638,18 @@ pub enum TypeErrorKind {
         /// User-facing representation of the actual scrutinee type.
         actual_ty: String,
     },
+    /// A trait bound on a generic type parameter uses positional type
+    /// arguments (e.g. `T: Eq<U>`) which is not a recognised bound form.
+    /// The Hew type-checker cannot validate or enforce such bounds; admitting
+    /// them would silently drop the type arguments and reduce `Eq<U>` to bare
+    /// `Eq`, which is misleading.  Use associated-type bindings instead
+    /// (e.g. `Iterator<Item = i64>`) for traits with output types.
+    ///
+    /// Envelope code: `E_UNKNOWN_TRAIT_BOUND_SHAPE`.
+    UnknownTraitBoundShape {
+        /// The trait name that carried the unknown positional type arguments.
+        trait_name: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -667,6 +683,7 @@ impl TypeErrorKind {
             Self::UnusedMut => "UnusedMut",
             Self::StyleSuggestion => "StyleSuggestion",
             Self::UnusedImport => "UnusedImport",
+            Self::RedundantIs => "RedundantIs",
             Self::UnreachableCode => "UnreachableCode",
             Self::Shadowing => "Shadowing",
             Self::DeadCode => "DeadCode",
@@ -699,6 +716,7 @@ impl TypeErrorKind {
             Self::UnsupportedPayloadSubpattern { .. } => "UnsupportedPayloadSubpattern",
             Self::InvalidRegexLiteral { .. } => "InvalidRegexLiteral",
             Self::RegexPatternNotString { .. } => "RegexPatternNotString",
+            Self::UnknownTraitBoundShape { .. } => "UnknownTraitBoundShape",
         }
     }
 }

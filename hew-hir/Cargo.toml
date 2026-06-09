@@ -15,5 +15,17 @@ hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 serde.workspace = true
 
+[features]
+# Exposes test-only entrypoints (e.g. `run_call_shape_gates_for_test`) used
+# by integration tests under `tests/` that need to drive lowering-internal
+# gates against synthetic HirItem fixtures. Off by default so production
+# builds do not see these symbols. Enable with
+# `cargo test -p hew-hir --features internal-test-hooks`.
+internal-test-hooks = []
+
+[[test]]
+name = "call_shape_gates"
+required-features = ["internal-test-hooks"]
+
 [lints]
 workspace = true

@@ -88,10 +88,10 @@ pub extern "C" fn hew_channel_new(capacity: i64) -> *mut HewChannelPair {
     };
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(cap);
 
-    let sender = Box::into_raw(Box::new(HewChannelSender { tx }));
-    let receiver = Box::into_raw(Box::new(HewChannelReceiver { rx }));
+    let sender = Box::into_raw(Box::new(HewChannelSender { tx })); // ALLOCATOR-PAIRING: GlobalAlloc
+    let receiver = Box::into_raw(Box::new(HewChannelReceiver { rx })); // ALLOCATOR-PAIRING: GlobalAlloc
 
-    Box::into_raw(Box::new(HewChannelPair { sender, receiver }))
+    Box::into_raw(Box::new(HewChannelPair { sender, receiver })) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Extract the sender from a channel pair.
@@ -301,7 +301,7 @@ pub unsafe extern "C" fn hew_channel_sender_clone(
     cabi_guard!(sender.is_null(), ptr::null_mut());
     // SAFETY: sender is valid per caller contract.
     let cloned_tx = unsafe { (*sender).tx.clone() };
-    Box::into_raw(Box::new(HewChannelSender { tx: cloned_tx }))
+    Box::into_raw(Box::new(HewChannelSender { tx: cloned_tx })) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 // ── Close / Free ────────────────────────────────────────────────────────────
@@ -321,7 +321,7 @@ pub unsafe extern "C" fn hew_channel_sender_close(sender: *mut HewChannelSender)
         return;
     }
     // SAFETY: caller guarantees sender was Box-allocated and is exclusively owned.
-    unsafe { drop(Box::from_raw(sender)) };
+    unsafe { drop(Box::from_raw(sender)) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Close and free a receiver handle.
@@ -336,7 +336,7 @@ pub unsafe extern "C" fn hew_channel_receiver_close(receiver: *mut HewChannelRec
         return;
     }
     // SAFETY: caller guarantees receiver was Box-allocated and is exclusively owned.
-    unsafe { drop(Box::from_raw(receiver)) };
+    unsafe { drop(Box::from_raw(receiver)) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -378,7 +378,7 @@ mod tests {
             assert!(!result.is_null());
             let received = CStr::from_ptr(result);
             assert_eq!(received.to_str().unwrap(), "hello");
-            libc::free(result.cast());
+            libc::free(result.cast()); // ALLOCATOR-PAIRING: libc
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
@@ -438,7 +438,7 @@ mod tests {
             assert!(!result.is_null(), "empty string message should be non-NULL");
             let received = CStr::from_ptr(result);
             assert_eq!(received.to_str().unwrap(), "");
-            libc::free(result.cast());
+            libc::free(result.cast()); // ALLOCATOR-PAIRING: libc
 
             // Now the channel is empty — try_recv should return NULL.
             let result2 = hew_channel_try_recv(rx);
@@ -515,7 +515,7 @@ mod tests {
                     break;
                 }
                 let s = CStr::from_ptr(result).to_str().unwrap().to_owned();
-                libc::free(result.cast());
+                libc::free(result.cast()); // ALLOCATOR-PAIRING: libc
                 messages.push(s);
             }
 

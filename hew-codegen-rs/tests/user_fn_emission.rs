@@ -29,7 +29,12 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let pipeline = hew_mir::lower_hir_module(&output.module);
     assert!(
         pipeline.diagnostics.is_empty(),

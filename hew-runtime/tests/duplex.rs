@@ -207,7 +207,7 @@ unsafe extern "C-unwind" fn noop_tell_body(
 }
 
 /// Noop state-drop for tests that use a null state pointer.
-unsafe extern "C" fn noop_state_drop(_state: *mut std::ffi::c_void) {}
+unsafe extern "C-unwind" fn noop_state_drop(_state: *mut std::ffi::c_void) {}
 
 #[test]
 fn lambda_self_send_fib_stop_after_external_release() {

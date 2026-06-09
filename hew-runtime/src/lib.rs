@@ -439,6 +439,7 @@ pub mod arena;
 // Expose arena_wasm as a distinct module in native test builds so its unit
 // tests run under CI.  The #[cfg_attr(target_arch = "wasm32", no_mangle)]
 // guard in arena_wasm.rs prevents duplicate symbol collisions with arena.rs.
+pub(crate) mod alloc_tracker;
 #[cfg(all(not(target_arch = "wasm32"), test))]
 pub mod arena_wasm;
 #[cfg(not(target_arch = "wasm32"))]

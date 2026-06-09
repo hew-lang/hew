@@ -31,7 +31,12 @@ fn lower_checked(source: &str) -> IrPipeline {
         "type-check errors: {:?}",
         tc_output.errors
     );
-    let hir = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         hir.diagnostics.is_empty(),
         "HIR diagnostics: {:?}",
@@ -221,6 +226,7 @@ fn gen_body_function_registered_in_raw_mir_pipeline() {
         &parsed.program,
         &hew_types::TypeCheckOutput::default(),
         &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
     );
     let pipeline = hew_mir::lower_hir_module(&hir.module);
     let gen_body = pipeline

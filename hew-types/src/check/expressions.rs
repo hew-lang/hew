@@ -3707,6 +3707,8 @@ impl Checker {
                                             )]
                                             index: idx as u32,
                                             child_ty: ty.clone(),
+                                            child_name: cn.clone(),
+                                            supervisor: sup_name.clone(),
                                         },
                                         ty.clone(),
                                     )
@@ -3729,6 +3731,8 @@ impl Checker {
                                             )]
                                             index: idx as u32,
                                             child_ty: ty.clone(),
+                                            child_name: cn.clone(),
+                                            supervisor: sup_name.clone(),
                                         },
                                         ty.clone(),
                                     )
@@ -5050,6 +5054,26 @@ impl Checker {
             let rhs_key = SpanKey::from(&rhs.1);
             self.is_type_patterns.insert(rhs_key, rhs_resolved.clone());
             self.record_type(&rhs.1, &rhs_resolved);
+            // Static-tautology warning: the LHS type already equals the RHS
+            // type pattern, so the comparison lowers to `Bool(true)` (see
+            // `hew-hir/src/lower.rs` Expr::Is branch) and any `else` branch
+            // gated on the negation is silently dead. Surface this as a
+            // `RedundantIs` warning so the user is told before they wonder
+            // why their else-branch never runs.
+            self.warnings.push(crate::error::TypeError {
+                severity: crate::error::Severity::Warning,
+                kind: TypeErrorKind::RedundantIs,
+                span: span.clone(),
+                message: format!(
+                    "`is {0}` is always true here: the operand already has type `{0}`",
+                    rhs_resolved.user_facing()
+                ),
+                notes: vec![],
+                suggestions: vec![
+                    "remove the `is` check, or compare against a different type".to_string()
+                ],
+                source_module: None,
+            });
         }
 
         Ty::Bool

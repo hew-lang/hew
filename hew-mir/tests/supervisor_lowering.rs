@@ -30,7 +30,12 @@ fn lower_module_from_source(source: &str) -> hew_mir::IrPipeline {
     // lowering would emit boundary diagnostics on the wired_to bridge.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let hir = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     assert!(
         hir.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
@@ -57,7 +62,12 @@ fn lower_module_from_source_with_enum_variants(source: &str) -> hew_mir::IrPipel
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let hir = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     // Filter out known v0.5 HIR limitation: enum-variant path expressions
     // (e.g. `CrashAction::Restart`) are not resolvable in HIR lowering
     // because `TypeBodyItem::Variant` is out of slice scope. Other
@@ -350,7 +360,12 @@ fn spawn_supervisor_with_init_args_emits_not_yet_implemented() {
     );
     let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let hir = hew_hir::lower_program(&parsed.program, &tc_output, &hew_hir::ResolutionCtx);
+    let hir = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
     let pipeline = hew_mir::lower_hir_module(&hir.module);
 
     let nyi_diag = pipeline.diagnostics.iter().find(|d| {

@@ -521,6 +521,14 @@ enum AskRejectionReasonCode {
     NoRunnableWork = AskError::NoRunnableWork as u8,
 }
 
+/// Errors returned by [`AskRejectionReasonCode::decode`].
+#[derive(Debug, PartialEq)]
+enum AskRejectionDecodeError {
+    /// The payload's first byte is not a recognised rejection-reason code.
+    /// Decoders MUST reject rather than silently substitute a default reason.
+    UnknownAskRejectionReason { code: u8 },
+}
+
 impl AskRejectionReasonCode {
     fn encode(reason: AskError) -> Option<u8> {
         let code = match reason {
@@ -534,19 +542,20 @@ impl AskRejectionReasonCode {
         Some(code as u8)
     }
 
-    fn decode(reason_payload: &[u8]) -> AskError {
+    fn decode(reason_payload: &[u8]) -> Result<AskError, AskRejectionDecodeError> {
         match reason_payload.first().copied() {
-            Some(x) if x == Self::WorkerAtCapacity as u8 => AskError::WorkerAtCapacity,
-            Some(x) if x == Self::ActorStopped as u8 => AskError::ActorStopped,
-            Some(x) if x == Self::MailboxFull as u8 => AskError::MailboxFull,
-            Some(x) if x == Self::OrphanedAsk as u8 => AskError::OrphanedAsk,
-            Some(x) if x == Self::NoRunnableWork as u8 => AskError::NoRunnableWork,
-            _ => AskError::WorkerAtCapacity,
+            None => Ok(AskError::WorkerAtCapacity), // empty payload: legacy peer
+            Some(x) if x == Self::WorkerAtCapacity as u8 => Ok(AskError::WorkerAtCapacity),
+            Some(x) if x == Self::ActorStopped as u8 => Ok(AskError::ActorStopped),
+            Some(x) if x == Self::MailboxFull as u8 => Ok(AskError::MailboxFull),
+            Some(x) if x == Self::OrphanedAsk as u8 => Ok(AskError::OrphanedAsk),
+            Some(x) if x == Self::NoRunnableWork as u8 => Ok(AskError::NoRunnableWork),
+            Some(code) => Err(AskRejectionDecodeError::UnknownAskRejectionReason { code }),
         }
     }
 }
 
-fn decode_rejection_reason(reason_payload: &[u8]) -> AskError {
+fn decode_rejection_reason(reason_payload: &[u8]) -> Result<AskError, AskRejectionDecodeError> {
     AskRejectionReasonCode::decode(reason_payload)
 }
 
@@ -556,7 +565,12 @@ fn decode_rejection_reason(reason_payload: &[u8]) -> AskError {
 /// (one with [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type` field).
 /// Empty payloads from older peers still default to `WorkerAtCapacity`.
 pub(crate) fn fail_remote_reply(request_id: u64, reason_payload: &[u8]) -> bool {
-    REPLY_TABLE.fail(request_id, decode_rejection_reason(reason_payload))
+    // On unknown codes, leave the pending ask unresolved (it will timeout)
+    // rather than fabricating a misleading AskError.
+    match decode_rejection_reason(reason_payload) {
+        Ok(reason) => REPLY_TABLE.fail(request_id, reason),
+        Err(_) => false,
+    }
 }
 
 pub(crate) fn fail_remote_replies_for_connection(conn_mgr: *const HewConnMgr, conn_id: c_int) {
@@ -3089,7 +3103,7 @@ mod tests {
             let payload = [AskRejectionReasonCode::encode(ask_error)
                 .expect("supported remote ask failure must encode to a wire code")];
             assert_eq!(
-                decode_rejection_reason(&payload),
+                decode_rejection_reason(&payload).expect("known code must decode"),
                 ask_error,
                 "encoded rejection reason must round-trip through the wire payload"
             );
@@ -3115,8 +3129,30 @@ mod tests {
         }
         assert_eq!(
             decode_rejection_reason(&[AskError::Timeout as u8]),
-            AskError::WorkerAtCapacity,
-            "unknown rejection-reason bytes must fail closed to WorkerAtCapacity"
+            Err(AskRejectionDecodeError::UnknownAskRejectionReason {
+                code: AskError::Timeout as u8
+            }),
+            "unknown rejection-reason bytes must produce Err, not a fabricated AskError"
+        );
+    }
+
+    #[test]
+    fn fail_remote_reply_unknown_code_returns_false_and_leaves_ask_unresolved() {
+        let _guard = crate::runtime_test_guard();
+
+        let (id, pending) = REPLY_TABLE.register(ConnectionKey {
+            conn_mgr: 92,
+            conn_id: 15,
+        });
+        assert!(!fail_remote_reply(id, &[0xFF]));
+
+        let guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            guard.is_none(),
+            "unknown code must not resolve the pending ask"
         );
     }
 

@@ -46,7 +46,13 @@ fn typecheck_and_lower_with_cap(source: &str, cap: usize) -> hew_hir::LowerOutpu
         "typecheck errors: {:#?}",
         tc_output.errors
     );
-    lower_program_with_mono_cap(&parsed.program, &tc_output, &ResolutionCtx, cap)
+    lower_program_with_mono_cap(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        cap,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 /// Test A from the plan: a generic top-level fn called with two
@@ -324,7 +330,12 @@ fn lower_program_uses_default_cap_and_records_entries() {
     let parsed = hew_parser::parse(source);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
 
     assert_eq!(
         output.module.monomorphisations.len(),

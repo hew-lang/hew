@@ -126,6 +126,28 @@ fn try_is_type_pattern_completions(
             sort_text: None,
         })
         .collect();
+    // Also surface builtin primitive type names (`i8`/`i16`/.../`bool`/`char`/
+    // `string`/`bytes`/`duration`). The checker's `is` type pattern resolver
+    // (`resolve_is_type_pattern`) accepts these via `Ty::from_name`; surfacing
+    // them as completions keeps the completion candidates aligned with the
+    // names the type-pattern resolver actually admits. Note the checker still
+    // rejects primitives with `E_IS_VALUE_TYPE` at type-check time — the
+    // completion is intentionally surface-faithful to the resolver, not to the
+    // identity-allowance set.
+    for (canonical, _aliases) in hew_types::ty::PRIMITIVE_ALIASES {
+        // Skip the un-spellable / non-named primitive entries.
+        if *canonical == "()" || *canonical == "!" {
+            continue;
+        }
+        items.push(CompletionItem {
+            label: (*canonical).to_string(),
+            kind: CompletionKind::Type,
+            detail: Some("builtin primitive type".to_string()),
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        });
+    }
     items.sort_by(|a, b| a.label.cmp(&b.label));
     (!items.is_empty()).then_some(items)
 }

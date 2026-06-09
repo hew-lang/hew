@@ -1178,6 +1178,56 @@ mod tests {
     }
 
     #[test]
+    fn is_rhs_completion_includes_builtin_primitive_types() {
+        // After the `is` keyword, the LSP completion provider must surface
+        // builtin primitive type names (`i32`, `string`, `bool`, `u64`,
+        // etc.) as candidates in addition to user-defined type names.
+        // The set is sourced from `hew_types::ty::PRIMITIVE_ALIASES` so it
+        // stays aligned with what the checker's `is` type-pattern resolver
+        // accepts via `Ty::from_name`.
+        let source = r"
+            type Holder {
+                v: i64;
+            }
+
+            fn main() {
+                let h = Holder { v: 1 };
+                let _eq: bool = h is
+            }
+        ";
+        let parse_result = hew_parser::parse(source);
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        let doc = DocumentState {
+            source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
+            parse_result,
+            type_output: Some(type_output),
+            diagnostics_by_uri: HashMap::new(),
+        };
+        // Position the cursor immediately after the trailing `is`.
+        let offset = source.find("h is").unwrap() + "h is".len();
+        let items = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        for primitive in &["i32", "i64", "u64", "bool", "string", "char", "bytes"] {
+            assert!(
+                labels.contains(primitive),
+                "expected builtin primitive `{primitive}` in is-RHS completion, got: {labels:?}",
+            );
+        }
+        // User types must still be present alongside the builtins.
+        assert!(
+            labels.contains(&"Holder"),
+            "user type `Holder` must still appear in is-RHS completion, got: {labels:?}",
+        );
+    }
+
+    #[test]
     fn completions_include_local_variables() {
         let source = "fn main() { let counter = 42; let name = \"hello\"; 0 }";
         let parse_result = hew_parser::parse(source);

@@ -17775,6 +17775,124 @@ mod assoc_types_slice2 {
         );
     }
 
+    // ── D4: UnknownTraitBoundShape — reject positional type args on bounds ─────
+    //
+    // `T: Eq<U>` is not a valid bound form in Hew. Positional type arguments
+    // on trait bounds are silently erased by `collect_type_param_bounds`,
+    // which would reduce `Eq<U>` to bare `Eq` without any diagnostic.
+    // The validator fires before erasure and produces `UnknownTraitBoundShape`.
+
+    /// `fn f<T, U>(x: T) where T: Eq<U>` must produce `UnknownTraitBoundShape`
+    /// citing `Eq`. This is the canonical D4 regression test.
+    #[test]
+    fn unknown_trait_bound_shape_rejected_for_positional_type_arg_in_where_clause() {
+        let output = check_source(
+            r"
+            fn f<T, U>(x: T) -> T where T: Eq<U> {
+                x
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                    if trait_name == "Eq"
+            )),
+            "expected UnknownTraitBoundShape for `Eq<U>` in where-clause; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `fn f<T: Eq<U>, U>(x: T) -> T` must also produce `UnknownTraitBoundShape`
+    /// when the positional arg is an inline type-param bound (not a where-clause).
+    #[test]
+    fn unknown_trait_bound_shape_rejected_for_positional_type_arg_inline() {
+        let output = check_source(
+            r"
+            fn f<T: Eq<U>, U>(x: T) -> T {
+                x
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                    if trait_name == "Eq"
+            )),
+            "expected UnknownTraitBoundShape for inline `T: Eq<U>`; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `impl<T: Eq<U>> Foo<T> { }` must produce `UnknownTraitBoundShape` for
+    /// the inline bound `Eq<U>` on the impl type parameter.
+    #[test]
+    fn unknown_trait_bound_shape_rejected_for_impl_inline_type_param_bound() {
+        let output = check_source(
+            r"
+            type Foo<T> { value: T; }
+            impl<T: Eq<U>, U> Foo<T> { }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                    if trait_name == "Eq"
+            )),
+            "expected UnknownTraitBoundShape for inline `T: Eq<U>` on impl; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `impl<T, U> Foo<T> where T: Eq<U>` must produce `UnknownTraitBoundShape`
+    /// for the where-clause bound `Eq<U>` on the impl type parameter.
+    #[test]
+    fn unknown_trait_bound_shape_rejected_for_impl_where_clause_bound() {
+        let output = check_source(
+            r"
+            type Foo<T> { value: T; }
+            impl<T, U> Foo<T> where T: Eq<U> { }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                    if trait_name == "Eq"
+            )),
+            "expected UnknownTraitBoundShape for where-clause `T: Eq<U>` on impl; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `machine M<T: Eq<U>> { }` must produce `UnknownTraitBoundShape` for
+    /// the inline bound `Eq<U>` on the machine type parameter.
+    #[test]
+    fn unknown_trait_bound_shape_rejected_for_machine_type_param_bound() {
+        let output = check_source(
+            r"
+            machine M<T: Eq<U>, U> { }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                    if trait_name == "Eq"
+            )),
+            "expected UnknownTraitBoundShape for machine `T: Eq<U>`; got: {:?}",
+            output.errors
+        );
+    }
+
     // ── extern "rt" validation ─────────────────────────────────────────────────
     //
     // `extern "rt"` declares JIT-visible runtime functions. Every symbol must
@@ -18934,6 +19052,342 @@ fn generic_machine_step_bare_event_propagates_receiver_args() {
         output.errors.is_empty(),
         "step() with bare unit event on generic machine must type-check; \
          got errors: {:#?}",
+        output.errors
+    );
+}
+
+// ── C1 UAF guard: E_SUPERVISOR_PERMANENT_OWNED_HEAP ──────────────────────────
+// Negative tests — the diagnostic MUST fire.
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_vec_field() {
+    let output = check_source(
+        r"
+        actor Counter {
+            let count: Vec<i64>;
+            receive fn inc() {}
+        }
+
+        supervisor App {
+            child worker: Counter permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("worker")
+                && e.message.contains("Counter")
+                && e.message.contains("count")
+        }),
+        "permanent child with Vec field must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_string_field() {
+    let output = check_source(
+        r"
+        actor Labelled {
+            let label: string;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child item: Labelled permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("label")
+        }),
+        "permanent child with string field must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_hashmap_field() {
+    let output = check_source(
+        r"
+        actor Registry {
+            let entries: HashMap<string, i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child reg: Registry permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("entries")
+        }),
+        "permanent child with HashMap field must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_hashset_field() {
+    let output = check_source(
+        r"
+        actor Deduplicator {
+            let seen: HashSet<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child dedup: Deduplicator permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("seen")
+        }),
+        "permanent child with HashSet field must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_bytes_field() {
+    let output = check_source(
+        r"
+        actor Blob {
+            let data: bytes;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child store: Blob permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("data")
+        }),
+        "permanent child with bytes field must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_implicit_permanent_owned_heap_rejects() {
+    // No restart keyword — defaults to permanent per llvm.rs:3013.
+    let output = check_source(
+        r"
+        actor Worker {
+            let items: Vec<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child w: Worker;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("items")
+        }),
+        "implicit-permanent child (no restart keyword) with Vec field must be rejected; \
+         errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_owned_heap_rejects_nested_vec() {
+    // Vec<Vec<i64>> — outer Vec matches ty_is_known_owned_heap.
+    let output = check_source(
+        r"
+        actor Nested {
+            let matrix: Vec<Vec<i64>>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child n: Nested permanent;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")
+                && e.message.contains("matrix")
+        }),
+        "permanent child with Vec<Vec<i64>> field must be rejected (outer Vec matched); \
+         errors: {:#?}",
+        output.errors
+    );
+}
+
+// Positive tests — the diagnostic must NOT fire.
+
+#[test]
+fn supervisor_transient_owned_heap_ok() {
+    let output = check_source(
+        r"
+        actor Worker {
+            let items: Vec<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child w: Worker transient;
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")),
+        "transient child must not trigger owned-heap reject; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_temporary_owned_heap_ok() {
+    let output = check_source(
+        r"
+        actor Worker {
+            let items: Vec<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child w: Worker temporary;
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")),
+        "temporary child must not trigger owned-heap reject; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_permanent_copy_only_fields_ok() {
+    let output = check_source(
+        r"
+        actor Counter {
+            let count: i64;
+            let flag: bool;
+            let ratio: f64;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child c: Counter permanent;
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")),
+        "permanent child with only copy-type fields must not trigger owned-heap reject; \
+         errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_pool_child_permanent_vec_ok() {
+    // Pool children are exempt: they are dynamically spawned, not restarted
+    // from a fixed init_state spec.
+    let output = check_source(
+        r"
+        actor Worker {
+            let items: Vec<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            strategy: simple_one_for_one,
+            pool workers: Worker
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")),
+        "pool child must not trigger owned-heap reject; errors: {:#?}",
+        output.errors
+    );
+}
+
+// KNOWN-RESIDUAL: a user-defined record that *wraps* an owned-heap type is not
+// detected by ty_is_known_owned_heap because the check only inspects the
+// top-level Ty variant of each actor state field.  The full fix
+// (init_state_clone_fn, v0.5.0.1 P0) will close this gap.  This test locks
+// the boundary so future implementers see it explicitly.
+#[test]
+fn supervisor_permanent_record_containing_vec_known_residual_gap() {
+    // The actor field type is a named record (not directly Vec/string/etc.),
+    // so the check does NOT fire.  This is the documented residual gap.
+    let output = check_source(
+        r"
+        record Wrapper { inner: Vec<i64> }
+
+        actor Holder {
+            let data: Wrapper;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child h: Holder permanent;
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_PERMANENT_OWNED_HEAP")),
+        "KNOWN-RESIDUAL: record-wrapping-Vec not yet detected by owned-heap check \
+         (full fix: init_state_clone_fn v0.5.0.1 P0); if this assertion now fails the \
+         residual gap has been closed — update this test accordingly; \
+         errors: {:#?}",
         output.errors
     );
 }

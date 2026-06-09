@@ -23,6 +23,22 @@ static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static FORCE_REPLY_ALLOC_FAILURE: AtomicBool = AtomicBool::new(false);
 
+// ── Debug allocator-pairing tracker ────────────────────────────────────────
+//
+// Reply payloads allocated here via `libc::malloc` are registered in the
+// runtime-wide tracker (crate::alloc_tracker).  Lambda-actor body reply
+// buffers use Rust's `GlobalAlloc` (`Box::into_raw`) and are freed via
+// `lambda_actor::free_body_reply_buf` — each free site in that module asserts
+// the pointer is NOT in the set, catching any allocator crossing before it
+// reaches `Box::from_raw`.
+//
+// Active only in debug builds; zero overhead in release.
+
+#[cfg(debug_assertions)]
+use crate::alloc_tracker::{
+    debug_is_libc_tracked, debug_track_libc_alloc, debug_untrack_libc_alloc,
+};
+
 /// One-shot reply channel for the actor ask pattern.
 ///
 /// Thread-safety contract: exactly one thread calls [`hew_reply`],
@@ -97,7 +113,12 @@ unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
         return ptr::null_mut();
     }
     // SAFETY: delegates to libc allocator for the requested reply payload size.
-    unsafe { libc::malloc(size) }
+    let ptr = unsafe { libc::malloc(size) };
+    #[cfg(debug_assertions)]
+    if !ptr.is_null() {
+        debug_track_libc_alloc(ptr.cast());
+    }
+    ptr
 }
 
 /// Retain an additional reference to a reply channel.
@@ -317,22 +338,38 @@ pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
 /// Free a reply payload returned by [`hew_reply_wait`], [`hew_reply_wait_timeout`],
 /// or [`hew_lambda_actor_ask`].
 ///
-/// Reply payloads are allocated via `libc::malloc` inside the reply channel.
-/// They MUST be freed with this function (which calls `libc::free`) — NOT with
-/// `hew_duplex_payload_free`, which uses Rust's global allocator and would
-/// produce undefined behaviour on any platform where `GlobalAlloc != libc malloc`.
+/// # Allocator pairing contract
 ///
-/// Passing `ptr = null` or `len = 0` is safe and a no-op.
+/// Reply payloads are allocated via `libc::malloc` inside [`alloc_reply_buffer`].
+/// They **must** be freed with this function (which calls `libc::free`) — NOT
+/// with `hew_duplex_payload_free`, which uses Rust's `GlobalAlloc` and would
+/// produce **undefined behaviour** on any platform where `GlobalAlloc ≠ libc
+/// malloc` (e.g. jemalloc, mimalloc).
+///
+/// Lambda-actor body reply buffers use `GlobalAlloc` (`Box::into_raw`) and are
+/// freed via `lambda_actor::free_body_reply_buf` — see that module for the
+/// counterpart free path. The two allocators must never be crossed.
+///
+/// Passing `ptr = null` is safe and a no-op.
 ///
 /// # Safety
 ///
 /// `ptr` must be a pointer previously returned by a successful reply wait call
-/// (or `hew_lambda_actor_ask`). `len` must match the reported payload length.
-/// The pointer is invalid after this call.
+/// (or `hew_lambda_actor_ask`). The pointer is invalid after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_reply_payload_free(ptr: *mut u8, _len: usize) {
     if ptr.is_null() {
         return;
+    }
+    #[cfg(debug_assertions)]
+    {
+        debug_assert!(
+            debug_is_libc_tracked(ptr),
+            "allocator-pairing contract violation: {ptr:p} is not libc-tracked; \
+             use hew_reply_payload_free only for reply-wait payloads (libc::malloc). \
+             Body reply buffers (Box/GlobalAlloc) are freed by lambda_actor::free_body_reply_buf.",
+        );
+        debug_untrack_libc_alloc(ptr);
     }
     // SAFETY: ptr was allocated by alloc_reply_buffer → libc::malloc.
     // Symmetric deallocation via libc::free preserves allocator pairing on
@@ -478,6 +515,8 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut HewReplyChannel) {
             return;
         }
         if !(*ch).value.is_null() {
+            #[cfg(debug_assertions)]
+            debug_untrack_libc_alloc((*ch).value.cast());
             libc::free((*ch).value);
         }
         #[cfg(test)]

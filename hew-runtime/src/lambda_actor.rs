@@ -118,7 +118,7 @@ pub type HewLambdaActorBody = unsafe extern "C-unwind" fn(
 ///
 /// SAFETY: `state` is the same pointer passed to `hew_lambda_actor_new`;
 /// called at most once.
-pub type HewLambdaActorStateDrop = unsafe extern "C" fn(state: *mut core::ffi::c_void);
+pub type HewLambdaActorStateDrop = unsafe extern "C-unwind" fn(state: *mut core::ffi::c_void);
 
 // ── Body-shape discriminant ────────────────────────────────────────────────
 
@@ -167,6 +167,46 @@ unsafe fn unframe_ask_envelope(env: &[u8]) -> (*mut HewReplyChannel, &[u8]) {
     ptr_bytes.copy_from_slice(&env[..ASK_REPLY_CH_PREFIX_LEN]);
     let ch = u64::from_le_bytes(ptr_bytes) as *mut HewReplyChannel;
     (ch, &env[ASK_REPLY_CH_PREFIX_LEN..])
+}
+
+// ── Allocator-pairing helpers ──────────────────────────────────────────────
+
+/// Free a body-allocated reply buffer via Rust's `GlobalAlloc`.
+///
+/// # Allocator pairing contract
+///
+/// Body callbacks allocate reply payloads with
+/// `Box::into_raw(bytes.into_boxed_slice())`, using Rust's `GlobalAlloc`.
+/// This function is the **symmetric deallocation** path for those buffers.
+///
+/// Reply-channel reply copies use `libc::malloc` (inside
+/// [`crate::reply_channel::alloc_reply_buffer`]) and **must** be freed with
+/// [`crate::reply_channel::hew_reply_payload_free`] — see that module for the
+/// counterpart.  Mixing the two allocators is **undefined behaviour** on any
+/// platform where `GlobalAlloc ≠ libc malloc` (e.g. jemalloc, mimalloc).
+///
+/// A `#[cfg(debug_assertions)]` assert verifies the pointer is not
+/// libc-tracked before deallocating.
+///
+/// # Safety
+///
+/// `ptr` must be a non-null pointer previously produced by a body callback via
+/// `Box<[u8]>` with the given `len`.
+#[inline]
+unsafe fn free_body_reply_buf(ptr: *mut u8, len: usize) {
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        !crate::alloc_tracker::debug_is_libc_tracked(ptr),
+        "allocator-pairing contract violation: reply_out {ptr:p} is libc-tracked \
+         (allocated via the reply channel); the body must allocate via Box. \
+         See reply_channel::hew_reply_payload_free for the libc-allocated free path.",
+    );
+    // SAFETY: ptr was allocated by the body via Box<[u8]>-compatible GlobalAlloc;
+    // we are the sole owner at this point.
+    unsafe {
+        let slice = std::slice::from_raw_parts_mut(ptr, len);
+        drop(Box::from_raw(slice as *mut [u8]));
+    }
 }
 
 // ── Internal shared state ──────────────────────────────────────────────────
@@ -287,6 +327,12 @@ impl LambdaActorInner {
     }
 }
 
+/// Test-only: captures the message passed to `set_last_error` when
+/// `state_drop` panics. Written by [`LambdaActorInner::drop`] on the
+/// dispatch thread; read by `state_drop_panic_does_not_abort_process`.
+#[cfg(test)]
+static LAST_DROP_PANIC_MSG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 impl Drop for LambdaActorInner {
     fn drop(&mut self) {
         // `state_drop` is called here — after the Arc strong count reaches
@@ -299,8 +345,34 @@ impl Drop for LambdaActorInner {
         // SAFETY: `state_drop` is a valid function pointer (set at
         // construction, never mutated). `state` is the same pointer
         // passed to `hew_lambda_actor_new`; called exactly once here.
-        unsafe {
-            (self.state_drop)(self.state);
+        //
+        // Wrapped in `catch_unwind` so that a panic in `state_drop` while
+        // this drop runs during stack unwinding cannot trigger a double-panic
+        // → process abort.
+        let state_drop = self.state_drop;
+        let state = self.state;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: state_drop is a valid extern "C-unwind" fn pointer (set at
+            // construction, never mutated); state is the same pointer passed to
+            // hew_lambda_actor_new; called exactly once here.
+            unsafe { state_drop(state) };
+        }));
+        if let Err(panic_payload) = result {
+            let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "non-string panic payload".to_string()
+            };
+            let error_msg = format!("LambdaActorInner::drop user state_drop panicked: {msg}");
+            crate::set_last_error(error_msg.clone());
+            #[cfg(test)]
+            {
+                *LAST_DROP_PANIC_MSG
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error_msg);
+            }
         }
     }
 }
@@ -496,7 +568,7 @@ fn dispatch_tell(inner: &LambdaActorInner, msg: &[u8]) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut reply_out: *mut u8 = ptr::null_mut();
         let mut reply_len_out: usize = 0;
-        // SAFETY: body_fn is a valid extern "C" fn pointer; msg_ptr valid for
+        // SAFETY: body_fn is a valid extern "C-unwind" fn pointer; msg_ptr valid for
         // msg.len() bytes; reply_out/reply_len_out are local stack variables.
         // SAFETY: body_fn valid; reply_out/reply_len_out are local stack
         // variables; raw ptrs avoid implicit-borrow lint.
@@ -512,12 +584,9 @@ fn dispatch_tell(inner: &LambdaActorInner, msg: &[u8]) {
         // Tell-shape contract: reply_out must be null. If the body sets
         // it (contract violation), free it and mark stopped.
         if !reply_out.is_null() {
-            // SAFETY: body_fn allocated this via Box/hew_duplex_payload_free
-            // compatible allocator; reclaim it before marking stopped.
-            unsafe {
-                let slice = std::slice::from_raw_parts_mut(reply_out, reply_len_out);
-                drop(Box::from_raw(slice as *mut [u8]));
-            }
+            // SAFETY: body_fn allocated this via Box-compatible GlobalAlloc;
+            // reclaim it before marking stopped.
+            unsafe { free_body_reply_buf(reply_out, reply_len_out) };
             crate::set_last_error(
                 "hew_lambda_actor: tell-shape body set reply_out (contract violation); actor stopped"
                     .to_string(),
@@ -607,12 +676,9 @@ fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
             // == false`), the waiter already abandoned this reply and the
             // runtime must reclaim the memory.
             if !reply_ptr.is_null() {
-                // SAFETY: body allocated this via Box<[u8]> compatible allocator;
+                // SAFETY: body allocated this via Box<[u8]>-compatible GlobalAlloc;
                 // hew_reply took a copy, so original buffer is ours to free.
-                unsafe {
-                    let slice = std::slice::from_raw_parts_mut(reply_ptr, reply_len);
-                    drop(Box::from_raw(slice as *mut [u8]));
-                }
+                unsafe { free_body_reply_buf(reply_ptr, reply_len) };
             }
             let _ = delivered;
         }
@@ -620,13 +686,9 @@ fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
             // Non-zero return: actor stopped. Free any partial reply and
             // orphan the reply channel.
             if !reply_ptr.is_null() {
-                // SAFETY: body allocated this via Box<[u8]>-compatible
-                // allocator; body returned non-zero so the channel is orphaned
-                // and we must reclaim the buffer.
-                unsafe {
-                    let slice = std::slice::from_raw_parts_mut(reply_ptr, reply_len);
-                    drop(Box::from_raw(slice as *mut [u8]));
-                }
+                // SAFETY: body allocated this via Box<[u8]>-compatible GlobalAlloc;
+                // body returned non-zero so the channel is orphaned and we reclaim.
+                unsafe { free_body_reply_buf(reply_ptr, reply_len) };
             }
             // Signal the waiter with a null reply (orphaned path).
             // SAFETY: reply_ch is alive; orphan_ask_sender_ref takes the
@@ -641,12 +703,9 @@ fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
             // before panicking (hoisted reply_out captures it), then orphan
             // the reply channel so the waiter unblocks.
             if !reply_ptr.is_null() {
-                // SAFETY: body allocated this via Box<[u8]>-compatible
-                // allocator and then panicked; we are the sole owner.
-                unsafe {
-                    let slice = std::slice::from_raw_parts_mut(reply_ptr, reply_len);
-                    drop(Box::from_raw(slice as *mut [u8]));
-                }
+                // SAFETY: body allocated this via Box<[u8]>-compatible GlobalAlloc
+                // and then panicked; we are the sole owner.
+                unsafe { free_body_reply_buf(reply_ptr, reply_len) };
             }
             // SAFETY: same as non-zero path above.
             unsafe {
@@ -661,13 +720,30 @@ fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
 /// orphaned so waiters unblock; tell envelopes are discarded.
 fn drain_stopped(inner: &LambdaActorInner) {
     while let Ok(envelope) = inner.recv() {
-        if inner.shape() == LambdaShape::Ask && envelope.len() >= ASK_REPLY_CH_PREFIX_LEN {
-            // SAFETY: envelope from frame_ask_envelope; reply_ch pointer valid
-            // (still ref-counted by the sending side).
-            let (reply_ch, _msg) = unsafe { unframe_ask_envelope(&envelope) };
-            // SAFETY: retire_orphaned_ask_sender_ref consumes the ref.
-            unsafe {
-                hew_reply_channel_retire_orphaned_ask_sender_ref(reply_ch);
+        if inner.shape() == LambdaShape::Ask {
+            if envelope.len() >= ASK_REPLY_CH_PREFIX_LEN {
+                // SAFETY: envelope from frame_ask_envelope; reply_ch pointer valid
+                // (still ref-counted by the sending side).
+                let (reply_ch, _msg) = unsafe { unframe_ask_envelope(&envelope) };
+                // SAFETY: retire_orphaned_ask_sender_ref consumes the ref.
+                unsafe {
+                    hew_reply_channel_retire_orphaned_ask_sender_ref(reply_ch);
+                }
+            } else {
+                // Malformed ask envelope: too short to hold a reply-channel pointer.
+                // The reply-channel sender ref cannot be recovered; log diagnostics
+                // for post-mortem. The waiter will see a timeout rather than a
+                // deterministic orphan error — this is an unrecoverable corruption.
+                let preview: Vec<u8> = envelope
+                    .iter()
+                    .copied()
+                    .take(ASK_REPLY_CH_PREFIX_LEN)
+                    .collect();
+                crate::set_last_error(format!(
+                    "hew_lambda_actor: drain_stopped: malformed ask envelope \
+                     (len={}, prefix={preview:?}); reply-channel sender ref could not be recovered",
+                    envelope.len(),
+                ));
             }
         }
         // Tell envelopes are simply dropped.
@@ -733,12 +809,12 @@ impl HewLambdaActorWeakHandle {
 ///
 /// # Safety
 ///
-/// - `body_fn` must be a valid `extern "C" fn` pointer for the lifetime
+/// - `body_fn` must be a valid `extern "C-unwind" fn` pointer for the lifetime
 ///   of the returned handle.
 /// - `state` is passed to `body_fn` on every dispatch; must be valid for
 ///   the lifetime of the actor. `state_drop(state)` is called once after
 ///   the dispatch loop stops.
-/// - `state_drop` must be a valid `extern "C" fn` pointer.
+/// - `state_drop` must be a valid `extern "C-unwind" fn` pointer.
 /// - The returned pointer is owned by the runtime and must be released
 ///   with [`hew_lambda_actor_release`].
 #[no_mangle]
@@ -1271,7 +1347,7 @@ mod tests {
     // ── Shared test helpers ────────────────────────────────────────────────
 
     /// No-op state-drop callback for tests that don't need cleanup.
-    unsafe extern "C" fn noop_state_drop(_state: *mut core::ffi::c_void) {}
+    unsafe extern "C-unwind" fn noop_state_drop(_state: *mut core::ffi::c_void) {}
 
     /// Body for `tell_shape_dispatch_roundtrip`: appends received bytes to an
     /// `Arc<Mutex<Vec<Vec<u8>>>>` passed via state.
@@ -1304,7 +1380,7 @@ mod tests {
 
     /// State-drop for `tell_shape_dispatch_roundtrip`: frees the Box wrapping
     /// the `Arc<Mutex<...>>`.
-    unsafe extern "C" fn arc_mutex_state_drop(state: *mut core::ffi::c_void) {
+    unsafe extern "C-unwind" fn arc_mutex_state_drop(state: *mut core::ffi::c_void) {
         use std::sync::Mutex;
         // SAFETY: state is a Box<Arc<Mutex<Vec<Vec<u8>>>>> pointer from
         // Box::into_raw; freed exactly once here.
@@ -1335,7 +1411,7 @@ mod tests {
     }
 
     /// State-drop for `tell_body_receives_message_bytes`.
-    unsafe extern "C" fn collect_state_drop(state: *mut core::ffi::c_void) {
+    unsafe extern "C-unwind" fn collect_state_drop(state: *mut core::ffi::c_void) {
         use std::sync::Mutex;
         // SAFETY: same Box<Arc<Mutex<...>>> provenance as arc_mutex_state_drop.
         unsafe { drop(Box::from_raw(state.cast::<Arc<Mutex<Vec<Vec<u8>>>>>())) };
@@ -1400,7 +1476,7 @@ mod tests {
 
     /// State-drop callback that increments a shared counter. Cast
     /// `Arc<AtomicUsize>` pointer to `*mut c_void` via `Arc::into_raw`.
-    unsafe extern "C" fn counting_state_drop(state: *mut core::ffi::c_void) {
+    unsafe extern "C-unwind" fn counting_state_drop(state: *mut core::ffi::c_void) {
         // SAFETY: state is `*const AtomicUsize` from Arc::into_raw; we
         // reconstruct the Arc and drop it (decrement refcount).
         let arc = unsafe { Arc::from_raw(state as *const AtomicUsize) };
@@ -1548,7 +1624,7 @@ mod tests {
     /// Helper: construct a noop-tell actor via C-ABI.
     fn new_tell_cabi(capacity: usize) -> *mut HewLambdaActorHandle {
         // SAFETY: all args are valid; noop_tell_body / noop_state_drop are
-        // valid extern "C" function pointers.
+        // valid extern "C-unwind" function pointers.
         unsafe {
             hew_lambda_actor_new(
                 capacity,
@@ -1952,5 +2028,172 @@ mod tests {
             1,
             "state_drop must be called exactly once"
         );
+    }
+
+    // ── H2 regression: drain_stopped malformed-envelope ───────────────────
+
+    /// Regression test for H2: `drain_stopped` receiving a malformed ask
+    /// envelope (< `ASK_REPLY_CH_PREFIX_LEN` bytes) must set `last_error`
+    /// rather than silently dropping it.
+    ///
+    /// Calls `drain_stopped` directly on the test thread so the
+    /// thread-local `set_last_error` is observable here.
+    #[test]
+    fn drain_stopped_malformed_ask_envelope_sets_last_error() {
+        // Build inner + send-half directly — no dispatch thread spawned.
+        let (inner, mailbox_in) = LambdaActorInner::new(
+            4,
+            LambdaShape::Ask,
+            noop_tell_body,
+            ptr::null_mut(),
+            noop_state_drop,
+        );
+        // Send a malformed ask envelope: only 3 bytes, shorter than
+        // ASK_REPLY_CH_PREFIX_LEN (8).  The send half accepts raw Vec<u8>.
+        assert_eq!(
+            mailbox_in.send(vec![0xDE, 0xAD, 0xBE]),
+            SendError::Ok,
+            "mailbox send must succeed before close"
+        );
+        // Drop the send half to close the mailbox so recv() returns Closed
+        // after processing the one queued message.
+        drop(mailbox_in);
+        // Clear any prior error on this thread.
+        crate::hew_clear_error();
+        // Call drain_stopped on this thread — set_last_error is thread-local,
+        // so calling it here makes it visible to the assert below.
+        drain_stopped(&inner);
+        let err_ptr = crate::hew_last_error();
+        assert!(
+            !err_ptr.is_null(),
+            "malformed ask envelope must set last_error"
+        );
+        let err = unsafe { std::ffi::CStr::from_ptr(err_ptr).to_str().unwrap() };
+        assert!(
+            err.contains("malformed ask envelope"),
+            "error message must mention 'malformed ask envelope'; got: {err}"
+        );
+    }
+
+    // ── H3 regression: allocator-pairing tracker ──────────────────────────
+
+    /// Regression test for H3: `free_body_reply_buf` must panic with an
+    /// "allocator-pairing" message when passed a libc-tracked pointer
+    /// (i.e., a pointer that was allocated via `libc::malloc` inside the
+    /// reply channel, not via `Box`).
+    ///
+    /// Active only in debug builds; the `debug_assert!` is elided in
+    /// release mode.
+    /// Verify that a panic inside `state_drop` does NOT abort the process.
+    ///
+    /// Regression test for M3: `LambdaActorInner::drop` must wrap `state_drop`
+    /// in `catch_unwind` so that a user panic cannot cause a double-panic →
+    /// process abort during stack unwinding.
+    #[test]
+    fn state_drop_panic_does_not_abort_process() {
+        static CALLED: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C-unwind" fn panicking_state_drop(_state: *mut core::ffi::c_void) {
+            CALLED.fetch_add(1, Ord::Relaxed);
+            panic!("intentional state_drop panic for M3 regression test");
+        }
+
+        // Clear any stale capture from a previous run.
+        *super::LAST_DROP_PANIC_MSG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+        let actor = HewLambdaActor::new(
+            1,
+            LambdaShape::Tell,
+            noop_tell_body,
+            ptr::null_mut(),
+            panicking_state_drop,
+        )
+        .expect("spawn");
+        drop(actor);
+        // Give the dispatch thread time to exit and invoke state_drop.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // state_drop ran (incremented counter).
+        assert_eq!(
+            CALLED.load(Ord::Relaxed),
+            1,
+            "state_drop should have been called once"
+        );
+        // CALLED is incremented before the panic, so by the time CALLED==1
+        // is confirmed above, set_last_error (and LAST_DROP_PANIC_MSG) have
+        // already been written on the dispatch thread. The Mutex provides
+        // the necessary memory-visibility barrier.
+        let captured = super::LAST_DROP_PANIC_MSG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let err_msg = captured
+            .as_deref()
+            .expect("state_drop panic must have logged an error via set_last_error");
+        assert!(
+            err_msg.contains("LambdaActorInner::drop user state_drop panicked:"),
+            "error must name the runtime drop path; got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("intentional state_drop panic"),
+            "error must contain the original panic message; got: {err_msg}"
+        );
+        // Reaching here means catch_unwind prevented a process abort.
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "allocator-pairing")]
+    fn allocator_pairing_body_reply_buf_panics_if_libc_tracked() {
+        // Allocate a small buffer via libc::malloc and register it in the
+        // libc-alloc tracker — simulating what alloc_reply_buffer does.
+        let ptr = unsafe { libc::malloc(8) }.cast::<u8>();
+        assert!(!ptr.is_null());
+        crate::alloc_tracker::debug_track_libc_alloc(ptr);
+        // free_body_reply_buf asserts the pointer is NOT libc-tracked.
+        // The debug_assert fires before Box::from_raw, so no UB occurs.
+        // SAFETY: the assert panics; Box::from_raw is never reached.
+        unsafe { free_body_reply_buf(ptr, 8) };
+        // Cleanup if somehow reached (e.g., release build running a
+        // `#[cfg(debug_assertions)]` test block — shouldn't happen).
+        unsafe { libc::free(ptr.cast()) };
+    }
+
+    /// A pointer tracked then untracked must report as not-tracked.
+    /// This validates the untrack half of the lifecycle.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn allocator_pairing_tracker_untrack_clears_tracking() {
+        let ptr = unsafe { libc::malloc(8) }.cast::<u8>();
+        assert!(!ptr.is_null());
+        crate::alloc_tracker::debug_track_libc_alloc(ptr);
+        assert!(
+            crate::alloc_tracker::debug_is_libc_tracked(ptr),
+            "pointer must be tracked after debug_track_libc_alloc"
+        );
+        crate::alloc_tracker::debug_untrack_libc_alloc(ptr);
+        assert!(
+            !crate::alloc_tracker::debug_is_libc_tracked(ptr),
+            "pointer must not be tracked after debug_untrack_libc_alloc"
+        );
+        // ALLOCATOR-PAIRING: libc — symmetric free.
+        unsafe { libc::free(ptr.cast()) };
+    }
+
+    /// A freshly Box-allocated pointer must never appear as libc-tracked.
+    /// Guards against false positives in the pairing tracker.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn allocator_pairing_globalalloc_ptr_not_libc_tracked() {
+        let b: Box<u8> = Box::new(0);
+        // ALLOCATOR-PAIRING: GlobalAlloc — into_raw for test only.
+        let ptr = Box::into_raw(b);
+        assert!(
+            !crate::alloc_tracker::debug_is_libc_tracked(ptr),
+            "Box-allocated pointer must not be libc-tracked"
+        );
+        // ALLOCATOR-PAIRING: GlobalAlloc — matching from_raw to avoid leak.
+        // SAFETY: ptr was produced by Box::into_raw above; ownership returned here.
+        unsafe { drop(Box::from_raw(ptr)) };
     }
 }

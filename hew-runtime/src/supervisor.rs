@@ -289,7 +289,7 @@ impl Drop for InternalPoolSpec {
     fn drop(&mut self) {
         if !self.name.is_null() {
             // SAFETY: name was allocated with libc::strdup.
-            unsafe { libc::free(self.name.cast::<c_void>()) };
+            unsafe { libc::free(self.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
             self.name = ptr::null_mut();
         }
     }
@@ -590,6 +590,16 @@ struct InternalChildSpec {
     /// is added. Every restart path calls this on the newly spawned actor so that
     /// restarted actors free their heap-allocated state fields on teardown.
     state_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// Codegen-emitted deep-clone callback for the spec's `init_state` template.
+    /// Registered via [`hew_supervisor_set_child_state_clone`] after the child spec
+    /// is added. When present, the restart path calls
+    /// `state_clone_fn(spec.init_state)` to produce an independently-owned deep
+    /// clone for each new actor (consumed via [`actor::hew_actor_spawn_opts_adopt`])
+    /// instead of the legacy byte-copy — fixing the supervisor-restart byte-alias
+    /// UAF (audit C1 / spec-section §5). Registration itself also breaks the
+    /// initial-spawn byte-alias by re-cloning the template in place
+    /// (see [`hew_supervisor_set_child_state_clone`] doc).
+    state_clone_fn: Option<actor::HewStateCloneFn>,
 }
 
 impl Drop for InternalChildSpec {
@@ -597,13 +607,13 @@ impl Drop for InternalChildSpec {
         if !self.init_state.is_null() {
             // SAFETY: init_state was allocated with libc::malloc in
             // hew_supervisor_add_child_spec.
-            unsafe { libc::free(self.init_state) };
+            unsafe { libc::free(self.init_state) }; // ALLOCATOR-PAIRING: libc
             self.init_state = ptr::null_mut();
         }
         if !self.name.is_null() {
             // SAFETY: name was allocated with libc::strdup in
             // hew_supervisor_add_child_spec.
-            unsafe { libc::free(self.name.cast::<c_void>()) };
+            unsafe { libc::free(self.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
             self.name = ptr::null_mut();
         }
     }
@@ -627,6 +637,7 @@ impl Default for InternalChildSpec {
             cycle_capable: 0,
             on_crash: None,
             state_drop_fn: None,
+            state_clone_fn: None,
         }
     }
 }
@@ -1123,7 +1134,7 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
     // SAFETY: teardown ownership was claimed once for this supervisor, the
     // self actor is no longer dispatching, and no other thread may consume the
     // raw pointer now.
-    let mut s = unsafe { Box::from_raw(sup) };
+    let mut s = unsafe { Box::from_raw(sup) }; // ALLOCATOR-PAIRING: GlobalAlloc
 
     // Recursively stop all child supervisors first.
     for child_sup in std::mem::take(&mut s.child_supervisors) {
@@ -1171,7 +1182,7 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
     for pool in std::mem::take(&mut s.pool_slots) {
         if !pool.is_null() {
             // SAFETY: pool was created by Box::into_raw in hew_supervisor_pool_add_slot.
-            unsafe { drop(Box::from_raw(pool)) };
+            unsafe { drop(Box::from_raw(pool)) }; // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 }
@@ -1185,7 +1196,7 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
 /// caller is responsible for pushing the result onto the `children` vec).
 unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut HewActor {
     // Copy scalar fields out before any mutable borrow of child_specs.
-    let (opts, state_drop_fn) = {
+    let (opts, state_drop_fn, state_clone_fn) = {
         let spec = &sup.child_specs[index];
         let opts = HewActorOpts {
             init_state: spec.init_state,
@@ -1199,11 +1210,60 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             arena_cap_bytes: spec.arena_cap_bytes,
             cycle_capable: spec.cycle_capable,
         };
-        (opts, spec.state_drop_fn)
+        (opts, spec.state_drop_fn, spec.state_clone_fn)
     };
 
-    // SAFETY: opts is valid.
-    let new_child = unsafe { actor::hew_actor_spawn_opts(&raw const opts) };
+    // Pick the spawn shape based on whether the actor has a registered
+    // deep-clone function.
+    //
+    // **state_clone_fn registered**: call the codegen-emitted clone fn to
+    // produce a fresh, independently-owned wrapper from the spec's template,
+    // then hand ownership to `hew_actor_spawn_opts_adopt`. This bypasses the
+    // legacy `deep_copy_state` byte-copy that aliased owned heap pointers
+    // between `spec.init_state` and `actor.state` (audit C1 UAF).
+    //
+    // **Null-clone-return policy**: when `clone_fn` itself returns null
+    // (OOM allocating the new wrapper), we return early **without** calling
+    // `circuit_breaker_record_success`. This is critical: a successful
+    // restart's clone has to land before the breaker counts the restart as
+    // healed, otherwise repeated null-clones would silently close the
+    // breaker and mask OOM. The outer `restart_with_budget_and_strategy`
+    // already counted this attempt via `record_restart`, so max-restarts /
+    // escalation still fire on persistent failure. Backoff is also applied
+    // so the supervisor doesn't busy-loop retrying clone fns.
+    //
+    // **state_clone_fn NOT registered**: fall back to the legacy byte-copy
+    // path via `hew_actor_spawn_opts`. The Q185(c) checker remains in
+    // defence-in-depth so codegen-emitted actors that should have a clone
+    // fn don't silently land on this path.
+    let new_child = if let Some(clone_fn) = state_clone_fn {
+        if opts.state_size == 0 || opts.init_state.is_null() {
+            // Zero-sized or null template: clone is a no-op; nothing to adopt.
+            // Use the legacy path (which also produces a null state for the
+            // zero-sized case).
+            // SAFETY: opts is valid.
+            unsafe { actor::hew_actor_spawn_opts(&raw const opts) }
+        } else {
+            // SAFETY: spec.init_state is a malloc'd wrapper of `state_size`
+            // bytes, replaced by the clone-aware template at registration
+            // time. clone_fn matches the HewStateCloneFn contract.
+            let cloned = unsafe { clone_fn(opts.init_state.cast_const()) };
+            if cloned.is_null() {
+                // Clone OOM: apply backoff, leave slot null, do NOT advance
+                // circuit-breaker success. The crash that triggered this
+                // restart was already counted by `record_restart` at the
+                // outer level.
+                apply_restart_backoff(&mut sup.child_specs[index]);
+                store_child_slot(sup, index, ptr::null_mut());
+                return ptr::null_mut();
+            }
+            // SAFETY: opts is valid; ownership of `cloned` is transferred.
+            unsafe { actor::hew_actor_spawn_opts_adopt(&raw const opts, cloned) }
+        }
+    } else {
+        // SAFETY: opts is valid.
+        unsafe { actor::hew_actor_spawn_opts(&raw const opts) }
+    };
 
     // Set supervisor back-pointer on the new child.
     if !new_child.is_null() {
@@ -1226,6 +1286,16 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             // SAFETY: new_child is valid; drop_fn is a codegen-emitted
             // function with the correct signature.
             unsafe { actor::hew_actor_set_state_drop(new_child, drop_fn) };
+        }
+
+        // Register the state-clone callback on the actor itself for symmetry
+        // and future direct-spawn restart consumers (the supervisor restart
+        // path reads the clone fn from the spec, not the actor, but storing
+        // it on the actor matches the state_drop_fn pattern).
+        if let Some(clone_fn) = state_clone_fn {
+            // SAFETY: new_child is valid; clone_fn is a codegen-emitted
+            // function with the correct signature.
+            unsafe { actor::hew_actor_set_state_clone(new_child, clone_fn) };
         }
 
         // Record successful restart for circuit breaker.
@@ -1754,7 +1824,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
         pool_slots: Vec::new(),
         pool_specs: Vec::new(),
     });
-    Box::into_raw(sup)
+    Box::into_raw(sup) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Add a child via a child spec.
@@ -1787,7 +1857,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
     // Deep-copy init state.
     let state_copy = if sp.init_state_size > 0 && !sp.init_state.is_null() {
         // SAFETY: init_state is valid for init_state_size bytes.
-        let buf = unsafe { libc::malloc(sp.init_state_size) };
+        let buf = unsafe { libc::malloc(sp.init_state_size) }; // ALLOCATOR-PAIRING: libc
         if buf.is_null() {
             return -1;
         }
@@ -1829,6 +1899,8 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         on_crash: sp.on_crash,
         // Registered by hew_supervisor_set_child_state_drop after this call.
         state_drop_fn: None,
+        // Registered by hew_supervisor_set_child_state_clone after this call.
+        state_clone_fn: None,
     });
 
     // Spawn the child actor.
@@ -1872,7 +1944,7 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
     // SAFETY: self_actor is valid; free the deep copy.
     unsafe {
         if !(*self_actor).state.is_null() {
-            libc::free((*self_actor).state);
+            libc::free((*self_actor).state); // ALLOCATOR-PAIRING: libc
         }
         (*self_actor).state = sup.cast::<c_void>();
         (*self_actor).state_size = 0; // mark as non-owned
@@ -2485,6 +2557,402 @@ mod tests {
             hew_supervisor_stop(sup);
         }
     }
+
+    // ── state_clone_fn tests (Lane A1) ─────────────────────────────────────
+    //
+    // These tests exercise the supervisor-restart deep-clone path. The shape
+    // mirrors the production C1 scenario: an actor holds a heap-allocated
+    // owned field (here a malloc'd byte buffer) and the supervisor must
+    // produce an independently-owned restart-state, not a byte-alias.
+
+    /// A miniature heap-bearing state struct used to validate clone/drop
+    /// callbacks. Owns `payload` (malloc'd); the `sentinel` exists so the
+    /// wrapper is non-trivially sized.
+    #[repr(C)]
+    struct HeapState {
+        payload: *mut u8,
+        payload_len: usize,
+        sentinel: u32,
+    }
+
+    static CLONE_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static DROP_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static CLONE_FORCE_NULL: AtomicBool = AtomicBool::new(false);
+    /// Serializes the `state_clone_fn_*` tests because they share the global
+    /// `CLONE_*` / `DROP_CALL_COUNT` atomics above (test binary runs tests
+    /// in parallel threads by default).
+    static CLONE_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn reset_clone_counters() {
+        CLONE_CALL_COUNT.store(0, Ordering::SeqCst);
+        DROP_CALL_COUNT.store(0, Ordering::SeqCst);
+        CLONE_FORCE_NULL.store(false, Ordering::SeqCst);
+    }
+
+    /// Deep-clone callback: allocates a fresh `HeapState` wrapper + fresh
+    /// payload buffer, copies payload bytes. Returns null if
+    /// `CLONE_FORCE_NULL` is set (used by the failure-blocks-restart test).
+    unsafe extern "C-unwind" fn heap_state_clone(src: *const c_void) -> *mut c_void {
+        CLONE_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        if CLONE_FORCE_NULL.load(Ordering::SeqCst) {
+            return ptr::null_mut();
+        }
+        // SAFETY: caller (runtime) guarantees src is a HeapState wrapper.
+        let src = unsafe { &*src.cast::<HeapState>() };
+        // SAFETY: malloc on the C heap to pair with libc::free in drop/teardown.
+        let dst = unsafe { libc::malloc(std::mem::size_of::<HeapState>()) }.cast::<HeapState>();
+        if dst.is_null() {
+            return ptr::null_mut();
+        }
+        let new_payload = if src.payload_len > 0 {
+            // SAFETY: payload_len is in-bounds malloc size.
+            let buf = unsafe { libc::malloc(src.payload_len) }.cast::<u8>();
+            if buf.is_null() {
+                // SAFETY: dst was just allocated.
+                unsafe { libc::free(dst.cast::<c_void>()) };
+                return ptr::null_mut();
+            }
+            // SAFETY: src.payload is valid for src.payload_len bytes.
+            unsafe { ptr::copy_nonoverlapping(src.payload, buf, src.payload_len) };
+            buf
+        } else {
+            ptr::null_mut()
+        };
+        // SAFETY: dst was just allocated.
+        unsafe {
+            (*dst).payload = new_payload;
+            (*dst).payload_len = src.payload_len;
+            (*dst).sentinel = src.sentinel;
+        }
+        dst.cast::<c_void>()
+    }
+
+    /// Drop callback: frees the wrapper's payload buffer (NOT the wrapper).
+    unsafe extern "C" fn heap_state_drop(state: *mut c_void) {
+        DROP_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        if state.is_null() {
+            return;
+        }
+        // SAFETY: state is a HeapState wrapper.
+        let s = unsafe { &mut *state.cast::<HeapState>() };
+        if !s.payload.is_null() {
+            // SAFETY: payload was malloc'd by the clone callback.
+            unsafe { libc::free(s.payload.cast::<c_void>()) };
+            s.payload = ptr::null_mut();
+        }
+    }
+
+    /// Build a heap-bearing initial-state template (caller owns the
+    /// returned pointer; pass to `add_child_spec` which will byte-copy it).
+    // Box return is intentional for clear ownership of the malloc-backed payload.
+    #[allow(clippy::unnecessary_box_returns, reason = "explicit ownership in test")]
+    fn make_heap_template() -> Box<HeapState> {
+        // Use Box to keep ownership clear in the test; the runtime byte-copies
+        // it into a libc::malloc buffer inside add_child_spec.
+        let payload_bytes: &[u8] = b"original";
+        // SAFETY: malloc payload buffer to match clone-fn's allocator.
+        let payload = unsafe { libc::malloc(payload_bytes.len()) }.cast::<u8>();
+        // SAFETY: payload buffer is malloc'd.
+        unsafe { ptr::copy_nonoverlapping(payload_bytes.as_ptr(), payload, payload_bytes.len()) };
+        Box::new(HeapState {
+            payload,
+            payload_len: payload_bytes.len(),
+            sentinel: 0xDEAD_BEEF,
+        })
+    }
+
+    unsafe fn make_supervisor_with_heap_child(
+        register_clone: bool,
+    ) -> (*mut HewSupervisor, Box<HeapState>) {
+        // SAFETY: test owns the supervisor tree.
+        unsafe {
+            let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 4, 1);
+            assert!(!sup.is_null());
+
+            let template = make_heap_template();
+            let spec = HewChildSpec {
+                name: ptr::null(),
+                init_state: std::ptr::from_ref(&*template).cast_mut().cast::<c_void>(),
+                init_state_size: std::mem::size_of::<HeapState>(),
+                dispatch: Some(noop_child_dispatch),
+                restart_policy: RESTART_PERMANENT,
+                mailbox_capacity: -1,
+                overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
+            };
+            assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
+            hew_supervisor_set_child_state_drop(sup, 0, heap_state_drop);
+            if register_clone {
+                hew_supervisor_set_child_state_clone(sup, 0, heap_state_clone);
+            }
+            (sup, template)
+        }
+    }
+
+    #[test]
+    fn state_clone_fn_basic_round_trip() {
+        // Registers a clone fn that deep-clones HeapState, drives a restart
+        // via restart_child_from_spec, verifies clone_fn was invoked and the
+        // new actor's state is a distinct allocation.
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+        // SAFETY: test owns the supervisor tree.
+        unsafe {
+            let (sup, _template) = make_supervisor_with_heap_child(true);
+
+            // Registration of clone_fn re-clones spec.init_state in place to
+            // break the initial byte-alias. Expect: 1 clone call so far.
+            assert_eq!(
+                CLONE_CALL_COUNT.load(Ordering::SeqCst),
+                1,
+                "set_child_state_clone must re-clone the spec template once to break initial byte-alias"
+            );
+
+            let initial_child = (&(*sup).children)[0];
+            assert!(!initial_child.is_null());
+            let initial_state_ptr = (*initial_child).state;
+            let spec_template_after_reg = (&(*sup).child_specs)[0].init_state;
+            assert_ne!(
+                initial_state_ptr, spec_template_after_reg,
+                "spec.init_state must be re-cloned to a distinct allocation; actor.state still byte-copied from original"
+            );
+
+            // Drive a restart. The supervisor sees state_clone_fn=Some and
+            // routes through hew_actor_spawn_opts_adopt.
+            let restarted = restart_child_from_spec(&mut *sup, 0);
+            assert!(!restarted.is_null(), "restart must succeed");
+            assert_eq!(
+                CLONE_CALL_COUNT.load(Ordering::SeqCst),
+                2,
+                "clone_fn must be invoked once per restart (1 reg + 1 restart = 2 total)"
+            );
+            assert_ne!(
+                (*restarted).state,
+                spec_template_after_reg,
+                "restarted actor.state must be a fresh clone, not aliasing the spec template"
+            );
+            assert!(
+                (*restarted).init_state.is_null(),
+                "adopt-spawn path must leave actor.init_state null (spec holds the template)"
+            );
+
+            // Sentinel survived the round-trip.
+            let restarted_payload = &*(*restarted).state.cast::<HeapState>();
+            assert_eq!(restarted_payload.sentinel, 0xDEAD_BEEF);
+            assert_eq!(restarted_payload.payload_len, b"original".len());
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    fn state_clone_fn_failure_blocks_restart() {
+        // clone_fn returns null. Verify: restart returns null, child slot
+        // is null, circuit-breaker success counter is NOT advanced.
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+        // SAFETY: test owns the supervisor tree.
+        unsafe {
+            let (sup, _template) = make_supervisor_with_heap_child(true);
+            // Put the breaker in HALF_OPEN: if the null-clone path
+            // incorrectly called `circuit_breaker_record_success`, it would
+            // transition the state back to CLOSED. Observing HALF_OPEN
+            // unchanged is the strongest available signal that the success
+            // path was NOT taken.
+            (&mut (*sup).child_specs)[0].circuit_breaker.state = 2; // HEW_CIRCUIT_BREAKER_HALF_OPEN
+            let baseline_clone_calls = CLONE_CALL_COUNT.load(Ordering::SeqCst);
+
+            CLONE_FORCE_NULL.store(true, Ordering::SeqCst);
+            let restarted = restart_child_from_spec(&mut *sup, 0);
+            assert!(
+                restarted.is_null(),
+                "null-clone-return must propagate as a failed restart"
+            );
+            assert_eq!(
+                CLONE_CALL_COUNT.load(Ordering::SeqCst),
+                baseline_clone_calls + 1,
+                "clone_fn must be called exactly once before the null-return short-circuit"
+            );
+            assert_eq!(
+                (&(*sup).child_specs)[0].circuit_breaker.state,
+                2,
+                "circuit-breaker must remain HALF_OPEN; null-clone must NOT call record_success"
+            );
+            assert!(
+                (&(*sup).children)[0].is_null(),
+                "child slot must be null after a blocked restart"
+            );
+
+            // Clear the flag so cleanup doesn't infinite-loop in any
+            // subsequent restart attempt during stop.
+            CLONE_FORCE_NULL.store(false, Ordering::SeqCst);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    fn state_clone_fn_null_falls_back_to_bytecopy() {
+        // No state_clone_fn registered: restart must still succeed via the
+        // legacy `hew_actor_spawn_opts` byte-copy path. This preserves
+        // backward compatibility for children whose codegen has not yet
+        // emitted a clone fn (out-of-tree consumers, hand-rolled actors).
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+        // SAFETY: test owns the supervisor tree.
+        unsafe {
+            let (sup, _template) = make_supervisor_with_heap_child(false);
+            assert_eq!(
+                CLONE_CALL_COUNT.load(Ordering::SeqCst),
+                0,
+                "no clone fn registered => no clone calls"
+            );
+
+            let restarted = restart_child_from_spec(&mut *sup, 0);
+            assert!(
+                !restarted.is_null(),
+                "legacy byte-copy restart must still succeed"
+            );
+            assert_eq!(
+                CLONE_CALL_COUNT.load(Ordering::SeqCst),
+                0,
+                "legacy byte-copy path must NOT invoke clone_fn"
+            );
+            assert!(
+                !(*restarted).init_state.is_null(),
+                "legacy path must populate actor.init_state via deep_copy_state"
+            );
+
+            // Pin: the spec stayed in legacy mode (no in-place re-clone).
+            // No assertion on spec.init_state value — just that the test
+            // doesn't UAF.
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    fn state_clone_fn_alias_freedom_under_mutation() {
+        // C1 regression: with clone_fn registered, mutating actor.state's
+        // owned heap fields must NOT dangle spec.init_state's pointers.
+        // Verifies that registration breaks the initial byte-alias and that
+        // a subsequent restart deep-clones from the clean spec template.
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+        // SAFETY: test owns the supervisor tree.
+        unsafe {
+            let (sup, _template) = make_supervisor_with_heap_child(true);
+            let child = (&(*sup).children)[0];
+            assert!(!child.is_null());
+
+            // Simulate the actor reallocating its `payload` (Vec growth):
+            // free the old payload, malloc a fresh, larger one, splice into
+            // actor.state. After this, if spec.init_state still aliased the
+            // old payload pointer, a clone read would UAF.
+            let actor_state = &mut *(*child).state.cast::<HeapState>();
+            libc::free(actor_state.payload.cast::<c_void>());
+            let new_payload = libc::malloc(64).cast::<u8>();
+            assert!(!new_payload.is_null());
+            libc::memset(new_payload.cast::<c_void>(), 0xAB, 64);
+            actor_state.payload = new_payload;
+            actor_state.payload_len = 64;
+
+            // Critically, the spec template was re-cloned at registration
+            // time; its `payload` points to an independent allocation that
+            // is unaffected by the mutation above.
+            let spec_template = &*(&(*sup).child_specs)[0].init_state.cast::<HeapState>();
+            assert_ne!(
+                spec_template.payload, actor_state.payload,
+                "post-registration: spec.init_state.payload must be independent from actor.state.payload"
+            );
+            assert_eq!(
+                spec_template.payload_len,
+                b"original".len(),
+                "spec template payload length must reflect the clean clone, not the mutated actor"
+            );
+
+            // Restart: clone_fn reads spec.init_state (clean), not
+            // actor.state (mutated). Must not UAF.
+            let baseline_clones = CLONE_CALL_COUNT.load(Ordering::SeqCst);
+            let restarted = restart_child_from_spec(&mut *sup, 0);
+            assert!(!restarted.is_null());
+            assert_eq!(CLONE_CALL_COUNT.load(Ordering::SeqCst), baseline_clones + 1);
+
+            let restarted_state = &*(*restarted).state.cast::<HeapState>();
+            assert_eq!(
+                restarted_state.payload_len,
+                b"original".len(),
+                "restart must reproduce the clean template, not the mutated actor's state"
+            );
+            assert_ne!(
+                restarted_state.payload, spec_template.payload,
+                "restart payload must be an independent clone, not aliasing the spec template"
+            );
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    fn hew_supervisor_set_child_state_clone_back_fills() {
+        // Setting the clone fn after add_child_spec must back-fill it onto
+        // the already-spawned actor so future direct-spawn restart consumers
+        // see the same callback. Mirror of the state_drop_fn back-fill test.
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+        // SAFETY: test owns the supervisor tree.
+        unsafe {
+            let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            assert!(!sup.is_null());
+            let template = make_heap_template();
+            let spec = HewChildSpec {
+                name: ptr::null(),
+                init_state: std::ptr::from_ref(&*template).cast_mut().cast::<c_void>(),
+                init_state_size: std::mem::size_of::<HeapState>(),
+                dispatch: Some(noop_child_dispatch),
+                restart_policy: RESTART_TEMPORARY,
+                mailbox_capacity: -1,
+                overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
+            };
+            assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
+            let child = (&(*sup).children)[0];
+            assert!(!child.is_null());
+            assert!(
+                (*child).state_clone_fn.is_none(),
+                "before set_child_state_clone, actor.state_clone_fn must be None"
+            );
+
+            hew_supervisor_set_child_state_clone(sup, 0, heap_state_clone);
+
+            let stored = (*child)
+                .state_clone_fn
+                .expect("back-fill must populate actor.state_clone_fn");
+            assert_eq!(
+                stored as *const () as usize, heap_state_clone as *const () as usize,
+                "back-filled fn pointer must match the registered fn"
+            );
+            // The spec template was re-cloned during registration.
+            assert_eq!(CLONE_CALL_COUNT.load(Ordering::SeqCst), 1);
+
+            // Stop without enabling clone-from-fail; cleans up the heap
+            // allocations via state_drop_fn on actor.state and libc::free of
+            // the cloned spec template.
+            hew_supervisor_stop(sup);
+        }
+    }
 }
 
 /// Free a supervisor struct without stopping actors or spin-waiting.
@@ -2524,7 +2992,7 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) {
     }
     // Drop the Box — child spec Drop impls free names + init_state.
     // SAFETY: sup was allocated with Box::into_raw and is valid per caller contract.
-    drop(unsafe { Box::from_raw(sup) });
+    drop(unsafe { Box::from_raw(sup) }); // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Handle a crashed child actor by applying the supervisor's restart strategy.
@@ -3078,7 +3546,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
     // Deep-copy init state.
     let state_copy = if sp.init_state_size > 0 && !sp.init_state.is_null() {
         // SAFETY: init_state is valid for init_state_size bytes.
-        let buf = unsafe { libc::malloc(sp.init_state_size) };
+        let buf = unsafe { libc::malloc(sp.init_state_size) }; // ALLOCATOR-PAIRING: libc
         if buf.is_null() {
             return -1;
         }
@@ -3124,6 +3592,9 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         // immediately after this call returns. See the function doc comment
         // for the race-window analysis and calling contract.
         state_drop_fn: None,
+        // Registered by the caller via hew_supervisor_set_child_state_clone
+        // immediately after this call returns.
+        state_clone_fn: None,
     });
 
     // Spawn the child if the supervisor is running.
@@ -3192,12 +3663,12 @@ pub unsafe extern "C" fn hew_supervisor_remove_child(
     let spec = &mut s.child_specs[idx];
     if !spec.init_state.is_null() {
         // SAFETY: init_state was allocated with libc::malloc.
-        unsafe { libc::free(spec.init_state) };
+        unsafe { libc::free(spec.init_state) }; // ALLOCATOR-PAIRING: libc
         spec.init_state = ptr::null_mut();
     }
     if !spec.name.is_null() {
         // SAFETY: name was allocated with libc::strdup.
-        unsafe { libc::free(spec.name.cast::<c_void>()) };
+        unsafe { libc::free(spec.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
         spec.name = ptr::null_mut();
     }
 
@@ -3284,6 +3755,124 @@ pub unsafe extern "C" fn hew_supervisor_set_child_state_drop(
         // SAFETY: child is a valid actor pointer; state_drop_fn has the
         // correct signature.
         unsafe { actor::hew_actor_set_state_drop(child, state_drop_fn) };
+    }
+}
+
+/// Register a state-clone callback for a child actor spec, breaking the
+/// initial-spawn byte-alias between the spec's `init_state` template and the
+/// running actor's `state` allocation.
+///
+/// Called by codegen (Lane A2) immediately after [`hew_supervisor_add_child_spec`]
+/// (or [`hew_supervisor_add_child_dynamic`]). Stores the clone fn on the spec so
+/// future restart paths use it (see `restart_child_from_spec`), back-fills it
+/// on the already-spawned child actor for symmetry, **and** — critically —
+/// re-clones `spec.init_state` in place using the freshly-registered
+/// `state_clone_fn`, replacing the byte-copy template that
+/// `hew_supervisor_add_child_spec` installed.
+///
+/// **Why the in-place re-clone**: prior to this setter, the spec's
+/// `init_state` is a `memcpy` of the user-supplied template, and the initial
+/// actor's `state` is a `memcpy` of *that* — meaning all three wrappers
+/// share identical byte patterns including embedded heap pointers
+/// (`Vec.ptr`, `String.ptr`, IO handles). When the actor first mutates or
+/// reallocates an owned field, the spec's wrapper carries a dangling pointer
+/// (root cause of audit C1 UAF). Re-cloning the spec at registration time —
+/// while the actor is still idle in its mailbox queue and has not yet
+/// dispatched a message — converts `spec.init_state` into an independently-
+/// owned deep clone. Subsequent restarts then deep-clone *that* clean
+/// template via the same `state_clone_fn`.
+///
+/// **Race window**: codegen emits this setter call back-to-back with
+/// `hew_supervisor_add_child_spec` in the same basic block; the spawned
+/// actor's mailbox is empty at this point, so no dispatch can have run yet.
+/// This matches the calling contract documented on
+/// [`actor::hew_actor_set_state_drop`].
+///
+/// **OOM on re-clone**: if the in-place clone fails (`clone_fn` returns null),
+/// the spec retains its byte-copy template — restart can still fall back to
+/// the legacy byte-copy path on a future crash (with the same C1 hazard, but
+/// no worse than today). The `state_clone_fn` pointer is still stored so
+/// future restarts retry the clone-aware path.
+///
+/// `child_index` is the zero-based index of the child whose spec should be
+/// updated. Indices are stable until [`hew_supervisor_remove_child`] is called.
+///
+/// # Safety
+///
+/// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+/// - `child_index` must be a valid index (0 ≤ index < `child_count`).
+/// - `state_clone_fn` must satisfy the [`actor::HewStateCloneFn`] contract
+///   (deep-cloning, `malloc`-compatible output, null on OOM).
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_set_child_state_clone(
+    sup: *mut HewSupervisor,
+    child_index: c_int,
+    state_clone_fn: actor::HewStateCloneFn,
+) {
+    if sup.is_null() || child_index < 0 {
+        return;
+    }
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &mut *sup };
+
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "child_index is checked to be non-negative"
+    )]
+    let idx = child_index as usize;
+
+    if idx >= s.child_count {
+        return;
+    }
+
+    s.child_specs[idx].state_clone_fn = Some(state_clone_fn);
+
+    // Break the initial-spawn byte-alias by re-cloning the spec template
+    // in place. Safe to do BEFORE locking children because we only read
+    // immutable spec fields here; the actor's `state` is a sibling
+    // byte-copy and is untouched by this re-clone.
+    let (template_ptr, template_size) = {
+        let spec = &s.child_specs[idx];
+        (spec.init_state, spec.init_state_size)
+    };
+    if template_size > 0 && !template_ptr.is_null() {
+        // SAFETY: template_ptr is a malloc'd wrapper of template_size bytes
+        // produced by hew_supervisor_add_child_spec's byte-copy; the
+        // contract of state_clone_fn admits reading from such a wrapper as
+        // long as it has not yet been mutated. The race-window analysis in
+        // the doc comment justifies the no-mutation precondition.
+        let fresh = unsafe { state_clone_fn(template_ptr.cast_const()) };
+        if !fresh.is_null() {
+            // Replace spec.init_state with the independently-owned clone.
+            // The OLD template's owned-field pointers byte-alias the
+            // running actor's `state` fields, so we must raw-libc::free the
+            // wrapper *without* calling state_drop_fn — letting the actor
+            // remain the sole owner of those heap allocations until it
+            // crashes or stops.
+            // SAFETY: old template was allocated with libc::malloc in
+            // hew_supervisor_add_child_spec / _add_child_dynamic.
+            unsafe {
+                libc::free(template_ptr); // ALLOCATOR-PAIRING: libc
+            }
+            s.child_specs[idx].init_state = fresh;
+        }
+        // If `fresh.is_null()` (clone OOM at registration time), leave the
+        // byte-copy template in place. The state_clone_fn is still stored;
+        // the next restart will retry the clone-aware path.
+    }
+
+    // Guard the children-slot read so a concurrent supervisor restart on
+    // another thread cannot replace s.children[idx] between the load and
+    // the hew_actor_set_state_clone call.
+    let _guard = s.children_lock.lock_or_recover();
+
+    // Register on the already-spawned actor for its first run (the initial
+    // spawn happens inside add_child_spec before this setter is called).
+    let child = s.children[idx];
+    if !child.is_null() {
+        // SAFETY: child is a valid actor pointer; state_clone_fn has the
+        // correct signature.
+        unsafe { actor::hew_actor_set_state_clone(child, state_clone_fn) };
     }
 }
 
@@ -3419,7 +4008,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_add_slot(
         // Free the duplicated name on allocation failure.
         if !name_copy.is_null() {
             // SAFETY: name_copy was allocated with libc::strdup.
-            unsafe { libc::free(name_copy.cast::<c_void>()) };
+            unsafe { libc::free(name_copy.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
         }
         return -1;
     }

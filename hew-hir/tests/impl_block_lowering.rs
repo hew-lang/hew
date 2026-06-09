@@ -30,7 +30,12 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
     // checker fall-through paths. Per-test asserts cover the actually-relevant
     // diagnostics in each scenario.
     let _ = &tc_output;
-    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 fn assert_no_top_level_item_unsupported(output: &hew_hir::LowerOutput) {
@@ -258,12 +263,11 @@ fn impl_block_with_single_bound_where_clause_lowers() {
 }
 
 #[test]
-fn impl_block_with_multi_bound_where_clause_emits_fail_closed_shape_diagnostic() {
-    // Fail-closed boundary: multi-bound `where T: A + B` predicates are
-    // outside V0b's sufficient surface (γ1 lifts only single-bound
-    // `where T: Trait`). The diagnostic must surface as
-    // `ImplBlockShapeNotLowered { shape: "multi-bound where-clause on `T`" }`
-    // rather than fall through to the generic `top-level-item` catch-all.
+fn impl_block_with_multi_bound_where_clause_lowers() {
+    // Slice ε lift: multi-bound `where T: A + B` predicates are now admitted
+    // (the checker already enforces them; HIR has no runtime artefact for bounds).
+    // Both the single-bound and multi-bound forms must lower cleanly and emit
+    // the impl's method as a top-level `HirItem::Function`.
     let output = lower(
         r"
         pub trait Eq {
@@ -286,6 +290,7 @@ fn impl_block_with_multi_bound_where_clause_emits_fail_closed_shape_diagnostic()
         ",
     );
 
+    assert_no_top_level_item_unsupported(&output);
     let shape_diag = output.diagnostics.iter().find_map(|d| {
         if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
             Some(shape.clone())
@@ -293,12 +298,20 @@ fn impl_block_with_multi_bound_where_clause_emits_fail_closed_shape_diagnostic()
             None
         }
     });
-    assert_eq!(
-        shape_diag.as_deref(),
-        Some("multi-bound where-clause on `T`"),
-        "V0b must surface a precise shape diagnostic for multi-bound \
-         where-clauses; got diagnostics: {:#?}",
+    assert!(
+        shape_diag.is_none(),
+        "multi-bound `where T: A + B` impl must lower in slice ε; \
+         got shape diagnostic: {shape_diag:?} out of full diagnostics: {:#?}",
         output.diagnostics,
+    );
+    let has_first = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Wrap::first"));
+    assert!(
+        has_first,
+        "Wrap::first must be emitted when the multi-bound where-clause is admitted"
     );
 }
 
@@ -340,6 +353,119 @@ fn impl_block_with_where_clause_on_non_type_param_emits_fail_closed_shape_diagno
         "V0b must surface a precise shape diagnostic for parameterised-type \
          where-clauses; got diagnostic: {shape_diag:?} out of full diagnostics: \
          {:#?}",
+        output.diagnostics,
+    );
+}
+
+#[test]
+fn impl_block_blanket_impl_emits_fail_closed_shape_diagnostic() {
+    // Fail-closed boundary: blanket impls (`impl<T> Trait for T`) require
+    // specialisation infrastructure that is not in V0b. The diagnostic must
+    // surface as a precise `ImplBlockShapeNotLowered { shape: "blanket impl
+    // ..." }` rather than fall through to the generic `top-level-item`
+    // catch-all.
+    let output = lower(
+        r"
+        pub trait Eq {
+            fn eq(a: Self, b: Self) -> bool;
+        }
+
+        impl<T> Eq for T {
+            fn eq(a: T, b: T) -> bool {
+                true
+            }
+        }
+        ",
+    );
+
+    let shape_diag = output.diagnostics.iter().find_map(|d| {
+        if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
+            Some(shape.clone())
+        } else {
+            None
+        }
+    });
+    assert!(
+        matches!(
+            shape_diag.as_deref(),
+            Some(s) if s.starts_with("blanket impl")
+        ),
+        "V0b must surface a precise shape diagnostic for blanket impls; got \
+         shape diagnostic: {shape_diag:?} out of full diagnostics: {:#?}",
+        output.diagnostics,
+    );
+}
+
+#[test]
+fn impl_block_non_nominal_target_emits_fail_closed_shape_diagnostic() {
+    // Fail-closed boundary: impl targets must be a named nominal type. Tuple,
+    // array, function, and trait-object targets are not yet supported. The
+    // diagnostic must surface as `ImplBlockShapeNotLowered { shape: "impl on
+    // non-nominal target" }` rather than fall through to the generic
+    // `top-level-item` catch-all.
+    let output = lower(
+        r"
+        pub trait Show {
+            fn show(self) -> bool;
+        }
+
+        impl<A, B> Show for (A, B) {
+            fn show(t: (A, B)) -> bool {
+                true
+            }
+        }
+        ",
+    );
+
+    let shape_diag = output.diagnostics.iter().find_map(|d| {
+        if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
+            Some(shape.clone())
+        } else {
+            None
+        }
+    });
+    assert_eq!(
+        shape_diag.as_deref(),
+        Some("impl on non-nominal target"),
+        "V0b must surface a precise shape diagnostic for non-nominal impl \
+         targets; got diagnostics: {:#?}",
+        output.diagnostics,
+    );
+}
+
+#[test]
+fn impl_block_inherent_on_builtin_nominal_emits_fail_closed_shape_diagnostic() {
+    // Fail-closed boundary: bare inherent impls on builtin nominal types
+    // (`impl Vec<T> { ... }`, `impl HashMap<K, V> { ... }`, etc.) collide
+    // downstream with the stdlib-shipped inherent impls registered via the
+    // checker's `register_builtins_hew_impls` path. V0b rejects them at the
+    // lowering boundary so the failure site matches the cause site, rather
+    // than surfacing later as a confusing duplicate-definition error.
+    //
+    // Trait impls on builtins (`impl MyTrait for Vec<T>`) are deliberately
+    // not covered by this guard — orphan-rule policing is a separate concern.
+    let output = lower(
+        r"
+        impl<T> Vec<T> {
+            fn user_method(v: Vec<T>) -> i32 {
+                0
+            }
+        }
+        ",
+    );
+
+    let shape_diag = output.diagnostics.iter().find_map(|d| {
+        if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
+            Some(shape.clone())
+        } else {
+            None
+        }
+    });
+    assert_eq!(
+        shape_diag.as_deref(),
+        Some("inherent impl on builtin nominal `Vec`"),
+        "V0b must surface a precise shape diagnostic for inherent impls on \
+         builtin nominals; got diagnostics: {:#?}",
         output.diagnostics,
     );
 }

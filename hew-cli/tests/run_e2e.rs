@@ -158,6 +158,38 @@ fn run_timeout_exit_code_is_non_zero() {
     assert!(stderr.contains("Error: program timed out after 1s"));
 }
 
+/// On macOS, `hew run` must not emit ld64.lld "newer than target minimum"
+/// deployment-target mismatch warnings.  These warnings appear when the LLVM
+/// object emitted for the user's program carries a higher macOS SDK version
+/// than the deployment target set at link time.
+///
+/// Regression test for the fix in `hew-codegen-rs`: native object emission
+/// now uses `MACOSX_DEPLOYMENT_TARGET` (defaulting to `"13.0"`) instead of
+/// the system default LLVM triple, so the emitted object's minimum-OS version
+/// matches the linker's target minimum.
+#[cfg(target_os = "macos")]
+#[test]
+fn native_run_emits_no_deployment_target_mismatch_warning() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("deployment_target_check.hew");
+    std::fs::write(&path, "fn main() {}\n").expect("write source");
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .expect("invoke hew run");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("which is newer than target minimum"),
+        "ld64.lld deployment-target mismatch warning found in stderr:\n{stderr}",
+    );
+}
+
 #[test]
 fn run_program_with_simple_arithmetic_succeeds() {
     require_codegen();

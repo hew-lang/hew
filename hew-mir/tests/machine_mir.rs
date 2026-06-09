@@ -175,7 +175,7 @@ fn make_transition(
         event_name: event_name.to_string(),
         source_state: source.to_string(),
         target_state: target.to_string(),
-        has_guard: false,
+        guard: None,
         is_self_transition: source == target,
         reenter: false,
         body_writes: Vec::new(),

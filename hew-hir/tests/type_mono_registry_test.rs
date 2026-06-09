@@ -43,7 +43,12 @@ fn typecheck_and_lower(source: &str) -> hew_hir::LowerOutput {
         "typecheck errors: {:#?}",
         tc_output.errors
     );
-    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 fn typecheck_and_lower_allowing_diags(source: &str) -> hew_hir::LowerOutput {
@@ -61,7 +66,12 @@ fn typecheck_and_lower_allowing_diags(source: &str) -> hew_hir::LowerOutput {
     let _ = tc_output;
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
-    lower_program(&parsed.program, &tc_output, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 /// (a) Plan test A: two distinct `T`s at the same generic record
@@ -416,7 +426,13 @@ fn record_layout_cap_exceeded_emits_fail_closed_diagnostic() {
         "typecheck errors: {:#?}",
         tc_output.errors
     );
-    let output = lower_program_with_mono_cap(&parsed.program, &tc_output, &ResolutionCtx, 2);
+    let output = lower_program_with_mono_cap(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        2,
+        hew_hir::TargetArch::host(),
+    );
 
     let cap_diags: Vec<_> = output
         .diagnostics

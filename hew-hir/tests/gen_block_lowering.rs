@@ -15,7 +15,12 @@ fn typecheck_and_lower(source: &str) -> hew_hir::LowerOutput {
     let tco = checker.check_program(&parsed.program);
     assert!(tco.errors.is_empty(), "type errors: {:?}", tco.errors);
 
-    lower_program(&parsed.program, &tco, &ResolutionCtx)
+    lower_program(
+        &parsed.program,
+        &tco,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
 }
 
 fn main_body(output: &hew_hir::LowerOutput) -> &hew_hir::HirBlock {

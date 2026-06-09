@@ -448,7 +448,7 @@ pub(crate) unsafe fn read_slot_deposit_data(slot: *mut HewReadSlot, triple: Byte
         let await_cancel = s.await_cancel.load(Ordering::Acquire);
         if !await_cancel.is_null() {
             // SAFETY: slot holds a retained registration reference.
-            unsafe { hew_await_cancel_complete(await_cancel) };
+            return unsafe { hew_await_cancel_complete(await_cancel) } != 0;
         }
         true
     } else {
@@ -498,7 +498,7 @@ pub(crate) unsafe fn read_slot_deposit_status(slot: *mut HewReadSlot, status: Re
         let await_cancel = s.await_cancel.load(Ordering::Acquire);
         if !await_cancel.is_null() {
             // SAFETY: slot holds a retained registration reference.
-            unsafe { hew_await_cancel_complete(await_cancel) };
+            return unsafe { hew_await_cancel_complete(await_cancel) } != 0;
         }
         true
     } else {
@@ -545,7 +545,7 @@ pub(crate) unsafe fn read_slot_deposit_handle(slot: *mut HewReadSlot, handle: i6
         let await_cancel = s.await_cancel.load(Ordering::Acquire);
         if !await_cancel.is_null() {
             // SAFETY: slot holds a retained registration reference.
-            unsafe { hew_await_cancel_complete(await_cancel) };
+            return unsafe { hew_await_cancel_complete(await_cancel) } != 0;
         }
         true
     } else {
@@ -568,6 +568,11 @@ mod tests {
         let len = u32::try_from(bytes.len()).unwrap();
         // SAFETY: bytes is valid for len; hew_bytes_from_static copies it.
         unsafe { crate::bytes::hew_bytes_from_static(bytes.as_ptr(), len) }
+    }
+
+    unsafe extern "C" fn read_slot_cleanup_for_test(source: *mut std::ffi::c_void, status: i32) {
+        // SAFETY: each test passes a live read slot as the registration source.
+        unsafe { hew_read_slot_cancel_cleanup(source, status) };
     }
 
     #[test]
@@ -747,6 +752,83 @@ mod tests {
 
         let triple = make_triple(b"late");
         assert!(!unsafe { read_slot_deposit_data(slot, triple) });
+        unsafe {
+            crate::await_cancel::hew_await_cancel_free(reg);
+            hew_read_slot_free(slot);
+        }
+    }
+
+    #[test]
+    fn await_cancel_read_complete_wins_and_suppresses_late_deadline() {
+        let slot = hew_read_slot_new();
+        let reg = unsafe {
+            crate::await_cancel::hew_await_cancel_new(
+                std::ptr::null_mut(),
+                Some(read_slot_cleanup_for_test),
+                slot.cast(),
+            )
+        };
+        unsafe { hew_read_slot_set_await_cancel(slot, reg) };
+
+        let wake = unsafe { read_slot_deposit_data(slot, make_triple(b"ready")) };
+        assert!(wake, "read-complete winner must wake exactly once");
+        assert_eq!(
+            unsafe {
+                crate::await_cancel::hew_await_cancel_cancel(
+                    reg,
+                    AwaitCancelStatus::TimedOut as i32,
+                    0,
+                )
+            },
+            0,
+            "late deadline must not win after read completion"
+        );
+        assert_eq!(
+            unsafe { hew_read_slot_status(slot) },
+            ReadStatus::Data as i32
+        );
+        let taken = unsafe { hew_read_slot_take(slot) };
+        assert_eq!(taken.len, 5);
+        unsafe {
+            crate::bytes::hew_bytes_drop(taken.ptr);
+            crate::await_cancel::hew_await_cancel_free(reg);
+            hew_read_slot_free(slot);
+        }
+    }
+
+    #[test]
+    fn await_cancel_deadline_wins_and_suppresses_late_read_wake() {
+        let slot = hew_read_slot_new();
+        let reg = unsafe {
+            crate::await_cancel::hew_await_cancel_new(
+                std::ptr::null_mut(),
+                Some(read_slot_cleanup_for_test),
+                slot.cast(),
+            )
+        };
+        unsafe { hew_read_slot_set_await_cancel(slot, reg) };
+
+        assert_eq!(
+            unsafe {
+                crate::await_cancel::hew_await_cancel_cancel(
+                    reg,
+                    AwaitCancelStatus::TimedOut as i32,
+                    0,
+                )
+            },
+            1,
+            "deadline should win the pending read"
+        );
+        assert_eq!(
+            unsafe { hew_read_slot_status(slot) },
+            ReadStatus::TimedOut as i32
+        );
+        let wake = unsafe { read_slot_deposit_data(slot, make_triple(b"late")) };
+        assert!(!wake, "late read must not wake after deadline");
+        assert_eq!(
+            unsafe { hew_read_slot_status(slot) },
+            ReadStatus::TimedOut as i32
+        );
         unsafe {
             crate::await_cancel::hew_await_cancel_free(reg);
             hew_read_slot_free(slot);

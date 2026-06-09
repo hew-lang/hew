@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Status: runnable (actor fan-out via join{} structured concurrency; native codegen-rs)
 //! Description: Actor-based Fibonacci - Hew language example
 
 // Actor-based Fibonacci - Hew language example

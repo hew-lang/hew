@@ -1,0 +1,17 @@
+// Reject fixture (NEW-6c): read deadlines require a suspendable context. A
+// default-call-convention `main` has no parked continuation for the timer to
+// resume, so accepting this would fabricate an uninitialized `Result`.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "non-suspendable context"
+import std::net;
+
+fn helper(conn: Connection) -> Result<bytes, fs.IoError> {
+    await conn.read() | after 50ms
+}
+
+fn main() {
+    let conn = net.connect("127.0.0.1:9");
+    let got = helper(conn);
+    let _ = got;
+}

@@ -1812,7 +1812,8 @@ impl BasicBlock {
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
-            | Terminator::Select { next, .. } => vec![*next],
+            | Terminator::Select { next, .. }
+            | Terminator::Join { next, .. } => vec![*next],
             // The default suspend-return edge exits the function (returns to the
             // executor, like a `Return`); only the resume + cleanup arms are
             // in-CFG successors.
@@ -2113,6 +2114,14 @@ pub enum Terminator {
         /// `reply_dest` — the value-routing destination a dedicated carrier
         /// states directly (D-1).
         result_dest: Place,
+        /// When present, this read is the source of `await conn.read() | after d`.
+        /// `result_dest` remains the raw bytes payload slot; codegen binds
+        /// `Ok(result_dest)` or `Err(error_dest)` into this outer Result slot on
+        /// the resume edge after resolving the await-cancel arbiter.
+        deadline_result_dest: Option<Place>,
+        /// `IoError` payload slot for the deadline Err arm. Present exactly when
+        /// `deadline_result_dest` is present.
+        error_dest: Option<Place>,
         /// Block reached on the coro switch resume edge (case 0) — the body
         /// continues here after `enqueue_resume` woke the parked continuation and
         /// the bytes are bound. This is the `next` block of the original read.
@@ -2408,6 +2417,23 @@ pub enum Terminator {
     /// block reached after the winning arm body completes — the join
     /// edge that converges the per-arm bodies.
     Select { arms: Vec<SelectArm>, next: u32 },
+    /// Sealed `join { }` construct — the wait-ALL sibling of
+    /// [`Terminator::Select`]. Every branch is an actor-ask issued
+    /// concurrently; codegen issues each ask (channel alloc + ask issue,
+    /// reusing the `select` setup preamble), waits for ALL replies via
+    /// `hew_reply_wait`, and materialises the `result` tuple from the
+    /// per-branch reply slots in declaration order. Per HEW-SPEC-2026
+    /// §4.11.2 a branch trap cancels the remaining branches and the trap
+    /// propagates to the enclosing scope.
+    ///
+    /// The branch vector is non-empty (HIR enforces). `result` is the
+    /// tuple local that converges the per-branch replies; `next` is the
+    /// block reached after all replies land and the tuple is bound.
+    Join {
+        branches: Vec<JoinBranch>,
+        result: Place,
+        next: u32,
+    },
     /// Stackless suspend point (R326/R327, W6.007). The carrier for a
     /// `coro.suspend` in a switched-resume LLVM coroutine: any function whose
     /// CFG contains this terminator is lowered by codegen as a
@@ -2497,6 +2523,31 @@ pub enum SelectArmKind {
     ChannelRecv { receiver: Place, elem_is_int: bool },
     /// `after <duration>` — timer.
     AfterTimer { duration: Place },
+}
+
+/// One branch of a sealed `join { }` terminator — a single actor-ask
+/// issued concurrently with its siblings. Mirrors
+/// [`SelectArmKind::ActorAsk`] (codegen reuses the same packed-payload
+/// channel-alloc + ask-issue preamble) and additionally carries the
+/// per-branch reply slot the wait-ALL loop writes into and the reply
+/// value's resolved type. The branch's position in the
+/// [`Terminator::Join`] `branches` vector is the element index of the
+/// `result` tuple that this reply materialises.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinBranch {
+    pub actor: Place,
+    pub method: String,
+    pub args: Vec<Place>,
+    pub msg_type: i32,
+    /// Packed-payload place (one ptr + size threaded through
+    /// `hew_actor_ask_with_channel`), built via `lower_actor_payload`.
+    pub value: Place,
+    /// Reply slot — codegen writes `hew_reply_wait`'s result here, then
+    /// composes it into the `result` tuple at this branch's index.
+    pub reply_dest: Place,
+    /// The reply value's resolved type — sizes the reply slot and the
+    /// tuple element it feeds.
+    pub reply_ty: ResolvedTy,
 }
 
 /// An addressable target for a load or store in the backend-authority
@@ -4166,6 +4217,15 @@ pub enum ExitPath {
     /// constructs this — codegen rejects `Terminator::Select` before
     /// the elaboration pass would observe a `Select` exit at runtime.
     Select {
+        block: u32,
+        next: u32,
+    },
+    /// Sealed `join{}` exit — the wait-ALL sibling of [`ExitPath::Select`].
+    /// Mirrors [`Terminator::Join`]; declared so the elaboration pass is
+    /// exhaustive. Per-branch loser/cancel cleanup lives at the codegen
+    /// join-dispatch site (cancel-rest on a branch trap), not in the
+    /// function-wide `DropPlan`, exactly as for `Select`.
+    Join {
         block: u32,
         next: u32,
     },

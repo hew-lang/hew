@@ -604,8 +604,19 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             )
             .expect("write to string");
         }
-        HirExprKind::ConnAwaitRead { conn, to_string } => {
-            writeln!(out, "{pad}  conn-await-read to_string={to_string}").expect("write to string");
+        HirExprKind::ConnAwaitRead {
+            conn,
+            to_string,
+            deadline_ns,
+        } => {
+            let deadline = deadline_ns
+                .map(|ns| format!(" | after {ns}ns"))
+                .unwrap_or_default();
+            writeln!(
+                out,
+                "{pad}  conn-await-read to_string={to_string}{deadline}"
+            )
+            .expect("write to string");
             dump_expr(out, conn, indent + 2);
         }
         HirExprKind::ListenerAwaitAccept { listener } => {
@@ -629,6 +640,17 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 let binding_label = arm.binding_name.as_deref().unwrap_or("_");
                 writeln!(out, "{pad}    arm {kind_label} bind={binding_label}")
                     .expect("write to string");
+            }
+        }
+        HirExprKind::Join(join) => {
+            writeln!(out, "{pad}  join branches={}", join.branches.len()).expect("write to string");
+            for branch in &join.branches {
+                writeln!(out, "{pad}    branch actor-ask method={}", branch.method)
+                    .expect("write to string");
+                dump_expr(out, &branch.actor, indent + 2);
+                for arg in &branch.args {
+                    dump_expr(out, arg, indent + 2);
+                }
             }
         }
         HirExprKind::SpawnLambdaActor {

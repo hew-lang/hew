@@ -202,6 +202,14 @@ fn terminator_reads(term: &Terminator) -> Vec<Place> {
                 crate::model::SelectArmKind::AfterTimer { duration } => vec![*duration],
             })
             .collect(),
+        Terminator::Join { branches, .. } => branches
+            .iter()
+            .flat_map(|branch| {
+                let mut r = vec![branch.actor, branch.value];
+                r.extend(branch.args.iter().copied());
+                r
+            })
+            .collect(),
     }
 }
 

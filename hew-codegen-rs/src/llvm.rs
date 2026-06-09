@@ -1361,6 +1361,24 @@ fn intern_runtime_decl<'ctx>(
         // `#[repr(C)] BytesTriple` uses — reconstructed into the `{ptr,i32,i32}`
         // dest by a raw 16-byte store (mirrors `is_bytes_triple_return_producer`).
         "hew_read_slot_take" => i64_ty.array_type(2).fn_type(&[ptr_ty.into()], false),
+        // hew_read_slot_set_await_cancel(slot: *mut HewReadSlot,
+        //   reg: *mut HewAwaitCancel) -> void (read_slot.rs:275). Attaches the
+        // common cancel/deadline registration to the read slot; read-complete
+        // deposits call `hew_await_cancel_complete` through this handle.
+        "hew_read_slot_set_await_cancel" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_read_slot_cancel_cleanup(source: *mut c_void, status: i32) -> void
+        // (read_slot.rs:300). Cleanup callback passed to `hew_await_cancel_new`;
+        // on deadline expiry it marks the read slot TimedOut and detaches it from
+        // the reactor so a later readiness event cannot wake the caller.
+        "hew_read_slot_cancel_cleanup" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into()], false),
+        // hew_read_slot_status(slot: *mut HewReadSlot) -> i32. Reads the current
+        // read-slot terminal state; the read deadline resume path uses the
+        // await-cancel status as authority, but this remains part of the ABI.
+        "hew_read_slot_status" => i32_ty.fn_type(&[ptr_ty.into()], false),
         // hew_read_slot_cancel(slot: *mut HewReadSlot) -> void
         // (`hew-runtime/src/read_slot.rs`). The abandon / register-failure edge:
         // a still-pending reactor deposit is dropped instead of waking + the
@@ -19062,6 +19080,7 @@ fn emit_elab_drops(
             | ExitPath::Send { block, .. }
             | ExitPath::Ask { block, .. }
             | ExitPath::Select { block, .. }
+            | ExitPath::Join { block, .. }
             | ExitPath::Suspend { block, .. } => *block,
         };
         exit_block == block_id
@@ -20978,8 +20997,14 @@ struct SuspendingAskEmit {
 struct SuspendingReadEmit {
     conn: Place,
     result_dest: Place,
+    deadline_result_dest: Option<Place>,
+    error_dest: Option<Place>,
     resume: u32,
     cleanup: u32,
+    /// NEW-6c `await conn.read() | after d` deadline (nanoseconds). `Some(ns)`
+    /// schedules the common await-cancel arbiter against the read slot; timeout
+    /// binds `Err(IoError::TimedOut(0))`. `None` is a plain suspending read.
+    deadline_ns: Option<i64>,
 }
 
 /// Carrier for [`emit_suspending_accept_terminator`] — the suspending
@@ -21097,6 +21122,13 @@ fn emit_suspending_read_terminator<'ctx>(
             term.cleanup
         )));
     }
+    if term.deadline_ns.is_some()
+        && (term.deadline_result_dest.is_none() || term.error_dest.is_none())
+    {
+        return Err(CodegenError::FailClosed(
+            "SuspendingRead deadline reached codegen without Result/IoError destinations".into(),
+        ));
+    }
 
     // self = the current actor — the parked-continuation waiter the reactor wake
     // re-enqueues. MUST come from `hew_actor_self()` (the thread-local execution
@@ -21136,6 +21168,53 @@ fn emit_suspending_read_terminator<'ctx>(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
         .into_pointer_value();
+
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
+        let cancel_new = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_new",
+        )?;
+        let cleanup_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_read_slot_cancel_cleanup",
+        )?;
+        let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
+        let reg = fn_ctx
+            .builder
+            .build_call(
+                cancel_new,
+                &[self_actor.into(), cleanup_ptr.into(), slot.into()],
+                "suspending_read_deadline_reg",
+            )
+            .llvm_ctx("hew_await_cancel_new call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
+            .into_pointer_value();
+        let set_await_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_read_slot_set_await_cancel",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                set_await_cancel,
+                &[slot.into(), reg.into()],
+                "suspending_read_set_await_cancel",
+            )
+            .llvm_ctx("hew_read_slot_set_await_cancel call")?;
+        Some(reg)
+    } else {
+        None
+    };
 
     let await_read = intern_runtime_decl(
         fn_ctx.ctx,
@@ -21206,7 +21285,23 @@ fn emit_suspending_read_terminator<'ctx>(
         .builder
         .build_call(slot_free, &[slot.into()], "suspending_read_err_free")
         .llvm_ctx("hew_read_slot_free (register err) call")?;
-    store_empty_bytes(fn_ctx, term.result_dest)?;
+    if let Some(reg) = reg {
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_read_err_reg_free")
+            .llvm_ctx("hew_await_cancel_free (register err) call")?;
+    }
+    if let (Some(result_dest), Some(error_dest)) = (term.deadline_result_dest, term.error_dest) {
+        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
+    } else {
+        store_empty_bytes(fn_ctx, term.result_dest)?;
+    }
     fn_ctx
         .builder
         .build_unconditional_branch(resume_bb)
@@ -21216,6 +21311,156 @@ fn emit_suspending_read_terminator<'ctx>(
     // returns the coro handle to the trampoline (which parks it on this actor);
     // case 0 resumes into the read-bind block; case 1 tears down. ──────────────
     fn_ctx.builder.position_at_end(do_suspend_bb);
+    if let (Some(reg), Some(ns)) = (reg, term.deadline_ns) {
+        let delay_ms = (ns / 1_000_000).max(1) as u64;
+        let tw_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_global_timer_wheel",
+        )?;
+        let tw = fn_ctx
+            .builder
+            .build_call(tw_fn, &[], "suspending_read_deadline_tw")
+            .llvm_ctx("hew_global_timer_wheel call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
+            .into_pointer_value();
+        let schedule = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_schedule_deadline_ms",
+        )?;
+        let delay_val = i64_ty.const_int(delay_ms, false);
+        let sched_rc = fn_ctx
+            .builder
+            .build_call(
+                schedule,
+                &[reg.into(), tw.into(), delay_val.into()],
+                "suspending_read_schedule_deadline",
+            )
+            .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_await_cancel_schedule_deadline_ms returned void".into(),
+                )
+            })?
+            .into_int_value();
+        let armed = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                sched_rc,
+                sched_rc.get_type().const_zero(),
+                "suspending_read_deadline_armed",
+            )
+            .llvm_ctx("suspending read schedule-armed compare")?;
+        let deadline_proceed_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_read_deadline_proceed");
+        let deadline_check_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_read_deadline_check");
+        fn_ctx
+            .builder
+            .build_conditional_branch(armed, deadline_proceed_bb, deadline_check_bb)
+            .llvm_ctx("suspending read schedule-armed branch")?;
+
+        fn_ctx.builder.position_at_end(deadline_check_bb);
+        let status_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_status",
+        )?;
+        let sched_status = fn_ctx
+            .builder
+            .build_call(status_fn, &[reg.into()], "suspending_read_schedule_status")
+            .llvm_ctx("hew_await_cancel_status (schedule) call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
+            })?
+            .into_int_value();
+        let read_completed = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                sched_status,
+                i32_ty.const_int(1, false),
+                "suspending_read_schedule_read_completed",
+            )
+            .llvm_ctx("suspending read schedule read-completed compare")?;
+        let deadline_failclosed_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_read_deadline_failclosed");
+        fn_ctx
+            .builder
+            .build_conditional_branch(read_completed, deadline_proceed_bb, deadline_failclosed_bb)
+            .llvm_ctx("suspending read schedule read-completed branch")?;
+
+        fn_ctx.builder.position_at_end(deadline_failclosed_bb);
+        let reg_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_cancel",
+        )?;
+        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
+        let no_wake = i32_ty.const_zero();
+        fn_ctx
+            .builder
+            .build_call(
+                reg_cancel,
+                &[reg.into(), cancelled_status.into(), no_wake.into()],
+                "suspending_read_failclosed_reg_cancel",
+            )
+            .llvm_ctx("hew_await_cancel_cancel (read fail-closed) call")?;
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                reg_free,
+                &[reg.into()],
+                "suspending_read_failclosed_reg_free",
+            )
+            .llvm_ctx("hew_await_cancel_free (read fail-closed) call")?;
+        fn_ctx
+            .builder
+            .build_call(
+                slot_cancel,
+                &[slot.into()],
+                "suspending_read_failclosed_slot_cancel",
+            )
+            .llvm_ctx("hew_read_slot_cancel (fail-closed) call")?;
+        fn_ctx
+            .builder
+            .build_call(slot_free, &[slot.into()], "suspending_read_failclosed_free")
+            .llvm_ctx("hew_read_slot_free (fail-closed) call")?;
+        let result_dest = term.deadline_result_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingRead fail-closed missing Result dest".into())
+        })?;
+        let error_dest = term.error_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingRead fail-closed missing IoError dest".into())
+        })?;
+        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending read deadline fail-closed br")?;
+
+        fn_ctx.builder.position_at_end(deadline_proceed_bb);
+    }
     let read_bind_bb = fn_ctx
         .ctx
         .append_basic_block(parent, "suspending_read_bind");
@@ -21251,6 +21496,34 @@ fn emit_suspending_read_terminator<'ctx>(
     // ── abandon_cleanup: cancel + free the read slot, then join the shared coro
     // cleanup (frame-free + coro.end). ─────────────────────────────────────────
     fn_ctx.builder.position_at_end(abandon_cleanup_bb);
+    if let Some(reg) = reg {
+        let reg_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_cancel",
+        )?;
+        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
+        let no_wake = i32_ty.const_zero();
+        fn_ctx
+            .builder
+            .build_call(
+                reg_cancel,
+                &[reg.into(), cancelled_status.into(), no_wake.into()],
+                "suspending_read_abandon_reg_cancel",
+            )
+            .llvm_ctx("hew_await_cancel_cancel (read abandon) call")?;
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_read_abandon_reg_free")
+            .llvm_ctx("hew_await_cancel_free (read abandon) call")?;
+    }
     fn_ctx
         .builder
         .build_call(
@@ -21273,6 +21546,82 @@ fn emit_suspending_read_terminator<'ctx>(
     // transfer) on the fast path. Store the triple into `result_dest`, release
     // the creator ref, and branch to the MIR resume block. ─────────────────────
     fn_ctx.builder.position_at_end(read_bind_bb);
+    if let Some(reg) = reg {
+        let complete = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_complete",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(complete, &[reg.into()], "suspending_read_deadline_complete")
+            .llvm_ctx("hew_await_cancel_complete call")?;
+        let status_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_status",
+        )?;
+        let status = fn_ctx
+            .builder
+            .build_call(status_fn, &[reg.into()], "suspending_read_deadline_status")
+            .llvm_ctx("hew_await_cancel_status call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
+            })?
+            .into_int_value();
+        let timed_out = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                i32_ty.const_int(3, false),
+                "suspending_read_timed_out",
+            )
+            .llvm_ctx("suspending read timed-out compare")?;
+        let timeout_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_read_timeout");
+        let read_proceed_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_read_proceed");
+        fn_ctx
+            .builder
+            .build_conditional_branch(timed_out, timeout_bb, read_proceed_bb)
+            .llvm_ctx("suspending read deadline branch")?;
+
+        fn_ctx.builder.position_at_end(timeout_bb);
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_read_timeout_reg_free")
+            .llvm_ctx("hew_await_cancel_free (read timeout) call")?;
+        fn_ctx
+            .builder
+            .build_call(slot_free, &[slot.into()], "suspending_read_timeout_free")
+            .llvm_ctx("hew_read_slot_free (timeout) call")?;
+        let result_dest = term.deadline_result_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingRead timeout missing Result dest".into())
+        })?;
+        let error_dest = term.error_dest.ok_or_else(|| {
+            CodegenError::FailClosed("SuspendingRead timeout missing IoError dest".into())
+        })?;
+        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending read timeout br")?;
+
+        fn_ctx.builder.position_at_end(read_proceed_bb);
+    }
     let slot_take = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -21300,10 +21649,25 @@ fn emit_suspending_read_terminator<'ctx>(
         .builder
         .build_store(dest_ptr, triple)
         .llvm_ctx("suspending read bytes store")?;
+    if let Some(result_dest) = term.deadline_result_dest {
+        emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
+    }
     fn_ctx
         .builder
         .build_call(slot_free, &[slot.into()], "suspending_read_ok_free")
         .llvm_ctx("hew_read_slot_free (ok) call")?;
+    if let Some(reg) = reg {
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_read_ok_reg_free")
+            .llvm_ctx("hew_await_cancel_free (read ok) call")?;
+    }
     fn_ctx
         .builder
         .build_unconditional_branch(resume_bb)
@@ -22471,6 +22835,37 @@ fn store_empty_bytes<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, dest: Place) -> CodegenResu
         .build_store(dest_ptr, struct_ty.const_zero())
         .llvm_ctx("store empty bytes")?;
     Ok(())
+}
+
+fn emit_read_deadline_timeout_err(
+    fn_ctx: &FnCtx<'_, '_>,
+    result_dest: Place,
+    error_dest: Place,
+) -> CodegenResult<()> {
+    let error_local = composite_dest_local(error_dest, "SuspendingRead IoError")?;
+    // `IoError::TimedOut` is variant index 5 in `std/fs.hew`.
+    store_composite_tag(fn_ctx, error_local, 5, "SuspendingRead IoError::TimedOut")?;
+    let (payload_ptr, payload_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: error_local,
+            variant_idx: 5,
+            field_idx: 0,
+        },
+    )?;
+    let payload_int_ty = match payload_ty {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "SuspendingRead IoError::TimedOut payload must be integer, got {other:?}"
+            )));
+        }
+    };
+    fn_ctx
+        .builder
+        .build_store(payload_ptr, payload_int_ty.const_zero())
+        .llvm_ctx("store SuspendingRead IoError::TimedOut payload")?;
+    emit_result_err(fn_ctx, result_dest, error_dest)
 }
 
 /// Store an INVALID `Connection` (NEW-2) into a pointer-shaped opaque-handle
@@ -26237,6 +26632,8 @@ fn lower_terminator<'ctx>(
         Terminator::SuspendingRead {
             conn,
             result_dest,
+            deadline_result_dest,
+            error_dest,
             resume,
             cleanup,
         } => emit_suspending_read_terminator(
@@ -26244,8 +26641,11 @@ fn lower_terminator<'ctx>(
             SuspendingReadEmit {
                 conn: *conn,
                 result_dest: *result_dest,
+                deadline_result_dest: *deadline_result_dest,
+                error_dest: *error_dest,
                 resume: *resume,
                 cleanup: *cleanup,
+                deadline_ns: await_deadlines.get(&block_id).copied(),
             },
         )?,
         Terminator::SuspendingStreamNext {
@@ -26376,6 +26776,13 @@ fn lower_terminator<'ctx>(
         )?,
         Terminator::Select { arms, .. } => {
             emit_select_terminator(fn_ctx, arms)?;
+        }
+        Terminator::Join {
+            branches,
+            result,
+            next,
+        } => {
+            emit_join_terminator(fn_ctx, branches, *result, *next)?;
         }
         Terminator::Suspend {
             resume,
@@ -27797,6 +28204,376 @@ fn emit_select_terminator<'ctx>(
             .llvm_ctx("select after br")?;
     }
 
+    Ok(())
+}
+
+/// Emit the LLVM IR for `Terminator::Join` — the wait-ALL sibling of
+/// [`emit_select_terminator`].
+///
+/// Every branch is an actor-ask. The setup PREAMBLE is identical to the
+/// `select` ActorAsk path: allocate one reply channel per branch, store
+/// it into a stack `[N x ptr]` array, and issue the ask; any ask-issue
+/// failure frees the channels allocated so far and traps
+/// (`emit_select_setup_failure_trap`). The back half differs: instead of
+/// a `hew_select_first` winner race, we WAIT on EVERY channel in
+/// declaration order (`hew_reply_wait`), materialise each reply into the
+/// `result` tuple's matching element, and free each channel exactly once.
+///
+/// Per HEW-SPEC-2026 §4.11.2, a branch error cancels the remaining
+/// branches and the trap propagates. The substrate surfaces a branch
+/// failure as a null reply (`hew_reply_wait` returns null when the
+/// published value pointer was null — the allocation-failure /
+/// unreachable-mailbox path); on a null reply we cancel + free every
+/// not-yet-consumed channel (cancel-rest) and trap (propagate).
+fn emit_join_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    branches: &[hew_mir::JoinBranch],
+    result: Place,
+    next: u32,
+) -> CodegenResult<()> {
+    if branches.is_empty() {
+        // HIR rejects empty joins with JoinNoBranches; defence-in-depth.
+        return Err(CodegenError::FailClosed(
+            "join{} terminator carries zero branches (HIR should have rejected with JoinNoBranches)"
+                .to_string(),
+        ));
+    }
+
+    let n = branches.len();
+    let n_i32 = i32::try_from(n).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "join{{}} branch count {n} exceeds i32::MAX — runtime ABI is i32-bound"
+        ))
+    })?;
+
+    let ctx = fn_ctx.ctx;
+    let i32_ty = ctx.i32_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    // Channel array on the stack: [N x ptr]. Branch i stores its freshly
+    // allocated `*mut HewReplyChannel` at `channel_array[i]`.
+    let arr_ty = ptr_ty.array_type(n_i32 as u32);
+    let arr_ptr = fn_ctx
+        .builder
+        .build_alloca(arr_ty, "join_channels")
+        .llvm_ctx("join channel array alloca")?;
+
+    let parent_fn = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("join block has no parent function".into()))?;
+
+    let channel_new = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_new",
+    )?;
+    let ask_with_channel = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_ask_with_channel",
+    )?;
+    let channel_cancel = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_cancel",
+    )?;
+    let channel_free = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_free",
+    )?;
+    let reply_wait = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_wait",
+    )?;
+    let libc_free = get_or_declare_free(fn_ctx);
+
+    // `&channel_array[i]` helper.
+    let slot_ptr = |i: usize| -> CodegenResult<PointerValue<'ctx>> {
+        let i_u32 = u32::try_from(i).map_err(|_| {
+            CodegenError::FailClosed(format!("join branch index {i} exceeds u32::MAX"))
+        })?;
+        let idx0 = i32_ty.const_zero();
+        let idx1 = i32_ty.const_int(u64::from(i_u32), false);
+        let gep = unsafe {
+            fn_ctx
+                .builder
+                .build_gep(arr_ty, arr_ptr, &[idx0, idx1], &format!("join_ch_slot_{i}"))
+                .llvm_ctx("join ch slot gep")?
+        };
+        Ok(gep)
+    };
+
+    // ── Setup PREAMBLE: allocate channel + issue ask per branch ──────
+    for (i, branch) in branches.iter().enumerate() {
+        let ch_val = fn_ctx
+            .builder
+            .build_call(channel_new, &[], &format!("join_ch_new_{i}"))
+            .llvm_ctx("hew_reply_channel_new call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_reply_channel_new returned void".into()))?
+            .into_pointer_value();
+
+        // Store BEFORE issuing the ask so the recovery path sees a
+        // consistent array view if the ask issue fails.
+        let slot = slot_ptr(i)?;
+        fn_ctx
+            .builder
+            .build_store(slot, ch_val)
+            .llvm_ctx("join ch slot store")?;
+
+        let actor_ptr = load_duplex_handle(fn_ctx, branch.actor, "join_actor_handle")?;
+        let (payload_ptr, payload_size) =
+            actor_payload_ptr_size(fn_ctx, branch.value, "join_ask_payload")?;
+        let msg_type_val = i32_ty.const_int(branch.msg_type as u64, false);
+        let status = fn_ctx
+            .builder
+            .build_call(
+                ask_with_channel,
+                &[
+                    actor_ptr.into(),
+                    msg_type_val.into(),
+                    payload_ptr.into(),
+                    payload_size.into(),
+                    ch_val.into(),
+                ],
+                &format!("join_ask_issue_{i}"),
+            )
+            .llvm_ctx("hew_actor_ask_with_channel call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into())
+            })?
+            .into_int_value();
+
+        // Branch on status: 0 → next ask; non-zero → mid-setup recovery
+        // (free every channel allocated through `i` inclusive, then trap).
+        let zero = i32_ty.const_zero();
+        let failed = fn_ctx
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                status,
+                zero,
+                &format!("join_ask_failed_{i}"),
+            )
+            .llvm_ctx("join ask cmp")?;
+        let setup_ok_bb = ctx.append_basic_block(parent_fn, &format!("join_setup_ok_{i}"));
+        let setup_fail_bb = ctx.append_basic_block(parent_fn, &format!("join_setup_fail_{i}"));
+        fn_ctx
+            .builder
+            .build_conditional_branch(failed, setup_fail_bb, setup_ok_bb)
+            .llvm_ctx("join setup br")?;
+
+        // Recovery block: cancel + free channels [0..i] (each had an ask
+        // successfully submitted), then free the failing channel `i`
+        // (no cancel — no ask was submitted), then trap.
+        fn_ctx.builder.position_at_end(setup_fail_bb);
+        for j in 0..i {
+            let cleanup_slot = slot_ptr(j)?;
+            let cleanup_ch = fn_ctx
+                .builder
+                .build_load(ptr_ty, cleanup_slot, &format!("join_cleanup_load_{j}"))
+                .llvm_ctx("join setup-fail load")?
+                .into_pointer_value();
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_cancel,
+                    &[cleanup_ch.into()],
+                    &format!("join_cleanup_cancel_{j}"),
+                )
+                .llvm_ctx("join setup-fail cancel")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[cleanup_ch.into()],
+                    &format!("join_cleanup_free_{j}"),
+                )
+                .llvm_ctx("join setup-fail free")?;
+        }
+        fn_ctx
+            .builder
+            .build_call(
+                channel_free,
+                &[ch_val.into()],
+                &format!("join_setup_fail_free_self_{i}"),
+            )
+            .llvm_ctx("join setup-fail self free")?;
+        emit_select_setup_failure_trap(fn_ctx)?;
+
+        fn_ctx.builder.position_at_end(setup_ok_bb);
+    }
+
+    // ── WAIT-ALL back half: wait every channel, materialise the tuple ─
+    let (result_ptr, result_ty) = place_pointer(fn_ctx, result)?;
+    // A multi-branch join binds a tuple struct; a single-branch join
+    // binds the lone reply type directly (the checker's `Expr::Join`
+    // rule). Resolve the per-branch element type accordingly.
+    let result_struct_ty = match result_ty {
+        BasicTypeEnum::StructType(st) => Some(st),
+        _ => {
+            if n != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "join{{}} with {n} branches must bind a tuple struct result, got {result_ty:?}"
+                )));
+            }
+            None
+        }
+    };
+
+    for (i, branch) in branches.iter().enumerate() {
+        let win_slot_ptr = slot_ptr(i)?;
+        let win_ch = fn_ctx
+            .builder
+            .build_load(ptr_ty, win_slot_ptr, &format!("join_ch_load_{i}"))
+            .llvm_ctx("join channel load")?
+            .into_pointer_value();
+
+        let reply_ptr = fn_ctx
+            .builder
+            .build_call(
+                reply_wait,
+                &[win_ch.into()],
+                &format!("join_reply_wait_{i}"),
+            )
+            .llvm_ctx("hew_reply_wait call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
+            .into_pointer_value();
+
+        // Null reply ⇒ this branch errored. Per §4.11.2 cancel the rest
+        // (every not-yet-consumed channel: this one + branches i+1..n)
+        // and trap (propagate).
+        let null_bb = ctx.append_basic_block(parent_fn, &format!("join_reply_null_{i}"));
+        let ok_bb = ctx.append_basic_block(parent_fn, &format!("join_reply_ok_{i}"));
+        let is_null = fn_ctx
+            .builder
+            .build_is_null(reply_ptr, &format!("join_reply_is_null_{i}"))
+            .llvm_ctx("join reply null cmp")?;
+        fn_ctx
+            .builder
+            .build_conditional_branch(is_null, null_bb, ok_bb)
+            .llvm_ctx("join reply null branch")?;
+
+        // Cancel-rest + trap branch.
+        fn_ctx.builder.position_at_end(null_bb);
+        // Free the failing channel's caller-side ref (its reply was null).
+        fn_ctx
+            .builder
+            .build_call(
+                channel_free,
+                &[win_ch.into()],
+                &format!("join_err_free_self_{i}"),
+            )
+            .llvm_ctx("join error self free")?;
+        // Cancel + free every still-pending sibling channel.
+        for j in (i + 1)..n {
+            let rest_slot = slot_ptr(j)?;
+            let rest_ch = fn_ctx
+                .builder
+                .build_load(ptr_ty, rest_slot, &format!("join_err_rest_load_{i}_{j}"))
+                .llvm_ctx("join error rest load")?
+                .into_pointer_value();
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_cancel,
+                    &[rest_ch.into()],
+                    &format!("join_err_rest_cancel_{i}_{j}"),
+                )
+                .llvm_ctx("join error rest cancel")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[rest_ch.into()],
+                    &format!("join_err_rest_free_{i}_{j}"),
+                )
+                .llvm_ctx("join error rest free")?;
+        }
+        let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
+            CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
+        })?;
+        let trap_fn = trap_intrinsic
+            .get_declaration(fn_ctx.llvm_mod, &[])
+            .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+        fn_ctx
+            .builder
+            .build_call(trap_fn, &[], &format!("join_reply_null_trap_{i}"))
+            .llvm_ctx("join reply null trap")?;
+        fn_ctx
+            .builder
+            .build_unreachable()
+            .llvm_ctx("join reply null unreachable")?;
+
+        // Ok branch: materialise the reply into result tuple element `i`.
+        fn_ctx.builder.position_at_end(ok_bb);
+        let (elem_ptr, elem_ty) = if let Some(struct_ty) = result_struct_ty {
+            let elem_ty = struct_ty.get_field_type_at_index(i as u32).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "join{{}} result tuple has no field at index {i} (branch/element mismatch)"
+                ))
+            })?;
+            let field_ptr = fn_ctx
+                .builder
+                .build_struct_gep(
+                    struct_ty,
+                    result_ptr,
+                    i as u32,
+                    &format!("join_elem_{i}_gep"),
+                )
+                .llvm_ctx("join tuple elem gep")?;
+            (field_ptr, elem_ty)
+        } else {
+            (result_ptr, result_ty)
+        };
+        let reply_val = fn_ctx
+            .builder
+            .build_load(elem_ty, reply_ptr, &format!("join_reply_value_{i}"))
+            .llvm_ctx("join reply load")?;
+        fn_ctx
+            .builder
+            .build_store(elem_ptr, reply_val)
+            .llvm_ctx("join reply store")?;
+        // Free the heap reply payload and the caller-side channel ref.
+        fn_ctx
+            .builder
+            .build_call(
+                libc_free,
+                &[reply_ptr.into()],
+                &format!("join_reply_free_{i}"),
+            )
+            .llvm_ctx("join reply free")?;
+        fn_ctx
+            .builder
+            .build_call(channel_free, &[win_ch.into()], &format!("join_ch_free_{i}"))
+            .llvm_ctx("join channel free")?;
+        let _ = branch;
+    }
+
+    // All replies landed and the tuple is bound — continue at `next`.
+    let next_bb = *fn_ctx.blocks.get(&next).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "join{{}} next block {next} missing from FnCtx.blocks"
+        ))
+    })?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("join next br")?;
     Ok(())
 }
 

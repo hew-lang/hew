@@ -633,6 +633,14 @@ fn walk_expr(
                 walk_expr(&arm.body, subst, residual_domain, disc);
             }
         }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                walk_expr(&branch.actor, subst, residual_domain, disc);
+                for a in &branch.args {
+                    walk_expr(a, subst, residual_domain, disc);
+                }
+            }
+        }
         // Leaf variants: no child expressions. `expr.ty` was already visited
         // above, so a leaf typed as a concrete generic record/enum (e.g. a
         // `BindingRef` of type `Box<i64>`) still reaches through.

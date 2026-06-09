@@ -1,0 +1,30 @@
+// Regression guard for the join actor-only branch enforcement: a `select`
+// channel-receive arm (`pat from rx.recv()`) is STILL valid and must keep
+// checking OK. The join-branch validator that rejects `join { rx.recv() }`
+// (see reject/join_branch_not_actor.hew) is join-specific and must NOT regress
+// select's legitimate recv/stream arms.
+import std::channel::channel;
+
+actor Worker {
+    #[on(start)]
+    fn start() {
+        let (txa, rxa): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);
+        txa.send(7);
+        select {
+            a from rxa.recv() => {
+                match a {
+                    Some(n) => println(f"a:{n}"),
+                    None => println("a:none"),
+                }
+            },
+            after 1s => println("timeout"),
+        };
+        txa.close();
+        rxa.close();
+    }
+}
+
+fn main() {
+    let _w = spawn Worker;
+    sleep_ms(50);
+}

@@ -1,0 +1,37 @@
+// Acceptance fixture for join{} with two actor-ask branches.
+//
+// Design intent:
+//   - join{} issues BOTH asks concurrently and waits for ALL replies
+//     (the wait-ALL sibling of select{}), binding a tuple of the
+//     per-branch results in declaration order (HEW-SPEC-2026 §4.11.2).
+//   - Doubler.compute(x) returns x * 2. With inputs 10 and 11 the tuple
+//     is (20, 22).
+//
+// Order proof: the binding `(ra, rb)` must receive branch 0's reply in
+// `ra` and branch 1's reply in `rb`. `assert_eq` pins each element, so a
+// transposed or mismatched tuple materialisation fails the run.
+//
+// Exit-code contract: main returns ra + rb = 42. POSIX exit is 8-bit, so
+// the value stays in 0..=255. 42 is the canonical fixture value.
+//
+// Channel-free proof: the compiler lowers each branch through
+// hew_reply_channel_new + hew_actor_ask_with_channel and the wait-ALL
+// loop frees every channel exactly once (see Terminator::Join codegen in
+// hew-codegen-rs/src/llvm.rs::emit_join_terminator).
+actor Doubler {
+    receive fn compute(x: i64) -> i64 {
+        x * 2
+    }
+}
+
+fn main() -> i64 {
+    let a = spawn Doubler;
+    let b = spawn Doubler;
+    let (ra, rb) = join {
+        a.compute(10),
+        b.compute(11),
+    };
+    assert_eq(ra, 20);
+    assert_eq(rb, 22);
+    ra + rb
+}

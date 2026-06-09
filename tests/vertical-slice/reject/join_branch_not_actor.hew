@@ -1,0 +1,19 @@
+// Reject fixture for HEW-SPEC-2026 §4.11.2: every `join` branch must be an
+// actor receive-handler call (`<actor>.<method>(<args>)` with a return type).
+//
+// `rx.recv()` is a channel receive — valid as a `select` arm source, but NOT a
+// valid `join` branch (a channel is not an actor). The branch carries no
+// actor-ask dispatch, so the join-specific branch validator rejects it at CHECK
+// time with `JoinBranchNotActorAsk` — never a silent `Unit` lowering and never
+// a late MIR error. This is the CONSUMED form (`let v = join { ... }`); the
+// discarded form is rejected identically.
+import std::channel::channel;
+
+fn main() -> i64 {
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    tx.send(7);
+    let _v = join {
+        rx.recv(),
+    };
+    0
+}

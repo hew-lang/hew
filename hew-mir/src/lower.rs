@@ -17,7 +17,7 @@ use std::{
 use hew_hir::stdlib_catalog;
 use hew_hir::{
     named_type_components, named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock,
-    HirConstValue, HirExpr, HirExprKind, HirFn, HirItem, HirLifecycleHookKind, HirLiteral,
+    HirConstValue, HirExpr, HirExprKind, HirFn, HirItem, HirJoin, HirLifecycleHookKind, HirLiteral,
     HirMachineDecl, HirMachineTransition, HirModule, HirNodeId, HirSelect, HirSelectArmKind,
     HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirVarSelfMethodTarget,
     IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
@@ -32,9 +32,10 @@ use crate::dataflow;
 use crate::model::{
     ActorHandlerLayout, ActorLayout, BasicBlock, BlockKind, CheckedMirFunction, CmpPred,
     DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath,
-    FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck,
-    MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
-    SelectArm, SelectArmKind, Strategy, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch,
+    LambdaCapture, MirCheck, MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind,
+    MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind, Strategy, Terminator,
+    ThirFunction, TraitObjectStorage, TrapKind,
 };
 
 type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
@@ -4062,6 +4063,14 @@ fn collect_unknown_self_fields_in_expr(
                 collect_unknown_self_fields_in_expr(&arm.body, state_fields, seen, unknown);
             }
         }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                collect_unknown_self_fields_in_expr(&branch.actor, state_fields, seen, unknown);
+                for arg in &branch.args {
+                    collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
+                }
+            }
+        }
         HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
             collect_unknown_self_fields_in_expr(body, state_fields, seen, unknown);
         }
@@ -7465,6 +7474,7 @@ impl Builder {
                 ..
             } => self.lower_await_task(*binding_id, output_ty, expr.site),
             HirExprKind::Select(select) => self.lower_select(select, &expr.ty, expr.site),
+            HirExprKind::Join(join) => self.lower_join(join, &expr.ty, expr.site),
             HirExprKind::SpawnLambdaActor { .. } => {
                 // The lambda-actor literal allocates a fresh local
                 // (typed as the actor's Duplex<Msg, Reply>) and
@@ -7494,9 +7504,11 @@ impl Builder {
                 reply_ty,
                 deadline_ns,
             } => self.lower_actor_ask(receiver, method_id, args, reply_ty, *deadline_ns, expr),
-            HirExprKind::ConnAwaitRead { conn, to_string } => {
-                self.lower_conn_await_read(conn, *to_string, expr)
-            }
+            HirExprKind::ConnAwaitRead {
+                conn,
+                to_string,
+                deadline_ns,
+            } => self.lower_conn_await_read(conn, *to_string, *deadline_ns, expr),
             HirExprKind::ListenerAwaitAccept { listener } => {
                 self.lower_listener_await_accept(listener, expr)
             }
@@ -9922,7 +9934,8 @@ impl Builder {
                     | Terminator::SuspendingAccept { .. }
                     | Terminator::SuspendingChannelRecv { .. }
                     | Terminator::SuspendingRemoteAsk { .. }
-                    | Terminator::Select { .. } => false,
+                    | Terminator::Select { .. }
+                    | Terminator::Join { .. } => false,
                 }
             }
         };
@@ -15052,6 +15065,88 @@ impl Builder {
         Some(result_place)
     }
 
+    /// Lower a `join { ... }` expression — STAGE 1 fail-closed placeholder.
+    ///
+    /// Stage 2 replaces this with the real `Terminator::Join` producer (the
+    /// wait-ALL sibling of `lower_select`). Until then, fail closed with a
+    /// `NotYetImplemented` diagnostic so `hew check` reports a precise
+    /// limitation rather than silently mis-lowering the construct.
+    /// Lower a `join { ... }` expression — the wait-ALL sibling of
+    /// `lower_select`. Allocates the result-tuple local, issues every
+    /// branch ask (resolving the handler reply type + packing the
+    /// payload exactly as the `select` `ActorAsk` arm does), and seals the
+    /// originating block with `Terminator::Join`. Codegen waits for ALL
+    /// replies and materialises the tuple; per HEW-SPEC-2026 §4.11.2 a
+    /// branch trap cancels the remaining branches and propagates.
+    fn lower_join(
+        &mut self,
+        join: &HirJoin,
+        expected_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Result tuple local first so it dominates the next block.
+        let result_place = self.alloc_local(expected_ty.clone());
+        let next_bb = self.alloc_block();
+
+        let mut mir_branches: Vec<JoinBranch> = Vec::with_capacity(join.branches.len());
+        for branch in &join.branches {
+            // Resolve the actor handler's reply type so the per-branch
+            // reply slot is typed correctly — identical to the single-arm
+            // `lower_actor_ask` / select ActorAsk path.
+            let info = self.actor_method_info(&branch.actor.ty, &branch.method, site)?;
+            if info.param_tys.len() != branch.args.len() {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "join actor-ask branch arity mismatch for `{}`",
+                            branch.method
+                        ),
+                        site,
+                    },
+                    note: format!(
+                        "handler expects {} argument(s), branch supplied {}",
+                        info.param_tys.len(),
+                        branch.args.len()
+                    ),
+                });
+                return None;
+            }
+            let actor_place = self.lower_value(&branch.actor)?;
+            let arg_places: Option<Vec<Place>> =
+                branch.args.iter().map(|a| self.lower_value(a)).collect();
+            let arg_places = arg_places?;
+            // Pack args into a single payload Place using the same helper
+            // single-shot ask + select lowering use (codegen-side ABI:
+            // one payload ptr + size through `hew_actor_ask_with_channel`).
+            let payload_place = self.lower_actor_payload(&branch.args, site)?;
+            // Per-branch reply slot. Codegen writes `hew_reply_wait`'s
+            // result here, then composes it into `result_place`'s tuple
+            // element at this branch's index.
+            let reply_dest = self.alloc_local(info.return_ty.clone());
+            mir_branches.push(JoinBranch {
+                actor: actor_place,
+                method: branch.method.clone(),
+                args: arg_places,
+                msg_type: info.msg_type,
+                value: payload_place,
+                reply_dest,
+                reply_ty: info.return_ty.clone(),
+            });
+        }
+
+        // Seal the originating block with the join terminator.
+        self.finish_current_block(Terminator::Join {
+            branches: mir_branches,
+            result: result_place,
+            next: next_bb,
+        });
+
+        // Continuation — subsequent lowering resumes after all replies
+        // landed and the result tuple is bound.
+        self.start_block(next_bb);
+        Some(result_place)
+    }
+
     fn lower_actor_ask(
         &mut self,
         receiver: &HirExpr,
@@ -15172,6 +15267,7 @@ impl Builder {
         &mut self,
         conn: &HirExpr,
         to_string: bool,
+        deadline_ns: Option<i64>,
         expr: &HirExpr,
     ) -> Option<Place> {
         let conn_place = self.lower_value(conn)?;
@@ -15182,18 +15278,50 @@ impl Builder {
         let bytes_dest = self.alloc_local(bytes_ty.clone());
 
         if self.current_function_call_conv.carries_execution_context() {
+            let deadline_result_dest =
+                deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
+            let error_dest = deadline_ns.map(|_| {
+                self.alloc_local(ResolvedTy::Named {
+                    name: "IoError".to_string(),
+                    args: Vec::new(),
+                    builtin: None,
+                    is_opaque: false,
+                })
+            });
             let next = self.alloc_block();
+            if let Some(ns) = deadline_ns {
+                self.await_deadline_ns.insert(self.current_block_id, ns);
+            }
             // `SuspendingRead` carries no separate MIR cleanup block — it rides
             // the multi-suspend epilogue, so `cleanup` reuses `next` (exactly as
             // `SuspendingAsk` does).
             self.finish_current_block(Terminator::SuspendingRead {
                 conn: conn_place,
                 result_dest: bytes_dest,
+                deadline_result_dest,
+                error_dest,
                 resume: next,
                 cleanup: next,
             });
             self.start_block(next);
+            if let Some(result_dest) = deadline_result_dest {
+                return Some(result_dest);
+            }
         } else {
+            if deadline_ns.is_some() {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "`await conn.read() | after d` in a non-suspendable context"
+                            .to_string(),
+                        site: expr.site,
+                    },
+                    note: "read deadlines require a suspendable actor/closure/task context; \
+                           default-call-convention functions have no parkable continuation to \
+                           resume on timeout"
+                        .to_string(),
+                });
+                return None;
+            }
             // Default callers use the blocking read FFI: they run on a foreign/main
             // thread with no parkable continuation. Closure shims above fail closed
             // for captured Connection awaits until closure invocations can suspend.
@@ -17241,6 +17369,7 @@ fn exit_block_id(exit: &ExitPath) -> u32 {
         | ExitPath::Send { block, .. }
         | ExitPath::Ask { block, .. }
         | ExitPath::Select { block, .. }
+        | ExitPath::Join { block, .. }
         | ExitPath::Suspend { block, .. } => block,
     }
 }
@@ -17260,6 +17389,7 @@ fn exit_kind_label(exit: &ExitPath) -> &'static str {
         ExitPath::Send { .. } => "Send",
         ExitPath::Ask { .. } => "Ask",
         ExitPath::Select { .. } => "Select",
+        ExitPath::Join { .. } => "Join",
         ExitPath::Suspend { .. } => "Suspend",
     }
 }
@@ -17780,7 +17910,8 @@ fn validate_cross_block_split_consume(
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
-            | Terminator::Select { next, .. } => emit(*next),
+            | Terminator::Select { next, .. }
+            | Terminator::Join { next, .. } => emit(*next),
             // Suspend's default edge exits the function; resume + cleanup are
             // the in-CFG successor edges.
             Terminator::Suspend {
@@ -17831,7 +17962,8 @@ fn validate_cross_block_split_consume(
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
-            | Terminator::Select { next, .. } => vec![*next],
+            | Terminator::Select { next, .. }
+            | Terminator::Join { next, .. } => vec![*next],
             // Suspend's default edge exits the function; resume + cleanup are
             // the in-CFG successors.
             Terminator::Suspend {
@@ -18527,6 +18659,17 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
             }
             places
         }
+        Terminator::Join { branches, .. } => {
+            let mut places = Vec::new();
+            for branch in branches {
+                places.push(branch.actor);
+                places.extend(branch.args.iter().copied());
+                places.push(branch.value);
+                // `branch.reply_dest` is the slot the reply is written
+                // into — a write, not a source.
+            }
+            places
+        }
     }
 }
 
@@ -18745,6 +18888,9 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         Terminator::RemoteAsk { value, .. }
         | Terminator::SuspendingRemoteAsk { value, .. } => place_refs_local(*value, local),
         Terminator::Select { .. } => terminator_source_places(term)
+            .into_iter()
+            .any(|p| place_refs_local(p, local)),
+        Terminator::Join { .. } => terminator_source_places(term)
             .into_iter()
             .any(|p| place_refs_local(p, local)),
     }
@@ -20886,6 +21032,13 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
             }
             places
         }
+        // A `join { a.m(owned), ... }` transfers each branch's `value`
+        // payload into its actor message queue exactly as the `select`
+        // ActorAsk arms above do — poison each so the escape gate refuses
+        // or poisons an owned-handle payload identically.
+        Terminator::Join { branches, .. } => {
+            branches.iter().map(|branch| branch.value).collect()
+        }
         // F-1: a SUSPENDABLE `await peer.method(owned)` / `await sink.send(owned)`
         // transfers its `value` payload into the message / channel queue exactly
         // as the blocking `Ask`/`Send` above do. Before this arm both fell into a
@@ -21968,6 +22121,16 @@ fn enumerate_exits(
                 // site; the function-wide DropPlan is intentionally
                 // empty for ExitPath::Select.
                 ExitPath::Select {
+                    block: block_id,
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+            // `join { }` exit — the wait-ALL sibling of `Terminator::Select`.
+            // Per-branch cancel-rest cleanup lives at the codegen join-dispatch
+            // site, not in the function-wide DropPlan, exactly as for `Select`.
+            Terminator::Join { branches: _, result: _, next } => (
+                ExitPath::Join {
                     block: block_id,
                     next: *next,
                 },
@@ -25106,6 +25269,8 @@ mod f1_suspending_escape_poison {
         let read = Terminator::SuspendingRead {
             conn: Place::Local(1),
             result_dest: Place::Local(2),
+            deadline_result_dest: None,
+            error_dest: None,
             resume: 1,
             cleanup: 2,
         };

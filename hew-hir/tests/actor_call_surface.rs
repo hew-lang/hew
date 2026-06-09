@@ -207,6 +207,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Select(_)
+        | HirExprKind::Join(_)
         | HirExprKind::AwaitTask { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }

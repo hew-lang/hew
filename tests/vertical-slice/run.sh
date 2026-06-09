@@ -310,6 +310,35 @@ run_accept_expect_status "actor_multi_on_stop" 0
 # value is returned and the loser channel is cancelled without leaking.
 run_accept_expect_status "actor_ask_race" 42
 
+# join{} wait-ALL with two actor-ask branches: Doubler.compute(10)/(11)
+# reply 20/22; the tuple binds (ra, rb) in declaration order. Exit code
+# ra + rb = 42 proves both replies are materialised into the correct
+# tuple elements and every reply channel is freed exactly once.
+run_accept_expect_status "join_two_actors" 42
+
+# join{} error propagation (HEW-SPEC-2026 §4.11.2): one branch traps
+# (assert_eq false in Bad.compute). The trap propagates out of the join
+# site instead of binding a tuple; the assertion-failure abort exits 134
+# (SIGABRT), matching `assert_eq_fail`. Deterministic — independent of
+# which branch replies first.
+run_accept_expect_status "join_branch_trap" 134
+
+# Reject (§4.11.2 actor-only join branches): `join { rx.recv() }` is NOT a
+# valid join branch — a channel receive is not an actor receive-handler ask.
+# The join-specific branch validator must reject it at CHECK time with
+# `JoinBranchNotActorAsk` (declared but previously never triggered) — never a
+# silent `Unit` lowering, never a late MIR error. Exercises the consumed form.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/join_branch_not_actor.hew" >"${reject_output}" 2>&1; then
+  echo "expected join_branch_not_actor fixture to fail" >&2
+  exit 1
+fi
+grep -q 'JoinBranchNotActorAsk' "${reject_output}"
+
+# Regression guard: the join-branch rejection above is join-scoped and must NOT
+# break `select`'s legitimate channel-receive arm. A `select { pat from
+# rx.recv() ... }` still checks OK.
+"${HEW}" check "${ROOT}/tests/vertical-slice/accept/select_recv_guard.hew" >"${accept_output}" 2>&1
+
 # Supervisor bootstrap: spawn AppSupervisor → hew_supervisor_new + add_child_spec + start;
 # main returns 42 after bootstrap completes successfully.
 run_accept_expect_status "supervisor_basic" 42
@@ -1405,16 +1434,50 @@ if [[ "${ok_status}" -ne 42 ]]; then
   exit 1
 fi
 
-# Reject (fail-closed, deferred to v0.6): a deadline on a suspendable READ await.
-# Only actor-ask deadlines are wired; read/accept/recv/next fail CLOSED at CHECK
-# time with a precise diagnostic (not a runtime NYI, not a hang).
-if "${HEW}" compile \
-    "${ROOT}/tests/vertical-slice/reject/await_read_deadline_deferred.hew" \
-    >"${reject_output}" 2>&1; then
-  echo "expected await_read_deadline_deferred fixture to fail" >&2
+# Accept (worker-free read-deadline oracle): `await conn.read() | after 60ms`
+# where the peer stays silent. Under HEW_WORKERS=1 the read parks worker-free and
+# the deadline timer resumes the actor with Err(IoError::TimedOut) -> exit 7.
+compile_accept "await_read_deadline_deferred"
+read_timeout_bin="${ROOT}/.tmp/compile-out/await_read_deadline_deferred"
+read_deadline_status=0
+if timeout --kill-after=5s 30s env HEW_WORKERS=1 "${read_timeout_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  read_deadline_status=0
+else
+  read_deadline_status=$?
+fi
+if [[ "${read_deadline_status}" -ne 7 ]]; then
+  echo "expected await_read_deadline_deferred (HEW_WORKERS=1) to exit 7, got ${read_deadline_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
   exit 1
 fi
-grep -q 'only supported for actor-ask awaits' "${reject_output}"
+
+# Accept (read-before-deadline race): peer writes immediately; the read completes
+# first, cancels the long deadline, and binds Ok(bytes) -> exit 42.
+compile_accept "await_read_deadline_ok"
+read_ok_bin="${ROOT}/.tmp/compile-out/await_read_deadline_ok"
+read_ok_status=0
+if timeout --kill-after=5s 30s env HEW_WORKERS=1 "${read_ok_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  read_ok_status=0
+else
+  read_ok_status=$?
+fi
+if [[ "${read_ok_status}" -ne 42 ]]; then
+  echo "expected await_read_deadline_ok (HEW_WORKERS=1) to exit 42, got ${read_ok_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
+# Reject (fail-closed): read deadlines require a suspendable context. A default
+# `main` has no parkable continuation to resume on timeout.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_read_deadline_default_context.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_read_deadline_default_context fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-suspendable context' "${reject_output}"
 
 # Reject (fail-closed, deferred to v0.6): a deadline on a SUSPENDING-CLOSURE call.
 if "${HEW}" compile \

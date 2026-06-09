@@ -326,6 +326,17 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
                 walk_expr_for_suspend(&arm.body, found);
             }
         }
+        HirExprKind::Join(join) => {
+            // Every join branch is an actor-ask issued concurrently; the
+            // wait-ALL is a suspend point from the enclosing body's view.
+            *found = true;
+            for branch in &join.branches {
+                walk_expr_for_suspend(&branch.actor, found);
+                for arg in &branch.args {
+                    walk_expr_for_suspend(arg, found);
+                }
+            }
+        }
         // --- containers: recurse into all sub-expressions -----------
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             walk_expr_for_suspend(left, found);

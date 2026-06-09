@@ -409,6 +409,14 @@ impl Verifier {
                     self.expr(&arm.body);
                 }
             }
+            HirExprKind::Join(join) => {
+                for branch in &join.branches {
+                    self.expr(&branch.actor);
+                    for arg in &branch.args {
+                        self.expr(arg);
+                    }
+                }
+            }
             HirExprKind::SpawnLambdaActor { body, captures, .. } => {
                 // The lambda body is a child expression — recurse for
                 // node/site/diagnostic coverage. The capture set is

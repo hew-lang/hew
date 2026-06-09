@@ -202,6 +202,18 @@ pub enum HirDiagnosticKind {
     SelectStreamNextArity {
         arg_count: usize,
     },
+    /// A `join { ... }` branch's source expression is not an actor
+    /// method call (`<actor-expr>.<method>(<args>)`). Per HEW-SPEC-2026
+    /// §4.11.2 every join branch must be an actor receive-handler call
+    /// with a return type; arbitrary expressions are rejected.
+    JoinBranchNotActorAsk {
+        /// Short description of the offending source shape, e.g.
+        /// `"literal"`, `"binary expression"`, `"identifier"`.
+        source_shape: String,
+    },
+    /// A `join { }` expression contains zero branches. An empty join
+    /// produces no values and is rejected at the surface.
+    JoinNoBranches,
 
     // ── Machine static checks ────────────────────────────────────────────
     /// One or more `(state, event)` pairs have no matching transition and

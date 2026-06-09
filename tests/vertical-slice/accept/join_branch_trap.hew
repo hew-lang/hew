@@ -1,0 +1,42 @@
+// Acceptance fixture for join{} error propagation (HEW-SPEC-2026 §4.11.2):
+//   "If any branch in a `join` traps, the remaining branches are
+//    cancelled and the trap propagates to the enclosing scope."
+//
+// Design intent:
+//   - Good.compute(x) returns x * 2 (would yield 20).
+//   - Bad.compute(x) traps: `assert_eq(x, x + 1)` is always false, so the
+//     handler aborts. The trap propagates out of the join site to the
+//     enclosing scope (here, process exit), and the result tuple is never
+//     bound — `ra + rb` is unreachable.
+//
+// Exit-code contract: a trapped branch propagates as a process-level
+// abort (the failed `assert_eq` calls `abort()`, raising SIGABRT). POSIX
+// reports a signal-terminated child as 128 + signum, so SIGABRT (signal 6)
+// surfaces as exit 134. The fixture asserts status 134, proving the trap is
+// NOT swallowed and no bogus tuple is produced.
+//
+// Flake contract: deterministic — Bad always traps regardless of which
+// branch's reply lands first, so the propagation is independent of
+// scheduling.
+actor Good {
+    receive fn compute(x: i64) -> i64 {
+        x * 2
+    }
+}
+
+actor Bad {
+    receive fn compute(x: i64) -> i64 {
+        assert_eq(x, x + 1);
+        x
+    }
+}
+
+fn main() -> i64 {
+    let g = spawn Good;
+    let b = spawn Bad;
+    let (ra, rb) = join {
+        g.compute(10),
+        b.compute(5),
+    };
+    ra + rb
+}

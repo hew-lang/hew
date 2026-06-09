@@ -2062,6 +2062,34 @@ fn walk_expr(
                 );
             }
         }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                walk_expr(
+                    &branch.actor,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+                for a in &branch.args {
+                    walk_expr(
+                        a,
+                        subst,
+                        machine_decls,
+                        residual_domain,
+                        seen,
+                        order,
+                        cap,
+                        diagnostics,
+                        cap_diag_emitted,
+                    );
+                }
+            }
+        }
     }
 }
 

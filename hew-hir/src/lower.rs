@@ -39,12 +39,12 @@ use crate::monomorph::{
 use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
-    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding,
-    HirMatchArmPredicate, HirModule, HirPayloadPredicate, HirRecordDecl, HirRegexLiteral,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
-    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
-    HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
+    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
+    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate, HirRecordDecl,
+    HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
+    HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
@@ -3424,6 +3424,14 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(&arm.body, out, trait_out);
             }
         }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                collect_call_sites_in_expr(&branch.actor, out, trait_out);
+                for a in &branch.args {
+                    collect_call_sites_in_expr(a, out, trait_out);
+                }
+            }
+        }
         // Leaf variants: no sub-expressions, so no call sites to collect.
         HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
@@ -5871,6 +5879,18 @@ impl LowerCtx {
                         receiver,
                         abi_return_ty,
                     );
+                }
+            }
+            HirExprKind::Join(join) => {
+                for branch in &mut join.branches {
+                    self.wrap_var_self_explicit_expr_returns(
+                        &mut branch.actor,
+                        receiver,
+                        abi_return_ty,
+                    );
+                    for arg in &mut branch.args {
+                        self.wrap_var_self_explicit_expr_returns(arg, receiver, abi_return_ty);
+                    }
                 }
             }
             HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
@@ -9973,6 +9993,7 @@ impl LowerCtx {
                             kind: HirExprKind::ConnAwaitRead {
                                 conn: Box::new(conn),
                                 to_string,
+                                deadline_ns: None,
                             },
                             span: span.clone(),
                         };
@@ -10214,6 +10235,7 @@ impl LowerCtx {
             Expr::Select { arms, timeout } => {
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
+            Expr::Join(branches) => self.lower_join(branches, span.clone()),
             Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
             Expr::SpawnLambdaActor {
                 params,
@@ -11057,6 +11079,145 @@ impl LowerCtx {
 
         let result_ty = expected_ty.unwrap_or(ResolvedTy::Unit);
         (HirExprKind::Select(HirSelect { arms: hir_arms }), result_ty)
+    }
+
+    /// Lower a parsed `join { ... }` expression to HIR — the wait-ALL
+    /// sibling of `lower_select`.
+    ///
+    /// Per HEW-SPEC-2026 §4.11.2 every branch must be an actor receive
+    /// handler call (`<actor-expr>.<method>(<args>)`, optionally written
+    /// `await <actor>.<method>(...)` — the `await` is redundant inside
+    /// `join`). Each branch is issued concurrently; the construct waits
+    /// for ALL replies and binds a tuple of the per-branch reply values
+    /// in declaration order. A branch trap cancels the remaining branches
+    /// and propagates (handled at codegen).
+    ///
+    /// Non-actor-call branches are rejected with `JoinBranchNotActorAsk`
+    /// (defence-in-depth — the checker already restricts join branches via
+    /// `synthesize_actor_concurrency_source`). An empty join is rejected
+    /// with `JoinNoBranches`.
+    fn lower_join(
+        &mut self,
+        branches: &[Spanned<Expr>],
+        span: std::ops::Range<usize>,
+    ) -> (HirExprKind, ResolvedTy) {
+        if branches.is_empty() {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::JoinNoBranches,
+                span.clone(),
+                "join expression contains no branches",
+            ));
+            return (
+                HirExprKind::Unsupported("empty join".into()),
+                ResolvedTy::Unit,
+            );
+        }
+
+        let mut hir_branches: Vec<HirJoinBranch> = Vec::with_capacity(branches.len());
+        for branch in branches {
+            hir_branches.push(self.lower_join_branch(branch));
+        }
+
+        // The construct's static type is the checker-authoritative tuple
+        // recorded on the join span; fall back to a tuple built from the
+        // per-branch reply types when the checker has no entry (e.g. a
+        // standalone HIR test driver). A single-branch join is the branch
+        // reply type itself, mirroring the checker's `Expr::Join` rule.
+        let result_ty = self
+            .expr_types
+            .get(&SpanKey::from(&span))
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .unwrap_or_else(|| {
+                if hir_branches.len() == 1 {
+                    hir_branches[0].reply_ty.clone()
+                } else {
+                    ResolvedTy::Tuple(hir_branches.iter().map(|b| b.reply_ty.clone()).collect())
+                }
+            });
+
+        (
+            HirExprKind::Join(HirJoin {
+                branches: hir_branches,
+            }),
+            result_ty,
+        )
+    }
+
+    /// Lower a single `join` branch into a [`HirJoinBranch`]. The branch
+    /// must be an actor method call; `await <call>` is unwrapped (the
+    /// `await` is redundant inside `join`). The reply type is harvested
+    /// from the checker-authoritative `actor_method_dispatch` table keyed
+    /// on the method-call span, exactly as `select_arm_binding_ty` does.
+    fn lower_join_branch(&mut self, branch: &Spanned<Expr>) -> HirJoinBranch {
+        let (call_expr, call_span) = match &branch.0 {
+            Expr::Await(inner) => (&inner.0, &inner.1),
+            _ => (&branch.0, &branch.1),
+        };
+        // §4.11.2: every join branch must be an actor receive-handler ask
+        // (`<actor>.<method>(<args>)` with a return type). The method-call
+        // SHAPE alone is not sufficient — the branch must carry a
+        // checker-authoritative actor-ask dispatch. A non-actor method call
+        // (e.g. a channel `rx.recv()`, which `select` legitimately accepts but
+        // `join` does not, or a fire/tell handler with no reply) has no `Ask`
+        // dispatch and is rejected here with `JoinBranchNotActorAsk` at CHECK
+        // time — never silently lowered to `Unit` (which would later surface as
+        // an opaque MIR error or a no-op compile). This validator runs only on
+        // the join path, so `select`'s valid recv/stream arms are untouched.
+        if let Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } = call_expr
+        {
+            if let Some(ActorMethodKind::Ask(_, reply_ty)) = self
+                .actor_method_dispatch
+                .get(&SpanKey::from(call_span))
+                .cloned()
+            {
+                let actor = self.lower_expr(receiver, IntentKind::Read);
+                let lowered_args: Vec<HirExpr> = args
+                    .iter()
+                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .collect();
+                let reply_ty = ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit);
+                return HirJoinBranch {
+                    actor: Box::new(actor),
+                    method: method.clone(),
+                    args: lowered_args,
+                    reply_ty,
+                };
+            }
+        }
+
+        let shape = describe_select_source_shape(call_expr);
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::JoinBranchNotActorAsk {
+                source_shape: shape,
+            },
+            branch.1.clone(),
+            "join branch must be an actor receive-handler call (`actor.method(args)`)",
+        ));
+        // The branch is already rejected (error severity halts the pipeline
+        // before MIR), so this placeholder is never lowered or codegen'd. Use a
+        // benign unit value rather than an `Unsupported` node so the HIR
+        // verifier does not append a spurious `NotYetImplemented` — the
+        // `JoinBranchNotActorAsk` above is the single, authoritative diagnostic.
+        HirJoinBranch {
+            actor: Box::new(HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                ty: ResolvedTy::Unit,
+                value_class: ValueClass::BitCopy,
+                intent: IntentKind::Unknown,
+                kind: HirExprKind::TupleLiteral {
+                    elements: Vec::new(),
+                },
+                span: branch.1.clone(),
+            }),
+            method: String::new(),
+            args: Vec::new(),
+            reply_ty: ResolvedTy::Unit,
+        }
     }
 
     /// Build the `Duplex<Msg, Reply>` `ResolvedTy` for an actor-lambda
@@ -15521,8 +15682,9 @@ impl LowerCtx {
             );
             return self.unsupported_expr(span.clone(), "non-await deadline combinator");
         };
-        // The only suspendable await whose timeout `Result` is concretely specced
-        // is the local actor ask (`Result<R, AskError>`, `AskError::Timeout`).
+        // The suspendable awaits whose timeout `Result` is concretely specced are
+        // local actor asks (`Result<R, AskError>`, `AskError::Timeout`) and raw
+        // connection reads (`Result<bytes, IoError>`, `IoError::TimedOut`).
         let inner_key = SpanKey::from(&await_inner.1);
         let is_local_ask = matches!(
             self.actor_method_dispatch.get(&inner_key),
@@ -15547,14 +15709,47 @@ impl LowerCtx {
             );
             return self.unsupported_expr(span.clone(), "unsupported actor-ask deadline form");
         }
-        // Out-of-scope await sources: task-await, conn.read/accept, channel recv,
+        if matches!(self.conn_await_reads.get(&inner_key), Some(false)) {
+            let mut read_expr = self.lower_expr(inner, intent);
+            if let HirExprKind::ConnAwaitRead {
+                deadline_ns: slot,
+                to_string: false,
+                ..
+            } = &mut read_expr.kind
+            {
+                *slot = Some(deadline_ns);
+                let io_error_ty = ResolvedTy::Named {
+                    name: "IoError".to_string(),
+                    args: Vec::new(),
+                    builtin: None,
+                    is_opaque: false,
+                };
+                read_expr.ty = ResolvedTy::Named {
+                    name: "Result".to_string(),
+                    args: vec![ResolvedTy::Bytes, io_error_ty],
+                    builtin: Some(BuiltinType::Result),
+                    is_opaque: false,
+                };
+                read_expr.value_class = ValueClass::of_ty(&read_expr.ty, &self.type_classes);
+                self.try_register_enum_instantiation(span);
+                return read_expr;
+            }
+            self.unsupported(
+                span.clone(),
+                "`await conn.read() | after d` is only supported for a raw connection read in a \
+                 suspendable context",
+                "new6c-read-deadline",
+            );
+            return self.unsupported_expr(span.clone(), "unsupported read deadline form");
+        }
+        // Out-of-scope await sources: task-await, read_string/accept, channel recv,
         // stream next, suspending closure. Fail closed at CHECK time naming the form.
         self.unsupported(
             span.clone(),
-            "`await <…> | after d` deadline is only supported for actor-ask awaits; \
-             task-await, read/accept/recv/next, and suspending-closure deadlines are \
-             deferred to v0.6",
-            "new6b-deadline-wiring",
+            "`await <…> | after d` deadline is only supported for actor-ask awaits and \
+             raw connection reads; task-await, read_string/accept/recv/next, and \
+             suspending-closure deadlines are deferred to v0.6",
+            "new6c-read-deadline",
         );
         self.unsupported_expr(span.clone(), "unsupported await-deadline source")
     }
@@ -16671,6 +16866,14 @@ fn collect_captures_walk(
                 collect_captures_walk(&arm.body, param_ids, seen, captures, self_id);
             }
         }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                collect_captures_walk(&branch.actor, param_ids, seen, captures, self_id);
+                for arg in &branch.args {
+                    collect_captures_walk(arg, param_ids, seen, captures, self_id);
+                }
+            }
+        }
         HirExprKind::TupleIndex { tuple, .. } => {
             collect_captures_walk(tuple, param_ids, seen, captures, self_id);
         }
@@ -16961,6 +17164,19 @@ fn collect_general_closure_captures_walk(
                     }
                 }
                 collect_general_closure_captures_walk(&arm.body, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                collect_general_closure_captures_walk(
+                    &branch.actor,
+                    outer_bindings,
+                    seen,
+                    captures,
+                );
+                for arg in &branch.args {
+                    collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
+                }
             }
         }
         HirExprKind::TupleIndex { tuple, .. } => {
@@ -17802,6 +18018,14 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                 collect_hir_emitted_events_walk(&arm.body, event_names, out);
             }
         }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                collect_hir_emitted_events_walk(&branch.actor, event_names, out);
+                for a in &branch.args {
+                    collect_hir_emitted_events_walk(a, event_names, out);
+                }
+            }
+        }
         // A general closure executes inline in the current lowering flow;
         // emits in its body belong to the enclosing transition.
         HirExprKind::Closure { body, .. } => {
@@ -17841,6 +18065,7 @@ fn describe_select_source_shape(expr: &Expr) -> String {
         Expr::FieldAccess { .. } => "field access".into(),
         Expr::Index { .. } => "index expression".into(),
         Expr::Range { .. } => "range expression".into(),
+        Expr::MethodCall { .. } => "non-actor method call".into(),
         Expr::Cast { .. } => "cast expression".into(),
         Expr::Timeout { .. } => "timeout expression".into(),
         Expr::UnsafeBlock(_) => "unsafe block".into(),
@@ -20532,6 +20757,14 @@ fn scan_expr_for_call_shape(
                     }
                 }
                 scan_expr_for_call_shape(&arm.body, callable, diagnostics);
+            }
+        }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                scan_expr_for_call_shape(&branch.actor, callable, diagnostics);
+                for a in &branch.args {
+                    scan_expr_for_call_shape(a, callable, diagnostics);
+                }
             }
         }
         HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {

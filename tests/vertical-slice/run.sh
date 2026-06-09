@@ -1660,3 +1660,92 @@ if "${HEW}" compile \
   exit 1
 fi
 grep -q 'non-literal duration' "${reject_output}"
+
+# `lower_match_project` lowers non-BitCopy
+# record/tuple match destructure (heap-owning fields), but a wildcard `_` on
+# an *owned-aggregate* field (record/tuple/enum carrying heap payload) still
+# fails closed — the inline-drop dispatcher only emits leaf release symbols
+# (`hew_string_drop`, `hew_vec_free*`, `hew_hashmap_free_layout`,
+# `hew_hashset_free_layout`, `hew_gen_free`, `hew_bytes_drop`), not
+# `DropKind::RecordInPlace`. Loading such a field into a temp + inline-Drop
+# would emit a wrong-ABI free, so MIR refuses. This pins the diagnostic.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/match_destructure_wildcard_owned_aggregate.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected match_destructure_wildcard_owned_aggregate fixture to fail" >&2
+  exit 1
+fi
+grep -q 'match-destructure wildcard on owned aggregate field' "${reject_output}"
+
+# A `BindingRef` scrutinee
+# whose owned fields are destructured (full or partial) must transition to
+# `Consumed` at the destructure site so the dataflow checker rejects a
+# post-match read — without the consume mark, partial extraction would
+# wildcard-drop `p.b` inline and then leak / UAF on a later `p.b` read.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/match_destructure_use_after_consume.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected match_destructure_use_after_consume fixture to fail" >&2
+  exit 1
+fi
+grep -q 'UseAfterConsume' "${reject_output}"
+
+# A `FieldAccess`
+# / `TupleIndex` / `Index` / `Slice` (or captured `BindingRef`) scrutinee is
+# re-readable through the same shape after the match. There is no binding
+# for the dataflow checker to mark `Consumed`, so MIR refuses the shape
+# fail-closed rather than emit a structurally undetectable UAF.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/match_destructure_projection_scrutinee.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected match_destructure_projection_scrutinee fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-BitCopy match destructure on projection scrutinee' "${reject_output}"
+
+# A temporary (fresh-value) scrutinee has no composite drop: with an
+# all-wildcard arm nothing frees the discarded aggregate's owned fields, so
+# every field would leak. MIR refuses fail-closed and tells the user to bind
+# the scrutinee to a local first (whose composite drop frees the fields).
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/match_destructure_temporary_scrutinee.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected match_destructure_temporary_scrutinee fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-BitCopy match destructure on temporary scrutinee' "${reject_output}"
+
+# The same gate covers a temporary scrutinee with a binding arm: with no
+# binding to consume-mark, the extracted binder stays tainted as a projection
+# alias and its payload would leak. Refused fail-closed with the same
+# temporary-scrutinee diagnostic.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/match_destructure_temporary_scrutinee_bound.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected match_destructure_temporary_scrutinee_bound fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-BitCopy match destructure on temporary scrutinee' "${reject_output}"
+
+# A guard on a record destructure arm has no fallthrough target: the project
+# pattern is irrefutable, so the first arm is taken unconditionally and the
+# guard would be silently ignored (a miscompile that runs the wrong arm).
+# Rejected fail-closed; the condition belongs in the arm body or an enum match.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/match_destructure_guarded_record.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected match_destructure_guarded_record fixture to fail" >&2
+  exit 1
+fi
+grep -q 'guarded record/tuple match destructure' "${reject_output}"
+
+# The same gate covers a guard on a tuple destructure arm — the tuple project
+# pattern is irrefutable exactly like the record case, so the guard is rejected
+# fail-closed with the same diagnostic.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/match_destructure_guarded_tuple.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected match_destructure_guarded_tuple fixture to fail" >&2
+  exit 1
+fi
+grep -q 'guarded record/tuple match destructure' "${reject_output}"

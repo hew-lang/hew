@@ -667,6 +667,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_expr(&right.0, &right.1, body);
             }
             Expr::Unary { operand, .. }
+            | Expr::Clone(operand)
             | Expr::Await(operand)
             | Expr::PostfixTry(operand)
             | Expr::Yield(Some(operand)) => {

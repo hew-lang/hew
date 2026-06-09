@@ -338,7 +338,7 @@ fn collect_inlay_hints_from_expr(
             collect_inlay_hints_from_expr(source, &left.0, tc, hints);
             collect_inlay_hints_from_expr(source, &right.0, tc, hints);
         }
-        Expr::Unary { operand, .. } => {
+        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
             collect_inlay_hints_from_expr(source, &operand.0, tc, hints);
         }
         Expr::Lambda {

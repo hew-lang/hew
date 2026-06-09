@@ -1044,8 +1044,516 @@ fn run_generic_record_swap_owned_is_dropped_once() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// W5-011 P3 actor-context drop-safety guard: a heap-owning `string` moved into
-/// an actor mailbox must NOT be scope-dropped by the sender on any exit path.
+/// Non-BitCopy record match destructure — full extraction of an owned
+/// `string` field across 100k iterations. Until the partial-move/drop
+/// elaboration spine landed, `lower_match_project` rejected the shape
+/// fail-closed; this guards the lift. The extracted binder is added to
+/// `owned_locals` so its function-scope drop fires exactly once, and
+/// `derive_owned_record_drop_allowed` excludes the source aggregate's
+/// composite drop via the field-binder release-owner rule. A regressed
+/// lift that double-freed would abort at `free_cstring`'s sentinel; a
+/// regressed lift that leaked would grow RSS linearly with iteration count.
+#[test]
+fn run_match_record_destructure_owned_drops_once() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/match_record_destructure_owned.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/match_record_destructure_owned.expected"),
+    )
+    .expect("read match_record_destructure_owned.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "match_record_destructure_owned should run cleanly (a double-free would \
+         abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// Non-BitCopy tuple match destructure — full extraction of a
+/// `(string, i64)` across 100k iterations. The tuple analogue of
+/// `run_match_record_destructure_owned_drops_once`:
+/// `derive_tuple_composite_drop_allowed` excludes the tuple temp's composite
+/// member drop because the extracted owned binder is in
+/// `release_owner_bases`. A double-free aborts; a leak grows RSS.
+#[test]
+fn run_match_tuple_destructure_owned_drops_once() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/match_tuple_destructure_owned.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/match_tuple_destructure_owned.expected"),
+    )
+    .expect("read match_tuple_destructure_owned.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "match_tuple_destructure_owned should run cleanly (a double-free would \
+         abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// Non-BitCopy record match destructure — PARTIAL extraction (wildcard on
+/// an owned `string` sibling) across 100k iterations. The partial-extraction
+/// emitter loads the wildcarded field into a temp and emits an inline
+/// `Instr::Drop` with the leaf release symbol (`hew_string_drop`). Without
+/// that emission the wildcarded sibling leaked — the drop spine's composite
+/// suppression already kicks in once any binder owns release. A double-free
+/// (composite + binder + inline drop all firing) aborts; a leak grows RSS.
+#[test]
+fn run_match_record_partial_extraction_owned_drops_once() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/match_record_partial_extraction_owned.hew");
+    let expected = std::fs::read_to_string(
+        repo_root()
+            .join("tests/vertical-slice/accept/match_record_partial_extraction_owned.expected"),
+    )
+    .expect("read match_record_partial_extraction_owned.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "match_record_partial_extraction_owned should run cleanly (a double-free \
+         or use-after-free would abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// Fail-closed: match-destructure wildcard on an owned-aggregate field
+/// (here `Inner` is a record carrying a `string`). The inline-drop
+/// dispatcher cannot emit `DropKind::RecordInPlace`, so
+/// `project_field_inline_drop_symbol` returns `None` for owned record /
+/// tuple / enum field types and the pre-flight emits
+/// `E_NOT_YET_IMPLEMENTED: MIR lowering for match-destructure wildcard on
+/// owned aggregate field`. The guard guarantees the lift never silently
+/// leaks an owned-aggregate sibling.
+#[test]
+fn check_match_destructure_wildcard_owned_aggregate_fails_closed() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("tests/vertical-slice/reject/match_destructure_wildcard_owned_aggregate.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("match-destructure wildcard on owned aggregate field"),
+        "expected fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// Non-BitCopy record match destructure — FULL extraction with a
+/// non-escaping bound owned field.
+///
+/// `Pair { a: x, b: y } => x` binds both heap-owning fields, but `y` is
+/// never read. Until the per-binder taint-suppression landed, `y`'s
+/// `RecordFieldLoad` dest was tainted as a projection-alias of the parent,
+/// `derive_cow_sole_owner` excluded it from the leaf `CoW` allow-set, and
+/// `build_lifo_drops` silently emitted no drop for `y` — one allocation
+/// leaked per match. The fix pairs the scrutinee consume mark with a
+/// `match_project_consumed_binder_locals` exemption: when the scrutinee is
+/// a non-captured `BindingRef` (consume-marked at the destructure site),
+/// the bound owned fields become sole owners and are admitted. A double-
+/// free regression (composite + binder both fire) would abort at
+/// `free_cstring`'s sentinel; the prior leak posture grew RSS linearly
+/// with iteration count.
+#[test]
+fn run_match_record_full_extraction_unused_binder_drops_once() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("tests/vertical-slice/accept/match_record_full_extraction_unused_binder.hew");
+    let expected =
+        std::fs::read_to_string(repo_root().join(
+            "tests/vertical-slice/accept/match_record_full_extraction_unused_binder.expected",
+        ))
+        .expect("read match_record_full_extraction_unused_binder.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "match_record_full_extraction_unused_binder should run cleanly (a double-free \
+         would abort, a leak would grow RSS); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// Fail-closed: post-match read of a `BindingRef` scrutinee whose owned
+/// fields were destructured. The destructure consumes the scrutinee's
+/// storage (per-binding
+/// loads hand off ownership; partial-extraction wildcards drop fields IN
+/// PLACE). MIR emits a follow-up `Use { intent: Consume }` for the
+/// scrutinee binding so the dataflow checker transitions it to
+/// `Consumed(site)`; any post-match `BindingRef` use then fires
+/// `E_MIR_CHECK: UseAfterConsume`, catching the UAF at check time.
+#[test]
+fn check_match_destructure_use_after_consume_fails_closed() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/reject/match_destructure_use_after_consume.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("UseAfterConsume"),
+        "expected UseAfterConsume diagnostic; got: {combined}"
+    );
+}
+
+/// Fail-closed: non-BitCopy match destructure on a projection scrutinee
+/// (`FieldAccess` / `TupleIndex` / `Index` / `Slice` or captured
+/// `BindingRef`).
+/// The projection's source storage is re-readable through the same shape
+/// after the match, and there is no binding for the dataflow checker to
+/// mark `Consumed`. MIR refuses fail-closed with
+/// `E_NOT_YET_IMPLEMENTED: MIR lowering for non-BitCopy match destructure
+/// on projection scrutinee` and instructs the user to bind the scrutinee
+/// to a local first so the consume mark has a target.
+#[test]
+fn check_match_destructure_projection_scrutinee_fails_closed() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/reject/match_destructure_projection_scrutinee.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("non-BitCopy match destructure on projection scrutinee"),
+        "expected fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// Non-BitCopy record match destructure — FULL extraction of an owned
+/// `Vec<i64>` field with a wildcarded `BitCopy` sibling. The arm
+/// `Pair { a: _, b: v } => v` moves the vector into `v`, which enters
+/// `owned_locals` exactly like a `string` binder would: the extraction path
+/// is type-agnostic over non-BitCopy field types. Correctness oracle — each
+/// extracted vector is a valid length-2 buffer holding `[10, 20]`, so the
+/// running total over 1000 iterations is `1000 * (2 + 10 + 20) = 32000`. A
+/// lift that rejected non-`string` owned binders would fail to compile; a
+/// lift that handed back an empty / invalid handle would print the wrong
+/// total or abort. (The `Vec` drop-in-loop leak axis is governed by the
+/// pre-existing `Vec` value-class drop limitation — identical to a plain
+/// `let v = make_vec()` — so this test pins extraction correctness and the
+/// absence of double-free / abort across the back-edge drop path, not the
+/// per-iteration `Vec` byte count.)
+#[test]
+fn run_match_record_vec_full_extraction() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/match_record_vec_full_extraction.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/match_record_vec_full_extraction.expected"),
+    )
+    .expect("read match_record_vec_full_extraction.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "match_record_vec_full_extraction should run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// Non-BitCopy record match destructure — ALL-wildcard arm over an owned
+/// aggregate (`Outer { name: _, inner: _ } => 0`). The arm binds nothing, so
+/// nothing seeds the field-binder release-owner rule and the scrutinee's own
+/// composite `RecordInPlace` drop is NOT suppressed: it fires at scope exit
+/// and frees every owned field (`name` plus the nested `inner.value`). Drop
+/// oracle over 100k iterations of a `string`-backed aggregate (string drop is
+/// leak-clean, unlike `Vec`): a regression that suppressed the composite drop
+/// without a replacement leaks two strings per iteration (the time-bounded
+/// runner trips on linear RSS growth / wall-clock); a regression that BOTH
+/// dropped composite AND emitted per-field drops double-frees and aborts at
+/// `free_cstring`'s sentinel. A clean `done` is the behavioural proof.
+#[test]
+fn run_match_record_wildcard_all_owned_drops_once() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("tests/vertical-slice/accept/match_record_wildcard_all_owned_drops_once.hew");
+    let expected =
+        std::fs::read_to_string(repo_root().join(
+            "tests/vertical-slice/accept/match_record_wildcard_all_owned_drops_once.expected",
+        ))
+        .expect("read match_record_wildcard_all_owned_drops_once.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "match_record_wildcard_all_owned_drops_once should run cleanly (a leak or \
+         double-free would trip the runner / abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// Non-BitCopy record match destructure — an all-wildcard arm leaves the
+/// scrutinee reusable. Because the arm moves nothing out, the scrutinee
+/// binding is NOT consume-marked (only an arm that binds at least one owned
+/// field earns the mark), so a post-match read of `o.name` is legitimate and
+/// the binding's composite drop still fires at scope exit. This is the
+/// inverse of `check_match_destructure_use_after_consume_fails_closed`: there
+/// an owned field is moved out, the scrutinee is consumed, and a post-match
+/// read fires `UseAfterConsume`. A regression that over-eagerly consume-marked
+/// an all-wildcard scrutinee would reject this read at check time.
+#[test]
+fn run_match_record_wildcard_scrutinee_reusable() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("tests/vertical-slice/accept/match_record_wildcard_scrutinee_reusable.hew");
+    let expected = std::fs::read_to_string(
+        repo_root()
+            .join("tests/vertical-slice/accept/match_record_wildcard_scrutinee_reusable.expected"),
+    )
+    .expect("read match_record_wildcard_scrutinee_reusable.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "match_record_wildcard_scrutinee_reusable should run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// Fail-closed: non-BitCopy match destructure on a TEMPORARY (fresh-value)
+/// scrutinee with an all-wildcard arm (`match make() { Outer { .. } => 0 }`).
+/// A temporary has no composite drop — nothing in the surrounding scope frees
+/// it at scope exit — and an all-wildcard arm emits no per-field drops, so
+/// every owned field of the discarded aggregate would leak. The
+/// scrutinee-shape gate refuses this fail-closed with
+/// `E_NOT_YET_IMPLEMENTED: MIR lowering for non-BitCopy match destructure on
+/// temporary scrutinee` and instructs the user to bind the scrutinee to a
+/// local first so its composite drop frees the discarded fields. Without the
+/// gate covering the zero-binding arm, this shape would `check` green and
+/// leak on every evaluation.
+#[test]
+fn check_match_destructure_temporary_scrutinee_fails_closed() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/reject/match_destructure_temporary_scrutinee.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("non-BitCopy match destructure on temporary scrutinee"),
+        "expected temporary-scrutinee fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// Fail-closed: non-BitCopy match destructure on a TEMPORARY scrutinee with a
+/// binding arm (`match make() { Pair { a: x, b: _ } => x }`). The same
+/// scrutinee-shape gate that covers the all-wildcard temporary also covers
+/// the partial-extraction temporary: with no binding for the scrutinee, there
+/// is no consume mark to untaint the extracted binder, so the temporary's
+/// owned payload would leak. Refused fail-closed with the same
+/// temporary-scrutinee diagnostic; binding the scrutinee to a local first
+/// routes through the consume-mark + binder-untaint path that drops every
+/// field exactly once.
+#[test]
+fn check_match_destructure_temporary_scrutinee_bound_fails_closed() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("tests/vertical-slice/reject/match_destructure_temporary_scrutinee_bound.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("non-BitCopy match destructure on temporary scrutinee"),
+        "expected temporary-scrutinee fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// Fail-closed: a guard on a record match-destructure arm. A record project
+/// pattern is irrefutable, so `lower_match_project` lowers exactly the first
+/// arm's body with no ordered fallthrough chain. An arm guard
+/// (`Pattern if <cond>`) has no fallthrough target, so a `false` guard cannot
+/// retry a later arm — the guarded arm would run anyway and consume the
+/// scrutinee out from under the intended arm, a silent miscompile. This is the
+/// exact shape `match p { Pair { a: x, b: _ } if false => x, Pair { a: _, b: y }
+/// => y }`, which must print `b-payload` but would wrongly bind `x`. MIR
+/// refuses fail-closed with
+/// `E_NOT_YET_IMPLEMENTED: guarded record/tuple match destructure` and steers
+/// the user to move the condition into the arm body or match on an enum.
+#[test]
+fn check_match_destructure_guarded_record_fails_closed() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/reject/match_destructure_guarded_record.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("guarded record/tuple match destructure"),
+        "expected guarded-destructure fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// Fail-closed: a guard on a tuple match-destructure arm. A tuple project
+/// pattern is irrefutable exactly like the record case, so the same gate
+/// applies — `match p { (a, _) if false => a, (_, b) => b }` would silently
+/// take the guarded first arm. MIR refuses fail-closed with the same
+/// `guarded record/tuple match destructure` diagnostic, confirming the gate is
+/// unconditional across record and tuple projection scrutinees.
+#[test]
+fn check_match_destructure_guarded_tuple_fails_closed() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/reject/match_destructure_guarded_tuple.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("guarded record/tuple match destructure"),
+        "expected guarded-destructure fail-closed diagnostic; got: {combined}"
+    );
+}
 /// The mailbox takes ownership of the buffer (no retain-on-send on the M-COW
 /// spine), so a sender that also scope-dropped it would free a buffer the live
 /// mailbox still owns — a use-after-free on the receiving side or a double-free
@@ -2513,4 +3021,214 @@ fn run_record_of_handles_return_drops_each_field_once() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "record-ok\n");
+}
+
+// ── `clone <expr>` duplication prefix ────────────────────────────────────
+//
+// End-to-end coverage for the canonical duplication surface. These exercise
+// the whole pipeline (parse → check → HIR → MIR → codegen → run), which is the
+// only layer where the prefix's runtime effect is observable: `Expr::Clone`
+// is erased to an ordinary `.clone()` method call during HIR lowering, so MIR
+// and codegen never see a clone-specific node.
+
+/// A cloned string survives a consuming actor send while the original stays
+/// usable: `clone s` produces an independent owned value.
+#[test]
+fn clone_string_survives_consuming_send() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("clone_string_send.hew");
+    std::fs::write(
+        &path,
+        "actor Sink { let id: i64; receive fn take(s: string) -> i64 { s.len() } }\n\
+         fn main() {\n\
+         \x20   let s: string = \"hello\";\n\
+         \x20   let dup = clone s;\n\
+         \x20   let sink = spawn Sink(id: 0);\n\
+         \x20   let n = await sink.take(dup);\n\
+         \x20   match n { Ok(len) => println(f\"len={len}\"), Err(_) => println(\"ask failed\") }\n\
+         \x20   println(f\"original still usable: {s}\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, repo_root());
+    assert!(
+        output.status.success(),
+        "clone-before-consume should run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("len=5") && stdout.contains("original still usable: hello"),
+        "expected both the consumed clone's length and the surviving original; got: {stdout}"
+    );
+}
+
+/// Formatting a value (original or clone) is non-consuming: both bindings are
+/// usable across multiple interpolations.
+#[test]
+fn clone_then_format_is_non_consuming() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("clone_format.hew");
+    std::fs::write(
+        &path,
+        "fn main() {\n\
+         \x20   let s: string = \"world\";\n\
+         \x20   let dup = clone s;\n\
+         \x20   println(f\"hello {dup}, len={s.len()}\");\n\
+         \x20   println(f\"again {s} and {dup}\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, repo_root());
+    assert!(
+        output.status.success(),
+        "clone + formatting should run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "hello world, len=5\nagain world and world\n"
+    );
+}
+
+/// `clone xs` on a `Vec` produces an independent copy: mutating the duplicate
+/// leaves the original's length unchanged.
+#[test]
+fn clone_vec_is_independent_copy() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("clone_vec.hew");
+    std::fs::write(
+        &path,
+        "fn main() {\n\
+         \x20   let xs: Vec<i64> = Vec::new();\n\
+         \x20   xs.push(1); xs.push(2);\n\
+         \x20   let dup = clone xs;\n\
+         \x20   dup.push(99);\n\
+         \x20   println(f\"original_len={xs.len()} dup_len={dup.len()}\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, repo_root());
+    assert!(
+        output.status.success(),
+        "clone of a Vec should run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "original_len=2 dup_len=3\n"
+    );
+}
+
+/// Regression: the existing `x.clone()` method form still runs unchanged.
+#[test]
+fn existing_vec_method_clone_still_runs() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("method_clone.hew");
+    std::fs::write(
+        &path,
+        "fn main() {\n\
+         \x20   let xs: Vec<i64> = Vec::new();\n\
+         \x20   xs.push(1); xs.push(2);\n\
+         \x20   let b = xs.clone();\n\
+         \x20   b.push(99);\n\
+         \x20   println(f\"a={xs.len()} b={b.len()}\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, repo_root());
+    assert!(
+        output.status.success(),
+        "`x.clone()` should still run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "a=2 b=3\n");
+}
+
+/// `&x` is not an expression: Hew has no prefix borrow. The diagnostic must
+/// reject it and steer the author to `clone x`.
+#[test]
+fn ampersand_expression_is_rejected() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("ampersand_reject.hew");
+    std::fs::write(
+        &path,
+        "fn main() {\n\
+         \x20   let x = 5;\n\
+         \x20   let y = &x;\n\
+         \x20   println(y);\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, repo_root());
+    assert!(
+        !output.status.success(),
+        "`&x` must be rejected; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("not a prefix operator") && combined.contains("clone"),
+        "expected the `&`-rejection diagnostic pointing at `clone`; got: {combined}"
+    );
+}
+
+/// `clone` on a type with no clone method fails closed, exactly as the
+/// equivalent `.clone()` call would — no silent success.
+#[test]
+fn clone_on_unsupported_scalar_fails_closed() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("clone_unsupported.hew");
+    std::fs::write(
+        &path,
+        "fn main() {\n\
+         \x20   let n = 5;\n\
+         \x20   let m = clone n;\n\
+         \x20   println(m);\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, repo_root());
+    assert!(
+        !output.status.success(),
+        "`clone` on an unsupported type must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("clone") && combined.contains("i64"),
+        "expected a fail-closed `clone`-on-`i64` diagnostic; got: {combined}"
+    );
 }

@@ -1,0 +1,47 @@
+//! Non-BitCopy record match destructure — full extraction of an owned
+//! `Vec<i64>` field with a wildcarded `BitCopy` sibling.
+//!
+//! `Pair { a: i64, b: Vec<i64> }` carries one heap-owning field (`b`). The
+//! arm `Pair { a: _, b: v }` extracts the vector into `v` and discards the
+//! scalar `a`. The per-binding loop registers `v` in `owned_locals` (it is
+//! non-BitCopy by `ValueClass`), so its drop elaborates through the standard
+//! LIFO pass, and `derive_owned_record_drop_allowed` excludes the source
+//! aggregate's composite drop via the field-binder release-owner rule. The
+//! extraction is type-agnostic: a `Vec` binder takes the same
+//! `RecordFieldLoad` + `owned_locals` path a `string` binder takes.
+//!
+//! Observable contract: every extracted vector is a valid length-2 buffer
+//! holding `[10, 20]`, so the running total is `1000 * (2 + 10 + 20) = 32000`.
+//! A regressed lift that rejected non-`string` owned binders would fail to
+//! compile; a lift that returned an empty / invalid handle would print the
+//! wrong total. (The `Vec` drop-in-loop leak axis is governed by the
+//! pre-existing `Vec` value-class drop limitation, identical to a plain
+//! `let v = make_vec()`; this fixture pins extraction correctness and the
+//! no-double-free / no-abort behaviour across the back-edge drop path.)
+
+type Pair {
+    a: i64,
+    b: Vec<i64>,
+}
+
+fn make_pair(n: i64) -> Pair {
+    let v: Vec<i64> = Vec::new();
+    v.push(10);
+    v.push(20);
+    Pair { a: n, b: v }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 1000 {
+        let p = make_pair(i);
+        let extracted = match p {
+            Pair { a: _, b: v } => v,
+        };
+        total = total + extracted.len() + extracted.get(0) + extracted.get(1);
+        i = i + 1;
+    }
+    println(total);
+    0
+}

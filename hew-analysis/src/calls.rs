@@ -232,7 +232,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             collect_calls_in_expr(left.as_ref(), calls);
             collect_calls_in_expr(right.as_ref(), calls);
         }
-        Expr::Unary { operand, .. } => {
+        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
             collect_calls_in_expr(operand.as_ref(), calls);
         }
         Expr::Await(a) => {

@@ -647,6 +647,23 @@ impl<'src> Parser<'src> {
         self.tokens.get(index).map(|(t, _)| t)
     }
 
+    /// Whether the current position is a contextual `clone <operand>` prefix.
+    ///
+    /// True only when the current token is the identifier `clone` AND the next
+    /// token begins an operand (`token_begins_clone_operand`). When `clone` is
+    /// followed by a continuation token (`.`, `(`, `[`, `?`, an infix operator,
+    /// or a terminator) it stays an ordinary identifier — so `x.clone()`,
+    /// `fn clone(...)`, and `clone(args)` are unaffected. The adjacency check
+    /// is precedence-free: `clone x` was always a parse error before (two
+    /// adjacent primaries), so repurposing it cannot change the meaning of any
+    /// previously valid program.
+    fn peek_is_clone_prefix(&self) -> bool {
+        matches!(self.peek(), Some(Token::Identifier(name)) if *name == "clone")
+            && self
+                .peek_at(self.pos + 1)
+                .is_some_and(token_begins_clone_operand)
+    }
+
     /// Check whether the current token starts with `>` (i.e. is `>`, `>>`, `>=`, or `>>=`).
     /// Used in type-argument / type-parameter parsing so that `Vec<Vec<i32>>`
     /// works without requiring a space before `>>`.
@@ -5799,8 +5816,37 @@ impl<'src> Parser<'src> {
     fn parse_expr_bp(&mut self, min_bp: u8) -> Option<Spanned<Expr>> {
         let start = self.peek_span().start;
 
+        // `&expr` is not an expression in Hew. `&` is infix bitwise-and and the
+        // type-level borrow marker (`&T`, ABI substrate); there is no
+        // prefix-reference/borrow expression. Duplication is spelled `clone x`.
+        // Catch a leading `&` in operand position with a targeted diagnostic so
+        // the reader is pointed at `clone` instead of a generic parse error,
+        // then recover by parsing the operand as if the `&` were absent (one
+        // diagnostic, no cascade).
+        if self.peek() == Some(&Token::Ampersand) {
+            self.error_with_hint(
+                "`&` is not a prefix operator; Hew has no reference or borrow \
+                 expression"
+                    .to_string(),
+                "to duplicate a value, write `clone x`",
+            );
+            self.advance()?; // consume `&` and recover on the operand
+            return self.parse_expr_bp(min_bp);
+        }
+
         // Prefix operators
-        let mut lhs = if let Some(rbp) = self.peek().and_then(prefix_bp) {
+        let mut lhs = if self.peek_is_clone_prefix() {
+            // Contextual `clone <operand>` duplication prefix. `clone` is not a
+            // reserved word — it is also a method/free-fn name — so it only acts
+            // as the prefix when it sits in operator position immediately
+            // followed by an operand token (`peek_is_clone_prefix`). Binds at
+            // unary precedence so `clone a + b` is `(clone a) + b` and
+            // `clone x.field` / `clone foo()` clone the whole postfix chain.
+            self.advance()?; // consume `clone`
+            let operand = self.parse_expr_bp(CLONE_PREFIX_BP)?;
+            let end = operand.1.end;
+            (Expr::Clone(Box::new(operand)), start..end)
+        } else if let Some(rbp) = self.peek().and_then(prefix_bp) {
             let (op_tok, _) = self.advance()?;
             match op_tok {
                 Token::Bang => {
@@ -7883,6 +7929,39 @@ fn prefix_bp(op: &Token) -> Option<u8> {
     }
 }
 
+/// Right binding power of the contextual `clone <operand>` prefix.
+///
+/// Matches the other unary prefixes (`!`, `-`, `~`) so `clone a + b` parses as
+/// `(clone a) + b` and a postfix chain binds into the operand: `clone x.f()`
+/// clones the result of `x.f()`.
+const CLONE_PREFIX_BP: u8 = 25;
+
+/// Whether `tok` begins an operand for the contextual `clone` prefix.
+///
+/// Restricted to tokens that unambiguously start a fresh primary expression:
+/// any identifier or literal. Deliberately excludes `(`, `[`, `.`, `?`, and
+/// the infix/unary operator symbols so that `clone(args)` stays a call,
+/// `clone.field` / `clone[i]` stay identifier postfixes, and `clone - x` stays
+/// subtraction — `clone` remains a usable identifier in every position where
+/// it is followed by a continuation rather than a new operand.
+fn token_begins_clone_operand(tok: &Token) -> bool {
+    matches!(
+        tok,
+        Token::Identifier(_)
+            | Token::Integer(_)
+            | Token::Float(_)
+            | Token::StringLit(_)
+            | Token::CharLit(_)
+            | Token::RawString(_)
+            | Token::ByteStringLit(_)
+            | Token::InterpolatedString(_)
+            | Token::RegexLiteral(_)
+            | Token::Duration(_)
+            | Token::True
+            | Token::False
+    )
+}
+
 fn token_to_binop(token: &Token) -> Option<BinaryOp> {
     match token {
         Token::Plus => Some(BinaryOp::Add),
@@ -9074,6 +9153,118 @@ fn demo() {}
         let source = "fn main() { let a = -x; let b = !flag; }";
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    /// Extract the initializer expression of the first `let` in the first
+    /// function body. Panics if the shape does not match — tests want a loud
+    /// failure when the AST drifts.
+    fn first_let_value(result: &ParseResult) -> &Expr {
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected first item to be a function");
+        };
+        let Stmt::Let { value, .. } = &f.body.stmts[0].0 else {
+            panic!("expected first statement to be a `let`");
+        };
+        &value.as_ref().expect("let initializer present").0
+    }
+
+    #[test]
+    fn parse_clone_prefix_expression() {
+        let source = "fn main() { let a = clone x; }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match first_let_value(&result) {
+            Expr::Clone(operand) => {
+                assert!(
+                    matches!(&operand.0, Expr::Identifier(name) if name == "x"),
+                    "clone operand should be identifier `x`, got: {:?}",
+                    operand.0
+                );
+            }
+            other => panic!("expected Expr::Clone, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_clone_prefix_takes_whole_postfix_chain() {
+        // `clone x.field` must clone the field access, not `(clone x).field`.
+        let source = "fn main() { let a = clone x.field; }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match first_let_value(&result) {
+            Expr::Clone(operand) => assert!(
+                matches!(&operand.0, Expr::FieldAccess { field, .. } if field == "field"),
+                "clone operand should be the field access, got: {:?}",
+                operand.0
+            ),
+            other => panic!("expected Expr::Clone wrapping a field access, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_clone_prefix_binds_below_binary() {
+        // `clone x + y` is `(clone x) + y`, matching other unary prefixes.
+        let source = "fn main() { let a = clone x + y; }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match first_let_value(&result) {
+            Expr::Binary { left, op, .. } => {
+                assert_eq!(*op, BinaryOp::Add);
+                assert!(
+                    matches!(&left.0, Expr::Clone(_)),
+                    "left of `+` should be the clone, got: {:?}",
+                    left.0
+                );
+            }
+            other => panic!("expected Expr::Binary with a clone on the left, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_clone_call_is_not_a_prefix() {
+        // `clone(x)` stays a call to a function named `clone`; the contextual
+        // prefix only triggers when an operand token (not `(`) follows.
+        let source = "fn main() { let a = clone(x); }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match first_let_value(&result) {
+            Expr::Call { function, .. } => assert!(
+                matches!(&function.0, Expr::Identifier(name) if name == "clone"),
+                "expected a call to `clone`, got: {:?}",
+                function.0
+            ),
+            other => panic!("expected Expr::Call, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_clone_as_identifier_still_works() {
+        // `clone` is not a reserved word: usable as a binding and in operator
+        // position when not followed by an operand token.
+        let source = "fn main() { let clone = 5; let y = clone + 1; }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_ampersand_prefix_is_rejected() {
+        let source = "fn main() { let y = &x; }";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected a parse error for prefix `&`"
+        );
+        let err = &result.errors[0];
+        assert!(
+            err.message.contains("not a prefix operator"),
+            "message should explain `&` is not a prefix operator, got: {}",
+            err.message
+        );
+        assert!(
+            err.hint.as_deref().is_some_and(|h| h.contains("clone")),
+            "hint should point at `clone`, got: {:?}",
+            err.hint
+        );
     }
 
     #[test]

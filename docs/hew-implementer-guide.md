@@ -19,7 +19,7 @@ A reference for writing correct idiomatic Hew. Every example below was executed 
 - Access actor state by bare field name inside handlers — no `self.` or `this.`.
 - Fire-and-forget actor sends have no return type and no `await`: `ref.method(arg);`.
 - Ask (request-reply) is `await ref.method(arg)` and returns `Result<R, AskError>` — match `Ok`/`Err`.
-- Passing a value into an actor consumes it; `.clone()` it if you keep using it afterward.
+- Passing a value into an actor consumes it; duplicate it first with `clone x` (canonical) if you keep using it afterward.
 - Within a fn or actor there is no borrow checker: pass values freely, mutations to Vec/HashMap persist in the caller.
 - Last expression of a block (no trailing semicolon) is its value; a trailing `;` makes it unit.
 - Lean on the safe stdlib trio: `std::string`, `std::math`, `std::iter`. Do not import `std::option`/`std::result`.
@@ -497,6 +497,34 @@ fn main() {
 
 Use `.clone()` only when you need a second independent copy — e.g. before sending one to an actor and keeping one.
 
+### clone x — the canonical duplication prefix
+
+```hew
+fn main() {
+    let a: Vec<i64> = Vec::new();
+    a.push(1); a.push(2);
+    let b = clone a;    // independent copy — same effect as `a.clone()`
+    b.push(99);
+    println(a.len());   // 2
+    println(b.len());   // 3
+}
+```
+
+`clone x` is the canonical way to duplicate a value: a contextual prefix that
+reads the operand without consuming it and yields an owned copy, dropped
+normally. It is exactly equivalent to the `x.clone()` method form and resolves
+the same way — strings and `Vec<T>` clone; a type with no clone path fails
+closed at compile time (the same diagnostic as `x.clone()`), never a silent
+alias. `clone` is not a reserved word, so it stays usable as an ordinary
+identifier or method name; it only acts as the prefix when an operand follows
+directly (`clone x`, `clone foo.bar()`), never in `clone(args)` or `clone.field`.
+
+It binds at unary precedence and takes the whole postfix chain: `clone x.f()`
+clones the result of `x.f()`, and `clone a + b` is `(clone a) + b`. There is no
+`&x` borrow expression in Hew — `&` is bitwise-and and the type-level borrow
+marker (`&T`) only; writing `&x` is rejected with a diagnostic pointing you at
+`clone x`.
+
 ### Struct value param and returning a struct
 
 ```hew
@@ -517,18 +545,17 @@ For transformations, construct and return a fresh struct literal. Struct fields 
 ### Move-on-send: passing into an actor consumes it
 
 ```hew
-actor Sink { let id: i64; receive fn take(data: Vec<i64>) -> i64 { data.len() } }
+actor Sink { let id: i64; receive fn take(data: string) -> i64 { data.len() } }
 fn main() {
     let s = spawn Sink(id: 0);
-    let xs: Vec<i64> = Vec::new();
-    xs.push(1); xs.push(2);
-    let n = await s.take(xs.clone());   // send a clone to keep xs
+    let msg: string = "hello";
+    let n = await s.take(clone msg);   // send a copy to keep msg
     match n { Ok(len) => println(len), Err(_) => println("ask failed") }
-    println(xs.len());   // 2, xs still valid
+    println(msg.len());   // 5, msg still valid
 }
 ```
 
-Passing a value into an actor's `receive fn` consumes it; reusing it after is a hard `use of moved value` error. Pass `x.clone()` to keep the original. `await actor.method(...)` on a request-reply fn returns `Result<R, AskError>` — match it.
+Passing a value into an actor's `receive fn` consumes it; reusing it after is a hard `use of moved value` error. Duplicate it first with `clone x` (or the equivalent `x.clone()`) to keep the original. `await actor.method(...)` on a request-reply fn returns `Result<R, AskError>` — match it.
 
 ### Strings and scalars are freely reusable
 

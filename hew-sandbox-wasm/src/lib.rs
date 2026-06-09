@@ -688,6 +688,26 @@ fn main() {
     }
 
     #[test]
+    fn clone_prefix_is_profile_rejected() {
+        // `clone x` type-checks (string clone is supported by the checker) and
+        // so reaches the sandbox profile gate. The emitter has no lowering for
+        // it, so the profile must reject it here — proving the export fails
+        // closed to `bytecode: None` instead of emitting an
+        // `unsupported_instruction` trap. The matched kind also guarantees the
+        // rejection comes from the profile gate, not an earlier parse/type one.
+        assert_profile_rejection(
+            r#"
+fn main() {
+    let original = "hi";
+    let duplicate = clone original;
+    println(duplicate);
+}
+"#,
+            "reserved_runtime_feature",
+        );
+    }
+
+    #[test]
     fn user_resource_type_is_profile_rejected_w3030() {
         // W3.030 V15 — `#[resource]` types carry an implicit drop contract
         // that dispatches `<T>::close` on every scope-exit path through the

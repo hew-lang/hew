@@ -1,0 +1,47 @@
+//! Non-BitCopy record match destructure — PARTIAL extraction (wildcard on
+//! an owned `string` sibling).
+//!
+//! `Pair { a: string, b: string }` carries two heap-owning fields. The match
+//! arm `Pair { a: x, b: _ }` extracts `a` into a binding `x` and wildcards
+//! `b`. Without explicit-drop emission for `b`, the partial-extraction case
+//! leaked the wildcarded `string` heap allocation on every iteration: the
+//! drop spine's `derive_owned_record_drop_allowed` excludes the source
+//! aggregate's composite drop once any extracted binder owns release, but
+//! the wildcarded sibling has nobody to release it.
+//!
+//! The fix emits an inline `RecordFieldLoad` + `Instr::Drop` (with the
+//! leaf release symbol `hew_string_drop`) for every owned field NOT in
+//! `selected.bindings`. The extracted binder + the inline drop both seed
+//! release-owner attribution, the composite stays excluded, and every
+//! owned field is freed exactly once.
+//!
+//! Observable contract: across many iterations the program prints `done`
+//! and exits 0 with bounded RSS. A regressed lift that leaked the
+//! wildcarded sibling would grow RSS linearly with iteration count; a
+//! regressed lift that double-freed (composite + binder + inline drop all
+//! firing) would abort at `free_cstring`'s sentinel.
+
+type Pair {
+    a: string,
+    b: string,
+}
+
+fn make_pair(n: i64) -> Pair {
+    Pair {
+        a: string_concat("a-", "-payload"),
+        b: string_concat("b-", "-payload"),
+    }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 100000 {
+        let p = make_pair(i);
+        let _s = match p {
+            Pair { a: x, b: _ } => x,
+        };
+        i = i + 1;
+    }
+    println("done");
+    0
+}

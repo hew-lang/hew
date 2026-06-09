@@ -119,17 +119,15 @@ fn sum(t: (i64, i64, i64)) -> i64 {
     assert_eq!(field_loads, 3);
 }
 
-/// Regression (F1): a record with an owning (non-BitCopy) field must be
-/// rejected fail-closed at MIR with a `NotYetImplemented` diagnostic when
-/// matched via a destructure pattern. `Holder { name: string, n: i64 }` has
-/// `name: string` which is `CowValue`, so the scrutinee is not `BitCopy`.
-///
-/// Before the `type_classes` table was populated and threaded correctly, this
-/// compiled silently — copying an owning field without any drop/move
-/// discipline. The guard in `lower_match_project` must fire with a populated
-/// `type_classes` so it correctly classifies `Holder` as non-BitCopy.
+/// Regression: a record with an owning (non-BitCopy)
+/// field is lowered by `lower_match_project` via the `RecordFieldLoad`
+/// path — the binder enters `owned_locals` and the drop spine
+/// (`derive_owned_record_drop_allowed`) excludes the source aggregate from
+/// composite drop via the field-binder release-owner rule. This pins the
+/// new invariant: no `NotYetImplemented` for the common shape, and the
+/// destructure actually emits `RecordFieldLoad` instructions.
 #[test]
-fn owning_field_destructure_emits_not_yet_implemented() {
+fn owning_field_destructure_lowers_to_record_field_loads() {
     let pipeline = pipeline_with_tc_allow_diags(
         r"
 type Holder {
@@ -151,10 +149,20 @@ fn project(h: Holder) -> i64 {
         )
     });
     assert!(
-        has_nyi,
-        "expected a NotYetImplemented diagnostic for owning-field destructure; \
-         got: {:#?}",
+        !has_nyi,
+        "non-BitCopy record destructure must lower without NYI; got: {:#?}",
         pipeline.diagnostics
+    );
+    let func = find_fn(&pipeline, "project");
+    let field_loads = func
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| matches!(instr, Instr::RecordFieldLoad { .. }))
+        .count();
+    assert!(
+        field_loads >= 2,
+        "expected RecordFieldLoad for both bound fields; got {field_loads}"
     );
 }
 

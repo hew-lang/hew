@@ -1109,7 +1109,7 @@ impl Checker {
                 self.classify_escapes_in_expr(&left.0, &left.1, in_fork, AnonContext::Other);
                 self.classify_escapes_in_expr(&right.0, &right.1, in_fork, AnonContext::Other);
             }
-            Expr::Unary { operand, .. } => {
+            Expr::Unary { operand, .. } | Expr::Clone(operand) => {
                 self.classify_escapes_in_expr(&operand.0, &operand.1, in_fork, AnonContext::Other);
             }
             Expr::FieldAccess { object, .. } => {
@@ -1523,7 +1523,7 @@ fn collect_lambda_spans_in_expr(
             collect_lambda_spans_in_expr(&left.0, &left.1, out);
             collect_lambda_spans_in_expr(&right.0, &right.1, out);
         }
-        Expr::Unary { operand, .. } => {
+        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
             collect_lambda_spans_in_expr(&operand.0, &operand.1, out);
         }
         Expr::FieldAccess { object, .. } => {

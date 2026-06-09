@@ -5144,6 +5144,34 @@ struct Builder {
     generated_functions: Vec<LoweredFunction>,
     closure_record_layouts: Vec<crate::model::RecordLayout>,
     capture_env_sources: HashMap<BindingId, CaptureEnvSource>,
+    /// Base locals (the `u32` slot index from `Place::Local`) of pattern
+    /// bindings introduced by a non-BitCopy `match` record/tuple destructure
+    /// (`lower_match_project`) **whose scrutinee was consume-marked at the
+    /// destructure site**. Consulted by `derive_cow_sole_owner` to SUPPRESS
+    /// the projection-alias taint seed for these binders.
+    ///
+    /// Why this exists. The pattern binder is loaded via `RecordFieldLoad` /
+    /// `TupleFieldLoad`, both of which `projection_alias_dest` seeds as
+    /// tainted (interior alias of the parent aggregate). Tainted
+    /// leaf-`string`/`Vec`/`bytes` locals are excluded from
+    /// `cow_drop_allowed`, so `build_lifo_drops` silently skips their drop
+    /// (the leaf-CoW arm tolerates a missing place rather than panicking).
+    /// The taint is correct when the parent aggregate's composite drop still
+    /// fires (otherwise the same buffer frees twice), but a consume-marked
+    /// scrutinee emits a follow-up `Use { intent: Consume }` for the
+    /// `BindingRef`, so the parent's drop is suppressed by the dataflow
+    /// exit-state filter. With the parent consumed, the binder is the SOLE
+    /// owner of its loaded payload; the taint would otherwise become a leak.
+    ///
+    /// Membership is restricted to the binders whose source we actually
+    /// consume — the `match_project_scrutinee_reject` gate guarantees this is
+    /// always a non-captured `BindingRef`. Other destructure shapes
+    /// (let-pattern, enum-tag, while-let) keep their existing taint
+    /// behaviour. The dataflow `Consumed`/`MaybeConsumed` exit-state
+    /// post-filter at the `derive_cow_sole_owner` call site is still the
+    /// final authority: a binder consumed by `=> y` is removed from the
+    /// allow-set, so the drop won't double-free a moved-out payload.
+    match_project_consumed_binder_locals: HashSet<u32>,
     /// Bindings that hold a closure value whose resolved invoke-shim carries a
     /// suspend terminator (the suspendable-callee discriminator). Populated by
     /// the `Let` handler from the shim's lowered MIR carriers — the SAME
@@ -10296,6 +10324,183 @@ impl Builder {
         }
     }
 
+    /// Leaf C-ABI release symbol for an UNSELECTED owned field discarded in a
+    /// record/tuple match destructure (the `_` arm on an owned-typed field).
+    ///
+    /// Returns `Some(symbol)` only for field types whose drop is a single-`ptr`
+    /// release the inline-drop dispatcher (`codegen-rs/llvm.rs ::
+    /// lower_inline_drop`) is allowed to emit:
+    ///   - `string` → `hew_string_drop`
+    ///   - `bytes`  → `hew_bytes_drop` (triple-field-0 release)
+    ///   - `Vec<T>` → `hew_vec_free` or `hew_vec_free_owned` (per-element-owns-heap)
+    ///   - `HashMap<K,V>` → `hew_hashmap_free_layout`
+    ///   - `HashSet<T>` → `hew_hashset_free_layout`
+    ///   - `Generator<Y,R>` / `AsyncGenerator<Y>` → `hew_gen_free`
+    ///
+    /// Returns `None` for owned-aggregate fields (records/tuples/enums) — their
+    /// in-place drop is `DropKind::RecordInPlace` / `TupleInPlace` /
+    /// `EnumInPlace`, NOT an inline `Instr::Drop`. The caller fails closed for
+    /// these rather than emit a wrong-ABI free (leak-not-double-free posture).
+    ///
+    /// The symbol authority MUST agree with codegen's `cow_heap_release_symbol`
+    /// + Bytes-intercept in `lower_inline_drop` (`dedup-semantic-boundary`,
+    ///   `lifecycle-symmetry`). A symbol absent from that authority would be
+    ///   rejected at codegen-emit time as a wrong-ABI free.
+    fn project_field_inline_drop_symbol(&self, ty: &ResolvedTy) -> Option<&'static str> {
+        match self.subst_ty(ty) {
+            ResolvedTy::String => Some("hew_string_drop"),
+            ResolvedTy::Bytes => Some("hew_bytes_drop"),
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Vec),
+                ref args,
+                ..
+            } => {
+                if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
+                    Some("hew_vec_free_owned")
+                } else {
+                    Some("hew_vec_free")
+                }
+            }
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::HashMap),
+                ..
+            } => Some("hew_hashmap_free_layout"),
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::HashSet),
+                ..
+            } => Some("hew_hashset_free_layout"),
+            ResolvedTy::Named {
+                builtin:
+                    Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
+                ..
+            } => Some("hew_gen_free"),
+            _ => None,
+        }
+    }
+
+    /// Field-precise owned-field enumeration for a record/tuple match
+    /// destructure scrutinee. For each owned field (non-BitCopy by value-class)
+    /// returns `(field_idx, substituted_type)`. Used by `lower_match_project`
+    /// to compute the set of fields needing explicit-drop emission for the
+    /// partial-extraction case.
+    fn project_record_owned_field_list(&self, ty: &ResolvedTy) -> Vec<(u32, ResolvedTy)> {
+        let subst = self.subst_ty(ty);
+        let Some(key) = user_record_layout_key(&subst) else {
+            return Vec::new();
+        };
+        let Some(field_order) = self.lookup_record_field_order(&key) else {
+            return Vec::new();
+        };
+        field_order
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, (_name, field_ty))| {
+                let substituted = self.subst_ty(field_ty);
+                if ValueClass::of_ty(&substituted, &self.type_classes) == ValueClass::BitCopy {
+                    None
+                } else {
+                    u32::try_from(idx).ok().map(|i| (i, substituted))
+                }
+            })
+            .collect()
+    }
+
+    fn project_tuple_owned_field_list(&self, ty: &ResolvedTy) -> Vec<(u32, ResolvedTy)> {
+        let subst = self.subst_ty(ty);
+        let ResolvedTy::Tuple(items) = subst else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| {
+                let substituted = self.subst_ty(item);
+                if ValueClass::of_ty(&substituted, &self.type_classes) == ValueClass::BitCopy {
+                    None
+                } else {
+                    u32::try_from(idx).ok().map(|i| (i, substituted))
+                }
+            })
+            .collect()
+    }
+
+    /// Classify a non-BitCopy match-project scrutinee shape. A
+    /// non-BitCopy record/tuple destructure touches the scrutinee storage in
+    /// one of two regimes:
+    /// - with bindings — per-field loads hand ownership of the bound owned
+    ///   fields to the bindings, and the partial-extraction emitter drops
+    ///   wildcarded owned fields IN PLACE on the scrutinee storage; or
+    /// - all-wildcard — nothing is moved out, and the whole aggregate is
+    ///   discarded after the (always-matching) arm runs.
+    ///
+    /// The ONLY scrutinee shape that lowers leak-free AND use-after-free-free
+    /// for both regimes is a non-captured `BindingRef`:
+    /// - it carries a composite drop, so an all-wildcard discard frees every
+    ///   owned field (a temporary has no composite drop — the discard would
+    ///   leak the whole aggregate); and
+    /// - the dataflow checker can mark it `Consumed` at the destructure site,
+    ///   so a post-match read of a binding whose fields were moved out fires
+    ///   `UseAfterConsume` (a projection or capture re-exposes the consumed
+    ///   storage with no place to anchor the consume).
+    ///
+    /// Returns `None` when the scrutinee is a non-captured `BindingRef` (safe
+    /// to lower). Returns `Some((construct, note))` for every other shape so
+    /// the caller can emit a fail-closed `NotYetImplemented` diagnostic:
+    /// projections (`FieldAccess` / `TupleIndex` / `Index` / `Slice`), captured
+    /// `BindingRef`s, and temporaries (`Call`, `StructInit`, `TupleLiteral`,
+    /// blocks, …). The user binds the scrutinee to a local first.
+    fn match_project_scrutinee_reject(
+        &self,
+        scrutinee: &HirExpr,
+    ) -> Option<(&'static str, String)> {
+        let ty = scrutinee.ty.user_facing();
+        match &scrutinee.kind {
+            HirExprKind::FieldAccess { .. }
+            | HirExprKind::TupleIndex { .. }
+            | HirExprKind::Index { .. }
+            | HirExprKind::Slice { .. } => Some((
+                "non-BitCopy match destructure on projection scrutinee",
+                format!(
+                    "scrutinee of `{ty}` is a projection; non-BitCopy match destructure \
+                     drops owned fields IN PLACE on the scrutinee storage, and the \
+                     projection lets later code re-read that freed storage. Bind the \
+                     scrutinee to a local first: `let scrutinee = <expr>; match scrutinee \
+                     {{ … }}` — the binding carries the consume mark that prevents \
+                     post-match use",
+                ),
+            )),
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } if self.capture_env_sources.contains_key(id) => Some((
+                "non-BitCopy match destructure on projection scrutinee",
+                format!(
+                    "scrutinee of `{ty}` is a closure-env captured binding; the capture \
+                     load bypasses the standard consume path, so a follow-up consume mark \
+                     cannot anchor against the env source and a post-match read would \
+                     re-use freed storage. Bind the scrutinee to a local inside the \
+                     closure first: `let scrutinee = <expr>; match scrutinee {{ … }}`",
+                ),
+            )),
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(_),
+                ..
+            } => None,
+            _ => Some((
+                "non-BitCopy match destructure on temporary scrutinee",
+                format!(
+                    "scrutinee of `{ty}` is a temporary (fresh value); it has no composite \
+                     drop, so destructuring it would leak every owned field the match does \
+                     not move out — an all-wildcard arm leaks the whole aggregate, and a \
+                     binding arm leaks the bound field that does not escape. Bind the \
+                     scrutinee to a local first: `let scrutinee = <expr>; match scrutinee \
+                     {{ … }}` — the local's composite drop frees the unmoved fields and \
+                     carries the consume mark for the moved ones",
+                ),
+            )),
+        }
+    }
+
     /// Lower a match whose arms are all `Wildcard` or `Binding`, each with
     /// an optional guard. Arms are tried in source order; a guard failure
     /// falls through to the next arm. The last arm (which must succeed if
@@ -10439,6 +10644,37 @@ impl Builder {
             )
         })?;
 
+        // Guard gate. A record/tuple project pattern is irrefutable, so the
+        // first arm is taken unconditionally and this function lowers exactly
+        // that one body — it does not build an ordered arm chain. An arm guard
+        // (`Pattern if <cond>`) would therefore be silently dropped: a `false`
+        // guard has no fallthrough target here, so the guarded arm would still
+        // run (wrong result) and its destructure would consume the scrutinee
+        // out from under the arm the user intended. Honoring guards needs the
+        // deferred-bind / fallthrough lowering that `lower_match_binding_chain`
+        // and `lower_match_enum_tag` provide for their irrefutable-or-tagged
+        // arms; that is not wired for owned-field projection, where a failed
+        // guard would have to roll back partial moves. Reject fail-closed for
+        // every project match (BitCopy and non-BitCopy alike) rather than
+        // miscompile. Unguarded arms are unaffected: with no guard the single
+        // taken arm is exactly correct and any trailing arms are unreachable.
+        if let Some(guard) = arms.iter().find_map(|arm| arm.guard.as_ref()) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "guarded record/tuple match destructure".to_string(),
+                    site: guard.site,
+                },
+                note: "a `match` on a record or tuple value lowers as a single irrefutable \
+                       destructure, so an arm guard (`Pattern if <cond>`) cannot fall through to \
+                       a later arm — the guard would be ignored and the first arm taken \
+                       unconditionally. Move the condition into the arm body \
+                       (`=> if <cond> { … } else { … }`), or match on an enum, whose guarded \
+                       arms lower as an ordered fallthrough chain"
+                    .to_string(),
+            });
+            return None;
+        }
+
         let result_place = self.alloc_local(result_ty.clone());
         let scrutinee_place = self.lower_value(scrutinee)?;
         let scrutinee_local = match scrutinee_place {
@@ -10457,21 +10693,85 @@ impl Builder {
             }
         };
 
-        if !selected.bindings.is_empty() && !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty)
-        {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "non-BitCopy record/tuple match destructure".to_string(),
-                    site: scrutinee.site,
-                },
-                note: format!(
-                    "record/tuple match destructure currently copies projected fields from the \
-                     scrutinee; `{}` is not known to be BitCopy, so owning-field destructure \
-                     is rejected fail-closed until partial-move/drop elaboration is wired",
-                    scrutinee.ty.user_facing()
-                ),
-            });
-            return None;
+        let scrutinee_is_non_bitcopy = !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty);
+
+        // Scrutinee-shape gate. A non-BitCopy record/tuple destructure
+        // either moves owned fields out of the scrutinee storage (with bindings)
+        // or discards the whole aggregate (all-wildcard). The only scrutinee
+        // shape we can lower leak- AND use-after-free-free is a non-captured
+        // `BindingRef`: it carries a composite drop (so an all-wildcard discard
+        // frees every owned field) and the dataflow checker can mark it
+        // `Consumed` (so a post-match read of a moved-out binding fires
+        // `UseAfterConsume`). This gate runs for EVERY non-BitCopy match-project
+        // — the earlier `!selected.bindings.is_empty()` guard let an all-wildcard
+        // owned aggregate bypass the check, and a temporary all-wildcard
+        // scrutinee (no composite drop) then leaked every owned field. Every
+        // other shape — projections, captures, and temporaries — fails closed.
+        // See `match_project_scrutinee_reject`.
+        if scrutinee_is_non_bitcopy {
+            if let Some((construct, note)) = self.match_project_scrutinee_reject(scrutinee) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: construct.to_string(),
+                        site: scrutinee.site,
+                    },
+                    note,
+                });
+                return None;
+            }
+        }
+
+        // Inline-drop pre-flight (partial extraction only). When at least one
+        // owned field is bound, `derive_owned_record_drop_allowed` /
+        // `derive_tuple_composite_drop_allowed` suppress the scrutinee's
+        // composite drop (the field-binder release-owner rule), so every
+        // UNSELECTED owned field must be freed by an inline `Instr::Drop`
+        // emitted below. The inline-drop dispatcher can only emit a single-`ptr`
+        // leaf release (`project_field_inline_drop_symbol`); an owned-AGGREGATE
+        // field (record / tuple / enum) has only a function-scope in-place drop
+        // kind it cannot emit, so wildcarding such a field would leak. Determine
+        // the unselected-owned set BEFORE emitting any code so a fail-closed
+        // diagnostic surfaces cleanly without a half-lowered block. All-wildcard
+        // patterns skip this loop: with no binding to suppress it, the
+        // scrutinee's own composite drop frees every field (the gate above
+        // proved the scrutinee is a droppable `BindingRef`).
+        if !selected.bindings.is_empty() && scrutinee_is_non_bitcopy {
+            let extracted: HashSet<u32> = selected.bindings.iter().map(|b| b.field_idx).collect();
+            let owned_fields: Vec<(u32, ResolvedTy)> = match &selected.predicate {
+                hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                    self.project_record_owned_field_list(&scrutinee.ty)
+                }
+                hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                    self.project_tuple_owned_field_list(&scrutinee.ty)
+                }
+                _ => Vec::new(),
+            };
+            for (idx, field_ty) in &owned_fields {
+                if extracted.contains(idx) {
+                    continue;
+                }
+                if self.project_field_inline_drop_symbol(field_ty).is_none() {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "match-destructure wildcard on owned aggregate field"
+                                .to_string(),
+                            site: scrutinee.site,
+                        },
+                        note: format!(
+                            "field {idx} of `{}` has owned-aggregate type `{}`; wildcarding it \
+                             would leak its heap contents because the in-place drop kinds \
+                             (`RecordInPlace` / `TupleInPlace` / `EnumInPlace`) are function-\
+                             scope drops, not inline `Instr::Drop` targets. Bind the field \
+                             explicitly so its drop is elaborated through `owned_locals`, or \
+                             extract every sibling instead of using `_` on this field — refusing \
+                             to lower fail-closed rather than emit a leak / wrong-ABI drop",
+                            scrutinee.ty.user_facing(),
+                            field_ty.user_facing(),
+                        ),
+                    });
+                    return None;
+                }
+            }
         }
 
         let join_bb = self.alloc_block();
@@ -10479,25 +10779,37 @@ impl Builder {
         self.finish_current_block(Terminator::Goto { target: body_bb });
         self.start_block(body_bb);
 
+        // Decide once whether the scrutinee gets the follow-up `Use {
+        // intent: Consume }` mark. This drives BOTH the post-destructure
+        // consume emission AND each non-BitCopy binder's taint-suppression.
+        // Hoisted out of the per-binding loop so the two paths cannot diverge
+        // — a binder admitted to the sole-owner allow-set without a
+        // corresponding scrutinee consume would double-free the shared buffer.
+        //
+        // Projections, captures, AND temporaries were already rejected by the
+        // `match_project_scrutinee_reject` gate above, so the only scrutinee
+        // that reaches here for a non-BitCopy match is a non-captured
+        // `BindingRef`. It earns the consume mark + the binder untaint when the
+        // arm binds at least one owned field; an all-wildcard arm moves nothing
+        // out, so the binding stays live and its composite drop frees every
+        // field (no consume mark — a post-match read of an all-wildcard
+        // scrutinee is legitimate).
+        let consume_scrutinee: Option<(BindingId, String)> = match &scrutinee.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                name,
+            } if !selected.bindings.is_empty()
+                && !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty)
+                && !self.capture_env_sources.contains_key(id) =>
+            {
+                Some((*id, name.clone()))
+            }
+            _ => None,
+        };
+
         let mut overwritten_bindings = Vec::with_capacity(selected.bindings.len());
         for binding in &selected.bindings {
             let binding_ty = self.subst_ty(&binding.ty);
-            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "owning field match destructure binding".to_string(),
-                        site: selected.body.site,
-                    },
-                    note: format!(
-                        "binding `{}` has non-BitCopy type `{}`; record/tuple match destructure \
-                         defers owning-field move semantics rather than copying or double-dropping",
-                        binding.name,
-                        binding_ty.user_facing()
-                    ),
-                });
-                return None;
-            }
-
             self.statements.push(MirStatement::Bind {
                 binding: binding.binding,
                 name: binding.name.clone(),
@@ -10505,7 +10817,58 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
+            // Non-BitCopy bindings (owned `string` / `bytes` / `Vec<T>` /
+            // owned record/tuple/enum) MUST enter `owned_locals` so the
+            // function-scope LIFO drop pass releases them exactly once, AND so
+            // their presence in `release_owner_bases` excludes the source
+            // aggregate's composite drop in `derive_owned_record_drop_allowed`
+            // / `derive_tuple_composite_drop_allowed` (the field-binder rule).
+            // Skipping this for an owned binding produces a leak (no drop
+            // elaborated) OR a double-free (composite drop still fires plus
+            // the binding's escape consume) — both fail-closed-unsafe.
+            // BitCopy bindings stay out: their copy is free of heap ownership
+            // and the surrounding scrutinee's composite drop covers them.
+            let keep_for_drop_elab =
+                ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy;
+            if keep_for_drop_elab {
+                self.owned_locals
+                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+                // A generator/AsyncGenerator handle bound via match destructure
+                // gets the same per-scope-exit `hew_gen_free` registration the
+                // `Let` path uses, so the per-iteration release fires for a
+                // match inside a loop (see `scope_generator_bindings`).
+                if ty_is_generator_handle(&binding_ty) {
+                    if let Some(scope) = self.active_scopes.last().copied() {
+                        self.scope_generator_bindings.push((
+                            scope,
+                            binding.binding,
+                            binding_ty.clone(),
+                        ));
+                    }
+                }
+            }
             let dest = self.alloc_local(binding_ty);
+            // Pair the binder with the scrutinee's consume mark: register the
+            // binder's base local so `derive_cow_sole_owner` skips the
+            // projection-alias taint seed for it. Once the parent is
+            // `Consumed` at this site, the binder owns its loaded payload
+            // exclusively and must be admitted to the leaf CoW drop allow-set,
+            // otherwise `build_lifo_drops`'s leaf-CoW arm silently emits no
+            // drop and the payload leaks. The dataflow exit-state post-filter
+            // at the `derive_cow_sole_owner` call site still removes any
+            // binder consumed by the arm body (`=> y`), so this never
+            // double-frees a moved-out payload.
+            //
+            // Gated: only when the scrutinee earns a consume mark (a non-
+            // captured `BindingRef` non-BitCopy scrutinee with bindings)
+            // AND the binder itself is non-BitCopy. BitCopy binders carry
+            // no heap to drop; non-consume-marked scrutinees keep the
+            // parent's composite drop alive, so binder taint must stand.
+            if consume_scrutinee.is_some() && keep_for_drop_elab {
+                if let Some(local_idx) = base_local(dest) {
+                    self.match_project_consumed_binder_locals.insert(local_idx);
+                }
+            }
             match &selected.predicate {
                 hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
                     self.instructions.push(Instr::RecordFieldLoad {
@@ -10556,12 +10919,141 @@ impl Builder {
                 }
             }
             let previous = self.binding_locals.insert(binding.binding, dest);
-            overwritten_bindings.push((binding.binding, previous));
+            overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
+        }
+
+        // Partial-extraction safety drops. After the per-binding extraction
+        // loop, every owned field of the scrutinee that is NOT in
+        // `selected.bindings` is a wildcard discard. If the scrutinee carries
+        // any owned content, the composite drop on the source aggregate is
+        // already suppressed by `derive_owned_record_drop_allowed` /
+        // `derive_tuple_composite_drop_allowed` once an extracted binding (or
+        // an inline drop emitted here) seeds the field-binder release-owner
+        // path. Without explicit drops for the wildcarded owned fields, those
+        // fields would leak (the composite is suppressed, the extracted bindings
+        // do not cover them). Emit a `RecordFieldLoad` / `TupleFieldLoad` of
+        // each unselected owned field into a fresh temp, then an inline
+        // `Instr::Drop` with the leaf release symbol the inline-drop dispatcher
+        // is allowed to emit (`project_field_inline_drop_symbol`). The pre-flight
+        // above guarantees every unselected owned field has a known leaf symbol
+        // — if any did not, we have already returned a fail-closed diagnostic
+        // and never enter this loop.
+        //
+        // Emit drops AFTER the extraction binds but BEFORE the body: the body
+        // refers only to the bound names (not the wildcarded fields), so the
+        // drops free the discarded heap content immediately and leave the body
+        // to run with the bound owners live.
+        if !selected.bindings.is_empty() && !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty)
+        {
+            let extracted: HashSet<u32> = selected.bindings.iter().map(|b| b.field_idx).collect();
+            let owned_fields: Vec<(u32, ResolvedTy)> = match &selected.predicate {
+                hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                    self.project_record_owned_field_list(&scrutinee.ty)
+                }
+                hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                    self.project_tuple_owned_field_list(&scrutinee.ty)
+                }
+                _ => Vec::new(),
+            };
+            for (idx, field_ty) in owned_fields {
+                if extracted.contains(&idx) {
+                    continue;
+                }
+                let Some(drop_symbol) = self.project_field_inline_drop_symbol(&field_ty) else {
+                    // Unreachable — the pre-flight at the head of the function
+                    // returned fail-closed on the same condition. Defense-in-
+                    // depth: surface the invariant rather than silently leak.
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "match-destructure wildcard on owned aggregate field"
+                                .to_string(),
+                            site: scrutinee.site,
+                        },
+                        note: format!(
+                            "field {idx} of `{}` slipped past the pre-flight inline-drop \
+                             admission check; refusing to emit a leak / wrong-ABI free",
+                            scrutinee.ty.user_facing(),
+                        ),
+                    });
+                    return None;
+                };
+                let temp = self.alloc_local(field_ty.clone());
+                match &selected.predicate {
+                    hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                        self.instructions.push(Instr::RecordFieldLoad {
+                            record: Place::Local(scrutinee_local),
+                            field_offset: FieldOffset(idx),
+                            dest: temp,
+                        });
+                    }
+                    hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                        self.instructions.push(Instr::TupleFieldLoad {
+                            tuple: Place::Local(scrutinee_local),
+                            field_index: idx,
+                            dest: temp,
+                        });
+                    }
+                    _ => unreachable!(
+                        "owned-field enumeration only populated for project predicates"
+                    ),
+                }
+                self.instructions.push(Instr::Drop {
+                    place: temp,
+                    ty: field_ty,
+                    drop_fn: Some(drop_symbol.to_string()),
+                });
+            }
+        }
+
+        // The destructure consumed the scrutinee's storage: bindings own the
+        // loaded fields and any inline drops above released wildcarded owned
+        // fields IN PLACE. If the scrutinee was a `BindingRef`, any post-match
+        // read of that binding (`p.b` after `match p { Pair { a: x, b: _ } =>
+        // x }`, or even a later full-field read once the binders drop their
+        // payloads) would be a use-after-free. Emit a follow-up
+        // `MirStatement::Use { intent: Consume }` for the scrutinee binding so
+        // the dataflow checker transitions it to `Consumed(site)` — any later
+        // `BindingRef` use then fires `UseAfterConsume`.
+        //
+        // The `consume_scrutinee` decision was hoisted above the per-binding
+        // loop so this emission and the per-binder taint-suppression (at
+        // `match_project_consumed_binder_locals`) stay in lock-step: a binder
+        // admitted to the leaf CoW sole-owner allow-set without a
+        // corresponding parent consume would double-free.
+        if let Some((scrutinee_id, scrutinee_name)) = consume_scrutinee.as_ref() {
+            let scrutinee_ty = self.subst_ty(&scrutinee.ty);
+            self.statements.push(MirStatement::Use {
+                binding: *scrutinee_id,
+                name: scrutinee_name.clone(),
+                site: scrutinee.site,
+                ty: scrutinee_ty,
+                intent: IntentKind::Consume,
+            });
+            self.mark_binding_moved(*scrutinee_id);
         }
 
         let value = self.lower_value(&selected.body);
 
-        for (binding, previous) in overwritten_bindings.into_iter().rev() {
+        // For owned (non-BitCopy) pattern bindings, KEEP the `binding_locals`
+        // entry alive past the arm body so `build_lifo_drops` can resolve the
+        // binding's Place at function-exit (and loop back-edge) drop
+        // elaboration time. Removing it here would leak the bound owned field:
+        // for the leaf
+        // `string`/`Vec`/etc. arm in `build_lifo_drops`, an `owned_locals`
+        // entry without a `binding_locals` Place silently emits no drop
+        // (the `if let Some(place) = binding_locals.get(...)` arm short-
+        // circuits). The `keep_for_drop_elab` flag was set above iff the
+        // binding's type is non-BitCopy — exactly the bindings that need
+        // their drop elaborated. Lexical liveness is still narrowed by the
+        // dataflow exit-state filter inside `drops_for_exit` (a binding
+        // `Consumed` mid-body is excluded), mirroring the discipline the
+        // enum-variant arm uses at `lower_match_enum_tag` (~L11860).
+        // BitCopy bindings have no drop to elaborate, so restoring their
+        // previous slot is correct and shadowing-safe.
+        for (binding, previous, keep_for_drop_elab) in overwritten_bindings.into_iter().rev() {
+            if keep_for_drop_elab {
+                continue;
+            }
             if let Some(previous) = previous {
                 self.binding_locals.insert(binding, previous);
             } else {
@@ -18206,6 +18698,7 @@ fn elaborate(
         &checked.blocks,
         &builder.owned_locals,
         &builder.binding_locals,
+        &builder.match_project_consumed_binder_locals,
     );
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
@@ -20083,6 +20576,7 @@ fn derive_cow_sole_owner(
     blocks: &[BasicBlock],
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
+    match_project_consumed_binder_locals: &HashSet<u32>,
 ) -> HashSet<BindingId> {
     // 1. Every local read as a source operand anywhere — i.e. every local
     //    whose pointer is copied/aliased out of its slot.
@@ -20105,12 +20599,26 @@ fn derive_cow_sole_owner(
     // 2. Projection-alias taint. Seed at every interior-pointer load dest,
     //    then propagate forward through `Move` to a fixpoint — a value
     //    copied from a tainted local is itself a parent-interior alias.
+    //
+    // Exception: a match-destructure binder whose scrutinee was consume-
+    // marked at the destructure site (`lower_match_project` populates
+    // `match_project_consumed_binder_locals`) is a sole owner — the
+    // parent's composite drop is dataflow-suppressed, so the projection-
+    // alias-as-double-free reasoning does not apply. Skipping the SEED is
+    // sufficient: the binder's slot is allocated by `alloc_local` and not
+    // a re-projection, so no later `Move`-fixpoint round can re-taint it
+    // unless something else writes into the same local (which would itself
+    // be a separate seed). The dataflow exit-state post-filter at the
+    // `derive_cow_sole_owner` call site still removes binders consumed by
+    // the arm body, so this never double-frees a moved-out payload.
     let mut tainted: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Some(dest) = projection_alias_dest(instr) {
                 if let Some(l) = base_local(dest) {
-                    tainted.insert(l);
+                    if !match_project_consumed_binder_locals.contains(&l) {
+                        tainted.insert(l);
+                    }
                 }
             }
             // A `Move` *from* an interior projection (enum/machine payload
@@ -20121,6 +20629,13 @@ fn derive_cow_sole_owner(
             // scrutinee (marking it read), but the binder dest is a fresh
             // owned local that must itself be tainted or it is admitted to
             // drop and double-frees the shared buffer.
+            //
+            // The match-destructure consumed-binder exemption does NOT apply
+            // here: the consume-mark suppression is for `*FieldLoad` dests
+            // populated by `lower_match_project`, which never emits a Move-
+            // from-interior-projection for its binders (it uses the
+            // dedicated `*FieldLoad` instructions instead). Enum/machine
+            // payload destructures continue to flow through this seed.
             if let Instr::Move { dest, src } = instr {
                 if place_is_interior_projection(*src) {
                     if let Some(dl) = base_local(*dest) {
@@ -25394,7 +25909,8 @@ mod cow_sole_owner_derivation {
         let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
         binding_locals.insert(b, Place::Local(7));
 
-        let allowed = derive_cow_sole_owner(&[block(vec![])], &owned, &binding_locals);
+        let allowed =
+            derive_cow_sole_owner(&[block(vec![])], &owned, &binding_locals, &HashSet::new());
         assert!(
             allowed.contains(&b),
             "an untouched string local is its own sole owner and must be admitted"
@@ -25437,7 +25953,8 @@ mod cow_sole_owner_derivation {
         binding_locals.insert(f, Place::Local(20));
         binding_locals.insert(g, Place::Local(21));
 
-        let allowed = derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals);
+        let allowed =
+            derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals, &HashSet::new());
         assert!(
             !allowed.contains(&f) && !allowed.contains(&g),
             "payload-destructure binders alias parent storage (no retain) and \
@@ -25477,7 +25994,8 @@ mod cow_sole_owner_derivation {
         binding_locals.insert(payload, Place::Local(40));
         binding_locals.insert(copy, Place::Local(41));
 
-        let allowed = derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals);
+        let allowed =
+            derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals, &HashSet::new());
         assert!(
             allowed.is_empty(),
             "the enum-variant binder and the local it is moved into both alias \
@@ -25505,7 +26023,8 @@ mod cow_sole_owner_derivation {
         binding_locals.insert(src, Place::Local(60));
         binding_locals.insert(dst, Place::Local(61));
 
-        let allowed = derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals);
+        let allowed =
+            derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals, &HashSet::new());
         assert!(
             !allowed.contains(&src),
             "the move source is aliased out and must be excluded"

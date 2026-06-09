@@ -516,6 +516,19 @@ impl<'a> ProfileChecker<'a> {
             | Expr::PostfixTry(operand) => {
                 self.check_expr(operand);
             }
+            Expr::Clone(operand) => {
+                // `clone x` lowers to a `.clone()` method call the sandbox
+                // emitter does not implement, so the profile admits nothing:
+                // reject here (yielding `bytecode: None`) rather than letting
+                // emission fall through to an `unsupported_instruction` trap.
+                // The operand is still walked so its own rejections surface.
+                self.reject(
+                    span.clone(),
+                    "reserved_runtime_feature",
+                    "`clone` duplication is not admitted to sandbox bytecode export yet",
+                );
+                self.check_expr(operand);
+            }
             Expr::Await(operand) => {
                 // Only the actor-ask form `await ref.handler(args)` is admitted.
                 // The emitter lowers this to `actor.ask`; any other await form is

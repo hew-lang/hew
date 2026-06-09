@@ -1,0 +1,49 @@
+//! Non-BitCopy record match destructure — ALL-wildcard owned aggregate.
+//!
+//! `Outer { name: string, inner: Inner }` owns heap through both fields
+//! (`name` directly, `inner` via its own `string`). The arm
+//! `Outer { name: _, inner: _ }` binds nothing — it discards the whole
+//! aggregate after the (always-matching) arm runs.
+//!
+//! With no binding, nothing seeds the field-binder release-owner rule, so the
+//! scrutinee's own composite drop is NOT suppressed: it fires at scope exit and
+//! frees every owned field (`name` and the nested `inner.value`). The
+//! scrutinee-shape gate proves the scrutinee is a droppable local `BindingRef`
+//! before admitting the destructure, so this composite drop is guaranteed to
+//! exist — a temporary scrutinee (which has no composite drop) is rejected
+//! fail-closed instead (see `reject/match_destructure_temporary_scrutinee`).
+//!
+//! Observable contract: across many iterations the program prints `done` and
+//! exits 0 with bounded RSS. A regression that suppressed the composite drop
+//! without a replacement would leak both strings per iteration (linear RSS
+//! growth); a regression that both dropped composite AND emitted per-field
+//! drops would double-free and abort at `free_cstring`'s sentinel.
+
+type Inner {
+    value: string,
+}
+
+type Outer {
+    name: string,
+    inner: Inner,
+}
+
+fn make(n: i64) -> Outer {
+    Outer {
+        name: string_concat("name-", "x"),
+        inner: Inner { value: string_concat("v-", "x") },
+    }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 100000 {
+        let o = make(i);
+        let _r = match o {
+            Outer { name: _, inner: _ } => 0,
+        };
+        i = i + 1;
+    }
+    println("done");
+    0
+}

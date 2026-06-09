@@ -5049,7 +5049,9 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
             scan_expr_for_private_refs(&left.0, pf, out);
             scan_expr_for_private_refs(&right.0, pf, out);
         }
-        Expr::Unary { operand, .. } => scan_expr_for_private_refs(&operand.0, pf, out),
+        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+            scan_expr_for_private_refs(&operand.0, pf, out);
+        }
         Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
             for e in es {
                 scan_expr_for_private_refs(&e.0, pf, out);
@@ -10277,6 +10279,14 @@ impl LowerCtx {
                 method,
                 args,
             } => self.lower_method_call(receiver, method, args, span.clone(), site),
+            // `clone <operand>` reuses the `.clone()` lowering: the checker
+            // recorded the method resolution / rewrite at this span (see
+            // `synthesize` `Expr::Clone`), so this routes through the same
+            // copy-path selection and fail-closed `CloneNotYetSupported`
+            // diagnostic as `<operand>.clone()`.
+            Expr::Clone(operand) => {
+                self.lower_method_call(operand, "clone", &[], span.clone(), site)
+            }
             Expr::UnsafeBlock(block) => {
                 // Unsafe clearance is a checker-only concept; the HIR represents the
                 // body as a plain block.  The `in_unsafe` flag pushed by the type

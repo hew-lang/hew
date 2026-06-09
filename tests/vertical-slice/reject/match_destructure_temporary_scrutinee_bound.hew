@@ -1,0 +1,40 @@
+//! Reject: non-BitCopy match destructure on a TEMPORARY (fresh-value)
+//! scrutinee with a binding arm (partial extraction).
+//!
+//! `match make() { Pair { a: x, b: _ } => x }` extracts `a` into a binding and
+//! wildcards `b`. The scrutinee is a temporary returned by a call, so it has no
+//! composite drop. The bound field `x` is loaded via `RecordFieldLoad`, which
+//! seeds it as a projection-alias of the parent; without a consume mark on the
+//! parent (a temporary cannot be consume-marked — there is no binding to mark),
+//! `derive_cow_sole_owner` excludes `x` from the drop allow-set and its payload
+//! leaks. The wildcarded `b` is inline-dropped, so the net leak is the
+//! extracted-but-aliased binder, one allocation per evaluation.
+//!
+//! The scrutinee-shape gate refuses this fail-closed with
+//! `E_NOT_YET_IMPLEMENTED: MIR lowering for non-BitCopy match destructure on
+//! temporary scrutinee`. Binding the scrutinee to a local first
+//! (`let scrutinee = make(); match scrutinee { … }`) routes through the
+//! consume-mark + binder-untaint path that drops every field exactly once.
+//!
+//! Observable contract: `hew check` fails non-zero with the temporary-scrutinee
+//! diagnostic. A regression that admitted temporary scrutinees would let this
+//! file `check` green and leak the extracted binder on every evaluation.
+
+type Pair {
+    a: string,
+    b: string,
+}
+
+fn make() -> Pair {
+    Pair {
+        a: string_concat("a-", "payload"),
+        b: string_concat("b-", "payload"),
+    }
+}
+
+fn main() -> i64 {
+    let _s = match make() {
+        Pair { a: x, b: _ } => x,
+    };
+    0
+}

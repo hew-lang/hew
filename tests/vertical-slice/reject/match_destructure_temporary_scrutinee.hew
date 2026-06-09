@@ -1,0 +1,43 @@
+//! Reject: non-BitCopy match destructure on a TEMPORARY (fresh-value)
+//! scrutinee with an all-wildcard arm.
+//!
+//! `match make() { Outer { name: _, inner: _ } => 0 }` matches a fresh value
+//! returned by a call. A temporary has no composite drop: unlike a local
+//! binding, nothing in the surrounding scope frees it at scope exit. An
+//! all-wildcard arm binds nothing and emits no per-field drops, so every owned
+//! field of the discarded aggregate (`name`, `inner.value`) would leak — one
+//! allocation per field, per evaluation.
+//!
+//! The scrutinee-shape gate refuses this fail-closed with
+//! `E_NOT_YET_IMPLEMENTED: MIR lowering for non-BitCopy match destructure on
+//! temporary scrutinee`, instructing the user to bind the scrutinee to a local
+//! first (`let scrutinee = make(); match scrutinee { … }`) — the local's
+//! composite drop then frees the discarded fields (see the accept fixture
+//! `match_record_wildcard_all_owned_drops_once`).
+//!
+//! Observable contract: `hew check` fails non-zero with the temporary-scrutinee
+//! diagnostic. A regression that admitted temporary scrutinees would let this
+//! file `check` green and leak both strings on every evaluation.
+
+type Inner {
+    value: string,
+}
+
+type Outer {
+    name: string,
+    inner: Inner,
+}
+
+fn make() -> Outer {
+    Outer {
+        name: string_concat("name-", "x"),
+        inner: Inner { value: string_concat("v-", "x") },
+    }
+}
+
+fn main() -> i64 {
+    let _r = match make() {
+        Outer { name: _, inner: _ } => 0,
+    };
+    0
+}

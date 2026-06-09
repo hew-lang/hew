@@ -255,6 +255,15 @@ impl Checker {
             // Unary ops
             Expr::Unary { op, operand } => self.synthesize_unary_op(*op, operand, span),
 
+            // `clone <operand>` — explicit duplication. Resolved exactly like
+            // `<operand>.clone()`: method resolution decides cloneability and
+            // the result type (checker authority), the operand is read
+            // non-consumingly, and the same side tables are recorded at this
+            // span so HIR lowering can reuse the `.clone()` lowering path.
+            // Types with no clone path fail closed downstream with the existing
+            // clone diagnostic.
+            Expr::Clone(operand) => self.check_method_call(operand, "clone", &[], span),
+
             // Call
             Expr::Call {
                 function,
@@ -1070,6 +1079,13 @@ impl Checker {
                          `.send_half()`, and `.recv_half()` move the handle; \
                          use a single consuming call per binding",
                         ty.user_facing()
+                    ));
+                } else if self.registry.implements_marker(&ty, MarkerTrait::Clone) {
+                    // The value's type has a clone path, so the canonical fix is
+                    // to duplicate it before the consuming use and pass the copy.
+                    err = err.with_suggestion(format!(
+                        "duplicate `{name}` with `clone {name}` before the consuming use \
+                         to keep the original usable"
                     ));
                 }
                 self.errors.push(err);
@@ -3908,6 +3924,7 @@ impl Checker {
             }
             Expr::Binary { .. }
             | Expr::Unary { .. }
+            | Expr::Clone(_)
             | Expr::Literal(_)
             | Expr::Identifier(_)
             | Expr::Tuple(_)

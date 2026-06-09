@@ -1,0 +1,34 @@
+//! Non-BitCopy tuple match destructure — full extraction of `(string, i64)`.
+//!
+//! A tuple carrying at least one heap-owning element is non-BitCopy by
+//! `project_match_scrutinee_is_bitcopy`. Until the partial-move/drop
+//! elaboration spine landed, `lower_match_project` rejected this shape
+//! fail-closed. After the lift, the per-binding loop registers `a` in
+//! `owned_locals` so its drop fires once at function scope exit, and
+//! `derive_tuple_composite_drop_allowed` sees `a` as an element-binder
+//! release owner and excludes the tuple temp's composite member drop —
+//! no double-free, no leak.
+//!
+//! Observable contract: across many iterations the program prints `done`
+//! and exits 0 with bounded RSS. A regressed lift that double-freed would
+//! abort at `free_cstring`'s sentinel; a regressed lift that leaked would
+//! grow RSS linearly with iteration count.
+
+fn make_pair(n: i64) -> (string, i64) {
+    (string_concat("item-", "-payload"), n)
+}
+
+fn main() -> i64 {
+    var acc: i64 = 0;
+    var i: i64 = 0;
+    while i < 100000 {
+        let t = make_pair(i);
+        let _s = match t {
+            (a, b) => a,
+        };
+        acc = acc + i;
+        i = i + 1;
+    }
+    println("done");
+    acc * 0
+}

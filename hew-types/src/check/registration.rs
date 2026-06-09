@@ -2453,6 +2453,7 @@ impl Checker {
                 Self::collect_machine_transition_forbidden_exprs(&right.0, &right.1, hits);
             }
             Expr::Unary { operand, .. }
+            | Expr::Clone(operand)
             | Expr::ForkChild { expr: operand, .. }
             | Expr::PostfixTry(operand)
             | Expr::Yield(Some(operand)) => {

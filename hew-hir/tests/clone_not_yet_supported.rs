@@ -70,6 +70,40 @@ fn clone_call_emits_not_yet_supported_diagnostic() {
     );
 }
 
+/// The `clone <expr>` prefix lowers through the *same* `lower_method_call`
+/// path as `x.clone()`, so on an unresolved (no-stdlib) type it must emit the
+/// identical `CloneNotYetSupported` diagnostic and fail the build.  This pins
+/// the symmetry between the prefix surface and the method form at the HIR
+/// boundary: the prefix is not a second, weaker code path.
+#[test]
+fn clone_prefix_emits_not_yet_supported_diagnostic() {
+    let source = r"
+        fn main() -> i64 {
+            let x: i32 = 42;
+            let y = clone x;
+            return 0;
+        }
+    ";
+
+    let (_, lower) = run_pipeline(source);
+
+    let clone_diag = lower
+        .diagnostics
+        .iter()
+        .find(|d| matches!(&d.kind, HirDiagnosticKind::CloneNotYetSupported { .. }));
+    assert!(
+        clone_diag.is_some(),
+        "expected CloneNotYetSupported diagnostic for `clone x`; \
+         got diagnostics: {:#?}",
+        lower.diagnostics
+    );
+
+    assert!(
+        lower.into_result().is_err(),
+        "pipeline must fail when source contains an unsupported `clone x`"
+    );
+}
+
 /// `.clone()` with one or more arguments must NOT be intercepted — only the
 /// zero-argument form is the clone method.  This guards against accidentally
 /// blocking methods named `clone` that happen to take parameters.

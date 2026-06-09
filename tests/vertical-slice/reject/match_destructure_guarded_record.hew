@@ -1,0 +1,42 @@
+//! Reject: a guard on a record match-destructure arm.
+//!
+//! A record project pattern (`Pair { a: x, b: y }`) is irrefutable, so
+//! `lower_match_project` lowers exactly the first arm's body — it does not
+//! build an ordered arm chain with fallthrough. An arm guard
+//! (`Pattern if <cond>`) therefore has no fallthrough target: a `false`
+//! guard cannot retry a later arm, so the guarded arm would run anyway and
+//! its destructure would consume the scrutinee out from under the arm the
+//! user intended. The result is a silent miscompile — the binding below
+//! would take `x` from the `if false` arm, yielding `a-payload` instead of
+//! the `b-payload` the second arm specifies.
+//!
+//! The fix rejects any guarded record/tuple destructure fail-closed with
+//! `E_NOT_YET_IMPLEMENTED: guarded record/tuple match destructure`, and a
+//! note steering the user to move the condition into the arm body
+//! (`=> if <cond> { … } else { … }`) or match on an enum, whose guarded
+//! arms lower as an ordered fallthrough chain.
+//!
+//! Observable contract: `hew check` fails non-zero with the
+//! NotYetImplemented diagnostic. A regression that admits guarded project
+//! arms would let this file `check` green and run the wrong arm.
+
+type Pair {
+    a: string,
+    b: string,
+}
+
+fn make_pair() -> Pair {
+    Pair {
+        a: string_concat("a-", "payload"),
+        b: string_concat("b-", "payload"),
+    }
+}
+
+fn main() -> i64 {
+    let p = make_pair();
+    let _v = match p {
+        Pair { a: x, b: _ } if false => x,
+        Pair { a: _, b: y } => y,
+    };
+    0
+}

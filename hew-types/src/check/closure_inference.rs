@@ -200,7 +200,7 @@ fn body_visit_expr(expr: &Expr, out: &mut LambdaBodyFacts) {
             body_visit_expr(&left.0, out);
             body_visit_expr(&right.0, out);
         }
-        Expr::Unary { operand, .. } => body_visit_expr(&operand.0, out),
+        Expr::Unary { operand, .. } | Expr::Clone(operand) => body_visit_expr(&operand.0, out),
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::This
@@ -613,7 +613,10 @@ fn esc_visit_expr(
             esc_visit_expr(&left.0, name, in_fork, acc, false);
             esc_visit_expr(&right.0, name, in_fork, acc, false);
         }
-        Expr::Unary { operand, .. } => esc_visit_expr(&operand.0, name, in_fork, acc, false),
+        // `clone <operand>` is read-only and recurses like other unary forms.
+        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+            esc_visit_expr(&operand.0, name, in_fork, acc, false);
+        }
         Expr::Literal(_)
         | Expr::This
         | Expr::RegexLiteral(_)

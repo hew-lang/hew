@@ -1,0 +1,47 @@
+//! Reject: non-BitCopy match destructure on a projection scrutinee.
+//!
+//! The destructure consumes the scrutinee's storage in two ways:
+//! per-binding `RecordFieldLoad` / `TupleFieldLoad` hand ownership of
+//! owned fields to the bindings, and the partial-extraction emitter drops
+//! wildcarded owned fields IN PLACE on the scrutinee. A `FieldAccess` /
+//! `TupleIndex` / `Index` / `Slice` scrutinee, however, is a projection
+//! whose source storage stays readable through the same shape after the
+//! match. There is no binding for the dataflow checker to mark
+//! `Consumed`, so a re-read like `h.p.b` would silently UAF.
+//!
+//! The fix rejects projection scrutinees fail-closed with
+//! `E_NOT_YET_IMPLEMENTED: MIR lowering for non-BitCopy match destructure
+//! on projection scrutinee`, with a diagnostic note pointing the user at
+//! `let scrutinee = <expr>; match scrutinee { … }` — the local binding
+//! carries the consume mark that prevents the post-match use.
+//!
+//! Observable contract: `hew check` fails non-zero with the
+//! NotYetImplemented diagnostic. A regression that admits projection
+//! scrutinees without the consume anchor would let this file `check`
+//! green and run-time UAF.
+
+type Pair {
+    a: string,
+    b: string,
+}
+
+type Holder {
+    p: Pair,
+}
+
+fn make_holder() -> Holder {
+    Holder {
+        p: Pair {
+            a: string_concat("a-", "payload"),
+            b: string_concat("b-", "payload"),
+        },
+    }
+}
+
+fn main() -> i64 {
+    let h = make_holder();
+    let _x = match h.p {
+        Pair { a: x, b: _ } => x,
+    };
+    0
+}

@@ -2128,6 +2128,7 @@ impl<'a> Formatter<'a> {
                 Self::can_format_expr_inline(&value.0) && Self::can_format_expr_inline(&count.0)
             }
             Expr::Unary { operand, .. }
+            | Expr::Clone(operand)
             | Expr::PostfixTry(operand)
             | Expr::Await(operand)
             | Expr::Yield(Some(operand)) => Self::can_format_expr_inline(&operand.0),
@@ -2680,6 +2681,10 @@ impl<'a> Formatter<'a> {
             }
             Expr::Literal(lit) => self.format_literal(lit),
             Expr::Identifier(name) => self.write(name),
+            Expr::Clone(operand) => {
+                self.write("clone ");
+                self.format_expr(&operand.0);
+            }
             Expr::Tuple(elems) => {
                 self.write("(");
                 self.comma_sep(elems, |f, elem| f.format_expr(&elem.0));

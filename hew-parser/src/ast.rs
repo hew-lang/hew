@@ -142,6 +142,22 @@ pub enum Expr {
         op: UnaryOp,
         operand: Box<Spanned<Expr>>,
     },
+    /// Explicit duplication prefix: `clone <operand>`.
+    ///
+    /// The canonical surface for producing an independent owned copy of a
+    /// value. `clone` is a contextual prefix, not a reserved word — it is
+    /// still usable as a method name (`x.clone()`) and a free/impl function
+    /// name (`fn clone(s: string) -> string`). The parser only reads it as
+    /// this prefix when it sits in operator position immediately followed by
+    /// an operand token (see `token_begins_clone_operand`).
+    ///
+    /// The operand is read non-consumingly; the result is an owned value that
+    /// drops normally. The checker resolves cloneability via the same method
+    /// resolution that backs `<operand>.clone()`, and HIR lowering reuses the
+    /// `.clone()` lowering path, so `clone x` and `x.clone()` share one
+    /// substrate. Types without a clone path fail closed with the existing
+    /// clone diagnostic rather than silently aliasing.
+    Clone(Box<Spanned<Expr>>),
     Literal(Literal),
     Identifier(String),
     Tuple(Vec<Spanned<Expr>>),

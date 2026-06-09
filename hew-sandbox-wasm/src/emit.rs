@@ -1800,6 +1800,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::This
             | Expr::Cast { .. }
             | Expr::PostfixTry(_)
+            | Expr::Clone(_)
             | Expr::Range { .. }
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)

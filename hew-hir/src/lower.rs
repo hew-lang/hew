@@ -10758,6 +10758,12 @@ impl LowerCtx {
                     ),
                 }
             }
+            Expr::Timeout {
+                expr: timeout_inner,
+                duration,
+            } => {
+                return self.lower_await_deadline(timeout_inner, duration, &span, intent);
+            }
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -13777,6 +13783,7 @@ impl LowerCtx {
                             method_id,
                             args: lowered_args,
                             reply_ty: reply_ty.clone(),
+                            deadline_ns: None,
                         },
                         reply_ty,
                     ),
@@ -15472,6 +15479,94 @@ impl LowerCtx {
         let lowered = self.lower_block(block, &ResolvedTy::Unit);
         self.scope_depth = saved_scope_depth;
         lowered
+    }
+
+    /// Lower the NEW-6b `await <op> | after <duration>` deadline combinator.
+    ///
+    /// Only `await <actor>.<askmethod>(...) | after <DurationLiteral>` is wired:
+    /// it lowers to the same `HirExprKind::ActorAsk` (`Result<R, AskError>`) as a
+    /// plain suspending ask, with `deadline_ns` attached so codegen schedules a
+    /// fail-closed timeout against the suspend's cancel registration (deadline →
+    /// `Err(AskError::Timeout)`). Every other form fails closed at CHECK time with
+    /// a precise, deferred diagnostic — never a runtime `NotYetImplemented`, never
+    /// a hang, never a fabricated value.
+    fn lower_await_deadline(
+        &mut self,
+        inner: &Spanned<Expr>,
+        duration: &Spanned<Expr>,
+        span: &Span,
+        intent: IntentKind,
+    ) -> HirExpr {
+        let Some(deadline_ns) = Self::duration_literal_ns(&duration.0) else {
+            self.unsupported(
+                span.clone(),
+                "`await … | after <duration>` with a non-literal duration (deferred to v0.6)",
+                "new6b-deadline-wiring",
+            );
+            return self.unsupported_expr(span.clone(), "non-literal deadline duration");
+        };
+        if deadline_ns <= 0 {
+            self.unsupported(
+                span.clone(),
+                "`await … | after <duration>` with a non-positive duration (deferred to v0.6)",
+                "new6b-deadline-wiring",
+            );
+            return self.unsupported_expr(span.clone(), "non-positive deadline duration");
+        }
+        let Expr::Await(await_inner) = &inner.0 else {
+            self.unsupported(
+                span.clone(),
+                "`| after <duration>` on a non-await expression (deferred to v0.6)",
+                "new6b-deadline-wiring",
+            );
+            return self.unsupported_expr(span.clone(), "non-await deadline combinator");
+        };
+        // The only suspendable await whose timeout `Result` is concretely specced
+        // is the local actor ask (`Result<R, AskError>`, `AskError::Timeout`).
+        let inner_key = SpanKey::from(&await_inner.1);
+        let is_local_ask = matches!(
+            self.actor_method_dispatch.get(&inner_key),
+            Some(ActorMethodKind::Ask(_, _))
+        );
+        if is_local_ask {
+            let mut ask_expr = self.lower_expr(inner, intent);
+            if let HirExprKind::ActorAsk {
+                deadline_ns: slot, ..
+            } = &mut ask_expr.kind
+            {
+                *slot = Some(deadline_ns);
+                return ask_expr;
+            }
+            // The await lowered to something other than a local `ActorAsk` (e.g. a
+            // remote ask or a blocking-caller path). Out of scope — fail closed.
+            self.unsupported(
+                span.clone(),
+                "`await <…>(...) | after d` is only supported for a local actor ask in a \
+                 suspendable context (deferred to v0.6)",
+                "new6b-deadline-wiring",
+            );
+            return self.unsupported_expr(span.clone(), "unsupported actor-ask deadline form");
+        }
+        // Out-of-scope await sources: task-await, conn.read/accept, channel recv,
+        // stream next, suspending closure. Fail closed at CHECK time naming the form.
+        self.unsupported(
+            span.clone(),
+            "`await <…> | after d` deadline is only supported for actor-ask awaits; \
+             task-await, read/accept/recv/next, and suspending-closure deadlines are \
+             deferred to v0.6",
+            "new6b-deadline-wiring",
+        );
+        self.unsupported_expr(span.clone(), "unsupported await-deadline source")
+    }
+
+    /// Extract the nanosecond value of a literal `Duration` deadline. Non-literal
+    /// durations (variables, arithmetic) are not constant-foldable here and fail
+    /// closed at CHECK time (the codegen deadline is carried as a constant).
+    fn duration_literal_ns(expr: &Expr) -> Option<i64> {
+        match expr {
+            Expr::Literal(Literal::Duration(ns)) => Some(*ns),
+            _ => None,
+        }
     }
 
     fn unsupported(

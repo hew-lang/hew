@@ -1254,6 +1254,58 @@ fn intern_runtime_decl<'ctx>(
         "hew_reply_channel_set_parked_waiter" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // ── NEW-6b await-deadline wiring (hew-runtime/src/await_cancel.rs,
+        // reply_channel.rs, timer_periodic.rs) ───────────────────────────────
+        // hew_reply_channel_set_await_cancel(ch: *mut HewReplyChannel,
+        //   reg: *mut HewAwaitCancel) -> void (reply_channel.rs:167). Attaches
+        // the shared cancel/deadline registration to the reply channel; the
+        // channel retains it and calls `hew_await_cancel_complete` on a reply
+        // deposit (cancelling the timer — the deadline-vs-reply arbiter).
+        "hew_reply_channel_set_await_cancel" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_reply_channel_cancel_cleanup(source: *mut c_void, status: i32)
+        // -> void (reply_channel.rs:193). The cleanup callback handed to
+        // `hew_await_cancel_new`; on deadline expiry it tombstones the reply
+        // channel so a late replier releases its sender ref. Declared so codegen
+        // can take its address; never called directly by codegen.
+        "hew_reply_channel_cancel_cleanup" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into()], false),
+        // hew_await_cancel_new(actor: *mut HewActor, cleanup: fn(ptr,i32),
+        //   source: *mut c_void) -> *mut HewAwaitCancel (await_cancel.rs:195).
+        // Allocates the one-shot cancel/deadline registration (refs=1, snapshots
+        // the current scope cancel token).
+        "hew_await_cancel_new" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
+        }
+        // hew_await_cancel_schedule_deadline_ms(reg: *mut HewAwaitCancel,
+        //   tw: *mut HewTimerWheel, delay_ms: u64) -> i32 (await_cancel.rs:320).
+        // Schedules the registration to time out after `delay_ms`; returns 0 on
+        // success, -1 if invalid or no longer pending.
+        "hew_await_cancel_schedule_deadline_ms" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false)
+        }
+        // hew_await_cancel_complete(reg) -> i32 (await_cancel.rs:283). One-shot
+        // CAS Pending→Completed; cancels the deadline timer if it wins. The
+        // resume edge calls this to claim the reply before checking status.
+        "hew_await_cancel_complete" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_await_cancel_cancel(reg, status: i32, wake_actor: i32) -> i32
+        // (await_cancel.rs:299). Forces a terminal Cancelled/TimedOut transition;
+        // used on the abandon-cleanup edge to disarm the timer.
+        "hew_await_cancel_cancel" => {
+            i32_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false)
+        }
+        // hew_await_cancel_status(reg) -> i32 (await_cancel.rs:268). Reads the
+        // terminal state (Pending=0, Completed=1, Cancelled=2, TimedOut=3).
+        "hew_await_cancel_status" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_await_cancel_free(reg) -> void (await_cancel.rs:245). Releases one
+        // registration reference (frees at zero).
+        "hew_await_cancel_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_global_timer_wheel() -> *mut HewTimerWheel (timer_periodic.rs).
+        // Returns the process-wide timer wheel, lazily creating it and starting
+        // the 1ms ticker thread. The deadline schedule target.
+        "hew_global_timer_wheel" => ptr_ty.fn_type(&[], false),
         "hew_reply_channel_signal_ready" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // ── suspendable-callee driver (Terminator::SuspendingCallClosure) ─────
         // The continuation-handle verbs the driver calls to run a closure-invoke
@@ -1470,6 +1522,34 @@ fn intern_runtime_decl<'ctx>(
             false,
         ),
         "hew_node_ask_take_last_error" => i32_ty.fn_type(&[], false),
+        // hew_node_api_ask_async(pid, msg_type, data, size, timeout_ms,
+        //                        caller_actor) -> *mut c_void
+        // (`hew-runtime/src/hew_node.rs`). NEW-5 suspendable submit: parks the
+        // caller's coroutine on the reply table and returns an opaque pending
+        // handle (null on setup failure). `caller_actor` is the `hew_actor_self`
+        // pointer the wire reply resumes through `enqueue_resume`.
+        "hew_node_api_ask_async" => ptr_ty.fn_type(
+            &[
+                i64_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                i64_ty.into(),
+                i64_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
+        // hew_node_api_ask_finish(pending_handle, msg_type, reply_size)
+        //   -> *mut c_void (`hew-runtime/src/hew_node.rs`). Drains the reply
+        // deposited for a suspended remote ask on the resume edge; null is the
+        // typed-failure sentinel (read via hew_node_ask_take_last_error).
+        "hew_node_api_ask_finish" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i64_ty.into()], false)
+        }
+        // hew_node_api_ask_cancel(pending_handle) -> void
+        // (`hew-runtime/src/hew_node.rs`). Abandons a suspended remote ask on
+        // the `coro.destroy` cleanup edge, removing the pending entry.
+        "hew_node_api_ask_cancel" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // hew_actor_ask_take_last_error() -> i32
         // (`hew-runtime/src/actor.rs:150`). Reads and clears the thread-local
         // error discriminant set by a failed `hew_actor_ask` (null return).
@@ -20859,6 +20939,21 @@ struct RemoteAskEmit<'a> {
     next: u32,
 }
 
+/// Carrier for [`emit_suspending_remote_actor_ask_terminator`] — the suspending
+/// cross-node `await remote.ask(...)` ramp (`Terminator::SuspendingRemoteAsk`).
+struct SuspendingRemoteAskEmit<'a> {
+    actor: Place,
+    msg_type: i32,
+    value: Place,
+    timeout_ms: Place,
+    result_dest: Place,
+    reply_dest: Place,
+    error_dest: Place,
+    reply_ty: &'a ResolvedTy,
+    resume: u32,
+    cleanup: u32,
+}
+
 struct SuspendingAskEmit {
     actor: Place,
     msg_type: i32,
@@ -20868,6 +20963,11 @@ struct SuspendingAskEmit {
     error_dest: Place,
     resume: u32,
     cleanup: u32,
+    /// NEW-6b `await … | after d` deadline (nanoseconds). `Some(ns)` schedules a
+    /// fail-closed timeout against the suspend's cancel registration; on expiry
+    /// the resume edge binds `Err(AskError::Timeout)` instead of waiting for a
+    /// reply. `None` is a plain suspending ask.
+    deadline_ns: Option<i64>,
 }
 
 struct SuspendingReadEmit {
@@ -22513,6 +22613,60 @@ fn emit_suspending_ask_terminator<'ctx>(
         )
         .llvm_ctx("hew_reply_channel_set_parked_waiter call")?;
 
+    // ── NEW-6b await-deadline registration. Attach a one-shot cancel/deadline
+    // record to the reply channel BEFORE the ask submits so the reply-deposit
+    // path (`hew_await_cancel_complete` on the channel's `await_cancel`) is the
+    // deadline-vs-reply arbiter. The timer itself is armed only on the commit
+    // (`do_suspend`) path; `schedule_deadline_ms` no-ops if a reply already
+    // completed the registration. `reg` is a frame-spilled local live across the
+    // suspend (like `ch`). `None` when this ask carries no deadline. ───────────
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
+        let cancel_new = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_new",
+        )?;
+        let cleanup_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_reply_channel_cancel_cleanup",
+        )?;
+        let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
+        let reg = fn_ctx
+            .builder
+            .build_call(
+                cancel_new,
+                &[self_actor.into(), cleanup_ptr.into(), ch.into()],
+                "suspending_ask_deadline_reg",
+            )
+            .llvm_ctx("hew_await_cancel_new call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
+            .into_pointer_value();
+        let set_await_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_reply_channel_set_await_cancel",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                set_await_cancel,
+                &[ch.into(), reg.into()],
+                "suspending_ask_set_await_cancel",
+            )
+            .llvm_ctx("hew_reply_channel_set_await_cancel call")?;
+        Some(reg)
+    } else {
+        None
+    };
+
     let ask_fn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -22578,6 +22732,20 @@ fn emit_suspending_ask_terminator<'ctx>(
         .builder
         .build_call(ch_free, &[ch.into()], "suspending_ask_send_err_free")
         .llvm_ctx("hew_reply_channel_free (send err) call")?;
+    if let Some(reg) = reg {
+        // Submit failed → no reply, no suspend. Release the registration creator
+        // ref (no timer was armed; the channel's retained ref drops at final free).
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_ask_send_err_reg_free")
+            .llvm_ctx("hew_await_cancel_free (send err) call")?;
+    }
     emit_suspending_ask_err(fn_ctx, term.result_dest, term.error_dest)?;
     fn_ctx
         .builder
@@ -22588,6 +22756,193 @@ fn emit_suspending_ask_terminator<'ctx>(
     // edge returns the coro handle to the trampoline (which parks it on this
     // actor); case 0 resumes into the reply-bind block; case 1 tears down. ────
     fn_ctx.builder.position_at_end(do_suspend_bb);
+    // ── NEW-6b: arm the deadline timer now that we are committed to suspending.
+    // `schedule_deadline_ms` returns 0 once armed, and -1 either because (a) a
+    // reply already completed the registration in the submit→here window — a
+    // BENIGN fast-reply race, so the reply-bind path will return Ok — or because
+    // (b) the timer wheel could not be obtained / the schedule genuinely failed
+    // (`hew_global_timer_wheel()` null on init failure, or a null timer entry).
+    // Case (b) must FAIL CLOSED: a `| after d` ask whose deadline cannot be armed
+    // would otherwise silently degrade to an un-deadlined await that can hang,
+    // contradicting the never-hang contract. We distinguish (a) from (b) by the
+    // registration's terminal state: (a) leaves it `Completed`, (b) leaves it
+    // `Pending`. On (b) we tear the ask down deterministically and bind
+    // `Err(AskError::Timeout)` (the deadline cannot be honoured → conservatively
+    // report the deadline as elapsed) WITHOUT parking — never a silent
+    // un-deadlined await, never a crash.
+    if let (Some(reg), Some(ns)) = (reg, term.deadline_ns) {
+        // ns → ms (the runtime timer-wheel granularity), floored to ≥ 1 ms so a
+        // sub-millisecond literal still arms one tick rather than rounding to 0.
+        let delay_ms = (ns / 1_000_000).max(1) as u64;
+        let tw_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_global_timer_wheel",
+        )?;
+        // `hew_global_timer_wheel` returns null on init failure; the schedule call
+        // below null-checks `tw` and returns -1, which we then route to fail-closed.
+        let tw = fn_ctx
+            .builder
+            .build_call(tw_fn, &[], "suspending_ask_deadline_tw")
+            .llvm_ctx("hew_global_timer_wheel call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
+            .into_pointer_value();
+        let schedule = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_schedule_deadline_ms",
+        )?;
+        let delay_val = i64_ty.const_int(delay_ms, false);
+        let sched_rc = fn_ctx
+            .builder
+            .build_call(
+                schedule,
+                &[reg.into(), tw.into(), delay_val.into()],
+                "suspending_ask_schedule_deadline",
+            )
+            .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_await_cancel_schedule_deadline_ms returned void".into(),
+                )
+            })?
+            .into_int_value();
+        let armed = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                sched_rc,
+                sched_rc.get_type().const_zero(),
+                "suspending_ask_deadline_armed",
+            )
+            .llvm_ctx("suspending ask schedule-armed compare")?;
+        let deadline_proceed_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_ask_deadline_proceed");
+        let deadline_check_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_ask_deadline_check");
+        fn_ctx
+            .builder
+            .build_conditional_branch(armed, deadline_proceed_bb, deadline_check_bb)
+            .llvm_ctx("suspending ask schedule-armed branch")?;
+
+        // ── deadline_check: schedule returned -1. If the registration is already
+        // `Completed`, a reply won the race (benign) → proceed to the reply bind.
+        // Otherwise the deadline could not be armed → fail closed. ───────────────
+        fn_ctx.builder.position_at_end(deadline_check_bb);
+        let status_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_status",
+        )?;
+        let sched_status = fn_ctx
+            .builder
+            .build_call(status_fn, &[reg.into()], "suspending_ask_schedule_status")
+            .llvm_ctx("hew_await_cancel_status (schedule) call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
+            })?
+            .into_int_value();
+        // AwaitCancelStatus::Completed = 1.
+        let reply_completed = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                sched_status,
+                i32_ty.const_int(1, false),
+                "suspending_ask_schedule_reply_completed",
+            )
+            .llvm_ctx("suspending ask schedule reply-completed compare")?;
+        let deadline_failclosed_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_ask_deadline_failclosed");
+        fn_ctx
+            .builder
+            .build_conditional_branch(reply_completed, deadline_proceed_bb, deadline_failclosed_bb)
+            .llvm_ctx("suspending ask schedule reply-completed branch")?;
+
+        // ── deadline_failclosed: the deadline could not be armed and no reply
+        // completed the registration. Terminalize the registration (disarms any
+        // timer, tombstones the channel so a late replier releases its sender
+        // ref), cancel + free the reply channel, release the creator ref, bind
+        // `Err(AskError::Timeout)`, and resume WITHOUT ever parking. ─────────────
+        fn_ctx.builder.position_at_end(deadline_failclosed_bb);
+        let reg_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_cancel",
+        )?;
+        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
+        let no_wake = i32_ty.const_zero();
+        fn_ctx
+            .builder
+            .build_call(
+                reg_cancel,
+                &[reg.into(), cancelled_status.into(), no_wake.into()],
+                "suspending_ask_failclosed_reg_cancel",
+            )
+            .llvm_ctx("hew_await_cancel_cancel (fail-closed) call")?;
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                reg_free,
+                &[reg.into()],
+                "suspending_ask_failclosed_reg_free",
+            )
+            .llvm_ctx("hew_await_cancel_free (fail-closed) call")?;
+        let ch_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_reply_channel_cancel",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                ch_cancel,
+                &[ch.into()],
+                "suspending_ask_failclosed_ch_cancel",
+            )
+            .llvm_ctx("hew_reply_channel_cancel (fail-closed) call")?;
+        let ch_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_reply_channel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(ch_free, &[ch.into()], "suspending_ask_failclosed_ch_free")
+            .llvm_ctx("hew_reply_channel_free (fail-closed) call")?;
+        // AskError::Timeout = 5.
+        let timeout_code = i32_ty.const_int(5, false);
+        emit_suspending_ask_err_with_code(fn_ctx, term.result_dest, term.error_dest, timeout_code)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending ask deadline fail-closed br")?;
+
+        // Proceed: the deadline armed (or a reply already won) — continue to the
+        // coro suspend. Subsequent emit_suspend uses the current builder block.
+        fn_ctx.builder.position_at_end(deadline_proceed_bb);
+    }
     let reply_bind_bb = fn_ctx
         .ctx
         .append_basic_block(parent, "suspending_ask_reply_bind");
@@ -22625,6 +22980,39 @@ fn emit_suspending_ask_terminator<'ctx>(
     // ── abandon_cleanup: free the awaited reply channel, then join the shared
     // coro cleanup (frame-free + coro.end). ──────────────────────────────────
     fn_ctx.builder.position_at_end(abandon_cleanup_bb);
+    if let Some(reg) = reg {
+        // Parked continuation destroyed without resuming: force the registration
+        // terminal (disarms the deadline timer, releasing its retained ref and
+        // running the channel-tombstone cleanup while `ch` is still live), then
+        // release the creator ref. wake_actor = 0: we are tearing down, not
+        // resuming. The channel's own retained ref drops at its final free below.
+        let reg_cancel = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_cancel",
+        )?;
+        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
+        let no_wake = i32_ty.const_zero();
+        fn_ctx
+            .builder
+            .build_call(
+                reg_cancel,
+                &[reg.into(), cancelled_status.into(), no_wake.into()],
+                "suspending_ask_abandon_reg_cancel",
+            )
+            .llvm_ctx("hew_await_cancel_cancel (abandon) call")?;
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_ask_abandon_reg_free")
+            .llvm_ctx("hew_await_cancel_free (abandon) call")?;
+    }
     let ch_cancel = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -22649,6 +23037,94 @@ fn emit_suspending_ask_terminator<'ctx>(
     // Bind Ok(reply)/Err(AskError) exactly as Terminator::Ask does, then free
     // the reply payload + the channel, and branch to the MIR resume block. ────
     fn_ctx.builder.position_at_end(reply_bind_bb);
+    // ── NEW-6b deadline-vs-reply resolution at the single resume convergence
+    // point. Whichever wake fired (reply deposit or deadline timer), the one-shot
+    // registration is authoritative: `complete` claims the reply if still pending
+    // (which cancels the timer); if the timer already won, `complete` is a no-op
+    // and `status` reads TimedOut. On TimedOut we bind `Err(AskError::Timeout)`
+    // and tear the channel down WITHOUT waiting on a reply that will never come.
+    if let Some(reg) = reg {
+        let complete = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_complete",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(complete, &[reg.into()], "suspending_ask_deadline_complete")
+            .llvm_ctx("hew_await_cancel_complete call")?;
+        let status_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_status",
+        )?;
+        let status = fn_ctx
+            .builder
+            .build_call(status_fn, &[reg.into()], "suspending_ask_deadline_status")
+            .llvm_ctx("hew_await_cancel_status call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
+            })?
+            .into_int_value();
+        // AwaitCancelStatus::TimedOut = 3.
+        let timed_out = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                i32_ty.const_int(3, false),
+                "suspending_ask_timed_out",
+            )
+            .llvm_ctx("suspending ask timed-out compare")?;
+        let timeout_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_ask_timeout");
+        let reply_proceed_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "suspending_ask_reply_proceed");
+        fn_ctx
+            .builder
+            .build_conditional_branch(timed_out, timeout_bb, reply_proceed_bb)
+            .llvm_ctx("suspending ask deadline branch")?;
+
+        // ── timeout: the deadline elapsed first. Release the registration creator
+        // ref, cancel + free the reply channel (a late replier releases its sender
+        // ref on the tombstone), bind `Err(AskError::Timeout)`, and resume. ───────
+        fn_ctx.builder.position_at_end(timeout_bb);
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_ask_timeout_reg_free")
+            .llvm_ctx("hew_await_cancel_free (timeout) call")?;
+        fn_ctx
+            .builder
+            .build_call(ch_cancel, &[ch.into()], "suspending_ask_timeout_ch_cancel")
+            .llvm_ctx("hew_reply_channel_cancel (timeout) call")?;
+        fn_ctx
+            .builder
+            .build_call(ch_free, &[ch.into()], "suspending_ask_timeout_ch_free")
+            .llvm_ctx("hew_reply_channel_free (timeout) call")?;
+        // AskError::Timeout = 5 (runtime internal::types::AskError; the Hew std
+        // AskError enum shares the same discriminant).
+        let timeout_code = i32_ty.const_int(5, false);
+        emit_suspending_ask_err_with_code(fn_ctx, term.result_dest, term.error_dest, timeout_code)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(resume_bb)
+            .llvm_ctx("suspending ask timeout br")?;
+
+        // Reply landed before the deadline: continue the normal Ok/Err binding.
+        fn_ctx.builder.position_at_end(reply_proceed_bb);
+    }
     let reply_wait = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -22699,6 +23175,18 @@ fn emit_suspending_ask_terminator<'ctx>(
         .builder
         .build_call(ch_free, &[ch.into()], "suspending_ask_ok_ch_free")
         .llvm_ctx("hew_reply_channel_free (ok) call")?;
+    if let Some(reg) = reg {
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_ask_ok_reg_free")
+            .llvm_ctx("hew_await_cancel_free (ok) call")?;
+    }
     fn_ctx
         .builder
         .build_unconditional_branch(resume_bb)
@@ -22738,7 +23226,18 @@ fn emit_suspending_ask_terminator<'ctx>(
         .builder
         .build_call(ch_free, &[ch.into()], "suspending_ask_err_ch_free")
         .llvm_ctx("hew_reply_channel_free (err) call")?;
-    let i32_ty = fn_ctx.ctx.i32_type();
+    if let Some(reg) = reg {
+        let reg_free = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_await_cancel_free",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(reg_free, &[reg.into()], "suspending_ask_err_reg_free")
+            .llvm_ctx("hew_await_cancel_free (err) call")?;
+    }
     let is_orphaned = fn_ctx
         .builder
         .build_int_compare(
@@ -23316,6 +23815,367 @@ fn emit_suspending_ask_err_with_code<'ctx>(
     emit_result_err(fn_ctx, result_dest, error_dest)
 }
 
+/// Bind a `Result::Err(AskError)` into `result_dest` from the node ask-error
+/// slot (`hew_node_ask_take_last_error`). Shared by the blocking and suspending
+/// remote-ask failure edges — both read the same thread-local discriminant set
+/// by a null return from the runtime ask path.
+fn emit_remote_ask_err_from_last_error<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    result_dest: Place,
+    error_dest: Place,
+) -> CodegenResult<()> {
+    let err_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_node_ask_take_last_error",
+    )?;
+    let err_code = fn_ctx
+        .builder
+        .build_call(err_fn, &[], "hew_node_ask_take_last_error_call")
+        .llvm_ctx("hew_node_ask_take_last_error call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_node_ask_take_last_error returned void".into())
+        })?
+        .into_int_value();
+    let error_local = composite_dest_local(error_dest, "RemoteAsk AskError")?;
+    let (error_tag_ptr, error_tag_ty) = place_pointer(fn_ctx, Place::MachineTag(error_local))?;
+    let error_tag_int_ty = match error_tag_ty {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "RemoteAsk AskError tag projection must be integer, got {other:?}"
+            )));
+        }
+    };
+    let err_code = match err_code
+        .get_type()
+        .get_bit_width()
+        .cmp(&error_tag_int_ty.get_bit_width())
+    {
+        std::cmp::Ordering::Equal => err_code,
+        std::cmp::Ordering::Less => fn_ctx
+            .builder
+            .build_int_z_extend(err_code, error_tag_int_ty, "remote_ask_err_zext")
+            .llvm_ctx("remote ask err zext")?,
+        std::cmp::Ordering::Greater => fn_ctx
+            .builder
+            .build_int_truncate(err_code, error_tag_int_ty, "remote_ask_err_trunc")
+            .llvm_ctx("remote ask err trunc")?,
+    };
+    fn_ctx
+        .builder
+        .build_store(error_tag_ptr, err_code)
+        .llvm_ctx("store RemoteAsk AskError tag")?;
+    emit_result_err(fn_ctx, result_dest, error_dest)
+}
+
+/// Emit the caller-side non-blocking cross-node `await remote.ask(...)` (NEW-5
+/// `Terminator::SuspendingRemoteAsk`). The wire-reply analogue of
+/// [`emit_suspending_ask_terminator`]: instead of blocking an OS worker in
+/// `hew_node_api_ask`, submit the ask + register the parked continuation
+/// (`hew_node_api_ask_async`), suspend (freeing the worker), and on the resume
+/// edge drain the deposited reply (`hew_node_api_ask_finish`), binding
+/// `Result<Reply, AskError>`.
+///
+/// Shape (the suspendable remote-ask ramp):
+/// ```text
+///   self    = hew_actor_self()                       ; the parked-cont actor
+///   handle  = hew_node_api_ask_async(pid, msg_type, payload, size, timeout, self)
+///   br (handle == null) ? submit_err : do_suspend
+/// submit_err:                                         ; setup failed, never parked
+///   bind Result::Err(hew_node_ask_take_last_error()); br resume
+/// do_suspend:                                         ; park the continuation
+///   coro.suspend → { default: executor, resume: reply_bind, cleanup: abandon }
+/// abandon_cleanup:                                    ; parked cont destroyed
+///   hew_node_api_ask_cancel(handle); br shared cleanup
+/// reply_bind:                                         ; wire reply woke us
+///   reply = hew_node_api_ask_finish(handle, msg_type, reply_size)
+///   br (reply == null) ? err : ok
+/// ok:   bind Result::Ok(reply); free(reply); br resume
+/// err:  bind Result::Err(hew_node_ask_take_last_error()); br resume
+/// ```
+/// The reply travels through the reply routing table (the `request_id`-keyed
+/// pending slot) across the suspend, NOT a terminator operand — exactly as
+/// `SuspendingAsk`'s reply travels through its reply channel.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the full caller-side remote-ask ramp — submit + suspend + the \
+              resume-edge reply binding — is kept in one place so the suspend \
+              point and the value routing it depends on are read together"
+)]
+fn emit_suspending_remote_actor_ask_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingRemoteAskEmit<'_>,
+) -> CodegenResult<()> {
+    // The coro prologue must be present (lower_function detects the
+    // SuspendingRemoteAsk carrier via `has_suspend`). Fail closed otherwise
+    // (R2 / the Lane-B silent-no-op class).
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Terminator::SuspendingRemoteAsk reached codegen but the function carries no \
+             coro prologue state — lower_function must detect the suspend carrier"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingRemoteAsk resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingRemoteAsk cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+
+    let (pid_slot, pid_slot_ty) = place_pointer(fn_ctx, term.actor)?;
+    if !matches!(pid_slot_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingRemoteAsk actor place must be the packed i64 RemotePid<T>, got {pid_slot_ty:?}"
+        )));
+    }
+    let pid_val = fn_ctx
+        .builder
+        .build_load(pid_slot_ty, pid_slot, "remote_ask_pid")
+        .llvm_ctx("load SuspendingRemoteAsk pid")?
+        .into_int_value();
+    let (payload_ptr, payload_size) =
+        actor_payload_ptr_size(fn_ctx, term.value, "remote_ask_payload")?;
+    let (timeout_ptr, timeout_ty) = place_pointer(fn_ctx, term.timeout_ms)?;
+    let timeout_val = fn_ctx
+        .builder
+        .build_load(timeout_ty, timeout_ptr, "remote_ask_timeout")
+        .llvm_ctx("load SuspendingRemoteAsk timeout")?
+        .into_int_value();
+    if timeout_val.get_type().get_bit_width() != 64 {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingRemoteAsk timeout_ms must lower to a 64-bit integer, got {} bits",
+            timeout_val.get_type().get_bit_width()
+        )));
+    }
+    let reply_size = static_type_size_i64(fn_ctx, term.reply_ty, "remote_ask_reply")?;
+
+    // self = the current actor — the parked-continuation waiter the wire reply
+    // re-enqueues. MUST come from `hew_actor_self()` (the live thread-local
+    // execution context); across a suspend the spilled `ctx` param's context is
+    // freed, but the thread-local read returns the live actor on resume. The
+    // same single-authority live-context accessor the SuspendingRead/Ask ramps
+    // use.
+    let actor_self_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let self_actor = fn_ctx
+        .builder
+        .build_call(actor_self_fn, &[], "suspending_remote_ask_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+
+    let ask_async_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_node_api_ask_async",
+    )?;
+    let msg_type = fn_ctx.ctx.i32_type().const_int(term.msg_type as u64, false);
+    let pending_handle = fn_ctx
+        .builder
+        .build_call(
+            ask_async_fn,
+            &[
+                pid_val.into(),
+                msg_type.into(),
+                payload_ptr.into(),
+                payload_size.into(),
+                timeout_val.into(),
+                self_actor.into(),
+            ],
+            "hew_node_api_ask_async_call",
+        )
+        .llvm_ctx("hew_node_api_ask_async call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_node_api_ask_async returned void".into()))?
+        .into_pointer_value();
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending remote ask block has no parent function".into())
+        })?;
+    // ── submit_err: setup failed (null handle); no reply will ever arrive and we
+    // never parked. Bind the typed Err without suspending (no worker to free).
+    let submit_err_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_remote_ask_submit_err");
+    let do_suspend_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_remote_ask_suspend");
+    let handle_is_null = fn_ctx
+        .builder
+        .build_is_null(pending_handle, "suspending_remote_ask_handle_is_null")
+        .llvm_ctx("suspending remote ask handle null compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(handle_is_null, submit_err_bb, do_suspend_bb)
+        .llvm_ctx("suspending remote ask submit branch")?;
+
+    fn_ctx.builder.position_at_end(submit_err_bb);
+    emit_remote_ask_err_from_last_error(fn_ctx, term.result_dest, term.error_dest)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(resume_bb)
+        .llvm_ctx("suspending remote ask submit-err br")?;
+
+    // ── do_suspend: park the continuation (non-final suspend). The default edge
+    // returns the coro handle to the trampoline (which parks it on this actor);
+    // case 0 resumes into the reply-bind block; case 1 tears down. ─────────────
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    let reply_bind_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_remote_ask_reply_bind");
+    // Abandon-cleanup edge: a parked SuspendingRemoteAsk continuation DESTROYED
+    // without resuming (actor stop/crash while suspended, the C1 free-path
+    // destroy_parked) runs `coro.suspend`'s case-1 edge. The shared cleanup only
+    // frees the coro frame — it never sees `pending_handle` (a codegen-local SSA
+    // value with no MIR Place), so without this interposition the pending entry
+    // leaks. Route case 1 to a block that CANCELS the pending reply (removing it
+    // from the routing table) before joining the shared cleanup. A racing late
+    // reply then finds nothing; the late wake itself is independently fail-safe
+    // (enqueue_resume drops a wake to a freed caller).
+    let abandon_cleanup_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_remote_ask_abandon_cleanup");
+    let cc = crate::coro::CoroContext {
+        ctx: fn_ctx.ctx,
+        llvm_mod: fn_ctx.llvm_mod,
+        builder: &fn_ctx.builder,
+        function: parent,
+        handle: coro.handle,
+        id_token: coro.id_token,
+    };
+    cc.emit_suspend(
+        reply_bind_bb,
+        abandon_cleanup_bb,
+        coro.suspend_return_block,
+        false,
+        "suspending_remote_ask",
+    )?;
+
+    // ── abandon_cleanup: cancel the pending reply, then join the shared coro
+    // cleanup (frame-free + coro.end). ─────────────────────────────────────────
+    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
+    let ask_cancel_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_node_api_ask_cancel",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            ask_cancel_fn,
+            &[pending_handle.into()],
+            "suspending_remote_ask_cancel",
+        )
+        .llvm_ctx("hew_node_api_ask_cancel call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(coro.cleanup_block)
+        .llvm_ctx("suspending remote ask abandon -> shared cleanup br")?;
+
+    // ── reply_bind: the wire reply (or peer-drop / timeout failure) resumed us.
+    // Drain the deposited outcome; null is the typed-failure sentinel. ─────────
+    fn_ctx.builder.position_at_end(reply_bind_bb);
+    let ask_finish_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_node_api_ask_finish",
+    )?;
+    let reply_ptr = fn_ctx
+        .builder
+        .build_call(
+            ask_finish_fn,
+            &[pending_handle.into(), msg_type.into(), reply_size.into()],
+            "hew_node_api_ask_finish_call",
+        )
+        .llvm_ctx("hew_node_api_ask_finish call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_node_api_ask_finish returned void".into()))?
+        .into_pointer_value();
+
+    let ok_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_remote_ask_ok");
+    let err_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_remote_ask_err");
+    let is_null = fn_ctx
+        .builder
+        .build_is_null(reply_ptr, "suspending_remote_ask_is_null")
+        .llvm_ctx("suspending remote ask null compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_null, err_bb, ok_bb)
+        .llvm_ctx("suspending remote ask result branch")?;
+
+    fn_ctx.builder.position_at_end(ok_bb);
+    if matches!(term.reply_ty, ResolvedTy::Unit) {
+        emit_result_ok(fn_ctx, term.result_dest, None)?;
+    } else {
+        let (reply_dest_ptr, reply_dest_ty) = place_pointer(fn_ctx, term.reply_dest)?;
+        let reply_val = fn_ctx
+            .builder
+            .build_load(
+                reply_dest_ty,
+                reply_ptr,
+                "suspending_remote_ask_reply_value",
+            )
+            .llvm_ctx("suspending remote ask reply load")?;
+        fn_ctx
+            .builder
+            .build_store(reply_dest_ptr, reply_val)
+            .llvm_ctx("suspending remote ask reply store")?;
+        emit_result_ok(fn_ctx, term.result_dest, Some(term.reply_dest))?;
+        let free = get_or_declare_free(fn_ctx);
+        fn_ctx
+            .builder
+            .build_call(
+                free,
+                &[reply_ptr.into()],
+                "suspending_remote_ask_reply_free",
+            )
+            .llvm_ctx("free suspending remote ask reply")?;
+    }
+    fn_ctx
+        .builder
+        .build_unconditional_branch(resume_bb)
+        .llvm_ctx("suspending remote ask ok br")?;
+
+    fn_ctx.builder.position_at_end(err_bb);
+    emit_remote_ask_err_from_last_error(fn_ctx, term.result_dest, term.error_dest)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(resume_bb)
+        .llvm_ctx("suspending remote ask err br")?;
+
+    Ok(())
+}
+
 fn emit_remote_actor_ask_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     term: RemoteAskEmit<'_>,
@@ -23418,52 +24278,7 @@ fn emit_remote_actor_ask_terminator<'ctx>(
         .llvm_ctx("remote ask ok br")?;
 
     fn_ctx.builder.position_at_end(err_bb);
-    let err_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_node_ask_take_last_error",
-    )?;
-    let err_code = fn_ctx
-        .builder
-        .build_call(err_fn, &[], "hew_node_ask_take_last_error_call")
-        .llvm_ctx("hew_node_ask_take_last_error call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed("hew_node_ask_take_last_error returned void".into())
-        })?
-        .into_int_value();
-    let error_local = composite_dest_local(term.error_dest, "RemoteAsk AskError")?;
-    let (error_tag_ptr, error_tag_ty) = place_pointer(fn_ctx, Place::MachineTag(error_local))?;
-    let error_tag_int_ty = match error_tag_ty {
-        BasicTypeEnum::IntType(t) => t,
-        other => {
-            return Err(CodegenError::FailClosed(format!(
-                "RemoteAsk AskError tag projection must be integer, got {other:?}"
-            )));
-        }
-    };
-    let err_code = match err_code
-        .get_type()
-        .get_bit_width()
-        .cmp(&error_tag_int_ty.get_bit_width())
-    {
-        std::cmp::Ordering::Equal => err_code,
-        std::cmp::Ordering::Less => fn_ctx
-            .builder
-            .build_int_z_extend(err_code, error_tag_int_ty, "remote_ask_err_zext")
-            .llvm_ctx("remote ask err zext")?,
-        std::cmp::Ordering::Greater => fn_ctx
-            .builder
-            .build_int_truncate(err_code, error_tag_int_ty, "remote_ask_err_trunc")
-            .llvm_ctx("remote ask err trunc")?,
-    };
-    fn_ctx
-        .builder
-        .build_store(error_tag_ptr, err_code)
-        .llvm_ctx("store RemoteAsk AskError tag")?;
-    emit_result_err(fn_ctx, term.result_dest, term.error_dest)?;
+    emit_remote_ask_err_from_last_error(fn_ctx, term.result_dest, term.error_dest)?;
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
@@ -24166,6 +24981,8 @@ fn lower_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
     term: &Terminator,
+    block_id: u32,
+    await_deadlines: &std::collections::HashMap<u32, i64>,
 ) -> CodegenResult<()> {
     match term {
         Terminator::Return => {
@@ -25409,6 +26226,7 @@ fn lower_terminator<'ctx>(
                 error_dest: *error_dest,
                 resume: *resume,
                 cleanup: *cleanup,
+                deadline_ns: await_deadlines.get(&block_id).copied(),
             },
         )?,
         Terminator::SuspendingRead {
@@ -25523,6 +26341,32 @@ fn lower_terminator<'ctx>(
                 error_dest: *error_dest,
                 reply_ty,
                 next: *next,
+            },
+        )?,
+        Terminator::SuspendingRemoteAsk {
+            actor,
+            msg_type,
+            value,
+            timeout_ms,
+            result_dest,
+            reply_dest,
+            error_dest,
+            reply_ty,
+            resume,
+            cleanup,
+        } => emit_suspending_remote_actor_ask_terminator(
+            fn_ctx,
+            SuspendingRemoteAskEmit {
+                actor: *actor,
+                msg_type: *msg_type,
+                value: *value,
+                timeout_ms: *timeout_ms,
+                result_dest: *result_dest,
+                reply_dest: *reply_dest,
+                error_dest: *error_dest,
+                reply_ty,
+                resume: *resume,
+                cleanup: *cleanup,
             },
         )?,
         Terminator::Select { arms, .. } => {
@@ -27218,6 +28062,7 @@ fn declare_function<'ctx>(
                 | Terminator::SuspendingStreamSend { .. }
                 | Terminator::SuspendingAccept { .. }
                 | Terminator::SuspendingChannelRecv { .. }
+                | Terminator::SuspendingRemoteAsk { .. }
         )
     });
     let return_ty_llvm = if is_coroutine {
@@ -27654,6 +28499,7 @@ fn lower_function<'ctx>(
                 | Terminator::SuspendingStreamSend { .. }
                 | Terminator::SuspendingAccept { .. }
                 | Terminator::SuspendingChannelRecv { .. }
+                | Terminator::SuspendingRemoteAsk { .. }
         )
     });
 
@@ -27748,11 +28594,27 @@ fn lower_function<'ctx>(
     // is the ramp's `ptr` handle — the body still writes its logical Hew value
     // (e.g. the awaited reply) into this slot; the `Terminator::Return` coroutine
     // arm loads it and deposits it via `hew_get_reply_channel` + `hew_reply` to
-    // the handler's caller (W6.010) — not through any out-pointer parameter. A
-    // unit/never coroutine has no value slot (the body writes nothing), so reuse
-    // the ramp `ptr` type as a harmless zero-width-equivalent placeholder.
+    // the handler's caller (W6.010) — not through any out-pointer parameter.
+    //
+    // A UNIT logical return has no reply to deposit (the coroutine `Return` arm
+    // takes the `logical_return_ty == None` path and never reads this slot), but
+    // the body still emits the same trailing `Move { dest: ReturnSlot, src: <unit> }`
+    // epilogue a non-coroutine unit function does. `place_pointer(ReturnSlot)`
+    // reports this slot's type, so it MUST be sized to the unit value type (`i8`)
+    // for that move to type-check — reusing the ramp `ptr` here makes the unit
+    // move fail closed with an `i8 → ptr` mismatch. (First exercised by a
+    // unit-returning suspend handler — e.g. NEW-5's `await remote.ask(...)` /
+    // a local `await peer.method()` in an actor handler — which is the first
+    // unit coroutine to reach full codegen.) `Never` carries no return-value
+    // move (it diverges), so the ramp `ptr` placeholder stays harmless there.
     let body_return_ty_llvm = match &coro_state {
-        Some(coro) => coro.logical_return_ty.unwrap_or(return_ty_llvm),
+        Some(coro) => match coro.logical_return_ty {
+            Some(logical) => logical,
+            None if matches!(func.return_ty, ResolvedTy::Unit) => {
+                resolve_ty(ctx, &func.return_ty, record_layouts)?
+            }
+            None => return_ty_llvm,
+        },
         None => return_ty_llvm,
     };
     let return_slot = builder
@@ -28217,7 +29079,13 @@ fn lower_function<'ctx>(
         // terminator so the alloca null-stores precede the ret/br.
         // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
         emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
-        lower_terminator(&fn_ctx, fn_symbols, &block.terminator)?;
+        lower_terminator(
+            &fn_ctx,
+            fn_symbols,
+            &block.terminator,
+            block.id,
+            &func.await_deadline_ns,
+        )?;
     }
 
     // Coroutine epilogue (R326/R327). Fill the two shared blocks every
@@ -29125,6 +29993,7 @@ fn build_module_for_target<'ctx>(
                                     | Terminator::SuspendingStreamSend { .. }
                                     | Terminator::SuspendingAccept { .. }
                                     | Terminator::SuspendingChannelRecv { .. }
+                                    | Terminator::SuspendingRemoteAsk { .. }
                             )
                         })
                     })
@@ -32021,6 +32890,7 @@ mod tests {
             }],
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -32212,6 +33082,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let main = RawMirFunction {
             name: "main".to_string(),
@@ -32248,6 +33119,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -32321,6 +33193,7 @@ mod tests {
                 blocks,
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
+                await_deadline_ns: std::collections::HashMap::new(),
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
@@ -32436,6 +33309,7 @@ mod tests {
             }],
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -32528,6 +33402,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -32650,6 +33525,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -32724,6 +33600,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -32792,6 +33669,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -32970,6 +33848,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -33173,6 +34052,7 @@ mod tests {
             blocks,
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -33871,6 +34751,7 @@ mod tests {
             }],
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
 
         let pipeline = IrPipeline {
@@ -33952,6 +34833,7 @@ mod tests {
             ],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -34055,6 +34937,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         // The enclosing function: allocate a Generator-typed local, construct it
         // via MakeGenerator, then return.
@@ -34084,6 +34967,7 @@ mod tests {
             ],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -34151,6 +35035,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -34237,6 +35122,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let layout = GenStateLayout {
             function_name: body_name.to_string(),
@@ -34699,6 +35585,7 @@ mod tests {
             ],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -34803,6 +35690,7 @@ mod tests {
             ],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -34860,6 +35748,7 @@ mod tests {
             ],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -36411,6 +37300,7 @@ mod tests {
             }],
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: vec![],
@@ -36551,6 +37441,7 @@ mod tests {
             }],
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: vec![],
@@ -36894,6 +37785,7 @@ mod tests {
             }],
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let elab = ElaboratedMirFunction {
             name: "frame_owned_drop_with_drop_fn".to_string(),
@@ -37087,6 +37979,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         // Minimal stub actor: no state fields, no handlers, no clone/drop
         // symbols.  The trampoline emits a vacuous dispatch switch; the
@@ -37294,6 +38187,7 @@ mod tests {
             ],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -37477,6 +38371,7 @@ mod tests {
             ],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -37653,6 +38548,7 @@ mod tests {
             ],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -37758,6 +38654,7 @@ mod tests {
             ],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }
     }
 
@@ -37780,6 +38677,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }
     }
 
@@ -37804,6 +38702,7 @@ mod tests {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let mut raw_mir = vec![main];
         let mut handler_layouts = Vec::with_capacity(handlers.len());
@@ -38657,6 +39556,7 @@ fn main() {
             }],
             decisions: Vec::new(),
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let pipeline =
             pipeline_with_actor_handlers("MallocWidthActor", vec![(handler_layout, handler_fn)]);

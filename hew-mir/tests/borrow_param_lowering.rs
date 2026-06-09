@@ -128,6 +128,7 @@ fn callee_param_is_borrow_distinguishes_borrow_from_owned_pointer() {
         blocks: Vec::new(),
         decisions: Vec::new(),
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
     let owned_ptr_fn = RawMirFunction {
         name: "takes_owned_pointer".to_string(),
@@ -141,6 +142,7 @@ fn callee_param_is_borrow_distinguishes_borrow_from_owned_pointer() {
         blocks: Vec::new(),
         decisions: Vec::new(),
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
     let module = vec![borrow_fn, owned_ptr_fn];
 
@@ -176,6 +178,7 @@ fn borrow_param_call_is_non_consuming() {
         blocks: Vec::new(),
         decisions: Vec::new(),
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
     let by_value_fn = RawMirFunction {
         name: "takes_owned".to_string(),
@@ -186,6 +189,7 @@ fn borrow_param_call_is_non_consuming() {
         blocks: Vec::new(),
         decisions: Vec::new(),
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
     let module = vec![borrow_fn, by_value_fn];
 

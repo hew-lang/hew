@@ -3048,6 +3048,7 @@ fn synthesize_machine_step_fn(
         blocks: blocks.clone(),
         decisions: Vec::new(),
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
 
     let thir = ThirFunction {
@@ -4387,6 +4388,7 @@ fn lower_function(
         // codegen's `lower_fn` synthesizes the trampoline body instead of
         // emitting the bodyless placeholder (the D343 fail-OPEN no-op).
         intrinsic_id: func.intrinsic_id.clone(),
+        await_deadline_ns: builder.await_deadline_ns.clone(),
     };
     // Checked MIR's `checks` field is populated by `check_function`
     // from real dataflow over the checker-authority `MirStatement`
@@ -4837,6 +4839,14 @@ struct Builder {
     /// drop-cleanup and rebinding semantics.
     binding_locals: HashMap<BindingId, Place>,
     decisions: Vec<DecisionFact>,
+    /// NEW-6b: maps the id of a basic block that ends in `Terminator::SuspendingAsk`
+    /// to the constant deadline (nanoseconds) of an `await … | after d` combinator.
+    /// Populated by `lower_actor_ask` when the HIR `ActorAsk` carries a
+    /// `deadline_ns`; consumed by codegen to schedule
+    /// `hew_await_cancel_schedule_deadline_ms` against the suspend's cancel
+    /// registration. Carried as a side-table (not a carrier/Terminator field) so
+    /// the eight `Suspending*` carriers stay unchanged (codegen-locals shape).
+    await_deadline_ns: HashMap<u32, i64>,
     owned_locals: Vec<(hew_hir::BindingId, String, ResolvedTy)>,
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
     /// were declared in, recorded so a per-scope-exit `hew_gen_free` fires when
@@ -7482,7 +7492,8 @@ impl Builder {
                 method_id,
                 args,
                 reply_ty,
-            } => self.lower_actor_ask(receiver, method_id, args, reply_ty, expr),
+                deadline_ns,
+            } => self.lower_actor_ask(receiver, method_id, args, reply_ty, *deadline_ns, expr),
             HirExprKind::ConnAwaitRead { conn, to_string } => {
                 self.lower_conn_await_read(conn, *to_string, expr)
             }
@@ -9910,6 +9921,7 @@ impl Builder {
                     | Terminator::SuspendingStreamSend { .. }
                     | Terminator::SuspendingAccept { .. }
                     | Terminator::SuspendingChannelRecv { .. }
+                    | Terminator::SuspendingRemoteAsk { .. }
                     | Terminator::Select { .. } => false,
                 }
             }
@@ -13179,6 +13191,7 @@ impl Builder {
             blocks,
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         };
         let builder = Builder {
             type_classes: self.type_classes.clone(),
@@ -15045,6 +15058,7 @@ impl Builder {
         method_id: &str,
         args: &[hew_hir::HirExpr],
         reply_ty: &ResolvedTy,
+        deadline_ns: Option<i64>,
         expr: &HirExpr,
     ) -> Option<Place> {
         let site = expr.site;
@@ -15106,6 +15120,15 @@ impl Builder {
         // codegen `Terminator::Suspend` case-1 edge routes to the shared
         // epilogue).
         if self.current_function_call_conv.carries_execution_context() {
+            // NEW-6b: record an `await … | after d` deadline for THIS block (the
+            // one finished with `SuspendingAsk`). Only a suspendable caller carries
+            // the deadline — a blocking `Terminator::Ask` (foreign/main thread) has
+            // no parkable continuation to time out, so a deadline there fails closed
+            // in HIR (it only attaches to the suspending path). Literal-only ns
+            // (constant side-table, no Place threaded into the IR).
+            if let Some(ns) = deadline_ns {
+                self.await_deadline_ns.insert(self.current_block_id, ns);
+            }
             self.finish_current_block(Terminator::SuspendingAsk {
                 actor,
                 msg_type: info.msg_type,
@@ -15312,17 +15335,45 @@ impl Builder {
             is_opaque: false,
         });
         let next = self.alloc_block();
-        self.finish_current_block(Terminator::RemoteAsk {
-            actor,
-            msg_type: info.msg_type,
-            value,
-            timeout_ms,
-            result_dest,
-            reply_dest,
-            error_dest,
-            reply_ty: reply_ty.clone(),
-            next,
-        });
+        // Suspendable-caller flip (NEW-5). A caller that carries the execution
+        // context (an actor handler / closure / task entry) runs on the
+        // scheduler as a coroutine and can PARK its continuation across the
+        // cross-node wire round-trip: emit the non-blocking
+        // `SuspendingRemoteAsk` so the ask suspends (freeing the worker) and
+        // resumes when the wire reply / peer-drop / timeout lands, binding the
+        // `Result<Reply, AskError>` on the resume edge. A
+        // `FunctionCallConv::Default` caller (`main`, a free function) runs on a
+        // foreign/main thread with no parkable continuation, so it keeps the
+        // blocking `Terminator::RemoteAsk` (`hew_node_api_ask`). The resume edge
+        // IS `next` (lowering continues in the block where the result is bound);
+        // `cleanup` reuses `next` as the multi-suspend drop-elaboration seam,
+        // exactly as `SuspendingAsk` does.
+        if self.current_function_call_conv.carries_execution_context() {
+            self.finish_current_block(Terminator::SuspendingRemoteAsk {
+                actor,
+                msg_type: info.msg_type,
+                value,
+                timeout_ms,
+                result_dest,
+                reply_dest,
+                error_dest,
+                reply_ty: reply_ty.clone(),
+                resume: next,
+                cleanup: next,
+            });
+        } else {
+            self.finish_current_block(Terminator::RemoteAsk {
+                actor,
+                msg_type: info.msg_type,
+                value,
+                timeout_ms,
+                result_dest,
+                reply_dest,
+                error_dest,
+                reply_ty: reply_ty.clone(),
+                next,
+            });
+        }
         self.start_block(next);
         Some(result_dest)
     }
@@ -15865,6 +15916,7 @@ impl Builder {
             blocks,
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
+            await_deadline_ns: builder.await_deadline_ns.clone(),
         };
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
@@ -16001,6 +16053,7 @@ impl Builder {
             blocks: blocks.clone(),
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
+            await_deadline_ns: builder.await_deadline_ns.clone(),
         };
 
         // Synthetic HirFn for dataflow checking — no HIR params (the shim
@@ -16333,6 +16386,7 @@ impl Builder {
             blocks: blocks.clone(),
             decisions: body_builder.decisions.clone(),
             intrinsic_id: None,
+            await_deadline_ns: body_builder.await_deadline_ns.clone(),
         };
 
         // A synthetic HirFn shell so `check_function` has a valid fn descriptor.
@@ -17752,6 +17806,9 @@ fn validate_cross_block_split_consume(
             }
             | Terminator::SuspendingChannelRecv {
                 resume, cleanup, ..
+            }
+            | Terminator::SuspendingRemoteAsk {
+                resume, cleanup, ..
             } => {
                 emit(*resume);
                 emit(*cleanup);
@@ -17799,6 +17856,9 @@ fn validate_cross_block_split_consume(
                 resume, cleanup, ..
             }
             | Terminator::SuspendingChannelRecv {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingRemoteAsk {
                 resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
@@ -18373,6 +18433,7 @@ pub fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
             | Terminator::SuspendingStreamSend { .. }
             | Terminator::SuspendingAccept { .. }
             | Terminator::SuspendingChannelRecv { .. }
+            | Terminator::SuspendingRemoteAsk { .. }
     )
 }
 
@@ -18431,6 +18492,15 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
             places
         }
         Terminator::RemoteAsk {
+            actor,
+            value,
+            timeout_ms,
+            ..
+        } => vec![*actor, *value, *timeout_ms],
+        // `SuspendingRemoteAsk` mirrors `RemoteAsk`'s operand shape: `actor` +
+        // `value` + `timeout_ms` are the reads; the result/reply/error dests are
+        // write slots bound on the resume edge.
+        Terminator::SuspendingRemoteAsk {
             actor,
             value,
             timeout_ms,
@@ -18672,7 +18742,8 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         | Terminator::Ask { value, .. }
         | Terminator::SuspendingAsk { value, .. }
         | Terminator::SuspendingStreamSend { value, .. } => place_refs_local(*value, local),
-        Terminator::RemoteAsk { value, .. } => place_refs_local(*value, local),
+        Terminator::RemoteAsk { value, .. }
+        | Terminator::SuspendingRemoteAsk { value, .. } => place_refs_local(*value, local),
         Terminator::Select { .. } => terminator_source_places(term)
             .into_iter()
             .any(|p| place_refs_local(p, local)),
@@ -20823,7 +20894,12 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
         // body-end drop plus the message consumption both released it). Poison the
         // payload so the escape gate refuses-or-poisons it like the blocking forms.
         Terminator::SuspendingAsk { value, .. }
-        | Terminator::SuspendingStreamSend { value, .. } => vec![*value],
+        | Terminator::SuspendingStreamSend { value, .. }
+        // A SUSPENDABLE cross-node `await remote.ask(owned)` transfers its
+        // `value` payload onto the wire (serialized into the ask envelope)
+        // exactly as the blocking `RemoteAsk` above does — poison it so the
+        // escape gate refuses-or-poisons the owned payload identically.
+        | Terminator::SuspendingRemoteAsk { value, .. } => vec![*value],
         // A SUSPENDABLE `await closure(args...)` forwards `args` BY VALUE into the
         // callee coroutine, exactly as the non-suspending [`Instr::CallClosure`]
         // does (`instr_escape_places` poisons its `args`). An owned-handle arg
@@ -21961,6 +22037,14 @@ fn enumerate_exits(
             // (the abandon edge additionally detaches the channel-await
             // registration + cancels/frees the slot), never at the suspend site.
             | Terminator::SuspendingChannelRecv {
+                resume, cleanup, ..
+            }
+            // `SuspendingRemoteAsk` has the identical drop posture: the pending
+            // reply registration + the live-across-suspend state ride the coro
+            // frame, dropped exactly once by the `cleanup` outline on
+            // `coro.destroy` (the abandon edge additionally cancels the pending
+            // reply entry), never at the suspend site.
+            | Terminator::SuspendingRemoteAsk {
                 resume, cleanup, ..
             } => (
                 ExitPath::Suspend {

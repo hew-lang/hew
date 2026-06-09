@@ -59,6 +59,7 @@ fn floor_pipeline(
             blocks: placeholder.clone(),
             decisions: vec![],
             intrinsic_id: Some(intrinsic_id.to_string()),
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: name.to_string(),

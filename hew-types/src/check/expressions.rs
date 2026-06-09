@@ -1747,9 +1747,26 @@ impl Checker {
                 expr: inner,
                 duration,
             } => {
-                let inner_ty = self.synthesize(&inner.0, &inner.1);
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);
-                Ty::option(inner_ty)
+                let inner_ty = self.synthesize(&inner.0, &inner.1);
+                // NEW-6b: `await <actor>.<askmethod>(...) | after d` resolves to
+                // `Result<R, AskError>` (deadline → `Err(AskError::Timeout)`), the
+                // same type as the inner suspending ask. Other `| after d` forms are
+                // deferred and fail closed in HIR lowering; type them as the inner
+                // expression's type so the checker emits no spurious diagnostics here
+                // (the precise deferred diagnostic is raised during lowering).
+                if let Expr::Await(await_inner) = &inner.0 {
+                    let inner_key = SpanKey::from(&await_inner.1);
+                    if let Some(ActorMethodKind::Ask(_, reply_ty)) =
+                        self.actor_method_dispatch.get(&inner_key).cloned()
+                    {
+                        Ty::result(reply_ty, Ty::ask_error())
+                    } else {
+                        inner_ty
+                    }
+                } else {
+                    inner_ty
+                }
             }
             Expr::GenBlock { body } => {
                 // WHY: `gen { }` expression-position generator blocks are part

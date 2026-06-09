@@ -62,6 +62,7 @@ fn pipeline_with_task_abi_call(
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -148,6 +149,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 blocks: vec![main_block.clone()],
                 decisions: vec![],
                 intrinsic_id: None,
+                await_deadline_ns: std::collections::HashMap::new(),
             },
             RawMirFunction {
                 name: "long_op".to_string(),
@@ -158,6 +160,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 blocks: vec![long_op_block.clone()],
                 decisions: vec![],
                 intrinsic_id: None,
+                await_deadline_ns: std::collections::HashMap::new(),
             },
         ],
         checked_mir: vec![
@@ -232,6 +235,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 blocks: vec![main_block.clone()],
                 decisions: vec![],
                 intrinsic_id: None,
+                await_deadline_ns: std::collections::HashMap::new(),
             },
             RawMirFunction {
                 name: "long_op".to_string(),
@@ -242,6 +246,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 blocks: vec![long_op_block.clone()],
                 decisions: vec![],
                 intrinsic_id: None,
+                await_deadline_ns: std::collections::HashMap::new(),
             },
         ],
         checked_mir: vec![
@@ -336,6 +341,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 blocks: vec![main_block.clone()],
                 decisions: vec![],
                 intrinsic_id: None,
+                await_deadline_ns: std::collections::HashMap::new(),
             },
             RawMirFunction {
                 name: "__hew_closure_invoke_main_0".to_string(),
@@ -346,6 +352,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 blocks: vec![closure_block.clone()],
                 decisions: vec![],
                 intrinsic_id: None,
+                await_deadline_ns: std::collections::HashMap::new(),
             },
         ],
         checked_mir: vec![
@@ -537,6 +544,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),

@@ -414,6 +414,9 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
             }
             | Terminator::SuspendingChannelRecv {
                 resume, cleanup, ..
+            }
+            | Terminator::SuspendingRemoteAsk {
+                resume, cleanup, ..
             } => {
                 emit_edge(*resume);
                 emit_edge(*cleanup);
@@ -463,6 +466,9 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
             resume, cleanup, ..
         }
         | Terminator::SuspendingChannelRecv {
+            resume, cleanup, ..
+        }
+        | Terminator::SuspendingRemoteAsk {
             resume, cleanup, ..
         } => vec![*resume, *cleanup],
     }

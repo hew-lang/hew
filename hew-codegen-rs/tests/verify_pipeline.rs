@@ -45,6 +45,7 @@ fn pipeline_const_42() -> IrPipeline {
         }],
         decisions: Vec::<DecisionFact>::new(),
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -89,6 +90,7 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
         }],
         decisions: Vec::new(),
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),

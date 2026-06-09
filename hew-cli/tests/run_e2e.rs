@@ -2195,6 +2195,69 @@ fn blocking_listener_accept_in_main_keeps_blocking_call() {
     );
 }
 
+/// NEW-5 oracle: a cross-node `peer.ask(msg, timeout)` in an actor handler (an
+/// execution-context caller) flips to the `SuspendingRemoteAsk` terminator — the
+/// caller parks its coroutine on the wire reply instead of blocking a worker; a
+/// context-free caller (`main`, free fn) keeps the blocking `RemoteAsk`. The
+/// cross-node sibling of the local-ask flip.
+#[test]
+fn suspending_remote_ask_flip_in_execution_context() {
+    let dump = mir_checked_dump(
+        "actor Echo {\n\
+         \x20   receive fn handle(req: i64) -> i64 { req }\n\
+         }\n\
+         impl ActorMsg for Echo {\n\
+         \x20   type Msg = i64;\n\
+         \x20   type Reply = i64;\n\
+         }\n\
+         actor Client {\n\
+         \x20   receive fn go(unused: i64) {\n\
+         \x20       let found: Result<RemotePid<Echo>, LookupError> = Node::lookup(\"echo\");\n\
+         \x20       match found {\n\
+         \x20           Ok(peer) => { let _ = peer.ask(7, 1000); },\n\
+         \x20           Err(_) => {},\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n\
+         fn main() { let c = spawn Client(); c.go(0); }\n",
+    );
+    assert!(
+        dump.contains("SuspendingRemoteAsk"),
+        "actor-handler `peer.ask()` must flip to SuspendingRemoteAsk:\n{dump}"
+    );
+}
+
+/// NEW-5 negative: a context-free caller (`fn main`) keeps the BLOCKING remote
+/// ask (`RemoteAsk`); the caller-conv flip must NOT emit `SuspendingRemoteAsk`
+/// where there is no parkable continuation (mirrors the local-ask negative).
+#[test]
+fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
+    let dump = mir_checked_dump(
+        "actor Echo {\n\
+         \x20   receive fn handle(req: i64) -> i64 { req }\n\
+         }\n\
+         impl ActorMsg for Echo {\n\
+         \x20   type Msg = i64;\n\
+         \x20   type Reply = i64;\n\
+         }\n\
+         fn main() {\n\
+         \x20   let found: Result<RemotePid<Echo>, LookupError> = Node::lookup(\"echo\");\n\
+         \x20   match found {\n\
+         \x20       Ok(peer) => { let _ = peer.ask(7, 1000); },\n\
+         \x20       Err(_) => {},\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(
+        !dump.contains("SuspendingRemoteAsk"),
+        "`peer.ask()` from main must NOT flip to SuspendingRemoteAsk:\n{dump}"
+    );
+    assert!(
+        dump.contains("RemoteAsk"),
+        "`peer.ask()` from main must keep the blocking RemoteAsk terminator:\n{dump}"
+    );
+}
+
 /// Oracle: a NESTED owned aggregate `((Sink,), Stream)` returned by name. The
 /// value-flow decomposition must recurse through the inner `TupleConstruct`.
 #[test]

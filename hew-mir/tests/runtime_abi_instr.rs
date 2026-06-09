@@ -313,6 +313,7 @@ fn raw_mir_basic_block_round_trips_call_runtime_abi() {
         }],
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
 
     // The Clone + PartialEq derives let us assert the variant

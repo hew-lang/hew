@@ -14,6 +14,7 @@ fn actor_handler(blocks: Vec<BasicBlock>) -> RawMirFunction {
         blocks,
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     }
 }
 

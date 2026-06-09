@@ -262,11 +262,24 @@ unsafe fn publish_reply_from_sender_ref(
         (*ch).value_size = value_size;
         // Release barrier ensures value writes are visible to the waiter.
         (*ch).ready.store(true, Ordering::Release);
+        // NEW-6b exactly-one-waker: the reply only owns the wake if it WINS the
+        // completion arbiter. When a deadline registration is attached,
+        // `hew_await_cancel_complete` returns 1 iff this reply won the one-shot
+        // CAS (claiming the reply and cancelling the timer); it returns 0 if the
+        // deadline timer already won (and has already, or will, wake the caller).
+        // Re-enqueuing on the losing edge produces a spurious wake that lingers
+        // into the caller's NEXT park (the scheduler's `pending_wake`), so the
+        // parked-continuation wake below is gated on winning. With NO registration
+        // (a plain ask, no `| after d`) the reply is the only waker and always
+        // wakes. The arbiter `complete` itself MUST still run unconditionally so a
+        // winning reply cancels the timer.
         let await_cancel = (*ch).await_cancel.load(Ordering::Acquire);
-        if !await_cancel.is_null() {
+        let reply_won = if await_cancel.is_null() {
+            true
+        } else {
             // SAFETY: the channel holds a retained registration reference.
-            hew_await_cancel_complete(await_cancel);
-        }
+            hew_await_cancel_complete(await_cancel) != 0
+        };
 
         // Waiter-kind branch (W6.010, E5/E6). A parked-continuation waiter
         // (`caller_actor` non-null) is woken by re-enqueuing its actor; the
@@ -278,12 +291,15 @@ unsafe fn publish_reply_from_sender_ref(
         // submission and therefore before any reply can fire.
         let caller_actor = (*ch).caller_actor.load(Ordering::Acquire);
         if caller_actor.is_null() {
-            // Foreign/main-thread condvar waiter (E6 — unchanged).
+            // Foreign/main-thread condvar waiter (E6 — unchanged). A condvar
+            // waiter re-checks its `ready`/`cancelled` predicate under the lock,
+            // so a notify on the losing edge is harmless; it is left ungated.
             let guard = (*ch).lock.lock_or_recover();
             (*ch).cond.notify_one();
             drop(guard);
-        } else {
-            // Parked-continuation waiter: re-enqueue the caller actor. The
+        } else if reply_won {
+            // Parked-continuation waiter: re-enqueue the caller actor ONLY when
+            // the reply won the arbiter (or carried no deadline registration). The
             // continuation handle is owned by the scheduler's suspend edge (the
             // `suspended_cont` slot); `enqueue_resume` reads the slot itself and
             // records a `pending_wake` if the reply fired in the FG3 park window
@@ -919,6 +935,158 @@ mod tests {
             active_channel_count(),
             pre,
             "cancelled suspended ask must release the waiter and late sender exactly once"
+        );
+    }
+
+    // NEW-6b regression: exactly-one-waker under the deadline-vs-reply split-brain
+    // race. The reviewer's P1 was the loser-stale-wake: a reply that passes the
+    // pre-publish `cancelled` check just before the timer's cleanup, then reaches
+    // `publish_reply_from_sender_ref` and LOSES the completion arbiter, used to
+    // re-enqueue the caller UNCONDITIONALLY. That spurious wake survived as a
+    // `pending_wake` into the caller's NEXT park and could resume a SECOND await
+    // before its own source was ready. The fix gates the parked-continuation wake
+    // on winning the arbiter (or carrying no registration). This test drives the
+    // exact split-brain ordering deterministically — no timing, no flake — by
+    // terminalising the registration as `TimedOut` (the timer won) and then
+    // calling `publish_reply_from_sender_ref` directly (the reply that already
+    // passed the pre-publish check). The observable is the caller's
+    // `pending_wake`: the loser edge must leave it FALSE (so a following park /
+    // second await is not spuriously resumed), while a winning reply and a
+    // no-registration (plain ask) reply must each set it TRUE (the legitimate,
+    // sole waker still fires).
+    #[test]
+    fn loser_reply_does_not_wake_caller_winner_and_plain_ask_do() {
+        use crate::internal::types::{ContTag, HewActorState};
+        use std::sync::atomic::{AtomicI32, AtomicU64};
+
+        // A tracked caller actor whose state is `Running` with a null
+        // `suspended_cont`: in that shape `enqueue_resume` records the wake via
+        // `mark_pending_wake` and returns without touching the global run queue,
+        // so `take_pending_wake` is a clean, isolated observation of whether the
+        // reply path woke the caller.
+        fn caller_actor(id: u64) -> Box<HewActor> {
+            Box::new(HewActor {
+                sched_link_next: AtomicPtr::new(ptr::null_mut()),
+                id,
+                state: ptr::null_mut(),
+                state_size: 0,
+                dispatch: None,
+                mailbox: ptr::null_mut(),
+                actor_state: AtomicI32::new(HewActorState::Running as i32),
+                budget: AtomicI32::new(0),
+                init_state: ptr::null_mut(),
+                init_state_size: 0,
+                coalesce_key_fn: None,
+                terminate_fn: None,
+                state_drop_fn: None,
+                state_clone_fn: None,
+                terminate_called: AtomicBool::new(false),
+                terminate_finished: AtomicBool::new(false),
+                error_code: AtomicI32::new(0),
+                supervisor: ptr::null_mut(),
+                supervisor_child_index: 0,
+                priority: AtomicI32::new(1),
+                reductions: AtomicI32::new(0),
+                idle_count: AtomicI32::new(0),
+                hibernation_threshold: AtomicI32::new(0),
+                hibernating: AtomicI32::new(0),
+                prof_messages_processed: AtomicU64::new(0),
+                prof_processing_time_ns: AtomicU64::new(0),
+                arena: ptr::null_mut(),
+                suspended_cont: AtomicPtr::new(ptr::null_mut()),
+                cont_tag: AtomicI32::new(ContTag::Empty as i32),
+                pending_wake: AtomicBool::new(false),
+                suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
+                suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
+            })
+        }
+
+        unsafe extern "C" fn cleanup(source: *mut c_void, status: i32) {
+            // SAFETY: the registration source is the live reply channel for this test.
+            unsafe { hew_reply_channel_cancel_cleanup(source, status) };
+        }
+
+        let _guard = crate::runtime_test_guard();
+        let pre = active_channel_count();
+
+        let mut actor = caller_actor(0x00C0_FFEE);
+        let actor_ptr: *mut HewActor = &raw mut *actor;
+        // SAFETY: `actor` outlives the registry tracking (untracked before drop).
+        unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) };
+
+        // ── Case 1: the reply LOSES the arbiter (timer already won). ──────────
+        // SAFETY: this test owns the channel + registration for the whole case.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_set_parked_waiter(ch, actor_ptr);
+            let reg =
+                crate::await_cancel::hew_await_cancel_new(actor_ptr, Some(cleanup), ch.cast());
+            hew_reply_channel_set_await_cancel(ch, reg);
+
+            // The deadline timer wins first: terminalise the registration as
+            // TimedOut (wake_actor=0 — we are isolating the REPLY edge, so the
+            // timer's own wake is suppressed here).
+            assert_eq!(
+                crate::await_cancel::hew_await_cancel_cancel(
+                    reg,
+                    AwaitCancelStatus::TimedOut as i32,
+                    0,
+                ),
+                1,
+                "timer must win the one-shot arbiter"
+            );
+            actor.pending_wake.store(false, Ordering::Release);
+
+            // The reply that already passed the pre-publish cancelled check now
+            // reaches publish and LOSES (`hew_await_cancel_complete` returns 0).
+            publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+
+            crate::await_cancel::hew_await_cancel_free(reg);
+        }
+        assert!(
+            !crate::coro_exec::take_pending_wake(&actor),
+            "a reply that lost the deadline arbiter must NOT wake the caller — \
+             a stale wake would spuriously resume the caller's next park"
+        );
+
+        // ── Case 2: the reply WINS the arbiter (no timer). ───────────────────
+        // SAFETY: this test owns the channel + registration for the whole case.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_set_parked_waiter(ch, actor_ptr);
+            let reg =
+                crate::await_cancel::hew_await_cancel_new(actor_ptr, Some(cleanup), ch.cast());
+            hew_reply_channel_set_await_cancel(ch, reg);
+            actor.pending_wake.store(false, Ordering::Release);
+
+            publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+
+            crate::await_cancel::hew_await_cancel_free(reg);
+        }
+        assert!(
+            crate::coro_exec::take_pending_wake(&actor),
+            "a reply that won the deadline arbiter MUST wake the caller"
+        );
+
+        // ── Case 3: a plain ask with NO deadline registration still wakes. ───
+        // SAFETY: this test owns the channel for the whole case.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_set_parked_waiter(ch, actor_ptr);
+            actor.pending_wake.store(false, Ordering::Release);
+
+            publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+        }
+        assert!(
+            crate::coro_exec::take_pending_wake(&actor),
+            "a plain ask (no deadline registration) must always wake the caller"
+        );
+
+        crate::lifetime::live_actors::untrack_actor(actor_ptr);
+        assert_eq!(
+            active_channel_count(),
+            pre,
+            "every channel allocated by this test must be freed (no leak)"
         );
     }
 

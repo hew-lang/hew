@@ -1,0 +1,23 @@
+// Reject fixture (NEW-6b): `await conn.read() | after d` — a deadline on a
+// suspendable read await. Only the actor-ask deadline (`Result<R, AskError>`,
+// `AskError::Timeout`) is wired in v0.5; read/accept/recv/next deadlines are
+// deferred to v0.6 (their timeout `Result` shaping is not yet specced) and fail
+// CLOSED at CHECK time — a precise compile-time diagnostic naming the form, NOT
+// a runtime NotYetImplemented and NOT a hang.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "only supported for actor-ask awaits"
+import std::net;
+
+actor Reader {
+    receive fn go() {
+        let conn = net.connect("127.0.0.1:9");
+        let body = await conn.read() | after 50ms;
+        println(f"{body.len()}");
+    }
+}
+
+fn main() {
+    let r = spawn Reader;
+    r.go();
+}

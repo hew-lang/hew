@@ -62,6 +62,7 @@ fn pipeline_discard_extern(
         blocks: blocks.clone(),
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
     let checked = CheckedMirFunction {
         name: "probe".to_string(),

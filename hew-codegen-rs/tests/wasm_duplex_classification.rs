@@ -79,6 +79,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -152,6 +153,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -229,6 +231,7 @@ fn pipeline_no_duplex() -> IrPipeline {
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

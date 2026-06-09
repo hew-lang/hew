@@ -116,6 +116,7 @@ fn floor_fn(name: &str, id: &str, params: Vec<ResolvedTy>, ret: ResolvedTy) -> R
         }],
         decisions: vec![],
         intrinsic_id: Some(id.to_string()),
+        await_deadline_ns: std::collections::HashMap::new(),
     }
 }
 
@@ -239,6 +240,7 @@ fn driver_main() -> RawMirFunction {
         blocks,
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     }
 }
 
@@ -329,6 +331,7 @@ fn driver_copy_no_free() -> RawMirFunction {
         blocks,
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     }
 }
 

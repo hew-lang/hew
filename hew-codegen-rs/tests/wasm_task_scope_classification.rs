@@ -59,6 +59,7 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -138,6 +139,7 @@ fn pipeline_with_task_scope_spawn_call() -> IrPipeline {
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),

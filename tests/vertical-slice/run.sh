@@ -1361,3 +1361,119 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_non_empty_b
   exit 1
 fi
 grep -q 'E_OPAQUE_TYPE_SHAPE' "${reject_output}"
+
+# ---------------------------------------------------------------------------
+# NEW-6b — `await … | after d` deadlines on suspendable actor asks
+# ---------------------------------------------------------------------------
+
+# Accept (worker-free deadline oracle): `await s.block() | after 60ms` where the
+# callee parks worker-free on an empty channel recv and never replies. Under
+# HEW_WORKERS=1 the deadline timer (its own ticker thread) cancels the in-flight
+# ask and resumes the caller with Err(AskError::Timeout) → exit 7. Proves the
+# deadline-before-reply race AND that the lone worker is freed + resumed by the
+# timer (a blocking path would strand the worker / hang).
+compile_accept "await_ask_deadline_timeout"
+timeout_bin="${ROOT}/.tmp/compile-out/await_ask_deadline_timeout"
+deadline_status=0
+if timeout --kill-after=5s 30s env HEW_WORKERS=1 "${timeout_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  deadline_status=0
+else
+  deadline_status=$?
+fi
+if [[ "${deadline_status}" -ne 7 ]]; then
+  echo "expected await_ask_deadline_timeout (HEW_WORKERS=1) to exit 7, got ${deadline_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
+# Accept (reply-before-deadline race): `await f.answer() | after 5000ms` where
+# the callee replies immediately. The long deadline never fires and is cancelled
+# on the reply → Ok(42) → exit 42 (no spurious timeout).
+compile_accept "await_ask_deadline_ok"
+ok_bin="${ROOT}/.tmp/compile-out/await_ask_deadline_ok"
+ok_status=0
+if timeout --kill-after=5s 30s env HEW_WORKERS=1 "${ok_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  ok_status=0
+else
+  ok_status=$?
+fi
+if [[ "${ok_status}" -ne 42 ]]; then
+  echo "expected await_ask_deadline_ok (HEW_WORKERS=1) to exit 42, got ${ok_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
+# Reject (fail-closed, deferred to v0.6): a deadline on a suspendable READ await.
+# Only actor-ask deadlines are wired; read/accept/recv/next fail CLOSED at CHECK
+# time with a precise diagnostic (not a runtime NYI, not a hang).
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_read_deadline_deferred.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_read_deadline_deferred fixture to fail" >&2
+  exit 1
+fi
+grep -q 'only supported for actor-ask awaits' "${reject_output}"
+
+# Reject (fail-closed, deferred to v0.6): a deadline on a SUSPENDING-CLOSURE call.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_closure_deadline_deferred.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_closure_deadline_deferred fixture to fail" >&2
+  exit 1
+fi
+grep -q 'on a non-await expression' "${reject_output}"
+
+# Reject (fail-closed, deferred to v0.6): a deadline on a TASK-await. The named
+# fork surface is parser-only in this build, so the form is doubly fail-closed at
+# compile time.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_task_deadline_deferred.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_task_deadline_deferred fixture to fail" >&2
+  exit 1
+fi
+grep -q 'parser-only in this build' "${reject_output}"
+
+# Reject (fail-closed, deferred to v0.6): a deadline on a suspendable channel
+# RECV await. recv/next deadlines fail CLOSED at CHECK time (not a runtime NYI,
+# not a hang) with the same precise diagnostic as read/accept.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_recv_deadline_deferred.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_recv_deadline_deferred fixture to fail" >&2
+  exit 1
+fi
+grep -q 'only supported for actor-ask awaits' "${reject_output}"
+
+# Reject (fail-closed, deferred to v0.6): a deadline on a suspendable listener
+# ACCEPT await.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_accept_deadline_deferred.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_accept_deadline_deferred fixture to fail" >&2
+  exit 1
+fi
+grep -q 'only supported for actor-ask awaits' "${reject_output}"
+
+# Reject (fail-closed, deferred to v0.6): a deadline on a suspendable typed-STREAM
+# next (`Stream<bytes>.recv()`).
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_stream_recv_deadline_deferred.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_stream_recv_deadline_deferred fixture to fail" >&2
+  exit 1
+fi
+grep -q 'only supported for actor-ask awaits' "${reject_output}"
+
+# Reject (fail-closed, deferred to v0.6): an actor-ask deadline with a NON-LITERAL
+# duration. The codegen deadline is a compile-time constant, so a variable /
+# computed duration fails CLOSED at CHECK time (not a runtime NYI, not a hang).
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_nonliteral_duration_deferred.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_nonliteral_duration_deferred fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-literal duration' "${reject_output}"

@@ -1,0 +1,33 @@
+// Reject fixture (NEW-6b): a `| after d` deadline on a suspending-closure call.
+// `recv_once()` invokes a closure whose body `await`s across a suspend point
+// (`SuspendingCallClosure`). The spec is silent on the timeout error type for a
+// closure that suspends across multiple await points, so this form is deferred
+// to v0.6 and fails CLOSED at CHECK time — a precise compile-time diagnostic,
+// NOT a runtime NotYetImplemented and NOT a hang.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "on a non-await expression"
+import std::channel::channel;
+
+actor Worker {
+    receive fn run() -> i64 {
+        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+        let recv_once = || {
+            await rx.recv()
+        };
+        let got = recv_once() | after 50ms;
+        let _ = tx;
+        match got {
+            Some(v) => v,
+            None => -1,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn Worker;
+    match await w.run() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

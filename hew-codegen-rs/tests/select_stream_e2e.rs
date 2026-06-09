@@ -90,6 +90,7 @@ fn select_stream_i64_pipeline() -> IrPipeline {
             blocks,
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![],
         elaborated_mir: vec![],

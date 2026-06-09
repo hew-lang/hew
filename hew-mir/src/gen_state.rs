@@ -171,7 +171,16 @@ fn terminator_reads(term: &Terminator) -> Vec<Place> {
             r.extend(args.iter().copied());
             r
         }
+        // `SuspendingRemoteAsk` reads the same operands as `RemoteAsk` (`actor` +
+        // `value` + `timeout_ms`); the result/reply/error dests are write slots
+        // bound on the resume edge, not reads.
         Terminator::RemoteAsk {
+            actor,
+            value,
+            timeout_ms,
+            ..
+        }
+        | Terminator::SuspendingRemoteAsk {
             actor,
             value,
             timeout_ms,
@@ -758,5 +767,6 @@ fn build_drop_shim_function(shim_name: &str, state_ty: ResolvedTy) -> RawMirFunc
         blocks: vec![entry],
         decisions: Vec::new(),
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     }
 }

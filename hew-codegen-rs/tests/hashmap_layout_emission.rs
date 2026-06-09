@@ -67,6 +67,7 @@ fn base_pipeline(
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -500,6 +501,7 @@ fn hash_thunk_dedup_one_per_record_per_module() {
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -631,6 +633,7 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -1007,6 +1010,7 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

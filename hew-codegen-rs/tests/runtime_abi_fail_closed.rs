@@ -61,6 +61,7 @@ fn pipeline_with_call_runtime_abi_parts(
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),

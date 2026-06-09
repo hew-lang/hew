@@ -188,6 +188,7 @@ fn vec_index_i64_mir() -> RawMirFunction {
         blocks: vec![entry_block, trap_block, cont_block],
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     }
 }
 

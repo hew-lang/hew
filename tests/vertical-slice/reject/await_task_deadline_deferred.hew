@@ -1,0 +1,31 @@
+// Reject fixture (NEW-6b): `await <task> | after d` — a deadline on a task-await.
+// The spec is silent on the task-await timeout error type, so this form is
+// deferred to v0.6 and must fail CLOSED at CHECK time (never a runtime
+// NotYetImplemented, never a hang). In this build the task-binding surface
+// (`fork name = expr;`) is itself parser-only, so the form is doubly fail-closed
+// at compile time — the named-fork gate rejects it before the deadline lowering
+// is reached.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "parser-only in this build"
+fn work() -> i64 {
+    1
+}
+
+actor Driver {
+    receive fn go() -> i64 {
+        scope {
+            fork t = work();
+            let r = await t | after 50ms;
+            r
+        }
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn Driver;
+    match await d.go() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

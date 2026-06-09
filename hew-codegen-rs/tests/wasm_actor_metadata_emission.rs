@@ -60,6 +60,7 @@ fn spawn_pipeline() -> IrPipeline {
         }],
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
 
     let handler_fn = RawMirFunction {
@@ -76,6 +77,7 @@ fn spawn_pipeline() -> IrPipeline {
         }],
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
 
     let actor_layout = ActorLayout {

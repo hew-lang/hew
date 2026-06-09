@@ -1,0 +1,33 @@
+// Accept fixture (NEW-6b): `await <actor>.<ask>() | after d` — the reply lands
+// before the deadline, so the suspending ask resolves to `Ok(value)` and the
+// deadline timer is cancelled (no spurious timeout).
+//
+// `Fast.answer()` replies immediately; the long `after 5000ms` deadline never
+// fires. Proves the deadline-vs-reply race the OTHER direction (reply wins) and
+// that a prompt reply disarms the timer via `hew_await_cancel_complete`.
+//
+// Exit-code contract: `Ok(42)` → 42.
+
+actor Fast {
+    receive fn answer() -> i64 {
+        42
+    }
+}
+
+actor Caller {
+    receive fn go() -> i64 {
+        let f = spawn Fast;
+        match await f.answer() | after 5000ms {
+            Ok(v) => v,
+            Err(_e) => 7,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let c = spawn Caller;
+    match await c.go() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

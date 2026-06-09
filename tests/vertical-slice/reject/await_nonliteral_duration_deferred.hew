@@ -1,0 +1,34 @@
+// Reject fixture (NEW-6b): `await actor.ask(...) | after d` with a NON-LITERAL
+// duration. The codegen deadline is carried as a compile-time constant, so the
+// duration MUST be a literal; a variable / computed duration is not
+// constant-foldable here and fails CLOSED at CHECK time — a precise compile-time
+// diagnostic, NOT a runtime NotYetImplemented and NOT a hang. This is the actor-
+// ask form (otherwise fully wired), so ONLY the non-literal duration is rejected.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "non-literal duration"
+
+actor Fast {
+    receive fn answer() -> i64 {
+        42
+    }
+}
+
+actor Caller {
+    receive fn go() -> i64 {
+        let f = spawn Fast;
+        let d = 50ms;
+        match await f.answer() | after d {
+            Ok(v) => v,
+            Err(_e) => 7,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let c = spawn Caller;
+    match await c.go() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

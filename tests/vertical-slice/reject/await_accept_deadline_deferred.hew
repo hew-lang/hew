@@ -1,0 +1,23 @@
+// Reject fixture (NEW-6b): `await ln.accept() | after d` — a deadline on a
+// suspendable listener ACCEPT await. Only the actor-ask deadline
+// (`Result<R, AskError>`, `AskError::Timeout`) is wired in v0.5; accept
+// deadlines are deferred to v0.6 (their timeout `Result` shaping is not yet
+// specced) and fail CLOSED at CHECK time — a precise compile-time diagnostic
+// naming the form, NOT a runtime NotYetImplemented and NOT a hang.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "only supported for actor-ask awaits"
+import std::net;
+
+actor Server {
+    receive fn go() {
+        let ln = net.listen("127.0.0.1:0");
+        let conn = await ln.accept() | after 50ms;
+        let _ = conn;
+    }
+}
+
+fn main() {
+    let s = spawn Server;
+    s.go();
+}

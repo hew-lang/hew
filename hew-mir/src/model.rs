@@ -1433,6 +1433,14 @@ pub struct RawMirFunction {
     /// Fail-closed (D343): a key codegen cannot synthesize is a hard
     /// `CodegenError`, never a silent empty-body no-op.
     pub intrinsic_id: Option<String>,
+    /// NEW-6b `await … | after d` deadlines. Maps the id of each basic block
+    /// whose terminator is a `Terminator::SuspendingAsk` carrying a deadline to
+    /// the deadline value in nanoseconds. Empty for functions with no
+    /// deadline-await. Codegen schedules `hew_await_cancel_schedule_deadline_ms`
+    /// (ns → ms) against the suspend's cancel registration for these blocks and
+    /// shapes the resume edge to `Err(AskError::Timeout)` on expiry. A side-table
+    /// (not a carrier field) keeps the eight `Suspending*` terminators unchanged.
+    pub await_deadline_ns: std::collections::HashMap<u32, i64>,
 }
 
 /// A generic origin function lowered against abstract `ResolvedTy::TypeParam`
@@ -1847,6 +1855,13 @@ impl BasicBlock {
             // channel readiness exactly like the stream-recv ramp: the default
             // edge exits to the executor; resume + cleanup are the in-CFG successors.
             | Terminator::SuspendingChannelRecv {
+                resume, cleanup, ..
+            }
+            // The suspending cross-node remote-ask ramp parks the calling
+            // continuation on the wire reply exactly like the ask ramp: the
+            // default edge exits to the executor; resume + cleanup are the
+            // in-CFG successors.
+            | Terminator::SuspendingRemoteAsk {
                 resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
@@ -2323,6 +2338,62 @@ pub enum Terminator {
         error_dest: Place,
         reply_ty: ResolvedTy,
         next: u32,
+    },
+    /// Non-blocking `await remote.ask(...)` across nodes from a SUSPENDABLE
+    /// caller (NEW-5). The cross-node-reply analogue of
+    /// [`Terminator::SuspendingAsk`]: instead of blocking an OS worker in
+    /// `hew_node_api_ask` waiting on the wire reply, codegen lowers this as a
+    /// `coro.suspend` source — it submits the ask + registers the parked
+    /// continuation with the process-global reply routing table
+    /// (`hew_node_api_ask_async`), suspends (freeing the worker), and on the
+    /// resume edge drains the deposited reply (`hew_node_api_ask_finish`),
+    /// binding `Result<Reply, AskError>`. The reply travels through the reply
+    /// routing table held across the suspend (the `request_id`-keyed pending
+    /// slot), NOT a terminator operand — exactly as `SuspendingAsk`'s reply
+    /// travels through its reply channel. The resume edge is woken by the wire
+    /// reply, a peer-drop failure, or a timeout, each routed through the shared
+    /// `scheduler::enqueue_resume` readiness edge.
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` / `is_coroutine`: any function whose CFG contains this
+    /// terminator is lowered as a `presplitcoroutine`. Emitted ONLY when the
+    /// lowering function carries the execution context
+    /// (`FunctionCallConv::carries_execution_context` — actor handler / closure
+    /// / task entry); a `FunctionCallConv::Default` caller (`main`, free fns)
+    /// runs on a foreign thread with no parkable continuation and keeps the
+    /// blocking [`Terminator::RemoteAsk`] (`hew_node_api_ask`). A peer-down /
+    /// malformed reply binds a typed `AskError` on the resume edge — never a
+    /// hang or a fabricated value (fail-closed).
+    SuspendingRemoteAsk {
+        actor: Place,
+        msg_type: i32,
+        value: Place,
+        timeout_ms: Place,
+        /// `Result<Reply, AskError>` slot — bound on the resume edge after the
+        /// reply lands. Identical role to [`Terminator::RemoteAsk::result_dest`].
+        result_dest: Place,
+        /// Raw reply slot — the reconstructed `Reply` read from the reply table
+        /// on the resume edge. Identical role to
+        /// [`Terminator::RemoteAsk::reply_dest`].
+        reply_dest: Place,
+        /// `AskError` slot for the failure path on resume (peer down / timeout /
+        /// malformed reply). Identical role to
+        /// [`Terminator::RemoteAsk::error_dest`].
+        error_dest: Place,
+        /// The reply value's resolved type — sizes the reply binding read off
+        /// the reply table on the resume edge. Identical role to
+        /// [`Terminator::RemoteAsk::reply_ty`].
+        reply_ty: ResolvedTy,
+        /// Block reached on the coro switch resume edge (case 0) — the body
+        /// continues here after `enqueue_resume` woke the parked continuation
+        /// and the reply/error is bound. This is the `next` block of the
+        /// original remote ask (lowering continues there).
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the frame's
+        /// teardown when the parked continuation is abandoned (`coro.destroy`);
+        /// the pending reply entry is cancelled there
+        /// (`hew_node_api_ask_cancel`).
+        cleanup: u32,
     },
     /// Sealed `select{}` construct. The terminator carries the per-arm
     /// discriminator and per-arm body block ids; the runtime substrate

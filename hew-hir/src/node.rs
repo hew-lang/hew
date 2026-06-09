@@ -1031,6 +1031,13 @@ pub enum HirExprKind {
         method_id: String,
         args: Vec<HirExpr>,
         reply_ty: ResolvedTy,
+        /// NEW-6b `await <actor>.<method>(...) | after d` deadline, in nanoseconds.
+        /// `Some(ns)` attaches a fail-closed timeout to the suspending ask: when the
+        /// deadline elapses before the reply, the in-flight ask is cancelled and the
+        /// `Result<R, AskError>` resolves to `Err(AskError::Timeout)`. `None` is a
+        /// plain ask. Only literal `Duration` deadlines are carried (codegen-locals
+        /// side-table); non-literal durations fail closed at CHECK time.
+        deadline_ns: Option<i64>,
     },
     /// Cross-node request/reply dispatch on `RemotePid<T>::ask(msg, timeout_ms)`.
     ///

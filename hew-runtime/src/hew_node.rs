@@ -13,7 +13,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::set_last_error;
@@ -362,8 +364,15 @@ impl ConnectionKey {
 
 struct PendingReply {
     connection: ConnectionKey,
+    request_id: u64,
     outcome: Mutex<Option<ReplyOutcome>>,
     cond: Condvar,
+    /// When non-null, the remote ask was issued by a SUSPENDABLE caller (NEW-5):
+    /// the caller's coroutine has parked (or is about to park) on this reply and
+    /// the readiness source must RESUME it through the scheduler rather than
+    /// signal `cond`. Null for a blocking (condvar) caller. Set once at
+    /// registration; read on completion to pick the wake path.
+    parked_caller: AtomicPtr<crate::actor::HewActor>,
 }
 
 /// Process-global reply routing table for correlating remote ask/reply pairs.
@@ -384,13 +393,21 @@ impl ReplyRoutingTable {
         }
     }
 
-    /// Allocate a new request ID and register a pending reply slot.
-    fn register(&self, connection: ConnectionKey) -> (u64, Arc<PendingReply>) {
+    /// Allocate a new request ID and register a pending reply slot, recording
+    /// the optional parked caller (NEW-5). A non-null `parked_caller` routes the
+    /// completion wake through `scheduler::enqueue_resume` instead of the condvar.
+    fn register_with_caller(
+        &self,
+        connection: ConnectionKey,
+        parked_caller: *mut crate::actor::HewActor,
+    ) -> (u64, Arc<PendingReply>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let entry = Arc::new(PendingReply {
             connection,
+            request_id: id,
             outcome: Mutex::new(None),
             cond: Condvar::new(),
+            parked_caller: AtomicPtr::new(parked_caller),
         });
         let mut map = self
             .pending
@@ -398,6 +415,21 @@ impl ReplyRoutingTable {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.insert(id, Arc::clone(&entry));
         (id, entry)
+    }
+
+    /// Allocate a new request ID and register a blocking (condvar) pending reply.
+    fn register(&self, connection: ConnectionKey) -> (u64, Arc<PendingReply>) {
+        self.register_with_caller(connection, ptr::null_mut())
+    }
+
+    /// Allocate a new request ID and register a SUSPENDED (NEW-5) pending reply
+    /// whose completion resumes `parked_caller`'s coroutine.
+    fn register_parked(
+        &self,
+        connection: ConnectionKey,
+        parked_caller: *mut crate::actor::HewActor,
+    ) -> (u64, Arc<PendingReply>) {
+        self.register_with_caller(connection, parked_caller)
     }
 
     /// Complete a pending reply by depositing the payload and signalling
@@ -422,29 +454,51 @@ impl ReplyRoutingTable {
             map.remove(&request_id)
         };
         if let Some(pending) = entry {
-            let mut guard = pending
-                .outcome
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard = Some(outcome);
-            pending.cond.notify_one();
+            Self::complete_pending(&pending, outcome);
             true
         } else {
             false
         }
     }
 
-    fn fail_pending_with_reason(pending: &PendingReply, ask_error: AskError) {
+    /// Deposit `outcome` into `pending` and wake the waiter. A blocking caller
+    /// is signalled via the condvar; a SUSPENDED caller (NEW-5,
+    /// `parked_caller` non-null) is RESUMED through the scheduler's single
+    /// readiness-resume edge (`enqueue_resume`) — the same edge the reactor /
+    /// channels / reply slot feed. The outcome lock is released BEFORE the wake
+    /// so the resumed coroutine can drain it without contending on this lock.
+    fn complete_pending(pending: &PendingReply, outcome: ReplyOutcome) {
         let mut guard = pending
             .outcome
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = Some(ReplyOutcome {
-            status: ReplyStatus::Failed,
-            data: Vec::new(),
-            ask_error,
-        });
-        pending.cond.notify_one();
+        *guard = Some(outcome);
+        drop(guard);
+
+        let caller = pending.parked_caller.load(Ordering::Acquire);
+        if caller.is_null() {
+            pending.cond.notify_one();
+        } else {
+            // SAFETY: `caller` is the actor whose coroutine parked on this
+            // request. `enqueue_resume` re-confirms liveness against the live
+            // registry under lock and drops the wake for an actor already torn
+            // down, so a stale pointer from an abandoned ask is never
+            // dereferenced. `cont` is null: the parked continuation handle the
+            // suspend edge published is resumed in place (every readiness source
+            // passes null here).
+            unsafe { crate::scheduler::enqueue_resume(caller, ptr::null_mut()) };
+        }
+    }
+
+    fn fail_pending_with_reason(pending: &PendingReply, ask_error: AskError) {
+        Self::complete_pending(
+            pending,
+            ReplyOutcome {
+                status: ReplyStatus::Failed,
+                data: Vec::new(),
+                ask_error,
+            },
+        );
     }
 
     fn fail_pending(pending: &PendingReply) {
@@ -507,13 +561,14 @@ impl ReplyRoutingTable {
         }
     }
 
-    /// Remove a pending entry (used on timeout to prevent leaks).
-    fn remove(&self, request_id: u64) {
+    /// Remove a pending entry (used on timeout / coroutine abandonment to
+    /// prevent leaks). Returns the removed entry, if any.
+    fn remove(&self, request_id: u64) -> Option<Arc<PendingReply>> {
         let mut map = self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.remove(&request_id);
+        map.remove(&request_id)
     }
 }
 
@@ -2511,57 +2566,28 @@ enum RemoteAskSetupResult {
     Error(AskError),
 }
 
-/// Perform a blocking ask against a PID, handling local and remote actors.
-///
-/// If the PID targets the local node, delegates to `hew_actor_ask`.
-/// If remote, sends the message with a `request_id` over the mesh and
-/// blocks until the reply arrives (or times out).
-///
-/// Returns a `malloc`'d reply buffer on success. Remote failures return
-/// `NULL` instead of fabricating a zero/default reply value. Successful
-/// remote asks for `void` (`reply_size == 0`) return a non-null internal
-/// sentinel pointer. Successful empty replies for non-void asks fail closed
-/// with `NULL`. The caller must `free` only heap-allocated non-null reply
-/// buffers.
+/// Set up an outbound remote ask: serialize the request, register a pending
+/// reply slot (recording `parked_caller` for the NEW-5 suspendable path when
+/// non-null), and send the ask envelope over the mesh. Returns the
+/// `(request_id, pending)` pair on a successful submit, or a typed [`AskError`]
+/// on any setup failure. The blocking and suspendable entry points share this
+/// single submit state machine.
 ///
 /// # Safety
 ///
-/// - `pid` must be a valid actor PID.
+/// - `pid` must be a valid remote actor PID.
 /// - `data` must point to at least `size` readable bytes, or be null when
 ///   `size` is 0.
-#[no_mangle]
-#[allow(
-    clippy::too_many_lines,
-    reason = "coherent remote-ask state machine: setup/serialize, send, block-on-reply, \
-              deserialize-reply — splitting would obscure the single linear flow"
-)]
-pub unsafe extern "C" fn hew_node_api_ask(
+/// - `parked_caller`, if non-null, must be the live actor whose continuation is
+///   about to park on the reply.
+fn setup_remote_ask(
     pid: u64,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
-    timeout_ms: u64,
-    reply_size: usize,
-) -> *mut c_void {
-    let target_node_id = crate::pid::hew_pid_node(pid);
-    let local_node_id = crate::pid::hew_pid_local_node();
-
-    // Local path: delegate to the by-ID ask (which packs a reply channel).
-    if target_node_id == 0 || target_node_id == local_node_id {
-        // SAFETY: data/size are caller-validated; local actor ask is safe here.
-        let result = unsafe { crate::actor::hew_actor_ask_by_id(pid, msg_type, data, size) };
-        if result.is_null() {
-            // Bridge the actor-level error discriminant into the node error slot
-            // so callers of hew_node_api_ask see a consistent error regardless
-            // of whether the ask went local or remote.
-            let local_err = crate::actor::actor_ask_take_last_error_raw();
-            LAST_ASK_ERROR.with(|c| c.set(local_err));
-        }
-        return result;
-    }
-
-    // Remote path: send message over mesh with request_id, wait for reply.
-    let result = CURRENT_NODE.read_access(|guard| {
+    parked_caller: *mut crate::actor::HewActor,
+) -> RemoteAskSetupResult {
+    CURRENT_NODE.read_access(|guard| {
         let node_ptr = *guard as *mut HewNode;
         if node_ptr.is_null() {
             return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
@@ -2602,9 +2628,15 @@ pub unsafe extern "C" fn hew_node_api_ask(
             None => (std::ptr::null(), 0),
         };
 
-        // Register a pending reply slot.
-        let (request_id, pending) =
-            REPLY_TABLE.register(ConnectionKey::new(node.conn_mgr.cast_const(), conn_id));
+        // Register a pending reply slot. A suspendable caller (NEW-5) records
+        // its actor so the completion resumes the parked coroutine instead of
+        // signalling the condvar.
+        let connection = ConnectionKey::new(node.conn_mgr.cast_const(), conn_id);
+        let (request_id, pending) = if parked_caller.is_null() {
+            REPLY_TABLE.register(connection)
+        } else {
+            REPLY_TABLE.register_parked(connection, parked_caller)
+        };
 
         // Encode the ask envelope with request_id and source_node_id over the
         // SERIALIZED request bytes.
@@ -2655,41 +2687,34 @@ pub unsafe extern "C" fn hew_node_api_ask(
         }
 
         RemoteAskSetupResult::Ok((request_id, pending))
-    });
-    let (request_id, pending) = match result {
-        RemoteAskSetupResult::Ok(pair) => pair,
-        RemoteAskSetupResult::Error(e) => return ask_null(e),
-    };
+    })
+}
 
-    // Block until the reply arrives or the caller-supplied timeout elapses.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-    let mut outcome_guard = pending
-        .outcome
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    while outcome_guard.is_none() {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            // Timeout — remove the pending entry and return the null failure sentinel.
-            REPLY_TABLE.remove(request_id);
-            return ask_null(AskError::Timeout);
-        }
-        let (new_guard, wait_result) = pending
-            .cond
-            .wait_timeout_or_recover(outcome_guard, remaining);
-        outcome_guard = new_guard;
-        if wait_result.timed_out() && outcome_guard.is_none() {
-            REPLY_TABLE.remove(request_id);
-            return ask_null(AskError::Timeout);
-        }
-    }
+/// Spawn a detached timer that fails the pending ask `request_id` with
+/// [`AskError::Timeout`] after `timeout_ms`. Used by the SUSPENDABLE path
+/// (NEW-5), which cannot block a worker on the reply condvar. If the real reply
+/// (or a peer-drop failure) lands first it removes the entry, so this later
+/// `fail` is a no-op. Returns `Err` if the timer thread could not be spawned.
+fn spawn_remote_ask_timeout(request_id: u64, timeout_ms: u64) -> Result<(), AskError> {
+    thread::Builder::new()
+        .name("hew-remote-ask-timeout".to_string())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(timeout_ms));
+            REPLY_TABLE.fail(request_id, AskError::Timeout);
+        })
+        .map(|_| ())
+        .map_err(|_| AskError::SendFailed)
+}
 
-    let reply = outcome_guard.take().unwrap_or(ReplyOutcome {
-        status: ReplyStatus::Failed,
-        data: Vec::new(),
-        ask_error: AskError::ConnectionDropped,
-    });
-    drop(outcome_guard);
+/// Materialise a completed [`ReplyOutcome`] into the codegen-visible reply
+/// pointer / null-failure sentinel. Shared by the blocking and suspendable
+/// finish paths. Records the exact [`AskError`] in the node ask-error slot on
+/// failure.
+fn finish_remote_ask_outcome(
+    msg_type: i32,
+    reply_size: usize,
+    reply: &ReplyOutcome,
+) -> *mut c_void {
     if reply.status == ReplyStatus::Failed {
         return ask_null(reply.ask_error);
     }
@@ -2727,6 +2752,196 @@ pub unsafe extern "C" fn hew_node_api_ask(
     }
     LAST_ASK_ERROR.with(|cell| cell.set(AskError::None as i32));
     value
+}
+
+/// Perform a blocking ask against a PID, handling local and remote actors.
+///
+/// If the PID targets the local node, delegates to `hew_actor_ask`.
+/// If remote, sends the message with a `request_id` over the mesh and
+/// blocks until the reply arrives (or times out).
+///
+/// Returns a `malloc`'d reply buffer on success. Remote failures return
+/// `NULL` instead of fabricating a zero/default reply value. Successful
+/// remote asks for `void` (`reply_size == 0`) return a non-null internal
+/// sentinel pointer. Successful empty replies for non-void asks fail closed
+/// with `NULL`. The caller must `free` only heap-allocated non-null reply
+/// buffers.
+///
+/// # Safety
+///
+/// - `pid` must be a valid actor PID.
+/// - `data` must point to at least `size` readable bytes, or be null when
+///   `size` is 0.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_ask(
+    pid: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    timeout_ms: u64,
+    reply_size: usize,
+) -> *mut c_void {
+    let target_node_id = crate::pid::hew_pid_node(pid);
+    let local_node_id = crate::pid::hew_pid_local_node();
+
+    // Local path: delegate to the by-ID ask (which packs a reply channel).
+    if target_node_id == 0 || target_node_id == local_node_id {
+        // SAFETY: data/size are caller-validated; local actor ask is safe here.
+        let result = unsafe { crate::actor::hew_actor_ask_by_id(pid, msg_type, data, size) };
+        if result.is_null() {
+            // Bridge the actor-level error discriminant into the node error slot
+            // so callers of hew_node_api_ask see a consistent error regardless
+            // of whether the ask went local or remote.
+            let local_err = crate::actor::actor_ask_take_last_error_raw();
+            LAST_ASK_ERROR.with(|c| c.set(local_err));
+        }
+        return result;
+    }
+
+    // Remote path: send message over mesh with request_id, block on the reply.
+    let (request_id, pending) = match setup_remote_ask(pid, msg_type, data, size, ptr::null_mut()) {
+        RemoteAskSetupResult::Ok(pair) => pair,
+        RemoteAskSetupResult::Error(e) => return ask_null(e),
+    };
+
+    // Block until the reply arrives or the caller-supplied timeout elapses.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let mut outcome_guard = pending
+        .outcome
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while outcome_guard.is_none() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            // Timeout — remove the pending entry and return the null failure sentinel.
+            REPLY_TABLE.remove(request_id);
+            return ask_null(AskError::Timeout);
+        }
+        let (new_guard, wait_result) = pending
+            .cond
+            .wait_timeout_or_recover(outcome_guard, remaining);
+        outcome_guard = new_guard;
+        if wait_result.timed_out() && outcome_guard.is_none() {
+            REPLY_TABLE.remove(request_id);
+            return ask_null(AskError::Timeout);
+        }
+    }
+
+    let reply = outcome_guard.take().unwrap_or(ReplyOutcome {
+        status: ReplyStatus::Failed,
+        data: Vec::new(),
+        ask_error: AskError::ConnectionDropped,
+    });
+    drop(outcome_guard);
+    finish_remote_ask_outcome(msg_type, reply_size, &reply)
+}
+
+/// Start a non-blocking remote ask for a SUSPENDABLE caller (NEW-5).
+///
+/// Serializes + submits the ask exactly as the blocking path, registers the
+/// parked caller so the wire reply / peer-drop RESUMES the coroutine through
+/// `scheduler::enqueue_resume`, and arms a detached timeout. Returns an opaque
+/// pending-reply handle on a successful submit; the caller MUST hand it to
+/// [`hew_node_api_ask_finish`] after resume or to [`hew_node_api_ask_cancel`]
+/// on coroutine abandonment (`coro.destroy`). On setup failure returns null and
+/// records the exact [`AskError`] in the node ask-error slot.
+///
+/// Targets that resolve to the local node are rejected ([`AskError::RoutingFailed`]):
+/// codegen only flips the wire (remote) ask to the suspendable terminator.
+///
+/// # Safety
+///
+/// - `pid` must be a valid remote actor PID.
+/// - `data` must point to at least `size` readable bytes, or be null when
+///   `size` is 0.
+/// - `caller_actor` must be the live actor whose continuation is about to park.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_ask_async(
+    pid: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    timeout_ms: u64,
+    caller_actor: *mut crate::actor::HewActor,
+) -> *mut c_void {
+    let target_node_id = crate::pid::hew_pid_node(pid);
+    let local_node_id = crate::pid::hew_pid_local_node();
+    if target_node_id == 0 || target_node_id == local_node_id {
+        return ask_null(AskError::RoutingFailed);
+    }
+    if caller_actor.is_null() {
+        return ask_null(AskError::NoRunnableWork);
+    }
+
+    let (request_id, pending) = match setup_remote_ask(pid, msg_type, data, size, caller_actor) {
+        RemoteAskSetupResult::Ok(pair) => pair,
+        RemoteAskSetupResult::Error(e) => return ask_null(e),
+    };
+
+    if let Err(e) = spawn_remote_ask_timeout(request_id, timeout_ms) {
+        REPLY_TABLE.remove(request_id);
+        return ask_null(e);
+    }
+
+    // Transfer one owning ref to the caller; reclaimed in finish/cancel.
+    Arc::into_raw(pending).cast::<c_void>().cast_mut()
+}
+
+/// Drain the reply deposited for a SUSPENDED remote ask after the coroutine
+/// resumes. Consumes the handle returned by [`hew_node_api_ask_async`] and
+/// materialises the outcome exactly as the blocking finish path. A handle whose
+/// outcome is still empty (no reply, no failure) fails closed with
+/// [`AskError::ConnectionDropped`] rather than fabricating a value.
+///
+/// # Safety
+///
+/// `pending_handle` must be a handle returned by [`hew_node_api_ask_async`]
+/// that has not already been finished or cancelled.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_ask_finish(
+    pending_handle: *mut c_void,
+    msg_type: i32,
+    reply_size: usize,
+) -> *mut c_void {
+    if pending_handle.is_null() {
+        return ask_null(AskError::ConnectionDropped);
+    }
+    // SAFETY: caller transfers back the creator reference returned by
+    // `hew_node_api_ask_async`; this consumes it exactly once.
+    let pending = unsafe { Arc::from_raw(pending_handle.cast::<PendingReply>()) };
+    let reply = {
+        let mut outcome_guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        outcome_guard.take().unwrap_or(ReplyOutcome {
+            status: ReplyStatus::Failed,
+            data: Vec::new(),
+            ask_error: AskError::ConnectionDropped,
+        })
+    };
+    finish_remote_ask_outcome(msg_type, reply_size, &reply)
+}
+
+/// Abandon a SUSPENDED remote ask whose coroutine frame is being destroyed
+/// (the `coro.destroy` cleanup edge). Consumes the handle returned by
+/// [`hew_node_api_ask_async`] and removes any still-pending entry so a late
+/// reply finds nothing and is dropped. The parked-caller wake is independently
+/// fail-safe: `enqueue_resume` drops a wake to an already-freed caller.
+///
+/// # Safety
+///
+/// `pending_handle` must be a handle returned by [`hew_node_api_ask_async`]
+/// that has not already been finished or cancelled.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_ask_cancel(pending_handle: *mut c_void) {
+    if pending_handle.is_null() {
+        return;
+    }
+    // SAFETY: caller transfers back the creator reference returned by
+    // `hew_node_api_ask_async`; this consumes it exactly once.
+    let pending = unsafe { Arc::from_raw(pending_handle.cast::<PendingReply>()) };
+    REPLY_TABLE.remove(pending.request_id);
 }
 
 #[cfg(test)]
@@ -4145,6 +4360,88 @@ mod tests {
     }
 
     #[test]
+    fn parked_reply_table_complete_resumes_via_pending_handle() {
+        let _guard = crate::runtime_test_guard();
+        let key = ConnectionKey {
+            conn_mgr: 101,
+            conn_id: 21,
+        };
+        // A dangling (untracked) actor pointer exercises the suspend wake path
+        // without a live actor: `enqueue_resume` re-confirms liveness against the
+        // live registry and drops the wake for an untracked pointer, so the
+        // completion still deposits the outcome the finish path drains.
+        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        let (id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        assert_eq!(pending.parked_caller.load(Ordering::Acquire), parked_actor);
+        let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
+
+        assert!(REPLY_TABLE.complete(id, Vec::new()));
+        // SAFETY: `handle` is the live creator ref from register_parked.
+        let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
+
+        assert_eq!(reply, remote_void_reply_sentinel());
+        assert_eq!(hew_node_ask_take_last_error(), AskError::None as i32);
+    }
+
+    #[test]
+    fn parked_reply_timeout_finishes_with_timeout_error() {
+        let _guard = crate::runtime_test_guard();
+        let key = ConnectionKey {
+            conn_mgr: 102,
+            conn_id: 22,
+        };
+        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        let (id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
+
+        assert!(REPLY_TABLE.fail(id, AskError::Timeout));
+        // SAFETY: `handle` is the live creator ref from register_parked.
+        let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
+
+        assert!(reply.is_null());
+        assert_eq!(hew_node_ask_take_last_error(), AskError::Timeout as i32);
+    }
+
+    #[test]
+    fn parked_reply_connection_drop_finishes_with_connection_dropped_error() {
+        let _guard = crate::runtime_test_guard();
+        let key = ConnectionKey {
+            conn_mgr: 103,
+            conn_id: 23,
+        };
+        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        let (_id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
+
+        REPLY_TABLE.fail_connection(key);
+        // SAFETY: `handle` is the live creator ref from register_parked.
+        let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
+
+        assert!(reply.is_null());
+        assert_eq!(
+            hew_node_ask_take_last_error(),
+            AskError::ConnectionDropped as i32
+        );
+    }
+
+    #[test]
+    fn parked_reply_cancel_removes_pending_entry() {
+        let _guard = crate::runtime_test_guard();
+        let key = ConnectionKey {
+            conn_mgr: 104,
+            conn_id: 24,
+        };
+        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        let (id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
+
+        // SAFETY: `handle` is the live creator ref from register_parked.
+        unsafe { hew_node_api_ask_cancel(handle) };
+        // The entry is gone: a late reply finds nothing to complete.
+        assert!(!REPLY_TABLE.complete(id, Vec::new()));
+    }
+
+    #[test]
     fn reply_table_complete_unknown_returns_false() {
         let table = ReplyRoutingTable::new();
         assert!(!table.complete(u64::MAX - 1, vec![42]));
@@ -5113,6 +5410,128 @@ mod tests {
 
         // SAFETY: actor and nodes were allocated in this test and are valid.
         unsafe {
+            let _ = crate::actor::hew_actor_free(echo_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn two_node_remote_ask_async_resumes_on_wire_reply() {
+        // NEW-5 worker-free oracle at the runtime contract: a suspendable remote
+        // ask (`hew_node_api_ask_async`) submits WITHOUT blocking the caller, and
+        // the cross-node wire reply lands in the parked slot — the resume edge —
+        // for `hew_node_api_ask_finish` to drain. The caller never blocks on a
+        // condvar; the reply is delivered by the connection reader thread and
+        // routed at the parked caller through `enqueue_resume`.
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+        register_test_u32_codec(1);
+
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: bind address is a valid C string for this scope.
+        let node1 = unsafe { TestNode::new(321, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+        // SAFETY: node1 is valid for the call.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(322);
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(322);
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let echo_actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(ask_probe_dispatch)) };
+        crate::pid::hew_pid_set_local_node(321);
+        assert!(!echo_actor.is_null(), "echo actor spawn failed");
+        // SAFETY: actor was just spawned and is valid.
+        let actor_id = unsafe { (*echo_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 322);
+
+        // A live local actor stands in for the parked coroutine: the wire reply
+        // routes `enqueue_resume` at it. With no coroutine actually parked the
+        // Suspended→Runnable CAS fails and the wake is dropped (fail-safe), while
+        // the reply still lands in the pending slot the finish path drains.
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let caller =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(ask_probe_dispatch)) };
+        assert!(!caller.is_null(), "caller actor spawn failed");
+
+        let connect_addr = CString::new(format!("322@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this call.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers are valid.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        let send_value: u32 = 21;
+        // SAFETY: send_value is a valid u32 on the stack; caller is a live actor.
+        let handle = unsafe {
+            hew_node_api_ask_async(
+                actor_id,
+                1,
+                (&raw const send_value).cast::<c_void>().cast_mut(),
+                std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                caller,
+            )
+        };
+        assert!(
+            !handle.is_null(),
+            "async remote ask submit should return a pending handle"
+        );
+
+        // Poll the parked slot for the deposited reply — the wire reply arriving on
+        // the reader thread resolves it (the resume edge). The caller never blocked.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let ready = {
+                // SAFETY: `handle` points at the live PendingReply whose creator ref
+                // we still own; this shared borrow is dropped before `_finish`
+                // reclaims that ref.
+                let pending = unsafe { &*handle.cast::<PendingReply>() };
+                pending
+                    .outcome
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some()
+            };
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "wire reply never resumed the parked async ask"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // SAFETY: `handle` is the live creator ref; finish consumes it exactly once.
+        let reply_ptr = unsafe { hew_node_api_ask_finish(handle, 1, std::mem::size_of::<u32>()) };
+        assert!(
+            !reply_ptr.is_null(),
+            "resumed async ask should bind a non-null reply"
+        );
+        // SAFETY: reply_ptr was malloc'd by the finish path; valid for a u32 read.
+        let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
+        assert_eq!(
+            reply_value,
+            send_value * 2,
+            "echo-double should return 21 * 2 = 42"
+        );
+        // SAFETY: reply_ptr was malloc'd and is ours to free.
+        unsafe { libc::free(reply_ptr) };
+
+        // SAFETY: actors and nodes were allocated in this test and are valid.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(caller);
             let _ = crate::actor::hew_actor_free(echo_actor);
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);

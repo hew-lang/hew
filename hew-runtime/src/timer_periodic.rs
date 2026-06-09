@@ -68,6 +68,23 @@ pub(crate) fn global_wheel() -> *mut HewTimerWheel {
     })
 }
 
+/// Return the process-wide timer wheel, lazily creating it and ensuring the
+/// 1 ms ticker thread is running. This is the deadline-schedule target for
+/// NEW-6b `await … | after d`: codegen passes the returned wheel to
+/// `hew_await_cancel_schedule_deadline_ms`. Returns null only if the wheel /
+/// ticker could not be created (the caller then skips arming the deadline and
+/// the await behaves as an un-deadlined suspend — fail-safe, never a hang of
+/// the timer subsystem itself).
+///
+/// # Safety
+///
+/// FFI entry point. The returned pointer is owned by the runtime singleton and
+/// outlives every scheduled deadline; callers must not free it.
+#[no_mangle]
+pub unsafe extern "C" fn hew_global_timer_wheel() -> *mut HewTimerWheel {
+    global_wheel()
+}
+
 /// Spawn a background thread that ticks the global timer wheel every 1 ms.
 fn start_ticker_thread(tw: *mut HewTimerWheel) -> bool {
     if TICKER_RUNNING.swap(true, Ordering::SeqCst) {

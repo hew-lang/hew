@@ -53,6 +53,7 @@ fn spawn_pipeline(
         }],
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
 
     let actor_layout = ActorLayout {

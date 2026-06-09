@@ -94,6 +94,7 @@ fn impl_method_stub(name: &str, ret: ResolvedTy) -> RawMirFunction {
         }],
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     }
 }
 
@@ -485,6 +486,7 @@ fn coercion_site_and_vtable_definition_share_same_symbol() {
         }],
         decisions: vec![],
         intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
     };
     let inst = vtable_instance(0, "Speak", ResolvedTy::I64, vec![]);
     let vtable_sym = mangle_dyn_vtable_symbol(0, "Speak", &ResolvedTy::I64);

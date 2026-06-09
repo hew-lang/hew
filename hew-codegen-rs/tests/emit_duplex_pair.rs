@@ -111,6 +111,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

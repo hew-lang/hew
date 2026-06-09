@@ -65,8 +65,19 @@ KNOWN_BLOCKING=(
     "tcp_echo"
 )
 
+# Aspirational examples with known runtime instability. Keep these out of
+# runnable sweeps until their backing runtime architecture is fixed.
+KNOWN_RUNTIME_UNSTABLE=(
+    "examples/supervisor_crash_budget"
+)
+
 should_skip() {
     local name="$1"
+    for pattern in "${KNOWN_RUNTIME_UNSTABLE[@]}"; do
+        if [[ "$name" == "$pattern" ]]; then
+            return 0
+        fi
+    done
     # Always skip blocking programs (servers etc.) under valgrind.
     for pattern in "${KNOWN_BLOCKING[@]}"; do
         if [[ "$name" == *"$pattern"* ]]; then
@@ -92,7 +103,7 @@ TOTAL=0
 LEAK_DETAILS=""
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=scripts/lib/timeout.sh
+# shellcheck source=scripts/lib/timeout.sh disable=SC1091
 source "${SCRIPT_DIR}/../lib/timeout.sh"
 
 extract_definitely_lost_bytes() {

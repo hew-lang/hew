@@ -11,7 +11,7 @@ import std::os;
 // Mirror the server's serializable types.  Both nodes must agree on these.
 record KvPut {
     key: string,
-    val: string,
+    val: string
 }
 
 enum KvReq {
@@ -120,7 +120,6 @@ fn main() -> i64 {
                     }
                 },
             }
-
             // Scenario 4: get("count") — second blocking remote ask.
             let ask2 = kv.ask(KvReq::GetKey("count"), 5000);
             match ask2 {

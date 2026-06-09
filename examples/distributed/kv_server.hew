@@ -11,13 +11,12 @@
 //
 // Or via the harness:
 //   .tmp/run-node-e2e.sh
-
 import std::os;
 
 // `record` is Serializable (required for RemotePid messaging).
 record KvPut {
     key: string,
-    val: string,
+    val: string
 }
 
 enum KvReq {
@@ -32,7 +31,6 @@ enum KvResp {
 
 actor KeyValue {
     let store: HashMap<string, string>;
-
     receive fn handle(req: KvReq) -> KvResp {
         match req {
             KvReq::Put(kv) => {
@@ -47,7 +45,6 @@ actor KeyValue {
             },
         }
     }
-
     receive fn count() -> i64 {
         store.len()
     }
@@ -68,7 +65,6 @@ fn main() {
     Node::set_transport("tcp");
     Node::start(addr);
     println("[kv-server] node started");
-
     let s: HashMap<string, string> = HashMap::new();
     let kv = spawn KeyValue(store: s);
     Node::register("kv", kv);
@@ -77,13 +73,11 @@ fn main() {
     // Wait for client to connect and run assertions.
     // Client sleeps 500ms before connecting, 1000ms for gossip, then exercises the actor.
     sleep_ms(10000);
-
     let n = await kv.count();
     match n {
         Ok(cnt) => println(f"[kv-server] entries stored: {cnt}"),
         Err(_) => println("[kv-server] count ask failed"),
     }
-
     Node::shutdown();
     println("[kv-server] shutdown complete");
 }

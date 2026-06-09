@@ -618,16 +618,11 @@ unsafeBlock
 
 expr
     : unsafeExpr
-    | sendExpr
+    | timeoutExpr
     ;
 
 unsafeExpr
     : 'unsafe' block
-    ;
-
-// Send:  actor <- message
-sendExpr
-    : timeoutExpr ( '<-' expr )?
     ;
 
 // Timeout combinator:  expr | after duration
@@ -801,7 +796,7 @@ selectExpr
     ;
 
 selectArm
-    : pattern ( '<-' | 'from' ) expr '=>' expr ','?
+    : pattern 'from' expr '=>' expr ','?
     ;
 
 timeoutArm
@@ -950,7 +945,6 @@ patternField
 HASH_LBRACKET : '#[' ;
 ARROW         : '->' ;
 FAT_ARROW     : '=>' ;
-SEND          : '<-' ;
 DOTDOT        : '..' ;
 DOTDOTEQ      : '..=' ;
 SHL           : '<<' ;

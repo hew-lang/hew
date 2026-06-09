@@ -1,4 +1,7 @@
 //! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Runtime instability: supervisor restarts may abort with SIGTRAP on the restart path.
+//! Pending the post-tag `state_clone_fn` architecture fix; documented as a pattern,
+//! not as a reliably runnable example.
 //! Description: Crash Cascade Prevention
 
 // Crash Cascade Prevention

@@ -114,8 +114,6 @@ fn for_await_receiver_int_drains_to_completion_under_single_worker() {
     run_for_await_surface_fixture("for_await_recv_int");
 }
 
-// WINDOWS-TODO: async stream programs exit non-zero with no output on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn for_await_stream_bytes_drains_to_completion_under_single_worker() {
     run_for_await_surface_fixture("for_await_stream_bytes");

@@ -2099,6 +2099,23 @@ pub unsafe extern "C" fn hew_stream_next_bytes(
     triple
 }
 
+/// Out-pointer variant of [`hew_stream_next_bytes`] for Windows x64 MSVC sret fix.
+///
+/// # Safety
+///
+/// `stream` must be a valid stream pointer.
+/// `out` must point to a valid, writable `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_next_bytes_raw(
+    stream: *mut HewStream,
+    out: *mut crate::bytes::BytesTriple,
+) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_stream_next_bytes(stream) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
+}
+
 /// Write a `bytes` value to a sink.
 ///
 /// Takes a POINTER to the caller's [`crate::bytes::BytesTriple`] and writes the
@@ -2231,6 +2248,23 @@ pub unsafe extern "C" fn hew_stream_pop_bytes(stream: *mut HewStream) -> crate::
         // non-channel backings.
         None => unsafe { hew_stream_next_bytes(stream) },
     }
+}
+
+/// Out-pointer variant of [`hew_stream_pop_bytes`] for Windows x64 MSVC sret fix.
+///
+/// # Safety
+///
+/// `stream` must be a valid stream handle.
+/// `out` must point to a valid, writable `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_pop_bytes_raw(
+    stream: *mut HewStream,
+    out: *mut crate::bytes::BytesTriple,
+) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_stream_pop_bytes(stream) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
 }
 
 /// Pop one item on the consumer resume / immediate bind edge, as a header-aware
@@ -2491,6 +2525,23 @@ pub unsafe extern "C" fn hew_stream_try_next_bytes(
             unsafe { crate::bytes::hew_bytes_from_static(item.as_ptr(), len) }
         }
     }
+}
+
+/// Out-pointer variant of [`hew_stream_try_next_bytes`] for Windows x64 MSVC sret fix.
+///
+/// # Safety
+///
+/// `stream` must be a valid stream pointer.
+/// `out` must point to a valid, writable `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_try_next_bytes_raw(
+    stream: *mut HewStream,
+    out: *mut crate::bytes::BytesTriple,
+) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_stream_try_next_bytes(stream) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
 }
 
 /// Non-blocking variant of [`hew_sink_write_string`].

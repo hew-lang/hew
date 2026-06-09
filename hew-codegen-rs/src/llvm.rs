@@ -2213,6 +2213,24 @@ fn intern_runtime_decl<'ctx>(
         "hew_dealloc" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false),
+        // ── BytesTriple `_raw` out-pointer variants (Windows x64 MSVC sret fix) ──
+        "hew_read_slot_take_raw" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_stream_pop_bytes_raw" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_bytes_slice_raw" => ctx.void_type().fn_type(
+            &[
+                ptr_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+                i64_ty.into(),
+                i64_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -2428,29 +2446,38 @@ fn declare_catalog_ffi<'ctx>(
     // narrower than the Hew-facing catalog type. The call boundary
     // (`Terminator::Call` → `FnSymbol::Real`) reconciles the narrow result up to
     // the Hew dest width with sign-extension. See `runtime_ffi_return_abi_bits`.
-    let return_ty =
-        if matches!(entry.return_ty, BuiltinTy::Bytes) && is_bytes_triple_return_producer(symbol) {
-            // A migrated `bytes` producer returns the AAPCS/SysV two-eightbyte
-            // `[2 x i64]` boundary type, reconstructed into the `{ptr,i32,i32}` dest
-            // at the call return-store (see `predeclare_extern_decls`). Scoped to the
-            // migrated producers — legacy HewVec-returning bytes catalog entries keep
-            // their existing (mismatched, fail-closed) declaration.
-            Some(ctx.i64_type().array_type(2).into())
-        } else {
-            match runtime_ffi_return_abi_bits(symbol) {
-                Some(32) => Some(ctx.i32_type().into()),
-                Some(bits) => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "runtime FFI ABI width {bits} for `{symbol}` is unsupported"
-                    )));
-                }
-                None => builtin_return_to_llvm(ctx, entry.return_ty, record_layouts)?,
+    // For bytes-triple producers, declare `{symbol}_raw` (void + out-ptr) to
+    // avoid the Windows x64 MSVC sret mismatch. Sentinel [2 x i64] return_ty
+    // preserved for bytes_raw_dest_ptr detection at Terminator::Call.
+    let bytes_return =
+        matches!(entry.return_ty, BuiltinTy::Bytes) && is_bytes_triple_return_producer(symbol);
+    let return_ty = if bytes_return {
+        Some(ctx.i64_type().array_type(2).into())
+    } else {
+        match runtime_ffi_return_abi_bits(symbol) {
+            Some(32) => Some(ctx.i32_type().into()),
+            Some(bits) => {
+                return Err(CodegenError::FailClosed(format!(
+                    "runtime FFI ABI width {bits} for `{symbol}` is unsupported"
+                )));
             }
-        };
-    let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
-    let value = llvm_mod
-        .get_function(symbol)
-        .unwrap_or_else(|| llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External)));
+            None => builtin_return_to_llvm(ctx, entry.return_ty, record_layouts)?,
+        }
+    };
+    let value = if bytes_return {
+        let raw_name = format!("{}_raw", symbol);
+        let mut raw_param_tys = param_tys.clone();
+        raw_param_tys.push(ctx.ptr_type(AddressSpace::default()).into());
+        let raw_fn_ty = ctx.void_type().fn_type(&raw_param_tys, false);
+        llvm_mod
+            .get_function(&raw_name)
+            .unwrap_or_else(|| llvm_mod.add_function(&raw_name, raw_fn_ty, Some(Linkage::External)))
+    } else {
+        let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
+        llvm_mod
+            .get_function(symbol)
+            .unwrap_or_else(|| llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External)))
+    };
     Ok(FnSymbol::Real {
         value,
         return_ty: return_ty.unwrap_or_else(|| ctx.i8_type().into()),
@@ -2625,18 +2652,31 @@ fn predeclare_extern_decls<'ctx>(
         // externs (crypto/encoding/fs/quic/tls) must NOT — declaring them
         // `[2 x i64]` would reinterpret a HewVec pointer as a triple and silently
         // produce garbage instead of failing closed.
+        // Windows x64 MSVC sret: use _raw (void + out-ptr) stored under original key.
         let bytes_return = is_bytes_triple_return_producer(&decl.name);
         let return_ty = if matches!(decl.return_ty, ResolvedTy::Unit) {
             None
-        } else if bytes_return {
-            Some(ctx.i64_type().array_type(2).into())
         } else {
-            Some(resolve_ty(ctx, &decl.return_ty, record_layouts)?)
+            Some(if bytes_return {
+                ctx.i64_type().array_type(2).into()
+            } else {
+                resolve_ty(ctx, &decl.return_ty, record_layouts)?
+            })
         };
-        let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
-        let value = llvm_mod
-            .get_function(&decl.name)
-            .unwrap_or_else(|| llvm_mod.add_function(&decl.name, fn_ty, Some(Linkage::External)));
+        let value = if bytes_return {
+            let raw_name = format!("{}_raw", &decl.name);
+            let mut raw_param_tys = param_tys.clone();
+            raw_param_tys.push(ctx.ptr_type(AddressSpace::default()).into());
+            let raw_fn_ty = ctx.void_type().fn_type(&raw_param_tys, false);
+            llvm_mod.get_function(&raw_name).unwrap_or_else(|| {
+                llvm_mod.add_function(&raw_name, raw_fn_ty, Some(Linkage::External))
+            })
+        } else {
+            let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
+            llvm_mod.get_function(&decl.name).unwrap_or_else(|| {
+                llvm_mod.add_function(&decl.name, fn_ty, Some(Linkage::External))
+            })
+        };
         fn_symbols.insert(
             decl.name.clone(),
             FnSymbol::Real {
@@ -17744,10 +17784,14 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_bytes_len store")?;
             let _ = (i32_ty, i64_ty, ptr_ty);
         }
-        // hew_bytes_slice(ptr, offset, len, start, end) -> BytesTriple.
+        // hew_bytes_slice_raw(ptr, offset, len, start, end, out: *mut BytesTriple) -> void.
         // A `bytes` receiver is a stack-resident triple; unpack it field-by-field,
-        // pass the scalar runtime ABI, then store the returned two-eightbyte
-        // BytesTriple directly into the destination bytes slot.
+        // pass the scalar runtime ABI with an out-pointer for the result.
+        // Uses `_raw` void-return/out-pointer variant to avoid the Windows x64 MSVC sret
+        // mismatch: `BytesTriple` is 16 bytes and MSVC returns it via a hidden RCX
+        // sret pointer, which conflicts with hew's `[2 x i64]` register-pair
+        // codegen.  The `_raw` variant is `void(ptr, i32, i32, i64, i64, *mut
+        // BytesTriple)` and writes the result directly into the dest alloca.
         "hew_bytes_slice" => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
@@ -17803,13 +17847,20 @@ fn lower_call_runtime_abi(
                 .into_int_value();
             let start_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_bytes_slice start")?;
             let end_val = load_int_arg(fn_ctx, args[2], i64_ty, "hew_bytes_slice end")?;
+            // Obtain dest_ptr before the call so we can pass it as the out-pointer.
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            if !matches!(dest_ty, BasicTypeEnum::StructType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_slice dest must be a bytes struct slot, got {dest_ty:?}"
+                )));
+            }
             let fv = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
                 &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
+                "hew_bytes_slice_raw",
             )?;
-            let call = fn_ctx
+            fn_ctx
                 .builder
                 .build_call(
                     fv,
@@ -17819,24 +17870,13 @@ fn lower_call_runtime_abi(
                         len_val.into(),
                         start_val.into(),
                         end_val.into(),
+                        dest_ptr.into(),
                     ],
-                    "hew_bytes_slice_call",
+                    "hew_bytes_slice_raw_call",
                 )
-                .llvm_ctx("hew_bytes_slice call")?;
-            let result_val = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_bytes_slice returned void".into()))?;
-            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            if !matches!(dest_ty, BasicTypeEnum::StructType(_)) {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_bytes_slice dest must be a bytes struct slot, got {dest_ty:?}"
-                )));
-            }
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, result_val)
-                .llvm_ctx("hew_bytes_slice store")?;
+                .llvm_ctx("hew_bytes_slice_raw call")?;
+            // `_raw` writes directly into `dest_ptr`; no try_as_basic_value /
+            // build_store needed.
             let _ = (i8_ty, i64_ty);
         }
         "hew_bytes_push" => {
@@ -22979,19 +23019,10 @@ fn emit_suspending_read_terminator<'ctx>(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_take",
+        "hew_read_slot_take_raw",
     )?;
-    let triple = fn_ctx
-        .builder
-        .build_call(slot_take, &[slot.into()], "suspending_read_take")
-        .llvm_ctx("hew_read_slot_take call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_take returned void".into()))?;
-    // The dest is the `{ptr,i32,i32}` bytes alloca; `triple` is the `[2 x i64]`
-    // two-eightbyte pair. A raw 16-byte store writes ptr@0, offset@8, len@12 —
-    // the exact layout the caller-side field accesses expect (mirrors the blocking
-    // `hew_tcp_read` bytes return store).
+    // Use hew_read_slot_take_raw: avoid Windows x64 MSVC sret mismatch.
+    // _raw writes directly to dest_ptr and returns void.
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, term.result_dest)?;
     if !matches!(dest_ty, BasicTypeEnum::StructType(_)) {
         return Err(CodegenError::FailClosed(format!(
@@ -23000,8 +23031,12 @@ fn emit_suspending_read_terminator<'ctx>(
     }
     fn_ctx
         .builder
-        .build_store(dest_ptr, triple)
-        .llvm_ctx("suspending read bytes store")?;
+        .build_call(
+            slot_take,
+            &[slot.into(), dest_ptr.into()],
+            "suspending_read_take_raw",
+        )
+        .llvm_ctx("hew_read_slot_take_raw call")?;
     if let Some(result_dest) = term.deadline_result_dest {
         emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
     }
@@ -23550,26 +23585,39 @@ fn emit_suspending_stream_next_terminator<'ctx>(
             .into_pointer_value();
         store_recv_ptr_as_option_string(fn_ctx, ret_ptr, dest_local, "hew_stream_pop_string")?;
     } else {
-        // `Option<bytes>`: pop a `BytesTriple` (`[2 x i64]`); empty triple
-        // (null data pointer) maps to `None`, present triple to `Some(bytes)`.
-        let pop_bytes = intern_runtime_decl(
+        // `Option<bytes>`: use hew_stream_pop_bytes_raw to avoid Windows x64 MSVC sret.
+        let pop_bytes_raw = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
             &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_stream_pop_bytes",
+            "hew_stream_pop_bytes_raw",
         )?;
-        let triple_val = fn_ctx
+        let bytes_struct_ty = fn_ctx.ctx.struct_type(
+            &[
+                fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default()).into(),
+                fn_ctx.ctx.i32_type().into(),
+                fn_ctx.ctx.i32_type().into(),
+            ],
+            false,
+        );
+        let triple_alloca = fn_ctx
+            .builder
+            .build_alloca(bytes_struct_ty, "stream_pop_bytes_raw_out")
+            .llvm_ctx("hew_stream_pop_bytes_raw alloca")?;
+        fn_ctx
             .builder
             .build_call(
-                pop_bytes,
-                &[stream_ptr.into()],
-                "suspending_stream_next_pop",
+                pop_bytes_raw,
+                &[stream_ptr.into(), triple_alloca.into()],
+                "suspending_stream_next_pop_raw",
             )
-            .llvm_ctx("hew_stream_pop_bytes call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_stream_pop_bytes returned void".into()))?;
-        store_recv_triple_as_option(fn_ctx, triple_val, dest_local, "hew_stream_pop_bytes")?;
+            .llvm_ctx("hew_stream_pop_bytes_raw call")?;
+        store_recv_triple_alloca_as_option(
+            fn_ctx,
+            triple_alloca,
+            dest_local,
+            "hew_stream_pop_bytes_raw",
+        )?;
     }
     fn_ctx
         .builder
@@ -26144,16 +26192,28 @@ fn emit_bytes_stream_recv_call<'ctx>(
 
     // arg0: the stream handle (an opaque `ptr` alloca).
     let stream_ptr = load_duplex_handle(fn_ctx, *stream_arg, &format!("{callee} stream"))?;
-    let triple_val = fn_ctx
+    // Use _raw variant: alloca BytesTriple slot, pass address, avoid Windows sret mismatch.
+    let bytes_struct_ty = fn_ctx.ctx.struct_type(
+        &[
+            fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default()).into(),
+            fn_ctx.ctx.i32_type().into(),
+            fn_ctx.ctx.i32_type().into(),
+        ],
+        false,
+    );
+    let triple_alloca = fn_ctx
         .builder
-        .build_call(recv_fn, &[stream_ptr.into()], "stream_recv_call")
-        .llvm_ctx_with(|| format!("{callee} call"))?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} returned void")))?;
-    // Unbox the returned `[2 x i64]` bytes triple into the `Option<bytes>` dest
-    // (null data pointer → `None` tag 1; else `Some` tag 0 + the triple).
-    store_recv_triple_as_option(fn_ctx, triple_val, *dest_local, callee)?;
+        .build_alloca(bytes_struct_ty, "stream_recv_raw_out")
+        .llvm_ctx_with(|| format!("{callee} triple alloca"))?;
+    fn_ctx
+        .builder
+        .build_call(
+            recv_fn,
+            &[stream_ptr.into(), triple_alloca.into()],
+            "stream_recv_raw_call",
+        )
+        .llvm_ctx_with(|| format!("{callee} _raw call"))?;
+    store_recv_triple_alloca_as_option(fn_ctx, triple_alloca, *dest_local, callee)?;
 
     // ── Continue into the call's `next` block. ──
     let next_bb = *fn_ctx
@@ -26167,156 +26227,6 @@ fn emit_bytes_stream_recv_call<'ctx>(
     Ok(())
 }
 
-/// Unbox a `[2 x i64]` bytes triple (the recv/pop runtime return) into an
-/// `Option<bytes>` dest local. A null data pointer (eightbyte0 == 0) means
-/// EOF / not-ready / a present zero-length item → `None` (tag 1); a present
-/// triple → `Some` (tag 0) with the reconstructed `{ptr,i32,i32}` payload.
-///
-/// On return the builder is positioned at the merge (`cont`) block so the
-/// caller can branch to its own continuation (the recv call's `next`, or the
-/// suspending-recv resume edge).
-fn store_recv_triple_as_option<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    triple_val: BasicValueEnum<'ctx>,
-    dest_local: u32,
-    callee: &str,
-) -> CodegenResult<()> {
-    // The boundary return is `[2 x i64]` (the two BytesTriple eightbytes:
-    // word0 = data pointer, word1 = offset (low 32) | len (high 32)).
-    let triple_array = triple_val.into_array_value();
-    let ptr_word = fn_ctx
-        .builder
-        .build_extract_value(triple_array, 0, "recv_triple_ptr_word")
-        .llvm_ctx_with(|| format!("{callee} extract ptr word"))?
-        .into_int_value();
-    let packed_word = fn_ctx
-        .builder
-        .build_extract_value(triple_array, 1, "recv_triple_packed_word")
-        .llvm_ctx_with(|| format!("{callee} extract packed word"))?
-        .into_int_value();
-    // Null data pointer ⇒ EOF / not-ready ⇒ None.
-    let is_eof = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            ptr_word,
-            ptr_word.get_type().const_zero(),
-            "recv_is_eof",
-        )
-        .llvm_ctx_with(|| format!("{callee} eof compare"))?;
-
-    // Reconstruct the `{ptr, i32, i32}` triple value so the Some-payload store
-    // is TYPE-CONSISTENT with the match arm's `{ptr, i32, i32}` load. A raw
-    // `store [2 x i64]` into the `{ptr,i32,i32}`-shaped Option payload (offset 8
-    // inside the enum) is not reliably store-to-load forwarded at -O2 because
-    // the value type and the load type disagree — the optimiser reads stale
-    // offset/len. Building the struct value avoids the type mismatch.
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let i64_ty = fn_ctx.ctx.i64_type();
-    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    let data_ptr = fn_ctx
-        .builder
-        .build_int_to_ptr(ptr_word, ptr_ty, "recv_data_ptr")
-        .llvm_ctx_with(|| format!("{callee} inttoptr data ptr"))?;
-    let offset_field = fn_ctx
-        .builder
-        .build_int_truncate(packed_word, i32_ty, "recv_offset")
-        .llvm_ctx_with(|| format!("{callee} offset truncate"))?;
-    let len_shifted = fn_ctx
-        .builder
-        .build_right_shift(
-            packed_word,
-            i64_ty.const_int(32, false),
-            false,
-            "recv_len_shift",
-        )
-        .llvm_ctx_with(|| format!("{callee} len shift"))?;
-    let len_field = fn_ctx
-        .builder
-        .build_int_truncate(len_shifted, i32_ty, "recv_len")
-        .llvm_ctx_with(|| format!("{callee} len truncate"))?;
-    let triple_struct_ty = fn_ctx
-        .ctx
-        .struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
-    let mut triple_struct = triple_struct_ty.get_undef();
-    triple_struct = fn_ctx
-        .builder
-        .build_insert_value(triple_struct, data_ptr, 0, "recv_triple_with_ptr")
-        .llvm_ctx_with(|| format!("{callee} insert ptr"))?
-        .into_struct_value();
-    triple_struct = fn_ctx
-        .builder
-        .build_insert_value(triple_struct, offset_field, 1, "recv_triple_with_offset")
-        .llvm_ctx_with(|| format!("{callee} insert offset"))?
-        .into_struct_value();
-    triple_struct = fn_ctx
-        .builder
-        .build_insert_value(triple_struct, len_field, 2, "recv_triple_with_len")
-        .llvm_ctx_with(|| format!("{callee} insert len"))?
-        .into_struct_value();
-
-    // Resolve the Option tag + Some-payload slots before branching.
-    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
-    let tag_int = match tag_ty {
-        BasicTypeEnum::IntType(t) => t,
-        other => {
-            return Err(CodegenError::FailClosed(format!(
-                "{callee} dest Option tag must be integer-shaped; got {other:?}"
-            )));
-        }
-    };
-    let some_payload = Place::EnumVariant {
-        local: dest_local,
-        variant_idx: 0,
-        field_idx: 0,
-    };
-    let (payload_ptr, _payload_ty) = place_pointer(fn_ctx, some_payload)?;
-
-    let parent_fn = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| CodegenError::Llvm("stream-recv block has no parent function".into()))?;
-    let none_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_none");
-    let some_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_some");
-    let cont_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_cont");
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_eof, none_bb, some_bb)
-        .llvm_ctx_with(|| format!("{callee} branch"))?;
-
-    // ── None: EOF / not-ready. Write tag 1; payload left undef. ──
-    fn_ctx.builder.position_at_end(none_bb);
-    fn_ctx
-        .builder
-        .build_store(tag_ptr, tag_int.const_int(1, false))
-        .llvm_ctx_with(|| format!("{callee} None tag store"))?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(cont_bb)
-        .llvm_ctx_with(|| format!("{callee} None br"))?;
-
-    // ── Some: write tag 0 + the reconstructed `{ptr,i32,i32}` triple. ──
-    fn_ctx.builder.position_at_end(some_bb);
-    fn_ctx
-        .builder
-        .build_store(tag_ptr, tag_int.const_int(0, false))
-        .llvm_ctx_with(|| format!("{callee} Some tag store"))?;
-    fn_ctx
-        .builder
-        .build_store(payload_ptr, triple_struct)
-        .llvm_ctx_with(|| format!("{callee} Some payload store"))?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(cont_bb)
-        .llvm_ctx_with(|| format!("{callee} Some br"))?;
-
-    // ── Continue: leave the builder positioned at the merge block so the
-    // caller branches to its own continuation. ──
-    fn_ctx.builder.position_at_end(cont_bb);
-    Ok(())
-}
-
 /// Store a raw `*mut c_char` (the stream/channel string-recv runtime return)
 /// into an `Option<string>` dest local. NULL → `None` (tag 1); non-null →
 /// `Some` (tag 0) with the OWNED malloc'd cstring pointer the MIR drop spine
@@ -26326,7 +26236,7 @@ fn store_recv_triple_as_option<'ctx>(
 /// Shared by the suspending `SuspendingStreamNext` ramp's bind edge and the
 /// non-suspending `Terminator::Call` intercept for `hew_stream_next` (the
 /// canonical string-element recv symbol — the `_bytes` suffix is the
-/// bytes-element sibling). Sibling of [`store_recv_triple_as_option`] for the
+/// bytes-element sibling). Sibling of [`store_recv_triple_alloca_as_option`] for the
 /// bytes element kind, and mirrors the string branch of
 /// [`store_channel_recv_option`] (NEW-4).
 fn store_recv_ptr_as_option_string<'ctx>(
@@ -26449,6 +26359,95 @@ fn emit_string_stream_recv_call<'ctx>(
         .builder
         .build_unconditional_branch(next_bb)
         .llvm_ctx_with(|| format!("{callee} cont br next"))?;
+    Ok(())
+}
+
+/// Unbox a `{ptr, i32, i32}` BytesTriple alloca (written by a `_raw` runtime
+/// call) into an `Option<bytes>` dest local. Null data ptr → `None` (tag 1);
+/// non-null → `Some` (tag 0) with the `{ptr, i32, i32}` payload.
+fn store_recv_triple_alloca_as_option<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    triple_alloca: inkwell::values::PointerValue<'ctx>,
+    dest_local: u32,
+    callee: &str,
+) -> CodegenResult<()> {
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let ptr_ty = fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default());
+    let triple_struct_ty = fn_ctx
+        .ctx
+        .struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+    let data_ptr_gep = fn_ctx
+        .builder
+        .build_struct_gep(
+            triple_struct_ty,
+            triple_alloca,
+            0,
+            "recv_triple_alloca_ptr_gep",
+        )
+        .llvm_ctx_with(|| format!("{callee} triple alloca ptr GEP"))?;
+    let data_ptr = fn_ctx
+        .builder
+        .build_load(ptr_ty, data_ptr_gep, "recv_triple_alloca_ptr")
+        .llvm_ctx_with(|| format!("{callee} triple alloca ptr load"))?
+        .into_pointer_value();
+    let is_eof = fn_ctx
+        .builder
+        .build_is_null(data_ptr, "recv_triple_alloca_is_eof")
+        .llvm_ctx_with(|| format!("{callee} eof null check"))?;
+    let triple_struct = fn_ctx
+        .builder
+        .build_load(triple_struct_ty, triple_alloca, "recv_triple_alloca_struct")
+        .llvm_ctx_with(|| format!("{callee} triple alloca struct load"))?;
+    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
+    let tag_int = match tag_ty {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{callee} dest Option tag must be integer-shaped; got {other:?}"
+            )));
+        }
+    };
+    let some_payload = Place::EnumVariant {
+        local: dest_local,
+        variant_idx: 0,
+        field_idx: 0,
+    };
+    let (payload_ptr, _payload_ty) = place_pointer(fn_ctx, some_payload)?;
+    let parent_fn = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("stream-recv-alloca block has no parent fn".into()))?;
+    let none_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_alloca_none");
+    let some_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_alloca_some");
+    let cont_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_alloca_cont");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_eof, none_bb, some_bb)
+        .llvm_ctx_with(|| format!("{callee} alloca branch"))?;
+    fn_ctx.builder.position_at_end(none_bb);
+    fn_ctx
+        .builder
+        .build_store(tag_ptr, tag_int.const_int(1, false))
+        .llvm_ctx_with(|| format!("{callee} None tag store"))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx_with(|| format!("{callee} None br"))?;
+    fn_ctx.builder.position_at_end(some_bb);
+    fn_ctx
+        .builder
+        .build_store(tag_ptr, tag_int.const_int(0, false))
+        .llvm_ctx_with(|| format!("{callee} Some tag store"))?;
+    fn_ctx
+        .builder
+        .build_store(payload_ptr, triple_struct)
+        .llvm_ctx_with(|| format!("{callee} Some payload store"))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx_with(|| format!("{callee} Some br"))?;
+    fn_ctx.builder.position_at_end(cont_bb);
     Ok(())
 }
 
@@ -27526,6 +27525,28 @@ fn lower_terminator<'ctx>(
                     } else {
                         None
                     };
+                    // ── Bytes-triple `_raw` path ─────────────────────────────────────────
+                    // [2 x i64] return_ty sentinel means stored value is {callee}_raw:
+                    // void(params..., out_ptr). Detect early to append dest_ptr and skip store.
+                    let bytes_raw_dest_ptr = if return_ty.is_array_type() {
+                        if let Some(dest_place) = dest.as_ref() {
+                            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+                            if matches!(dest_ty, BasicTypeEnum::StructType(_))
+                                && matches!(
+                                    place_resolved_ty(fn_ctx, *dest_place)?,
+                                    ResolvedTy::Bytes
+                                )
+                            {
+                                Some(dest_ptr)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                     // Reconcile each loaded argument against the callee's
                     // *declared* LLVM parameter type. The Hew place may hold a
                     // wider integer (e.g. an i64 local or the i64 result of a
@@ -27535,9 +27556,11 @@ fn lower_terminator<'ctx>(
                     // hands an i64 to an i32 param and LLVM verification
                     // rejects the module. Signed narrow/widen keeps negative
                     // values correct. See `reconcile_int_width_signed`.
+                    // NOTE: for _raw, declared_param_tys has trailing ptr; loop
+                    // uses args.len() indices so it never misclassifies it.
                     let declared_param_tys = value.get_type().get_param_types();
                     let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
-                        Vec::with_capacity(args.len());
+                        Vec::with_capacity(args.len() + usize::from(bytes_raw_dest_ptr.is_some()));
                     for (idx, arg) in args.iter().enumerate() {
                         let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
                         // By-pointer bytes consumer: the callee declares this
@@ -27572,11 +27595,17 @@ fn lower_terminator<'ctx>(
                         };
                         arg_vals.push(metadata_value_from_basic(reconciled));
                     }
+                    // Bytes-triple _raw: append dest_ptr as final out-param.
+                    if let Some(dest_ptr) = bytes_raw_dest_ptr {
+                        arg_vals.push(metadata_value_from_basic(dest_ptr.into()));
+                    }
                     let call_site = fn_ctx
                         .builder
                         .build_call(value, &arg_vals, "call_result")
                         .llvm_ctx("build_call")?;
-                    if let Some(dest_place) = dest {
+                    if bytes_raw_dest_ptr.is_some() {
+                        // `_raw` wrote directly to dest_ptr; no further store needed.
+                    } else if let Some(dest_place) = dest {
                         if returns_unit {
                             return Err(CodegenError::FailClosed(format!(
                                 "Call to unit-returning fn `{callee}` must not carry a Terminator::Call dest"
@@ -27589,23 +27618,8 @@ fn lower_terminator<'ctx>(
                                     .into(),
                             )
                         })?;
-                        // Bytes C-ABI return: a `bytes`-returning Rust extern is
-                        // declared with an `[2 x i64]` return (the AAPCS/SysV
-                        // two-eightbyte pair the Rust `#[repr(C)] BytesTriple`
-                        // actually uses) instead of `{ptr, i32, i32}` (which LLVM
-                        // would classify into three return registers and
-                        // mis-store). The dest alloca is the `{ptr, i32, i32}`
-                        // bytes value; a raw 16-byte store of the `[2 x i64]`
-                        // result writes ptr@0, offset@8, len@12 — the same byte
-                        // layout the caller-side field accesses expect. The store
-                        // is keyed on the value type, the pointer is opaque, so
-                        // this is a plain 16-byte memory write.
-                        let bytes_array_return = return_ty.is_array_type()
-                            && matches!(dest_ty, BasicTypeEnum::StructType(_))
-                            && matches!(place_resolved_ty(fn_ctx, *dest_place)?, ResolvedTy::Bytes);
-                        let stored = if bytes_array_return {
-                            ret_val
-                        } else if dest_ty == return_ty {
+                        // Reconcile C-ABI return width against Hew dest width.
+                        let stored = if dest_ty == return_ty {
                             // Reconcile the runtime C-ABI return width against the
                             // Hew dest width. A runtime function declared `-> i32`
                             // (e.g. `hew_string_find` / `hew_string_index_of_start`,
@@ -34498,24 +34512,26 @@ fn emit_de_value<'ctx>(
                 .build_load(i32_ty, len_slot, "de_bytes_lenv")
                 .llvm_ctx("de bytes len load")?
                 .into_int_value();
-            // hew_bytes_from_static(ptr, len) -> { ptr, i32, i32 } copies into a
-            // fresh refcounted buffer.
-            let triple_ty = ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+            // Use `hew_bytes_from_static_raw` to avoid the Windows x64 MSVC sret
+            // mismatch: `BytesTriple` is 16 bytes and MSVC returns it via a hidden
+            // RCX sret pointer, conflicting with a struct return declaration.
+            // `_raw` is `void(ptr, i32, *mut BytesTriple)` and writes the result
+            // directly into `dst`.
             let new_prim = declare_codec_prim(
                 ctx,
                 llvm_mod,
-                "hew_bytes_from_static",
-                triple_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false),
+                "hew_bytes_from_static_raw",
+                ctx.void_type()
+                    .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
             );
-            let triple = builder
-                .build_call(new_prim, &[raw.into(), len.into()], "de_bytes_new")
-                .llvm_ctx("de bytes_from_static")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_bytes_from_static void".into()))?;
             builder
-                .build_store(dst, triple)
-                .llvm_ctx("de bytes store")?;
+                .build_call(
+                    new_prim,
+                    &[raw.into(), len.into(), dst.into()],
+                    "de_bytes_new_raw",
+                )
+                .llvm_ctx("de bytes_from_static_raw")?;
+            // `_raw` writes directly into `dst`; no try_as_basic_value / build_store needed.
             // hew_de_read_bytes returned a malloc'd copy; hew_bytes_from_static
             // copied it into its own refcounted buffer, so free the intermediate.
             let free_prim = declare_codec_prim(

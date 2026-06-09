@@ -230,8 +230,6 @@ fn run_program_with_simple_arithmetic_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
 }
 
-// WINDOWS-TODO: passive blocking TCP loopback exits non-zero with no output on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn tcp_loopback_read_string_roundtrip_returns_written_bytes() {
     require_codegen();

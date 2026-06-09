@@ -371,6 +371,21 @@ pub unsafe extern "C" fn hew_read_slot_take(slot: *mut HewReadSlot) -> BytesTrip
     triple
 }
 
+/// Out-pointer variant of [`hew_read_slot_take`] for Windows x64 MSVC
+/// sret-safe `BytesTriple` passing.
+///
+/// # Safety
+///
+/// `slot` must be a valid `HewReadSlot` the caller holds a ref to.
+/// `out` must point to a valid, writable `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_read_slot_take_raw(slot: *mut HewReadSlot, out: *mut BytesTriple) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_read_slot_take(slot) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
+}
+
 /// Take the deposited i64 handle out of the slot (NEW-2 `await
 /// listener.accept()`). Returns the accepted `Connection` handle when the
 /// status is `Data`, or [`INVALID_CONNECTION_HANDLE`] (`-1`) otherwise (no

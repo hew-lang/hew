@@ -22,33 +22,34 @@
 /// Represents either an element (with tag, attributes, and children) or a
 /// text node. Created by `xml.parse(s)` or by navigating into a parsed
 /// tree. Must be freed with `free()` when no longer needed.
+#[opaque]
 type Node {
 }
 
 /// Methods available on an XML `Node`.
 trait NodeMethods {
     /// Serialize the node tree back to an XML string.
-    fn to_string(node: Node) -> string;
+    fn to_string(self) -> string;
 
     /// Get the tag name of an element node. Returns empty for text nodes.
-    fn get_tag(node: Node) -> string;
+    fn get_tag(self) -> string;
 
     /// Get an attribute value by name. Returns empty string if not found.
-    fn get_attribute(node: Node, name: string) -> string;
+    fn get_attribute(self, name: string) -> string;
 
     /// Get the number of child nodes.
-    fn children_count(node: Node) -> i64;
+    fn children_count(self) -> i64;
 
     /// Get a child node by index. Returns a new Node that must be freed.
-    fn get_child(node: Node, index: i64) -> Node;
+    fn get_child(self, index: i64) -> Node;
 
     /// Get the concatenated text content of this node and its descendants.
-    fn get_text(node: Node) -> string;
+    fn get_text(self) -> string;
 
     /// Return 1 if this is an element node, 0 if text, -1 if null.
-    fn is_element(node: Node) -> i32; // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
+    fn is_element(self) -> i32; // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
     /// Release the node resources.
-    fn free(node: Node);
+    fn free(self);
 }
 
 impl NodeMethods for Node {

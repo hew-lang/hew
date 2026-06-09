@@ -1,0 +1,5 @@
+// HashMap takes exactly two type arguments: key and value.
+fn main() -> i64 {
+    let _m = HashMap::<i64>::new();
+    0
+}

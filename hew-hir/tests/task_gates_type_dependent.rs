@@ -75,7 +75,7 @@ fn await_non_unit_task_rejected_when_expr_type_is_present() {
         }
         ";
     let (parsed, mut tco) = support::checker_pipeline::typecheck_source(source);
-    tco.expr_types.insert(
+    tco.insert_expr_type(
         awaited_task_span_key(source),
         Ty::Named {
             builtin: None,

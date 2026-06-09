@@ -26,6 +26,7 @@ import std::fs;
 /// Created by calling `http.listen(addr)`. Use `accept()` to wait for
 /// incoming requests in a loop, then call `close()` before the value goes
 /// out of scope.
+#[opaque]
 type Server {
 }
 
@@ -35,6 +36,7 @@ type Server {
 /// method, path, headers, and body. Must be responded to with one of
 /// the `respond` methods. Call `free()` before the value goes out of
 /// scope; dropping without `free()` is a resource leak.
+#[opaque]
 type Request {
 }
 
@@ -42,16 +44,16 @@ type Request {
 /// Methods available on an HTTP `Server`.
 trait ServerMethods {
     /// Block until a client connects and return the next `Request`.
-    fn accept(srv: Server) -> Request;
+    fn accept(self) -> Request;
 
     /// Set the per-request body read deadline in milliseconds.
-    fn set_request_timeout_ms(srv: Server, timeout_ms: i64) -> i64;
+    fn set_request_timeout_ms(self, timeout_ms: i64) -> i64;
 
     /// Canonical release path for `Server`.
     ///
     /// Callers MUST invoke `close()` before the value goes out of scope;
     /// dropping without `close()` is a resource leak.
-    fn close(srv: Server);
+    fn close(self);
 }
 
 impl ServerMethods for Server {
@@ -82,30 +84,30 @@ impl ServerMethods for Server {
 /// Methods available on an HTTP `Request`.
 trait RequestMethods {
     /// Return the HTTP method (e.g. `"GET"`, `"POST"`).
-    fn method(req: Request) -> string;
+    fn method(self) -> string;
 
     /// Return the request path (e.g. `"/api/users"`).
-    fn path(req: Request) -> string;
+    fn path(self) -> string;
 
     /// Return the value of the named header, or an empty string.
-    fn header(req: Request, name: string) -> string;
+    fn header(self, name: string) -> string;
 
     /// Return all request headers as a list of `(name, value)` pairs.
     ///
     /// The returned vector is owned by the caller; Hew frees it automatically
     /// when it goes out of scope. Returns an empty vector if no headers were
     /// present or the request is invalid.
-    fn headers(req: Request) -> Vec<(string, string)>;
+    fn headers(self) -> Vec<(string, string)>;
 
     /// Return the request body, decoded according to `encoding`.
     ///
     /// Pass `"utf-8"` for text bodies, or `"raw"` for binary.
-    fn body(req: Request, encoding: string) -> string;
+    fn body(self, encoding: string) -> string;
 
     /// Send a full HTTP response with status, content-type, and body.
     ///
     /// The `Content-Length` header is derived from `body` automatically.
-    fn respond(req: Request, status: i64, content_type: string, body: string) -> i64;
+    fn respond(self, status: i64, content_type: string, body: string) -> i64;
 
     /// Send a plain-text HTTP response.
     ///
@@ -115,10 +117,10 @@ trait RequestMethods {
     /// req.respond_text(200, "OK");
     /// req.respond_text(404, "Not Found");
     /// ```
-    fn respond_text(req: Request, status: i64, body: string) -> i64;
+    fn respond_text(self, status: i64, body: string) -> i64;
 
     /// Send a JSON HTTP response with `Content-Type: application/json`.
-    fn respond_json(req: Request, status: i64, json: string) -> i64;
+    fn respond_json(self, status: i64, json: string) -> i64;
 
     /// Begin a streaming response and return a `Sink` for chunked output.
     ///
@@ -133,19 +135,19 @@ trait RequestMethods {
     /// body.write("chunk 2");
     /// body.close();
     /// ```
-    fn respond_stream(req: Request, status: i64, content_type: string) -> Sink<string>;
+    fn respond_stream(self, status: i64, content_type: string) -> Sink<string>;
 
     /// Send a full HTTP response, returning `Err(fs.IoError)` on failure.
-    fn try_respond(req: Request, status: i64, content_type: string, body: string) -> Result<i64, fs.IoError>;
+    fn try_respond(self, status: i64, content_type: string, body: string) -> Result<i64, fs.IoError>;
 
     /// Send a plain-text HTTP response, returning `Err(fs.IoError)` on failure.
-    fn try_respond_text(req: Request, status: i64, body: string) -> Result<i64, fs.IoError>;
+    fn try_respond_text(self, status: i64, body: string) -> Result<i64, fs.IoError>;
 
     /// Send a JSON HTTP response, returning `Err(fs.IoError)` on failure.
-    fn try_respond_json(req: Request, status: i64, json: string) -> Result<i64, fs.IoError>;
+    fn try_respond_json(self, status: i64, json: string) -> Result<i64, fs.IoError>;
 
     /// Begin a streaming response, returning `Err(fs.IoError)` on failure.
-    fn try_respond_stream(req: Request, status: i64, content_type: string) -> Result<Sink<string>, fs.IoError>;
+    fn try_respond_stream(self, status: i64, content_type: string) -> Result<Sink<string>, fs.IoError>;
 }
 
 impl RequestMethods for Request {

@@ -141,6 +141,7 @@ pub enum BuiltinTy {
     Bool,
     Char,
     String,
+    Bytes,
     Unit,
     Never,
     VecAny,
@@ -168,6 +169,7 @@ impl BuiltinTy {
             BuiltinTy::Bool => ResolvedTy::Bool,
             BuiltinTy::Char => ResolvedTy::Char,
             BuiltinTy::String => ResolvedTy::String,
+            BuiltinTy::Bytes => ResolvedTy::Bytes,
             BuiltinTy::Unit => ResolvedTy::Unit,
             BuiltinTy::Never => ResolvedTy::Never,
             BuiltinTy::VecAny => ResolvedTy::Named {
@@ -228,12 +230,19 @@ const F64: &[BuiltinTy] = &[BuiltinTy::F64];
 const BOOL: &[BuiltinTy] = &[BuiltinTy::Bool];
 const CHAR: &[BuiltinTy] = &[BuiltinTy::Char];
 const STRING: &[BuiltinTy] = &[BuiltinTy::String];
+const BYTES_I32: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I32];
+const BYTES: &[BuiltinTy] = &[BuiltinTy::Bytes];
 const VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny];
 const VEC_ANY_BOOL: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::Bool];
 const VEC_ANY_I32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I32];
 const VEC_ANY_I64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64];
+const VEC_ANY_F64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::F64];
+const VEC_ANY_STRING: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::String];
 const VEC_ANY_I64_BOOL: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::Bool];
 const VEC_ANY_I64_I32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::I32];
+const VEC_ANY_I64_I64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::I64];
+const VEC_ANY_I64_F64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::F64];
+const VEC_ANY_I64_STRING: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::String];
 const VEC_ANY_VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::VecAny];
 const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
@@ -793,9 +802,16 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_chars",
         },
     ),
-    // Class A: declarative bytes receiver bridge. The current native bytes ABI
-    // is Vec<i32>-backed, so these direct rows expose the checked-in runtime
-    // entry points that `std/io.hew` names with `#[extern_symbol]`.
+    // Class A: declarative bytes receiver bridge. Bytes push has a native ABI;
+    // remaining collection-like bytes methods still name Vec-backed runtime
+    // entry points until matching hew_bytes_* symbols exist.
+    direct(
+        "hew_bytes_push",
+        BuiltinClass::ClassA,
+        BYTES_I32,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
     direct(
         "hew_vec_push_bool",
         BuiltinClass::ClassA,
@@ -821,6 +837,24 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_push_i64",
+        },
+    ),
+    direct(
+        "hew_vec_push_f64",
+        BuiltinClass::ClassA,
+        VEC_ANY_F64,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_f64",
+        },
+    ),
+    direct(
+        "hew_vec_push_str",
+        BuiltinClass::ClassA,
+        VEC_ANY_STRING,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_str",
         },
     ),
     direct(
@@ -851,6 +885,24 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_pop_f64",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::F64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_f64",
+        },
+    ),
+    direct(
+        "hew_vec_pop_str",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_str",
+        },
+    ),
+    direct(
         "hew_vec_get_bool",
         BuiltinClass::ClassA,
         VEC_ANY_I64,
@@ -878,6 +930,24 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_get_f64",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::F64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_f64",
+        },
+    ),
+    direct(
+        "hew_vec_get_str",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_str",
+        },
+    ),
+    direct(
         "hew_vec_set_bool",
         BuiltinClass::ClassA,
         VEC_ANY_I64_BOOL,
@@ -893,6 +963,33 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_set_i32",
+        },
+    ),
+    direct(
+        "hew_vec_set_i64",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_I64,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_i64",
+        },
+    ),
+    direct(
+        "hew_vec_set_f64",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_F64,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_f64",
+        },
+    ),
+    direct(
+        "hew_vec_set_str",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_STRING,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_str",
         },
     ),
     // Layout-backed Vec<T> methods are checker-only rewrite targets for
@@ -1067,6 +1164,13 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinClass::ClassA,
         HASHSET_ANY,
         BuiltinTy::I64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_hashset_is_empty_layout",
+        BuiltinClass::ClassA,
+        HASHSET_ANY,
+        BuiltinTy::Bool,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
@@ -1341,9 +1445,32 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_contains_f64",
+        BuiltinClass::ClassA,
+        VEC_ANY_F64,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_contains_f64",
+        },
+    ),
+    direct(
+        "hew_vec_contains_str",
+        BuiltinClass::ClassA,
+        VEC_ANY_STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_contains_str",
+        },
+    ),
+    // W4.039: bytes -> string canonicalisation. Single `hew_bytes_to_string`
+    // runtime export consumes the BytesTriple value directly; the catalog
+    // declares the LLVM extern with a single `bytes` parameter, which codegen
+    // materialises as `{ptr, i32, i32}` (ABI-equivalent to a
+    // `#[repr(C)] BytesTriple` passed by value).
+    direct(
         "hew_bytes_to_string",
         BuiltinClass::ClassA,
-        VEC_ANY,
+        BYTES,
         BuiltinTy::String,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_bytes_to_string",
@@ -1356,6 +1483,33 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_append",
+        },
+    ),
+    direct(
+        "hew_vec_remove_at",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_remove_at",
+        },
+    ),
+    direct(
+        "hew_vec_clone",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::VecAny,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_clone",
+        },
+    ),
+    direct(
+        "hew_vec_join_str",
+        BuiltinClass::ClassA,
+        VEC_ANY_STRING,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_join_str",
         },
     ),
     // Class B: math module intrinsics.

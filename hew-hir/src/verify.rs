@@ -1,3 +1,13 @@
+// The verify pass walks `HirExprKind` exhaustively, which includes the
+// `#[deprecated]` `CallTraitMethodStatic` variant. The deprecation
+// enforcement is structural (allowlist test on construction sites),
+// not lint-driven.
+#![allow(
+    deprecated,
+    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
+              see hew-hir/tests/call_trait_method_static_creation_allowlist.rs"
+)]
+
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
@@ -181,6 +191,44 @@ impl Verifier {
                 self.expr(right);
             }
             HirExprKind::Unary { operand, .. } => self.expr(operand),
+            HirExprKind::TupleLiteral { elements } => {
+                // Arity check: expr.ty must be ResolvedTy::Tuple with width
+                // matching elements.len(). Checker-authoritative invariant: the
+                // lowering pass reads tuple types from TypeCheckOutput.expr_types,
+                // never re-derives them. A mismatch here surfaces a checker/HIR
+                // boundary violation (poison in the side-table), not a user error.
+                match &expr.ty {
+                    ResolvedTy::Tuple(fields) => {
+                        if fields.len() != elements.len() {
+                            self.diagnostics.push(self.diagnostic(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "tuple literal".to_string(),
+                                    reason: format!(
+                                        "tuple type has arity {} but literal has {} elements",
+                                        fields.len(),
+                                        elements.len()
+                                    ),
+                                },
+                                expr.span.clone(),
+                                "tuple literal element count does not match declared type width",
+                            ));
+                        }
+                    }
+                    other => {
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "tuple literal".to_string(),
+                                reason: format!("expected tuple type, got {}", other.user_facing()),
+                            },
+                            expr.span.clone(),
+                            "tuple literal must have tuple type",
+                        ));
+                    }
+                }
+                for elem in elements {
+                    self.expr(elem);
+                }
+            }
             HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
                 self.expr(callee);
                 for arg in args {
@@ -195,6 +243,7 @@ impl Verifier {
             HirExprKind::ActorSend { receiver, args, .. }
             | HirExprKind::ActorAsk { receiver, args, .. }
             | HirExprKind::CallDynMethod { receiver, args, .. }
+            | HirExprKind::ResolvedImplCall { receiver, args, .. }
             | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
                 self.expr(receiver);
                 for arg in args {

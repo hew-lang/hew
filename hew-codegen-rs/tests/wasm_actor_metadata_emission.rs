@@ -105,6 +105,7 @@ fn spawn_pipeline() -> IrPipeline {
         checked_mir: vec![],
         elaborated_mir: vec![],
         diagnostics: vec![],
+        opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![actor_layout],
         supervisor_layouts: vec![],

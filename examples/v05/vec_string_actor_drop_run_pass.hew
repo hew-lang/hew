@@ -1,0 +1,51 @@
+// Vec<string> actor-state drop run-pass exercise (W5.002 / F0b).
+//
+// Companion to `collection_actor_drop_run_pass.hew`. W5.002 migrated Vec onto
+// the witness-managed clone/free pair (`hew_vec_clone_managed` /
+// `hew_vec_free_managed`): `collection_layout_witness` derives BOTH the clone
+// and the free symbol for a Vec<T> state field from the single layout-witness
+// descriptor, so the constructor, clone, and free can never select mismatched
+// runtime ABI families (the W4.045 UAF class).
+//
+// This fixture pins a NON-TRIVIAL element type: `Vec<string>` owns one heap
+// `strdup` per slot. On actor teardown the synthesised `state_drop_fn` calls
+// `hew_vec_free_managed`, which must free each owned string EXACTLY once. The
+// legacy `hew_vec_clone` aborts on any layout-aware Vec, and a mismatched free
+// would double-free or leak the per-slot strings — so a clean exit 0 is the
+// load-bearing signal that the managed per-slot free is correct.
+//
+// As with the i64/HashMap fixture, the vec is built and populated in `main`
+// and moved into the actor's initial state, so the only context that touches
+// it is the teardown drop. In-receive collection field access is a separate,
+// pre-existing gap and is deliberately avoided here. The printed length is
+// derived from the actual populated vec (no fake-green constant).
+//
+// WASM is intentionally not registered: Vec layout-managed clone/free follow
+// the same native-only collection substrate as the HashMap/HashSet `*_layout`
+// family (tracked WASM-parity gap #1820).
+//
+// `hew run examples/v05/vec_string_actor_drop_run_pass.hew` must complete with
+// exit 0 and print `ok`.
+actor WordHolder {
+    let words: Vec<string>;
+    receive fn ping() -> i64 {
+        1
+    }
+}
+
+fn main() {
+    // Populate with heap-owned strings so state-drop frees NON-EMPTY per-slot
+    // storage through `hew_vec_free_managed`.
+    let words: Vec<string> = Vec::new();
+    words.push("alpha");
+    words.push("beta");
+    words.push("gamma");
+    let count = words.len();
+    let holder = spawn WordHolder(words: words);
+    let acked = holder.ping();
+    // "ok" is gated on both the populated-vec count (real data flow) and the
+    // actor ack; teardown then exercises the managed per-slot string free.
+    if acked == 1 && count == 3 {
+        println("ok");
+    }
+}

@@ -1,0 +1,19 @@
+// S1-V3: trait declares `var self` receiver, impl declares plain `self` —
+// Q004 impl-vs-trait equivalence checker rejects on receiver-mutability axis.
+
+trait MutOnly {
+    fn bump(var self) -> i64;
+}
+
+type Box { v: i64 }
+
+impl MutOnly for Box {
+    fn bump(self) -> i64 {
+        self.v
+    }
+}
+
+fn main() -> i64 {
+    var b: Box = Box { v: 1 };
+    b.bump()
+}

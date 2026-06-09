@@ -37,12 +37,13 @@ pub use actor_protocol::{
 pub use builtin_type::{builtin_types, lookup_builtin_type, BuiltinType, BuiltinTypeInfo};
 pub use check::{
     builtin_function_names, ActorMethodKind, ActorSendAliasing, ActorSendCopyReason,
-    ActorStateGuard, ArmResolution, AssignTargetKind, AssignTargetShape, CaptureModeOrigin,
-    Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode, ClosureEscapeFact,
-    ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall,
-    DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, MachineMethodKind,
-    MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily, NumericMethodLowering,
-    NumericMethodOp, NumericSignedness, NumericWidth, PatternKind, SpanKey, TypeCheckOutput,
+    ActorStateGuard, ArmResolution, AssignTargetKind, AssignTargetShape, Bound, CallAbiHint,
+    CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode,
+    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
+    DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, ImplDef, ImplId,
+    ImplRegistry, LookupError, MachineMethodKind, MethodCallReceiverKind, MethodCallRewrite,
+    MethodTarget, NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness,
+    NumericWidth, PatternKind, ResolvedCall, RuntimeAbi, SpanKey, TyPattern, TypeCheckOutput,
     VariantDef, VariantMatch,
 };
 pub use error::TypeError;

@@ -880,6 +880,12 @@ pub struct TypeDecl {
     /// Ownership discipline marker from `#[resource]` or `#[linear]`.
     #[serde(default, skip_serializing_if = "ResourceMarker::is_none")]
     pub resource_marker: ResourceMarker,
+    /// When true, this type is an opaque pointer-width runtime handle
+    /// (`#[opaque]`): empty body, surface-inaccessible (no field access, no
+    /// direct construction), lowers to LLVM `ptr`, ABI-round-trips runtime
+    /// `*mut T`. Orthogonal to `resource_marker` (representation vs ownership).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_opaque: bool,
     /// Names of methods declared with a `consuming self` receiver in this type body.
     /// Populated by the parser; used by the type checker to validate ownership rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1172,6 +1178,7 @@ impl WireDecl {
             }),
             is_indirect: false,
             resource_marker: ResourceMarker::None,
+            is_opaque: false,
             consuming_methods: Vec::new(),
         }
     }

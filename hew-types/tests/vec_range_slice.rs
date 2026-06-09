@@ -76,13 +76,29 @@ fn slice_on_int_rejected_as_invalid_operation() {
 }
 
 #[test]
-fn slice_on_string_rejected_as_invalid_operation() {
-    // `string[a..b]` is not supported by this slice — the checker rejects.
-    let kind = first_error_kind("fn f(s: string) -> string { s[0..1] }");
-    assert!(
-        matches!(kind, TypeErrorKind::InvalidOperation),
-        "string range-slice must surface InvalidOperation; got {kind:?}"
-    );
+fn slice_on_string_typechecks_clean() {
+    // W3 collections-sugar S2: `s[a..b]` over `string` returns a fresh
+    // `string` (codepoint slice, O(n), panic on invalid bounds).
+    assert_clean("fn f(s: string, a: i64, b: i64) -> string { s[a..b] }");
+}
+
+#[test]
+fn slice_on_bytes_typechecks_clean() {
+    // W3 collections-sugar S2: `b[a..b]` over `bytes` returns a refcounted
+    // `bytes` slice (O(1), panic on invalid bounds).
+    assert_clean("fn f(b: bytes, a: i64, b2: i64) -> bytes { b[a..b2] }");
+}
+
+#[test]
+fn index_string_yields_char() {
+    // W3 collections-sugar S2: `s[i]` over `string` returns a `char`.
+    assert_clean("fn f(s: string, i: i64) -> char { s[i] }");
+}
+
+#[test]
+fn index_bytes_yields_u8() {
+    // W3 collections-sugar S2: `b[i]` over `bytes` returns a `u8`.
+    assert_clean("fn f(b: bytes, i: i64) -> u8 { b[i] }");
 }
 
 #[test]

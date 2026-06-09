@@ -25,22 +25,22 @@ type Table {
 /// Methods available on a CSV `Table`.
 trait TableMethods {
     /// Return the number of data rows (excluding the header row).
-    fn rows(tbl: Table) -> i64;
+    fn rows(self) -> i64;
 
     /// Return the number of columns.
-    fn cols(tbl: Table) -> i64;
+    fn cols(self) -> i64;
 
     /// Return the header name for the given column index.
-    fn header(tbl: Table, col: i64) -> string;
+    fn header(self, col: i64) -> string;
 
     /// Return the cell value at the given row and column index.
-    fn get(tbl: Table, row: i64, col: i64) -> string;
+    fn get(self, row: i64, col: i64) -> string;
 
     /// Return the cell value at the given row for the named column.
-    fn get_by_name(tbl: Table, row: i64, col_name: string) -> string;
+    fn get_by_name(self, row: i64, col_name: string) -> string;
 
     /// No-op for compatibility (struct tables don't need manual freeing).
-    fn free(tbl: Table);
+    fn free(self);
 }
 
 impl TableMethods for Table {

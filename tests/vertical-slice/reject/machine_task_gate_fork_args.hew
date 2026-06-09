@@ -1,7 +1,7 @@
-// W4.002 reject fixture: a `fork child = worker(42)` (fork-child-with-args)
-// inside a machine state entry block must be rejected by the task-gate
-// HIR pre-pass, exercising the Item::Machine arm of `check_task_gates`
-// added in this lane.
+// Reject fixture: a `fork child = worker(42)` inside a machine state entry
+// block must fail before codegen. The current end-to-end compiler stops at the
+// checker-level parser-only gate for `fork name = expr;`; HIR unit coverage
+// pins the lower-level Item::Machine task-gate walker directly.
 fn worker(x: i64) {}
 
 machine M {
@@ -19,4 +19,3 @@ machine M {
 }
 
 fn main() {}
-

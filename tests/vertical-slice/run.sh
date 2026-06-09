@@ -26,7 +26,12 @@ run_accept_expect_status() {
   compile_accept "${fixture}"
   local bin="${ROOT}/.tmp/compile-out/${fixture}"
   local status=0
-  if bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+  # Time-bound the fixture binary: a non-terminating fixture (e.g. an actor
+  # that never exits) must surface as a failure, not hang CI. 124/137 from
+  # `timeout` then fail the exit-code assertion below rather than blocking.
+  # shellcheck disable=SC2016  # $1/$2/$3 are positional args to the inner
+  # `bash -c`, expanded there — the single quotes are deliberate.
+  if timeout --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
     status=0
   else
     status=$?
@@ -90,17 +95,27 @@ fi
 grep -q 'Blocking channel receive operations are not supported on WASM32' "${reject_output}"
 
 # Reject: `fork child = worker(42)` inside a machine state entry block must
-# be rejected by the task-gate HIR pre-pass. Exercises the Item::Machine arm
-# added to `check_task_gates`. Uses `hew compile` (not `hew check`) because
-# the HIR pre-pass runs as part of the compile pipeline, not the type-check-
-# only path.
+# be rejected before codegen. Current end-to-end compilation stops at the
+# checker-level parser-only gate for `fork name = expr;`; lower-level HIR tests
+# continue to pin the Item::Machine task-gate walker directly.
 if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/machine_task_gate_fork_args.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected machine_task_gate_fork_args fixture to fail" >&2
   exit 1
 fi
-grep -q 'TaskSpawnSignatureUnsupported\|spawned function must have zero arguments' "${reject_output}"
+grep -qF 'parser-only in this build' "${reject_output}"
+
+# Stage-2 lazy iterator wrappers: structural smoke. The fixture's wrapper
+# records and `impl Iterator` blocks compile cleanly through the parser and
+# the type checker, but the generic-T impl bodies do not yet have a MIR
+# `ValueClass` lowering (deferred to the follow-on stages that wire
+# `Vec::IntoIterator` and the for-loop desugar). The lock tests under
+# `hew-types::iterator_lazy_wrappers` carry the binding shape — this
+# command is documentary: the fixture is wired in so a future stage
+# wraps it into a real accept run once MIR lowering catches up.
+"${HEW}" check "${ROOT}/tests/vertical-slice/accept/iter_lazy_wrappers.hew" \
+    >"${accept_output}" 2>&1 || true
 
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
@@ -312,6 +327,15 @@ grep -q 'LocalPid' "${reject_output}"
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"
+
+# W4.039 — bytes-to-string triple-ABI canonicalisation. Behavioural proof
+# that `bytes.to_string()` routes through the canonical
+# `hew_bytes_to_string(triple: BytesTriple) -> *mut c_char` runtime export
+# (the catalog declares the LLVM extern with a single `bytes` parameter,
+# materialised as `{ptr, i32, i32}`, which is ABI-equivalent to a
+# `#[repr(C)] BytesTriple` passed by value). Asserts both exit-0 status
+# and exact stdout `Hi\n`.
+run_accept_expect_stdout "bytes_push_round_trip"
 
 run_accept_expect_status "panic" 101
 grep -q 'panic fixture' "${stderr_output}"
@@ -685,6 +709,51 @@ run_accept_expect_status "generic_user_record_bitcopy" 42
 run_accept_expect_status "vec_aggregate_contains" 0
 
 # ---------------------------------------------------------------------------
+# W3.043 — integer literal inference + record field mutability
+# ---------------------------------------------------------------------------
+
+# Accept: unsuffixed integer literals infer from adjacent concrete integer
+# annotations, including narrower widths. Checker-only fixture: the current
+# native MIR slice does not lower every narrow-width literal path yet.
+if ! "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/accept/int_literal_inference.hew" \
+    >"${accept_output}" 2>&1; then
+  echo "W3.043: expected int_literal_inference to pass hew check" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
+
+# Reject: out-of-range unsuffixed integer literal must fail against the
+# adjacent annotation rather than silently defaulting to i64.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/int_literal_inference_overflow.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "W3.043: expected int_literal_inference_overflow to fail" >&2
+  exit 1
+fi
+grep -qF 'does not fit' "${reject_output}"
+
+# Accept: mutable record bindings can be updated through functional update.
+# Direct field-write acceptance is covered by hew-types checker tests; native
+# MIR field-store lowering is outside this type-system polish lane.
+if ! "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/accept/record_field_mutation_mut_binding.hew" \
+    >"${accept_output}" 2>&1; then
+  echo "W3.043: expected record_field_mutation_mut_binding to pass hew check" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
+
+# Reject: record field writes through immutable bindings remain disallowed.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/record_field_mutation_immutable_binding.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "W3.043: expected record_field_mutation_immutable_binding to fail" >&2
+  exit 1
+fi
+grep -qF 'immutable binding' "${reject_output}"
+
+# ---------------------------------------------------------------------------
 # W3.004 — Vec::new turbofish + W3.013 — Vec range-slice sugar
 # ---------------------------------------------------------------------------
 
@@ -718,8 +787,53 @@ run_accept_expect_status "vec_new_turbofish_type" 0
 # Accept (S1): Vec::<i64>::new() turbofish with push/pop chain. Exit 7.
 run_accept_expect_status "vec_new_turbofish_method" 7
 
+# Accept: HashMap::<K, V>::new() turbofish syntax.  `hew check` is enough here:
+# the regression is the checker rejecting type args before constructor lowering.
+gtimeout 30 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/hashmap_new_turbofish_type.hew"
+
+# Accept: HashSet::<T>::new() turbofish syntax.
+gtimeout 30 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/hashset_new_turbofish_type.hew"
+
+# ---------------------------------------------------------------------------
+# W3 collections-sugar S2: string codepoint index + slice (locked Q-CS1).
+# ---------------------------------------------------------------------------
+# Accept: ASCII codepoint slice. "hello"[1..4] = "ell" → byte_length = 3.
+run_accept_expect_status "string_slice_codepoint" 3
+# Accept: ASCII single-element index path runs without panic and the
+# accompanying slice [1..2] returns a 1-byte string.
+run_accept_expect_status "string_index_codepoint" 1
+# Accept: multi-byte UTF-8 codepoint slice. "héllo"[1..2] = "é" = 2 UTF-8
+# bytes. A byte-clamping slice would yield 1 byte and either truncate
+# or abort — this fixture proves we walk codepoints.
+run_accept_expect_status "string_slice_multibyte" 2
+# Accept (panic semantics): out-of-bounds codepoint slice ABORTS. Exit
+# 134 = SIGABRT (libc::abort from hew_string_slice_codepoints). Q-CS1
+# locks panic-on-OOB; no clamp / null / empty-string fallback.
+run_accept_expect_status "string_slice_oob_panics" 134
+
 # Accept (S1): Vec<i64> push/pop/get/contains via catalog entries. Exit 10.
 run_accept_expect_status "vec_i64_basic" 10
+
+# Accept (W3 Stage 3, typecheck-only): `impl<T> IntoIterator for Vec<T>` ships
+# in std/builtins.hew. The checker must resolve `v.into_iter()` to
+# `VecIter<T>` for both Vec<i32> and Vec<i64> (the two stdlib catalog
+# instantiations). HIR-level dispatch wiring for user trait method calls is
+# owned by Stage 4 (for-loop desugar) — this slice intentionally stops at
+# typecheck. Assert there is no "no method `into_iter`" or "no method `next`"
+# diagnostic in the checker output.
+gtimeout 30 "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/accept/vec_into_iter_typeck.hew" \
+    >"${accept_output}" 2>&1 || true
+if grep -q "no method \`into_iter\`" "${accept_output}"; then
+  echo "W3 Stage 3: Vec<T>::into_iter must resolve through IntoIterator impl" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
+if grep -q "no field\|undefined type \`VecIter\`" "${accept_output}"; then
+  echo "W3 Stage 3: VecIter<T> must be defined in std/builtins.hew" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
 
 # Reject (S1): Vec::<i64, i32>::new() turbofish arity mismatch — Vec takes exactly
 # 1 type argument; supplying 2 must produce a clear diagnostic.
@@ -727,6 +841,24 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/vec_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
   echo "W3.004: expected vec_new_turbofish_arity_mismatch to fail" >&2
+  exit 1
+fi
+grep -q 'takes 1 type argument but 2 were supplied' "${reject_output}"
+
+# Reject: HashMap takes key and value type arguments.
+if gtimeout 30 "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/hashmap_new_turbofish_arity_mismatch.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected hashmap_new_turbofish_arity_mismatch to fail" >&2
+  exit 1
+fi
+grep -q 'takes 2 type arguments but 1 was supplied' "${reject_output}"
+
+# Reject: HashSet takes one element type argument.
+if gtimeout 30 "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/hashset_new_turbofish_arity_mismatch.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected hashset_new_turbofish_arity_mismatch to fail" >&2
   exit 1
 fi
 grep -q 'takes 1 type argument but 2 were supplied' "${reject_output}"
@@ -752,6 +884,25 @@ run_accept_expect_status "generic_enum_option_some" 42
 # Accept: Option<i64>::None — unit arm of the same generic enum.
 # Exit 99 proves the None arm matched (no payload confusion with Some).
 run_accept_expect_status "generic_enum_option_none" 99
+
+# Accept: builtin (stdlib) Option<i64> with bare `None`/`Some` — NO user
+# `enum Option<T>` redeclaration (the W4.042 workaround). Exercises the checker
+# now recording the bare `None`'s resolved type at its span so HIR stamps the
+# concrete `Option<i64>` args and codegen resolves `Option$$i64` instead of
+# tripping the D10 wall. Exit 99 proves the None arm drove the exit; exit 42
+# proves the Some payload round-tripped through the match.
+run_accept_expect_status "stdlib_option_none" 99
+run_accept_expect_status "stdlib_option_some" 42
+
+# WASM parity (W4.042): the bare-`None` builtin Option<i64> path must also lower
+# under wasm32-unknown-unknown. The fix is pure checker-boundary type recording
+# (hew-types) with no native-only codegen change, so behavioural parity is
+# inherited from the shared MIR->LLVM lower; this gate pins that the wasm target
+# emits a module for the stdlib bare-None path.
+"${HEW}" compile --target wasm32-unknown-unknown \
+  "${ROOT}/tests/vertical-slice/accept/stdlib_option_none.hew" \
+  >"${accept_output}" 2>&1
+test -s "${ROOT}/.tmp/compile-out/stdlib_option_none.wasm"
 
 # Accept: Maybe<i64>::Just { value: 42 } — struct-variant (named-field) generic enum.
 # Exit 42 proves named-field variant payloads lower through the generic path.
@@ -931,3 +1082,134 @@ fi
   ulimit -v 524288
   timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashmap_run_pass.hew"
 )
+
+# W4.045: HashSet<i64> / HashSet<string> actor-state drop run-pass. Regression
+# guard for the P0 use-after-free where scalar/string-element sets dropped a
+# layout-keyed `HewLayoutHashSet*` through the legacy `hew_hashset_free`,
+# corrupting the heap on actor shutdown. The actor holds two populated sets
+# moved in from `main`; teardown frees them through the corrected
+# `hew_hashset_free_layout`. Post-fix it prints `ok` and exits 0.
+(
+  ulimit -v 524288
+  out="$(timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashset_actor_drop_run_pass.hew")"
+  if [[ "${out}" != "ok" ]]; then
+    echo "W4.045: hashset actor drop run-pass: expected 'ok', got '${out}'" >&2
+    exit 1
+  fi
+)
+
+# W5.001 (F0a): Vec<i64> + HashMap<string,i64> actor-state drop run-pass.
+# Companion to the HashSet guard above. Pins the descriptor-derived collection
+# memory consolidation: `collection_layout_witness` is the sole authority for
+# Vec/HashMap clone+free symbol selection, so the constructor, clone, and free
+# can never select mismatched ABI families (the W4.045 UAF class). The actor
+# holds a populated map and vec moved in from `main`; teardown frees them
+# through the witness-selected `hew_hashmap_free_layout` / `hew_vec_free`.
+# Prints `ok` and exits 0. WASM is deliberately covered by the codegen
+# fail-closed substrate gate (native-only layout family; tracked #1820).
+(
+  ulimit -v 524288
+  out="$(timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/collection_actor_drop_run_pass.hew")"
+  if [[ "${out}" != "ok" ]]; then
+    echo "W5.001: collection actor drop run-pass: expected 'ok', got '${out}'" >&2
+    exit 1
+  fi
+)
+
+# W5.002 (F0b): Vec<string> actor-state drop run-pass. Pins the Vec migration
+# onto the witness-managed clone/free pair (`hew_vec_clone_managed` /
+# `hew_vec_free_managed`). The actor holds a populated `Vec<string>` (one heap
+# `strdup` per slot) moved in from `main`; teardown frees each owned string
+# through the witness-selected `hew_vec_free_managed`. A mismatched free would
+# double-free or leak — so a clean `ok`/exit-0 is the load-bearing signal that
+# the managed per-slot free is correct. WASM is deliberately covered by the
+# native-only collection substrate gate (tracked #1820).
+(
+  ulimit -v 524288
+  out="$(timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/vec_string_actor_drop_run_pass.hew")"
+  if [[ "${out}" != "ok" ]]; then
+    echo "W5.002: vec<string> actor drop run-pass: expected 'ok', got '${out}'" >&2
+    exit 1
+  fi
+)
+
+# ---------------------------------------------------------------------------
+# Q004: impl-vs-trait method signature equivalence checked at the impl site.
+#
+# Locks the diagnostic-authority property recorded in LESSONS row
+# `diagnostic-trust` (P1): a wrong impl signature must be rejected locally at
+# the impl method's span with `TraitImplSignatureMismatch`, not surface
+# downstream as a confusing "type does not satisfy trait" cascade.
+# ---------------------------------------------------------------------------
+
+# Accept: impl signature structurally matches the trait after `Self`-sub and
+# `Self::Item` projection (Container::unwrap → Holder::unwrap), so the program
+# compiles and runs.
+run_accept_expect_status "q004_trait_impl_sig_match" 7
+
+q004_check_reject() {
+  local fixture="$1"
+  local detail_substr="$2"
+  if "${HEW}" compile \
+      "${ROOT}/tests/vertical-slice/reject/${fixture}.hew" \
+      >"${reject_output}" 2>&1; then
+    echo "Q004: expected ${fixture} fixture to fail" >&2
+    cat "${reject_output}" >&2
+    exit 1
+  fi
+  # Q004 diagnostics are rendered as human-readable messages anchored at the
+  # impl method span ("impl method `Type::method` ..."). We check both the
+  # common impl-method prefix and a discriminating per-fixture substring so a
+  # regression to a generic "type does not satisfy trait" cascade is caught.
+  grep -q 'error: impl method `' "${reject_output}" || {
+    echo "Q004: ${fixture}: expected impl-method-anchored diagnostic" >&2
+    cat "${reject_output}" >&2
+    exit 1
+  }
+  grep -q -- "${detail_substr}" "${reject_output}" || {
+    echo "Q004: ${fixture}: expected diagnostic to mention '${detail_substr}'" >&2
+    cat "${reject_output}" >&2
+    exit 1
+  }
+}
+
+# shellcheck disable=SC2016  # backticks inside the patterns are literal — they
+# match the CLI diagnostic's pretty-printed type names (e.g. `Option<i64>`),
+# not command substitution.
+q004_check_reject "q004_trait_impl_sig_wrong_return" \
+  'returns `i64` but trait `Container` requires `Option<i64>`'
+# shellcheck disable=SC2016
+q004_check_reject "q004_trait_impl_sig_wrong_arity" \
+  'has 1 parameter(s) but trait `Container` declares 0'
+# shellcheck disable=SC2016
+q004_check_reject "q004_trait_impl_sig_wrong_param" \
+  'parameter `key` has type `string` but trait `Indexer` requires `i32`'
+
+# ---------------------------------------------------------------------------
+# W3.020 — #[opaque] runtime handles
+# ---------------------------------------------------------------------------
+
+# Accept: an #[opaque] handle lowers to a bare `ptr` and round-trips through the
+# real `hew_deque_*` runtime FFI. main() pushes three elements; len == 3.
+run_accept_expect_status "opaque_handle_ffi_round_trip" 3
+
+# Reject: direct construction — an opaque handle has no constructible record
+# layout (it lowers to `ptr`); only FFI may produce one.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_construct.hew" >"${reject_output}" 2>&1; then
+  echo "expected opaque_handle_construct fixture to fail" >&2
+  exit 1
+fi
+
+# Reject: field access — an opaque handle has no fields.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_field_access.hew" >"${reject_output}" 2>&1; then
+  echo "expected opaque_handle_field_access fixture to fail" >&2
+  exit 1
+fi
+grep -q 'no field' "${reject_output}"
+
+# Reject: #[opaque] on a non-empty body.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_non_empty_body.hew" >"${reject_output}" 2>&1; then
+  echo "expected opaque_handle_non_empty_body fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_OPAQUE_TYPE_SHAPE' "${reject_output}"

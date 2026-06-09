@@ -2422,3 +2422,89 @@ fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
         "Pair::next under where T: Display must return Some(left) and print 77",
     );
 }
+
+// ---------------------------------------------------------------------------
+// W4.047 P1.3: end-to-end totality probes for the high-risk Unit-coercion
+// seams that the HIR shadow asserts instrument (actor-ask reply, dyn-method
+// return, static trait-method dispatch). Each program returns a *concrete
+// non-Unit* type across the seam, so in a debug build (debug_assertions on)
+// the shadow asserts execute against real check_program output. A pass proves
+// both halves of the Phase-1 contract: (a) the typed handoff is total at these
+// seams (no assert fires) and (b) behaviour is unchanged (correct output).
+// ---------------------------------------------------------------------------
+
+fn run_hew_source(file_name: &str, src: &str) -> Output {
+    let dir = support::tempdir();
+    let hew_src = dir.path().join(file_name);
+    std::fs::write(&hew_src, src).unwrap();
+    Command::new(hew_binary())
+        .arg("run")
+        .arg(&hew_src)
+        .current_dir(repo_root())
+        .output()
+        .unwrap()
+}
+
+/// Actor-ask reply seam: a `select { reply from w.twice(..) => reply }` ask
+/// returns a concrete `i64` reply, surfaced as the process exit code. This is
+/// the codegen-supported ask form (cf. `examples/v05/actor_ask_race.hew`); the
+/// ask-reply totality assert runs during lowering of the reply binding.
+#[test]
+fn w4_047_actor_ask_reply_concrete_type_totality() {
+    require_codegen();
+
+    let output = run_hew_source(
+        "ask_reply.hew",
+        "actor Doubler {\n\
+         \x20   receive fn twice(n: i64) -> i64 { n * 2 }\n\
+         }\n\
+         fn main() -> i64 {\n\
+         \x20   let w = spawn Doubler;\n\
+         \x20   let r = select {\n\
+         \x20       reply from w.twice(21) => reply,\n\
+         \x20       after 1000ms => 0,\n\
+         \x20   };\n\
+         \x20   r\n\
+         }\n",
+    );
+
+    // 21*2 = 42, returned as the process exit code.
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "actor-ask reply probe should exit 42; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn w4_047_static_trait_dispatch_concrete_return_totality() {
+    require_codegen();
+
+    let output = run_hew_source(
+        "static_valued.hew",
+        "trait Valued {\n\
+         \x20   fn value(val: Self) -> i64;\n\
+         }\n\
+         type Token { id: i64; }\n\
+         impl Valued for Token {\n\
+         \x20   fn value(t: Token) -> i64 { t.id }\n\
+         }\n\
+         fn show<T: Valued>(item: T) -> i64 {\n\
+         \x20   item.value()\n\
+         }\n\
+         fn main() {\n\
+         \x20   let t = Token { id: 42 };\n\
+         \x20   println(f\"{show(t)}\");\n\
+         }\n",
+    );
+
+    assert!(
+        output.status.success(),
+        "static trait-dispatch probe should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(strip_ansi(&String::from_utf8_lossy(&output.stdout)), "42\n");
+}

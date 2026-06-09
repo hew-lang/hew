@@ -230,6 +230,7 @@ fn transfer_block(
 fn meet_predecessors(
     preds: &[u32],
     exit_states: &HashMap<u32, BTreeMap<BindingId, BindingState>>,
+    reachable: &HashSet<u32>,
 ) -> BTreeMap<BindingId, BindingState> {
     if preds.is_empty() {
         return BTreeMap::new();
@@ -248,10 +249,14 @@ fn meet_predecessors(
     // contribution. The `changed` guard (line above the `for succ`
     // loop) ensures re-visits only propagate when state actually
     // changes, so fixpoint terminates.
+    // Only reachable, already-processed predecessors contribute. An
+    // unreachable predecessor (no path from entry) never executes, so it
+    // delivers no state — including it would let its empty exit state poison
+    // the meet to `Uninit`.
     let visited_preds: Vec<u32> = preds
         .iter()
         .copied()
-        .filter(|p| exit_states.contains_key(p))
+        .filter(|p| reachable.contains(p) && exit_states.contains_key(p))
         .collect();
 
     if visited_preds.is_empty() {
@@ -347,6 +352,29 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
 ///
 /// Unreachable blocks (not reachable from block 0) are appended at the
 /// end in ID order so they still receive an exit-state entry.
+/// Block IDs reachable from the entry block (id 0) along terminator edges.
+/// Used to exclude unreachable (dangling) predecessors from the dataflow meet —
+/// they never execute and must not contribute state.
+fn reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut stack: Vec<u32> = Vec::new();
+    if by_id.contains_key(&0) {
+        stack.push(0);
+        visited.insert(0);
+    }
+    while let Some(cur) = stack.pop() {
+        if let Some(block) = by_id.get(&cur) {
+            for s in successors(block) {
+                if visited.insert(s) {
+                    stack.push(s);
+                }
+            }
+        }
+    }
+    visited
+}
+
 fn compute_rpo(blocks: &[BasicBlock]) -> Vec<u32> {
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
     let mut visited: HashSet<u32> = HashSet::new();
@@ -497,8 +525,20 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             (reads, vec![*dest])
         }
         Instr::RecordFieldLoad { record, dest, .. } => (vec![*record], vec![*dest]),
+        Instr::RecordFieldStore { record, src, .. } => {
+            // Field-store reads both the aggregate (to GEP into it) and
+            // the source. The aggregate stays Live — only the field bytes
+            // are overwritten; ownership of the surrounding record does
+            // not transfer. Returning the record as a read (not a write)
+            // is what keeps the dataflow lattice in the `Live` state for
+            // it after the store. See `Iterator::next(var self)` in
+            // `std/builtins.hew` for the load-bearing consumer (the
+            // mutable-receiver substrate).
+            (vec![*record, *src], vec![])
+        }
         Instr::ActorStateFieldStore { src, .. } => (vec![*src], vec![]),
         Instr::TupleFieldLoad { tuple, dest, .. } => (vec![*tuple], vec![*dest]),
+        Instr::TupleConstruct { elements, dest } => (elements.clone(), vec![*dest]),
         Instr::SpawnActor {
             state,
             init_args,
@@ -679,6 +719,15 @@ pub fn analyze(
     let preds = build_preds(blocks);
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
 
+    // Blocks reachable from the entry. Unreachable blocks (lowering can emit
+    // empty `goto`-only blocks with no predecessors that target a join block —
+    // e.g. the continuation after an `if { return }`) must NOT contribute to a
+    // join block's meet: they never execute, so they deliver no state. Without
+    // this filter, such a dangling pred's empty exit state makes the meet treat
+    // every live binding (params included) as `Uninit`, producing a
+    // false-positive `InitialisedBeforeUse` at the join.
+    let reachable = reachable_from_entry(blocks);
+
     // The function's entry block is id 0 by construction (see
     // `lower::Builder::finalize_blocks`).
     let entry_id = 0;
@@ -735,7 +784,7 @@ pub fn analyze(
             let preds_of_bb = preds.get(&cur_id).unwrap_or(&empty);
             // Phase 1 uses the visited-only meet so back-edges don't
             // contribute `Uninit` before they are processed.
-            meet_predecessors(preds_of_bb, &exit_states)
+            meet_predecessors(preds_of_bb, &exit_states, &reachable)
         };
         // In Phase 1 we only propagate state — diagnostics are discarded.
         let mut phase1_checks: Vec<MirCheck> = Vec::new();
@@ -790,7 +839,7 @@ pub fn analyze(
             let empty = Vec::new();
             let preds_of_bb = preds.get(&blk_id).unwrap_or(&empty);
             // Phase 2 uses ALL predecessors (all are now in exit_states).
-            meet_predecessors(preds_of_bb, &exit_states)
+            meet_predecessors(preds_of_bb, &exit_states, &reachable)
         };
         transfer_block(
             entry,

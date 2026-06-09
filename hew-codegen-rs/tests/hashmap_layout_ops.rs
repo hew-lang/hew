@@ -98,6 +98,7 @@ fn pipeline_with_entry_terminator(
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        opaque_handle_names: vec![],
         record_layouts,
         actor_layouts: vec![],
         supervisor_layouts: vec![],

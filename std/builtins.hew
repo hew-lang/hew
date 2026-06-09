@@ -150,22 +150,25 @@ impl<T: ActorMsg> Pid for RemotePid<T> {
 /// values whose type implements `IntoIterator` and walk the resulting
 /// `Iterator` to bind each yielded `Item`.
 ///
-/// `next` takes `self` by move and returns the (possibly mutated) iterator
-/// state by re-binding through the `Option<Self::Item>` payload. The v0.5
-/// receiver surface does not expose `&mut self`; stateful iterator wrappers
-/// hold their cursor as a field and produce a fresh `Self` on each call. The
-/// for-loop desugar holds the iterator in a `var` binding and rebinds it per
-/// iteration. v0.6+ may migrate to a `&mut self` receiver once that surface
-/// stabilises; the trait shape will be revisited then.
+/// `next` takes its receiver mutably (`var self`): iterator implementations
+/// step their internal state in place (cursor advance, decrement remaining,
+/// flush a buffer) and surface successive items through the
+/// `Option<Self::Item>` return. Callers must hold the iterator in a `var`
+/// binding so that the mutated receiver remains observable between calls;
+/// binding the iterator with `let` is rejected by the checker with a
+/// "receiver requires mutable binding" diagnostic.
 ///
-/// The shape `fn next(self) -> Option<Self::Item>` is also the natural target
-/// for the generator → iterator bridge: a `Generator<Y, ()>` resumes to its
-/// next yield and returns `Some(y)` until completion, then `None`. Stage 7 of
-/// the iteration-foundation lane wires that bridge.
+/// Iterator methods with mutable receivers keep the iterator `Live` past
+/// exhaustion; drop fires at scope exit, not at the `None` return. This is
+/// a deliberate shift from a hypothetical by-move shape: exhaustion is a
+/// `Some → None` boundary, not a lifetime boundary. Iterator implementations
+/// that own non-shared resources (heap-owning buffers, channel readers)
+/// inherit the "exhaustion ≠ drop" invariant — see the `lifecycle-symmetry`
+/// invariant in `LESSONS.md`.
 pub trait Iterator {
     type Item;
 
-    fn next(self) -> Option<Self::Item>;
+    fn next(var self) -> Option<Self::Item>;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +192,69 @@ pub trait IntoIterator {
     type IntoIter: Iterator<Item = Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter;
+}
+
+// ---------------------------------------------------------------------------
+// VecIter — concrete IntoIterator impl for Vec<T>
+// ---------------------------------------------------------------------------
+/// Cursor iterator over a `Vec<T>` produced by `vec.into_iter()`.
+///
+/// `VecIter<T>` is the concrete `IntoIterator::IntoIter` for `Vec<T>` — it
+/// pairs the owned vector with the current `idx` cursor so that
+/// `for x in v { ... }` (for-loop desugar) and the lazy combinators in
+/// `std/iter` can drive iteration through the trait surface rather than the
+/// per-type `*_int` / `*_str` / `*_f64` table.
+///
+/// `next` takes a mutable receiver: each call reads the current element and
+/// then bumps `self.idx` in place via a field-store. `idx` advances once per
+/// call until it reaches the vector's length, after which every subsequent
+/// `next` returns `None`. The receiver remains `Live` after exhaustion and
+/// drops at scope exit — see the `Iterator` trait doc-comment.
+///
+/// `Vec` is a refcounted heap handle, so the cursor carries the underlying
+/// vector storage by handle (no per-step copy).
+///
+/// Lives in `std/builtins.hew` rather than `std/vec.hew` so it registers
+/// alongside the Vec `Index` impl through `register_builtins_hew_impls` (the
+/// per-stdlib-module receiver-impl harness only handles a fixed set of
+/// receivers; auto-registration on builtin nominals belongs in builtins).
+pub type VecIter<T> {
+    vec: Vec<T>;
+    idx: i64;
+}
+
+impl<T> Iterator for VecIter<T> {
+    type Item = T;
+
+    /// Return `Some(vec.get(idx))` and advance `idx` by one; return `None`
+    /// once the cursor reaches the vector's length.
+    ///
+    /// The `self.idx = self.idx + 1` field-store mutates the receiver in
+    /// place; the caller observes the bumped cursor on the next call.
+    fn next(var self) -> Option<T> {
+        if self.idx >= self.vec.len() {
+            None
+        } else {
+            let v = self.vec.get(self.idx);
+            self.idx = self.idx + 1;
+            Some(v)
+        }
+    }
+}
+
+impl<T> IntoIterator for Vec<T> {
+    type Item = T;
+    type IntoIter = VecIter<T>;
+
+    /// Produce a `VecIter<T>` positioned at index `0`.
+    ///
+    /// The returned iterator shares the receiver's underlying refcounted
+    /// storage; mutating the source `Vec` while a `VecIter` is live yields
+    /// the same semantics as any other shared-handle aliasing in Hew
+    /// (no iterator-invalidation diagnostic — see Stage 5 HashSet note).
+    fn into_iter(v: Vec<T>) -> VecIter<T> {
+        VecIter { vec: v, idx: 0 }
+    }
 }
 
 // ---------------------------------------------------------------------------

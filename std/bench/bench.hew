@@ -49,13 +49,13 @@ trait SuiteMethods {
     /// Executes `f` for `iterations` times after a warmup phase
     /// (10% of iterations, minimum 1). Records min, max, avg, and total
     /// timing in nanoseconds.
-    fn add(suite: Suite, name: string, iterations: i64, f: fn());
+    fn add(self, name: string, iterations: i64, f: fn());
 
     /// Print results as a human-readable table.
-    fn report(suite: Suite);
+    fn report(self);
 
     /// Print results as a JSON array.
-    fn report_json(suite: Suite);
+    fn report_json(self);
 }
 
 impl SuiteMethods for Suite {

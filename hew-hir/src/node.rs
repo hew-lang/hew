@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
-use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy, VariantMatch};
+use hew_types::{ChildSlot, ExecutionContextReader, ImplId, ResolvedTy, TyPattern, VariantMatch};
 use hew_types::{NumericMethodFamily, NumericMethodOp, NumericSignedness, NumericWidth};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
@@ -648,6 +648,12 @@ pub struct HirTypeDecl {
     pub node: HirNodeId,
     pub name: String,
     pub marker: ResourceMarker,
+    /// `#[opaque]` — this type is a pointer-width opaque runtime handle.
+    /// Distinct from `marker` (which carries `BitCopy` for opaque-only
+    /// handles): downstream stages (construction gate, MIR ptr-layout) need
+    /// to recognise opacity specifically, since `BitCopy` is also used by
+    /// non-opaque substrate records.
+    pub is_opaque: bool,
     /// Names of methods declared with a `consuming self` receiver in the
     /// type body. Lifted verbatim from `TypeDecl.consuming_methods`.
     pub consuming_methods: Vec<String>,
@@ -851,6 +857,20 @@ pub enum HirExprKind {
         op: UnaryOp,
         operand: Box<HirExpr>,
         operand_ty: ResolvedTy,
+    },
+    /// Tuple literal construction (`(1, 2)`, `(a, b, c)`).
+    ///
+    /// Produced from `Expr::Tuple(elems)` when the checker has populated
+    /// `expr_types` for the tuple expression. The parent [`HirExpr::ty`] is
+    /// the tuple type (e.g. `ResolvedTy::Tuple(vec![I64, Bool])`); each
+    /// element in `elements` is a fully-lowered HIR expression whose type is
+    /// already validated by the checker.
+    ///
+    /// MIR lowering emits `Instr::TupleConstruct` — a stack-local allocation
+    /// of the tuple struct followed by per-element stores. Codegen maps the
+    /// tuple type to an unnamed LLVM struct with positional fields.
+    TupleLiteral {
+        elements: Vec<HirExpr>,
     },
     Call {
         callee: Box<HirExpr>,
@@ -1154,6 +1174,14 @@ pub enum HirExprKind {
     /// substitutes `receiver_type_param` via the monomorphization map, looks up
     /// the impl method via `(concrete_receiver_ty, declaring_trait, method_name)`,
     /// and emits an ordinary `Terminator::Call`.
+    #[deprecated(
+        note = "scheduled for removal once generic builtin dispatch (HashMap/HashSet/Vec \
+                migrated; Option/Result still pending) is fully migrated to \
+                `HirExprKind::ResolvedImplCall` which consumes \
+                `TypeCheckOutput::resolved_calls` (the structured \
+                `(ImplId, MethodTarget)` registry) directly. New construction sites are \
+                forbidden — see `call_trait_method_static_creation_allowlist` test."
+    )]
     CallTraitMethodStatic {
         receiver: Box<HirExpr>,
         /// Type-parameter name that carries the bound (e.g. "T").
@@ -1165,6 +1193,63 @@ pub enum HirExprKind {
         /// Method name within the declaring trait.
         method_name: String,
         args: Vec<HirExpr>,
+        ret_ty: ResolvedTy,
+    },
+    /// Builtin-generic trait dispatch resolved at type-check time via the
+    /// structured impl registry (`hew_types::check::dispatch::ImplRegistry`).
+    ///
+    /// Produced by `lower_method_call` when the checker's
+    /// `TypeCheckOutput::resolved_calls` side-table records a
+    /// [`hew_types::ResolvedCall`] for the call site.
+    ///
+    /// Carries the resolver's verdict verbatim: the opaque
+    /// [`hew_types::ImplId`] of the satisfying impl, the method name within
+    /// that impl, the concrete `type_args` resolved at the call site (as
+    /// [`hew_types::TyPattern`] — the resolver's data-only descriptor type),
+    /// the lowered argument list, and the checker-recorded return type.
+    ///
+    /// **Substrate status**: the variant is wired through every exhaustive
+    /// `HirExprKind` traversal (verify, dump, capture walks, machine-mono,
+    /// MIR closure-env suspend walk, etc.) so dataflow is preserved. MIR
+    /// `lower_value` lowers it to a `Terminator::Call { callee:
+    /// target_symbol, args: [receiver, lowered_args...], ... }` against the
+    /// kernel `hew_hashmap_*_layout` / `hew_hashset_*_layout` exports
+    /// declared by the C0b catalog and seeded into `module_fn_names`.
+    /// This is the production path for builtin generic dispatch of
+    /// HashMap/HashSet/Vec today; Option/Result migrate later.
+    ///
+    /// LESSONS: `checker-authority` (P0) — `impl_id` + `target_symbol`
+    /// come straight from the resolver's verdict; HIR never re-derives them.
+    ResolvedImplCall {
+        receiver: Box<HirExpr>,
+        /// Opaque identity of the satisfying impl in the checker's
+        /// `ImplRegistry`. Carried for downstream attribution (diagnostics,
+        /// drop-plan keying when Stage E lands); not consumed by today's
+        /// MIR lowering, which dispatches on `target_symbol` directly.
+        impl_id: ImplId,
+        /// Method name within `ImplDef::methods` (e.g. `"insert"`).
+        method_name: String,
+        /// Runtime symbol name from `MethodTarget.symbol_name` (e.g.
+        /// `"hew_hashmap_insert_layout"`). Stashed verbatim from the
+        /// resolver's verdict so MIR/codegen does not re-traverse the
+        /// `ImplRegistry` to recover it (LESSONS `checker-authority`,
+        /// `codegen-abi-authority`). Resolves at link time to the
+        /// `#[no_mangle] pub extern "C"` export in `hew-runtime`.
+        target_symbol: String,
+        /// Concrete type-arguments resolved at the call site, in
+        /// first-occurrence order of `TyPattern::Var`s in
+        /// `ImplDef::self_pattern`. Mirrors
+        /// [`hew_types::ResolvedCall::type_args`]. Consumed by codegen-side
+        /// catalog-presence checks (every K/V class the resolver accepts
+        /// must have a matching `BuiltinLinkage::LayoutDescriptorSymbol`
+        /// row in `stdlib_catalog`).
+        type_args: Vec<TyPattern>,
+        /// Lowered call arguments (without the receiver). MIR prepends
+        /// the receiver as arg[0] when constructing `Terminator::Call`.
+        args: Vec<HirExpr>,
+        /// Checker-recorded return type for the call site. Read from
+        /// `TypeCheckOutput::expr_types` at lowering time; carried here so
+        /// downstream consumers do not have to plumb `expr_types` separately.
         ret_ty: ResolvedTy,
     },
     /// Checker-authoritative integer opt-out method call:

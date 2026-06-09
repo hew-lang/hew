@@ -98,6 +98,36 @@ pub enum LookupError {
 }
 ";
 
+/// Stdlib-floor modules permitted to DECLARE `#[intrinsic("…")]` functions.
+///
+/// A605 (ratified): the `#[intrinsic]` surface is compiler-internal-only — no
+/// user-reachable module may declare an intrinsic. Each entry is a `.`-joined
+/// module path matched against the checker's `current_module`
+/// (e.g. `ModuleId { path: ["std", "math"] }` → `"std.math"`).
+///
+/// The list is an explicit, enumerated allowlist (not a prefix match): a module
+/// is a floor module only if its full dotted path is present here. This is the
+/// security boundary's authority — keep it as small as the floor requires.
+///
+/// Current members:
+/// - `std.math` — the math intrinsics (`exp`/`log`/`sqrt`/…) are declared as
+///   typed `#[intrinsic("math.*")]` stubs in `std/math/math.hew`; the catalog
+///   supplies the lowering.
+///
+/// W5.005 (F1b) will add the dedicated memory-intrinsic floor module here when
+/// it introduces `alloc`/`size_of`/typed-ptr ops; W5.004 ships the protocol +
+/// gate only, so no memory module is listed yet.
+const INTRINSIC_FLOOR_MODULES: &[&str] = &["std.math"];
+
+/// Returns `true` iff `module` is a stdlib-floor module permitted to declare
+/// `#[intrinsic]` functions (see [`INTRINSIC_FLOOR_MODULES`]).
+///
+/// Fail-closed: the root/user module (`None`) is never a floor module, and any
+/// module path not in the explicit allowlist is rejected.
+fn is_intrinsic_floor_module(module: Option<&str>) -> bool {
+    module.is_some_and(|m| INTRINSIC_FLOOR_MODULES.contains(&m))
+}
+
 /// Raw TOML text of `scripts/jit-symbol-classification.toml`, embedded at
 /// compile time so `extern "rt"` validation does not require a runtime file
 /// read and works in test environments without a workspace checkout.
@@ -3670,6 +3700,19 @@ impl Checker {
                             id.type_params.as_ref(),
                             id.where_clause.as_ref(),
                         );
+                        // Q004: enforce impl-vs-trait signature equivalence at
+                        // the impl site so mismatches surface where the user
+                        // wrote them, not as a confusing "type does not satisfy
+                        // trait" downstream. See LESSONS row `diagnostic-trust`.
+                        if let Some(tb) = id.trait_bound.as_ref() {
+                            self.check_impl_method_against_trait(
+                                type_name,
+                                &self_type_args,
+                                tb,
+                                method,
+                                &sig,
+                            );
+                        }
                         // Stage A1: when the receiver is a primitive or compiler-builtin
                         // generic, `lookup_type_def_mut(type_name)` returns `None` so the
                         // sig has nowhere to live for later dispatch.  Mirror it onto the
@@ -4168,6 +4211,15 @@ impl Checker {
             is_pure: fd.is_pure,
             doc_comment: fd.doc_comment.clone(),
             extern_symbol: self.ingest_extern_symbol_attrs(&fd.attributes),
+            // Receiver mutability flag — see `FnSig::requires_mutable_receiver`.
+            // Only methods (Type::method) can carry a receiver; free functions
+            // whose first parameter happens to be named `self` are not methods
+            // in this sense (matches the `skip` logic above).
+            requires_mutable_receiver: is_method
+                && fd
+                    .params
+                    .first()
+                    .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
             ..FnSig::default()
         };
 
@@ -4175,12 +4227,127 @@ impl Checker {
             .unwrap_or_else(|| name.to_string());
         self.fn_sigs.insert(key.clone(), sig);
         self.record_fn_sig_inference_holes(&key, hole_vars);
-        // If the declaration carries `#[intrinsic("name")]`, record the
-        // mapping so HIR lowering can skip the body and wire to the catalog.
+        // If the declaration carries `#[intrinsic("name")]`, validate its
+        // placement and (if accepted) record the mapping so HIR lowering can
+        // skip the body and wire to the catalog.
         if let Some(intrinsic_key) = &fd.intrinsic {
-            self.intrinsic_declarations
-                .insert(key, intrinsic_key.clone());
+            self.register_intrinsic_declaration(key, intrinsic_key, name, fd);
         }
+    }
+
+    /// Validate a `#[intrinsic("…")]` declaration's placement and, if it lives
+    /// in a stdlib-floor module **and** is a top-level free function, record
+    /// the name→key mapping consumed by HIR lowering.
+    ///
+    /// P0 surface-immutability gate (A605, plan §7 risk 4): the `#[intrinsic]`
+    /// surface is compiler-internal-only. Any declaration outside the
+    /// designated stdlib-floor modules — including the root/user module — is a
+    /// hard `E_INTRINSIC_OUTSIDE_FLOOR` error so a user program (or any
+    /// non-floor module) cannot wire itself to a compiler intrinsic. Fail-closed:
+    /// every non-allowlisted module path is rejected, never silently allowed.
+    ///
+    /// **Two-axis gate** — this is the single complete enforcement point:
+    ///
+    /// * **(a) Module axis**: the current module must be on the floor allowlist.
+    ///   `#[intrinsic]` in the root/user module or any non-floor module is
+    ///   rejected with `E_INTRINSIC_OUTSIDE_FLOOR`.
+    ///
+    /// * **(b) Shape axis**: the `key` must be a top-level free-function name
+    ///   (no `::` separator). A method key of the form `"Type::method"` — which
+    ///   arises for impl methods, actor methods, and trait-impl methods that flow
+    ///   through `register_fn_sig_with_name` — is rejected with
+    ///   `E_INTRINSIC_ON_METHOD`, regardless of module. Compiler intrinsics are
+    ///   wired to standalone catalog entries; they are never method dispatch
+    ///   slots.
+    ///
+    /// A declaration that passes both axes is inserted into
+    /// `intrinsic_declarations`. A rejected declaration is never inserted, so
+    /// it cannot become a live intrinsic dispatch target.
+    fn register_intrinsic_declaration(
+        &mut self,
+        key: String,
+        intrinsic_key: &str,
+        name: &str,
+        fd: &FnDecl,
+    ) {
+        // Shape axis (b): a key containing `::` is a method (e.g. `"Type::method"`).
+        // Impl methods, actor methods, and trait-impl methods all reach here with
+        // such a key via `register_fn_sig_with_name`.  Methods are never valid
+        // intrinsic declarations, regardless of which module they live in.
+        // Reject early and do NOT insert into `intrinsic_declarations`.
+        if key.contains("::") {
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::IntrinsicOnMethod {
+                    intrinsic_key: intrinsic_key.to_string(),
+                    method_key: key.clone(),
+                },
+                span: fd.decl_span.clone(),
+                message: format!(
+                    "E_INTRINSIC_ON_METHOD: `#[intrinsic(\"{intrinsic_key}\")]` on \
+                     `{name}` (key `{key}`) is declared on an impl method — \
+                     the `#[intrinsic]` surface is valid only on top-level free \
+                     functions inside a stdlib-floor module; method dispatch \
+                     slots are never wired to compiler intrinsics (A605)"
+                ),
+                notes: vec![(
+                    fd.decl_span.clone(),
+                    "Compiler intrinsics are catalog entries keyed on bare function \
+                     names; they cannot be dispatched through a receiver. Expose the \
+                     intrinsic as a top-level free function in the floor module and \
+                     call it from the impl method body if needed."
+                        .to_string(),
+                )],
+                suggestions: vec![
+                    "remove the `#[intrinsic(\"…\")]` attribute from this method".to_string(),
+                    "if a new intrinsic is genuinely needed, declare it as a top-level \
+                     free function in the appropriate stdlib-floor module"
+                        .to_string(),
+                ],
+                source_module: self.current_module.clone(),
+            });
+            // Deliberately do NOT record the intrinsic mapping: a rejected
+            // declaration must not become a live intrinsic dispatch target.
+            return;
+        }
+        // Module axis (a): the declaration must live in a stdlib-floor module.
+        if is_intrinsic_floor_module(self.current_module.as_deref()) {
+            self.intrinsic_declarations
+                .insert(key, intrinsic_key.to_string());
+            return;
+        }
+        let module_label = self
+            .current_module
+            .clone()
+            .unwrap_or_else(|| "(root)".to_string());
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::IntrinsicOutsideFloor {
+                intrinsic_key: intrinsic_key.to_string(),
+                module: module_label.clone(),
+            },
+            span: fd.decl_span.clone(),
+            message: format!(
+                "E_INTRINSIC_OUTSIDE_FLOOR: `#[intrinsic(\"{intrinsic_key}\")]` on \
+                 `{name}` is declared in `{module_label}`, which is not a \
+                 stdlib-floor module — the `#[intrinsic]` surface is \
+                 compiler-internal-only and cannot be declared by user code"
+            ),
+            notes: vec![(
+                fd.decl_span.clone(),
+                "Memory and math intrinsics are wired by the compiler; user \
+                 programs call the stdlib functions that the floor exposes, \
+                 they never declare `#[intrinsic]` themselves. There is no \
+                 user-visible `unsafe`/`@unsafe` surface (A605)."
+                    .to_string(),
+            )],
+            suggestions: vec!["remove the `#[intrinsic(\"…\")]` attribute and call the \
+                 corresponding stdlib function instead"
+                .to_string()],
+            source_module: self.current_module.clone(),
+        });
+        // Deliberately do NOT record the intrinsic mapping: a rejected
+        // declaration must not become a live intrinsic dispatch target.
     }
 
     /// Register an impl method on a type's method table and `fn_sigs`.
@@ -4337,12 +4504,396 @@ impl Checker {
             is_async: method.is_async,
             is_pure: method.is_pure,
             extern_symbol,
+            // Mirror `register_fn_sig_with_name`'s computation so that
+            // `lookup_named_method_sig` (which prefers `td.methods` before
+            // `fn_sigs`) returns a sig with the receiver-mutability flag
+            // set. Without this, the call-site mutable-binding gate at
+            // `methods.rs` (Q297 Stage 1) silently misses every trait impl
+            // method on a user type.
+            requires_mutable_receiver: method
+                .params
+                .first()
+                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
             ..FnSig::default()
         };
         if let Some(td) = self.lookup_type_def_mut(type_name) {
             td.methods.insert(method.name.clone(), sig.clone());
         }
         sig
+    }
+
+    /// Substitute trait-side type references into impl-side concrete types.
+    ///
+    /// Walks `ty` recursively and replaces:
+    /// * `Ty::Named { name: "Self", args: [] }` → `impl_self`
+    /// * `Ty::Named { name: <trait type param>, args: [] }` → the impl-supplied
+    ///   type arg from `trait_param_map`
+    /// * `Ty::AssocType { base: Self, trait_name == trait_name, assoc_name }`
+    ///   → the impl's `type <assoc_name> = X` binding when present
+    ///
+    /// Used by [`Self::check_impl_method_against_trait`] to project the trait
+    /// method's declared signature into the concrete shape the impl method
+    /// must match. Returns the input unchanged for any subterm the
+    /// substitution cannot resolve (so comparison errs on the side of
+    /// accepting rather than firing on partial information).
+    fn substitute_trait_sig_for_impl(
+        &self,
+        ty: &Ty,
+        impl_self: &Ty,
+        impl_target_name: &str,
+        trait_name: &str,
+        trait_param_map: &HashMap<String, Ty>,
+    ) -> Ty {
+        match ty {
+            Ty::Named { name, args, .. } if args.is_empty() && name == "Self" => impl_self.clone(),
+            Ty::Named { name, args, .. } if args.is_empty() => {
+                if let Some(mapped) = trait_param_map.get(name) {
+                    return mapped.clone();
+                }
+                ty.clone()
+            }
+            Ty::AssocType {
+                base,
+                trait_name: tn,
+                assoc_name,
+            } => {
+                let base_is_self = matches!(&**base, Ty::Named { name, args, .. } if name == "Self" && args.is_empty());
+                if base_is_self && tn.as_ref() == trait_name {
+                    let key = (
+                        impl_target_name.to_string(),
+                        trait_name.to_string(),
+                        assoc_name.as_ref().to_string(),
+                    );
+                    if let Some(resolved) = self.impl_assoc_type_bindings.get(&key) {
+                        return resolved.clone();
+                    }
+                }
+                let new_base = self.substitute_trait_sig_for_impl(
+                    base,
+                    impl_self,
+                    impl_target_name,
+                    trait_name,
+                    trait_param_map,
+                );
+                Ty::AssocType {
+                    base: Box::new(new_base),
+                    trait_name: tn.clone(),
+                    assoc_name: assoc_name.clone(),
+                }
+            }
+            _ => ty.map_children_pub(&|child| {
+                self.substitute_trait_sig_for_impl(
+                    child,
+                    impl_self,
+                    impl_target_name,
+                    trait_name,
+                    trait_param_map,
+                )
+            }),
+        }
+    }
+
+    /// Rename method-level type parameter names in `ty` from the trait's
+    /// declared names to the impl's declared names, paired positionally.
+    ///
+    /// Accepts the legitimate case where an impl renames a trait's method
+    /// type param (`fn map<T>` in the trait, `fn map<U>` in the impl): after
+    /// renaming, `Ty::Named { name: "T" }` becomes `Ty::Named { name: "U" }`
+    /// in the expected sig so structural equality with the impl sig holds.
+    ///
+    /// Only renames when both sides declare the same number of method-level
+    /// type params. Skips otherwise so a separate arity-of-type-params
+    /// diagnostic (future) is not preempted.
+    fn rename_method_type_params(
+        ty: &Ty,
+        trait_method_tps: Option<&Vec<hew_parser::ast::TypeParam>>,
+        impl_method_tps: Option<&Vec<hew_parser::ast::TypeParam>>,
+    ) -> Ty {
+        let trait_names: Vec<&str> = trait_method_tps
+            .map(|v| v.iter().map(|tp| tp.name.as_str()).collect())
+            .unwrap_or_default();
+        let impl_names: Vec<&str> = impl_method_tps
+            .map(|v| v.iter().map(|tp| tp.name.as_str()).collect())
+            .unwrap_or_default();
+        if trait_names.is_empty() || trait_names.len() != impl_names.len() {
+            return ty.clone();
+        }
+        let mut renamed = ty.clone();
+        for (t, u) in trait_names.iter().zip(impl_names.iter()) {
+            if t == u {
+                continue;
+            }
+            let replacement = Ty::Named {
+                builtin: None,
+                name: (*u).to_string(),
+                args: vec![],
+            };
+            renamed = renamed.substitute_named_param(t, &replacement);
+        }
+        renamed
+    }
+
+    /// Enforce that an impl method's signature matches the declared trait
+    /// method's signature, after substituting `Self`, trait type parameters,
+    /// and the impl's associated-type aliases. Q004 / LESSONS
+    /// `diagnostic-trust`: emits at the impl method's local span so the user
+    /// sees the actual divergence instead of a confusing
+    /// "type does not satisfy trait" cascaded from a later call site.
+    ///
+    /// Silent (no diagnostic) when:
+    /// * the trait method is not declared (a separate "extra method" check is
+    ///   future work; this lane only enforces equivalence of methods that are
+    ///   intended to satisfy a declared trait method);
+    /// * the trait signature was not registered (already produced a
+    ///   diagnostic, would double-fire);
+    /// * any side of the comparison contains `Ty::Error` (cascading
+    ///   suppression — see the `cascading-Ty::Error` invariant);
+    /// * the receiver-skip stripped a different number of params on either
+    ///   side because the impl elided the receiver (treat as receiver-kind
+    ///   mismatch and report).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single-source-of-truth for the impl-vs-trait sig comparison; \
+                  factoring would obscure the substitution / projection / \
+                  renaming order that the comparison depends on"
+    )]
+    pub(super) fn check_impl_method_against_trait(
+        &mut self,
+        type_name: &str,
+        self_type_args: &[Ty],
+        trait_bound: &TraitBound,
+        method: &FnDecl,
+        impl_sig: &FnSig,
+    ) {
+        let trait_name = trait_bound.name.clone();
+        let Some(trait_info) = self.trait_defs.get(&trait_name).cloned() else {
+            return;
+        };
+        let Some(trait_method) = trait_info
+            .methods
+            .iter()
+            .find(|m| m.name == method.name)
+            .cloned()
+        else {
+            return;
+        };
+        let trait_method_key = format!("{trait_name}::{}", method.name);
+        let scoped_trait_key =
+            scoped_module_item_name(self.current_module.as_deref(), &trait_method_key)
+                .unwrap_or_else(|| trait_method_key.clone());
+        let Some(trait_sig) = self
+            .fn_sigs
+            .get(&scoped_trait_key)
+            .or_else(|| self.fn_sigs.get(&trait_method_key))
+            .cloned()
+        else {
+            return;
+        };
+
+        // Build trait-type-param substitution map.
+        let mut trait_param_map: HashMap<String, Ty> = HashMap::new();
+        if let Some(args) = trait_bound.type_args.as_ref() {
+            for (param_name, arg_expr) in trait_info.type_params.iter().zip(args.iter()) {
+                let resolved = self.resolve_type_expr(arg_expr);
+                trait_param_map.insert(param_name.clone(), resolved);
+            }
+        }
+
+        let impl_self = Ty::Named {
+            builtin: None,
+            name: type_name.to_string(),
+            args: self_type_args.to_vec(),
+        };
+
+        // Materialise the expected impl-side signature.
+        let expected_params: Vec<Ty> = trait_sig
+            .params
+            .iter()
+            .map(|p| {
+                let projected = self.substitute_trait_sig_for_impl(
+                    p,
+                    &impl_self,
+                    type_name,
+                    &trait_name,
+                    &trait_param_map,
+                );
+                Self::rename_method_type_params(
+                    &projected,
+                    trait_method.type_params.as_ref(),
+                    method.type_params.as_ref(),
+                )
+            })
+            .collect();
+        let expected_return = {
+            let projected = self.substitute_trait_sig_for_impl(
+                &trait_sig.return_type,
+                &impl_self,
+                type_name,
+                &trait_name,
+                &trait_param_map,
+            );
+            Self::rename_method_type_params(
+                &projected,
+                trait_method.type_params.as_ref(),
+                method.type_params.as_ref(),
+            )
+        };
+
+        // Cascading-Ty::Error suppression: if anything in expected or actual
+        // is Error, skip — earlier diagnostics already explain the failure.
+        let any_error = expected_params.iter().any(Ty::contains_error)
+            || expected_return.contains_error()
+            || impl_sig.params.iter().any(Ty::contains_error)
+            || impl_sig.return_type.contains_error();
+        if any_error {
+            return;
+        }
+
+        let report_span = if method.decl_span.start != method.decl_span.end {
+            method.decl_span.clone()
+        } else if method.fn_span.start != method.fn_span.end {
+            method.fn_span.clone()
+        } else {
+            // Defensive: if the parser left both blank, fall back to the trait
+            // method span so the message still anchors to a real source range.
+            trait_method.span.clone()
+        };
+
+        if expected_params.len() != impl_sig.params.len() {
+            // Arity mismatch — also fires when the impl wrote a different
+            // receiver shape (e.g. `(it: X)` vs `(self)`), because the impl's
+            // non-Self first param is not detected as a receiver and so is
+            // *not* skipped, producing a different post-skip arity.
+            self.report_error_with_note(
+                TypeErrorKind::TraitImplSignatureMismatch {
+                    trait_name: trait_name.clone(),
+                    method_name: method.name.clone(),
+                    detail: "arity",
+                },
+                &report_span,
+                format!(
+                    "impl method `{type_name}::{}` has {} parameter(s) but trait `{trait_name}` declares {} \
+                     (after substituting `Self` and projecting associated types)",
+                    method.name,
+                    impl_sig.params.len(),
+                    expected_params.len(),
+                ),
+                &trait_method.span,
+                format!(
+                    "trait method `{trait_name}::{}` declared here",
+                    method.name
+                ),
+            );
+            return;
+        }
+
+        // Receiver-mutability axis (Q297 Stage 1): when both sides declare a
+        // receiver, the `is_mutable` flag must match. A trait declaring
+        // `fn next(var self)` and an impl declaring `fn next(self)` (or vice
+        // versa) is a hard reject — the receiver-mutability axis is part of
+        // the contract, not a free parameter the impl may choose.
+        //
+        // Determine each side's receiver-mutability flag by checking the
+        // first parameter for receiver-shape. This mirrors how
+        // `register_impl_method` and `register_fn_sig_with_name` already
+        // detect-and-skip receivers when building the signature's params
+        // list; the receiver's `is_mutable` flag is otherwise dropped on
+        // the floor, which is precisely the contract gap this check closes.
+        let trait_receiver_mut = trait_method
+            .params
+            .first()
+            .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+        let impl_receiver_mut = method
+            .params
+            .first()
+            .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+        if trait_receiver_mut != impl_receiver_mut {
+            let (trait_shape, impl_shape) = if trait_receiver_mut {
+                (
+                    "`var self` (mutable receiver)",
+                    "`self` (by-value receiver)",
+                )
+            } else {
+                (
+                    "`self` (by-value receiver)",
+                    "`var self` (mutable receiver)",
+                )
+            };
+            self.report_error_with_note(
+                TypeErrorKind::TraitImplSignatureMismatch {
+                    trait_name: trait_name.clone(),
+                    method_name: method.name.clone(),
+                    detail: "receiver mutability",
+                },
+                &report_span,
+                format!(
+                    "impl method `{type_name}::{}` declares {impl_shape} but trait `{trait_name}` requires {trait_shape}",
+                    method.name,
+                ),
+                &trait_method.span,
+                format!(
+                    "trait method `{trait_name}::{}` declared here",
+                    method.name
+                ),
+            );
+            return;
+        }
+
+        for (i, (expected, actual)) in expected_params
+            .iter()
+            .zip(impl_sig.params.iter())
+            .enumerate()
+        {
+            if expected != actual {
+                let param_label = impl_sig.param_names.get(i).map_or_else(
+                    || format!("parameter {}", i + 1),
+                    |n| format!("parameter `{n}`"),
+                );
+                self.report_error_with_note(
+                    TypeErrorKind::TraitImplSignatureMismatch {
+                        trait_name: trait_name.clone(),
+                        method_name: method.name.clone(),
+                        detail: "parameter",
+                    },
+                    &report_span,
+                    format!(
+                        "impl method `{type_name}::{}` {param_label} has type `{}` but trait `{trait_name}` \
+                         requires `{}`",
+                        method.name,
+                        actual.user_facing(),
+                        expected.user_facing(),
+                    ),
+                    &trait_method.span,
+                    format!(
+                        "trait method `{trait_name}::{}` declared here",
+                        method.name
+                    ),
+                );
+                return;
+            }
+        }
+
+        if expected_return != impl_sig.return_type {
+            self.report_error_with_note(
+                TypeErrorKind::TraitImplSignatureMismatch {
+                    trait_name: trait_name.clone(),
+                    method_name: method.name.clone(),
+                    detail: "return type",
+                },
+                &report_span,
+                format!(
+                    "impl method `{type_name}::{}` returns `{}` but trait `{trait_name}` requires `{}`",
+                    method.name,
+                    impl_sig.return_type.user_facing(),
+                    expected_return.user_facing(),
+                ),
+                &trait_method.span,
+                format!(
+                    "trait method `{trait_name}::{}` declared here",
+                    method.name
+                ),
+            );
+        }
     }
 
     pub(super) fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {

@@ -240,9 +240,18 @@ pub enum HirDiagnosticKind {
         event_name: String,
     },
     /// A method call expression has no entry in `TypeCheckOutput.method_call_rewrites`
-    /// for its span.  Fail-closed per the `checker-output-boundary` invariant:
-    /// HIR lowering never re-infers a runtime symbol from the receiver type; every
-    /// lowerable method call must be backed by a checker-produced rewrite entry.
+    /// AND no entry in `TypeCheckOutput.resolved_calls` for its span. Fail-closed
+    /// per the `checker-output-boundary` invariant: HIR lowering never re-infers
+    /// a runtime symbol from the receiver type; every lowerable method call must
+    /// be backed by a checker-produced rewrite entry (legacy path) or a
+    /// `ResolvedImplCall` (Stage C resolver-authority path, e.g. `HashMap` /
+    /// `HashSet` after the W4.001 DI-017 cutover).
+    ///
+    /// Post-Stage-C3 this diagnostic should be a boundary-violation signal only:
+    /// user-reachable `HashMap`/`HashSet` mistakes now surface as resolver-side
+    /// `TypeErrorKind::BoundsNotSatisfied` BEFORE lowering. Reaching this arm in
+    /// production traffic indicates the checker / HIR boundary contract was
+    /// broken — a regression worth investigating, not a missing user feature.
     MethodCallNoRewrite {
         /// The method name the user wrote (e.g. `send`).
         method: String,

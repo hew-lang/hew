@@ -1,0 +1,44 @@
+// Vec method dispatch via the resolved-call kernel — exercises the
+// scalar, layout, and string-element paths end-to-end (push, pop, len,
+// get, set, remove, contains, is_empty, clone, append, extend, clear,
+// join) so any regression in the checker/HIR/MIR/codegen chain that
+// powers `Vec<T>` shows up here.
+
+record Point { x: i64, y: i64 }
+
+fn main() -> i64 {
+    let nums: Vec<i64> = Vec::new();
+    nums.push(1);
+    nums.push(2);
+    let _popped = nums.pop();
+    nums.push(3);
+    let _len = nums.len();
+    let _first = nums.get(0);
+    nums.set(0, 4);
+    nums.remove(0);
+    let _has = nums.contains(3);
+    let _empty = nums.is_empty();
+    let _copy = nums.clone();
+
+    let more: Vec<i64> = Vec::new();
+    nums.append(more);
+    let extra: Vec<i64> = Vec::new();
+    nums.extend(extra);
+    nums.clear();
+
+    let words: Vec<string> = Vec::new();
+    words.push("a");
+    words.push("b");
+    let _joined = words.join(",");
+
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 1, y: 2 });
+    let _point = points.get(0);
+    points.set(0, Point { x: 3, y: 4 });
+    let _has_point = points.contains(Point { x: 3, y: 4 });
+    let _points_copy = points.clone();
+    points.remove(0);
+    points.push(Point { x: 5, y: 6 });
+    let _maybe_point = points.pop();
+    return 0;
+}

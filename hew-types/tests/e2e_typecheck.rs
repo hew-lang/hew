@@ -144,6 +144,7 @@ fn main() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashmap_i64_key_remove_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -300,12 +301,17 @@ fn consume(s: Stream<string>) {
 }
 
 /// V0a: built-in Vec methods (`push`/`pop`/`get`/`set`/`len`/`clear`/
-/// `is_empty`/`contains`/`remove`/`append`/`clone`) must populate
-/// `method_call_rewrites` with the element-typed `hew_vec_*` runtime symbol
-/// so HIR lowering can rewrite the call to a free-function dispatch. Each
-/// assertion below corresponds to one arm in `check_vec_method`; together
-/// they exercise the full V0a surface.
+/// `is_empty`/`contains`/`remove`/`append`/`clone`) used to populate
+/// `method_call_rewrites` with the element-typed `hew_vec_*` runtime
+/// symbol so HIR lowering could rewrite the call to a free-function
+/// dispatch. The Vec migration to the resolved-call kernel made the
+/// resolver the sole admission authority for Vec method dispatch, so
+/// `method_call_rewrites` no longer carries Vec entries — coverage for
+/// the same surface now lives in
+/// `hew-types/tests/no_legacy_vec_rewrite.rs` (structural absence) and
+/// `hew-types/tests/resolved_call_registry_lookup.rs` (resolver entries).
 #[test]
+#[ignore = "Vec dispatch migrated to the resolved-call kernel; legacy `MethodCallRewrite::RewriteToFunction` Vec entries no longer exist. Coverage moved to resolved_calls assertions and the no_legacy_vec_rewrite structural test."]
 fn method_call_rewrites_record_vec_builtin_runtime_dispatch() {
     fn has_rewrite(output: &hew_types::TypeCheckOutput, expected_symbol: &str) -> bool {
         output.method_call_rewrites.values().any(|rewrite| {
@@ -3674,6 +3680,7 @@ fn hashset_int_insert_ok() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_inferred_literal_then_i16_insert_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -3756,6 +3763,7 @@ fn loader_registered_module_slice_signature_rejected_before_registration() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_bool_insert_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -3775,6 +3783,7 @@ fn hashset_bool_insert_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_i32_insert_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -3794,6 +3803,7 @@ fn hashset_i32_insert_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_u32_insert_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -3813,6 +3823,7 @@ fn hashset_u32_insert_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_small_integer_inserts_rejected_before_codegen() {
     for elem_ty in ["i8", "u8", "i16", "u16"] {
         let source = format!(
@@ -3836,6 +3847,7 @@ fn hashset_small_integer_inserts_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_i32_len_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -3855,6 +3867,7 @@ fn hashset_i32_len_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_bool_type_field_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -3875,6 +3888,7 @@ fn hashset_bool_type_field_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_bool_param_annotation_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -3897,6 +3911,7 @@ fn hashset_bool_param_annotation_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_bool_return_annotation_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -3919,6 +3934,7 @@ fn hashset_bool_return_annotation_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_bool_nested_in_vec_annotation_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -3938,6 +3954,7 @@ fn hashset_bool_nested_in_vec_annotation_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_i32_nested_in_option_param_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -3960,6 +3977,7 @@ fn hashset_i32_nested_in_option_param_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_bool_nested_in_result_return_rejected_before_codegen() {
     let output = typecheck_inline(
         r#"
@@ -3982,6 +4000,7 @@ fn hashset_bool_nested_in_result_return_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_i32_nested_in_type_field_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -4002,6 +4021,7 @@ fn hashset_i32_nested_in_type_field_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_bool_nested_in_actor_field_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -4024,6 +4044,7 @@ fn hashset_bool_nested_in_actor_field_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_i32_nested_in_machine_state_field_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -4046,6 +4067,7 @@ fn hashset_i32_nested_in_machine_state_field_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_bool_in_wire_enum_tuple_variant_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -4066,6 +4088,7 @@ fn hashset_bool_in_wire_enum_tuple_variant_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashset_i32_nested_in_wire_enum_struct_variant_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -4111,6 +4134,7 @@ fn inferred_hashmap_string_string_map_literal_typechecks_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashmap_i64_key_len_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -4131,6 +4155,7 @@ fn hashmap_i64_key_len_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn hashmap_tuple_value_annotation_rejected_before_codegen() {
     let output = typecheck_inline(
         r"
@@ -4152,6 +4177,7 @@ fn hashmap_tuple_value_annotation_rejected_before_codegen() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives. These rejection-shape assertions are obsolete; coverage shifts to resolver-side BoundsNotSatisfied tests and end-to-end behavior fixtures."]
 fn inferred_hashmap_tuple_value_map_literal_rejected_before_codegen() {
     let output = typecheck_inline(
         r#"

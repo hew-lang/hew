@@ -1,0 +1,52 @@
+// Vec<T> + HashMap<K,V> actor-state drop run-pass exercise.
+//
+// Companion to `hashset_actor_drop_run_pass.hew`. W5.001 (F0a) made
+// `collection_layout_witness` the sole authority for collection clone/drop
+// symbol selection: `emit_field_clone_step` / `emit_field_drop_step` derive
+// BOTH the clone and the free symbol for a Vec/HashMap/HashSet state field
+// from the single layout-witness descriptor, so the constructor, clone, and
+// free can never select mismatched runtime ABI families (the W4.045 UAF
+// class). This fixture pins the corrected end-to-end drop wiring for Vec and
+// HashMap state fields (verifiable in the emitted IR: only `hew_vec_free_managed`
+// and `hew_hashmap_free_layout` appear on the drop side).
+//
+// As with the HashSet fixture, the collections are built and populated in
+// `main` and moved into the actor's initial state, so the only context that
+// touches them is the synthesised `state_drop_fn` on actor teardown — the
+// load-bearing drop-safety path. In-receive collection field access is a
+// separate, pre-existing gap and is deliberately avoided here.
+//
+// WASM is intentionally not registered: the codegen gate maps every
+// `hew_hashmap_*_layout` callee to a structured `WasmUnsupportedSubstrate`
+// diagnostic before lowering — the v0.5 fail-closed behaviour for this
+// native-only runtime substrate (tracked WASM-parity gap).
+//
+// `hew run examples/v05/collection_actor_drop_run_pass.hew` must complete with
+// exit 0 and print `ok`.
+actor CollectionHolder {
+    let counts: HashMap<string, i64>;
+    let scores: Vec<i64>;
+    receive fn ping() -> i64 {
+        1
+    }
+}
+
+fn main() {
+    // Populate the map so state-drop frees NON-EMPTY layout storage.
+    let counts = HashMap::new<string, i64>();
+    counts.insert("alpha", 1);
+    counts.insert("beta", 2);
+    counts.insert("gamma", 3);
+    counts.insert("delta", 4);
+
+    // Populate the vec so state-drop frees NON-EMPTY backing storage.
+    let scores = Vec::new<i64>();
+    scores.push(10);
+    scores.push(20);
+    scores.push(30);
+    let holder = spawn CollectionHolder(counts: counts, scores: scores);
+    let acked = holder.ping();
+    if acked == 1 {
+        println("ok");
+    }
+}

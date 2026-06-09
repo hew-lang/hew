@@ -27,6 +27,7 @@
 ///
 /// Created by calling `smtp.connect(...)` or `smtp.connect_tls(...)`.
 /// Use `send()` or `send_html()` to deliver messages.
+#[opaque]
 type Conn {
 }
 
@@ -34,19 +35,19 @@ type Conn {
 /// Methods available on an SMTP `Conn`.
 trait ConnMethods {
     /// Send a plain-text email. Return 0 on success.
-    fn send(conn: Conn, from: string, to: string, subject: string, body: string) -> i64;
+    fn send(self, from: string, to: string, subject: string, body: string) -> i64;
 
     /// Send a plain-text email.
-    fn try_send(conn: Conn, from: string, to: string, subject: string, body: string) -> Result<(), string>;
+    fn try_send(self, from: string, to: string, subject: string, body: string) -> Result<(), string>;
 
     /// Send an HTML email. Return 0 on success.
-    fn send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> i64;
+    fn send_html(self, from: string, to: string, subject: string, html: string) -> i64;
 
     /// Send an HTML email.
-    fn try_send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> Result<(), string>;
+    fn try_send_html(self, from: string, to: string, subject: string, html: string) -> Result<(), string>;
 
     /// Close the SMTP connection.
-    fn close(conn: Conn);
+    fn close(self);
 }
 
 impl ConnMethods for Conn {

@@ -21,32 +21,33 @@
 ///
 /// Created by `semaphore.new(count)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
+#[opaque]
 type Semaphore {
 }
 
 /// Methods available on a `Semaphore`.
 trait SemaphoreMethods {
     /// Block until a permit is available, then acquire it.
-    fn acquire(sem: Semaphore);
+    fn acquire(self);
 
     /// Try to acquire a permit without blocking.
     ///
     /// Returns `true` if a permit was acquired, `false` otherwise.
-    fn try_acquire(sem: Semaphore) -> bool;
+    fn try_acquire(self) -> bool;
 
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
     ///
     /// Returns `true` if a permit was acquired before the timeout.
-    fn acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool;
+    fn acquire_timeout(self, timeout_ms: i64) -> bool;
 
     /// Release a previously acquired permit.
-    fn release(sem: Semaphore);
+    fn release(self);
 
     /// Return the current number of available permits.
-    fn count(sem: Semaphore) -> i64;
+    fn count(self) -> i64;
 
     /// Release the semaphore resources.
-    fn free(sem: Semaphore);
+    fn free(self);
 }
 
 impl SemaphoreMethods for Semaphore {

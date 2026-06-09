@@ -1,0 +1,16 @@
+// Accept: builtin (stdlib) Option<i64> with bare `None` — NO user `enum Option<T>`.
+// W4.042: the checker now records the bare `None`'s resolved type at its span,
+// so HIR stamps the concrete `Option<i64>` args and codegen resolves the
+// `Option$$i64` layout (previously a D10 violation at the LLVM emitter).
+// The None arm must drive the exit code (99), so the exit value derives from
+// the path under test rather than a hardcoded literal beside uninvoked code.
+fn nothing() -> Option<i64> {
+    None
+}
+
+fn main() -> i64 {
+    match nothing() {
+        Some(v) => v,
+        None => 99,
+    }
+}

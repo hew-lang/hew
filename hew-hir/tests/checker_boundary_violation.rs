@@ -69,7 +69,7 @@ fn poisoned_expr_types_emits_checker_boundary_violation() {
     // W4.015: behavior pin — hand-poison expr_types with an unresolved
     // TypeVar to cover the permanent CheckerBoundaryViolation path.
     let mut tc = TypeCheckOutput::default();
-    tc.expr_types.insert(span_key, Ty::Var(TypeVar(0)));
+    tc.insert_expr_type(span_key, Ty::Var(TypeVar(0)));
 
     let lower_output = lower_program(
         &parsed.program,

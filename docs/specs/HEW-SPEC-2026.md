@@ -2077,9 +2077,8 @@ impl Drop for File {
 ### 3.10 Standard Library Architecture
 
 Hew ships its standard library as Hew source under `std/`. Modules are imported
-by path (`import std::math;`, `import std::fs;`,
-`import std::collections::hashset;`) and most high-level APIs are defined in
-those source modules rather than by a separate metadata system.
+by path (`import std::math;`, `import std::fs;`) and most high-level APIs are
+defined in those source modules rather than by a separate metadata system.
 
 #### 3.10.1 Edition 2026 normative stdlib surface
 
@@ -2249,7 +2248,6 @@ The current release exposes concrete stdlib modules rather than a large trait
 hierarchy. Representative APIs include:
 
 ```hew
-import std::collections::hashset;
 import std::deque;
 import std::fmt;
 import std::io;
@@ -2273,13 +2271,13 @@ Important current details:
 
 - `std::io` currently provides plain functions (`read_line`, `write`,
   `write_err`, `read_all`), not `Read`/`Write`/`BufRead` traits
-- `std::collections::hashset` currently lowers the supported surface forms
-  `HashSet<i64>` and `HashSet<String>` through type-specific runtime entry
-  points; unsupported `HashSet<T>` usages are rejected fail-closed during
-  type checking, including nested annotations, function signatures, and
-  `wire enum` payloads; collection element admissibility also requires the
-  internal RcFree boundary, so `HashSet<Rc<T>>`, named wrappers that contain
-  `Rc`, and `LocalPid<A>` handles to actors with `Rc` state are rejected
+- Built-in `HashSet<T>` currently lowers the supported surface forms
+  `HashSet<i64>` and `HashSet<String>` through the typed-layout runtime;
+  unsupported `HashSet<T>` usages are rejected fail-closed during type
+  checking, including nested annotations, function signatures, and `wire enum`
+  payloads; collection element admissibility also requires the internal RcFree
+  boundary, so `HashSet<Rc<T>>`, named wrappers that contain `Rc`, and
+  `LocalPid<A>` handles to actors with `Rc` state are rejected
 - `std::iter` is presently specialised to `Vec<i64>` helpers such as
   `map_int`, `filter_int`, `fold_int`, `any`, `all`, and `sum`
 - `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,

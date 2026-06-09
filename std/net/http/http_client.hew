@@ -38,6 +38,7 @@
 ///
 /// Obtained from `http_client.request(...)`, `http_client.get(...)`, or
 /// `http_client.post(...)`. Must be freed with `free()` when no longer needed.
+#[opaque]
 type Response {
 }
 
@@ -45,30 +46,30 @@ type Response {
 /// Methods available on an HTTP `Response`.
 trait ResponseMethods {
     /// Return the HTTP status code (e.g. 200, 404). Returns -1 on error.
-    fn status(resp: Response) -> i64;
+    fn status(self) -> i64;
 
     /// Return a copy of the response body as a string.
-    fn body(resp: Response) -> string;
+    fn body(self) -> string;
 
     /// Look up a response header by name (case-insensitive).
     ///
     /// Returns an empty string if the header is not present.
-    fn header(resp: Response, name: string) -> string;
+    fn header(self, name: string) -> string;
 
     /// Return the `Content-Type` response header.
     ///
     /// Returns an empty string if not present.
-    fn content_type(resp: Response) -> string;
+    fn content_type(self) -> string;
 
     /// Return all response headers as a list of `(name, value)` pairs.
     ///
     /// The returned vector is owned by the caller; Hew frees it automatically
     /// when it goes out of scope. Returns an empty vector if no headers were
     /// captured or the response is invalid.
-    fn headers(resp: Response) -> Vec<(string, string)>;
+    fn headers(self) -> Vec<(string, string)>;
 
     /// Release the response resources.
-    fn free(resp: Response);
+    fn free(self);
 }
 
 impl ResponseMethods for Response {

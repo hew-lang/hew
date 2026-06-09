@@ -52,11 +52,11 @@
 //! `Option<fn>` cleanly; the niche-optimised null discriminant relies on the
 //! function pointer being a bare ABI-stable pointer.
 //!
-//! # WASM-TODO(#1451)
+//! # WASM-TODO(#1820)
 //!
 //! Like the rest of the layout-backed hashmap surface, these descriptors are
 //! not yet exercised on wasm32. The runtime entry points (`hew_hashmap_*_layout`)
-//! already carry the same WASM-TODO note; the descriptors themselves are
+//! already carry the same WASM-parity note; the descriptors themselves are
 //! pure data (no syscalls) and compile on wasm32, but consumers should
 //! continue to gate hashmap-layout integration tests off wasm32 until the
 //! tracking issue lands.

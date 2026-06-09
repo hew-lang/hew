@@ -1,0 +1,26 @@
+// S1-V4: caller binds the receiver with `let` (immutable) and calls a
+// method whose trait declares `var self` (mutable receiver). The
+// type-checker rejects with "method `bump` on `Box` requires a mutable
+// binding receiver" — the Stage 1 caller-side mutable-receiver gate.
+//
+// The method body is `0` rather than reading `self.field` to side-step
+// the pre-existing HIR/MIR `Self`-substitution gap for impl-method
+// bodies (tracked separately); this fixture's purpose is to drive the
+// new call-site diagnostic, not exercise the body.
+
+trait MutBump {
+    fn bump(var self) -> i64;
+}
+
+type Box { v: i64 }
+
+impl MutBump for Box {
+    fn bump(var self) -> i64 { 0 }
+}
+
+fn main() -> i64 {
+    let b: Box = Box { v: 1 };
+    b.bump()
+}
+
+

@@ -713,6 +713,11 @@
         "name": "Shape"
       },
       {
+        "id": "type:VecIter",
+        "kind": "record",
+        "name": "VecIter"
+      },
+      {
         "id": "type:bool",
         "kind": "bool",
         "name": "bool"
@@ -779,7 +784,7 @@
       }
     ]
   },
-  "package_id": "pkg:b53cc99fbd666511",
+  "package_id": "pkg:bc2571f401871566",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

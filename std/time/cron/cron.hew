@@ -21,6 +21,7 @@
 ///
 /// Created by `cron.parse(expr)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
+#[opaque]
 type Expr {
 }
 
@@ -63,19 +64,19 @@ fn cron_error_from_result(result: CronNextResult) -> CronError {
 /// Methods available on a parsed `Expr`.
 trait ExprMethods {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn next(expr: Expr, after_epoch_secs: i64) -> i64;
+    fn next(self, after_epoch_secs: i64) -> i64;
 
     /// Compute the next firing time (epoch seconds) after the given timestamp.
     ///
     /// Returns `Err(CronError)` when the schedule has no future match or the
     /// native ABI rejects the input.
-    fn try_next(expr: Expr, after_epoch_secs: i64) -> Result<i64, CronError>;
+    fn try_next(self, after_epoch_secs: i64) -> Result<i64, CronError>;
 
     /// Return the cron expression as a string.
-    fn to_string(expr: Expr) -> string;
+    fn to_string(self) -> string;
 
     /// Release the parsed expression resources.
-    fn free(expr: Expr);
+    fn free(self);
 }
 
 impl ExprMethods for Expr {

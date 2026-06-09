@@ -35,6 +35,7 @@
 ///
 /// The type parameter is managed by the compiler — the underlying runtime
 /// handle is type-erased.
+#[opaque]
 type Sender {
 }
 
@@ -45,6 +46,7 @@ type Sender {
 ///
 /// The type parameter is managed by the compiler — the underlying runtime
 /// handle is type-erased.
+#[opaque]
 type Receiver {
 }
 
@@ -54,15 +56,15 @@ trait SenderMethods {
     /// Send a message through the channel.
     ///
     /// Blocks if the channel is full (backpressure).
-    fn send(tx: Sender, data: string);
+    fn send(self, data: string);
 
     /// Clone this sender for multi-producer use.
-    fn clone(tx: Sender) -> Sender;
+    fn clone(self) -> Sender;
 
     /// Close this sender and release resources.
     ///
     /// When the last sender is closed the receiver sees channel closure.
-    fn close(tx: Sender);
+    fn close(self);
 }
 
 impl SenderMethods for Sender {
@@ -93,16 +95,16 @@ trait ReceiverMethods {
     ///
     /// Returns `Some(value)` if a message was received, or `None` when the
     /// channel is closed (all senders dropped).
-    fn recv(rx: Receiver) -> Option<string>;
+    fn recv(self) -> Option<string>;
 
     /// Try to receive a message without blocking.
     ///
     /// Returns `Some(value)` if a message was available, or `None` if
     /// the channel is empty or closed.
-    fn try_recv(rx: Receiver) -> Option<string>;
+    fn try_recv(self) -> Option<string>;
 
     /// Close this receiver and release resources.
-    fn close(rx: Receiver);
+    fn close(self);
 }
 
 impl ReceiverMethods for Receiver {
@@ -151,6 +153,7 @@ pub fn new(capacity: i64) -> (Sender, Receiver) {
 
 // ── FFI bindings ─────────────────────────────────────────────────────
 /// Internal paired channel handle.
+#[opaque]
 type ChannelPair {
 }
 

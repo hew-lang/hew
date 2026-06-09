@@ -1,0 +1,10 @@
+// HashMap::<K, V>::new() should accept turbofish type arguments even though
+// the stdlib catalog row declares no callable type parameters.
+record Key {
+    id: i64,
+}
+
+fn main() -> i64 {
+    let _m = HashMap::<Key, i64>::new();
+    0
+}

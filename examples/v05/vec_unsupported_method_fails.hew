@@ -1,0 +1,6 @@
+// Unsupported Vec method rejection fixture.
+
+fn main() {
+    let nums: Vec<i64> = Vec::new();
+    nums.nonsense();
+}

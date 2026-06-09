@@ -163,12 +163,12 @@ impl std::fmt::Display for CodegenError {
                 } else if symbol.starts_with("hew_hashmap_") && symbol.ends_with("_layout") {
                     (
                         "the layout-backed `HashMap` runtime substrate",
-                        "WASM-TODO(#1451): layout-backed HashMap wasm parity not yet designed",
+                        "WASM-TODO(#1820): layout-backed HashMap wasm parity not yet designed",
                     )
                 } else if symbol.starts_with("hew_hashset_") && symbol.ends_with("_layout") {
                     (
                         "the layout-backed `HashSet` runtime substrate",
-                        "WASM-TODO(#1451): layout-backed HashSet wasm parity not yet designed",
+                        "WASM-TODO(#1820): layout-backed HashSet wasm parity not yet designed",
                     )
                 } else {
                     ("a native-only runtime substrate", "WASM-TODO(#1451)")
@@ -192,6 +192,72 @@ impl From<std::io::Error> for CodegenError {
 }
 
 type CodegenResult<T> = Result<T, CodegenError>;
+
+// ---------------------------------------------------------------------------
+// Error-wrapping helpers (crate-private)
+// ---------------------------------------------------------------------------
+//
+// The dominant inkwell-error wrapping idiom in this file is
+//     `.map_err(|e| CodegenError::Llvm(format!("<ctx>: {e:?}")))?`
+// repeated at hundreds of sites. `LlvmResultExt` names that idiom so future
+// codegen arms have exactly one obvious way to wrap an LLVM error, and
+// `llvm_err!` is the matching macro for direct (non-`?`) constructions.
+//
+// **Crate-private by design** (see lane plan §Design and §Risks #4):
+//   - No `#[macro_export]`.
+//   - No public re-export from `lib.rs`.
+//   - Helpers only ever construct `CodegenError::Llvm` — they cannot, and
+//     must not, collapse the semantically distinct variants
+//     (`Unsupported`, `FailClosed`, `LlvmVerify`, `TargetSetup`, `Link`,
+//     `Io`, `WasmUnsupportedSubstrate`) into a single shape.
+//   - The Debug-vs-Display projection of the inkwell error is preserved:
+//     these helpers always use `{e:?}`. The handful of sites that need
+//     `Display` (`{e}`) — currently only `custom_width_int_type` — keep
+//     the explicit `format!` form with a `// JUSTIFIED: Display-format
+//     preserved` comment.
+
+pub(crate) trait LlvmResultExt<T> {
+    /// Wrap any `Debug`-printable error as
+    /// `CodegenError::Llvm(format!("{ctx}: {e:?}"))`.
+    ///
+    /// Behaviour-equivalent to
+    /// `.map_err(|e| CodegenError::Llvm(format!("{ctx}: {e:?}")))`.
+    fn llvm_ctx(self, ctx: &'static str) -> CodegenResult<T>;
+
+    /// Lazy context for sites that need to interpolate runtime values.
+    /// `f` is only invoked on the error path.
+    ///
+    /// Behaviour-equivalent to
+    /// `.map_err(|e| CodegenError::Llvm(format!("{}: {e:?}", f())))`.
+    fn llvm_ctx_with<F: FnOnce() -> String>(self, f: F) -> CodegenResult<T>;
+}
+
+impl<T, E: std::fmt::Debug> LlvmResultExt<T> for Result<T, E> {
+    #[inline]
+    fn llvm_ctx(self, ctx: &'static str) -> CodegenResult<T> {
+        self.map_err(|e| CodegenError::Llvm(format!("{ctx}: {e:?}")))
+    }
+
+    #[inline]
+    fn llvm_ctx_with<F: FnOnce() -> String>(self, f: F) -> CodegenResult<T> {
+        self.map_err(|e| CodegenError::Llvm(format!("{}: {e:?}", f())))
+    }
+}
+
+/// Direct construction of `CodegenError::Llvm` for `Err(...)` /
+/// `return Err(...)` sites (the non-`?` complement of `LlvmResultExt`).
+///
+/// Behaviour-equivalent to `CodegenError::Llvm(format!(...))`.
+///
+/// Crate-private; never `#[macro_export]`.
+#[allow(unused_macros)] // Used by the subsequent B5 bucket-migration commit.
+macro_rules! llvm_err {
+    ($($t:tt)*) => {
+        $crate::llvm::CodegenError::Llvm(format!($($t)*))
+    };
+}
+#[allow(unused_imports)] // Used by the subsequent B5 bucket-migration commit.
+pub(crate) use llvm_err;
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -403,7 +469,7 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                 let excluded = match instr {
                     Instr::CallRuntimeAbi(call) => {
                         let sym = call.symbol();
-                        // WASM-TODO(#1451): extend if layout ops arrive as
+                        // WASM-TODO(#1820): extend if layout ops arrive as
                         // `Instr::CallRuntimeAbi` rather than
                         // `Terminator::Call` — mandatory pre-condition for
                         // operation lowering of the layout-backed
@@ -461,7 +527,7 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
             // the underlying substrate symbol that the runtime exposes so the
             // user-facing diagnostic names the real wasm-unsupported ABI.
             //
-            // WASM-TODO(#1451): layout-backed HashMap/HashSet wasm parity is not yet
+            // WASM-TODO(#1820): layout-backed HashMap/HashSet wasm parity is not yet
             // designed; see the W3.003-C plan §Risks "WASM indirect calls" row.
             // Generators substrate WASM parity gate: `Terminator::Yield` emits a
             // direct call to the runtime symbol `hew_gen_yield`, but the
@@ -539,11 +605,11 @@ fn emit_object_in_process(
     let llvm_mod = build_module_for_target(&ctx, pipeline, module_name, Some(&machine))?;
     machine
         .write_to_file(&llvm_mod, FileType::Object, out_path)
-        .map_err(|e| {
-            CodegenError::Llvm(format!(
-                "write object for triple={triple} out={}: {e:?}",
+        .llvm_ctx_with(|| {
+            format!(
+                "write object for triple={triple} out={}",
                 out_path.display()
-            ))
+            )
         })?;
     Ok(())
 }
@@ -834,6 +900,7 @@ fn intern_runtime_decl<'ctx>(
     }
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
+    let i8_ty = ctx.i8_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let fn_ty = match symbol {
         // hew_actor_cooperate() -> c_int
@@ -994,6 +1061,12 @@ fn intern_runtime_decl<'ctx>(
         // hew_vec_len(v: *mut HewVec) -> i64
         // (`hew-runtime/src/vec.rs:649`). Returns the element count as i64.
         "hew_vec_len" => i64_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_bytes_push(triple: &mut BytesTriple, byte: u8) -> void.
+        // The receiver is the address of the stack-resident BytesTriple, not a
+        // loaded heap Vec pointer.
+        "hew_bytes_push" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i8_ty.into()], false),
         // hew_vec_get_bool(v: *mut HewVec, index: i64) -> bool
         // Rust/C bool crosses the ABI as i1; Hew bool locals are stored as i8.
         "hew_vec_get_bool" => ctx
@@ -1031,6 +1104,19 @@ fn intern_runtime_decl<'ctx>(
         | "hew_vec_slice_range_f64"
         | "hew_vec_slice_range_ptr"
         | "hew_vec_slice_range_str" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
+        }
+        // W3 collections-sugar S2 — fail-closed codepoint indexing / slicing.
+        //
+        // hew_string_index(s: *const c_char, index: i64) -> i32 (codepoint).
+        //   Aborts on null / invalid UTF-8 / negative / OOB.
+        // hew_string_slice_codepoints(s: *const c_char, start: i64, end: i64)
+        //   -> *mut c_char (fresh owned slice).
+        //   Aborts on invalid bounds / null / invalid UTF-8.
+        // Drop ownership: returned string follows the existing
+        // hew_string_drop / String value-class discipline.
+        "hew_string_index" => i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        "hew_string_slice_codepoints" => {
             ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
         }
         "hew_rc_new" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
@@ -1570,7 +1656,37 @@ fn predeclare_extern_decls<'ctx>(
 ///
 /// The map is keyed by the bare record name (no generic-args mangling)
 /// because A-7's surface is monomorphic — generic records are deferred.
-type RecordLayoutMap<'ctx> = HashMap<String, StructType<'ctx>>;
+/// Named-struct layouts codegen resolves `ResolvedTy::Named` against, plus the
+/// set of `#[opaque]` runtime-handle names that resolve to a bare `ptr`
+/// (W3.020) rather than a struct layout. `Deref`/`DerefMut` forward to the
+/// struct map so existing `.get`/`.insert`/`.keys` call sites are unchanged.
+#[derive(Debug)]
+struct RecordLayoutMap<'ctx> {
+    structs: HashMap<String, StructType<'ctx>>,
+    opaque: std::collections::HashSet<String>,
+}
+
+impl<'ctx> RecordLayoutMap<'ctx> {
+    fn new() -> Self {
+        Self {
+            structs: HashMap::new(),
+            opaque: std::collections::HashSet::new(),
+        }
+    }
+}
+
+impl<'ctx> std::ops::Deref for RecordLayoutMap<'ctx> {
+    type Target = HashMap<String, StructType<'ctx>>;
+    fn deref(&self) -> &Self::Target {
+        &self.structs
+    }
+}
+
+impl std::ops::DerefMut for RecordLayoutMap<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.structs
+    }
+}
 
 /// Register every named-form record from `layouts` as an LLVM named struct
 /// type on `ctx`, populating the body with each field's LLVM lowering.
@@ -1619,6 +1735,7 @@ fn predeclare_named_layouts<'ctx>(
     records: &[RecordLayout],
     enums: &[EnumLayout],
     machines: &[MachineLayout],
+    opaque_handle_names: &[String],
 ) -> CodegenResult<RecordLayoutMap<'ctx>> {
     // `class_owner` tracks which class first registered each name so a
     // later registration from a different class can fail-closed with a
@@ -1638,7 +1755,8 @@ fn predeclare_named_layouts<'ctx>(
             }
         }
     }
-    let mut map: RecordLayoutMap<'ctx> = HashMap::new();
+    let mut map: RecordLayoutMap<'ctx> = RecordLayoutMap::new();
+    map.opaque.extend(opaque_handle_names.iter().cloned());
     let mut class_owner: HashMap<String, Class> = HashMap::new();
     let insert = |map: &mut RecordLayoutMap<'ctx>,
                   owners: &mut HashMap<String, Class>,
@@ -2150,6 +2268,14 @@ fn build_tagged_union_layout<'ctx>(
     })?;
     let payload_element_int_ty = ctx
         .custom_width_int_type(element_bits_nz)
+        // JUSTIFIED: Display-format preserved. `custom_width_int_type` returns
+        // `Result<IntType, LLVMString>`, and the original wrap uses `{e}` (not
+        // `{e:?}`) to render the inkwell `LLVMString` as the LLVM diagnostic
+        // text without quoting it. Migrating to `LlvmResultExt::llvm_ctx` would
+        // silently switch to Debug projection (`{e:?}`) and change the
+        // user-visible error text. The lane plan §B4 deliberately leaves this
+        // one Display call un-migrated; if a second Display site ever appears,
+        // introduce a sibling `.llvm_ctx_display` helper.
         .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({element_bits}): {e}")))?;
 
     let tag_int_ty = tag_int_type_for_variant_count(ctx, outer_name, variants.len())?;
@@ -2399,6 +2525,13 @@ fn resolve_ty<'ctx>(
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
     if let ResolvedTy::Named { name, args, .. } = ty {
+        // `#[opaque]` runtime handles (W3.020) carry no struct layout — they
+        // lower to a bare `ptr` (pointer-width, ABI-compatible with the
+        // runtime's `*mut T`). Resolved structurally via the opaque-name set,
+        // never by matching the type's name (no name-magic).
+        if record_layouts.opaque.contains(name) {
+            return Ok(ctx.ptr_type(AddressSpace::default()).into());
+        }
         // Generic-enum instantiations are keyed by mangled name (e.g.
         // `"Option$$i64"`) in the record-layout map — the same key produced
         // by `register_enum_layouts`. When type args are present, mangle
@@ -2495,9 +2628,18 @@ fn primitive_to_llvm<'ctx>(
         // (matching the C `int32_t` convention for code points). The upper two
         // billion i32 values are unused — all scalar values fit in 21 bits.
         ResolvedTy::Char => Ok(ctx.i32_type().into()),
-        ResolvedTy::Bytes => Err(CodegenError::Unsupported(
-            "Bytes type — Cluster 2 lowering pending",
-        )),
+        // Native bytes are stack-resident `BytesTriple { ptr, offset: u32,
+        // len: u32 }` values. The LLVM ABI uses i32 for the two u32 fields.
+        ResolvedTy::Bytes => Ok(ctx
+            .struct_type(
+                &[
+                    ctx.ptr_type(AddressSpace::default()).into(),
+                    ctx.i32_type().into(),
+                    ctx.i32_type().into(),
+                ],
+                false,
+            )
+            .into()),
         // `Duration` is i64 nanoseconds. The `i64` encoding covers ±292 years
         // of nanosecond precision, which is sufficient for all practical use.
         ResolvedTy::Duration => Ok(ctx.i64_type().into()),
@@ -2792,11 +2934,11 @@ fn lower_coerce_to_dyn_trait(
     let agg_with_data = fn_ctx
         .builder
         .build_insert_value(agg_undef, value_ptr, 0, "dyn_data")
-        .map_err(|e| CodegenError::Llvm(format!("insertvalue dyn_data: {e:?}")))?;
+        .llvm_ctx("insertvalue dyn_data")?;
     let agg_full = fn_ctx
         .builder
         .build_insert_value(agg_with_data, vtable_ptr, 1, "dyn_vtable")
-        .map_err(|e| CodegenError::Llvm(format!("insertvalue dyn_vtable: {e:?}")))?;
+        .llvm_ctx("insertvalue dyn_vtable")?;
 
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     match dest_ty {
@@ -2813,7 +2955,7 @@ fn lower_coerce_to_dyn_trait(
     fn_ctx
         .builder
         .build_store(dest_ptr, agg_full.into_struct_value())
-        .map_err(|e| CodegenError::Llvm(format!("store dyn fat-ptr: {e:?}")))?;
+        .llvm_ctx("store dyn fat-ptr")?;
     Ok(())
 }
 
@@ -2918,17 +3060,17 @@ fn lower_call_trait_method(
     let fat_val = fn_ctx
         .builder
         .build_load(fat_ty, fat_ptr, "dyn_fat_load")
-        .map_err(|e| CodegenError::Llvm(format!("CallTraitMethod fat-ptr load: {e:?}")))?
+        .llvm_ctx("CallTraitMethod fat-ptr load")?
         .into_struct_value();
     let data_ptr = fn_ctx
         .builder
         .build_extract_value(fat_val, 0, "dyn_data_ptr")
-        .map_err(|e| CodegenError::Llvm(format!("CallTraitMethod data extract: {e:?}")))?
+        .llvm_ctx("CallTraitMethod data extract")?
         .into_pointer_value();
     let vtable_ptr = fn_ctx
         .builder
         .build_extract_value(fat_val, 1, "dyn_vtable_ptr")
-        .map_err(|e| CodegenError::Llvm(format!("CallTraitMethod vtable extract: {e:?}")))?
+        .llvm_ctx("CallTraitMethod vtable extract")?
         .into_pointer_value();
 
     // 2. GEP into the vtable at field index `slot`. The synthetic
@@ -2964,11 +3106,11 @@ fn lower_call_trait_method(
     let slot_addr = fn_ctx
         .builder
         .build_struct_gep(view_ty, vtable_ptr, slot, "dyn_method_slot_addr")
-        .map_err(|e| CodegenError::Llvm(format!("CallTraitMethod slot GEP: {e:?}")))?;
+        .llvm_ctx("CallTraitMethod slot GEP")?;
     let fn_ptr = fn_ctx
         .builder
         .build_load(ptr_ty, slot_addr, "dyn_method_fn_ptr")
-        .map_err(|e| CodegenError::Llvm(format!("CallTraitMethod fn-ptr load: {e:?}")))?
+        .llvm_ctx("CallTraitMethod fn-ptr load")?
         .into_pointer_value();
 
     // 3. Lower the erased indirect-call signature. Prepend `ptr` for
@@ -3009,7 +3151,7 @@ fn lower_call_trait_method(
         let basic = resolve_ty(fn_ctx.ctx, &resolved, fn_ctx.record_layouts)?;
         param_metas.push(metadata_type_from_basic(basic));
     }
-    let fn_ty = fn_type_from_return(return_basic, &param_metas);
+    let fn_ty = fn_type_for_return(fn_ctx.ctx, Some(return_basic), &param_metas);
 
     // 4. Build arg list: [data_ptr, args...].
     let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
@@ -3020,7 +3162,7 @@ fn lower_call_trait_method(
         let loaded = fn_ctx
             .builder
             .build_load(arg_ty, arg_ptr, "dyn_call_arg")
-            .map_err(|e| CodegenError::Llvm(format!("CallTraitMethod arg load: {e:?}")))?;
+            .llvm_ctx("CallTraitMethod arg load")?;
         arg_vals.push(metadata_value_from_basic(loaded));
     }
 
@@ -3028,7 +3170,7 @@ fn lower_call_trait_method(
     let call = fn_ctx
         .builder
         .build_indirect_call(fn_ty, fn_ptr, &arg_vals, "dyn_call_result")
-        .map_err(|e| CodegenError::Llvm(format!("CallTraitMethod indirect call: {e:?}")))?;
+        .llvm_ctx("CallTraitMethod indirect call")?;
 
     // 6. Store the return value, if any.
     if let Some(dest_place) = dest {
@@ -3049,7 +3191,7 @@ fn lower_call_trait_method(
         fn_ctx
             .builder
             .build_store(dest_ptr, ret_val)
-            .map_err(|e| CodegenError::Llvm(format!("CallTraitMethod result store: {e:?}")))?;
+            .llvm_ctx("CallTraitMethod result store")?;
     }
     Ok(())
 }
@@ -3126,7 +3268,7 @@ fn place_pointer<'ctx>(
             let tag_ptr = fn_ctx
                 .builder
                 .build_struct_gep(layout.outer_struct, slot, 0, "machine_tag_ptr")
-                .map_err(|e| CodegenError::Llvm(format!("GEP machine tag: {e:?}")))?;
+                .llvm_ctx("GEP machine tag")?;
             Ok((tag_ptr, layout.tag_int_ty.into()))
         }
         Place::MachineVariant {
@@ -3162,7 +3304,7 @@ fn place_pointer<'ctx>(
             let payload_ptr = fn_ctx
                 .builder
                 .build_struct_gep(layout.outer_struct, slot, 1, "machine_payload_ptr")
-                .map_err(|e| CodegenError::Llvm(format!("GEP machine payload: {e:?}")))?;
+                .llvm_ctx("GEP machine payload")?;
             // LLVM opaque pointers: a `ptr` is a `ptr`; the GEP that
             // follows is typed against the variant struct, which is
             // the LLVM idiom for "reinterpret these bytes as this
@@ -3182,7 +3324,7 @@ fn place_pointer<'ctx>(
                     field_idx,
                     "machine_variant_field_ptr",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("GEP machine variant field: {e:?}")))?;
+                .llvm_ctx("GEP machine variant field")?;
             let field_llvm_ty = variant_struct
                 .get_field_type_at_index(field_idx)
                 .ok_or_else(|| {
@@ -3245,7 +3387,7 @@ fn place_pointer<'ctx>(
             let field_ptr = fn_ctx
                 .builder
                 .build_struct_gep(state_struct, slot, field, "gen_state_field_ptr")
-                .map_err(|e| CodegenError::Llvm(format!("GEP gen-state field: {e:?}")))?;
+                .llvm_ctx("GEP gen-state field")?;
             let field_llvm_ty = state_struct.get_field_type_at_index(field).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "gen-state struct `{state_struct_name}` has no field at index {field}"
@@ -3445,7 +3587,7 @@ fn get_or_create_task_wrapper<'ctx>(
     })?;
     builder
         .build_call(callee_value, &[ctx_param.into()], "task_body_call")
-        .map_err(|e| CodegenError::Llvm(format!("task wrapper body call: {e:?}")))?;
+        .llvm_ctx("task wrapper body call")?;
 
     let complete = intern_runtime_decl(
         fn_ctx.ctx,
@@ -3459,10 +3601,8 @@ fn get_or_create_task_wrapper<'ctx>(
             &[task_param.into()],
             "hew_task_complete_threaded_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_task_complete_threaded call: {e:?}")))?;
-    builder
-        .build_return(None)
-        .map_err(|e| CodegenError::Llvm(format!("task wrapper return: {e:?}")))?;
+        .llvm_ctx("hew_task_complete_threaded call")?;
+    builder.build_return(None).llvm_ctx("task wrapper return")?;
     Ok(wrapper)
 }
 
@@ -3494,11 +3634,7 @@ fn emit_spawn_task_direct(
             &[parent_ctx.into(), task_ptr.into(), fn_ptr.into()],
             "hew_task_spawn_thread_with_inherited_context_call",
         )
-        .map_err(|e| {
-            CodegenError::Llvm(format!(
-                "hew_task_spawn_thread_with_inherited_context call: {e:?}"
-            ))
-        })?;
+        .llvm_ctx("hew_task_spawn_thread_with_inherited_context call")?;
     Ok(())
 }
 
@@ -3529,7 +3665,7 @@ fn intern_global_string_ptr<'ctx>(
     let global = fn_ctx
         .builder
         .build_global_string_ptr(value, name)
-        .map_err(|e| CodegenError::Llvm(format!("actor metadata string `{name}`: {e:?}")))?;
+        .llvm_ctx_with(|| format!("actor metadata string `{name}`"))?;
     Ok(global.as_pointer_value())
 }
 
@@ -3596,7 +3732,7 @@ fn emit_wasm_actor_metadata_registration<'ctx>(
                 handler_array_ty,
                 &format!("actor_meta_handlers_{actor_fragment}"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("actor metadata handler array: {e:?}")))?;
+            .llvm_ctx("actor metadata handler array")?;
         for (idx, handler) in layout.handlers.iter().enumerate() {
             let handler_idx = u32::try_from(idx).map_err(|_| {
                 CodegenError::FailClosed(format!(
@@ -3623,7 +3759,7 @@ fn emit_wasm_actor_metadata_registration<'ctx>(
                         ],
                         &format!("actor_meta_handler_{handler_idx}"),
                     )
-                    .map_err(|e| CodegenError::Llvm(format!("actor metadata handler GEP: {e:?}")))?
+                    .llvm_ctx("actor metadata handler GEP")?
             };
             let fields: [(u32, BasicValueEnum<'ctx>); 6] = [
                 (0, handler_name_ptr.into()),
@@ -3642,12 +3778,11 @@ fn emit_wasm_actor_metadata_registration<'ctx>(
                         field_idx,
                         &format!("actor_meta_handler_{handler_idx}_f{field_idx}"),
                     )
-                    .map_err(|e| {
-                        CodegenError::Llvm(format!("actor metadata handler field GEP: {e:?}"))
-                    })?;
-                fn_ctx.builder.build_store(field_ptr, value).map_err(|e| {
-                    CodegenError::Llvm(format!("actor metadata handler field store: {e:?}"))
-                })?;
+                    .llvm_ctx("actor metadata handler field GEP")?;
+                fn_ctx
+                    .builder
+                    .build_store(field_ptr, value)
+                    .llvm_ctx("actor metadata handler field store")?;
             }
         }
         unsafe {
@@ -3659,14 +3794,14 @@ fn emit_wasm_actor_metadata_registration<'ctx>(
                     &[i32_ty.const_zero(), i32_ty.const_zero()],
                     "actor_meta_handlers_ptr",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("actor metadata handlers ptr: {e:?}")))?
+                .llvm_ctx("actor metadata handlers ptr")?
         }
     };
 
     let actor_meta_slot = fn_ctx
         .builder
         .build_alloca(actor_meta_ty, &format!("actor_meta_{actor_fragment}"))
-        .map_err(|e| CodegenError::Llvm(format!("actor metadata alloca: {e:?}")))?;
+        .llvm_ctx("actor metadata alloca")?;
     let handler_count = u32::try_from(layout.handlers.len()).map_err(|_| {
         CodegenError::FailClosed(format!(
             "actor `{actor_name}` has more than u32::MAX handlers"
@@ -3686,11 +3821,11 @@ fn emit_wasm_actor_metadata_registration<'ctx>(
                 field_idx,
                 &format!("actor_meta_f{field_idx}"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("actor metadata field GEP: {e:?}")))?;
+            .llvm_ctx("actor metadata field GEP")?;
         fn_ctx
             .builder
             .build_store(field_ptr, value)
-            .map_err(|e| CodegenError::Llvm(format!("actor metadata field store: {e:?}")))?;
+            .llvm_ctx("actor metadata field store")?;
     }
 
     let register = intern_runtime_decl(
@@ -3706,7 +3841,7 @@ fn emit_wasm_actor_metadata_registration<'ctx>(
             &[actor_meta_slot.into()],
             "hew_wasm_register_actor_meta_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_wasm_register_actor_meta call: {e:?}")))?;
+        .llvm_ctx("hew_wasm_register_actor_meta call")?;
     Ok(())
 }
 
@@ -3823,7 +3958,7 @@ fn emit_actor_state_clone_drop_registration<'ctx>(
             &[spawned.into(), drop_fn_ptr.into()],
             "hew_actor_set_state_drop_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_actor_set_state_drop call: {e:?}")))?;
+        .llvm_ctx("hew_actor_set_state_drop call")?;
 
     let set_clone = intern_runtime_decl(
         fn_ctx.ctx,
@@ -3838,7 +3973,7 @@ fn emit_actor_state_clone_drop_registration<'ctx>(
             &[spawned.into(), clone_fn_ptr.into()],
             "hew_actor_set_state_clone_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_actor_set_state_clone call: {e:?}")))?;
+        .llvm_ctx("hew_actor_set_state_clone call")?;
 
     Ok(())
 }
@@ -3868,7 +4003,7 @@ fn emit_spawn_actor(
             fn_ctx
                 .builder
                 .build_int_z_extend(size, i64_ty, "actor_state_size")
-                .map_err(|e| CodegenError::Llvm(format!("actor state size zext: {e:?}")))?
+                .llvm_ctx("actor state size zext")?
         };
         (slot, size)
     } else {
@@ -3892,7 +4027,7 @@ fn emit_spawn_actor(
     fn_ctx
         .builder
         .build_call(sched_init, &[], "hew_sched_init_call")
-        .map_err(|e| CodegenError::Llvm(format!("hew_sched_init call: {e:?}")))?;
+        .llvm_ctx("hew_sched_init call")?;
     emit_wasm_actor_metadata_registration(fn_ctx, actor_name)?;
 
     let spawned = if max_heap_bytes.is_some() || cycle_capable {
@@ -3932,7 +4067,7 @@ fn emit_spawn_actor(
         let opts_slot = fn_ctx
             .builder
             .build_alloca(opts_ty, "actor_spawn_opts")
-            .map_err(|e| CodegenError::Llvm(format!("HewActorOpts alloca: {e:?}")))?;
+            .llvm_ctx("HewActorOpts alloca")?;
         let opts_fields: [(u32, BasicValueEnum<'_>); 10] = [
             (0, state_ptr.into()),
             (1, state_size.into()),
@@ -3949,12 +4084,11 @@ fn emit_spawn_actor(
             let gep = fn_ctx
                 .builder
                 .build_struct_gep(opts_ty, opts_slot, field_idx, &format!("opts_f{field_idx}"))
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("HewActorOpts GEP field {field_idx}: {e:?}"))
-                })?;
-            fn_ctx.builder.build_store(gep, value).map_err(|e| {
-                CodegenError::Llvm(format!("HewActorOpts store field {field_idx}: {e:?}"))
-            })?;
+                .llvm_ctx_with(|| format!("HewActorOpts GEP field {field_idx}"))?;
+            fn_ctx
+                .builder
+                .build_store(gep, value)
+                .llvm_ctx_with(|| format!("HewActorOpts store field {field_idx}"))?;
         }
         let spawn_opts_fn = intern_runtime_decl(
             fn_ctx.ctx,
@@ -3969,7 +4103,7 @@ fn emit_spawn_actor(
                 &[opts_slot.into()],
                 "hew_actor_spawn_opts_call",
             )
-            .map_err(|e| CodegenError::Llvm(format!("hew_actor_spawn_opts call: {e:?}")))?
+            .llvm_ctx("hew_actor_spawn_opts call")?
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn_opts returned void".into()))?
@@ -3993,7 +4127,7 @@ fn emit_spawn_actor(
                 ],
                 "hew_actor_spawn_call",
             )
-            .map_err(|e| CodegenError::Llvm(format!("hew_actor_spawn call: {e:?}")))?
+            .llvm_ctx("hew_actor_spawn call")?
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn returned void".into()))?
@@ -4028,7 +4162,7 @@ fn emit_spawn_actor(
     fn_ctx
         .builder
         .build_store(dest_ptr, spawned)
-        .map_err(|e| CodegenError::Llvm(format!("SpawnActor store: {e:?}")))?;
+        .llvm_ctx("SpawnActor store")?;
     Ok(())
 }
 
@@ -4190,11 +4324,7 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     let sched_init = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_sched_init")?;
     builder
         .build_call(sched_init, &[], "hew_sched_init_call")
-        .map_err(|e| {
-            CodegenError::Llvm(format!(
-                "hew_sched_init call in supervisor bootstrap: {e:?}"
-            ))
-        })?;
+        .llvm_ctx("hew_sched_init call in supervisor bootstrap")?;
 
     // ── %sup = call hew_supervisor_new(strategy, max_restarts, window_secs)
     let sup_new = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_supervisor_new")?;
@@ -4208,7 +4338,7 @@ fn emit_supervisor_bootstrap_body<'ctx>(
             ],
             "hew_supervisor_new_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_new call: {e:?}")))?
+        .llvm_ctx("hew_supervisor_new call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_supervisor_new returned void".into()))?
@@ -4257,7 +4387,7 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     let sup_start = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_supervisor_start")?;
     let rc = builder
         .build_call(sup_start, &[sup.into()], "hew_supervisor_start_call")
-        .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_start call: {e:?}")))?
+        .llvm_ctx("hew_supervisor_start call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_supervisor_start returned void".into()))?
@@ -4265,12 +4395,12 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     let zero = i32_ty.const_zero();
     let is_ok = builder
         .build_int_compare(IntPredicate::EQ, rc, zero, "sup_start_ok")
-        .map_err(|e| CodegenError::Llvm(format!("sup start cmp: {e:?}")))?;
+        .llvm_ctx("sup start cmp")?;
     let ok_bb = ctx.append_basic_block(llvm_fn, "sup_start_ok");
     let trap_bb = ctx.append_basic_block(llvm_fn, "sup_start_trap");
     builder
         .build_conditional_branch(is_ok, ok_bb, trap_bb)
-        .map_err(|e| CodegenError::Llvm(format!("sup start cond br: {e:?}")))?;
+        .llvm_ctx("sup start cond br")?;
     builder.position_at_end(trap_bb);
     // llvm.trap; unreachable — fail-closed on supervisor start failure.
     let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
@@ -4281,10 +4411,10 @@ fn emit_supervisor_bootstrap_body<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration missing".into()))?;
     builder
         .build_call(trap_fn, &[], "sup_start_trap_call")
-        .map_err(|e| CodegenError::Llvm(format!("sup start trap call: {e:?}")))?;
+        .llvm_ctx("sup start trap call")?;
     builder
         .build_unreachable()
-        .map_err(|e| CodegenError::Llvm(format!("sup start unreachable: {e:?}")))?;
+        .llvm_ctx("sup start unreachable")?;
 
     // ── ret sup ─────────────────────────────────────────────────────────
     builder.position_at_end(ok_bb);
@@ -4292,7 +4422,7 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     let _ = i64_ty;
     builder
         .build_return(Some(&sup))
-        .map_err(|e| CodegenError::Llvm(format!("sup bootstrap ret: {e:?}")))?;
+        .llvm_ctx("sup bootstrap ret")?;
     Ok(())
 }
 
@@ -4368,12 +4498,12 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     // Per-child stack alloca for the spec struct.
     let spec_slot = builder
         .build_alloca(*child_spec_ty, &format!("child_spec_{idx}"))
-        .map_err(|e| CodegenError::Llvm(format!("child spec alloca: {e:?}")))?;
+        .llvm_ctx("child spec alloca")?;
 
     // name → @.str.child.<sup>.<idx>
     let name_global = builder
         .build_global_string_ptr(&child.name, &format!("str_child_name_{sup_name}_{idx}"))
-        .map_err(|e| CodegenError::Llvm(format!("child name global: {e:?}")))?;
+        .llvm_ctx("child name global")?;
     let name_ptr = name_global.as_pointer_value();
 
     let restart_int = child.restart_policy.map(restart_policy_to_int).unwrap_or(0);
@@ -4403,10 +4533,10 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                 field_idx,
                 &format!("child_spec_{idx}_f{field_idx}"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("child spec gep: {e:?}")))?;
+            .llvm_ctx("child spec gep")?;
         builder
             .build_store(gep, value)
-            .map_err(|e| CodegenError::Llvm(format!("child spec store: {e:?}")))?;
+            .llvm_ctx("child spec store")?;
     }
 
     builder
@@ -4415,7 +4545,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             &[sup.into(), spec_slot.into()],
             &format!("hew_supervisor_add_child_spec_call_{idx}"),
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_add_child_spec call: {e:?}")))?;
+        .llvm_ctx("hew_supervisor_add_child_spec call")?;
 
     // ── W2.002 Stage 2: register state_drop + state_clone fn pointers
     // against this child slot. Mirrors `__hew_actor_dispatch_<actor>`
@@ -4452,18 +4582,14 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                 &[sup.into(), child_idx_const.into(), drop_fn_ptr.into()],
                 &format!("hew_supervisor_set_child_state_drop_call_{idx}"),
             )
-            .map_err(|e| {
-                CodegenError::Llvm(format!("hew_supervisor_set_child_state_drop call: {e:?}"))
-            })?;
+            .llvm_ctx("hew_supervisor_set_child_state_drop call")?;
         builder
             .build_call(
                 set_child_state_clone,
                 &[sup.into(), child_idx_const.into(), clone_fn_ptr.into()],
                 &format!("hew_supervisor_set_child_state_clone_call_{idx}"),
             )
-            .map_err(|e| {
-                CodegenError::Llvm(format!("hew_supervisor_set_child_state_clone call: {e:?}"))
-            })?;
+            .llvm_ctx("hew_supervisor_set_child_state_clone call")?;
     }
     Ok(())
 }
@@ -4658,6 +4784,87 @@ fn get_or_declare_drop_helper<'ctx>(
 /// Caller (`emit_field_clone_step`) handles UserRecord separately
 /// because it calls a per-record synthesised helper rather than a runtime
 /// extern.
+const HASHMAP_CLONE_LAYOUT_SYMBOL: &str = "hew_hashmap_clone_layout";
+const HASHMAP_FREE_LAYOUT_SYMBOL: &str = "hew_hashmap_free_layout";
+const HASHSET_CLONE_LAYOUT_SYMBOL: &str = "hew_hashset_clone_layout";
+const HASHSET_FREE_LAYOUT_SYMBOL: &str = "hew_hashset_free_layout";
+/// Witness-managed Vec clone/free pair (W5.002 F0b). Single-arg, descriptor
+/// read from the handle — the Vec companion of the HashMap/HashSet
+/// `*_clone_layout`/`*_free_layout` family. These supersede the legacy
+/// `hew_vec_clone`/`hew_vec_free` for actor-state Vec fields: the legacy clone
+/// calls `abort_if_layout_aware` and aborts on any layout-backed Vec (e.g.
+/// `Vec<Point>`), whereas the managed pair clones layout-backed `Plain`/
+/// `String` Vecs and fails closed only on `LayoutManaged` elements. The legacy
+/// symbols remain for non-state Vec drops/clones (locals, returns, user
+/// `Vec.clone()`); their retirement is W5.003 scope.
+const VEC_CLONE_MANAGED_SYMBOL: &str = "hew_vec_clone_managed";
+const VEC_FREE_MANAGED_SYMBOL: &str = "hew_vec_free_managed";
+
+/// The single layout-witness descriptor for a runtime-managed collection's
+/// memory lifecycle (W5.001 F0a).
+///
+/// Codegen derives BOTH the clone and the drop symbol for a collection
+/// state field from this ONE descriptor, so the two operations — and the
+/// constructor's `*_with_layout` ABI family they must pair with — can never
+/// select mismatched runtime symbols. This is the structural retirement of
+/// the W4.045 UAF class: there is no longer an independent per-type symbol
+/// *selection* on the clone side and the drop side that can drift apart (the
+/// prior bug was a drop arm branching on the element kind while the
+/// constructor and clone arms did not — `codegen-abi-authority` /
+/// `lifecycle-symmetry` P0). A new collection type registers its symbol
+/// pair here once; clone and drop derive mechanically.
+///
+/// Returns `None` for non-collection kinds (`String`/`Bytes`/`BitCopy`/
+/// `IoHandle`/`UserRecord`), which continue through their dedicated
+/// `clone_helper_for_kind` / `drop_helper_for_kind` / synthesised-helper
+/// arms unchanged.
+///
+/// This is the SOLE selection authority for collection clone/drop symbols.
+/// The matching arms in `clone_helper_for_kind` / `drop_helper_for_kind`
+/// are retired to `unreachable!` because the only callers
+/// (`emit_field_clone_step` / `emit_field_drop_step`) consult this witness
+/// first and never fall through to the per-type helper arm for a collection.
+struct CollectionLayoutWitness {
+    /// Allocating clone helper: `fn(*const handle) -> *mut handle`.
+    clone_sym: &'static str,
+    /// Free helper: `fn(*mut handle)`.
+    drop_sym: &'static str,
+}
+
+fn collection_layout_witness(kind: &StateFieldCloneKind) -> Option<CollectionLayoutWitness> {
+    match kind {
+        StateFieldCloneKind::Vec { .. } => Some(CollectionLayoutWitness {
+            // Constructor lowering stamps every layout-backed Vec<T> handle with
+            // its `HewTypeLayout` descriptor; the managed pair reads it from the
+            // handle and pairs allocate/free so they cannot drift (W4.045 UAF
+            // class). Layout-absent Vecs (legacy typed constructors) clone/free
+            // by `elem_kind`. LayoutManaged elements fail closed in the runtime.
+            clone_sym: VEC_CLONE_MANAGED_SYMBOL,
+            drop_sym: VEC_FREE_MANAGED_SYMBOL,
+        }),
+        StateFieldCloneKind::HashMap { .. } => Some(CollectionLayoutWitness {
+            // Constructor lowering routes every HashMap<K,V> handle through
+            // `hew_hashmap_new_with_layout`; clone/free MUST pair with the
+            // matching `*_layout` family (CLAUDE.md §1; W4.045 UAF class).
+            clone_sym: HASHMAP_CLONE_LAYOUT_SYMBOL,
+            drop_sym: HASHMAP_FREE_LAYOUT_SYMBOL,
+        }),
+        StateFieldCloneKind::HashSet { .. } => Some(CollectionLayoutWitness {
+            // Companion of the HashMap pairing. The constructor routes every
+            // HashSet<T> handle through `hew_hashset_new_with_layout`; the
+            // element kind is irrelevant — there is no `hew_hashset_new` call
+            // in codegen, so clone/free always use the `*_layout` family.
+            clone_sym: HASHSET_CLONE_LAYOUT_SYMBOL,
+            drop_sym: HASHSET_FREE_LAYOUT_SYMBOL,
+        }),
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::String
+        | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::IoHandle { .. }
+        | StateFieldCloneKind::UserRecord { .. } => None,
+    }
+}
+
 fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<CloneHelper>> {
     match kind {
         StateFieldCloneKind::BitCopy { .. } => Ok(None),
@@ -4667,15 +4874,14 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
         StateFieldCloneKind::Bytes => Ok(Some(CloneHelper::RefcountBump {
             name: "hew_bytes_clone_ref",
         })),
-        StateFieldCloneKind::Vec { .. } => Ok(Some(CloneHelper::Allocating {
-            name: "hew_vec_clone",
-        })),
-        StateFieldCloneKind::HashMap { .. } => Ok(Some(CloneHelper::Allocating {
-            name: "hew_hashmap_clone_impl",
-        })),
-        StateFieldCloneKind::HashSet { .. } => Ok(Some(CloneHelper::Allocating {
-            name: "hew_hashset_clone",
-        })),
+        StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. } => unreachable!(
+            "collection clone-symbol selection is owned solely by \
+             `collection_layout_witness` (W5.001 F0a); `emit_field_clone_step` \
+             consults the witness before reaching this helper, so this per-type \
+             arm is retired and must never be reached for Vec/HashMap/HashSet"
+        ),
         StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Connection,
         } => Err(CodegenError::FailClosed(
@@ -4701,50 +4907,14 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
         StateFieldCloneKind::Bytes => Ok(Some(DropHelper {
             name: "hew_bytes_drop",
         })),
-        StateFieldCloneKind::Vec { .. } => Ok(Some(DropHelper {
-            name: "hew_vec_free",
-        })),
-        StateFieldCloneKind::HashMap { key, .. } => Ok(Some(DropHelper {
-            // Drop helper must match the constructor's ABI handle kind
-            // (CLAUDE.md §1 drop-safety; `lifecycle-symmetry` /
-            // `codegen-abi-authority` P0). The runtime exposes two
-            // mutually incompatible constructor/free pairings:
-            //
-            //   - `hew_hashmap_new_with_layout` ↔ `hew_hashmap_free_layout`
-            //     produces / consumes `HewLayoutHashMap*` (key/value
-            //     descriptors materialised at the call site).
-            //   - `hew_hashmap_new_impl` ↔ `hew_hashmap_free_impl`
-            //     produces / consumes the legacy string-keyed
-            //     `HewHashMap*`.
-            //
-            // The discriminator here is the inner key kind: layout-keyed
-            // maps are admitted by the checker only when the key is a
-            // user record (`hash_eligibility` C-2a), so a UserRecord key
-            // implies the constructor lowered to `*_new_with_layout` and
-            // the free must use the matching `*_free_layout`. Any other
-            // key kind (String, BitCopy primitives, Bytes) means the
-            // legacy `_impl` pairing — preserved here so a future legacy
-            // construction path does not silently UB through the layout
-            // free's HewLayoutHashMap cast.
-            name: if matches!(key.as_ref(), StateFieldCloneKind::UserRecord { .. }) {
-                "hew_hashmap_free_layout"
-            } else {
-                "hew_hashmap_free_impl"
-            },
-        })),
-        StateFieldCloneKind::HashSet { elem } => Ok(Some(DropHelper {
-            // Companion of the HashMap arm — same key-vs-legacy
-            // discrimination, here on the set element kind. Runtime
-            // pairings: `hew_hashset_new_with_layout` ↔
-            // `hew_hashset_free_layout` (layout-keyed) and
-            // `hew_hashset_new` ↔ `hew_hashset_free` (legacy). A
-            // UserRecord elem implies the layout-keyed constructor.
-            name: if matches!(elem.as_ref(), StateFieldCloneKind::UserRecord { .. }) {
-                "hew_hashset_free_layout"
-            } else {
-                "hew_hashset_free"
-            },
-        })),
+        StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. } => unreachable!(
+            "collection drop-symbol selection is owned solely by \
+             `collection_layout_witness` (W5.001 F0a); `emit_field_drop_step` \
+             consults the witness before reaching this helper, so this per-type \
+             arm is retired and must never be reached for Vec/HashMap/HashSet"
+        ),
         StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Connection,
         } => {
@@ -5079,7 +5249,7 @@ fn emit_actor_state_clone_body<'ctx>(
         // per `hew-runtime/src/actor.rs:766` C1 fix block.
         builder
             .build_return(Some(&ptr_ty.const_null()))
-            .map_err(|e| CodegenError::Llvm(format!("connection clone null ret: {e:?}")))?;
+            .llvm_ctx("connection clone null ret")?;
         // Drop the unused ret_null_bb to keep the function well-formed.
         unsafe { ret_null_bb.delete().expect("delete empty bb") };
         return Ok(());
@@ -5092,14 +5262,14 @@ fn emit_actor_state_clone_body<'ctx>(
             IntPredicate::EQ,
             builder
                 .build_ptr_to_int(src, i64_ty, "src_as_int")
-                .map_err(|e| CodegenError::Llvm(format!("clone src ptr_to_int: {e:?}")))?,
+                .llvm_ctx("clone src ptr_to_int")?,
             i64_ty.const_zero(),
             "src_is_null",
         )
-        .map_err(|e| CodegenError::Llvm(format!("clone src null cmp: {e:?}")))?;
+        .llvm_ctx("clone src null cmp")?;
     builder
         .build_conditional_branch(src_null, ret_null_bb, alloc_bb)
-        .map_err(|e| CodegenError::Llvm(format!("clone src null branch: {e:?}")))?;
+        .llvm_ctx("clone src null branch")?;
 
     builder.position_at_end(alloc_bb);
     let size_bytes = state_struct
@@ -5112,7 +5282,7 @@ fn emit_actor_state_clone_body<'ctx>(
             &[i64_ty.const_int(size_bytes, false).into()],
             "state_wrapper",
         )
-        .map_err(|e| CodegenError::Llvm(format!("clone malloc: {e:?}")))?
+        .llvm_ctx("clone malloc")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("malloc returned void".into()))?
@@ -5122,15 +5292,15 @@ fn emit_actor_state_clone_body<'ctx>(
             IntPredicate::EQ,
             builder
                 .build_ptr_to_int(dst, i64_ty, "dst_as_int")
-                .map_err(|e| CodegenError::Llvm(format!("clone dst ptr_to_int: {e:?}")))?,
+                .llvm_ctx("clone dst ptr_to_int")?,
             i64_ty.const_zero(),
             "dst_is_null",
         )
-        .map_err(|e| CodegenError::Llvm(format!("clone dst null cmp: {e:?}")))?;
+        .llvm_ctx("clone dst null cmp")?;
     let memcpy_bb = ctx.append_basic_block(f, "memcpy_wholesale");
     builder
         .build_conditional_branch(dst_null, ret_null_bb, memcpy_bb)
-        .map_err(|e| CodegenError::Llvm(format!("clone dst null branch: {e:?}")))?;
+        .llvm_ctx("clone dst null branch")?;
 
     builder.position_at_end(memcpy_bb);
     // Wholesale memcpy: seeds BitCopy fields with correct values and
@@ -5140,7 +5310,7 @@ fn emit_actor_state_clone_body<'ctx>(
     if size_bytes > 0 {
         builder
             .build_memcpy(dst, 1, src, 1, i64_ty.const_int(size_bytes, false))
-            .map_err(|e| CodegenError::Llvm(format!("clone wholesale memcpy: {e:?}")))?;
+            .llvm_ctx("clone wholesale memcpy")?;
     }
 
     // ── Per-field clone with reverse-order rollback chain ─────────────
@@ -5170,7 +5340,7 @@ fn emit_actor_state_clone_body<'ctx>(
         // success directly.
         builder
             .build_unconditional_branch(success_bb)
-            .map_err(|e| CodegenError::Llvm(format!("clone trivial branch: {e:?}")))?;
+            .llvm_ctx("clone trivial branch")?;
     } else {
         // Pre-create one rollback BB per field step (index k => drop
         // fields 0..k-1 in reverse). The k=0 BB just frees the wrapper.
@@ -5186,7 +5356,7 @@ fn emit_actor_state_clone_body<'ctx>(
         // Branch from memcpy into the first clone BB.
         builder
             .build_unconditional_branch(clone_bbs[0])
-            .map_err(|e| CodegenError::Llvm(format!("clone first-step branch: {e:?}")))?;
+            .llvm_ctx("clone first-step branch")?;
 
         for (step_idx, &(field_idx, kind)) in field_steps.iter().enumerate() {
             builder.position_at_end(clone_bbs[step_idx]);
@@ -5229,22 +5399,22 @@ fn emit_actor_state_clone_body<'ctx>(
             let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
             builder
                 .build_call(free_fn, &[dst.into()], "rollback_free_wrapper")
-                .map_err(|e| CodegenError::Llvm(format!("clone rollback free: {e:?}")))?;
+                .llvm_ctx("clone rollback free")?;
             builder
                 .build_unconditional_branch(ret_null_bb)
-                .map_err(|e| CodegenError::Llvm(format!("clone rollback branch: {e:?}")))?;
+                .llvm_ctx("clone rollback branch")?;
         }
     }
 
     builder.position_at_end(success_bb);
     builder
         .build_return(Some(&dst))
-        .map_err(|e| CodegenError::Llvm(format!("clone success ret: {e:?}")))?;
+        .llvm_ctx("clone success ret")?;
 
     builder.position_at_end(ret_null_bb);
     builder
         .build_return(Some(&ptr_ty.const_null()))
-        .map_err(|e| CodegenError::Llvm(format!("clone null ret: {e:?}")))?;
+        .llvm_ctx("clone null ret")?;
 
     Ok(())
 }
@@ -5295,19 +5465,17 @@ fn emit_field_clone_step<'ctx>(
             let helper = get_or_declare_record_clone_inplace(ctx, llvm_mod, name);
             let src_field = builder
                 .build_struct_gep(st_ty, src, field_idx, &format!("src_f{field_idx}_ptr"))
-                .map_err(|e| CodegenError::Llvm(format!("clone src gep f{field_idx}: {e:?}")))?;
+                .llvm_ctx_with(|| format!("clone src gep f{field_idx}"))?;
             let dst_field = builder
                 .build_struct_gep(st_ty, dst, field_idx, &format!("dst_f{field_idx}_ptr"))
-                .map_err(|e| CodegenError::Llvm(format!("clone dst gep f{field_idx}: {e:?}")))?;
+                .llvm_ctx_with(|| format!("clone dst gep f{field_idx}"))?;
             let call_site = builder
                 .build_call(
                     helper,
                     &[src_field.into(), dst_field.into()],
                     &format!("record_clone_inplace_f{field_idx}"),
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("clone record helper call f{field_idx}: {e:?}"))
-                })?;
+                .llvm_ctx_with(|| format!("clone record helper call f{field_idx}"))?;
             let rc = call_site
                 .try_as_basic_value()
                 .basic()
@@ -5324,19 +5492,17 @@ fn emit_field_clone_step<'ctx>(
                     i32_ty.const_zero(),
                     &format!("record_clone_failed_f{field_idx}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("record clone cmp f{field_idx}: {e:?}")))?;
+                .llvm_ctx_with(|| format!("record clone cmp f{field_idx}"))?;
             // No separate store_bb work for UserRecord — the helper
             // already wrote into dst. The "store_bb" here is just the
             // path to next_bb. Wire it as the success edge.
             builder
                 .build_conditional_branch(failed, rollback_bb, store_bb)
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("record clone branch f{field_idx}: {e:?}"))
-                })?;
+                .llvm_ctx_with(|| format!("record clone branch f{field_idx}"))?;
             builder.position_at_end(store_bb);
-            builder.build_unconditional_branch(next_bb).map_err(|e| {
-                CodegenError::Llvm(format!("record clone next branch f{field_idx}: {e:?}"))
-            })?;
+            builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx_with(|| format!("record clone next branch f{field_idx}"))?;
             return Ok(());
         }
         StateFieldCloneKind::IoHandle {
@@ -5352,19 +5518,29 @@ fn emit_field_clone_step<'ctx>(
         _ => {}
     }
 
-    let helper = clone_helper_for_kind(kind)?.ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "field_clone_step at f{field_idx}: BitCopy field should not have a \
-             clone step entry — caller should filter BitCopy out before reaching here"
-        ))
-    })?;
+    // Collections (Vec/HashMap/HashSet) derive their clone symbol from the
+    // single layout-witness descriptor (W5.001 F0a) — the sole selection
+    // authority. Non-collection kinds fall through to their dedicated
+    // `clone_helper_for_kind` arm. BitCopy yields `None` there and is a
+    // caller-filter error.
+    let helper = match collection_layout_witness(kind) {
+        Some(witness) => CloneHelper::Allocating {
+            name: witness.clone_sym,
+        },
+        None => clone_helper_for_kind(kind)?.ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "field_clone_step at f{field_idx}: BitCopy field should not have a \
+                 clone step entry — caller should filter BitCopy out before reaching here"
+            ))
+        })?,
+    };
 
     let src_field_ptr = builder
         .build_struct_gep(st_ty, src, field_idx, &format!("src_f{field_idx}_ptr"))
-        .map_err(|e| CodegenError::Llvm(format!("clone src gep f{field_idx}: {e:?}")))?;
+        .llvm_ctx_with(|| format!("clone src gep f{field_idx}"))?;
     let src_field_val = builder
         .build_load(ptr_ty, src_field_ptr, &format!("src_f{field_idx}"))
-        .map_err(|e| CodegenError::Llvm(format!("clone src load f{field_idx}: {e:?}")))?
+        .llvm_ctx_with(|| format!("clone src load f{field_idx}"))?
         .into_pointer_value();
 
     let helper_fn = get_or_declare_clone_helper(ctx, llvm_mod, &helper);
@@ -5380,17 +5556,15 @@ fn emit_field_clone_step<'ctx>(
                     &[src_field_val.into()],
                     &format!("bytes_clone_ref_f{field_idx}"),
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("bytes refcount bump f{field_idx}: {e:?}"))
-                })?;
+                .llvm_ctx_with(|| format!("bytes refcount bump f{field_idx}"))?;
             // No failure path — refcount bump is infallible.
-            builder.build_unconditional_branch(store_bb).map_err(|e| {
-                CodegenError::Llvm(format!("bytes clone fallthrough f{field_idx}: {e:?}"))
-            })?;
+            builder
+                .build_unconditional_branch(store_bb)
+                .llvm_ctx_with(|| format!("bytes clone fallthrough f{field_idx}"))?;
             builder.position_at_end(store_bb);
-            builder.build_unconditional_branch(next_bb).map_err(|e| {
-                CodegenError::Llvm(format!("bytes clone next branch f{field_idx}: {e:?}"))
-            })?;
+            builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx_with(|| format!("bytes clone next branch f{field_idx}"))?;
         }
         CloneHelper::Allocating { name: _ } => {
             let call_site = builder
@@ -5399,9 +5573,7 @@ fn emit_field_clone_step<'ctx>(
                     &[src_field_val.into()],
                     &format!("clone_helper_f{field_idx}"),
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("clone helper call f{field_idx}: {e:?}"))
-                })?;
+                .llvm_ctx_with(|| format!("clone helper call f{field_idx}"))?;
             let cloned = call_site
                 .try_as_basic_value()
                 .basic()
@@ -5417,28 +5589,24 @@ fn emit_field_clone_step<'ctx>(
                     IntPredicate::EQ,
                     builder
                         .build_ptr_to_int(cloned, i64_ty, &format!("cloned_f{field_idx}_int"))
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("clone ptr_to_int f{field_idx}: {e:?}"))
-                        })?,
+                        .llvm_ctx_with(|| format!("clone ptr_to_int f{field_idx}"))?,
                     i64_ty.const_zero(),
                     &format!("cloned_f{field_idx}_null"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("clone null cmp f{field_idx}: {e:?}")))?;
+                .llvm_ctx_with(|| format!("clone null cmp f{field_idx}"))?;
             builder
                 .build_conditional_branch(cloned_null, rollback_bb, store_bb)
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("clone null branch f{field_idx}: {e:?}"))
-                })?;
+                .llvm_ctx_with(|| format!("clone null branch f{field_idx}"))?;
             builder.position_at_end(store_bb);
             let dst_field_ptr = builder
                 .build_struct_gep(st_ty, dst, field_idx, &format!("dst_f{field_idx}_ptr"))
-                .map_err(|e| CodegenError::Llvm(format!("clone dst gep f{field_idx}: {e:?}")))?;
+                .llvm_ctx_with(|| format!("clone dst gep f{field_idx}"))?;
             builder
                 .build_store(dst_field_ptr, cloned)
-                .map_err(|e| CodegenError::Llvm(format!("clone dst store f{field_idx}: {e:?}")))?;
-            builder.build_unconditional_branch(next_bb).map_err(|e| {
-                CodegenError::Llvm(format!("clone next branch f{field_idx}: {e:?}"))
-            })?;
+                .llvm_ctx_with(|| format!("clone dst store f{field_idx}"))?;
+            builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx_with(|| format!("clone next branch f{field_idx}"))?;
         }
     }
     Ok(())
@@ -5474,29 +5642,39 @@ fn emit_field_drop_step<'ctx>(
             let helper = get_or_declare_record_drop_inplace(ctx, llvm_mod, name);
             let field_ptr = builder
                 .build_struct_gep(st_ty, state, field_idx, &format!("drop_f{field_idx}_ptr"))
-                .map_err(|e| CodegenError::Llvm(format!("drop record gep f{field_idx}: {e:?}")))?;
+                .llvm_ctx_with(|| format!("drop record gep f{field_idx}"))?;
             builder
                 .build_call(
                     helper,
                     &[field_ptr.into()],
                     &format!("drop_record_f{field_idx}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("drop record call f{field_idx}: {e:?}")))?;
+                .llvm_ctx_with(|| format!("drop record call f{field_idx}"))?;
             Ok(())
         }
         _ => {
-            let helper = drop_helper_for_kind(kind)?.ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "field_drop_step at f{field_idx}: kind missing drop helper"
-                ))
-            })?;
+            // Collections (Vec/HashMap/HashSet) derive their drop symbol from
+            // the single layout-witness descriptor (W5.001 F0a) — the sole
+            // selection authority, paired with the clone symbol so the two can
+            // never drift (W4.045 UAF class). Non-collection kinds fall through
+            // to their dedicated `drop_helper_for_kind` arm.
+            let helper = match collection_layout_witness(kind) {
+                Some(witness) => DropHelper {
+                    name: witness.drop_sym,
+                },
+                None => drop_helper_for_kind(kind)?.ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "field_drop_step at f{field_idx}: kind missing drop helper"
+                    ))
+                })?,
+            };
             let helper_fn = get_or_declare_drop_helper(ctx, llvm_mod, &helper);
             let field_ptr = builder
                 .build_struct_gep(st_ty, state, field_idx, &format!("drop_f{field_idx}_ptr"))
-                .map_err(|e| CodegenError::Llvm(format!("drop gep f{field_idx}: {e:?}")))?;
+                .llvm_ctx_with(|| format!("drop gep f{field_idx}"))?;
             let val = builder
                 .build_load(ptr_ty, field_ptr, &format!("drop_f{field_idx}"))
-                .map_err(|e| CodegenError::Llvm(format!("drop load f{field_idx}: {e:?}")))?
+                .llvm_ctx_with(|| format!("drop load f{field_idx}"))?
                 .into_pointer_value();
             builder
                 .build_call(
@@ -5504,7 +5682,7 @@ fn emit_field_drop_step<'ctx>(
                     &[val.into()],
                     &format!("drop_helper_f{field_idx}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("drop helper call f{field_idx}: {e:?}")))?;
+                .llvm_ctx_with(|| format!("drop helper call f{field_idx}"))?;
             Ok(())
         }
     }
@@ -5555,14 +5733,14 @@ fn emit_actor_state_drop_body<'ctx>(
             IntPredicate::EQ,
             builder
                 .build_ptr_to_int(state, i64_ty, "state_int")
-                .map_err(|e| CodegenError::Llvm(format!("drop ptr_to_int: {e:?}")))?,
+                .llvm_ctx("drop ptr_to_int")?,
             i64_ty.const_zero(),
             "state_is_null",
         )
-        .map_err(|e| CodegenError::Llvm(format!("drop null cmp: {e:?}")))?;
+        .llvm_ctx("drop null cmp")?;
     builder
         .build_conditional_branch(is_null, done_bb, do_drop_bb)
-        .map_err(|e| CodegenError::Llvm(format!("drop null branch: {e:?}")))?;
+        .llvm_ctx("drop null branch")?;
 
     builder.position_at_end(do_drop_bb);
     // Reverse-order LIFO drop of non-BitCopy fields.
@@ -5592,15 +5770,13 @@ fn emit_actor_state_drop_body<'ctx>(
     let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
     builder
         .build_call(free_fn, &[state.into()], "free_wrapper")
-        .map_err(|e| CodegenError::Llvm(format!("drop free wrapper: {e:?}")))?;
+        .llvm_ctx("drop free wrapper")?;
     builder
         .build_unconditional_branch(done_bb)
-        .map_err(|e| CodegenError::Llvm(format!("drop done branch: {e:?}")))?;
+        .llvm_ctx("drop done branch")?;
 
     builder.position_at_end(done_bb);
-    builder
-        .build_return(None)
-        .map_err(|e| CodegenError::Llvm(format!("drop ret: {e:?}")))?;
+    builder.build_return(None).llvm_ctx("drop ret")?;
     Ok(())
 }
 
@@ -5652,7 +5828,7 @@ fn emit_record_clone_inplace_body<'ctx>(
     if field_steps.is_empty() {
         builder
             .build_unconditional_branch(success_bb)
-            .map_err(|e| CodegenError::Llvm(format!("record clone trivial: {e:?}")))?;
+            .llvm_ctx("record clone trivial")?;
     } else {
         let rollback_bbs: Vec<_> = (0..field_steps.len())
             .map(|k| ctx.append_basic_block(f, &format!("rb_step_{k}")))
@@ -5665,7 +5841,7 @@ fn emit_record_clone_inplace_body<'ctx>(
             .collect();
         builder
             .build_unconditional_branch(clone_bbs[0])
-            .map_err(|e| CodegenError::Llvm(format!("record clone first branch: {e:?}")))?;
+            .llvm_ctx("record clone first branch")?;
         for (step_idx, &(field_idx, kind)) in field_steps.iter().enumerate() {
             builder.position_at_end(clone_bbs[step_idx]);
             let next_bb = if step_idx + 1 < field_steps.len() {
@@ -5704,17 +5880,17 @@ fn emit_record_clone_inplace_body<'ctx>(
             // No wrapper free here — record is embedded.
             builder
                 .build_unconditional_branch(fail_bb)
-                .map_err(|e| CodegenError::Llvm(format!("record clone rb branch: {e:?}")))?;
+                .llvm_ctx("record clone rb branch")?;
         }
     }
     builder.position_at_end(success_bb);
     builder
         .build_return(Some(&i32_ty.const_zero()))
-        .map_err(|e| CodegenError::Llvm(format!("record clone success ret: {e:?}")))?;
+        .llvm_ctx("record clone success ret")?;
     builder.position_at_end(fail_bb);
     builder
         .build_return(Some(&i32_ty.const_int(1, false)))
-        .map_err(|e| CodegenError::Llvm(format!("record clone fail ret: {e:?}")))?;
+        .llvm_ctx("record clone fail ret")?;
     Ok(())
 }
 
@@ -5751,14 +5927,14 @@ fn emit_record_drop_inplace_body<'ctx>(
             IntPredicate::EQ,
             builder
                 .build_ptr_to_int(state, i64_ty, "rec_int")
-                .map_err(|e| CodegenError::Llvm(format!("record drop ptr_to_int: {e:?}")))?,
+                .llvm_ctx("record drop ptr_to_int")?,
             i64_ty.const_zero(),
             "rec_is_null",
         )
-        .map_err(|e| CodegenError::Llvm(format!("record drop null cmp: {e:?}")))?;
+        .llvm_ctx("record drop null cmp")?;
     builder
         .build_conditional_branch(is_null, done_bb, do_drop_bb)
-        .map_err(|e| CodegenError::Llvm(format!("record drop null branch: {e:?}")))?;
+        .llvm_ctx("record drop null branch")?;
 
     builder.position_at_end(do_drop_bb);
     for (idx, kind) in kinds.iter().enumerate().rev() {
@@ -5785,12 +5961,10 @@ fn emit_record_drop_inplace_body<'ctx>(
     }
     builder
         .build_unconditional_branch(done_bb)
-        .map_err(|e| CodegenError::Llvm(format!("record drop done branch: {e:?}")))?;
+        .llvm_ctx("record drop done branch")?;
 
     builder.position_at_end(done_bb);
-    builder
-        .build_return(None)
-        .map_err(|e| CodegenError::Llvm(format!("record drop ret: {e:?}")))?;
+    builder.build_return(None).llvm_ctx("record drop ret")?;
     Ok(())
 }
 
@@ -5845,13 +6019,13 @@ fn emit_actor_spawn_lifecycle<'ctx>(
         fn_ctx
             .builder
             .build_call(init_fn, &args, &format!("call_{init_name}"))
-            .map_err(|e| CodegenError::Llvm(format!("actor init call: {e:?}")))?;
+            .llvm_ctx("actor init call")?;
     }
     if let Some(start_fn) = start_fn {
         fn_ctx
             .builder
             .build_call(start_fn, &[ctx_arg.into()], &format!("call_{start_name}"))
-            .map_err(|e| CodegenError::Llvm(format!("actor on(start) call: {e:?}")))?;
+            .llvm_ctx("actor on(start) call")?;
     }
     emit_actor_state_lock_call(fn_ctx, spawned, "hew_actor_state_lock_release")?;
 
@@ -5875,7 +6049,7 @@ fn emit_actor_spawn_lifecycle<'ctx>(
                 &[spawned.into(), fn_ptr.into()],
                 "hew_actor_set_terminate_call",
             )
-            .map_err(|e| CodegenError::Llvm(format!("hew_actor_set_terminate call: {e:?}")))?;
+            .llvm_ctx("hew_actor_set_terminate call")?;
     }
 
     Ok(())
@@ -5889,7 +6063,7 @@ fn build_spawn_lifecycle_context<'ctx>(
     let ctx_slot = fn_ctx
         .builder
         .build_alloca(ctx_ty, "actor_spawn_lifecycle_ctx")
-        .map_err(|e| CodegenError::Llvm(format!("spawn lifecycle ctx alloca: {e:?}")))?;
+        .llvm_ctx("spawn lifecycle ctx alloca")?;
     store_context_ptr_field(fn_ctx, ctx_slot, HEW_CTX_OFFSET_ACTOR, actor, "ctx_actor")?;
     let actor_id = load_actor_id(fn_ctx, actor)?;
     store_context_i64_field(
@@ -5918,12 +6092,12 @@ fn store_context_ptr_field<'ctx>(
                 &[fn_ctx.ctx.i64_type().const_int(offset as u64, false)],
                 &format!("{name}_slot"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("{name} gep: {e:?}")))?
+            .llvm_ctx_with(|| format!("{name} gep"))?
     };
     fn_ctx
         .builder
         .build_store(field_ptr, value)
-        .map_err(|e| CodegenError::Llvm(format!("{name} store: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{name} store"))?;
     Ok(())
 }
 
@@ -5943,12 +6117,12 @@ fn store_context_i64_field<'ctx>(
                 &[fn_ctx.ctx.i64_type().const_int(offset as u64, false)],
                 &format!("{name}_slot"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("{name} gep: {e:?}")))?
+            .llvm_ctx_with(|| format!("{name} gep"))?
     };
     fn_ctx
         .builder
         .build_store(field_ptr, value)
-        .map_err(|e| CodegenError::Llvm(format!("{name} store: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{name} store"))?;
     Ok(())
 }
 
@@ -5961,7 +6135,7 @@ fn load_place_as_metadata<'ctx>(
     let loaded = fn_ctx
         .builder
         .build_load(ty, ptr, &format!("{label}_load"))
-        .map_err(|e| CodegenError::Llvm(format!("{label} load: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{label} load"))?;
     Ok(metadata_value_from_basic(loaded))
 }
 
@@ -5979,7 +6153,7 @@ fn emit_actor_state_lock_call(
     let rc = fn_ctx
         .builder
         .build_call(lock_fn, &[actor.into()], &format!("{symbol}_call"))
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?
+        .llvm_ctx_with(|| format!("{symbol} call"))?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?
@@ -5992,7 +6166,7 @@ fn emit_actor_state_lock_call(
             fn_ctx.ctx.i32_type().const_zero(),
             &format!("{symbol}_ok"),
         )
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} compare: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{symbol} compare"))?;
     let current = fn_ctx
         .builder
         .get_insert_block()
@@ -6009,7 +6183,7 @@ fn emit_actor_state_lock_call(
     fn_ctx
         .builder
         .build_conditional_branch(ok, ok_bb, trap_bb)
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} branch: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{symbol} branch"))?;
     fn_ctx.builder.position_at_end(trap_bb);
     let trap = Intrinsic::find("llvm.trap")
         .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
@@ -6017,11 +6191,11 @@ fn emit_actor_state_lock_call(
     fn_ctx
         .builder
         .build_call(trap, &[], &format!("{symbol}_trap"))
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} trap: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{symbol} trap"))?;
     fn_ctx
         .builder
         .build_unreachable()
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} unreachable: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{symbol} unreachable"))?;
     fn_ctx.builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -6084,7 +6258,7 @@ fn get_or_create_task_closure_wrapper<'ctx>(
     )?;
     let env_ptr = builder
         .build_call(get_env, &[task_param.into()], "hew_task_get_env_call")
-        .map_err(|e| CodegenError::Llvm(format!("hew_task_get_env call: {e:?}")))?
+        .llvm_ctx("hew_task_get_env call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_task_get_env returned void".into()))?
@@ -6095,7 +6269,7 @@ fn get_or_create_task_closure_wrapper<'ctx>(
             &[ctx_param.into(), env_ptr.into()],
             "closure_task_body_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("closure task body call: {e:?}")))?;
+        .llvm_ctx("closure task body call")?;
 
     let complete = intern_runtime_decl(
         fn_ctx.ctx,
@@ -6109,10 +6283,10 @@ fn get_or_create_task_closure_wrapper<'ctx>(
             &[task_param.into()],
             "hew_task_complete_threaded_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_task_complete_threaded call: {e:?}")))?;
+        .llvm_ctx("hew_task_complete_threaded call")?;
     builder
         .build_return(None)
-        .map_err(|e| CodegenError::Llvm(format!("closure task wrapper return: {e:?}")))?;
+        .llvm_ctx("closure task wrapper return")?;
     Ok(wrapper)
 }
 
@@ -6154,7 +6328,7 @@ fn emit_spawn_task_closure(
             &[env_ptr.into(), env_size.into(), null_drop.into()],
             "hew_closure_env_rc_new",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_rc_new call: {e:?}")))?
+        .llvm_ctx("hew_rc_new call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_rc_new returned void".into()))?
@@ -6172,7 +6346,7 @@ fn emit_spawn_task_closure(
             &[task_ptr.into(), rc_env.into()],
             "hew_task_set_env_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_task_set_env call: {e:?}")))?;
+        .llvm_ctx("hew_task_set_env call")?;
 
     let wrapper = get_or_create_task_closure_wrapper(fn_ctx, fn_symbol)?;
     let spawn = intern_runtime_decl(
@@ -6192,11 +6366,7 @@ fn emit_spawn_task_closure(
             ],
             "hew_task_spawn_thread_with_inherited_context_closure_call",
         )
-        .map_err(|e| {
-            CodegenError::Llvm(format!(
-                "hew_task_spawn_thread_with_inherited_context call: {e:?}"
-            ))
-        })?;
+        .llvm_ctx("hew_task_spawn_thread_with_inherited_context call")?;
     Ok(())
 }
 
@@ -6250,40 +6420,30 @@ fn saturating_bound<'ctx>(
                 IntArithOp::Add => fn_ctx
                     .builder
                     .build_int_compare(IntPredicate::SGE, rhs_v, zero, "sat_add_positive")
-                    .map_err(|e| {
-                        CodegenError::Llvm(format!("saturating add sign compare: {e:?}"))
-                    })?,
+                    .llvm_ctx("saturating add sign compare")?,
                 IntArithOp::Sub => fn_ctx
                     .builder
                     .build_int_compare(IntPredicate::SLT, rhs_v, zero, "sat_sub_negative")
-                    .map_err(|e| {
-                        CodegenError::Llvm(format!("saturating sub sign compare: {e:?}"))
-                    })?,
+                    .llvm_ctx("saturating sub sign compare")?,
                 IntArithOp::Mul => {
                     let lhs_neg = fn_ctx
                         .builder
                         .build_int_compare(IntPredicate::SLT, lhs_v, zero, "sat_mul_lhs_neg")
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("saturating mul lhs sign compare: {e:?}"))
-                        })?;
+                        .llvm_ctx("saturating mul lhs sign compare")?;
                     let rhs_neg = fn_ctx
                         .builder
                         .build_int_compare(IntPredicate::SLT, rhs_v, zero, "sat_mul_rhs_neg")
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("saturating mul rhs sign compare: {e:?}"))
-                        })?;
+                        .llvm_ctx("saturating mul rhs sign compare")?;
                     fn_ctx
                         .builder
                         .build_int_compare(IntPredicate::EQ, lhs_neg, rhs_neg, "sat_mul_same_sign")
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("saturating mul same-sign compare: {e:?}"))
-                        })?
+                        .llvm_ctx("saturating mul same-sign compare")?
                 }
             };
             Ok(fn_ctx
                 .builder
                 .build_select(choose_max, max, min, "sat_signed_bound")
-                .map_err(|e| CodegenError::Llvm(format!("saturating bound select: {e:?}")))?
+                .llvm_ctx("saturating bound select")?
                 .into_int_value())
         }
     }
@@ -6331,9 +6491,7 @@ fn lower_instruction(
                 BasicTypeEnum::PointerType(ptr_ty) => fn_ctx
                     .builder
                     .build_load(ptr_ty, token_ptr, "cancel_token_handle")
-                    .map_err(|e| {
-                        CodegenError::Llvm(format!("CancellationToken.is_cancelled load: {e:?}"))
-                    })?
+                    .llvm_ctx("CancellationToken.is_cancelled load")?
                     .into_pointer_value(),
                 other => {
                     return Err(CodegenError::FailClosed(format!(
@@ -6354,9 +6512,7 @@ fn lower_instruction(
                     &[token_handle.into()],
                     "hew_cancel_token_is_requested",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_cancel_token_is_requested call: {e:?}"))
-                })?
+                .llvm_ctx("hew_cancel_token_is_requested call")?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
@@ -6380,21 +6536,15 @@ fn lower_instruction(
                     requested_i32.get_type().const_zero(),
                     "cancel_requested_bit",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("CancellationToken.is_cancelled compare: {e:?}"))
-                })?;
+                .llvm_ctx("CancellationToken.is_cancelled compare")?;
             let requested_bool = fn_ctx
                 .builder
                 .build_int_z_extend_or_bit_cast(requested_bit, dest_int, "cancel_requested_bool")
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("CancellationToken.is_cancelled zext: {e:?}"))
-                })?;
+                .llvm_ctx("CancellationToken.is_cancelled zext")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, requested_bool)
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("CancellationToken.is_cancelled store: {e:?}"))
-                })?;
+                .llvm_ctx("CancellationToken.is_cancelled store")?;
         }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
@@ -6418,7 +6568,7 @@ fn lower_instruction(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, v)
-                .map_err(|e| CodegenError::Llvm(format!("store i64: {e:?}")))?;
+                .llvm_ctx("store i64")?;
         }
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
@@ -6438,12 +6588,12 @@ fn lower_instruction(
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, lhs_ptr, "arith_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("arith lhs load: {e:?}")))?
+                .llvm_ctx("arith lhs load")?
                 .into_int_value();
             let rhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, rhs_ptr, "arith_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("arith rhs load: {e:?}")))?
+                .llvm_ctx("arith rhs load")?
                 .into_int_value();
             let result = match instr {
                 Instr::IntAdd { .. } => fn_ctx.builder.build_int_add(lhs_v, rhs_v, "arith_add"),
@@ -6451,11 +6601,11 @@ fn lower_instruction(
                 Instr::IntMul { .. } => fn_ctx.builder.build_int_mul(lhs_v, rhs_v, "arith_mul"),
                 _ => unreachable!("matched on three i64-arith variants above"),
             }
-            .map_err(|e| CodegenError::Llvm(format!("i64 arith: {e:?}")))?;
+            .llvm_ctx("i64 arith")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result)
-                .map_err(|e| CodegenError::Llvm(format!("arith store: {e:?}")))?;
+                .llvm_ctx("arith store")?;
         }
         // B-5: division and remainder. These are the post-check instructions —
         // the divisor-zero and signed-MIN/-1 guard branches are emitted by
@@ -6492,12 +6642,12 @@ fn lower_instruction(
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, lhs_ptr, "div_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("div lhs load: {e:?}")))?
+                .llvm_ctx("div lhs load")?
                 .into_int_value();
             let rhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, rhs_ptr, "div_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("div rhs load: {e:?}")))?
+                .llvm_ctx("div rhs load")?
                 .into_int_value();
             let result = match (instr, signed) {
                 (Instr::IntDiv { .. }, IntSignedness::Signed) => {
@@ -6514,11 +6664,11 @@ fn lower_instruction(
                 }
                 _ => unreachable!("matched on IntDiv / IntRem above"),
             }
-            .map_err(|e| CodegenError::Llvm(format!("div/rem: {e:?}")))?;
+            .llvm_ctx("div/rem")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result)
-                .map_err(|e| CodegenError::Llvm(format!("div/rem store: {e:?}")))?;
+                .llvm_ctx("div/rem store")?;
         }
         // B-5: shift instructions. The out-of-range guard is emitted by the
         // MIR producer (`lower_shift`); by the time execution reaches here the
@@ -6539,21 +6689,21 @@ fn lower_instruction(
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, lhs_ptr, "shl_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("shl lhs load: {e:?}")))?
+                .llvm_ctx("shl lhs load")?
                 .into_int_value();
             let rhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, rhs_ptr, "shl_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("shl rhs load: {e:?}")))?
+                .llvm_ctx("shl rhs load")?
                 .into_int_value();
             let result = fn_ctx
                 .builder
                 .build_left_shift(lhs_v, rhs_v, "shl")
-                .map_err(|e| CodegenError::Llvm(format!("shl: {e:?}")))?;
+                .llvm_ctx("shl")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result)
-                .map_err(|e| CodegenError::Llvm(format!("shl store: {e:?}")))?;
+                .llvm_ctx("shl store")?;
         }
         Instr::IntShr {
             signed,
@@ -6576,12 +6726,12 @@ fn lower_instruction(
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, lhs_ptr, "shr_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("shr lhs load: {e:?}")))?
+                .llvm_ctx("shr lhs load")?
                 .into_int_value();
             let rhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, rhs_ptr, "shr_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("shr rhs load: {e:?}")))?
+                .llvm_ctx("shr rhs load")?
                 .into_int_value();
             // Arithmetic right shift for signed types (preserves sign),
             // logical right shift for unsigned types (zero-fills).
@@ -6593,11 +6743,11 @@ fn lower_instruction(
                     .builder
                     .build_right_shift(lhs_v, rhs_v, false, "lshr"),
             }
-            .map_err(|e| CodegenError::Llvm(format!("shr: {e:?}")))?;
+            .llvm_ctx("shr")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result)
-                .map_err(|e| CodegenError::Llvm(format!("shr store: {e:?}")))?;
+                .llvm_ctx("shr store")?;
         }
         // Bitwise &, |, ^. Well-defined for all integer widths/signednesses;
         // no traps, no overflow checks. Operands and dest share the same i64
@@ -6624,12 +6774,12 @@ fn lower_instruction(
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, lhs_ptr, "bitwise_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("bitwise lhs load: {e:?}")))?
+                .llvm_ctx("bitwise lhs load")?
                 .into_int_value();
             let rhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, rhs_ptr, "bitwise_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("bitwise rhs load: {e:?}")))?
+                .llvm_ctx("bitwise rhs load")?
                 .into_int_value();
             let result = match instr {
                 Instr::IntBitAnd { .. } => fn_ctx.builder.build_and(lhs_v, rhs_v, "bitand"),
@@ -6637,11 +6787,11 @@ fn lower_instruction(
                 Instr::IntBitXor { .. } => fn_ctx.builder.build_xor(lhs_v, rhs_v, "bitxor"),
                 _ => unreachable!("matched on three bitwise variants above"),
             }
-            .map_err(|e| CodegenError::Llvm(format!("bitwise: {e:?}")))?;
+            .llvm_ctx("bitwise")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result)
-                .map_err(|e| CodegenError::Llvm(format!("bitwise store: {e:?}")))?;
+                .llvm_ctx("bitwise store")?;
         }
         Instr::BoolNot { dest, operand } => {
             let (operand_ptr, operand_ty) = place_pointer(fn_ctx, *operand)?;
@@ -6665,7 +6815,7 @@ fn lower_instruction(
             let operand_v = fn_ctx
                 .builder
                 .build_load(bool_int, operand_ptr, "boolnot_operand")
-                .map_err(|e| CodegenError::Llvm(format!("bool not operand load: {e:?}")))?
+                .llvm_ctx("bool not operand load")?
                 .into_int_value();
             let bit = fn_ctx
                 .builder
@@ -6675,15 +6825,15 @@ fn lower_instruction(
                     bool_int.const_zero(),
                     "boolnot",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("bool not compare: {e:?}")))?;
+                .llvm_ctx("bool not compare")?;
             let widened = fn_ctx
                 .builder
                 .build_int_z_extend_or_bit_cast(bit, dest_int, "boolnot_widen")
-                .map_err(|e| CodegenError::Llvm(format!("bool not widen: {e:?}")))?;
+                .llvm_ctx("bool not widen")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, widened)
-                .map_err(|e| CodegenError::Llvm(format!("bool not store: {e:?}")))?;
+                .llvm_ctx("bool not store")?;
         }
         Instr::IntBitNot { dest, operand } => {
             let (operand_ptr, operand_ty) = place_pointer(fn_ctx, *operand)?;
@@ -6704,16 +6854,16 @@ fn lower_instruction(
             let operand_v = fn_ctx
                 .builder
                 .build_load(int_ty, operand_ptr, "bitnot_operand")
-                .map_err(|e| CodegenError::Llvm(format!("bitnot operand load: {e:?}")))?
+                .llvm_ctx("bitnot operand load")?
                 .into_int_value();
             let result = fn_ctx
                 .builder
                 .build_not(operand_v, "bitnot")
-                .map_err(|e| CodegenError::Llvm(format!("bitnot: {e:?}")))?;
+                .llvm_ctx("bitnot")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result)
-                .map_err(|e| CodegenError::Llvm(format!("bitnot store: {e:?}")))?;
+                .llvm_ctx("bitnot store")?;
         }
         Instr::IntArithChecked {
             op,
@@ -6774,49 +6924,41 @@ fn lower_instruction(
                 (IntArithOp::Mul, IntSignedness::Unsigned) => "llvm.umul.with.overflow",
             };
             let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
-                CodegenError::Llvm(format!(
-                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
-                ))
+                llvm_err!("with-overflow intrinsic `{intrinsic_name}` not found in LLVM build")
             })?;
             let intrinsic_fn = intrinsic
                 .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
-                .ok_or_else(|| {
-                    CodegenError::Llvm(format!(
-                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"
-                    ))
-                })?;
+                .ok_or_else(|| llvm_err!("with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"))?;
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, lhs_ptr, "checked_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("checked lhs load: {e:?}")))?
+                .llvm_ctx("checked lhs load")?
                 .into_int_value();
             let rhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, rhs_ptr, "checked_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("checked rhs load: {e:?}")))?
+                .llvm_ctx("checked rhs load")?
                 .into_int_value();
             let call_site = fn_ctx
                 .builder
                 .build_call(intrinsic_fn, &[lhs_v.into(), rhs_v.into()], "with_overflow")
-                .map_err(|e| CodegenError::Llvm(format!("with-overflow call: {e:?}")))?;
+                .llvm_ctx("with-overflow call")?;
             let agg = call_site
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
-                    CodegenError::Llvm(format!(
-                        "with-overflow intrinsic `{intrinsic_name}` returned void"
-                    ))
+                    llvm_err!("with-overflow intrinsic `{intrinsic_name}` returned void")
                 })?
                 .into_struct_value();
             let result_v = fn_ctx
                 .builder
                 .build_extract_value(agg, 0, "checked_result")
-                .map_err(|e| CodegenError::Llvm(format!("extractvalue result: {e:?}")))?
+                .llvm_ctx("extractvalue result")?
                 .into_int_value();
             let of_bit = fn_ctx
                 .builder
                 .build_extract_value(agg, 1, "checked_overflow")
-                .map_err(|e| CodegenError::Llvm(format!("extractvalue flag: {e:?}")))?
+                .llvm_ctx("extractvalue flag")?
                 .into_int_value();
             // The overflow flag is an i1; the MIR-allocated slot is a
             // `ResolvedTy::Bool` (i8 in LLVM lowering). Widen so the
@@ -6825,15 +6967,15 @@ fn lower_instruction(
             let of_widened = fn_ctx
                 .builder
                 .build_int_z_extend_or_bit_cast(of_bit, flag_int, "checked_overflow_widen")
-                .map_err(|e| CodegenError::Llvm(format!("flag zext: {e:?}")))?;
+                .llvm_ctx("flag zext")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result_v)
-                .map_err(|e| CodegenError::Llvm(format!("checked result store: {e:?}")))?;
+                .llvm_ctx("checked result store")?;
             fn_ctx
                 .builder
                 .build_store(flag_ptr, of_widened)
-                .map_err(|e| CodegenError::Llvm(format!("checked flag store: {e:?}")))?;
+                .llvm_ctx("checked flag store")?;
             let _ = ctx;
         }
         Instr::IntNegChecked {
@@ -6871,21 +7013,15 @@ fn lower_instruction(
                 IntSignedness::Unsigned => "llvm.usub.with.overflow",
             };
             let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
-                CodegenError::Llvm(format!(
-                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
-                ))
+                llvm_err!("with-overflow intrinsic `{intrinsic_name}` not found in LLVM build")
             })?;
             let intrinsic_fn = intrinsic
                 .get_declaration(fn_ctx.llvm_mod, &[int_ty.into()])
-                .ok_or_else(|| {
-                    CodegenError::Llvm(format!(
-                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {int_ty:?}"
-                    ))
-                })?;
+                .ok_or_else(|| llvm_err!("with-overflow intrinsic `{intrinsic_name}` declaration failed for width {int_ty:?}"))?;
             let operand_v = fn_ctx
                 .builder
                 .build_load(int_ty, operand_ptr, "ineg_operand")
-                .map_err(|e| CodegenError::Llvm(format!("ineg operand load: {e:?}")))?
+                .llvm_ctx("ineg operand load")?
                 .into_int_value();
             let call_site = fn_ctx
                 .builder
@@ -6894,38 +7030,36 @@ fn lower_instruction(
                     &[int_ty.const_zero().into(), operand_v.into()],
                     "neg_with_overflow",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("neg with-overflow call: {e:?}")))?;
+                .llvm_ctx("neg with-overflow call")?;
             let agg = call_site
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
-                    CodegenError::Llvm(format!(
-                        "with-overflow intrinsic `{intrinsic_name}` returned void"
-                    ))
+                    llvm_err!("with-overflow intrinsic `{intrinsic_name}` returned void")
                 })?
                 .into_struct_value();
             let result_v = fn_ctx
                 .builder
                 .build_extract_value(agg, 0, "neg_result")
-                .map_err(|e| CodegenError::Llvm(format!("neg extract result: {e:?}")))?
+                .llvm_ctx("neg extract result")?
                 .into_int_value();
             let of_bit = fn_ctx
                 .builder
                 .build_extract_value(agg, 1, "neg_overflow")
-                .map_err(|e| CodegenError::Llvm(format!("neg extract flag: {e:?}")))?
+                .llvm_ctx("neg extract flag")?
                 .into_int_value();
             let of_widened = fn_ctx
                 .builder
                 .build_int_z_extend_or_bit_cast(of_bit, flag_int, "neg_overflow_widen")
-                .map_err(|e| CodegenError::Llvm(format!("neg flag zext: {e:?}")))?;
+                .llvm_ctx("neg flag zext")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result_v)
-                .map_err(|e| CodegenError::Llvm(format!("neg result store: {e:?}")))?;
+                .llvm_ctx("neg result store")?;
             fn_ctx
                 .builder
                 .build_store(flag_ptr, of_widened)
-                .map_err(|e| CodegenError::Llvm(format!("neg flag store: {e:?}")))?;
+                .llvm_ctx("neg flag store")?;
             let _ = ctx;
         }
         Instr::IntArithCheckedOption {
@@ -6979,26 +7113,20 @@ fn lower_instruction(
             }
             let intrinsic_name = overflow_intrinsic_name(*op, *signed);
             let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
-                CodegenError::Llvm(format!(
-                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
-                ))
+                llvm_err!("with-overflow intrinsic `{intrinsic_name}` not found in LLVM build")
             })?;
             let intrinsic_fn = intrinsic
                 .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
-                .ok_or_else(|| {
-                    CodegenError::Llvm(format!(
-                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"
-                    ))
-                })?;
+                .ok_or_else(|| llvm_err!("with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"))?;
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, lhs_ptr, "checked_option_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("checked-option lhs load: {e:?}")))?
+                .llvm_ctx("checked-option lhs load")?
                 .into_int_value();
             let rhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, rhs_ptr, "checked_option_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("checked-option rhs load: {e:?}")))?
+                .llvm_ctx("checked-option rhs load")?
                 .into_int_value();
             let call_site = fn_ctx
                 .builder
@@ -7007,40 +7135,38 @@ fn lower_instruction(
                     &[lhs_v.into(), rhs_v.into()],
                     "checked_option_with_overflow",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("checked-option intrinsic call: {e:?}")))?;
+                .llvm_ctx("checked-option intrinsic call")?;
             let agg = call_site
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
-                    CodegenError::Llvm(format!(
-                        "with-overflow intrinsic `{intrinsic_name}` returned void"
-                    ))
+                    llvm_err!("with-overflow intrinsic `{intrinsic_name}` returned void")
                 })?
                 .into_struct_value();
             let result_v = fn_ctx
                 .builder
                 .build_extract_value(agg, 0, "checked_option_result")
-                .map_err(|e| CodegenError::Llvm(format!("checked-option result extract: {e:?}")))?
+                .llvm_ctx("checked-option result extract")?
                 .into_int_value();
             let of_bit = fn_ctx
                 .builder
                 .build_extract_value(agg, 1, "checked_option_overflow")
-                .map_err(|e| CodegenError::Llvm(format!("checked-option overflow extract: {e:?}")))?
+                .llvm_ctx("checked-option overflow extract")?
                 .into_int_value();
             let some_tag = tag_int.const_zero();
             let none_tag = tag_int.const_int(1, false);
             let tag_v = fn_ctx
                 .builder
                 .build_select(of_bit, none_tag, some_tag, "checked_option_tag")
-                .map_err(|e| CodegenError::Llvm(format!("checked-option tag select: {e:?}")))?;
+                .llvm_ctx("checked-option tag select")?;
             fn_ctx
                 .builder
                 .build_store(tag_ptr, tag_v)
-                .map_err(|e| CodegenError::Llvm(format!("checked-option tag store: {e:?}")))?;
+                .llvm_ctx("checked-option tag store")?;
             fn_ctx
                 .builder
                 .build_store(payload_ptr, result_v)
-                .map_err(|e| CodegenError::Llvm(format!("checked-option payload store: {e:?}")))?;
+                .llvm_ctx("checked-option payload store")?;
         }
         Instr::IntArithSaturating {
             op,
@@ -7069,26 +7195,20 @@ fn lower_instruction(
             validate_numeric_method_width(*width, lhs_int, "IntArithSaturating")?;
             let intrinsic_name = overflow_intrinsic_name(*op, *signed);
             let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
-                CodegenError::Llvm(format!(
-                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
-                ))
+                llvm_err!("with-overflow intrinsic `{intrinsic_name}` not found in LLVM build")
             })?;
             let intrinsic_fn = intrinsic
                 .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
-                .ok_or_else(|| {
-                    CodegenError::Llvm(format!(
-                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"
-                    ))
-                })?;
+                .ok_or_else(|| llvm_err!("with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"))?;
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, lhs_ptr, "saturating_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("saturating lhs load: {e:?}")))?
+                .llvm_ctx("saturating lhs load")?
                 .into_int_value();
             let rhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, rhs_ptr, "saturating_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("saturating rhs load: {e:?}")))?
+                .llvm_ctx("saturating rhs load")?
                 .into_int_value();
             let call_site = fn_ctx
                 .builder
@@ -7097,35 +7217,33 @@ fn lower_instruction(
                     &[lhs_v.into(), rhs_v.into()],
                     "saturating_with_overflow",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("saturating intrinsic call: {e:?}")))?;
+                .llvm_ctx("saturating intrinsic call")?;
             let agg = call_site
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
-                    CodegenError::Llvm(format!(
-                        "with-overflow intrinsic `{intrinsic_name}` returned void"
-                    ))
+                    llvm_err!("with-overflow intrinsic `{intrinsic_name}` returned void")
                 })?
                 .into_struct_value();
             let result_v = fn_ctx
                 .builder
                 .build_extract_value(agg, 0, "saturating_result")
-                .map_err(|e| CodegenError::Llvm(format!("saturating result extract: {e:?}")))?
+                .llvm_ctx("saturating result extract")?
                 .into_int_value();
             let of_bit = fn_ctx
                 .builder
                 .build_extract_value(agg, 1, "saturating_overflow")
-                .map_err(|e| CodegenError::Llvm(format!("saturating overflow extract: {e:?}")))?
+                .llvm_ctx("saturating overflow extract")?
                 .into_int_value();
             let bound = saturating_bound(fn_ctx, *op, *signed, lhs_int, lhs_v, rhs_v)?;
             let final_v = fn_ctx
                 .builder
                 .build_select(of_bit, bound, result_v, "saturating_select")
-                .map_err(|e| CodegenError::Llvm(format!("saturating select: {e:?}")))?;
+                .llvm_ctx("saturating select")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, final_v)
-                .map_err(|e| CodegenError::Llvm(format!("saturating result store: {e:?}")))?;
+                .llvm_ctx("saturating result store")?;
         }
         Instr::IntCmp {
             dest,
@@ -7168,12 +7286,12 @@ fn lower_instruction(
                 let lhs_v = fn_ctx
                     .builder
                     .build_load(lhs_ty, lhs_ptr, "string_cmp_lhs")
-                    .map_err(|e| CodegenError::Llvm(format!("string cmp lhs load: {e:?}")))?
+                    .llvm_ctx("string cmp lhs load")?
                     .into_pointer_value();
                 let rhs_v = fn_ctx
                     .builder
                     .build_load(lhs_ty, rhs_ptr, "string_cmp_rhs")
-                    .map_err(|e| CodegenError::Llvm(format!("string cmp rhs load: {e:?}")))?
+                    .llvm_ctx("string cmp rhs load")?
                     .into_pointer_value();
                 let callee = intern_runtime_decl(
                     fn_ctx.ctx,
@@ -7184,7 +7302,7 @@ fn lower_instruction(
                 let eq_i32 = fn_ctx
                     .builder
                     .build_call(callee, &[lhs_v.into(), rhs_v.into()], "hew_string_equals")
-                    .map_err(|e| CodegenError::Llvm(format!("hew_string_equals call: {e:?}")))?
+                    .llvm_ctx("hew_string_equals call")?
                     .try_as_basic_value()
                     .basic()
                     .ok_or_else(|| {
@@ -7202,15 +7320,15 @@ fn lower_instruction(
                 let bit = fn_ctx
                     .builder
                     .build_int_compare(predicate, eq_i32, zero, "string_cmp_bit")
-                    .map_err(|e| CodegenError::Llvm(format!("string cmp icmp: {e:?}")))?;
+                    .llvm_ctx("string cmp icmp")?;
                 let widened = fn_ctx
                     .builder
                     .build_int_z_extend_or_bit_cast(bit, dest_int, "string_cmp_zext")
-                    .map_err(|e| CodegenError::Llvm(format!("string cmp zext: {e:?}")))?;
+                    .llvm_ctx("string cmp zext")?;
                 fn_ctx
                     .builder
                     .build_store(dest_ptr, widened)
-                    .map_err(|e| CodegenError::Llvm(format!("string cmp store: {e:?}")))?;
+                    .llvm_ctx("string cmp store")?;
                 let _ = ctx;
                 return Ok(());
             }
@@ -7238,12 +7356,12 @@ fn lower_instruction(
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, lhs_ptr, "cmp_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("cmp lhs load: {e:?}")))?
+                .llvm_ctx("cmp lhs load")?
                 .into_int_value();
             let rhs_v = fn_ctx
                 .builder
                 .build_load(lhs_int, rhs_ptr, "cmp_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("cmp rhs load: {e:?}")))?
+                .llvm_ctx("cmp rhs load")?
                 .into_int_value();
             let llvm_pred = match pred {
                 CmpPred::Eq => IntPredicate::EQ,
@@ -7260,15 +7378,15 @@ fn lower_instruction(
             let bit = fn_ctx
                 .builder
                 .build_int_compare(llvm_pred, lhs_v, rhs_v, "cmp_bit")
-                .map_err(|e| CodegenError::Llvm(format!("icmp: {e:?}")))?;
+                .llvm_ctx("icmp")?;
             let widened = fn_ctx
                 .builder
                 .build_int_z_extend_or_bit_cast(bit, dest_int, "cmp_zext")
-                .map_err(|e| CodegenError::Llvm(format!("cmp zext: {e:?}")))?;
+                .llvm_ctx("cmp zext")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, widened)
-                .map_err(|e| CodegenError::Llvm(format!("cmp store: {e:?}")))?;
+                .llvm_ctx("cmp store")?;
             let _ = ctx;
         }
         Instr::IdentityCompare { dest, lhs, rhs } => {
@@ -7301,11 +7419,11 @@ fn lower_instruction(
             let lhs_val = fn_ctx
                 .builder
                 .build_load(lhs_ty, lhs_ptr, "is_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("is lhs load: {e:?}")))?;
+                .llvm_ctx("is lhs load")?;
             let rhs_val = fn_ctx
                 .builder
                 .build_load(rhs_ty, rhs_ptr, "is_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("is rhs load: {e:?}")))?;
+                .llvm_ctx("is rhs load")?;
             // Convert both operands to i64 integers for comparison.
             // Pointer operands: `ptrtoint ptr to i64`.
             // Integer operands (machine-id, already i64): bitcast or no-op.
@@ -7313,14 +7431,14 @@ fn lower_instruction(
                 inkwell::values::BasicValueEnum::PointerValue(p) => fn_ctx
                     .builder
                     .build_ptr_to_int(p, i64_ty, "is_lhs_int")
-                    .map_err(|e| CodegenError::Llvm(format!("is lhs ptrtoint: {e:?}")))?,
+                    .llvm_ctx("is lhs ptrtoint")?,
                 inkwell::values::BasicValueEnum::IntValue(v) => {
                     // Machine-id or other integer-shaped handle: extend/truncate
                     // to i64 so the icmp operands are uniform width.
                     fn_ctx
                         .builder
                         .build_int_z_extend_or_bit_cast(v, i64_ty, "is_lhs_i64")
-                        .map_err(|e| CodegenError::Llvm(format!("is lhs cast: {e:?}")))?
+                        .llvm_ctx("is lhs cast")?
                 }
                 _ => {
                     return Err(CodegenError::FailClosed(
@@ -7332,11 +7450,11 @@ fn lower_instruction(
                 inkwell::values::BasicValueEnum::PointerValue(p) => fn_ctx
                     .builder
                     .build_ptr_to_int(p, i64_ty, "is_rhs_int")
-                    .map_err(|e| CodegenError::Llvm(format!("is rhs ptrtoint: {e:?}")))?,
+                    .llvm_ctx("is rhs ptrtoint")?,
                 inkwell::values::BasicValueEnum::IntValue(v) => fn_ctx
                     .builder
                     .build_int_z_extend_or_bit_cast(v, i64_ty, "is_rhs_i64")
-                    .map_err(|e| CodegenError::Llvm(format!("is rhs cast: {e:?}")))?,
+                    .llvm_ctx("is rhs cast")?,
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IdentityCompare rhs must be a pointer or integer value".into(),
@@ -7347,15 +7465,15 @@ fn lower_instruction(
             let bit = fn_ctx
                 .builder
                 .build_int_compare(inkwell::IntPredicate::EQ, lhs_int, rhs_int, "is_bit")
-                .map_err(|e| CodegenError::Llvm(format!("is icmp: {e:?}")))?;
+                .llvm_ctx("is icmp")?;
             let widened = fn_ctx
                 .builder
                 .build_int_z_extend_or_bit_cast(bit, dest_int, "is_zext")
-                .map_err(|e| CodegenError::Llvm(format!("is zext: {e:?}")))?;
+                .llvm_ctx("is zext")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, widened)
-                .map_err(|e| CodegenError::Llvm(format!("is store: {e:?}")))?;
+                .llvm_ctx("is store")?;
             let _ = ctx;
         }
         Instr::Move { dest, src } => {
@@ -7391,18 +7509,16 @@ fn lower_instruction(
                         let narrow = fn_ctx
                             .builder
                             .build_load(src_ty, src_ptr, "move_iN_load")
-                            .map_err(|e| {
-                                CodegenError::Llvm(format!("move narrow int load: {e:?}"))
-                            })?
+                            .llvm_ctx("move narrow int load")?
                             .into_int_value();
                         let widened = fn_ctx
                             .builder
                             .build_int_z_extend(narrow, dest_int, "move_iN_zext")
-                            .map_err(|e| CodegenError::Llvm(format!("move zext: {e:?}")))?;
+                            .llvm_ctx("move zext")?;
                         fn_ctx
                             .builder
                             .build_store(dest_ptr, widened)
-                            .map_err(|e| CodegenError::Llvm(format!("move zext store: {e:?}")))?;
+                            .llvm_ctx("move zext store")?;
                         return Ok(());
                     }
                     // Narrowing iN → iW for the symmetric write-back:
@@ -7414,16 +7530,16 @@ fn lower_instruction(
                         let wide = fn_ctx
                             .builder
                             .build_load(src_ty, src_ptr, "move_iN_load_wide")
-                            .map_err(|e| CodegenError::Llvm(format!("move wide int load: {e:?}")))?
+                            .llvm_ctx("move wide int load")?
                             .into_int_value();
                         let narrowed = fn_ctx
                             .builder
                             .build_int_truncate(wide, dest_int, "move_iN_trunc")
-                            .map_err(|e| CodegenError::Llvm(format!("move trunc: {e:?}")))?;
+                            .llvm_ctx("move trunc")?;
                         fn_ctx
                             .builder
                             .build_store(dest_ptr, narrowed)
-                            .map_err(|e| CodegenError::Llvm(format!("move trunc store: {e:?}")))?;
+                            .llvm_ctx("move trunc store")?;
                         return Ok(());
                     }
                 }
@@ -7434,19 +7550,17 @@ fn lower_instruction(
                     let i64_val = fn_ctx
                         .builder
                         .build_load(src_ty, src_ptr, "move_i64_load")
-                        .map_err(|e| CodegenError::Llvm(format!("move i64 load: {e:?}")))?
+                        .llvm_ctx("move i64 load")?
                         .into_int_value();
                     let ptr_ty = dest_ty.into_pointer_type();
                     let ptr_val = fn_ctx
                         .builder
                         .build_int_to_ptr(i64_val, ptr_ty, "move_inttoptr")
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("move inttoptr (handle promotion): {e:?}"))
-                        })?;
+                        .llvm_ctx("move inttoptr (handle promotion)")?;
                     fn_ctx
                         .builder
                         .build_store(dest_ptr, ptr_val)
-                        .map_err(|e| CodegenError::Llvm(format!("move ptr store: {e:?}")))?;
+                        .llvm_ctx("move ptr store")?;
                 } else {
                     return Err(CodegenError::FailClosed(format!(
                         "Move type mismatch: src={src_ty:?} dest={dest_ty:?}"
@@ -7456,11 +7570,11 @@ fn lower_instruction(
                 let loaded = fn_ctx
                     .builder
                     .build_load(src_ty, src_ptr, "move_load")
-                    .map_err(|e| CodegenError::Llvm(format!("move load: {e:?}")))?;
+                    .llvm_ctx("move load")?;
                 fn_ctx
                     .builder
                     .build_store(dest_ptr, loaded)
-                    .map_err(|e| CodegenError::Llvm(format!("move store: {e:?}")))?;
+                    .llvm_ctx("move store")?;
             }
         }
         Instr::CallRuntimeAbi(call) => {
@@ -7568,12 +7682,12 @@ fn lower_instruction(
             let global = fn_ctx
                 .builder
                 .build_global_string_ptr(s, "str_lit")
-                .map_err(|e| CodegenError::Llvm(format!("build_global_string_ptr: {e:?}")))?;
+                .llvm_ctx("build_global_string_ptr")?;
             let ptr_val = global.as_pointer_value();
             fn_ctx
                 .builder
                 .build_store(dest_ptr, ptr_val)
-                .map_err(|e| CodegenError::Llvm(format!("StringLit store: {e:?}")))?;
+                .llvm_ctx("StringLit store")?;
             let _ = ctx;
         }
         Instr::RecordInit { ty, fields, dest } => {
@@ -7586,6 +7700,14 @@ fn lower_instruction(
             dest,
         } => {
             lower_record_field_load(fn_ctx, *record, *field_offset, *dest)?;
+            let _ = ctx;
+        }
+        Instr::RecordFieldStore {
+            record,
+            field_offset,
+            src,
+        } => {
+            lower_record_field_store(fn_ctx, *record, *field_offset, *src)?;
             let _ = ctx;
         }
         Instr::ActorStateFieldLoad { field_offset, dest } => {
@@ -7602,6 +7724,44 @@ fn lower_instruction(
             dest,
         } => {
             lower_tuple_field_load(fn_ctx, *tuple, *field_index, *dest)?;
+            let _ = ctx;
+        }
+        Instr::TupleConstruct { elements, dest } => {
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+
+            let tuple_struct_ty = match dest_ty {
+                BasicTypeEnum::StructType(st) => st,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "TupleConstruct dest is not a struct".into(),
+                    ));
+                }
+            };
+
+            // For each element, load from the source place and store into the tuple slot.
+            for (idx, elem_place) in elements.iter().enumerate() {
+                let (elem_ptr, elem_ty) = place_pointer(fn_ctx, *elem_place)?;
+
+                let loaded = fn_ctx
+                    .builder
+                    .build_load(elem_ty, elem_ptr, &format!("tuple_elem_{idx}_load"))
+                    .llvm_ctx_with(|| format!("tuple construct elem {idx} load"))?;
+
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        tuple_struct_ty,
+                        dest_ptr,
+                        idx as u32,
+                        &format!("tuple_elem_{idx}_gep"),
+                    )
+                    .llvm_ctx_with(|| format!("tuple construct elem {idx} GEP"))?;
+
+                fn_ctx
+                    .builder
+                    .build_store(field_ptr, loaded)
+                    .llvm_ctx_with(|| format!("tuple construct elem {idx} store"))?;
+            }
             let _ = ctx;
         }
         Instr::FloatLit {
@@ -7631,7 +7791,7 @@ fn lower_instruction(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, v)
-                .map_err(|e| CodegenError::Llvm(format!("FloatLit store: {e:?}")))?;
+                .llvm_ctx("FloatLit store")?;
             let _ = ctx;
         }
         Instr::FloatAdd { dest, lhs, rhs, .. }
@@ -7661,12 +7821,12 @@ fn lower_instruction(
             let lhs_v = fn_ctx
                 .builder
                 .build_load(lhs_float, lhs_ptr, "farith_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("farith lhs load: {e:?}")))?
+                .llvm_ctx("farith lhs load")?
                 .into_float_value();
             let rhs_v = fn_ctx
                 .builder
                 .build_load(lhs_float, rhs_ptr, "farith_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("farith rhs load: {e:?}")))?
+                .llvm_ctx("farith rhs load")?
                 .into_float_value();
             let result = match instr {
                 Instr::FloatAdd { .. } => {
@@ -7686,11 +7846,11 @@ fn lower_instruction(
                 }
                 _ => unreachable!("matched on five float-arith variants above"),
             }
-            .map_err(|e| CodegenError::Llvm(format!("float arith: {e:?}")))?;
+            .llvm_ctx("float arith")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result)
-                .map_err(|e| CodegenError::Llvm(format!("farith store: {e:?}")))?;
+                .llvm_ctx("farith store")?;
             let _ = ctx;
         }
         Instr::FloatNeg { dest, operand, .. } => {
@@ -7712,16 +7872,16 @@ fn lower_instruction(
             let operand_v = fn_ctx
                 .builder
                 .build_load(float_ty, operand_ptr, "fneg_operand")
-                .map_err(|e| CodegenError::Llvm(format!("fneg operand load: {e:?}")))?
+                .llvm_ctx("fneg operand load")?
                 .into_float_value();
             let result = fn_ctx
                 .builder
                 .build_float_sub(float_ty.const_float(-0.0), operand_v, "fneg")
-                .map_err(|e| CodegenError::Llvm(format!("fneg: {e:?}")))?;
+                .llvm_ctx("fneg")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result)
-                .map_err(|e| CodegenError::Llvm(format!("fneg store: {e:?}")))?;
+                .llvm_ctx("fneg store")?;
             let _ = ctx;
         }
         Instr::CharLit { value, dest } => {
@@ -7742,7 +7902,7 @@ fn lower_instruction(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, v)
-                .map_err(|e| CodegenError::Llvm(format!("CharLit store: {e:?}")))?;
+                .llvm_ctx("CharLit store")?;
             let _ = ctx;
         }
         Instr::UnitLit { dest } => {
@@ -7763,7 +7923,7 @@ fn lower_instruction(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, v)
-                .map_err(|e| CodegenError::Llvm(format!("UnitLit store: {e:?}")))?;
+                .llvm_ctx("UnitLit store")?;
             let _ = ctx;
         }
         Instr::DurationLit { nanos, dest } => {
@@ -7783,7 +7943,7 @@ fn lower_instruction(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, v)
-                .map_err(|e| CodegenError::Llvm(format!("DurationLit store: {e:?}")))?;
+                .llvm_ctx("DurationLit store")?;
             let _ = ctx;
         }
         Instr::MakeClosure {
@@ -7945,7 +8105,7 @@ fn lower_instruction(
                     &[queue_ptr.into(), tag_val.into(), null_ptr.into()],
                     "machine_emit_push_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_machine_emit_push call: {e:?}")))?;
+                .llvm_ctx("hew_machine_emit_push call")?;
         }
         Instr::EnumTagLoad { src, dest } => {
             // The `src` local holds a tagged-union enum value (the machine
@@ -7989,11 +8149,11 @@ fn lower_instruction(
             let tag_ptr = fn_ctx
                 .builder
                 .build_struct_gep(layout.outer_struct, src_slot, 0, "enum_tag_ptr")
-                .map_err(|e| CodegenError::Llvm(format!("GEP enum tag: {e:?}")))?;
+                .llvm_ctx("GEP enum tag")?;
             let tag_loaded = fn_ctx
                 .builder
                 .build_load(layout.tag_int_ty, tag_ptr, "enum_tag_load")
-                .map_err(|e| CodegenError::Llvm(format!("load enum tag: {e:?}")))?
+                .llvm_ctx("load enum tag")?
                 .into_int_value();
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let dest_int_ty = match dest_ty {
@@ -8013,12 +8173,12 @@ fn lower_instruction(
                 fn_ctx
                     .builder
                     .build_int_z_extend(tag_loaded, dest_int_ty, "enum_tag_zext")
-                    .map_err(|e| CodegenError::Llvm(format!("zext enum tag: {e:?}")))?
+                    .llvm_ctx("zext enum tag")?
             };
             fn_ctx
                 .builder
                 .build_store(dest_ptr, widened)
-                .map_err(|e| CodegenError::Llvm(format!("store enum tag: {e:?}")))?;
+                .llvm_ctx("store enum tag")?;
         }
         Instr::MachineStateName {
             machine_name,
@@ -8055,11 +8215,11 @@ fn lower_instruction(
             let tag_ptr = fn_ctx
                 .builder
                 .build_struct_gep(layout.outer_struct, src_slot, 0, "machine_tag_ptr")
-                .map_err(|e| CodegenError::Llvm(format!("GEP state-name tag: {e:?}")))?;
+                .llvm_ctx("GEP state-name tag")?;
             let tag_loaded = fn_ctx
                 .builder
                 .build_load(layout.tag_int_ty, tag_ptr, "state_name_tag")
-                .map_err(|e| CodegenError::Llvm(format!("load state-name tag: {e:?}")))?
+                .llvm_ctx("load state-name tag")?
                 .into_int_value();
             let i64_ty = ctx.i64_type();
             let tag_i64 = if layout.tag_int_ty.get_bit_width() == 64 {
@@ -8068,7 +8228,7 @@ fn lower_instruction(
                 fn_ctx
                     .builder
                     .build_int_z_extend(tag_loaded, i64_ty, "state_name_tag_zext")
-                    .map_err(|e| CodegenError::Llvm(format!("zext state-name tag: {e:?}")))?
+                    .llvm_ctx("zext state-name tag")?
             };
             // GEP into `[N x ptr]` table using [i32 0, i64 tag]. The element
             // type is `ptr` and the load yields the state-name pointer.
@@ -8093,13 +8253,13 @@ fn lower_instruction(
                         &[i32_zero, tag_i64],
                         "state_name_entry_ptr",
                     )
-                    .map_err(|e| CodegenError::Llvm(format!("GEP state-name entry: {e:?}")))?
+                    .llvm_ctx("GEP state-name entry")?
             };
             let ptr_ty = ctx.ptr_type(AddressSpace::default());
             let name_ptr = fn_ctx
                 .builder
                 .build_load(ptr_ty, entry_ptr, "state_name_ptr")
-                .map_err(|e| CodegenError::Llvm(format!("load state-name ptr: {e:?}")))?;
+                .llvm_ctx("load state-name ptr")?;
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
                 return Err(CodegenError::FailClosed(format!(
@@ -8109,7 +8269,7 @@ fn lower_instruction(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, name_ptr)
-                .map_err(|e| CodegenError::Llvm(format!("store state-name ptr: {e:?}")))?;
+                .llvm_ctx("store state-name ptr")?;
         }
     }
     Ok(())
@@ -8220,16 +8380,16 @@ fn lower_record_init(
         let field_ptr = fn_ctx
             .builder
             .build_struct_gep(struct_ty, dest_ptr, idx, &format!("field_{idx}_init_ptr"))
-            .map_err(|e| CodegenError::Llvm(format!("RecordInit struct_gep field {idx}: {e:?}")))?;
+            .llvm_ctx_with(|| format!("RecordInit struct_gep field {idx}"))?;
         // Load the source value (scalar or struct), store it into the field.
         let src_val = fn_ctx
             .builder
             .build_load(field_ty, src_ptr, &format!("field_{idx}_init_src"))
-            .map_err(|e| CodegenError::Llvm(format!("RecordInit field {idx} load: {e:?}")))?;
+            .llvm_ctx_with(|| format!("RecordInit field {idx} load"))?;
         fn_ctx
             .builder
             .build_store(field_ptr, src_val)
-            .map_err(|e| CodegenError::Llvm(format!("RecordInit field {idx} store: {e:?}")))?;
+            .llvm_ctx_with(|| format!("RecordInit field {idx} store"))?;
     }
     Ok(())
 }
@@ -8281,17 +8441,79 @@ fn lower_record_field_load(
     let field_ptr = fn_ctx
         .builder
         .build_struct_gep(struct_ty, record_ptr, idx, &format!("field_{idx}_load_ptr"))
-        .map_err(|e| {
-            CodegenError::Llvm(format!("RecordFieldLoad struct_gep field {idx}: {e:?}"))
-        })?;
+        .llvm_ctx_with(|| format!("RecordFieldLoad struct_gep field {idx}"))?;
     let field_val = fn_ctx
         .builder
         .build_load(field_ty, field_ptr, &format!("field_{idx}_load"))
-        .map_err(|e| CodegenError::Llvm(format!("RecordFieldLoad field {idx} load: {e:?}")))?;
+        .llvm_ctx_with(|| format!("RecordFieldLoad field {idx} load"))?;
     fn_ctx
         .builder
         .build_store(dest_ptr, field_val)
-        .map_err(|e| CodegenError::Llvm(format!("RecordFieldLoad field {idx} store: {e:?}")))?;
+        .llvm_ctx_with(|| format!("RecordFieldLoad field {idx} store"))?;
+    Ok(())
+}
+
+/// Lower `Instr::RecordFieldStore { record, field_offset, src }` to a
+/// GEP+store on the record's alloca, taking the source value from the
+/// `src` place.
+///
+/// The aggregate record stays Live after the store — only the named field's
+/// bytes are overwritten. Mirrors `lower_record_field_load` structurally.
+/// Producer is `assign()` in `hew-mir/src/lower.rs` for the `r.x = v`
+/// target shape (Q297 Stage 1, Q299=(a)).
+fn lower_record_field_store(
+    fn_ctx: &FnCtx<'_, '_>,
+    record: Place,
+    field_offset: FieldOffset,
+    src: Place,
+) -> CodegenResult<()> {
+    let (record_ptr, record_slot_ty) = place_pointer(fn_ctx, record)?;
+    let struct_ty = match record_slot_ty {
+        BasicTypeEnum::StructType(st) => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "RecordFieldStore record place has non-struct slot type: {other:?}"
+            )));
+        }
+    };
+    let idx = field_offset.0;
+    let idx_usize = usize::try_from(idx).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "RecordFieldStore field offset {idx} exceeds usize::MAX — impossible"
+        ))
+    })?;
+    let element_tys = struct_ty.get_field_types();
+    let field_ty = *element_tys.get(idx_usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "RecordFieldStore field offset {idx} is out of bounds for struct with \
+             {} fields",
+            element_tys.len()
+        ))
+    })?;
+    let (src_ptr, src_slot_ty) = place_pointer(fn_ctx, src)?;
+    if src_slot_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "RecordFieldStore src slot type does not match field type: \
+             src={src_slot_ty:?}, field={field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(
+            struct_ty,
+            record_ptr,
+            idx,
+            &format!("field_{idx}_store_ptr"),
+        )
+        .llvm_ctx_with(|| format!("RecordFieldStore struct_gep field {idx}"))?;
+    let src_val = fn_ctx
+        .builder
+        .build_load(field_ty, src_ptr, &format!("field_{idx}_store_src"))
+        .llvm_ctx_with(|| format!("RecordFieldStore field {idx} load src"))?;
+    fn_ctx
+        .builder
+        .build_store(field_ptr, src_val)
+        .llvm_ctx_with(|| format!("RecordFieldStore field {idx} store"))?;
     Ok(())
 }
 
@@ -8315,12 +8537,12 @@ fn current_actor_state_ptr<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<Poin
                 &[i64_ty.const_int(HEW_CTX_OFFSET_ACTOR as u64, false)],
                 "ctx_actor_ptr_slot",
             )
-            .map_err(|e| CodegenError::Llvm(format!("actor state ctx actor gep: {e:?}")))?
+            .llvm_ctx("actor state ctx actor gep")?
     };
     let actor_ptr = fn_ctx
         .builder
         .build_load(ptr_ty, actor_ptr_slot, "ctx_actor_ptr")
-        .map_err(|e| CodegenError::Llvm(format!("actor state actor load: {e:?}")))?
+        .llvm_ctx("actor state actor load")?
         .into_pointer_value();
     let state_slot = unsafe {
         fn_ctx
@@ -8331,12 +8553,12 @@ fn current_actor_state_ptr<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<Poin
                 &[i64_ty.const_int(HEW_ACTOR_OFFSET_STATE as u64, false)],
                 "actor_state_slot",
             )
-            .map_err(|e| CodegenError::Llvm(format!("actor state gep: {e:?}")))?
+            .llvm_ctx("actor state gep")?
     };
     Ok(fn_ctx
         .builder
         .build_load(ptr_ty, state_slot, "actor_state_ptr")
-        .map_err(|e| CodegenError::Llvm(format!("actor state ptr load: {e:?}")))?
+        .llvm_ctx("actor state ptr load")?
         .into_pointer_value())
 }
 
@@ -8371,15 +8593,15 @@ fn lower_actor_state_field_load(
             idx,
             &format!("actor_state_field_{idx}_ptr"),
         )
-        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldLoad gep: {e:?}")))?;
+        .llvm_ctx("ActorStateFieldLoad gep")?;
     let field_val = fn_ctx
         .builder
         .build_load(field_ty, field_ptr, &format!("actor_state_field_{idx}"))
-        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldLoad load: {e:?}")))?;
+        .llvm_ctx("ActorStateFieldLoad load")?;
     fn_ctx
         .builder
         .build_store(dest_ptr, field_val)
-        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldLoad store: {e:?}")))?;
+        .llvm_ctx("ActorStateFieldLoad store")?;
     Ok(())
 }
 
@@ -8414,15 +8636,15 @@ fn lower_actor_state_field_store(
             idx,
             &format!("actor_state_field_{idx}_ptr"),
         )
-        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldStore gep: {e:?}")))?;
+        .llvm_ctx("ActorStateFieldStore gep")?;
     let src_val = fn_ctx
         .builder
         .build_load(field_ty, src_ptr, &format!("actor_state_field_{idx}_src"))
-        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldStore load: {e:?}")))?;
+        .llvm_ctx("ActorStateFieldStore load")?;
     fn_ctx
         .builder
         .build_store(field_ptr, src_val)
-        .map_err(|e| CodegenError::Llvm(format!("ActorStateFieldStore store: {e:?}")))?;
+        .llvm_ctx("ActorStateFieldStore store")?;
     Ok(())
 }
 
@@ -8455,19 +8677,19 @@ fn lower_make_closure(
     let fn_field = fn_ctx
         .builder
         .build_struct_gep(struct_ty, dest_ptr, 0, "closure_fn_ptr")
-        .map_err(|e| CodegenError::Llvm(format!("MakeClosure fn gep: {e:?}")))?;
+        .llvm_ctx("MakeClosure fn gep")?;
     let env_field = fn_ctx
         .builder
         .build_struct_gep(struct_ty, dest_ptr, 1, "closure_env_ptr")
-        .map_err(|e| CodegenError::Llvm(format!("MakeClosure env gep: {e:?}")))?;
+        .llvm_ctx("MakeClosure env gep")?;
     fn_ctx
         .builder
         .build_store(fn_field, shim.as_global_value().as_pointer_value())
-        .map_err(|e| CodegenError::Llvm(format!("MakeClosure fn store: {e:?}")))?;
+        .llvm_ctx("MakeClosure fn store")?;
     fn_ctx
         .builder
         .build_store(env_field, env_ptr)
-        .map_err(|e| CodegenError::Llvm(format!("MakeClosure env store: {e:?}")))?;
+        .llvm_ctx("MakeClosure env store")?;
     Ok(())
 }
 
@@ -8536,16 +8758,16 @@ fn lower_context_field(fn_ctx: &FnCtx<'_, '_>, dest: Place, offset: usize) -> Co
                 &[offset_val],
                 &format!("ctx_field_{offset}_ptr"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("ContextField gep: {e:?}")))?
+            .llvm_ctx("ContextField gep")?
     };
     let field_val = fn_ctx
         .builder
         .build_load(dest_ty, field_ptr, &format!("ctx_field_{offset}_load"))
-        .map_err(|e| CodegenError::Llvm(format!("ContextField load: {e:?}")))?;
+        .llvm_ctx("ContextField load")?;
     fn_ctx
         .builder
         .build_store(dest_ptr, field_val)
-        .map_err(|e| CodegenError::Llvm(format!("ContextField store: {e:?}")))?;
+        .llvm_ctx("ContextField store")?;
     Ok(())
 }
 
@@ -8566,7 +8788,7 @@ fn lower_closure_env_field_load(
     let env_ptr = fn_ctx
         .builder
         .build_load(env_slot_ty, env_slot, "closure_env_ptr_load")
-        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad env load: {e:?}")))?
+        .llvm_ctx("ClosureEnvFieldLoad env load")?
         .into_pointer_value();
     let idx = field_offset.0;
     let idx_usize = usize::try_from(idx).map_err(|_| {
@@ -8588,15 +8810,15 @@ fn lower_closure_env_field_load(
     let field_ptr = fn_ctx
         .builder
         .build_struct_gep(env_struct, env_ptr, idx, "closure_capture_ptr")
-        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad gep: {e:?}")))?;
+        .llvm_ctx("ClosureEnvFieldLoad gep")?;
     let value = fn_ctx
         .builder
         .build_load(field_ty, field_ptr, "closure_capture_load")
-        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad field load: {e:?}")))?;
+        .llvm_ctx("ClosureEnvFieldLoad field load")?;
     fn_ctx
         .builder
         .build_store(dest_ptr, value)
-        .map_err(|e| CodegenError::Llvm(format!("ClosureEnvFieldLoad store: {e:?}")))?;
+        .llvm_ctx("ClosureEnvFieldLoad store")?;
     Ok(())
 }
 
@@ -8626,21 +8848,6 @@ fn metadata_value_from_basic<'ctx>(
     }
 }
 
-fn fn_type_from_return<'ctx>(
-    ret: BasicTypeEnum<'ctx>,
-    params: &[BasicMetadataTypeEnum<'ctx>],
-) -> inkwell::types::FunctionType<'ctx> {
-    match ret {
-        BasicTypeEnum::ArrayType(t) => t.fn_type(params, false),
-        BasicTypeEnum::FloatType(t) => t.fn_type(params, false),
-        BasicTypeEnum::IntType(t) => t.fn_type(params, false),
-        BasicTypeEnum::PointerType(t) => t.fn_type(params, false),
-        BasicTypeEnum::StructType(t) => t.fn_type(params, false),
-        BasicTypeEnum::VectorType(t) => t.fn_type(params, false),
-        BasicTypeEnum::ScalableVectorType(t) => t.fn_type(params, false),
-    }
-}
-
 fn lower_call_closure(
     fn_ctx: &FnCtx<'_, '_>,
     callee: Place,
@@ -8663,17 +8870,17 @@ fn lower_call_closure(
     let pair = fn_ctx
         .builder
         .build_load(pair_ty, callee_ptr, "closure_pair_load")
-        .map_err(|e| CodegenError::Llvm(format!("CallClosure pair load: {e:?}")))?
+        .llvm_ctx("CallClosure pair load")?
         .into_struct_value();
     let fn_ptr = fn_ctx
         .builder
         .build_extract_value(pair, 0, "closure_fn_extract")
-        .map_err(|e| CodegenError::Llvm(format!("CallClosure fn extract: {e:?}")))?
+        .llvm_ctx("CallClosure fn extract")?
         .into_pointer_value();
     let env_ptr = fn_ctx
         .builder
         .build_extract_value(pair, 1, "closure_env_extract")
-        .map_err(|e| CodegenError::Llvm(format!("CallClosure env extract: {e:?}")))?
+        .llvm_ctx("CallClosure env extract")?
         .into_pointer_value();
 
     let mut param_tys: Vec<BasicMetadataTypeEnum> =
@@ -8690,16 +8897,16 @@ fn lower_call_closure(
         let loaded = fn_ctx
             .builder
             .build_load(arg_ty, arg_ptr, "closure_call_arg")
-            .map_err(|e| CodegenError::Llvm(format!("CallClosure arg load: {e:?}")))?;
+            .llvm_ctx("CallClosure arg load")?;
         arg_vals.push(metadata_value_from_basic(loaded));
     }
 
     let ret_llvm = resolve_ty(fn_ctx.ctx, ret_ty, fn_ctx.record_layouts)?;
-    let fn_ty = fn_type_from_return(ret_llvm, &param_tys);
+    let fn_ty = fn_type_for_return(fn_ctx.ctx, Some(ret_llvm), &param_tys);
     let call = fn_ctx
         .builder
         .build_indirect_call(fn_ty, fn_ptr, &arg_vals, "closure_call_result")
-        .map_err(|e| CodegenError::Llvm(format!("CallClosure indirect call: {e:?}")))?;
+        .llvm_ctx("CallClosure indirect call")?;
     if let Some(dest_place) = dest {
         let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
         if dest_ty != ret_llvm {
@@ -8713,7 +8920,7 @@ fn lower_call_closure(
         fn_ctx
             .builder
             .build_store(dest_ptr, ret_val)
-            .map_err(|e| CodegenError::Llvm(format!("CallClosure result store: {e:?}")))?;
+            .llvm_ctx("CallClosure result store")?;
     }
     Ok(())
 }
@@ -8771,17 +8978,15 @@ fn lower_tuple_field_load(
     let field_ptr = fn_ctx
         .builder
         .build_struct_gep(struct_ty, tuple_ptr, idx, &format!("tuple_{idx}_load_ptr"))
-        .map_err(|e| {
-            CodegenError::Llvm(format!("TupleFieldLoad struct_gep element {idx}: {e:?}"))
-        })?;
+        .llvm_ctx_with(|| format!("TupleFieldLoad struct_gep element {idx}"))?;
     let field_val = fn_ctx
         .builder
         .build_load(field_ty, field_ptr, &format!("tuple_{idx}_load"))
-        .map_err(|e| CodegenError::Llvm(format!("TupleFieldLoad element {idx} load: {e:?}")))?;
+        .llvm_ctx_with(|| format!("TupleFieldLoad element {idx} load"))?;
     fn_ctx
         .builder
         .build_store(dest_ptr, field_val)
-        .map_err(|e| CodegenError::Llvm(format!("TupleFieldLoad element {idx} store: {e:?}")))?;
+        .llvm_ctx_with(|| format!("TupleFieldLoad element {idx} store"))?;
     Ok(())
 }
 
@@ -9060,12 +9265,12 @@ fn get_or_emit_eq_thunk<'ctx>(
     fn_ctx
         .builder
         .build_return(Some(&i32_ty.const_int(1, false)))
-        .map_err(|e| CodegenError::Llvm(format!("eq_thunk ret true: {e:?}")))?;
+        .llvm_ctx("eq_thunk ret true")?;
     fn_ctx.builder.position_at_end(ret_false_bb);
     fn_ctx
         .builder
         .build_return(Some(&i32_ty.const_zero()))
-        .map_err(|e| CodegenError::Llvm(format!("eq_thunk ret false: {e:?}")))?;
+        .llvm_ctx("eq_thunk ret false")?;
 
     // Restore the outer function's builder position.
     if let Some(bb) = saved_block {
@@ -9092,21 +9297,21 @@ fn emit_eq_thunk_body<'ctx>(
             let lv = fn_ctx
                 .builder
                 .build_load(int_ty, lhs, "eq_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk lhs load: {e:?}")))?
+                .llvm_ctx("eq_thunk lhs load")?
                 .into_int_value();
             let rv = fn_ctx
                 .builder
                 .build_load(int_ty, rhs, "eq_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk rhs load: {e:?}")))?
+                .llvm_ctx("eq_thunk rhs load")?
                 .into_int_value();
             let eq = fn_ctx
                 .builder
                 .build_int_compare(IntPredicate::EQ, lv, rv, "eq_field")
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk icmp: {e:?}")))?;
+                .llvm_ctx("eq_thunk icmp")?;
             fn_ctx
                 .builder
                 .build_conditional_branch(eq, ret_true_bb, ret_false_bb)
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk br: {e:?}")))?;
+                .llvm_ctx("eq_thunk br")?;
             Ok(())
         }
         BasicTypeEnum::StructType(st) => {
@@ -9117,7 +9322,7 @@ fn emit_eq_thunk_body<'ctx>(
                 fn_ctx
                     .builder
                     .build_unconditional_branch(ret_true_bb)
-                    .map_err(|e| CodegenError::Llvm(format!("eq_thunk zero-field br: {e:?}")))?;
+                    .llvm_ctx("eq_thunk zero-field br")?;
                 return Ok(());
             }
             let func = fn_ctx
@@ -9134,11 +9339,11 @@ fn emit_eq_thunk_body<'ctx>(
                 let lhs_field = fn_ctx
                     .builder
                     .build_struct_gep(st, lhs, idx, &format!("eq_lhs_f{idx}"))
-                    .map_err(|e| CodegenError::Llvm(format!("eq_thunk lhs gep: {e:?}")))?;
+                    .llvm_ctx("eq_thunk lhs gep")?;
                 let rhs_field = fn_ctx
                     .builder
                     .build_struct_gep(st, rhs, idx, &format!("eq_rhs_f{idx}"))
-                    .map_err(|e| CodegenError::Llvm(format!("eq_thunk rhs gep: {e:?}")))?;
+                    .llvm_ctx("eq_thunk rhs gep")?;
                 // Continuation block: where control resumes after a successful
                 // field comparison, unless this is the final field, in which
                 // case we branch directly to `ret_true_bb`.
@@ -9172,7 +9377,7 @@ fn emit_eq_thunk_body<'ctx>(
                 fn_ctx
                     .builder
                     .build_unconditional_branch(ret_true_bb)
-                    .map_err(|e| CodegenError::Llvm(format!("eq_thunk empty array br: {e:?}")))?;
+                    .llvm_ctx("eq_thunk empty array br")?;
                 return Ok(());
             }
             let func = fn_ctx
@@ -9190,13 +9395,13 @@ fn emit_eq_thunk_body<'ctx>(
                     fn_ctx
                         .builder
                         .build_in_bounds_gep(arr_ty, lhs, &[zero, idx_v], &format!("eq_lhs_a{idx}"))
-                        .map_err(|e| CodegenError::Llvm(format!("eq_thunk lhs array gep: {e:?}")))?
+                        .llvm_ctx("eq_thunk lhs array gep")?
                 };
                 let rhs_elem = unsafe {
                     fn_ctx
                         .builder
                         .build_in_bounds_gep(arr_ty, rhs, &[zero, idx_v], &format!("eq_rhs_a{idx}"))
-                        .map_err(|e| CodegenError::Llvm(format!("eq_thunk rhs array gep: {e:?}")))?
+                        .llvm_ctx("eq_thunk rhs array gep")?
                 };
                 let next_bb = if idx + 1 < len {
                     fn_ctx
@@ -9256,21 +9461,21 @@ fn emit_eq_thunk_field_check<'ctx>(
             let lv = fn_ctx
                 .builder
                 .build_load(int_ty, lhs_field, "eq_field_lhs")
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk field lhs load: {e:?}")))?
+                .llvm_ctx("eq_thunk field lhs load")?
                 .into_int_value();
             let rv = fn_ctx
                 .builder
                 .build_load(int_ty, rhs_field, "eq_field_rhs")
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk field rhs load: {e:?}")))?
+                .llvm_ctx("eq_thunk field rhs load")?
                 .into_int_value();
             let eq = fn_ctx
                 .builder
                 .build_int_compare(IntPredicate::EQ, lv, rv, "eq_field_cmp")
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk field icmp: {e:?}")))?;
+                .llvm_ctx("eq_thunk field icmp")?;
             fn_ctx
                 .builder
                 .build_conditional_branch(eq, success_bb, fail_bb)
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk field br: {e:?}")))?;
+                .llvm_ctx("eq_thunk field br")?;
             Ok(())
         }
         BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
@@ -9283,7 +9488,7 @@ fn emit_eq_thunk_field_check<'ctx>(
                     &[lhs_field.into(), rhs_field.into()],
                     "eq_field_nested",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk nested call: {e:?}")))?;
+                .llvm_ctx("eq_thunk nested call")?;
             let raw = call
                 .try_as_basic_value()
                 .basic()
@@ -9299,11 +9504,11 @@ fn emit_eq_thunk_field_check<'ctx>(
                     fn_ctx.ctx.i32_type().const_zero(),
                     "eq_field_nested_nz",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk nested ne: {e:?}")))?;
+                .llvm_ctx("eq_thunk nested ne")?;
             fn_ctx
                 .builder
                 .build_conditional_branch(nz, success_bb, fail_bb)
-                .map_err(|e| CodegenError::Llvm(format!("eq_thunk nested br: {e:?}")))?;
+                .llvm_ctx("eq_thunk nested br")?;
             Ok(())
         }
         BasicTypeEnum::FloatType(_) => Err(CodegenError::FailClosed(
@@ -9376,20 +9581,20 @@ fn mix_into_hash_acc<'ctx>(
     let acc = fn_ctx
         .builder
         .build_load(i64_ty, acc_slot, "hash_acc_load")
-        .map_err(|e| CodegenError::Llvm(format!("hash_thunk acc load: {e:?}")))?
+        .llvm_ctx("hash_thunk acc load")?
         .into_int_value();
     let xored = fn_ctx
         .builder
         .build_xor(acc, field_u64, "hash_xor")
-        .map_err(|e| CodegenError::Llvm(format!("hash_thunk xor: {e:?}")))?;
+        .llvm_ctx("hash_thunk xor")?;
     let mul = fn_ctx
         .builder
         .build_int_mul(xored, prime, "hash_mul")
-        .map_err(|e| CodegenError::Llvm(format!("hash_thunk mul: {e:?}")))?;
+        .llvm_ctx("hash_thunk mul")?;
     fn_ctx
         .builder
         .build_store(acc_slot, mul)
-        .map_err(|e| CodegenError::Llvm(format!("hash_thunk acc store: {e:?}")))?;
+        .llvm_ctx("hash_thunk acc store")?;
     Ok(())
 }
 
@@ -9424,14 +9629,14 @@ fn emit_hash_thunk_body<'ctx>(
             let loaded = fn_ctx
                 .builder
                 .build_load(int_ty, base_ptr, "hash_field_load")
-                .map_err(|e| CodegenError::Llvm(format!("hash_thunk int load: {e:?}")))?
+                .llvm_ctx("hash_thunk int load")?
                 .into_int_value();
             let masked = if matches!(resolved_ty, Some(ResolvedTy::Bool)) {
                 let one = int_ty.const_int(1, false);
                 fn_ctx
                     .builder
                     .build_and(loaded, one, "hash_bool_mask")
-                    .map_err(|e| CodegenError::Llvm(format!("hash_thunk bool mask: {e:?}")))?
+                    .llvm_ctx("hash_thunk bool mask")?
             } else {
                 loaded
             };
@@ -9439,7 +9644,7 @@ fn emit_hash_thunk_body<'ctx>(
                 fn_ctx
                     .builder
                     .build_int_z_extend(masked, i64_ty, "hash_field_zext")
-                    .map_err(|e| CodegenError::Llvm(format!("hash_thunk zext: {e:?}")))?
+                    .llvm_ctx("hash_thunk zext")?
             } else {
                 masked
             };
@@ -9469,7 +9674,7 @@ fn emit_hash_thunk_body<'ctx>(
                 let field_ptr = fn_ctx
                     .builder
                     .build_struct_gep(st, base_ptr, idx, &format!("hash_f{idx}"))
-                    .map_err(|e| CodegenError::Llvm(format!("hash_thunk struct gep: {e:?}")))?;
+                    .llvm_ctx("hash_thunk struct gep")?;
                 match field_ty {
                     BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
                         // Recurse via a separate dedup'd nested thunk so the
@@ -9479,9 +9684,7 @@ fn emit_hash_thunk_body<'ctx>(
                         let call = fn_ctx
                             .builder
                             .build_call(nested, &[field_ptr.into()], "hash_nested_call")
-                            .map_err(|e| {
-                                CodegenError::Llvm(format!("hash_thunk nested call: {e:?}"))
-                            })?;
+                            .llvm_ctx("hash_thunk nested call")?;
                         let nested_hash = call
                             .try_as_basic_value()
                             .basic()
@@ -9515,7 +9718,7 @@ fn emit_hash_thunk_body<'ctx>(
                             &[zero, idx_v],
                             &format!("hash_a{idx}"),
                         )
-                        .map_err(|e| CodegenError::Llvm(format!("hash_thunk arr gep: {e:?}")))?
+                        .llvm_ctx("hash_thunk arr gep")?
                 };
                 // Arrays of bool are not currently expressible in the Hew
                 // surface (bool aggregates are not first-class), so we walk
@@ -9580,11 +9783,11 @@ fn get_or_emit_hash_thunk<'ctx>(
     let acc_slot = fn_ctx
         .builder
         .build_alloca(i64_ty, "hash_acc")
-        .map_err(|e| CodegenError::Llvm(format!("hash_thunk alloca: {e:?}")))?;
+        .llvm_ctx("hash_thunk alloca")?;
     fn_ctx
         .builder
         .build_store(acc_slot, i64_ty.const_int(0xcbf29ce484222325_u64, false))
-        .map_err(|e| CodegenError::Llvm(format!("hash_thunk init store: {e:?}")))?;
+        .llvm_ctx("hash_thunk init store")?;
 
     let key_ptr = func
         .get_nth_param(0)
@@ -9596,23 +9799,94 @@ fn get_or_emit_hash_thunk<'ctx>(
     fn_ctx
         .builder
         .build_unconditional_branch(exit_bb)
-        .map_err(|e| CodegenError::Llvm(format!("hash_thunk br exit: {e:?}")))?;
+        .llvm_ctx("hash_thunk br exit")?;
     fn_ctx.builder.position_at_end(exit_bb);
     let final_acc = fn_ctx
         .builder
         .build_load(i64_ty, acc_slot, "hash_acc_final")
-        .map_err(|e| CodegenError::Llvm(format!("hash_thunk acc final load: {e:?}")))?
+        .llvm_ctx("hash_thunk acc final load")?
         .into_int_value();
     fn_ctx
         .builder
         .build_return(Some(&final_acc))
-        .map_err(|e| CodegenError::Llvm(format!("hash_thunk return: {e:?}")))?;
+        .llvm_ctx("hash_thunk return")?;
 
     if let Some(bb) = saved_block {
         fn_ctx.builder.position_at_end(bb);
     }
 
     Ok(func)
+}
+
+/// Map a primitive `ResolvedTy` to the runtime-defined key layout extern
+/// (`hew_layout_key_<prim>` in `hew-runtime/src/layout_intrinsics.rs`). Returns
+/// `None` for non-primitive shapes (records, tuples, etc.), which fall through
+/// to the codegen-synthesised per-record layout path.
+///
+/// Stage C3 (DI-017): the resolver-authority cutover admits Hash+Eq primitives
+/// (i32/i64/u32/u64/bool/char/string/bytes) as HashMap keys / HashSet
+/// elements. Synthesising per-primitive hash/eq thunks in codegen is
+/// unnecessary (and impossible for `string` whose LLVM repr is a pointer to a
+/// C string) — instead, route to the runtime-shipped static descriptors that
+/// embed the canonical hash/eq/drop function pointers.
+fn primitive_key_layout_extern_name(rty: &ResolvedTy) -> Option<&'static str> {
+    Some(match rty {
+        ResolvedTy::I32 => "hew_layout_key_i32",
+        ResolvedTy::I64 => "hew_layout_key_i64",
+        ResolvedTy::U32 => "hew_layout_key_u32",
+        ResolvedTy::U64 => "hew_layout_key_u64",
+        ResolvedTy::Bool => "hew_layout_key_bool",
+        ResolvedTy::Char => "hew_layout_key_char",
+        ResolvedTy::String => "hew_layout_key_string",
+        ResolvedTy::Bytes => "hew_layout_key_bytes",
+        // F32/F64 ship `hash_fn = None` / `eq_fn = None` (DI-003 fail-closed-
+        // by-absence). They should never reach codegen because the resolver
+        // rejects them with `BoundsNotSatisfied(Hash, _)`. Returning `None`
+        // here falls through to the codegen-synthesis path, which itself
+        // hard-errors on floats — defence in depth.
+        _ => return None,
+    })
+}
+
+/// Counterpart to `primitive_key_layout_extern_name` for the value side. Maps
+/// primitive `ResolvedTy` to `hew_layout_val_<prim>`. Returns `None` for
+/// non-primitive shapes which fall through to the codegen-emitted Plain
+/// layout.
+fn primitive_value_layout_extern_name(rty: &ResolvedTy) -> Option<&'static str> {
+    Some(match rty {
+        ResolvedTy::I32 => "hew_layout_val_i32",
+        ResolvedTy::I64 => "hew_layout_val_i64",
+        ResolvedTy::U32 => "hew_layout_val_u32",
+        ResolvedTy::U64 => "hew_layout_val_u64",
+        ResolvedTy::F32 => "hew_layout_val_f32",
+        ResolvedTy::F64 => "hew_layout_val_f64",
+        ResolvedTy::Bool => "hew_layout_val_bool",
+        ResolvedTy::Char => "hew_layout_val_char",
+        ResolvedTy::String => "hew_layout_val_string",
+        ResolvedTy::Bytes => "hew_layout_val_bytes",
+        ResolvedTy::Unit => "hew_layout_val_unit",
+        _ => return None,
+    })
+}
+
+/// Declare-or-fetch an extern global by name. The returned pointer is
+/// suitable for passing to the runtime as a `*const HewMapKeyLayout` /
+/// `*const HewMapValueLayout`. The global is shape-typed as `i8` because the
+/// actual layout struct shape lives in the runtime — the kernel reads it via
+/// `*const HewMapKeyLayout` pointer cast, so the LLVM-side type does not need
+/// to match the Rust-side struct.
+fn declare_extern_layout_global<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, name: &str) -> PointerValue<'ctx> {
+    if let Some(g) = fn_ctx.llvm_mod.get_global(name) {
+        return g.as_pointer_value();
+    }
+    // Use an opaque (i8) global type — the runtime owns the real shape and
+    // the kernel pointer-casts on receipt. No initializer because the symbol
+    // is resolved at link time against the runtime's `#[no_mangle]` static.
+    let i8_ty = fn_ctx.ctx.i8_type();
+    let g = fn_ctx.llvm_mod.add_global(i8_ty, None, name);
+    g.set_linkage(Linkage::External);
+    g.set_constant(true);
+    g.as_pointer_value()
 }
 
 /// Emit (or reuse) a `HewMapKeyLayout`-shaped private constant for `elem_ty`,
@@ -9631,6 +9905,17 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     elem_ty: BasicTypeEnum<'ctx>,
     resolved_ty: Option<&ResolvedTy>,
 ) -> CodegenResult<PointerValue<'ctx>> {
+    // Stage C3 (DI-017): for primitive K, route to the runtime-defined
+    // `hew_layout_key_<prim>` extern static. The codegen-synthesised
+    // hash/eq thunks below only work for record-shaped K (where field walks
+    // are well-defined); primitives like `string` (LLVM repr = `i8*`) cannot
+    // be hashed by the generic thunk emitter and need the runtime's
+    // canonical hash function. See `primitive_key_layout_extern_name`.
+    if let Some(rty) = resolved_ty {
+        if let Some(name) = primitive_key_layout_extern_name(rty) {
+            return Ok(declare_extern_layout_global(fn_ctx, name));
+        }
+    }
     let (size, align) = abi_size_align(elem_ty, None)?;
     let key = eq_thunk_struct_key(elem_ty);
     let global_name = format!("__hew_map_key_layout_{size}_{align}_{key}_plain");
@@ -9697,7 +9982,19 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
 fn hashmap_value_layout_descriptor_ptr<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     val_ty: BasicTypeEnum<'ctx>,
+    resolved_ty: Option<&ResolvedTy>,
 ) -> CodegenResult<PointerValue<'ctx>> {
+    // Stage C3 (DI-017): primitive V routes to the runtime-defined
+    // `hew_layout_val_<prim>` extern static. This matters in particular for
+    // `string` / `bytes` values whose drop semantics live in the runtime
+    // (`hew_layout_string_drop`, `hew_layout_bytes_drop`); the Plain
+    // codegen-emitted layout below would set `drop_fn = None`, leaking the
+    // contents.
+    if let Some(rty) = resolved_ty {
+        if let Some(name) = primitive_value_layout_extern_name(rty) {
+            return Ok(declare_extern_layout_global(fn_ctx, name));
+        }
+    }
     let (size, align) = abi_size_align(val_ty, None)?;
     let global_name = format!("__hew_map_value_layout_{size}_{align}_plain");
     if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
@@ -10009,6 +10306,7 @@ fn hashmap_layout_wasm_substrate_symbol(callee: &str) -> Option<&'static str> {
         "hew_hashset_contains_layout" => Some("hew_hashset_contains_layout"),
         "hew_hashset_remove_layout" => Some("hew_hashset_remove_layout"),
         "hew_hashset_len_layout" => Some("hew_hashset_len_layout"),
+        "hew_hashset_is_empty_layout" => Some("hew_hashset_is_empty_layout"),
         "hew_hashset_free_layout" => Some("hew_hashset_free_layout"),
         _ => None,
     }
@@ -10045,6 +10343,7 @@ fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
             | "hew_hashset_contains_layout"
             | "hew_hashset_remove_layout"
             | "hew_hashset_len_layout"
+            | "hew_hashset_is_empty_layout"
     )
 }
 
@@ -10160,6 +10459,8 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashset_remove_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
         // `i64 hew_hashset_len_layout(set)`
         "hew_hashset_len_layout" => Ok(i64_ty.fn_type(&[ptr_ty.into()], false)),
+        // `bool hew_hashset_is_empty_layout(set)`
+        "hew_hashset_is_empty_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into()], false)),
         _ => Err(CodegenError::FailClosed(format!(
             "not a layout HashMap/HashSet runtime symbol: {symbol}"
         ))),
@@ -10243,7 +10544,8 @@ fn lower_hashmap_layout_probe(
             // layout is independent.  Emit both so the test surface sees
             // both globals.
             let _ = hashmap_key_layout_descriptor_ptr(fn_ctx, key_ty, Some(key_resolved))?;
-            let _ = hashmap_value_layout_descriptor_ptr(fn_ctx, val_ty)?;
+            let val_resolved = place_resolved_ty(fn_ctx, args[1])?;
+            let _ = hashmap_value_layout_descriptor_ptr(fn_ctx, val_ty, Some(val_resolved))?;
         }
         "__hew_codegen_emit_hashset_layout_probe" => {
             if args.len() != 1 {
@@ -10279,7 +10581,7 @@ fn lower_hashmap_layout_probe(
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("{callee} br: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{callee} br"))?;
     Ok(())
 }
 
@@ -10334,7 +10636,7 @@ fn truncate_bool_arg_to_i1<'ctx>(
     let loaded = fn_ctx
         .builder
         .build_load(ty, ptr, &format!("{label}_load"))
-        .map_err(|e| CodegenError::Llvm(format!("{label} load: {e:?}")))?
+        .llvm_ctx_with(|| format!("{label} load"))?
         .into_int_value();
     if int_ty.get_bit_width() == 1 {
         Ok(loaded)
@@ -10347,7 +10649,7 @@ fn truncate_bool_arg_to_i1<'ctx>(
                 int_ty.const_zero(),
                 &format!("{label}_trunc_i1"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("{label} trunc bool to i1: {e:?}")))
+            .llvm_ctx_with(|| format!("{label} trunc bool to i1"))
     }
 }
 
@@ -10368,7 +10670,7 @@ fn zext_bool_i1_to_dest<'ctx>(
         Ok(fn_ctx
             .builder
             .build_int_z_extend(value, dest_int, &format!("{label}_zext_i8"))
-            .map_err(|e| CodegenError::Llvm(format!("{label} zext bool result: {e:?}")))?
+            .llvm_ctx_with(|| format!("{label} zext bool result"))?
             .into())
     }
 }
@@ -10405,7 +10707,7 @@ fn lower_bool_vec_direct_call(
             fn_ctx
                 .builder
                 .build_call(fv, &[vec_ptr.into(), val.into()], "hew_vec_push_bool_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_push_bool call: {e:?}")))?
+                .llvm_ctx("hew_vec_push_bool call")?
         }
         "hew_vec_get_bool" => {
             let index = load_int_arg(
@@ -10417,7 +10719,7 @@ fn lower_bool_vec_direct_call(
             fn_ctx
                 .builder
                 .build_call(fv, &[vec_ptr.into(), index.into()], "hew_vec_get_bool_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_get_bool call: {e:?}")))?
+                .llvm_ctx("hew_vec_get_bool call")?
         }
         "hew_vec_set_bool" => {
             let index = load_int_arg(
@@ -10434,12 +10736,12 @@ fn lower_bool_vec_direct_call(
                     &[vec_ptr.into(), index.into(), val.into()],
                     "hew_vec_set_bool_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_set_bool call: {e:?}")))?
+                .llvm_ctx("hew_vec_set_bool call")?
         }
         "hew_vec_pop_bool" => fn_ctx
             .builder
             .build_call(fv, &[vec_ptr.into()], "hew_vec_pop_bool_call")
-            .map_err(|e| CodegenError::Llvm(format!("hew_vec_pop_bool call: {e:?}")))?,
+            .llvm_ctx("hew_vec_pop_bool call")?,
         _ => unreachable!("matched above"),
     };
 
@@ -10461,7 +10763,7 @@ fn lower_bool_vec_direct_call(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, store_val)
-                .map_err(|e| CodegenError::Llvm(format!("{callee} store: {e:?}")))?;
+                .llvm_ctx_with(|| format!("{callee} store"))?;
         }
         ("hew_vec_get_bool" | "hew_vec_pop_bool", None) => {
             return Err(CodegenError::FailClosed(format!(
@@ -10478,7 +10780,7 @@ fn lower_bool_vec_direct_call(
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("{callee} br: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{callee} br"))?;
     Ok(())
 }
 
@@ -10581,12 +10883,12 @@ fn lower_vec_constructor_call(
         fn_ctx
             .builder
             .build_call(fv, &[layout_ptr.into()], "hew_vec_new_with_layout_call")
-            .map_err(|e| CodegenError::Llvm(format!("hew_vec_new_with_layout call: {e:?}")))?
+            .llvm_ctx("hew_vec_new_with_layout call")?
     } else {
         fn_ctx
             .builder
             .build_call(fv, &[], &format!("{runtime_symbol}_call"))
-            .map_err(|e| CodegenError::Llvm(format!("{runtime_symbol} call: {e:?}")))?
+            .llvm_ctx_with(|| format!("{runtime_symbol} call"))?
     };
     let handle = call
         .try_as_basic_value()
@@ -10601,7 +10903,7 @@ fn lower_vec_constructor_call(
     fn_ctx
         .builder
         .build_store(dest_ptr, handle)
-        .map_err(|e| CodegenError::Llvm(format!("Vec::new store: {e:?}")))?;
+        .llvm_ctx("Vec::new store")?;
 
     let next_bb = *fn_ctx
         .blocks
@@ -10610,7 +10912,7 @@ fn lower_vec_constructor_call(
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("Vec::new br: {e:?}")))?;
+        .llvm_ctx("Vec::new br")?;
     Ok(())
 }
 
@@ -10672,7 +10974,7 @@ fn lower_layout_vec_direct_call(
                     &[vec_ptr.into(), data_ptr.into(), layout_ptr.into()],
                     "hew_vec_push_layout_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_push_layout call: {e:?}")))?;
+                .llvm_ctx("hew_vec_push_layout call")?;
         }
         "hew_vec_get_layout" => {
             let dest_place = dest.ok_or_else(|| {
@@ -10695,7 +10997,7 @@ fn lower_layout_vec_direct_call(
                     &[vec_ptr.into(), index.into(), layout_ptr.into()],
                     "hew_vec_get_layout_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_get_layout call: {e:?}")))?;
+                .llvm_ctx("hew_vec_get_layout call")?;
             let raw_ptr = call
                 .try_as_basic_value()
                 .basic()
@@ -10704,11 +11006,11 @@ fn lower_layout_vec_direct_call(
             let loaded = fn_ctx
                 .builder
                 .build_load(dest_ty, raw_ptr, "hew_vec_get_layout_load")
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_get_layout load: {e:?}")))?;
+                .llvm_ctx("hew_vec_get_layout load")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, loaded)
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_get_layout store: {e:?}")))?;
+                .llvm_ctx("hew_vec_get_layout store")?;
         }
         "hew_vec_set_layout" => {
             if let Some(d) = dest {
@@ -10736,7 +11038,7 @@ fn lower_layout_vec_direct_call(
                     ],
                     "hew_vec_set_layout_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_set_layout call: {e:?}")))?;
+                .llvm_ctx("hew_vec_set_layout call")?;
         }
         "hew_vec_pop_layout" => {
             let dest_place = dest.ok_or_else(|| {
@@ -10753,7 +11055,7 @@ fn lower_layout_vec_direct_call(
                     &[vec_ptr.into(), dest_ptr.into(), layout_ptr.into()],
                     "hew_vec_pop_layout_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_pop_layout call: {e:?}")))?;
+                .llvm_ctx("hew_vec_pop_layout call")?;
             let ok = call
                 .try_as_basic_value()
                 .basic()
@@ -10767,7 +11069,7 @@ fn lower_layout_vec_direct_call(
                     i32_ty.const_zero(),
                     "hew_vec_pop_layout_nonempty",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_pop_layout compare: {e:?}")))?;
+                .llvm_ctx("hew_vec_pop_layout compare")?;
             let current = fn_ctx
                 .builder
                 .get_insert_block()
@@ -10785,7 +11087,7 @@ fn lower_layout_vec_direct_call(
             fn_ctx
                 .builder
                 .build_conditional_branch(nonzero, next_bb, trap_bb)
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_pop_layout branch: {e:?}")))?;
+                .llvm_ctx("hew_vec_pop_layout branch")?;
             fn_ctx.builder.position_at_end(trap_bb);
             emit_trap_with_code(fn_ctx, 205, "hew_vec_pop_layout_empty_trap")?;
             return Ok(());
@@ -10810,7 +11112,7 @@ fn lower_layout_vec_direct_call(
                     &[vec_ptr.into(), val_ptr.into(), thunk_ptr.into()],
                     "hew_vec_contains_thunk_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_contains_thunk call: {e:?}")))?;
+                .llvm_ctx("hew_vec_contains_thunk call")?;
             let raw_i32 = call
                 .try_as_basic_value()
                 .basic()
@@ -10837,14 +11139,14 @@ fn lower_layout_vec_direct_call(
                     i32_ty.const_zero(),
                     "contains_thunk_nz",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("contains_thunk compare: {e:?}")))?;
+                .llvm_ctx("contains_thunk compare")?;
             // Use the width-aware helper so this remains valid if the bool
             // storage representation changes (e.g. i1 ↔ i8).
             let widened = zext_bool_i1_to_dest(fn_ctx, nz, dest_ty, "contains_thunk")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, widened)
-                .map_err(|e| CodegenError::Llvm(format!("contains_thunk store: {e:?}")))?;
+                .llvm_ctx("contains_thunk store")?;
         }
         "hew_vec_remove_at_layout" => {
             // W3.003: index-based remove for BitCopy layout-backed Vec elements.
@@ -10895,7 +11197,7 @@ fn lower_layout_vec_direct_call(
                     &[vec_ptr.into(), index.into(), layout_ptr.into()],
                     "hew_vec_remove_at_layout_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_remove_at_layout call: {e:?}")))?;
+                .llvm_ctx("hew_vec_remove_at_layout call")?;
         }
         "hew_vec_clone_layout" => {
             // W3.003: BitCopy bulk-copy clone for layout-backed Vec elements.
@@ -10939,7 +11241,7 @@ fn lower_layout_vec_direct_call(
                     &[vec_ptr.into(), layout_ptr.into()],
                     "hew_vec_clone_layout_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_clone_layout call: {e:?}")))?;
+                .llvm_ctx("hew_vec_clone_layout call")?;
             let new_vec_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
                 CodegenError::FailClosed("hew_vec_clone_layout returned void".into())
             })?;
@@ -10947,7 +11249,7 @@ fn lower_layout_vec_direct_call(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, new_vec_ptr)
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_clone_layout store: {e:?}")))?;
+                .llvm_ctx("hew_vec_clone_layout store")?;
         }
         _ => unreachable!("matched above"),
     }
@@ -10959,7 +11261,7 @@ fn lower_layout_vec_direct_call(
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("{callee} br: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{callee} br"))?;
     let _ = ptr_ty;
     Ok(())
 }
@@ -10978,6 +11280,7 @@ fn lower_layout_vec_direct_call(
 /// - `hew_hashset_contains_layout`:     2 args (handle, elem)
 /// - `hew_hashset_remove_layout`:       2 args (handle, elem)
 /// - `hew_hashset_len_layout`:          1 arg  (handle)
+/// - `hew_hashset_is_empty_layout`:     1 arg  (handle)
 ///
 /// No hidden descriptor operands are synthesised at the call site: the
 /// key/value layout was baked into the HashMap/HashSet handle at
@@ -11005,7 +11308,7 @@ fn lower_hashmap_layout_direct_call(
         "hew_hashset_insert_layout"
         | "hew_hashset_contains_layout"
         | "hew_hashset_remove_layout" => 2,
-        "hew_hashset_len_layout" => 1,
+        "hew_hashset_len_layout" | "hew_hashset_is_empty_layout" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
                 "lower_hashmap_layout_direct_call called with non-layout symbol `{callee}`"
@@ -11039,9 +11342,7 @@ fn lower_hashmap_layout_direct_call(
                     &[map_ptr.into(), key_ptr.into(), val_ptr.into()],
                     "hew_hashmap_insert_layout_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_hashmap_insert_layout call: {e:?}"))
-                })?;
+                .llvm_ctx("hew_hashmap_insert_layout call")?;
             if let Some(dest_place) = dest {
                 let raw_bool = call
                     .try_as_basic_value()
@@ -11053,9 +11354,10 @@ fn lower_hashmap_layout_direct_call(
                 let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
                 let widened =
                     zext_bool_i1_to_dest(fn_ctx, raw_bool, dest_ty, "hashmap_insert_bool")?;
-                fn_ctx.builder.build_store(dest_ptr, widened).map_err(|e| {
-                    CodegenError::Llvm(format!("hew_hashmap_insert_layout store: {e:?}"))
-                })?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, widened)
+                    .llvm_ctx("hew_hashmap_insert_layout store")?;
             }
         }
         "hew_hashmap_contains_key_layout" => {
@@ -11073,9 +11375,7 @@ fn lower_hashmap_layout_direct_call(
                     &[map_ptr.into(), key_ptr.into()],
                     "hew_hashmap_contains_key_layout_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_hashmap_contains_key_layout call: {e:?}"))
-                })?;
+                .llvm_ctx("hew_hashmap_contains_key_layout call")?;
             let raw_bool = call
                 .try_as_basic_value()
                 .basic()
@@ -11086,9 +11386,10 @@ fn lower_hashmap_layout_direct_call(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
             let widened =
                 zext_bool_i1_to_dest(fn_ctx, raw_bool, dest_ty, "hashmap_contains_key_bool")?;
-            fn_ctx.builder.build_store(dest_ptr, widened).map_err(|e| {
-                CodegenError::Llvm(format!("hew_hashmap_contains_key_layout store: {e:?}"))
-            })?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .llvm_ctx("hew_hashmap_contains_key_layout store")?;
         }
         "hew_hashmap_remove_layout" => {
             // `bool hew_hashmap_remove_layout(map, key_ptr)`.
@@ -11105,9 +11406,7 @@ fn lower_hashmap_layout_direct_call(
                     &[map_ptr.into(), key_ptr.into()],
                     "hew_hashmap_remove_layout_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_hashmap_remove_layout call: {e:?}"))
-                })?;
+                .llvm_ctx("hew_hashmap_remove_layout call")?;
             let raw_bool = call
                 .try_as_basic_value()
                 .basic()
@@ -11117,9 +11416,10 @@ fn lower_hashmap_layout_direct_call(
                 .into_int_value();
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
             let widened = zext_bool_i1_to_dest(fn_ctx, raw_bool, dest_ty, "hashmap_remove_bool")?;
-            fn_ctx.builder.build_store(dest_ptr, widened).map_err(|e| {
-                CodegenError::Llvm(format!("hew_hashmap_remove_layout store: {e:?}"))
-            })?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .llvm_ctx("hew_hashmap_remove_layout store")?;
         }
         "hew_hashmap_len_layout" => {
             // `i64 hew_hashmap_len_layout(map)`.
@@ -11131,7 +11431,7 @@ fn lower_hashmap_layout_direct_call(
             let call = fn_ctx
                 .builder
                 .build_call(fv, &[map_ptr.into()], "hew_hashmap_len_layout_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_hashmap_len_layout call: {e:?}")))?;
+                .llvm_ctx("hew_hashmap_len_layout call")?;
             let len_val = call.try_as_basic_value().basic().ok_or_else(|| {
                 CodegenError::FailClosed("hew_hashmap_len_layout returned void".into())
             })?;
@@ -11139,7 +11439,7 @@ fn lower_hashmap_layout_direct_call(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, len_val)
-                .map_err(|e| CodegenError::Llvm(format!("hew_hashmap_len_layout store: {e:?}")))?;
+                .llvm_ctx("hew_hashmap_len_layout store")?;
         }
         "hew_hashset_insert_layout" => {
             // `bool hew_hashset_insert_layout(set, elem_ptr)`.
@@ -11151,9 +11451,7 @@ fn lower_hashmap_layout_direct_call(
                     &[map_ptr.into(), elem_ptr.into()],
                     "hew_hashset_insert_layout_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_hashset_insert_layout call: {e:?}"))
-                })?;
+                .llvm_ctx("hew_hashset_insert_layout call")?;
             if let Some(dest_place) = dest {
                 let raw_bool = call
                     .try_as_basic_value()
@@ -11165,9 +11463,10 @@ fn lower_hashmap_layout_direct_call(
                 let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
                 let widened =
                     zext_bool_i1_to_dest(fn_ctx, raw_bool, dest_ty, "hashset_insert_bool")?;
-                fn_ctx.builder.build_store(dest_ptr, widened).map_err(|e| {
-                    CodegenError::Llvm(format!("hew_hashset_insert_layout store: {e:?}"))
-                })?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, widened)
+                    .llvm_ctx("hew_hashset_insert_layout store")?;
             }
         }
         "hew_hashset_contains_layout" => {
@@ -11185,9 +11484,7 @@ fn lower_hashmap_layout_direct_call(
                     &[map_ptr.into(), elem_ptr.into()],
                     "hew_hashset_contains_layout_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_hashset_contains_layout call: {e:?}"))
-                })?;
+                .llvm_ctx("hew_hashset_contains_layout call")?;
             let raw_bool = call
                 .try_as_basic_value()
                 .basic()
@@ -11197,9 +11494,10 @@ fn lower_hashmap_layout_direct_call(
                 .into_int_value();
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
             let widened = zext_bool_i1_to_dest(fn_ctx, raw_bool, dest_ty, "hashset_contains_bool")?;
-            fn_ctx.builder.build_store(dest_ptr, widened).map_err(|e| {
-                CodegenError::Llvm(format!("hew_hashset_contains_layout store: {e:?}"))
-            })?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .llvm_ctx("hew_hashset_contains_layout store")?;
         }
         "hew_hashset_remove_layout" => {
             // `bool hew_hashset_remove_layout(set, elem_ptr)`.
@@ -11216,9 +11514,7 @@ fn lower_hashmap_layout_direct_call(
                     &[map_ptr.into(), elem_ptr.into()],
                     "hew_hashset_remove_layout_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_hashset_remove_layout call: {e:?}"))
-                })?;
+                .llvm_ctx("hew_hashset_remove_layout call")?;
             let raw_bool = call
                 .try_as_basic_value()
                 .basic()
@@ -11228,9 +11524,10 @@ fn lower_hashmap_layout_direct_call(
                 .into_int_value();
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
             let widened = zext_bool_i1_to_dest(fn_ctx, raw_bool, dest_ty, "hashset_remove_bool")?;
-            fn_ctx.builder.build_store(dest_ptr, widened).map_err(|e| {
-                CodegenError::Llvm(format!("hew_hashset_remove_layout store: {e:?}"))
-            })?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .llvm_ctx("hew_hashset_remove_layout store")?;
         }
         "hew_hashset_len_layout" => {
             // `i64 hew_hashset_len_layout(set)`.
@@ -11242,7 +11539,7 @@ fn lower_hashmap_layout_direct_call(
             let call = fn_ctx
                 .builder
                 .build_call(fv, &[map_ptr.into()], "hew_hashset_len_layout_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_hashset_len_layout call: {e:?}")))?;
+                .llvm_ctx("hew_hashset_len_layout call")?;
             let len_val = call.try_as_basic_value().basic().ok_or_else(|| {
                 CodegenError::FailClosed("hew_hashset_len_layout returned void".into())
             })?;
@@ -11250,7 +11547,32 @@ fn lower_hashmap_layout_direct_call(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, len_val)
-                .map_err(|e| CodegenError::Llvm(format!("hew_hashset_len_layout store: {e:?}")))?;
+                .llvm_ctx("hew_hashset_len_layout store")?;
+        }
+        "hew_hashset_is_empty_layout" => {
+            // `bool hew_hashset_is_empty_layout(set)`.
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_hashset_is_empty_layout returns bool; call must supply a dest".into(),
+                )
+            })?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[map_ptr.into()], "hew_hashset_is_empty_layout_call")
+                .llvm_ctx("hew_hashset_is_empty_layout call")?;
+            let raw_bool = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_hashset_is_empty_layout returned void".into())
+                })?
+                .into_int_value();
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            let widened = zext_bool_i1_to_dest(fn_ctx, raw_bool, dest_ty, "hashset_is_empty_bool")?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .llvm_ctx("hew_hashset_is_empty_layout store")?;
         }
         _ => unreachable!("matched above"),
     }
@@ -11262,7 +11584,7 @@ fn lower_hashmap_layout_direct_call(
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("{callee} br: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{callee} br"))?;
     Ok(())
 }
 
@@ -11327,7 +11649,7 @@ fn lower_hashmap_get_layout_call(
             &[map_ptr.into(), key_ptr.into()],
             "hew_hashmap_get_layout_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_hashmap_get_layout call: {e:?}")))?
+        .llvm_ctx("hew_hashmap_get_layout call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_hashmap_get_layout returned void".into()))?
@@ -11354,11 +11676,11 @@ fn lower_hashmap_get_layout_call(
             fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
             "hashmap_get_is_some",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_hashmap_get_layout null compare: {e:?}")))?;
+        .llvm_ctx("hew_hashmap_get_layout null compare")?;
     fn_ctx
         .builder
         .build_conditional_branch(is_some, some_bb, none_bb)
-        .map_err(|e| CodegenError::Llvm(format!("hew_hashmap_get_layout condbr: {e:?}")))?;
+        .llvm_ctx("hew_hashmap_get_layout condbr")?;
 
     // None = variant 1 for Hew's builtin `Option<T>` layout.
     fn_ctx.builder.position_at_end(none_bb);
@@ -11366,7 +11688,7 @@ fn lower_hashmap_get_layout_call(
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("hew_hashmap_get_layout none br: {e:?}")))?;
+        .llvm_ctx("hew_hashmap_get_layout none br")?;
 
     // Some = variant 0.  Tag via the enum-literal primitive, then copy exactly
     // the registered value-layout byte size into the Some payload field.
@@ -11396,11 +11718,11 @@ fn lower_hashmap_get_layout_call(
             val_align,
             fn_ctx.ctx.i64_type().const_int(val_size, false),
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_hashmap_get_layout value copy: {e:?}")))?;
+        .llvm_ctx("hew_hashmap_get_layout value copy")?;
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("hew_hashmap_get_layout some br: {e:?}")))?;
+        .llvm_ctx("hew_hashmap_get_layout some br")?;
     Ok(())
 }
 
@@ -11487,7 +11809,8 @@ fn lower_hashmap_constructor_call(
             let val_llvm = resolve_ty(fn_ctx.ctx, val_resolved, fn_ctx.record_layouts)?;
             let key_layout_ptr =
                 hashmap_key_layout_descriptor_ptr(fn_ctx, key_llvm, Some(key_resolved))?;
-            let val_layout_ptr = hashmap_value_layout_descriptor_ptr(fn_ctx, val_llvm)?;
+            let val_layout_ptr =
+                hashmap_value_layout_descriptor_ptr(fn_ctx, val_llvm, Some(val_resolved))?;
             fn_ctx
                 .builder
                 .build_call(
@@ -11495,9 +11818,7 @@ fn lower_hashmap_constructor_call(
                     &[key_layout_ptr.into(), val_layout_ptr.into()],
                     "hew_hashmap_new_with_layout_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_hashmap_new_with_layout call: {e:?}"))
-                })?
+                .llvm_ctx("hew_hashmap_new_with_layout call")?
         }
         "hew_hashset_new_with_layout" => {
             if name != "HashSet" || ty_args.len() != 1 {
@@ -11520,9 +11841,7 @@ fn lower_hashmap_constructor_call(
                     &[elem_layout_ptr.into()],
                     "hew_hashset_new_with_layout_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_hashset_new_with_layout call: {e:?}"))
-                })?
+                .llvm_ctx("hew_hashset_new_with_layout call")?
         }
         _ => unreachable!("guarded by is_hashmap_constructor_symbol"),
     };
@@ -11540,7 +11859,7 @@ fn lower_hashmap_constructor_call(
     fn_ctx
         .builder
         .build_store(dest_ptr, handle)
-        .map_err(|e| CodegenError::Llvm(format!("{callee} store: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{callee} store"))?;
 
     let next_bb = *fn_ctx
         .blocks
@@ -11549,7 +11868,7 @@ fn lower_hashmap_constructor_call(
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("{callee} br: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{callee} br"))?;
     Ok(())
 }
 
@@ -11581,6 +11900,7 @@ fn lower_call_runtime_abi(
     let dest = call.dest();
     let i32_ty = fn_ctx.ctx.i32_type();
     let i64_ty = fn_ctx.ctx.i64_type();
+    let i8_ty = fn_ctx.ctx.i8_type();
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     match symbol {
         "hew_duplex_pair" => {
@@ -11614,7 +11934,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_call(fv, &llvm_args, "hew_duplex_pair_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_duplex_pair call: {e:?}")))?;
+                .llvm_ctx("hew_duplex_pair call")?;
             // Producer emits dest: None — i32 return is discarded.
             // Defence in depth: if a future producer ever wires a
             // dest, fail-closed rather than silently dropping it.
@@ -11658,7 +11978,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_call(fv, &llvm_args, "hew_duplex_send_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_duplex_send call: {e:?}")))?;
+                .llvm_ctx("hew_duplex_send call")?;
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
                     "hew_duplex_send returns i32 (discarded by the runtime contract); \
@@ -11666,6 +11986,48 @@ fn lower_call_runtime_abi(
                 )));
             }
             let _ = (i32_ty, ptr_ty);
+        }
+        // ── Bytes mutating receiver ABI ───────────────────────────────────
+        //
+        // hew_bytes_push(triple: &mut BytesTriple, byte: u8) -> void.
+        // args[0]: Place::Local(N) for a bytes local. Pass the alloca address
+        // directly so the runtime can write back ptr/offset/len after CoW/grow.
+        // args[1]: Hew API accepts i32 for convenience; truncate to u8 at the
+        // runtime ABI boundary.
+        "hew_bytes_push" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_bytes_push): expected 2 args \
+                     (bytes, byte), got {}",
+                    args.len()
+                )));
+            }
+            let (bytes_slot, _bytes_ty) = place_pointer(fn_ctx, args[0])?;
+            let byte_i32 = load_int_arg(fn_ctx, args[1], i32_ty, "hew_bytes_push byte")?;
+            let byte_i8 = fn_ctx
+                .builder
+                .build_int_truncate(byte_i32, i8_ty, "hew_bytes_push_byte_i8")
+                .llvm_ctx("hew_bytes_push byte truncate")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[bytes_slot.into(), byte_i8.into()],
+                    "hew_bytes_push_call",
+                )
+                .llvm_ctx("hew_bytes_push call")?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_bytes_push returns void; producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i64_ty, ptr_ty);
         }
         // Actor link/monitor builtins.
         //
@@ -11711,7 +12073,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_call(fv, &llvm_args, "hew_actor_link_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_actor_link call: {e:?}")))?;
+                .llvm_ctx("hew_actor_link call")?;
             // SHIM(B3→Cluster2): `link()` returns Result<(), LinkError>.
             // Composite-type construction is not yet available in the Cluster 1
             // spine. Until the Cluster 2 spine lands, producers must not wire a
@@ -11747,7 +12109,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_call(fv, &llvm_args, "hew_actor_monitor_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_actor_monitor call: {e:?}")))?;
+                .llvm_ctx("hew_actor_monitor call")?;
             // SHIM(B3→Cluster2): `monitor()` returns MonitorRef { ref_id: i64 }.
             // Struct-literal construction requires the Cluster 2 spine.
             // Producers must not wire a dest until that lands.
@@ -11782,7 +12144,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_call(fv, &[sup_ptr.into()], "hew_supervisor_stop_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_stop call: {e:?}")))?;
+                .llvm_ctx("hew_supervisor_stop call")?;
             // Void return — producer supplies dest: None; fail-closed if not.
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
@@ -11827,7 +12189,7 @@ fn lower_call_runtime_abi(
             let call = fn_ctx
                 .builder
                 .build_call(fv, &[vec_ptr.into()], "hew_vec_len_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_len call: {e:?}")))?;
+                .llvm_ctx("hew_vec_len call")?;
             let len_val = call
                 .try_as_basic_value()
                 .basic()
@@ -11841,7 +12203,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, len_val)
-                .map_err(|e| CodegenError::Llvm(format!("hew_vec_len store: {e:?}")))?;
+                .llvm_ctx("hew_vec_len store")?;
             let _ = (i32_ty, ptr_ty);
         }
         // hew_vec_get_bool(v: *mut HewVec, index: i64) -> bool (i1 ABI)
@@ -11881,7 +12243,7 @@ fn lower_call_runtime_abi(
                     &[vec_ptr.into(), index_val.into()],
                     &format!("{symbol}_call"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+                .llvm_ctx_with(|| format!("{symbol} call"))?;
             let result_val = call
                 .try_as_basic_value()
                 .basic()
@@ -11898,7 +12260,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, store_val)
-                .map_err(|e| CodegenError::Llvm(format!("{symbol} store: {e:?}")))?;
+                .llvm_ctx_with(|| format!("{symbol} store"))?;
             let _ = (i32_ty, ptr_ty);
         }
         // ── Vec<T> range-slice (C-3) ──────────────────────────────────────
@@ -11937,7 +12299,7 @@ fn lower_call_runtime_abi(
                     &[vec_ptr.into(), start_val.into(), end_val.into()],
                     &format!("{symbol}_call"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+                .llvm_ctx_with(|| format!("{symbol} call"))?;
             let result_val = call
                 .try_as_basic_value()
                 .basic()
@@ -11949,8 +12311,98 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result_val)
-                .map_err(|e| CodegenError::Llvm(format!("{symbol} store: {e:?}")))?;
+                .llvm_ctx_with(|| format!("{symbol} store"))?;
             let _ = (i32_ty, ptr_ty);
+        }
+        // W3 collections-sugar S2 — string codepoint index / slice.
+        //
+        // Both arms follow the Vec single-element-getter / slice-range
+        // shape: load the `*const c_char` value from a `ptr`-typed
+        // String alloca (string locals are represented as `ptr` in
+        // LLVM — see `basic_type_for(ResolvedTy::String)`), pass i64
+        // endpoints, store the return into the producer-allocated
+        // dest. The runtime entries themselves enforce bounds and
+        // libc::abort on OOB / invalid UTF-8.
+        //
+        // hew_string_index(s: *const c_char, i: i64) -> i32 (char).
+        "hew_string_index" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_string_index): expected 2 args (s, i), got {}",
+                    args.len()
+                )));
+            }
+            let s_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_index arg0")?;
+            let i_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_string_index arg1")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[s_ptr.into(), i_val.into()], "hew_string_index_call")
+                .llvm_ctx("hew_string_index call")?;
+            let result_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_string_index returned void".into()))?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_string_index: producer must supply a dest place".into(),
+                )
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_val)
+                .llvm_ctx("hew_string_index store")?;
+            let _ = ptr_ty;
+        }
+        // hew_string_slice_codepoints(s: *const c_char, start: i64, end: i64)
+        //   -> *mut c_char (fresh owned slice)
+        "hew_string_slice_codepoints" => {
+            if args.len() != 3 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_string_slice_codepoints): expected 3 args \
+                     (s, start, end), got {}",
+                    args.len()
+                )));
+            }
+            let s_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_slice_codepoints arg0")?;
+            let start_val =
+                load_int_arg(fn_ctx, args[1], i64_ty, "hew_string_slice_codepoints arg1")?;
+            let end_val =
+                load_int_arg(fn_ctx, args[2], i64_ty, "hew_string_slice_codepoints arg2")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[s_ptr.into(), start_val.into(), end_val.into()],
+                    "hew_string_slice_codepoints_call",
+                )
+                .llvm_ctx("hew_string_slice_codepoints call")?;
+            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_string_slice_codepoints returned void".into())
+            })?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_string_slice_codepoints: producer must supply a dest place".into(),
+                )
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_val)
+                .llvm_ctx("hew_string_slice_codepoints store")?;
+            let _ = i32_ty;
         }
         // hew_task_new() -> *mut HewTask
         // No args. dest: Place holding the task pointer.
@@ -11970,7 +12422,7 @@ fn lower_call_runtime_abi(
             let call = fn_ctx
                 .builder
                 .build_call(fv, &[], "hew_task_new_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_task_new call: {e:?}")))?;
+                .llvm_ctx("hew_task_new call")?;
             let task_ptr = call
                 .try_as_basic_value()
                 .basic()
@@ -11984,7 +12436,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, task_ptr)
-                .map_err(|e| CodegenError::Llvm(format!("hew_task_new store: {e:?}")))?;
+                .llvm_ctx("hew_task_new store")?;
             let _ = (i32_ty, ptr_ty);
         }
         "hew_task_scope_new" => {
@@ -12003,7 +12455,7 @@ fn lower_call_runtime_abi(
             let call = fn_ctx
                 .builder
                 .build_call(fv, &[], "hew_task_scope_new_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_task_scope_new call: {e:?}")))?;
+                .llvm_ctx("hew_task_scope_new call")?;
             let scope_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
                 CodegenError::FailClosed("hew_task_scope_new returned void".into())
             })?;
@@ -12014,7 +12466,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, scope_ptr)
-                .map_err(|e| CodegenError::Llvm(format!("hew_task_scope_new store: {e:?}")))?;
+                .llvm_ctx("hew_task_scope_new store")?;
             let _ = (i32_ty, ptr_ty);
         }
         "hew_task_scope_set_current" => {
@@ -12034,17 +12486,16 @@ fn lower_call_runtime_abi(
             let call = fn_ctx
                 .builder
                 .build_call(fv, &[scope_ptr.into()], "hew_task_scope_set_current_call")
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_task_scope_set_current call: {e:?}"))
-                })?;
+                .llvm_ctx("hew_task_scope_set_current call")?;
             if let Some(dest_place) = dest {
                 let prev = call.try_as_basic_value().basic().ok_or_else(|| {
                     CodegenError::FailClosed("hew_task_scope_set_current returned void".into())
                 })?;
                 let (dest_ptr, _) = place_pointer(fn_ctx, dest_place)?;
-                fn_ctx.builder.build_store(dest_ptr, prev).map_err(|e| {
-                    CodegenError::Llvm(format!("hew_task_scope_set_current store: {e:?}"))
-                })?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, prev)
+                    .llvm_ctx("hew_task_scope_set_current store")?;
             }
             let _ = (i32_ty, ptr_ty);
         }
@@ -12065,7 +12516,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_call(fv, &[scope_ptr.into()], &format!("{symbol}_call"))
-                .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+                .llvm_ctx_with(|| format!("{symbol} call"))?;
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
                     "{symbol} returns void; producer must not supply dest={d:?}"
@@ -12095,7 +12546,7 @@ fn lower_call_runtime_abi(
                     &[scope_ptr.into(), task_ptr.into()],
                     "hew_task_scope_spawn_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_task_scope_spawn call: {e:?}")))?;
+                .llvm_ctx("hew_task_scope_spawn call")?;
             let _ = (i32_ty, ptr_ty);
         }
         "hew_task_scope_cancel_after_ns" => {
@@ -12126,9 +12577,7 @@ fn lower_call_runtime_abi(
                     &[scope_ptr.into(), nanos.into()],
                     "hew_task_scope_cancel_after_ns_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_task_scope_cancel_after_ns call: {e:?}"))
-                })?;
+                .llvm_ctx("hew_task_scope_cancel_after_ns call")?;
             let _ = (i32_ty, ptr_ty);
         }
         // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
@@ -12177,7 +12626,7 @@ fn lower_call_runtime_abi(
             let call = fn_ctx
                 .builder
                 .build_call(fv, &[task_ptr.into()], "hew_task_await_blocking_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_task_await_blocking call: {e:?}")))?;
+                .llvm_ctx("hew_task_await_blocking call")?;
             // Result pointer — optional; void-result tasks may pass dest: None.
             if let Some(dest_place) = dest {
                 let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
@@ -12187,9 +12636,7 @@ fn lower_call_runtime_abi(
                 fn_ctx
                     .builder
                     .build_store(dest_ptr, result_val)
-                    .map_err(|e| {
-                        CodegenError::Llvm(format!("hew_task_await_blocking store: {e:?}"))
-                    })?;
+                    .llvm_ctx("hew_task_await_blocking store")?;
             }
             let _ = (i32_ty, ptr_ty);
         }
@@ -12214,7 +12661,7 @@ fn lower_call_runtime_abi(
             let call = fn_ctx
                 .builder
                 .build_call(fv, &[task_ptr.into()], "hew_task_get_result_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_task_get_result call: {e:?}")))?;
+                .llvm_ctx("hew_task_get_result call")?;
             let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
                 CodegenError::FailClosed("hew_task_get_result returned void".into())
             })?;
@@ -12228,7 +12675,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result_val)
-                .map_err(|e| CodegenError::Llvm(format!("hew_task_get_result store: {e:?}")))?;
+                .llvm_ctx("hew_task_get_result store")?;
             let _ = (i32_ty, ptr_ty);
         }
         // hew_task_free(task: *mut HewTask) -> void
@@ -12250,7 +12697,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_call(fv, &[task_ptr.into()], "hew_task_free_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_task_free call: {e:?}")))?;
+                .llvm_ctx("hew_task_free call")?;
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
                     "hew_task_free returns void; producer must not supply dest={d:?}"
@@ -12309,9 +12756,7 @@ fn lower_call_runtime_abi(
             let key_i32 = fn_ctx
                 .builder
                 .build_int_truncate(key_i64, i32_ty, "supervisor_child_get key_i32")
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("supervisor_child_get key truncate: {e:?}"))
-                })?;
+                .llvm_ctx("supervisor_child_get key truncate")?;
 
             // Call hew_supervisor_child_get — returns { i8, i8, [6 x i8], ptr }.
             let fv = intern_runtime_decl(
@@ -12324,7 +12769,7 @@ fn lower_call_runtime_abi(
             let call_site = fn_ctx
                 .builder
                 .build_call(fv, &llvm_args, "hew_supervisor_child_get_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_child_get call: {e:?}")))?;
+                .llvm_ctx("hew_supervisor_child_get call")?;
             let struct_val = call_site
                 .try_as_basic_value()
                 .basic()
@@ -12342,22 +12787,22 @@ fn lower_call_runtime_abi(
             let word0_i64 = fn_ctx
                 .builder
                 .build_extract_value(struct_val, 0, "child_word0_i64")
-                .map_err(|e| CodegenError::Llvm(format!("extractvalue word0: {e:?}")))?
+                .llvm_ctx("extractvalue word0")?
                 .into_int_value();
             let tag_i8 = fn_ctx
                 .builder
                 .build_int_truncate(word0_i64, fn_ctx.ctx.i8_type(), "child_tag_i8")
-                .map_err(|e| CodegenError::Llvm(format!("trunc tag: {e:?}")))?;
+                .llvm_ctx("trunc tag")?;
             let tag_i64 = fn_ctx
                 .builder
                 .build_int_z_extend(tag_i8, i64_ty, "child_tag_i64")
-                .map_err(|e| CodegenError::Llvm(format!("zext tag: {e:?}")))?;
+                .llvm_ctx("zext tag")?;
 
             // field 1: handle integer — already i64.
             let handle_i64 = fn_ctx
                 .builder
                 .build_extract_value(struct_val, 1, "child_handle_i64")
-                .map_err(|e| CodegenError::Llvm(format!("extractvalue handle: {e:?}")))?
+                .llvm_ctx("extractvalue handle")?
                 .into_int_value();
 
             // The dest alloca has struct type { i64, i64 } (the MIR 2-field
@@ -12376,28 +12821,20 @@ fn lower_call_runtime_abi(
             let tag_field_ptr = fn_ctx
                 .builder
                 .build_struct_gep(dest_struct_ty, dest_ptr, 0, "dest_tag_field_ptr")
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("supervisor_child_get dest tag GEP: {e:?}"))
-                })?;
+                .llvm_ctx("supervisor_child_get dest tag GEP")?;
             fn_ctx
                 .builder
                 .build_store(tag_field_ptr, tag_i64)
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("supervisor_child_get tag store: {e:?}"))
-                })?;
+                .llvm_ctx("supervisor_child_get tag store")?;
             // Store handle into field 1 of the dest alloca.
             let handle_field_ptr = fn_ctx
                 .builder
                 .build_struct_gep(dest_struct_ty, dest_ptr, 1, "dest_handle_field_ptr")
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("supervisor_child_get dest handle GEP: {e:?}"))
-                })?;
+                .llvm_ctx("supervisor_child_get dest handle GEP")?;
             fn_ctx
                 .builder
                 .build_store(handle_field_ptr, handle_i64)
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("supervisor_child_get handle store: {e:?}"))
-                })?;
+                .llvm_ctx("supervisor_child_get handle store")?;
             let _ = (i32_ty, ptr_ty);
         }
 
@@ -12434,7 +12871,7 @@ fn lower_call_runtime_abi(
             let text_ptr = fn_ctx
                 .builder
                 .build_load(scrutinee_llvm_ty, scrutinee_alloca, "regex_match_text")
-                .map_err(|e| CodegenError::Llvm(format!("hew_regex_match text load: {e:?}")))?
+                .llvm_ctx("hew_regex_match text load")?
                 .into_pointer_value();
             // arg1: literal_id — ConstI64 → used as GEP index into @hew_regex_handles.
             let lit_id = load_int_arg(fn_ctx, args[1], i64_ty, "hew_regex_match lit_id")?;
@@ -12465,12 +12902,12 @@ fn lower_call_runtime_abi(
                         &[i64_ty.const_zero(), lit_id],
                         "regex_handle_slot",
                     )
-                    .map_err(|e| CodegenError::Llvm(format!("hew_regex_match GEP: {e:?}")))?
+                    .llvm_ctx("hew_regex_match GEP")?
             };
             let handle = fn_ctx
                 .builder
                 .build_load(ptr_ty, slot_ptr, "regex_handle")
-                .map_err(|e| CodegenError::Llvm(format!("hew_regex_match handle load: {e:?}")))?
+                .llvm_ctx("hew_regex_match handle load")?
                 .into_pointer_value();
             // Call hew_regex_match(handle, text) -> i32.
             let fv = intern_runtime_decl(
@@ -12483,7 +12920,7 @@ fn lower_call_runtime_abi(
             let call_site = fn_ctx
                 .builder
                 .build_call(fv, &llvm_args, "hew_regex_match_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_regex_match call: {e:?}")))?;
+                .llvm_ctx("hew_regex_match call")?;
             let result_i32 = call_site
                 .try_as_basic_value()
                 .basic()
@@ -12493,7 +12930,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_store(dest_ptr, result_i32)
-                .map_err(|e| CodegenError::Llvm(format!("hew_regex_match store: {e:?}")))?;
+                .llvm_ctx("hew_regex_match store")?;
         }
 
         // hew_regex_capture(re: *const HewRegex, text: *const c_char,
@@ -12526,7 +12963,7 @@ fn lower_call_runtime_abi(
             let text_ptr = fn_ctx
                 .builder
                 .build_load(scrutinee_llvm_ty, scrutinee_alloca, "regex_cap_text")
-                .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture text load: {e:?}")))?
+                .llvm_ctx("hew_regex_capture text load")?
                 .into_pointer_value();
             // arg1: literal_id — GEP into @hew_regex_handles.
             let lit_id = load_int_arg(fn_ctx, args[1], i64_ty, "hew_regex_capture lit_id")?;
@@ -12549,12 +12986,12 @@ fn lower_call_runtime_abi(
                         &[i64_ty.const_zero(), lit_id],
                         "regex_cap_handle_slot",
                     )
-                    .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture GEP: {e:?}")))?
+                    .llvm_ctx("hew_regex_capture GEP")?
             };
             let handle = fn_ctx
                 .builder
                 .build_load(ptr_ty, slot_ptr, "regex_cap_handle")
-                .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture handle load: {e:?}")))?
+                .llvm_ctx("hew_regex_capture handle load")?
                 .into_pointer_value();
             // arg2: capture_idx — i64.
             let cap_idx = load_int_arg(fn_ctx, args[2], i64_ty, "hew_regex_capture cap_idx")?;
@@ -12570,7 +13007,7 @@ fn lower_call_runtime_abi(
             let call_site = fn_ctx
                 .builder
                 .build_call(fv, &llvm_args, "hew_regex_capture_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture call: {e:?}")))?;
+                .llvm_ctx("hew_regex_capture call")?;
             let cap_ptr = call_site
                 .try_as_basic_value()
                 .basic()
@@ -12582,12 +13019,12 @@ fn lower_call_runtime_abi(
             let cap_as_i64 = fn_ctx
                 .builder
                 .build_ptr_to_int(cap_ptr, i64_ty, "regex_cap_as_i64")
-                .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture ptrtoint: {e:?}")))?;
+                .llvm_ctx("hew_regex_capture ptrtoint")?;
             let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, cap_as_i64)
-                .map_err(|e| CodegenError::Llvm(format!("hew_regex_capture store: {e:?}")))?;
+                .llvm_ctx("hew_regex_capture store")?;
         }
 
         // hew_regex_free_capture(ptr: *mut c_char) -> void
@@ -12613,9 +13050,7 @@ fn lower_call_runtime_abi(
             let cap_ptr = fn_ctx
                 .builder
                 .build_int_to_ptr(cap_as_i64, ptr_ty, "hew_regex_free_cap_ptr")
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_regex_free_capture inttoptr: {e:?}"))
-                })?;
+                .llvm_ctx("hew_regex_free_capture inttoptr")?;
             let fv = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -12625,7 +13060,7 @@ fn lower_call_runtime_abi(
             fn_ctx
                 .builder
                 .build_call(fv, &[cap_ptr.into()], "hew_regex_free_capture_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_regex_free_capture call: {e:?}")))?;
+                .llvm_ctx("hew_regex_free_capture call")?;
         }
 
         other => {
@@ -12910,7 +13345,7 @@ fn lower_drop_runtime(
             .builder
             .build_call(fv, &llvm_args, &format!("{symbol}_call"))
     };
-    call_result.map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+    call_result.llvm_ctx_with(|| format!("{symbol} call"))?;
     // Zero the alloca: structurally-reachable second drop must hit null
     // at the codegen layer. The runtime AtomicBool guard provides
     // defence-in-depth, but the codegen null-store is required per
@@ -12920,7 +13355,7 @@ fn lower_drop_runtime(
     fn_ctx
         .builder
         .build_store(slot, null_ptr)
-        .map_err(|e| CodegenError::Llvm(format!("post-{symbol} alloca null-store: {e:?}")))?;
+        .llvm_ctx_with(|| format!("post-{symbol} alloca null-store"))?;
     Ok(())
 }
 
@@ -12949,13 +13384,13 @@ fn lower_drop_user_fn(
     let loaded = fn_ctx
         .builder
         .build_load(slot_ty, slot, &format!("{symbol}_self"))
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} self load: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{symbol} self load"))?;
     let arg = metadata_value_from_basic(loaded);
     let llvm_args: [BasicMetadataValueEnum; 1] = [arg];
     fn_ctx
         .builder
         .build_call(value, &llvm_args, &format!("{symbol}_call"))
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{symbol} call"))?;
     // Zero the slot to enforce `raii-null-after-move`. `BasicTypeEnum::
     // const_zero` produces a struct-shaped zeroinitializer for record
     // allocas (and a typed zero for any other shape `place_pointer` may
@@ -12965,7 +13400,7 @@ fn lower_drop_user_fn(
     fn_ctx
         .builder
         .build_store(slot, zero)
-        .map_err(|e| CodegenError::Llvm(format!("post-{symbol} slot zero-store: {e:?}")))?;
+        .llvm_ctx_with(|| format!("post-{symbol} slot zero-store"))?;
     Ok(())
 }
 
@@ -13103,7 +13538,7 @@ fn load_int_arg<'ctx>(
     let v = fn_ctx
         .builder
         .build_load(int_ty, ptr, label)
-        .map_err(|e| CodegenError::Llvm(format!("{label} load: {e:?}")))?
+        .llvm_ctx_with(|| format!("{label} load"))?
         .into_int_value();
     Ok(v)
 }
@@ -13124,11 +13559,11 @@ fn spill_int_arg_as_ptr<'ctx>(
     let slot = fn_ctx
         .builder
         .build_alloca(expected, &format!("{label}_spill"))
-        .map_err(|e| CodegenError::Llvm(format!("{label} spill alloca: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{label} spill alloca"))?;
     fn_ctx
         .builder
         .build_store(slot, v)
-        .map_err(|e| CodegenError::Llvm(format!("{label} spill store: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{label} spill store"))?;
     Ok(slot)
 }
 
@@ -13154,7 +13589,7 @@ fn load_duplex_handle<'ctx>(
     let loaded = fn_ctx
         .builder
         .build_load(ty, slot, label)
-        .map_err(|e| CodegenError::Llvm(format!("{label} load: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{label} load"))?;
     match loaded {
         BasicValueEnum::PointerValue(p) => Ok(p),
         other => Err(CodegenError::FailClosed(format!(
@@ -13253,7 +13688,7 @@ fn emit_print_value_call<'ctx>(
     let loaded = fn_ctx
         .builder
         .build_load(arg_ty, arg_ptr, "print_arg")
-        .map_err(|e| CodegenError::Llvm(format!("print arg load: {e:?}")))?;
+        .llvm_ctx("print arg load")?;
     let i64_ty = fn_ctx.ctx.i64_type();
     let bits = match kind {
         PrintKind::I32 | PrintKind::U32 | PrintKind::Bool => {
@@ -13261,7 +13696,7 @@ fn emit_print_value_call<'ctx>(
             fn_ctx
                 .builder
                 .build_int_z_extend(int_value, i64_ty, "print_narrow_bits")
-                .map_err(|e| CodegenError::Llvm(format!("print payload zext: {e:?}")))?
+                .llvm_ctx("print payload zext")?
         }
         PrintKind::I64 | PrintKind::U64 => {
             let int_value = expect_int_value(loaded, "print i64/u64 payload")?;
@@ -13278,7 +13713,7 @@ fn emit_print_value_call<'ctx>(
             BasicValueEnum::FloatValue(v) => fn_ctx
                 .builder
                 .build_bit_cast(v, i64_ty, "print_f64_bits")
-                .map_err(|e| CodegenError::Llvm(format!("print f64 bitcast: {e:?}")))?
+                .llvm_ctx("print f64 bitcast")?
                 .into_int_value(),
             other => {
                 return Err(CodegenError::FailClosed(format!(
@@ -13290,7 +13725,7 @@ fn emit_print_value_call<'ctx>(
             BasicValueEnum::PointerValue(v) => fn_ctx
                 .builder
                 .build_ptr_to_int(v, i64_ty, "print_str_bits")
-                .map_err(|e| CodegenError::Llvm(format!("print str ptrtoint: {e:?}")))?,
+                .llvm_ctx("print str ptrtoint")?,
             other => {
                 return Err(CodegenError::FailClosed(format!(
                     "print string payload must be a pointer value, got {other:?}"
@@ -13312,7 +13747,7 @@ fn emit_print_value_call<'ctx>(
             &[kind_tag.into(), bits.into(), newline_flag.into()],
             "hew_print_value_call",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_print_value call: {e:?}")))?;
+        .llvm_ctx("hew_print_value call")?;
     Ok(())
 }
 
@@ -13338,7 +13773,7 @@ fn actor_payload_ptr_size<'ctx>(
         fn_ctx
             .builder
             .build_int_z_extend(size, i64_ty, &format!("{label}_size"))
-            .map_err(|e| CodegenError::Llvm(format!("{label} size zext: {e:?}")))?
+            .llvm_ctx_with(|| format!("{label} size zext"))?
     };
     Ok((ptr, size))
 }
@@ -13359,12 +13794,12 @@ fn load_actor_id<'ctx>(
                     .const_int(HEW_ACTOR_OFFSET_ID as u64, false)],
                 "actor_id_slot",
             )
-            .map_err(|e| CodegenError::Llvm(format!("actor id gep: {e:?}")))?
+            .llvm_ctx("actor id gep")?
     };
     Ok(fn_ctx
         .builder
         .build_load(fn_ctx.ctx.i64_type(), id_slot, "actor_id")
-        .map_err(|e| CodegenError::Llvm(format!("actor id load: {e:?}")))?
+        .llvm_ctx("actor id load")?
         .into_int_value())
 }
 
@@ -13427,7 +13862,7 @@ fn emit_machine_step_enter_call<'ctx>(
     fn_ctx
         .builder
         .build_call(step_enter_fn, &[queue.into()], "machine_emit_step_enter")
-        .map_err(|e| CodegenError::Llvm(format!("hew_machine_emit_step_enter call: {e:?}")))?;
+        .llvm_ctx("hew_machine_emit_step_enter call")?;
     Ok(())
 }
 
@@ -13439,7 +13874,7 @@ fn emit_machine_step_exit_call<'ctx>(
     fn_ctx
         .builder
         .build_call(step_exit_fn, &[queue.into()], "machine_emit_step_exit")
-        .map_err(|e| CodegenError::Llvm(format!("hew_machine_emit_step_exit call: {e:?}")))?;
+        .llvm_ctx("hew_machine_emit_step_exit call")?;
     Ok(())
 }
 
@@ -13464,7 +13899,7 @@ fn emit_trap_with_code(fn_ctx: &FnCtx<'_, '_>, code: u64, label: &str) -> Codege
     fn_ctx
         .builder
         .build_call(trap_with_code_fn, &[code_val.into()], label)
-        .map_err(|e| CodegenError::Llvm(format!("hew_trap_with_code call: {e:?}")))?;
+        .llvm_ctx("hew_trap_with_code call")?;
     let trap_intrinsic = Intrinsic::find("llvm.trap")
         .ok_or_else(|| CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into()))?;
     let trap_fn = trap_intrinsic
@@ -13473,11 +13908,8 @@ fn emit_trap_with_code(fn_ctx: &FnCtx<'_, '_>, code: u64, label: &str) -> Codege
     fn_ctx
         .builder
         .build_call(trap_fn, &[], &format!("{label}_llvm_trap"))
-        .map_err(|e| CodegenError::Llvm(format!("llvm.trap call: {e:?}")))?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .map_err(|e| CodegenError::Llvm(format!("unreachable: {e:?}")))?;
+        .llvm_ctx("llvm.trap call")?;
+    fn_ctx.builder.build_unreachable().llvm_ctx("unreachable")?;
     Ok(())
 }
 
@@ -13608,7 +14040,7 @@ fn emit_remote_pid_tell_call<'ctx>(
     let pid_val = fn_ctx
         .builder
         .build_load(pid_slot_ty, pid_slot, "remote_tell_pid")
-        .map_err(|e| CodegenError::Llvm(format!("load RemotePid u64: {e:?}")))?
+        .llvm_ctx("load RemotePid u64")?
         .into_int_value();
 
     // Extract the msg payload pointer and byte size from the msg arg's place.
@@ -13634,7 +14066,7 @@ fn emit_remote_pid_tell_call<'ctx>(
             ],
             "remote_tell_rc",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_actor_send_by_id call: {e:?}")))?
+        .llvm_ctx("hew_actor_send_by_id call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| {
@@ -13646,7 +14078,7 @@ fn emit_remote_pid_tell_call<'ctx>(
     let is_ok = fn_ctx
         .builder
         .build_int_compare(IntPredicate::EQ, rc, zero32, "remote_tell_is_ok")
-        .map_err(|e| CodegenError::Llvm(format!("remote_tell icmp: {e:?}")))?;
+        .llvm_ctx("remote_tell icmp")?;
 
     let parent = fn_ctx
         .builder
@@ -13660,7 +14092,7 @@ fn emit_remote_pid_tell_call<'ctx>(
     fn_ctx
         .builder
         .build_conditional_branch(is_ok, ok_bb, err_bb)
-        .map_err(|e| CodegenError::Llvm(format!("remote_tell condbr: {e:?}")))?;
+        .llvm_ctx("remote_tell condbr")?;
 
     let next_bb = *fn_ctx.blocks.get(&next).ok_or_else(|| {
         CodegenError::FailClosed(format!("hew_remote_pid_tell next bb{next} missing"))
@@ -13680,11 +14112,11 @@ fn emit_remote_pid_tell_call<'ctx>(
     fn_ctx
         .builder
         .build_store(tag_ptr_ok, tag_int_ty_ok.const_zero())
-        .map_err(|e| CodegenError::Llvm(format!("store Ok tag: {e:?}")))?;
+        .llvm_ctx("store Ok tag")?;
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("remote_tell ok br next: {e:?}")))?;
+        .llvm_ctx("remote_tell ok br next")?;
 
     // --- Err branch: tag=1, payload = SendError::NodeRoutingNotWired ---------
     fn_ctx.builder.position_at_end(err_bb);
@@ -13700,7 +14132,7 @@ fn emit_remote_pid_tell_call<'ctx>(
     fn_ctx
         .builder
         .build_store(tag_ptr_err, tag_int_ty_err.const_int(1, false))
-        .map_err(|e| CodegenError::Llvm(format!("store Err tag: {e:?}")))?;
+        .llvm_ctx("store Err tag")?;
     // Result<(), SendError>: variant 1 is the Err arm, field 0 is the
     // SendError outer struct.  SendError is a 3-variant payload-less enum
     // (Full=0, Closed=1, NodeRoutingNotWired=2); we write the SendError
@@ -13729,11 +14161,11 @@ fn emit_remote_pid_tell_call<'ctx>(
             fn_ctx
                 .builder
                 .build_store(send_err_ptr, int_ty.const_int(2, false))
-                .map_err(|e| CodegenError::Llvm(format!("store SendError discriminant: {e:?}")))?;
+                .llvm_ctx("store SendError discriminant")?;
             fn_ctx
                 .builder
                 .build_unconditional_branch(next_bb)
-                .map_err(|e| CodegenError::Llvm(format!("remote_tell err br next: {e:?}")))?;
+                .llvm_ctx("remote_tell err br next")?;
             return Ok(());
         }
         other => {
@@ -13747,7 +14179,7 @@ fn emit_remote_pid_tell_call<'ctx>(
     fn_ctx
         .builder
         .build_store(send_err_ptr, send_err_struct_ty.const_zero())
-        .map_err(|e| CodegenError::Llvm(format!("zero SendError struct: {e:?}")))?;
+        .llvm_ctx("zero SendError struct")?;
     // SendError's tag is at MachineTag of the dest's variant 1 field 0
     // local. For payload-less enums the layout is just a tag (no
     // MachineVariant projection needed), so we GEP into the struct's
@@ -13755,7 +14187,7 @@ fn emit_remote_pid_tell_call<'ctx>(
     let tag_field_ptr = fn_ctx
         .builder
         .build_struct_gep(send_err_struct_ty, send_err_ptr, 0, "send_err_tag_ptr")
-        .map_err(|e| CodegenError::Llvm(format!("SendError tag gep: {e:?}")))?;
+        .llvm_ctx("SendError tag gep")?;
     let tag_field_ty = send_err_struct_ty
         .get_field_type_at_index(0)
         .ok_or_else(|| CodegenError::FailClosed("SendError struct has no field 0 (tag)".into()))?;
@@ -13770,11 +14202,11 @@ fn emit_remote_pid_tell_call<'ctx>(
     fn_ctx
         .builder
         .build_store(tag_field_ptr, tag_field_int_ty.const_int(2, false))
-        .map_err(|e| CodegenError::Llvm(format!("store SendError tag: {e:?}")))?;
+        .llvm_ctx("store SendError tag")?;
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("remote_tell err br next: {e:?}")))?;
+        .llvm_ctx("remote_tell err br next")?;
 
     Ok(())
 }
@@ -13836,7 +14268,7 @@ fn emit_node_lookup_call<'ctx>(
     let name_val = fn_ctx
         .builder
         .build_load(name_slot_ty, name_ptr_slot, "lookup_name")
-        .map_err(|e| CodegenError::Llvm(format!("load lookup name: {e:?}")))?;
+        .llvm_ctx("load lookup name")?;
 
     // Call the runtime extern.
     let call_site = fn_ctx
@@ -13846,7 +14278,7 @@ fn emit_node_lookup_call<'ctx>(
             &[metadata_value_from_basic(name_val)],
             "lookup_rc",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_node_api_lookup call: {e:?}")))?;
+        .llvm_ctx("hew_node_api_lookup call")?;
     let rc_basic = call_site.try_as_basic_value().basic().ok_or_else(|| {
         CodegenError::FailClosed(
             "hew_node_api_lookup returned void — expected u64 packed pid".into(),
@@ -13858,7 +14290,7 @@ fn emit_node_lookup_call<'ctx>(
     let is_zero = fn_ctx
         .builder
         .build_int_compare(IntPredicate::EQ, rc, zero64, "lookup_is_zero")
-        .map_err(|e| CodegenError::Llvm(format!("lookup icmp: {e:?}")))?;
+        .llvm_ctx("lookup icmp")?;
 
     // Build target basic blocks for the Ok/Err arms; both join at `next`.
     let parent = fn_ctx
@@ -13873,7 +14305,7 @@ fn emit_node_lookup_call<'ctx>(
     fn_ctx
         .builder
         .build_conditional_branch(is_zero, err_bb, ok_bb)
-        .map_err(|e| CodegenError::Llvm(format!("lookup condbr: {e:?}")))?;
+        .llvm_ctx("lookup condbr")?;
 
     let next_bb = *fn_ctx
         .blocks
@@ -13895,7 +14327,7 @@ fn emit_node_lookup_call<'ctx>(
     fn_ctx
         .builder
         .build_store(tag_ptr_err, tag_one)
-        .map_err(|e| CodegenError::Llvm(format!("store Err tag: {e:?}")))?;
+        .llvm_ctx("store Err tag")?;
     let (err_field_ptr, err_field_ty) = place_pointer(
         fn_ctx,
         Place::MachineVariant {
@@ -13910,11 +14342,11 @@ fn emit_node_lookup_call<'ctx>(
     fn_ctx
         .builder
         .build_store(err_field_ptr, zero_lookup_err)
-        .map_err(|e| CodegenError::Llvm(format!("store LookupError::NotFound: {e:?}")))?;
+        .llvm_ctx("store LookupError::NotFound")?;
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("lookup err br next: {e:?}")))?;
+        .llvm_ctx("lookup err br next")?;
 
     // --- Ok branch: tag=0, payload = RemotePid<T>(rc as u64) --------------
     fn_ctx.builder.position_at_end(ok_bb);
@@ -13931,7 +14363,7 @@ fn emit_node_lookup_call<'ctx>(
     fn_ctx
         .builder
         .build_store(tag_ptr_ok, tag_zero)
-        .map_err(|e| CodegenError::Llvm(format!("store Ok tag: {e:?}")))?;
+        .llvm_ctx("store Ok tag")?;
     let (ok_field_ptr, ok_field_ty) = place_pointer(
         fn_ctx,
         Place::MachineVariant {
@@ -13948,11 +14380,11 @@ fn emit_node_lookup_call<'ctx>(
     fn_ctx
         .builder
         .build_store(ok_field_ptr, rc)
-        .map_err(|e| CodegenError::Llvm(format!("store RemotePid<T> u64: {e:?}")))?;
+        .llvm_ctx("store RemotePid<T> u64")?;
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
-        .map_err(|e| CodegenError::Llvm(format!("lookup ok br next: {e:?}")))?;
+        .llvm_ctx("lookup ok br next")?;
 
     Ok(())
 }
@@ -14056,7 +14488,7 @@ fn store_composite_tag(
     fn_ctx
         .builder
         .build_store(tag_ptr, tag_int_ty.const_int(tag_value, false))
-        .map_err(|e| CodegenError::Llvm(format!("{helper} store tag={tag_value}: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{helper} store tag={tag_value}"))?;
     Ok(())
 }
 
@@ -14096,16 +14528,11 @@ fn copy_into_variant_field(
             src_ptr,
             &format!("{helper}_v{variant_idx}_f{field_idx}_src"),
         )
-        .map_err(|e| {
-            CodegenError::Llvm(format!(
-                "{helper} variant {variant_idx} field {field_idx} load: {e:?}"
-            ))
-        })?;
-    fn_ctx.builder.build_store(dst_ptr, src_val).map_err(|e| {
-        CodegenError::Llvm(format!(
-            "{helper} variant {variant_idx} field {field_idx} store: {e:?}"
-        ))
-    })?;
+        .llvm_ctx_with(|| format!("{helper} variant {variant_idx} field {field_idx} load"))?;
+    fn_ctx
+        .builder
+        .build_store(dst_ptr, src_val)
+        .llvm_ctx_with(|| format!("{helper} variant {variant_idx} field {field_idx} store"))?;
     Ok(())
 }
 
@@ -14256,17 +14683,14 @@ fn lower_terminator<'ctx>(
                 fn_ctx
                     .builder
                     .build_return(Some(&fn_ctx.ctx.i8_type().const_zero()))
-                    .map_err(|e| CodegenError::Llvm(format!("unit ret: {e:?}")))?;
+                    .llvm_ctx("unit ret")?;
                 return Ok(());
             }
             let loaded = fn_ctx
                 .builder
                 .build_load(fn_ctx.return_ty, fn_ctx.return_slot, "ret_val")
-                .map_err(|e| CodegenError::Llvm(format!("ret load: {e:?}")))?;
-            fn_ctx
-                .builder
-                .build_return(Some(&loaded))
-                .map_err(|e| CodegenError::Llvm(format!("ret: {e:?}")))?;
+                .llvm_ctx("ret load")?;
+            fn_ctx.builder.build_return(Some(&loaded)).llvm_ctx("ret")?;
         }
         Terminator::Goto { target } => {
             let bb = fn_ctx.blocks.get(target).ok_or_else(|| {
@@ -14275,7 +14699,7 @@ fn lower_terminator<'ctx>(
             fn_ctx
                 .builder
                 .build_unconditional_branch(*bb)
-                .map_err(|e| CodegenError::Llvm(format!("br: {e:?}")))?;
+                .llvm_ctx("br")?;
         }
         Terminator::Branch {
             cond,
@@ -14294,13 +14718,13 @@ fn lower_terminator<'ctx>(
             let cond_loaded = fn_ctx
                 .builder
                 .build_load(cond_int_ty, cond_ptr, "cond_load")
-                .map_err(|e| CodegenError::Llvm(format!("cond load: {e:?}")))?
+                .llvm_ctx("cond load")?
                 .into_int_value();
             let zero = cond_int_ty.const_zero();
             let nonzero = fn_ctx
                 .builder
                 .build_int_compare(IntPredicate::NE, cond_loaded, zero, "cond_nz")
-                .map_err(|e| CodegenError::Llvm(format!("icmp ne: {e:?}")))?;
+                .llvm_ctx("icmp ne")?;
             let then_bb = *fn_ctx
                 .blocks
                 .get(then_target)
@@ -14312,7 +14736,7 @@ fn lower_terminator<'ctx>(
             fn_ctx
                 .builder
                 .build_conditional_branch(nonzero, then_bb, else_bb)
-                .map_err(|e| CodegenError::Llvm(format!("condbr: {e:?}")))?;
+                .llvm_ctx("condbr")?;
         }
         Terminator::Call {
             callee,
@@ -14418,13 +14842,13 @@ fn lower_terminator<'ctx>(
                         let loaded = fn_ctx
                             .builder
                             .build_load(arg_ty, arg_ptr, "call_arg")
-                            .map_err(|e| CodegenError::Llvm(format!("call arg load: {e:?}")))?;
+                            .llvm_ctx("call arg load")?;
                         arg_vals.push(metadata_value_from_basic(loaded));
                     }
                     let call_site = fn_ctx
                         .builder
                         .build_call(value, &arg_vals, "call_result")
-                        .map_err(|e| CodegenError::Llvm(format!("build_call: {e:?}")))?;
+                        .llvm_ctx("build_call")?;
                     if let Some(dest_place) = dest {
                         if returns_unit {
                             return Err(CodegenError::FailClosed(format!(
@@ -14447,7 +14871,7 @@ fn lower_terminator<'ctx>(
                         fn_ctx
                             .builder
                             .build_store(dest_ptr, ret_val)
-                            .map_err(|e| CodegenError::Llvm(format!("call store: {e:?}")))?;
+                            .llvm_ctx("call store")?;
                     } else if !returns_unit {
                         return Err(CodegenError::FailClosed(format!(
                             "Call to value-returning fn `{callee}` must carry a Terminator::Call dest"
@@ -14486,20 +14910,20 @@ fn lower_terminator<'ctx>(
                     let name_val = fn_ctx
                         .builder
                         .build_load(name_ty, name_ptr, "reg_name")
-                        .map_err(|e| CodegenError::Llvm(format!("load reg name: {e:?}")))?;
+                        .llvm_ctx("load reg name")?;
 
                     // Load the LocalPid<T> alloca as a raw pointer.
                     let (actor_alloca_ptr, actor_alloca_ty) = place_pointer(fn_ctx, *pid_arg)?;
                     let actor_ptr = fn_ctx
                         .builder
                         .build_load(actor_alloca_ty, actor_alloca_ptr, "reg_actor_ptr")
-                        .map_err(|e| CodegenError::Llvm(format!("load LocalPid<T> ptr: {e:?}")))?;
+                        .llvm_ctx("load LocalPid<T> ptr")?;
 
                     // Step 1: extract the u64 PID from the actor pointer.
                     let pid_call = fn_ctx
                         .builder
                         .build_call(pid_fn, &[metadata_value_from_basic(actor_ptr)], "actor_pid")
-                        .map_err(|e| CodegenError::Llvm(format!("hew_actor_pid call: {e:?}")))?;
+                        .llvm_ctx("hew_actor_pid call")?;
                     let pid_u64 = pid_call.try_as_basic_value().basic().ok_or_else(|| {
                         CodegenError::FailClosed(
                             "hew_actor_pid returned void — expected u64".into(),
@@ -14517,9 +14941,7 @@ fn lower_terminator<'ctx>(
                             ],
                             "reg_result",
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("hew_node_api_register_by_pid call: {e:?}"))
-                        })?;
+                        .llvm_ctx("hew_node_api_register_by_pid call")?;
                     let reg_i32 = reg_call.try_as_basic_value().basic().ok_or_else(|| {
                         CodegenError::FailClosed(
                             "hew_node_api_register_by_pid returned void — expected i32".into(),
@@ -14537,7 +14959,7 @@ fn lower_terminator<'ctx>(
                     fn_ctx
                         .builder
                         .build_store(dest_ptr, reg_i32)
-                        .map_err(|e| CodegenError::Llvm(format!("store reg result: {e:?}")))?;
+                        .llvm_ctx("store reg result")?;
                 }
             }
             let next_bb = *fn_ctx
@@ -14547,16 +14969,17 @@ fn lower_terminator<'ctx>(
             fn_ctx
                 .builder
                 .build_unconditional_branch(next_bb)
-                .map_err(|e| CodegenError::Llvm(format!("call br: {e:?}")))?;
+                .llvm_ctx("call br")?;
         }
         Terminator::Trap { kind } => {
             if matches!(*kind, TrapKind::MachineDispatchUnreachable) {
                 // Machine step dispatch is HIR-exhaustive. The residual
                 // fallthrough block is therefore impossible in well-typed
                 // programs and must not surface as a user-visible trap code.
-                fn_ctx.builder.build_unreachable().map_err(|e| {
-                    CodegenError::Llvm(format!("machine dispatch unreachable: {e:?}"))
-                })?;
+                fn_ctx
+                    .builder
+                    .build_unreachable()
+                    .llvm_ctx("machine dispatch unreachable")?;
                 return Ok(());
             }
             // The exit-code constants here MUST stay in lock-step
@@ -14623,7 +15046,7 @@ fn lower_terminator<'ctx>(
             let ctx_ptr = fn_ctx
                 .builder
                 .build_load(ptr_ty, ctx_slot, "gen_ctx_load")
-                .map_err(|e| CodegenError::Llvm(format!("gen ctx load: {e:?}")))?
+                .llvm_ctx("gen ctx load")?
                 .into_pointer_value();
             let (payload_ptr, payload_size) =
                 actor_payload_ptr_size(fn_ctx, *value, "gen_yield_payload")?;
@@ -14640,7 +15063,7 @@ fn lower_terminator<'ctx>(
                     &[ctx_ptr.into(), payload_ptr.into(), payload_size.into()],
                     "hew_gen_yield_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_gen_yield call: {e:?}")))?
+                .llvm_ctx("hew_gen_yield call")?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| CodegenError::FailClosed("hew_gen_yield returned void".into()))?
@@ -14684,7 +15107,7 @@ fn lower_terminator<'ctx>(
             fn_ctx
                 .builder
                 .build_conditional_branch(keep_going, cancel_check_bb, cancel_bb)
-                .map_err(|e| CodegenError::Llvm(format!("yield cont branch: {e:?}")))?;
+                .llvm_ctx("yield cont branch")?;
 
             // ── cancel_check_bb: scope-cancel observation ──
             // Loads the live parent cancel-token snapshot via
@@ -14717,9 +15140,7 @@ fn lower_terminator<'ctx>(
                     &[ctx_ptr.into()],
                     "hew_gen_ctx_parent_cancel_token_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_gen_ctx_parent_cancel_token call: {e:?}"))
-                })?
+                .llvm_ctx("hew_gen_ctx_parent_cancel_token call")?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
@@ -14739,9 +15160,7 @@ fn lower_terminator<'ctx>(
                     &[parent_token.into()],
                     "hew_cancel_token_is_requested_call",
                 )
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("hew_cancel_token_is_requested call: {e:?}"))
-                })?
+                .llvm_ctx("hew_cancel_token_is_requested call")?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
@@ -14757,13 +15176,11 @@ fn lower_terminator<'ctx>(
                     zero_i32,
                     "gen_yield_cancel_requested",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("cancel status cmp: {e:?}")))?;
+                .llvm_ctx("cancel status cmp")?;
             fn_ctx
                 .builder
                 .build_conditional_branch(cancel_requested, cancel_bb, next_bb)
-                .map_err(|e| {
-                    CodegenError::Llvm(format!("yield cancel-observation branch: {e:?}"))
-                })?;
+                .llvm_ctx("yield cancel-observation branch")?;
 
             // Cancel path: return from the body function. The runtime thread
             // unwraps the return at the catch_unwind boundary, frees the
@@ -14782,11 +15199,11 @@ fn lower_terminator<'ctx>(
             let ret_val = fn_ctx
                 .builder
                 .build_load(fn_ctx.return_ty, fn_ctx.return_slot, "gen_cancel_ret")
-                .map_err(|e| CodegenError::Llvm(format!("gen cancel ret load: {e:?}")))?;
+                .llvm_ctx("gen cancel ret load")?;
             fn_ctx
                 .builder
                 .build_return(Some(&ret_val))
-                .map_err(|e| CodegenError::Llvm(format!("gen cancel ret: {e:?}")))?;
+                .llvm_ctx("gen cancel ret")?;
         }
         Terminator::Send {
             actor,
@@ -14822,7 +15239,7 @@ fn lower_terminator<'ctx>(
                     ],
                     "hew_actor_send_by_id_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_actor_send_by_id call: {e:?}")))?
+                .llvm_ctx("hew_actor_send_by_id call")?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
@@ -14846,7 +15263,7 @@ fn lower_terminator<'ctx>(
                     zero,
                     "actor_send_failed",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("send status cmp: {e:?}")))?;
+                .llvm_ctx("send status cmp")?;
 
             let next_bb = *fn_ctx
                 .blocks
@@ -14855,7 +15272,7 @@ fn lower_terminator<'ctx>(
             fn_ctx
                 .builder
                 .build_conditional_branch(send_failed, send_fail_bb, next_bb)
-                .map_err(|e| CodegenError::Llvm(format!("send status branch: {e:?}")))?;
+                .llvm_ctx("send status branch")?;
 
             fn_ctx.builder.position_at_end(send_fail_bb);
             emit_trap_with_code(fn_ctx, 206, "actor_send_fail")?;
@@ -14889,7 +15306,7 @@ fn lower_terminator<'ctx>(
                     ],
                     "hew_actor_ask_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_actor_ask call: {e:?}")))?
+                .llvm_ctx("hew_actor_ask call")?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| CodegenError::FailClosed("hew_actor_ask returned void".into()))?
@@ -14911,11 +15328,11 @@ fn lower_terminator<'ctx>(
             let is_null = fn_ctx
                 .builder
                 .build_is_null(reply_ptr, "actor_ask_reply_is_null")
-                .map_err(|e| CodegenError::Llvm(format!("ask null compare: {e:?}")))?;
+                .llvm_ctx("ask null compare")?;
             fn_ctx
                 .builder
                 .build_conditional_branch(is_null, null_bb, ok_bb)
-                .map_err(|e| CodegenError::Llvm(format!("ask null branch: {e:?}")))?;
+                .llvm_ctx("ask null branch")?;
 
             fn_ctx.builder.position_at_end(null_bb);
             let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
@@ -14927,27 +15344,27 @@ fn lower_terminator<'ctx>(
             fn_ctx
                 .builder
                 .build_call(trap_fn, &[], "actor_ask_null_trap")
-                .map_err(|e| CodegenError::Llvm(format!("ask null trap: {e:?}")))?;
+                .llvm_ctx("ask null trap")?;
             fn_ctx
                 .builder
                 .build_unreachable()
-                .map_err(|e| CodegenError::Llvm(format!("ask null unreachable: {e:?}")))?;
+                .llvm_ctx("ask null unreachable")?;
 
             fn_ctx.builder.position_at_end(ok_bb);
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *reply_dest)?;
             let reply_val = fn_ctx
                 .builder
                 .build_load(dest_ty, reply_ptr, "actor_ask_reply_value")
-                .map_err(|e| CodegenError::Llvm(format!("ask reply load: {e:?}")))?;
+                .llvm_ctx("ask reply load")?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, reply_val)
-                .map_err(|e| CodegenError::Llvm(format!("ask reply store: {e:?}")))?;
+                .llvm_ctx("ask reply store")?;
             let free = get_or_declare_free(fn_ctx);
             fn_ctx
                 .builder
                 .build_call(free, &[reply_ptr.into()], "actor_ask_reply_free")
-                .map_err(|e| CodegenError::Llvm(format!("free ask reply: {e:?}")))?;
+                .llvm_ctx("free ask reply")?;
             let next_bb = *fn_ctx
                 .blocks
                 .get(next)
@@ -14955,7 +15372,7 @@ fn lower_terminator<'ctx>(
             fn_ctx
                 .builder
                 .build_unconditional_branch(next_bb)
-                .map_err(|e| CodegenError::Llvm(format!("ask br: {e:?}")))?;
+                .llvm_ctx("ask br")?;
         }
         Terminator::Select { arms, .. } => {
             emit_select_terminator(fn_ctx, arms)?;
@@ -15050,10 +15467,10 @@ fn get_or_create_select_stream_callback<'ctx>(
         .into_pointer_value();
     let item_is_null = builder
         .build_is_null(item, "stream_item_is_null")
-        .map_err(|e| CodegenError::Llvm(format!("stream callback item null cmp: {e:?}")))?;
+        .llvm_ctx("stream callback item null cmp")?;
     builder
         .build_conditional_branch(item_is_null, null_item_bb, non_null_bb)
-        .map_err(|e| CodegenError::Llvm(format!("stream callback item null branch: {e:?}")))?;
+        .llvm_ctx("stream callback item null branch")?;
 
     let reply = intern_runtime_decl(
         ctx,
@@ -15073,27 +15490,27 @@ fn get_or_create_select_stream_callback<'ctx>(
             ],
             "stream_reply_null_item",
         )
-        .map_err(|e| CodegenError::Llvm(format!("stream callback null hew_reply call: {e:?}")))?;
+        .llvm_ctx("stream callback null hew_reply call")?;
     builder
         .build_unconditional_branch(return_bb)
-        .map_err(|e| CodegenError::Llvm(format!("stream callback null return: {e:?}")))?;
+        .llvm_ctx("stream callback null return")?;
 
     builder.position_at_end(non_null_bb);
     let item_value = builder
         .build_load(item_ty, item, "stream_item_value")
-        .map_err(|e| CodegenError::Llvm(format!("stream callback item load: {e:?}")))?;
+        .llvm_ctx("stream callback item load")?;
     let item_slot = builder
         .build_alloca(item_ty, "stream_item_slot")
-        .map_err(|e| CodegenError::Llvm(format!("stream callback item slot alloca: {e:?}")))?;
+        .llvm_ctx("stream callback item slot alloca")?;
     builder
         .build_store(item_slot, item_value)
-        .map_err(|e| CodegenError::Llvm(format!("stream callback item store: {e:?}")))?;
+        .llvm_ctx("stream callback item store")?;
     let item_size = if item_size.get_type() == i64_ty {
         item_size
     } else {
         builder
             .build_int_z_extend(item_size, i64_ty, "stream_item_size")
-            .map_err(|e| CodegenError::Llvm(format!("stream callback item size zext: {e:?}")))?
+            .llvm_ctx("stream callback item size zext")?
     };
     let delivered = builder
         .build_call(
@@ -15101,24 +15518,24 @@ fn get_or_create_select_stream_callback<'ctx>(
             &[ch.into(), item_slot.into(), item_size.into()],
             "stream_reply_delivered",
         )
-        .map_err(|e| CodegenError::Llvm(format!("stream callback hew_reply call: {e:?}")))?
+        .llvm_ctx("stream callback hew_reply call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_reply returned void".into()))?
         .into_int_value();
     builder
         .build_conditional_branch(delivered, delivered_bb, not_delivered_bb)
-        .map_err(|e| CodegenError::Llvm(format!("stream callback delivered branch: {e:?}")))?;
+        .llvm_ctx("stream callback delivered branch")?;
 
     builder.position_at_end(delivered_bb);
     builder
         .build_unconditional_branch(free_item_bb)
-        .map_err(|e| CodegenError::Llvm(format!("stream callback delivered return: {e:?}")))?;
+        .llvm_ctx("stream callback delivered return")?;
 
     builder.position_at_end(not_delivered_bb);
     builder
         .build_unconditional_branch(free_item_bb)
-        .map_err(|e| CodegenError::Llvm(format!("stream callback item free branch: {e:?}")))?;
+        .llvm_ctx("stream callback item free branch")?;
 
     builder.position_at_end(free_item_bb);
     let free_fn = match fn_ctx.llvm_mod.get_function("free") {
@@ -15131,15 +15548,15 @@ fn get_or_create_select_stream_callback<'ctx>(
     };
     builder
         .build_call(free_fn, &[item.into()], "stream_item_free")
-        .map_err(|e| CodegenError::Llvm(format!("stream callback item free: {e:?}")))?;
+        .llvm_ctx("stream callback item free")?;
     builder
         .build_unconditional_branch(return_bb)
-        .map_err(|e| CodegenError::Llvm(format!("stream callback free return: {e:?}")))?;
+        .llvm_ctx("stream callback free return")?;
 
     builder.position_at_end(return_bb);
     builder
         .build_return(None)
-        .map_err(|e| CodegenError::Llvm(format!("stream callback return: {e:?}")))?;
+        .llvm_ctx("stream callback return")?;
     Ok(callback)
 }
 
@@ -15160,7 +15577,7 @@ fn load_current_task_scope<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<Poin
                 &[offset],
                 "select_task_scope_ptr",
             )
-            .map_err(|e| CodegenError::Llvm(format!("select task scope gep: {e:?}")))?
+            .llvm_ctx("select task scope gep")?
     };
     Ok(fn_ctx
         .builder
@@ -15169,7 +15586,7 @@ fn load_current_task_scope<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<Poin
             field_ptr,
             "select_task_scope",
         )
-        .map_err(|e| CodegenError::Llvm(format!("select task scope load: {e:?}")))?
+        .llvm_ctx("select task scope load")?
         .into_pointer_value())
 }
 
@@ -15243,12 +15660,12 @@ fn emit_select_terminator<'ctx>(
     let arr_ptr = fn_ctx
         .builder
         .build_alloca(arr_ty, "select_channels")
-        .map_err(|e| CodegenError::Llvm(format!("select channel array alloca: {e:?}")))?;
+        .llvm_ctx("select channel array alloca")?;
     let pending_id_arr_ty = i64_ty.array_type(n_waits_i32 as u32);
     let pending_id_arr_ptr = fn_ctx
         .builder
         .build_alloca(pending_id_arr_ty, "select_pending_read_ids")
-        .map_err(|e| CodegenError::Llvm(format!("select pending-read array alloca: {e:?}")))?;
+        .llvm_ctx("select pending-read array alloca")?;
 
     // Resolve the parent function once for block allocation.
     let parent_fn = fn_ctx
@@ -15352,7 +15769,7 @@ fn emit_select_terminator<'ctx>(
             fn_ctx
                 .builder
                 .build_gep(arr_ty, arr_ptr, &[idx0, idx1], &format!("ch_slot_{i}"))
-                .map_err(|e| CodegenError::Llvm(format!("ch slot gep: {e:?}")))?
+                .llvm_ctx("ch slot gep")?
         };
         Ok(gep)
     };
@@ -15372,7 +15789,7 @@ fn emit_select_terminator<'ctx>(
                     &[idx0, idx1],
                     &format!("pending_read_slot_{i}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("pending-read slot gep: {e:?}")))?
+                .llvm_ctx("pending-read slot gep")?
         };
         Ok(gep)
     };
@@ -15382,7 +15799,7 @@ fn emit_select_terminator<'ctx>(
         let ch_val = fn_ctx
             .builder
             .build_call(channel_new, &[], &format!("select_ch_new_{slot_idx}"))
-            .map_err(|e| CodegenError::Llvm(format!("hew_reply_channel_new call: {e:?}")))?
+            .llvm_ctx("hew_reply_channel_new call")?
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("hew_reply_channel_new returned void".into()))?
@@ -15395,7 +15812,7 @@ fn emit_select_terminator<'ctx>(
         fn_ctx
             .builder
             .build_store(slot, ch_val)
-            .map_err(|e| CodegenError::Llvm(format!("ch slot store: {e:?}")))?;
+            .llvm_ctx("ch slot store")?;
 
         let (status, current_has_retained_observer) = match &arms[arm_idx].kind {
             SelectArmKind::ActorAsk {
@@ -15421,9 +15838,7 @@ fn emit_select_terminator<'ctx>(
                         ],
                         &format!("select_ask_issue_{slot_idx}"),
                     )
-                    .map_err(|e| {
-                        CodegenError::Llvm(format!("hew_actor_ask_with_channel call: {e:?}"))
-                    })?
+                    .llvm_ctx("hew_actor_ask_with_channel call")?
                     .try_as_basic_value()
                     .basic()
                     .ok_or_else(|| {
@@ -15448,7 +15863,7 @@ fn emit_select_terminator<'ctx>(
                         &[ch_val.into()],
                         &format!("select_stream_ch_retain_{slot_idx}"),
                     )
-                    .map_err(|e| CodegenError::Llvm(format!("stream channel retain: {e:?}")))?;
+                    .llvm_ctx("stream channel retain")?;
                 let stream_ptr = load_duplex_handle(fn_ctx, *stream, "select_stream_handle")?;
                 let pending_id = fn_ctx
                     .builder
@@ -15461,7 +15876,7 @@ fn emit_select_terminator<'ctx>(
                         ],
                         &format!("select_stream_poll_{slot_idx}"),
                     )
-                    .map_err(|e| CodegenError::Llvm(format!("hew_stream_poll call: {e:?}")))?
+                    .llvm_ctx("hew_stream_poll call")?
                     .try_as_basic_value()
                     .basic()
                     .ok_or_else(|| {
@@ -15472,7 +15887,7 @@ fn emit_select_terminator<'ctx>(
                 fn_ctx
                     .builder
                     .build_store(pending_slot, pending_id)
-                    .map_err(|e| CodegenError::Llvm(format!("pending-read id store: {e:?}")))?;
+                    .llvm_ctx("pending-read id store")?;
                 let failed = fn_ctx
                     .builder
                     .build_int_compare(
@@ -15481,11 +15896,11 @@ fn emit_select_terminator<'ctx>(
                         i64_ty.const_zero(),
                         &format!("select_stream_poll_failed_{slot_idx}"),
                     )
-                    .map_err(|e| CodegenError::Llvm(format!("stream poll cmp: {e:?}")))?;
+                    .llvm_ctx("stream poll cmp")?;
                 let status = fn_ctx
                     .builder
                     .build_int_z_extend(failed, i32_ty, &format!("select_stream_status_{slot_idx}"))
-                    .map_err(|e| CodegenError::Llvm(format!("stream poll status zext: {e:?}")))?;
+                    .llvm_ctx("stream poll status zext")?;
                 (status, true)
             }
             SelectArmKind::TaskAwait { task } => {
@@ -15496,7 +15911,7 @@ fn emit_select_terminator<'ctx>(
                         &[ch_val.into()],
                         &format!("select_task_ch_retain_{slot_idx}"),
                     )
-                    .map_err(|e| CodegenError::Llvm(format!("task channel retain: {e:?}")))?;
+                    .llvm_ctx("task channel retain")?;
                 let scope_ptr = load_current_task_scope(fn_ctx)?;
                 let task_ptr = load_duplex_handle(fn_ctx, *task, "select_task_handle")?;
                 let status = fn_ctx
@@ -15511,9 +15926,7 @@ fn emit_select_terminator<'ctx>(
                         ],
                         &format!("select_task_observe_{slot_idx}"),
                     )
-                    .map_err(|e| {
-                        CodegenError::Llvm(format!("hew_task_completion_observe call: {e:?}"))
-                    })?
+                    .llvm_ctx("hew_task_completion_observe call")?
                     .try_as_basic_value()
                     .basic()
                     .ok_or_else(|| {
@@ -15539,14 +15952,14 @@ fn emit_select_terminator<'ctx>(
                 zero,
                 &format!("select_ask_failed_{slot_idx}"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("select ask cmp: {e:?}")))?;
+            .llvm_ctx("select ask cmp")?;
         let setup_ok_bb = ctx.append_basic_block(parent_fn, &format!("select_setup_ok_{slot_idx}"));
         let setup_fail_bb =
             ctx.append_basic_block(parent_fn, &format!("select_setup_fail_{slot_idx}"));
         fn_ctx
             .builder
             .build_conditional_branch(failed, setup_fail_bb, setup_ok_bb)
-            .map_err(|e| CodegenError::Llvm(format!("select setup br: {e:?}")))?;
+            .llvm_ctx("select setup br")?;
 
         // Recovery block: free channels [0..=slot_idx] (each was
         // allocated and stored; the ask-issue failure also released
@@ -15562,7 +15975,7 @@ fn emit_select_terminator<'ctx>(
             let cleanup_ch = fn_ctx
                 .builder
                 .build_load(ptr_ty, cleanup_slot, &format!("select_cleanup_load_{j}"))
-                .map_err(|e| CodegenError::Llvm(format!("setup-fail load: {e:?}")))?
+                .llvm_ctx("setup-fail load")?
                 .into_pointer_value();
             match &arms[prev_arm_idx].kind {
                 SelectArmKind::StreamNext { stream } => {
@@ -15575,9 +15988,7 @@ fn emit_select_terminator<'ctx>(
                             pending_slot,
                             &format!("select_cleanup_pending_id_{j}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("setup-fail pending id load: {e:?}"))
-                        })?
+                        .llvm_ctx("setup-fail pending id load")?
                         .into_int_value();
                     fn_ctx
                         .builder
@@ -15586,9 +15997,7 @@ fn emit_select_terminator<'ctx>(
                             &[stream_ptr.into(), pending_id.into()],
                             &format!("select_cleanup_stream_cancel_{j}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("setup-fail stream cancel: {e:?}"))
-                        })?;
+                        .llvm_ctx("setup-fail stream cancel")?;
                 }
                 SelectArmKind::TaskAwait { task } => {
                     fn_ctx
@@ -15598,7 +16007,7 @@ fn emit_select_terminator<'ctx>(
                             &[cleanup_ch.into()],
                             &format!("select_cleanup_cancel_{j}"),
                         )
-                        .map_err(|e| CodegenError::Llvm(format!("setup-fail cancel: {e:?}")))?;
+                        .llvm_ctx("setup-fail cancel")?;
                     let scope_ptr = load_current_task_scope(fn_ctx)?;
                     let task_ptr = load_duplex_handle(fn_ctx, *task, "select_cleanup_task")?;
                     fn_ctx
@@ -15613,9 +16022,7 @@ fn emit_select_terminator<'ctx>(
                             ],
                             &format!("select_cleanup_task_unobserve_{j}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("setup-fail task unobserve: {e:?}"))
-                        })?;
+                        .llvm_ctx("setup-fail task unobserve")?;
                 }
                 SelectArmKind::ActorAsk { .. } => {
                     fn_ctx
@@ -15625,7 +16032,7 @@ fn emit_select_terminator<'ctx>(
                             &[cleanup_ch.into()],
                             &format!("select_cleanup_cancel_{j}"),
                         )
-                        .map_err(|e| CodegenError::Llvm(format!("setup-fail cancel: {e:?}")))?;
+                        .llvm_ctx("setup-fail cancel")?;
                 }
                 SelectArmKind::AfterTimer { .. } => {
                     unreachable!("wait_arm_indices excludes AfterTimer")
@@ -15638,7 +16045,7 @@ fn emit_select_terminator<'ctx>(
                     &[cleanup_ch.into()],
                     &format!("select_cleanup_free_{j}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("setup-fail free: {e:?}")))?;
+                .llvm_ctx("setup-fail free")?;
         }
         // Failing channel: free the caller-side ref (no cancel — no
         // ask was successfully submitted, so no late replier exists).
@@ -15649,7 +16056,7 @@ fn emit_select_terminator<'ctx>(
                 &[ch_val.into()],
                 &format!("select_setup_fail_free_self_{slot_idx}"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("setup-fail self free: {e:?}")))?;
+            .llvm_ctx("setup-fail self free")?;
         if current_has_retained_observer {
             fn_ctx
                 .builder
@@ -15658,7 +16065,7 @@ fn emit_select_terminator<'ctx>(
                     &[ch_val.into()],
                     &format!("select_setup_fail_free_observer_{slot_idx}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("setup-fail observer free: {e:?}")))?;
+                .llvm_ctx("setup-fail observer free")?;
         }
 
         // Trap with HEW_TRAP_ACTOR_SEND_FAILED (the same diagnostic
@@ -15682,14 +16089,14 @@ fn emit_select_terminator<'ctx>(
         let dur_ns = fn_ctx
             .builder
             .build_load(dur_ty, dur_ptr, "select_after_dur_ns")
-            .map_err(|e| CodegenError::Llvm(format!("select after dur load: {e:?}")))?
+            .llvm_ctx("select after dur load")?
             .into_int_value();
         // ns → ms = dur_ns / 1_000_000.
         let ms_per_ns = i64_ty.const_int(1_000_000, false);
         let dur_ms_i64 = fn_ctx
             .builder
             .build_int_signed_div(dur_ns, ms_per_ns, "select_after_dur_ms_i64")
-            .map_err(|e| CodegenError::Llvm(format!("select after dur sdiv: {e:?}")))?;
+            .llvm_ctx("select after dur sdiv")?;
         // Saturate to i32::MAX (the runtime ABI is i32; a duration
         // > ~24.8 days clamps to "effectively wait forever" but stays
         // non-negative so `hew_select_first` doesn't interpret it as
@@ -15703,7 +16110,7 @@ fn emit_select_terminator<'ctx>(
                 i32_max_as_i64,
                 "select_after_dur_too_big",
             )
-            .map_err(|e| CodegenError::Llvm(format!("select after dur cmp: {e:?}")))?;
+            .llvm_ctx("select after dur cmp")?;
         let clamped = fn_ctx
             .builder
             .build_select(
@@ -15712,7 +16119,7 @@ fn emit_select_terminator<'ctx>(
                 dur_ms_i64,
                 "select_after_dur_clamped",
             )
-            .map_err(|e| CodegenError::Llvm(format!("select after dur select: {e:?}")))?
+            .llvm_ctx("select after dur select")?
             .into_int_value();
         // Negative durations clamp to 0 (immediate timeout) so we
         // never accidentally collide with the -1 wait-forever
@@ -15726,16 +16133,16 @@ fn emit_select_terminator<'ctx>(
                 zero_i64,
                 "select_after_dur_neg",
             )
-            .map_err(|e| CodegenError::Llvm(format!("select after dur neg cmp: {e:?}")))?;
+            .llvm_ctx("select after dur neg cmp")?;
         let clamped_nonneg = fn_ctx
             .builder
             .build_select(neg, zero_i64, clamped, "select_after_dur_nonneg")
-            .map_err(|e| CodegenError::Llvm(format!("select after dur nonneg select: {e:?}")))?
+            .llvm_ctx("select after dur nonneg select")?
             .into_int_value();
         fn_ctx
             .builder
             .build_int_truncate(clamped_nonneg, i32_ty, "select_after_dur_ms")
-            .map_err(|e| CodegenError::Llvm(format!("select after dur trunc: {e:?}")))?
+            .llvm_ctx("select after dur trunc")?
     } else {
         // No AfterTimer arm: wait indefinitely.
         i32_ty.const_int(u64::from(u32::MAX), true) // -1 in two's complement
@@ -15747,7 +16154,7 @@ fn emit_select_terminator<'ctx>(
         fn_ctx
             .builder
             .build_gep(arr_ty, arr_ptr, &[idx0, idx0], "select_channels_first")
-            .map_err(|e| CodegenError::Llvm(format!("select arr first gep: {e:?}")))?
+            .llvm_ctx("select arr first gep")?
     };
     let count_val = i32_ty.const_int(n_waits_i32 as u64, true);
     let winner = fn_ctx
@@ -15761,7 +16168,7 @@ fn emit_select_terminator<'ctx>(
             ],
             "select_winner_idx",
         )
-        .map_err(|e| CodegenError::Llvm(format!("hew_select_first call: {e:?}")))?
+        .llvm_ctx("hew_select_first call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_select_first returned void".into()))?
@@ -15795,7 +16202,7 @@ fn emit_select_terminator<'ctx>(
     fn_ctx
         .builder
         .build_switch(winner, default_bb, &cases)
-        .map_err(|e| CodegenError::Llvm(format!("select winner switch: {e:?}")))?;
+        .llvm_ctx("select winner switch")?;
 
     // No-winner fallback: trap. (Reachable only if the runtime
     // contract is violated — `hew_select_first` returned a value
@@ -15826,7 +16233,7 @@ fn emit_select_terminator<'ctx>(
                 win_slot_ptr,
                 &format!("select_win_ch_load_{winner_slot}"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("select winner load: {e:?}")))?
+            .llvm_ctx("select winner load")?
             .into_pointer_value();
 
         let (dest_ptr, dest_ty) = place_pointer(fn_ctx, binding_place)?;
@@ -15844,7 +16251,7 @@ fn emit_select_terminator<'ctx>(
                         &[task_ptr.into()],
                         &format!("select_task_get_result_{winner_slot}"),
                     )
-                    .map_err(|e| CodegenError::Llvm(format!("hew_task_get_result call: {e:?}")))?
+                    .llvm_ctx("hew_task_get_result call")?
                     .try_as_basic_value()
                     .basic()
                     .ok_or_else(|| {
@@ -15865,7 +16272,7 @@ fn emit_select_terminator<'ctx>(
                     &[win_ch.into()],
                     &format!("select_reply_wait_{winner_slot}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_reply_wait call: {e:?}")))?
+                .llvm_ctx("hew_reply_wait call")?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
@@ -15887,11 +16294,11 @@ fn emit_select_terminator<'ctx>(
         let is_null = fn_ctx
             .builder
             .build_is_null(reply_ptr, &format!("select_reply_is_null_{winner_slot}"))
-            .map_err(|e| CodegenError::Llvm(format!("select reply null cmp: {e:?}")))?;
+            .llvm_ctx("select reply null cmp")?;
         fn_ctx
             .builder
             .build_conditional_branch(is_null, null_bb, ok_bb)
-            .map_err(|e| CodegenError::Llvm(format!("select reply null branch: {e:?}")))?;
+            .llvm_ctx("select reply null branch")?;
         // Null-reply trap branch.
         fn_ctx.builder.position_at_end(null_bb);
         let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
@@ -15907,11 +16314,11 @@ fn emit_select_terminator<'ctx>(
                 &[],
                 &format!("select_reply_null_trap_call_{winner_slot}"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("select reply null trap: {e:?}")))?;
+            .llvm_ctx("select reply null trap")?;
         fn_ctx
             .builder
             .build_unreachable()
-            .map_err(|e| CodegenError::Llvm(format!("select reply null unreachable: {e:?}")))?;
+            .llvm_ctx("select reply null unreachable")?;
         // Ok branch: load + store + frees.
         fn_ctx.builder.position_at_end(ok_bb);
         let reply_val = fn_ctx
@@ -15921,11 +16328,11 @@ fn emit_select_terminator<'ctx>(
                 reply_ptr,
                 &format!("select_reply_value_{winner_slot}"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("select reply load: {e:?}")))?;
+            .llvm_ctx("select reply load")?;
         fn_ctx
             .builder
             .build_store(dest_ptr, reply_val)
-            .map_err(|e| CodegenError::Llvm(format!("select reply store: {e:?}")))?;
+            .llvm_ctx("select reply store")?;
 
         if task_result_ptr.is_none() {
             fn_ctx
@@ -15935,7 +16342,7 @@ fn emit_select_terminator<'ctx>(
                     &[reply_ptr.into()],
                     &format!("select_reply_free_{winner_slot}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("select reply free: {e:?}")))?;
+                .llvm_ctx("select reply free")?;
         }
 
         // Free the winning channel's caller-side ref (no cancel — we
@@ -15947,7 +16354,7 @@ fn emit_select_terminator<'ctx>(
                 &[win_ch.into()],
                 &format!("select_win_ch_free_{winner_slot}"),
             )
-            .map_err(|e| CodegenError::Llvm(format!("select winner ch free: {e:?}")))?;
+            .llvm_ctx("select winner ch free")?;
 
         // Loser cleanup: every OTHER ActorAsk arm gets cancel + free,
         // in that order (Risk R4 — cancel BEFORE free is the UAF
@@ -15964,7 +16371,7 @@ fn emit_select_terminator<'ctx>(
                     loser_slot_ptr,
                     &format!("select_loser_load_w{winner_slot}_l{loser_slot}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("select loser load: {e:?}")))?
+                .llvm_ctx("select loser load")?
                 .into_pointer_value();
             match &arms[loser_arm_idx].kind {
                 SelectArmKind::StreamNext { stream } => {
@@ -15977,9 +16384,7 @@ fn emit_select_terminator<'ctx>(
                             pending_slot,
                             &format!("select_loser_pending_id_w{winner_slot}_l{loser_slot}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("select loser pending id load: {e:?}"))
-                        })?
+                        .llvm_ctx("select loser pending id load")?
                         .into_int_value();
                     fn_ctx
                         .builder
@@ -15988,9 +16393,7 @@ fn emit_select_terminator<'ctx>(
                             &[stream_ptr.into(), pending_id.into()],
                             &format!("select_loser_stream_cancel_w{winner_slot}_l{loser_slot}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("select loser stream cancel: {e:?}"))
-                        })?;
+                        .llvm_ctx("select loser stream cancel")?;
                 }
                 SelectArmKind::TaskAwait { task } => {
                     fn_ctx
@@ -16000,7 +16403,7 @@ fn emit_select_terminator<'ctx>(
                             &[loser_ch.into()],
                             &format!("select_loser_cancel_w{winner_slot}_l{loser_slot}"),
                         )
-                        .map_err(|e| CodegenError::Llvm(format!("select loser cancel: {e:?}")))?;
+                        .llvm_ctx("select loser cancel")?;
                     let scope_ptr = load_current_task_scope(fn_ctx)?;
                     let task_ptr = load_duplex_handle(fn_ctx, *task, "select_loser_task")?;
                     fn_ctx
@@ -16015,9 +16418,7 @@ fn emit_select_terminator<'ctx>(
                             ],
                             &format!("select_loser_task_unobserve_w{winner_slot}_l{loser_slot}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("select loser task unobserve: {e:?}"))
-                        })?;
+                        .llvm_ctx("select loser task unobserve")?;
                 }
                 SelectArmKind::ActorAsk { .. } => {
                     fn_ctx
@@ -16027,7 +16428,7 @@ fn emit_select_terminator<'ctx>(
                             &[loser_ch.into()],
                             &format!("select_loser_cancel_w{winner_slot}_l{loser_slot}"),
                         )
-                        .map_err(|e| CodegenError::Llvm(format!("select loser cancel: {e:?}")))?;
+                        .llvm_ctx("select loser cancel")?;
                 }
                 SelectArmKind::AfterTimer { .. } => {
                     unreachable!("wait_arm_indices excludes AfterTimer")
@@ -16040,7 +16441,7 @@ fn emit_select_terminator<'ctx>(
                     &[loser_ch.into()],
                     &format!("select_loser_free_w{winner_slot}_l{loser_slot}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("select loser free: {e:?}")))?;
+                .llvm_ctx("select loser free")?;
         }
 
         // Branch into the arm body block.
@@ -16053,7 +16454,7 @@ fn emit_select_terminator<'ctx>(
         fn_ctx
             .builder
             .build_unconditional_branch(body_bb)
-            .map_err(|e| CodegenError::Llvm(format!("select win br: {e:?}")))?;
+            .llvm_ctx("select win br")?;
     }
 
     // AfterTimer winner: every ActorAsk arm is a loser; cancel + free
@@ -16071,7 +16472,7 @@ fn emit_select_terminator<'ctx>(
                     loser_slot_ptr,
                     &format!("select_after_loser_load_{loser_slot}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("select after loser load: {e:?}")))?
+                .llvm_ctx("select after loser load")?
                 .into_pointer_value();
             match &arms[loser_arm_idx].kind {
                 SelectArmKind::StreamNext { stream } => {
@@ -16085,9 +16486,7 @@ fn emit_select_terminator<'ctx>(
                             pending_slot,
                             &format!("select_after_loser_pending_id_{loser_slot}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("select after loser pending id load: {e:?}"))
-                        })?
+                        .llvm_ctx("select after loser pending id load")?
                         .into_int_value();
                     fn_ctx
                         .builder
@@ -16096,9 +16495,7 @@ fn emit_select_terminator<'ctx>(
                             &[stream_ptr.into(), pending_id.into()],
                             &format!("select_after_loser_stream_cancel_{loser_slot}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("select after loser stream cancel: {e:?}"))
-                        })?;
+                        .llvm_ctx("select after loser stream cancel")?;
                 }
                 SelectArmKind::TaskAwait { task } => {
                     fn_ctx
@@ -16108,9 +16505,7 @@ fn emit_select_terminator<'ctx>(
                             &[loser_ch.into()],
                             &format!("select_after_loser_cancel_{loser_slot}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("select after loser cancel: {e:?}"))
-                        })?;
+                        .llvm_ctx("select after loser cancel")?;
                     let scope_ptr = load_current_task_scope(fn_ctx)?;
                     let task_ptr = load_duplex_handle(fn_ctx, *task, "select_after_loser_task")?;
                     fn_ctx
@@ -16125,9 +16520,7 @@ fn emit_select_terminator<'ctx>(
                             ],
                             &format!("select_after_loser_task_unobserve_{loser_slot}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("select after loser task unobserve: {e:?}"))
-                        })?;
+                        .llvm_ctx("select after loser task unobserve")?;
                 }
                 SelectArmKind::ActorAsk { .. } => {
                     fn_ctx
@@ -16137,9 +16530,7 @@ fn emit_select_terminator<'ctx>(
                             &[loser_ch.into()],
                             &format!("select_after_loser_cancel_{loser_slot}"),
                         )
-                        .map_err(|e| {
-                            CodegenError::Llvm(format!("select after loser cancel: {e:?}"))
-                        })?;
+                        .llvm_ctx("select after loser cancel")?;
                 }
                 SelectArmKind::AfterTimer { .. } => {
                     unreachable!("wait_arm_indices excludes AfterTimer")
@@ -16152,7 +16543,7 @@ fn emit_select_terminator<'ctx>(
                     &[loser_ch.into()],
                     &format!("select_after_loser_free_{loser_slot}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("select after loser free: {e:?}")))?;
+                .llvm_ctx("select after loser free")?;
         }
         let body_bb = *fn_ctx.blocks.get(&body_block_id).ok_or_else(|| {
             CodegenError::FailClosed(format!(
@@ -16163,7 +16554,7 @@ fn emit_select_terminator<'ctx>(
         fn_ctx
             .builder
             .build_unconditional_branch(body_bb)
-            .map_err(|e| CodegenError::Llvm(format!("select after br: {e:?}")))?;
+            .llvm_ctx("select after br")?;
     }
 
     Ok(())
@@ -16195,7 +16586,7 @@ fn emit_select_setup_failure_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResu
     fn_ctx
         .builder
         .build_call(trap_with_code_fn, &[code.into()], "select_setup_fail_trap")
-        .map_err(|e| CodegenError::Llvm(format!("select setup fail trap: {e:?}")))?;
+        .llvm_ctx("select setup fail trap")?;
     let trap_intrinsic = Intrinsic::find("llvm.trap")
         .ok_or_else(|| CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into()))?;
     let trap_fn = trap_intrinsic
@@ -16204,11 +16595,11 @@ fn emit_select_setup_failure_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResu
     fn_ctx
         .builder
         .build_call(trap_fn, &[], "select_setup_fail_llvm_trap")
-        .map_err(|e| CodegenError::Llvm(format!("select setup fail llvm.trap: {e:?}")))?;
+        .llvm_ctx("select setup fail llvm.trap")?;
     fn_ctx
         .builder
         .build_unreachable()
-        .map_err(|e| CodegenError::Llvm(format!("select setup fail unreachable: {e:?}")))?;
+        .llvm_ctx("select setup fail unreachable")?;
     Ok(())
 }
 
@@ -16226,11 +16617,11 @@ fn emit_select_no_winner_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<(
     fn_ctx
         .builder
         .build_call(trap_fn, &[], "select_no_winner_trap")
-        .map_err(|e| CodegenError::Llvm(format!("select no winner trap: {e:?}")))?;
+        .llvm_ctx("select no winner trap")?;
     fn_ctx
         .builder
         .build_unreachable()
-        .map_err(|e| CodegenError::Llvm(format!("select no winner unreachable: {e:?}")))?;
+        .llvm_ctx("select no winner unreachable")?;
     Ok(())
 }
 
@@ -16241,14 +16632,14 @@ fn emit_cancel_trap_or_return(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
             fn_ctx
                 .builder
                 .build_return(Some(&ret))
-                .map_err(|e| CodegenError::Llvm(format!("cancel return: {e:?}")))?;
+                .llvm_ctx("cancel return")?;
         }
         BasicTypeEnum::PointerType(p) => {
             let ret = p.const_null();
             fn_ctx
                 .builder
                 .build_return(Some(&ret))
-                .map_err(|e| CodegenError::Llvm(format!("cancel return: {e:?}")))?;
+                .llvm_ctx("cancel return")?;
         }
         other => {
             return Err(CodegenError::FailClosed(format!(
@@ -16289,7 +16680,7 @@ fn emit_cooperate_check<'ctx>(
     let call = fn_ctx
         .builder
         .build_call(cooperate_fn, &[], "hew_actor_cooperate")
-        .map_err(|e| CodegenError::Llvm(format!("hew_actor_cooperate call: {e:?}")))?;
+        .llvm_ctx("hew_actor_cooperate call")?;
     let signal = call
         .try_as_basic_value()
         .basic()
@@ -16304,7 +16695,7 @@ fn emit_cooperate_check<'ctx>(
             cancel_code,
             "hew_cooperate_is_cancel",
         )
-        .map_err(|e| CodegenError::Llvm(format!("cooperate cancel compare: {e:?}")))?;
+        .llvm_ctx("cooperate cancel compare")?;
 
     let parent = fn_ctx
         .builder
@@ -16316,7 +16707,7 @@ fn emit_cooperate_check<'ctx>(
     fn_ctx
         .builder
         .build_conditional_branch(is_cancel, cancel_bb, continue_bb)
-        .map_err(|e| CodegenError::Llvm(format!("cooperate cancel branch: {e:?}")))?;
+        .llvm_ctx("cooperate cancel branch")?;
 
     fn_ctx.builder.position_at_end(cancel_bb);
     emit_cancel_drops(fn_ctx, block_id, drop_plans)?;
@@ -16376,12 +16767,12 @@ fn lower_auto_mutex_bracket<'ctx>(
     let handle = fn_ctx
         .builder
         .build_load(handle_ty, lock_ptr, "auto_lock_handle")
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} load: {e:?}")))?
+        .llvm_ctx_with(|| format!("{symbol} load"))?
         .into_pointer_value();
     fn_ctx
         .builder
         .build_call(runtime_fn, &[handle.into()], symbol)
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+        .llvm_ctx_with(|| format!("{symbol} call"))?;
     Ok(())
 }
 
@@ -16529,7 +16920,7 @@ fn lower_function<'ctx>(
 
     let return_slot = builder
         .build_alloca(return_ty_llvm, "return_slot")
-        .map_err(|e| CodegenError::Llvm(format!("alloca return_slot: {e:?}")))?;
+        .llvm_ctx("alloca return_slot")?;
 
     let execution_context = if func.call_conv.carries_execution_context() {
         let param = llvm_fn.get_nth_param(0).ok_or_else(|| {
@@ -16557,7 +16948,7 @@ fn lower_function<'ctx>(
         })?;
         let slot = builder
             .build_alloca(llvm_ty, &format!("local_{idx}"))
-            .map_err(|e| CodegenError::Llvm(format!("alloca local {idx}: {e:?}")))?;
+            .llvm_ctx_with(|| format!("alloca local {idx}"))?;
         locals.insert(idx_u32, (slot, llvm_ty));
         local_tys.insert(idx_u32, ty.clone());
     }
@@ -16590,7 +16981,7 @@ fn lower_function<'ctx>(
         })?;
         builder
             .build_store(slot, llvm_param)
-            .map_err(|e| CodegenError::Llvm(format!("param store {param_idx}: {e:?}")))?;
+            .llvm_ctx_with(|| format!("param store {param_idx}"))?;
     }
 
     let actor_state_ty = if func.call_conv == FunctionCallConv::ActorHandler {
@@ -16676,7 +17067,7 @@ fn lower_function<'ctx>(
     fn_ctx
         .builder
         .build_unconditional_branch(entry_bb)
-        .map_err(|e| CodegenError::Llvm(format!("prologue br: {e:?}")))?;
+        .llvm_ctx("prologue br")?;
 
     for block in &func.blocks {
         let bb = *blocks.get(&block.id).expect("block in map");
@@ -16773,7 +17164,7 @@ fn emit_actor_terminate_trampoline<'ctx>(
     // Get the current execution context (installed by call_terminate_fn).
     let ctx_ptr = builder
         .build_call(require_ctx_fn, &[], "terminate_ctx")
-        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: require_ctx call: {e:?}")))?
+        .llvm_ctx("terminate trampoline: require_ctx call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| {
@@ -16790,11 +17181,11 @@ fn emit_actor_terminate_trampoline<'ctx>(
                 &[ctx.i64_type().const_int(HEW_CTX_OFFSET_ACTOR as u64, false)],
                 "terminate_actor_slot",
             )
-            .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: actor gep: {e:?}")))?
+            .llvm_ctx("terminate trampoline: actor gep")?
     };
     let actor_val = builder
         .build_load(ptr_ty, actor_ptr, "terminate_actor")
-        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: actor load: {e:?}")))?
+        .llvm_ctx("terminate trampoline: actor load")?
         .into_pointer_value();
 
     // Acquire the actor-state lock (same protocol as dispatch trampolines).
@@ -16804,7 +17195,7 @@ fn emit_actor_terminate_trampoline<'ctx>(
             &[actor_val.into()],
             "terminate_lock_acquire",
         )
-        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: lock acquire: {e:?}")))?;
+        .llvm_ctx("terminate trampoline: lock acquire")?;
 
     // Call each on(stop) handler in lexical declaration order with the
     // ActorHandler ABI (ctx as first arg). All hooks share the single
@@ -16816,9 +17207,7 @@ fn emit_actor_terminate_trampoline<'ctx>(
                 &[ctx_ptr.into()],
                 &format!("terminate_on_stop_call_{i}"),
             )
-            .map_err(|e| {
-                CodegenError::Llvm(format!("terminate trampoline: on_stop[{i}] call: {e:?}"))
-            })?;
+            .llvm_ctx_with(|| format!("terminate trampoline: on_stop[{i}] call"))?;
     }
 
     // Release the actor-state lock.
@@ -16828,11 +17217,11 @@ fn emit_actor_terminate_trampoline<'ctx>(
             &[actor_val.into()],
             "terminate_lock_release",
         )
-        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: lock release: {e:?}")))?;
+        .llvm_ctx("terminate trampoline: lock release")?;
 
     builder
         .build_return(None)
-        .map_err(|e| CodegenError::Llvm(format!("terminate trampoline: return: {e:?}")))?;
+        .llvm_ctx("terminate trampoline: return")?;
 
     Ok(())
 }
@@ -16877,7 +17266,7 @@ fn emit_actor_dispatch_trampoline<'ctx>(
     }
     builder
         .build_switch(msg_type, default_bb, &cases)
-        .map_err(|e| CodegenError::Llvm(format!("actor dispatch switch: {e:?}")))?;
+        .llvm_ctx("actor dispatch switch")?;
 
     for (handler, (_, bb)) in layout.handlers.iter().zip(cases.iter()) {
         builder.position_at_end(*bb);
@@ -16902,12 +17291,12 @@ fn emit_actor_dispatch_trampoline<'ctx>(
             let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
             let loaded = builder
                 .build_load(llvm_ty, data_ptr, &format!("msg_arg_{idx}"))
-                .map_err(|e| CodegenError::Llvm(format!("actor dispatch arg load: {e:?}")))?;
+                .llvm_ctx("actor dispatch arg load")?;
             args.push(metadata_value_from_basic(loaded));
         }
         let call = builder
             .build_call(handler_fn, &args, &format!("call_{}", handler.name))
-            .map_err(|e| CodegenError::Llvm(format!("actor dispatch handler call: {e:?}")))?;
+            .llvm_ctx("actor dispatch handler call")?;
         if !returns_unit {
             let ret_val = call.try_as_basic_value().basic().ok_or_else(|| {
                 CodegenError::FailClosed(format!(
@@ -16928,7 +17317,7 @@ fn emit_actor_dispatch_trampoline<'ctx>(
             let reply = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_reply")?;
             let ch = builder
                 .build_call(reply_channel, &[], "hew_get_reply_channel_call")
-                .map_err(|e| CodegenError::Llvm(format!("get reply channel call: {e:?}")))?
+                .llvm_ctx("get reply channel call")?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
@@ -16937,10 +17326,10 @@ fn emit_actor_dispatch_trampoline<'ctx>(
                 .into_pointer_value();
             let ret_slot = builder
                 .build_alloca(return_ty, "actor_reply_slot")
-                .map_err(|e| CodegenError::Llvm(format!("actor reply alloca: {e:?}")))?;
+                .llvm_ctx("actor reply alloca")?;
             builder
                 .build_store(ret_slot, ret_val)
-                .map_err(|e| CodegenError::Llvm(format!("actor reply store: {e:?}")))?;
+                .llvm_ctx("actor reply store")?;
             let size = return_ty.size_of().ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "actor handler `{}` reply type has no static size: {return_ty:?}",
@@ -16952,7 +17341,7 @@ fn emit_actor_dispatch_trampoline<'ctx>(
             } else {
                 builder
                     .build_int_z_extend(size, i64_ty, "actor_reply_size")
-                    .map_err(|e| CodegenError::Llvm(format!("reply size zext: {e:?}")))?
+                    .llvm_ctx("reply size zext")?
             };
             builder
                 .build_call(
@@ -16960,11 +17349,11 @@ fn emit_actor_dispatch_trampoline<'ctx>(
                     &[ch.into(), ret_slot.into(), size.into()],
                     "hew_reply_call",
                 )
-                .map_err(|e| CodegenError::Llvm(format!("hew_reply call: {e:?}")))?;
+                .llvm_ctx("hew_reply call")?;
         }
         builder
             .build_unconditional_branch(after_bb)
-            .map_err(|e| CodegenError::Llvm(format!("actor dispatch branch: {e:?}")))?;
+            .llvm_ctx("actor dispatch branch")?;
     }
 
     builder.position_at_end(default_bb);
@@ -16973,15 +17362,15 @@ fn emit_actor_dispatch_trampoline<'ctx>(
         .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
     builder
         .build_call(trap, &[], "actor_dispatch_unknown_msg_trap")
-        .map_err(|e| CodegenError::Llvm(format!("actor dispatch trap: {e:?}")))?;
+        .llvm_ctx("actor dispatch trap")?;
     builder
         .build_unreachable()
-        .map_err(|e| CodegenError::Llvm(format!("actor dispatch unreachable: {e:?}")))?;
+        .llvm_ctx("actor dispatch unreachable")?;
 
     builder.position_at_end(after_bb);
     builder
         .build_return(None)
-        .map_err(|e| CodegenError::Llvm(format!("actor dispatch return: {e:?}")))?;
+        .llvm_ctx("actor dispatch return")?;
     Ok(())
 }
 
@@ -17046,6 +17435,7 @@ fn build_module_for_target<'ctx>(
         &pipeline.record_layouts,
         &pipeline.enum_layouts,
         &pipeline.machine_layouts,
+        &pipeline.opaque_handle_names,
     )?;
     fill_record_layout_bodies(ctx, &pipeline.record_layouts, &record_layouts)?;
     // Build a quick lookup from record name → field ResolvedTys, shared by
@@ -17483,11 +17873,11 @@ fn emit_dyn_trait_thunks<'ctx>(
 
             let call_site = builder
                 .build_call(impl_fn_value, &call_args, "dyn_thunk_call")
-                .map_err(|e| {
-                    CodegenError::Llvm(format!(
+                .llvm_ctx_with(|| {
+                    format!(
                         "dyn trait thunk `{thunk_symbol}`: forward call to \
-                         `{impl_fn_key}`: {e:?}"
-                    ))
+                         `{impl_fn_key}`"
+                    )
                 })?;
 
             // Propagate the impl's return value verbatim. Unit-returning
@@ -17497,17 +17887,13 @@ fn emit_dyn_trait_thunks<'ctx>(
             // a silent miscompile.
             match call_site.try_as_basic_value().basic() {
                 Some(rv) => {
-                    builder.build_return(Some(&rv)).map_err(|e| {
-                        CodegenError::Llvm(format!(
-                            "dyn trait thunk `{thunk_symbol}`: return: {e:?}"
-                        ))
-                    })?;
+                    builder
+                        .build_return(Some(&rv))
+                        .llvm_ctx_with(|| format!("dyn trait thunk `{thunk_symbol}`: return"))?;
                 }
                 None => {
-                    builder.build_return(None).map_err(|e| {
-                        CodegenError::Llvm(format!(
-                            "dyn trait thunk `{thunk_symbol}`: void return: {e:?}"
-                        ))
+                    builder.build_return(None).llvm_ctx_with(|| {
+                        format!("dyn trait thunk `{thunk_symbol}`: void return")
                     })?;
                 }
             }
@@ -17810,14 +18196,10 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
         ];
         builder
             .build_call(box_free_fn, &args, "dyn_box_free_call")
-            .map_err(|e| {
-                CodegenError::Llvm(format!(
-                    "dyn drop_in_place `{symbol}`: hew_dyn_box_free call: {e:?}"
-                ))
-            })?;
-        builder.build_return(None).map_err(|e| {
-            CodegenError::Llvm(format!("dyn drop_in_place `{symbol}`: void return: {e:?}"))
-        })?;
+            .llvm_ctx_with(|| format!("dyn drop_in_place `{symbol}`: hew_dyn_box_free call"))?;
+        builder
+            .build_return(None)
+            .llvm_ctx_with(|| format!("dyn drop_in_place `{symbol}`: void return"))?;
     }
     Ok(())
 }
@@ -18163,9 +18545,7 @@ fn emit_regex_module_init<'ctx>(
                 &[(*pat_ptr).into()],
                 &format!("compile_regex_{i}"),
             )
-            .map_err(|e| {
-                CodegenError::Llvm(format!("hew_regex_compile call in module-init: {e:?}"))
-            })?;
+            .llvm_ctx("hew_regex_compile call in module-init")?;
         let handle = call_result
             .try_as_basic_value()
             .basic()
@@ -18186,10 +18566,10 @@ fn emit_regex_module_init<'ctx>(
         let ok_bb = ctx.append_basic_block(init_fn, &format!("ok_{i}"));
         let is_null = builder
             .build_is_null(handle, &format!("is_null_{i}"))
-            .map_err(|e| CodegenError::Llvm(format!("is_null check in module-init: {e:?}")))?;
+            .llvm_ctx("is_null check in module-init")?;
         builder
             .build_conditional_branch(is_null, null_check_bb, ok_bb)
-            .map_err(|e| CodegenError::Llvm(format!("null-check branch in module-init: {e:?}")))?;
+            .llvm_ctx("null-check branch in module-init")?;
 
         builder.position_at_end(null_check_bb);
         // Trap code 209 — module-init regex compile failure (internal invariant
@@ -18209,10 +18589,10 @@ fn emit_regex_module_init<'ctx>(
                 &[trap_code.into(), lit_id_code.into()],
                 "trap_null_regex",
             )
-            .map_err(|e| CodegenError::Llvm(format!("trap call in module-init: {e:?}")))?;
+            .llvm_ctx("trap call in module-init")?;
         builder
             .build_unreachable()
-            .map_err(|e| CodegenError::Llvm(format!("unreachable in module-init: {e:?}")))?;
+            .llvm_ctx("unreachable in module-init")?;
 
         builder.position_at_end(ok_bb);
         // Store handle into @hew_regex_handles[i].
@@ -18225,15 +18605,15 @@ fn emit_regex_module_init<'ctx>(
                     &[i64_ty.const_zero(), idx],
                     &format!("regex_slot_{i}"),
                 )
-                .map_err(|e| CodegenError::Llvm(format!("GEP for regex handle slot {i}: {e:?}")))?
+                .llvm_ctx_with(|| format!("GEP for regex handle slot {i}"))?
         };
         builder
             .build_store(slot_ptr, handle)
-            .map_err(|e| CodegenError::Llvm(format!("store regex handle {i}: {e:?}")))?;
+            .llvm_ctx_with(|| format!("store regex handle {i}"))?;
     }
     builder
         .build_return(None)
-        .map_err(|e| CodegenError::Llvm(format!("return in hew_module_init_regex: {e:?}")))?;
+        .llvm_ctx("return in hew_module_init_regex")?;
 
     // 4. Register in @llvm.global_ctors (appending linkage, priority 65535).
     // The struct type is { i32, ptr, ptr } — priority, fn ptr, associated data (null).
@@ -18258,7 +18638,7 @@ fn emit_textual(pipeline: &IrPipeline, name: &str, out: &Path) -> CodegenResult<
     let llvm_mod = build_module(&ctx, pipeline, name)?;
     llvm_mod
         .print_to_file(out)
-        .map_err(|e| CodegenError::Llvm(format!("print_to_file {}: {e:?}", out.display())))?;
+        .llvm_ctx_with(|| format!("print_to_file {}", out.display()))?;
     Ok(())
 }
 
@@ -18353,6 +18733,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -18389,6 +18770,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -18510,6 +18892,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -18579,6 +18962,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -18642,6 +19026,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -18811,6 +19196,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -19009,6 +19395,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -19700,6 +20087,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -19775,6 +20163,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -19865,6 +20254,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -19955,6 +20345,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -20207,6 +20598,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -20269,6 +20661,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -20317,6 +20710,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -20390,6 +20784,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -20443,6 +20838,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
             diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
             record_layouts: Vec::new(),
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -20673,7 +21069,7 @@ mod tests {
         enum_fixtures: &[MirEnumLayout],
     ) -> CompositeHelperHarness<'ctx> {
         let mut record_layouts: RecordLayoutMap<'ctx> =
-            predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[])
+            predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[], &[])
                 .expect("named-layout predeclaration must succeed");
         fill_record_layout_bodies(ctx, record_fixtures, &record_layouts)
             .expect("record-layout body fill must succeed");
@@ -21234,7 +21630,7 @@ mod tests {
                 },
             ],
         }];
-        let mut map = predeclare_named_layouts(&ctx, &record_fixtures, &enum_fixtures, &[])
+        let mut map = predeclare_named_layouts(&ctx, &record_fixtures, &enum_fixtures, &[], &[])
             .expect("predeclare must succeed");
         let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
         register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
@@ -21281,7 +21677,7 @@ mod tests {
                 field_tys: vec![],
             }],
         }];
-        let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &machine_fixtures)
+        let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &machine_fixtures, &[])
             .expect("predeclare must succeed for record+machine");
         assert!(
             map.contains_key("Worker"),
@@ -21311,7 +21707,7 @@ mod tests {
                 builtin: None,
             }],
         }];
-        let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &[])
+        let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &[], &[])
             .expect("predeclare must succeed");
         let err = fill_record_layout_bodies(&ctx, &record_fixtures, &map)
             .expect_err("record body-fill must fail-closed on unknown Named type");
@@ -21345,7 +21741,7 @@ mod tests {
                 field_tys: vec![],
             }],
         }];
-        let err = predeclare_named_layouts(&ctx, &record_fixtures, &enum_fixtures, &[])
+        let err = predeclare_named_layouts(&ctx, &record_fixtures, &enum_fixtures, &[], &[])
             .expect_err("duplicate names across classes must fail-closed");
         match err {
             CodegenError::FailClosed(msg) => {
@@ -21400,7 +21796,7 @@ mod tests {
                 ],
             },
         ];
-        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[])
+        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
             .expect("predeclare must tolerate within-class duplicate enum names");
         let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
         register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
@@ -21472,7 +21868,7 @@ mod tests {
     fn resolve_ty_lowers_trait_object_to_fat_ptr_struct() {
         use hew_types::ResolvedTraitBound;
         let ctx = Context::create();
-        let record_layouts: RecordLayoutMap<'_> = HashMap::new();
+        let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
         let trait_object = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Display".to_string(),
@@ -21548,6 +21944,7 @@ mod tests {
             checked_mir: vec![],
             elaborated_mir: vec![],
             diagnostics: vec![],
+            opaque_handle_names: vec![],
             record_layouts: vec![],
             actor_layouts: vec![],
             supervisor_layouts: vec![],
@@ -21682,6 +22079,7 @@ mod tests {
             checked_mir: vec![],
             elaborated_mir: vec![],
             diagnostics: vec![],
+            opaque_handle_names: vec![],
             record_layouts: vec![],
             actor_layouts: vec![],
             supervisor_layouts: vec![],
@@ -21756,7 +22154,7 @@ mod tests {
         let ctx = Context::create();
         let llvm_mod = ctx.create_module("vtable_def_no_drop");
         let inst = build_minimal_dyn_vtable_instance();
-        let record_layouts: RecordLayoutMap<'_> = HashMap::new();
+        let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
         let err = emit_dyn_trait_vtable_definitions(
             &ctx,
             &llvm_mod,
@@ -21801,6 +22199,7 @@ mod tests {
                 accepts_kwargs: false,
                 doc_comment: None,
                 extern_symbol: None,
+                requires_mutable_receiver: false,
             },
         }];
         // Declare the drop-in-place fn so we make it past arm (a).
@@ -21809,7 +22208,7 @@ mod tests {
         let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
         llvm_mod.add_function(&drop_symbol, fn_ty, Some(Linkage::Private));
 
-        let record_layouts: RecordLayoutMap<'_> = HashMap::new();
+        let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
         let err = emit_dyn_trait_vtable_definitions(
             &ctx,
             &llvm_mod,
@@ -21842,7 +22241,7 @@ mod tests {
         llvm_mod.add_function(&drop_symbol, fn_ty, Some(Linkage::Private));
 
         // First call: sets struct body and initialiser successfully.
-        let record_layouts: RecordLayoutMap<'_> = HashMap::new();
+        let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
         emit_dyn_trait_vtable_definitions(
             &ctx,
             &llvm_mod,
@@ -21943,7 +22342,7 @@ mod tests {
         global.set_linkage(Linkage::Private);
         global.set_initializer(&ptr_ty.const_null());
 
-        let record_layouts: RecordLayoutMap<'_> = HashMap::new();
+        let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
         let err = emit_dyn_trait_vtable_definitions(
             &ctx,
             &llvm_mod,
@@ -22042,6 +22441,7 @@ mod tests {
             checked_mir: vec![],
             elaborated_mir: vec![elab],
             diagnostics: vec![],
+            opaque_handle_names: vec![],
             record_layouts: vec![],
             actor_layouts: vec![],
             supervisor_layouts: vec![],
@@ -22084,4 +22484,90 @@ mod tests {
         }
         drop(tmp);
     }
+
+    // ---- LlvmResultExt / llvm_err! text-identity tests ---------------------
+    //
+    // These exist to lock the helpers' message text bit-identical with the
+    // hand-written `format!("…: {e:?}")` and `format!(…)` idioms they
+    // replace, so the bulk-migration commits that follow are mechanical
+    // text-preserving rewrites.
+
+    #[derive(Debug, Clone)]
+    struct StubErr(#[allow(dead_code)] &'static str);
+
+    #[test]
+    fn llvm_ctx_matches_handwritten_b1_text() {
+        let res: Result<(), StubErr> = Err(StubErr("boom"));
+        let via_helper = res.clone().llvm_ctx("insertvalue dyn_data").unwrap_err();
+        // The raw side keeps the pre-migration form verbatim (not a helper
+        // call) so this test pins text-identity rather than self-comparing.
+        let via_raw = res
+            .map_err(|e| CodegenError::Llvm(format!("insertvalue dyn_data: {e:?}")))
+            .unwrap_err();
+        assert!(matches!(via_helper, CodegenError::Llvm(_)));
+        assert_eq!(format!("{via_helper}"), format!("{via_raw}"));
+    }
+
+    #[test]
+    fn llvm_ctx_with_matches_handwritten_b2_b3_text() {
+        let name = "alpha";
+        let triple = "x86_64-unknown-linux-gnu";
+        let res: Result<(), StubErr> = Err(StubErr("nope"));
+
+        // B2 — one interpolated identifier.
+        let via_helper = res
+            .clone()
+            .llvm_ctx_with(|| format!("actor metadata string `{name}`"))
+            .unwrap_err();
+        // Raw side kept verbatim as the pre-migration form, so this test
+        // pins text-identity rather than self-comparing.
+        let via_raw = res
+            .clone()
+            .map_err(|e| CodegenError::Llvm(format!("actor metadata string `{name}`: {e:?}")))
+            .unwrap_err();
+        assert_eq!(format!("{via_helper}"), format!("{via_raw}"));
+
+        // B3 — multi-token format with named + positional args.
+        let path: std::path::PathBuf = "/tmp/out.o".into();
+        let via_helper = res
+            .clone()
+            .llvm_ctx_with(|| format!("write object for triple={triple} out={}", path.display()))
+            .unwrap_err();
+        let via_raw = res
+            .map_err(|e| {
+                CodegenError::Llvm(format!(
+                    "write object for triple={triple} out={}: {e:?}",
+                    path.display(),
+                ))
+            })
+            .unwrap_err();
+        assert_eq!(format!("{via_helper}"), format!("{via_raw}"));
+    }
+
+    #[test]
+    fn llvm_err_macro_matches_direct_construction() {
+        let field_idx = 7u32;
+        let via_macro = llvm_err!("HewActorOpts GEP field {field_idx}: <e>");
+        let via_raw = CodegenError::Llvm(format!("HewActorOpts GEP field {field_idx}: <e>"));
+        assert_eq!(format!("{via_macro}"), format!("{via_raw}"));
+        assert!(matches!(via_macro, CodegenError::Llvm(_)));
+    }
+
+    #[test]
+    fn llvm_ctx_does_not_invoke_lazy_closure_on_ok_path() {
+        use std::cell::Cell;
+        let called: Cell<bool> = Cell::new(false);
+        let res: Result<i32, StubErr> = Ok(42);
+        let out = res
+            .llvm_ctx_with(|| {
+                called.set(true);
+                "should not be called".to_string()
+            })
+            .unwrap();
+        assert_eq!(out, 42);
+        assert!(!called.get(), "lazy closure must not run on Ok");
+    }
 }
+
+// Make `StubErr` `Clone` so we can re-use the same error in multiple
+// assertions above. (Trivial — derived above.)

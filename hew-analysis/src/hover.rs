@@ -1237,6 +1237,7 @@ mod tests {
         fn_sigs.insert(name.to_string(), sig);
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1518,6 +1519,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types: HashMap::new(),
+            resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1617,6 +1619,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1676,6 +1679,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1789,6 +1793,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1952,6 +1957,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),

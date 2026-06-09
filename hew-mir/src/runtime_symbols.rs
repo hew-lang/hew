@@ -50,8 +50,9 @@
 /// `stable` is broader (per-actor / per-mailbox / per-IO entries);
 /// the substrate subset that MIR producers can emit today is the
 /// list below.
-// Lexicographically sorted: `hew_actor_*` < `hew_duplex_*` < `hew_lambda_actor_*`
-// < `hew_recv_half_*` < `hew_regex_*` < `hew_reply_channel_*` < `hew_send_half_*`.
+// Lexicographically sorted: `hew_actor_*` < `hew_bytes_*` < `hew_duplex_*`
+// < `hew_lambda_actor_*` < `hew_recv_half_*` < `hew_regex_*`
+// < `hew_reply_channel_*` < `hew_send_half_*`.
 // Section comments mark the substrate-grouping for readability; the binary-search
 // invariant is over the flat ordering.
 const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
@@ -102,6 +103,21 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // `hew_auto_mutex_unlock(mtx: *mut HewAutoMutex)` — release. The
     // compiler emits this immediately AFTER the access completes.
     "hew_auto_mutex_unlock",
+    // --- Bytes value index/slice substrate (W3 collections-sugar S2) --------
+    // `hew_bytes_index(ptr, offset, len, index) -> u8`
+    //   (`hew-runtime/src/bytes.rs`). O(1) byte load over a (ptr,offset,len)
+    //   `BytesTriple`. Aborts on negative index or index >= len. Emitted by
+    //   the MIR producer arm for `b[i]` over `Ty::Bytes` receivers.
+    "hew_bytes_index",
+    // `hew_bytes_push(&mut BytesTriple, byte: u8)` appends one byte, updating
+    // the caller's stack-resident triple after CoW/growth. Emitted for
+    // `bytes.push(i32)` receiver methods; codegen truncates the element to u8.
+    "hew_bytes_push",
+    // `hew_bytes_slice(ptr, offset, len, start, end) -> BytesTriple`
+    //   (`hew-runtime/src/bytes.rs`). O(1) byte-range slice that bumps the
+    //   underlying refcount for non-empty results (empty slice returns a
+    //   null/0/0 triple). Aborts on invalid bounds. Emitted for `b[a..b]`.
+    "hew_bytes_slice",
     // --- Cancellation-token retain/release (ABI pin) -------------
     // `hew_cancel_token_is_requested(token: *mut HewCancellationToken) -> bool`
     // (`hew-runtime/src/task_scope.rs:272`). Non-blocking poll: returns
@@ -175,6 +191,7 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_hashset_contains_layout",
     "hew_hashset_free_layout",
     "hew_hashset_insert_layout",
+    "hew_hashset_is_empty_layout",
     "hew_hashset_len_layout",
     "hew_hashset_new_with_layout",
     "hew_hashset_remove_layout",
@@ -294,6 +311,18 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // --- SendHalf<T> ---------------------------------------------
     "hew_send_half_send",
     "hew_send_half_try_send",
+    // --- String codepoint index/slice substrate (W3 collections-sugar S2) ----
+    // `hew_string_index(s, i) -> i32` (`hew-runtime/src/string.rs`).
+    //   Codepoint at codepoint offset i; O(n). Aborts on null / invalid
+    //   UTF-8 / negative / OOB. NO -1 sentinel. Emitted by the MIR
+    //   producer arm for `s[i]` over `Ty::String` receivers.
+    "hew_string_index",
+    // `hew_string_slice_codepoints(s, start, end) -> *mut c_char`
+    //   (`hew-runtime/src/string.rs`). Fresh malloc'd codepoint slice
+    //   [start, end). Aborts on null / invalid UTF-8 / negative /
+    //   start>end / end>char_count. Emitted for `s[a..b]`. Disjoint
+    //   from the input pointer (drop-safety: fresh allocation).
+    "hew_string_slice_codepoints",
     // --- Supervisor static-child slot lookup ---------------------------------
     // `hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32) -> ChildLookupResult`
     // (`hew-runtime/src/supervisor.rs`). Non-blocking typed slot lookup for

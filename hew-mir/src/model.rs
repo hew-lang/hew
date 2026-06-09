@@ -23,6 +23,11 @@ pub struct IrPipeline {
     pub checked_mir: Vec<CheckedMirFunction>,
     pub elaborated_mir: Vec<ElaboratedMirFunction>,
     pub diagnostics: Vec<MirDiagnostic>,
+    /// Names of every `#[opaque]` runtime handle declared in the module
+    /// (W3.020). Codegen resolves these `Named` types to a bare LLVM `ptr`
+    /// (pointer-width opaque handle, ABI-compatible with the runtime's
+    /// `*mut T`) instead of a record struct layout.
+    pub opaque_handle_names: Vec<String>,
     /// Layout descriptors for every named-form `record` declaration in the
     /// module. Populated by `lower_hir_module` from the same `HirItem::Record`
     /// walk that builds the field-order table. Codegen (`hew-codegen-rs`)
@@ -2093,6 +2098,28 @@ pub enum Instr {
         /// Destination place that receives the constructed record value.
         dest: Place,
     },
+    /// Store a single field of a record value by its declaration-order
+    /// offset. The aggregate `record` stays `Live` after the store (only
+    /// one field's bytes are written; ownership of the aggregate does not
+    /// transfer).
+    ///
+    /// Produced from `HirStmtKind::Assign { target: FieldAccess { object,
+    /// field }, value }` when `object` resolves to a writable place (a
+    /// `var`-bound local — the assignment-target receiver-mutability gate
+    /// is enforced at the checker layer). The field name is resolved to
+    /// its 0-based `FieldOffset` via the record-field-order table, same
+    /// as `RecordFieldLoad`.
+    ///
+    /// Codegen lowers this to a GEP + store on the record's alloca,
+    /// mirroring `RecordFieldLoad`'s GEP + load.
+    RecordFieldStore {
+        /// The record value to write into.
+        record: Place,
+        /// 0-based index of the field within the record's declared field order.
+        field_offset: FieldOffset,
+        /// Source place whose value is stored into the field.
+        src: Place,
+    },
     /// Load a single field from a record value by its declaration-order
     /// offset. `dest` receives the field value.
     ///
@@ -2131,6 +2158,24 @@ pub enum Instr {
         /// 0-based element index (positional declaration order).
         field_index: u32,
         /// Destination place that receives the loaded element value.
+        dest: Place,
+    },
+    /// Construct a tuple value from individual element values.
+    ///
+    /// Produced from `HirExprKind::TupleLiteral { elements }` after the checker
+    /// has validated the tuple type and element types. The tuple is allocated on
+    /// the stack as an unnamed LLVM struct; codegen emits one `insertvalue` per
+    /// element or a sequence of GEP + store instructions.
+    ///
+    /// `elements` carries the `Place`s for each tuple slot in declaration order.
+    /// The tuple type is derived from `dest`'s type in the MIR `locals` table.
+    ///
+    /// Producer: `lower_value`'s `HirExprKind::TupleLiteral` arm.
+    /// Codegen: alloca for the tuple struct + per-element insertvalue or store.
+    TupleConstruct {
+        /// Element values in tuple-slot order (0-based).
+        elements: Vec<Place>,
+        /// Destination place that receives the constructed tuple.
         dest: Place,
     },
     /// `dest = const <float>` stored as a bit pattern.

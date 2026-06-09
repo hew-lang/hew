@@ -71,12 +71,14 @@ fn net_result_from_status(status: i32) -> Result<(), fs.IoError> { // INTERNAL-A
 ///
 /// Created by `net.listen(addr)`. Returns a negative value (as i32)
 /// on failure when cast; use comparison to check success.
+#[opaque]
 type Listener {
 }
 
 /// An established TCP connection for reading and writing.
 ///
 /// Obtained from `listener.accept()` or `net.connect(addr)`.
+#[opaque]
 type Connection {
 }
 
@@ -84,10 +86,10 @@ type Connection {
 /// Methods available on a TCP `Listener`.
 trait ListenerMethods {
     /// Block until a client connects and return the new `Connection`.
-    fn accept(ln: Listener) -> Connection;
+    fn accept(self) -> Connection;
 
     /// Close the listener and release the listening socket.
-    fn close(ln: Listener);
+    fn close(self);
 }
 
 impl ListenerMethods for Listener {
@@ -112,33 +114,33 @@ trait ConnectionMethods {
     ///
     /// Blocks until data is available. Returns an empty bytes buffer on EOF
     /// or disconnect.
-    fn read(conn: Connection) -> bytes;
+    fn read(self) -> bytes;
 
     /// Read a UTF-8 string from the connection.
     ///
     /// Convenience wrapper that reads bytes and converts to string.
-    fn read_string(conn: Connection) -> string;
+    fn read_string(self) -> string;
 
     /// Write raw bytes to the connection.
-    fn write(conn: Connection, data: bytes);
+    fn write(self, data: bytes);
 
     /// Write a UTF-8 string to the connection.
     ///
     /// Convenience wrapper that converts the string to bytes before sending.
-    fn write_string(conn: Connection, data: string);
+    fn write_string(self, data: string);
 
     /// Close the connection and release resources.
-    fn close(conn: Connection);
+    fn close(self);
 
     /// Set the read timeout in milliseconds.
     ///
     /// Pass a negative value to clear the timeout.
-    fn set_read_timeout(conn: Connection, ms: i64) -> Result<(), fs.IoError>;
+    fn set_read_timeout(self, ms: i64) -> Result<(), fs.IoError>;
 
     /// Set the write timeout in milliseconds.
     ///
     /// Pass a negative value to clear the timeout.
-    fn set_write_timeout(conn: Connection, ms: i64) -> Result<(), fs.IoError>;
+    fn set_write_timeout(self, ms: i64) -> Result<(), fs.IoError>;
 
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair
     /// backed by the same TCP socket.
@@ -164,7 +166,7 @@ trait ConnectionMethods {
     /// On `wasm32` targets this method is unavailable; the type checker rejects
     /// calls to `Connection` methods with `WasmUnsupportedFeature::TcpNetworking`
     /// before any codegen is reached (`WASM-TODO(#1451)`).
-    fn into_stream_sink(conn: Connection) -> (Stream<bytes>, Sink<bytes>);
+    fn into_stream_sink(self) -> (Stream<bytes>, Sink<bytes>);
 }
 
 impl ConnectionMethods for Connection {
@@ -368,6 +370,7 @@ pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<i64, f
 /// Opaque paired stream/sink handle returned by `hew_tcp_stream_from_conn`.
 /// Extract the two halves with `hew_stream_pair_stream_bytes` /
 /// `hew_stream_pair_sink_bytes`, then free with `hew_stream_pair_free`.
+#[opaque]
 type StreamPair {
 }
 

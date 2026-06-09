@@ -98,6 +98,7 @@ import std::fs;
 ///
 /// Created by `quic.new_client()` or `quic.new_server(addr)`.
 /// Must be released with `close()`.
+#[opaque]
 type QUICEndpoint {
 }
 
@@ -106,6 +107,7 @@ type QUICEndpoint {
 /// A connection multiplexes many independent streams over a single UDP path.
 /// Obtained from `endpoint.connect()` (client) or `endpoint.accept()` (server).
 /// Must be released with `disconnect()`.
+#[opaque]
 type QUICConnection {
 }
 
@@ -117,6 +119,7 @@ type QUICConnection {
 /// Obtained from `conn.open_stream()` or `conn.accept_stream()`.
 /// Finish the send side with `finish()` when no more data will be sent;
 /// the receive side drains naturally.
+#[opaque]
 type QUICStream {
 }
 
@@ -165,24 +168,24 @@ trait QUICEndpointMethods {
     /// used to verify the server's certificate.
     ///
     /// Returns an established `QUICConnection` or a zero-value on failure.
-    fn connect(ep: QUICEndpoint, addr: string, server_name: string) -> QUICConnection;
+    fn connect(self, addr: string, server_name: string) -> QUICConnection;
 
     /// Block until a remote peer opens an incoming connection (server side).
     ///
     /// Returns an established `QUICConnection` or a zero-value on failure.
-    fn accept(ep: QUICEndpoint) -> QUICConnection;
+    fn accept(self) -> QUICConnection;
 
     /// Close the endpoint and release all associated resources.
-    fn close(ep: QUICEndpoint);
+    fn close(self);
 
     /// Block until the next queued QUIC event on this endpoint.
     ///
     /// Events are recorded by successful `connect()` and `accept()` calls and
     /// by connection failures observed by the runtime.
-    fn on_event(ep: QUICEndpoint) -> QUICEvent;
+    fn on_event(self) -> QUICEvent;
 
     /// Return a non-destructive snapshot of endpoint state.
-    fn observe(ep: QUICEndpoint) -> QUICEndpointObservation;
+    fn observe(self) -> QUICEndpointObservation;
 }
 
 impl QUICEndpointMethods for QUICEndpoint {
@@ -217,26 +220,26 @@ trait QUICConnectionMethods {
     /// Open a new bidirectional stream on this connection.
     ///
     /// Returns a `QUICStream` or a zero-value on failure.
-    fn open_stream(conn: QUICConnection) -> QUICStream;
+    fn open_stream(self) -> QUICStream;
 
     /// Block until the remote peer opens an incoming stream.
     ///
     /// Returns a `QUICStream` or a zero-value on failure.
-    fn accept_stream(conn: QUICConnection) -> QUICStream;
+    fn accept_stream(self) -> QUICStream;
 
     /// Gracefully close this connection and release its resources.
     ///
     /// Returns `Ok(())` on success or `Err(fs.IoError)` on failure.
-    fn disconnect(conn: QUICConnection) -> Result<(), fs.IoError>;
+    fn disconnect(self) -> Result<(), fs.IoError>;
 
     /// Block until the next queued QUIC event on this connection.
     ///
     /// Events are recorded when streams open, when the peer disconnects, and
     /// when stream operations fail.
-    fn on_event(conn: QUICConnection) -> QUICEvent;
+    fn on_event(self) -> QUICEvent;
 
     /// Return a non-destructive snapshot of connection state and telemetry.
-    fn observe(conn: QUICConnection) -> QUICConnectionObservation;
+    fn observe(self) -> QUICConnectionObservation;
 }
 
 impl QUICConnectionMethods for QUICConnection {
@@ -269,24 +272,24 @@ trait QUICStreamMethods {
     /// Send raw bytes on this stream.
     ///
     /// Returns `Ok(())` on success or `Err(fs.IoError)` on failure.
-    fn send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError>;
+    fn send(self, data: bytes) -> Result<(), fs.IoError>;
 
     /// Block until data arrives and return the received bytes.
     ///
     /// Returns an empty buffer on stream close or error.
-    fn recv(strm: QUICStream) -> bytes;
+    fn recv(self) -> bytes;
 
     /// Receive bytes with a per-call deadline.
     ///
     /// `deadline_ms <= 0` disables the deadline. On deadline expiry returns
     /// `Err(IoError::TimedOut(0))`. On stream EOF returns `Ok(empty)`.
-    fn recv_timeout(strm: QUICStream, deadline_ms: i64) -> Result<bytes, fs.IoError>;
+    fn recv_timeout(self, deadline_ms: i64) -> Result<bytes, fs.IoError>;
 
     /// Send bytes with a per-call deadline.
     ///
     /// `deadline_ms <= 0` disables the deadline. On deadline expiry returns
     /// `Err(IoError::TimedOut(0))`.
-    fn send_timeout(strm: QUICStream, data: bytes, deadline_ms: i64) -> Result<(), fs.IoError>;
+    fn send_timeout(self, data: bytes, deadline_ms: i64) -> Result<(), fs.IoError>;
 
     /// Signal that no more data will be sent on this stream.
     ///
@@ -294,34 +297,34 @@ trait QUICStreamMethods {
     /// data has been delivered. This does not release the local stream handle;
     /// call `close()` when you are finished with the stream. Returns `Ok(())`
     /// on success or `Err(fs.IoError)` on failure.
-    fn finish(strm: QUICStream) -> Result<(), fs.IoError>;
+    fn finish(self) -> Result<(), fs.IoError>;
 
     /// Abruptly stop this stream with an application-defined error code.
     ///
     /// Unlike `finish`, pending data is discarded. Call `close()` afterwards to
     /// release the local stream handle. Returns `Ok(())` on success or
     /// `Err(fs.IoError)` on failure.
-    fn stop(strm: QUICStream, error_code: i64) -> Result<(), fs.IoError>;
+    fn stop(self, error_code: i64) -> Result<(), fs.IoError>;
 
     /// Release the local stream handle.
     ///
     /// Call `finish()` first if you want the peer to observe a graceful EOF.
-    fn close(strm: QUICStream);
+    fn close(self);
 
     /// Send a UTF-8 string on this stream.
     ///
     /// Convenience wrapper around `send` that converts `msg` to bytes first.
     /// Returns `Ok(())` on success or `Err(fs.IoError)` on failure.
-    fn send_string(strm: QUICStream, msg: string) -> Result<(), fs.IoError>;
+    fn send_string(self, msg: string) -> Result<(), fs.IoError>;
 
     /// Block until data arrives and return it as a UTF-8 string.
     ///
     /// Convenience wrapper around `recv` that converts the received bytes to
     /// a `string`.  Returns an empty string on stream close or error.
-    fn recv_string(strm: QUICStream) -> string;
+    fn recv_string(self) -> string;
 
     /// Return a non-destructive snapshot of stream state.
-    fn observe(strm: QUICStream) -> QUICStreamObservation;
+    fn observe(self) -> QUICStreamObservation;
 }
 
 impl QUICStreamMethods for QUICStream {
@@ -369,9 +372,9 @@ trait QUICEventMethods {
     /// Event kinds:
     ///   0 — connected, 1 — disconnected, 2 — stream opened,
     ///   3 — stream closed, −1 — error.
-    fn kind(evt: QUICEvent) -> i32; // INTERNAL-ABI: opaque event-kind enum (0=connected, 1=disconnected, 2=stream-opened, 3=stream-closed, -1=error); planned enum migration
+    fn kind(self) -> i32; // INTERNAL-ABI: opaque event-kind enum (0=connected, 1=disconnected, 2=stream-opened, 3=stream-closed, -1=error); planned enum migration
     /// Release the event and its resources.
-    fn free(evt: QUICEvent);
+    fn free(self);
 }
 
 impl QUICEventMethods for QUICEvent {

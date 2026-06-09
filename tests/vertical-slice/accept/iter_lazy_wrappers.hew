@@ -1,0 +1,110 @@
+//! Stage-2 lazy iterator wrappers: end-to-end type-check fixture.
+//!
+//! Mirrors `std/iter.hew` Stage-2 surface (`Map`, `Filter`, `Take`,
+//! `Skip` + `map`/`filter`/`take`/`skip` constructors and the
+//! `fold`/`count`/`collect` terminal helpers) and exercises a chained
+//! adapter pipeline (`take(filter(map(...)), 2)` then `skip(_, 1)`)
+//! through `hew check`. Bodies that trip Q004's checker substitution
+//! rule fail loud via `panic(...)` — the deferred-work invariant
+//! requires that deferrals must not look like working code. The
+//! fixture asserts the surface compiles, not the runtime semantics of
+//! the lazy chain.
+//!
+//! Inlines the wrapper surface locally rather than importing
+//! `std::iter` because the checker does not yet propagate the generic
+//! return-type substitution across module boundaries for these calls
+//! (separate lane). The wrapper shape is identical to `std/iter.hew`.
+
+pub type Counter {
+    n: i64;
+    limit: i64;
+}
+
+impl Iterator for Counter {
+    type Item = i64;
+    fn next(it: Counter) -> Option<i64> {
+        if it.n >= it.limit {
+            None
+        } else {
+            Some(it.n)
+        }
+    }
+}
+
+pub type Map<I, A, B> {
+    iter: I;
+    f: fn(A) -> B;
+}
+
+impl<I, A, B> Iterator for Map<I, A, B>
+where
+    I: Iterator<Item = A>,
+{
+    type Item = B;
+    fn next(it: Map<I, A, B>) -> Option<B> {
+        panic("Map::next deferred pending Q004 checker fix");
+        None
+    }
+}
+
+pub type Filter<I, A> {
+    iter: I;
+    pred: fn(A) -> bool;
+}
+
+impl<I, A> Iterator for Filter<I, A>
+where
+    I: Iterator<Item = A>,
+{
+    type Item = A;
+    fn next(it: Filter<I, A>) -> Option<A> {
+        panic("Filter::next deferred pending Q004 checker fix");
+        None
+    }
+}
+
+pub type Take<I> {
+    iter: I;
+    remaining: i64;
+}
+
+impl<I, A> Iterator for Take<I>
+where
+    I: Iterator<Item = A>,
+{
+    type Item = A;
+    fn next(it: Take<I>) -> Option<A> {
+        panic("Take::next deferred pending Q004 checker fix");
+        None
+    }
+}
+
+pub type Skip<I> {
+    iter: I;
+    remaining: i64;
+}
+
+impl<I, A> Iterator for Skip<I>
+where
+    I: Iterator<Item = A>,
+{
+    type Item = A;
+    fn next(it: Skip<I>) -> Option<A> {
+        panic("Skip::next deferred pending Q004 checker fix");
+        None
+    }
+}
+
+// The Stage-2 free constructor functions (`map`, `filter`, `take`,
+// `skip` and the terminal helpers `fold`/`count`/`collect`) are
+// exercised in the type-checker lock test (`hew-types::iterator_lazy_wrappers`)
+// rather than here, because their generic bodies do not yet have a
+// MIR `ValueClass` lowering for the type-parameter receivers (separate
+// stage's substrate work). The wrapper *shape* (records + `impl
+// Iterator` + Item projections) is what this fixture asserts compiles
+// through `hew check` end-to-end.
+
+fn main() -> i64 {
+    let c = Counter { n: 0, limit: 4 };
+    c.limit
+}

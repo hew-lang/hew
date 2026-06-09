@@ -6,20 +6,214 @@ use super::*;
 use crate::builtin_names::BuiltinNamedType;
 use crate::check::admissibility::compute_copy_record_layout;
 use crate::check::calls::SignatureArgApplication;
-use crate::check::dispatch::{
-    resolve_method_call, Bound, CallAbiHint, ImplDef, ImplRegistry, LookupError, MethodTarget,
-    RuntimeAbi, TyPattern,
-};
+use crate::check::dispatch::resolve_method_call;
 use crate::hash_eligibility::{ty_is_hash_eligible, HashEligibility};
 use crate::lowering_facts::{
     hashmap_layout_key_fact, hashmap_layout_key_layout_value_fact, hashset_layout_fact,
-    HashMapKeyType, HashMapValueType,
+    HashMapValueType,
 };
 use crate::method_resolution::{
     collect_method_sigs_for_receiver, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
 use crate::BuiltinType;
+
+/// Which builtin collection a [`check_collection_method`](Checker::check_collection_method)
+/// call is resolving.  This is the single discriminant the descriptor-driven
+/// resolver dispatches on; it carries no per-method behaviour itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum CollectionKind {
+    HashMap,
+    HashSet,
+    Vec,
+}
+
+impl CollectionKind {
+    /// User-facing collection name used in arity contexts and `UndefinedMethod`
+    /// diagnostics (e.g. `` `HashMap::insert` ``, `no method `x` on Vec`).
+    fn name(self) -> &'static str {
+        match self {
+            CollectionKind::HashMap => "HashMap",
+            CollectionKind::HashSet => "HashSet",
+            CollectionKind::Vec => "Vec",
+        }
+    }
+
+    fn builtin(self) -> BuiltinType {
+        match self {
+            CollectionKind::HashMap => BuiltinType::HashMap,
+            CollectionKind::HashSet => BuiltinType::HashSet,
+            CollectionKind::Vec => BuiltinType::Vec,
+        }
+    }
+}
+
+/// Pure-data shape of a single collection-method argument slot.
+///
+/// Templates name the *type shape* an argument is checked against, instantiated
+/// against the receiver's concrete `K`/`V`/`elem` at the call site.  They are
+/// deliberately data-only: the genuinely divergent argument *checking strategy*
+/// (e.g. `HashSet`'s `check_hashset_element_arg` coercion) stays a code-side hook
+/// in the driver, not a template flag (see `dedup-semantic-boundary`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ArgTemplate {
+    /// `HashMap` key type `K`.
+    Key,
+    /// `HashMap` value type `V`.
+    Value,
+    /// `HashSet` / `Vec` element type `elem`.
+    Elem,
+    /// `i64` (Vec index / count arguments).
+    I64,
+    /// The receiver type itself (Vec `append`/`extend`).
+    Receiver,
+}
+
+/// Pure-data shape of a collection-method return type, instantiated against the
+/// receiver's concrete `K`/`V`/`elem`/`Self` at the call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RetTemplate {
+    Unit,
+    Bool,
+    I64,
+    /// `Option<V>` (`HashMap` `get`).
+    OptionVal,
+    /// The element type `elem` (Vec `pop`/`get`).
+    Elem,
+    /// `Vec<K>` (`HashMap` `keys`).
+    VecOfKey,
+    /// `Vec<V>` (`HashMap` `values`).
+    VecOfVal,
+    /// The receiver collection type itself (`clone`).
+    SelfTy,
+}
+
+/// The data descriptor for one `(collection, method)` pair: arity, argument
+/// shape, and return shape.  This is the single source of truth for the shared
+/// arity → arg → return *walk*; the per-collection element validation, lowering
+/// facts, recording, and the Vec symbol-override remain code-side hooks
+/// (`dedup-semantic-boundary`: centralise the walk, not the decision).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CollectionMethodDesc {
+    /// `Some(n)` checks arity against `n`; `None` deliberately skips the arity
+    /// check (preserving `len`/`is_empty`/`set`/`append`/`extend`/`contains`
+    /// arms that historically never called `check_arity`).
+    arity: Option<usize>,
+    arg_templates: &'static [ArgTemplate],
+    ret: RetTemplate,
+}
+
+const fn desc(
+    arity: Option<usize>,
+    arg_templates: &'static [ArgTemplate],
+    ret: RetTemplate,
+) -> CollectionMethodDesc {
+    CollectionMethodDesc {
+        arity,
+        arg_templates,
+        ret,
+    }
+}
+
+/// The descriptor table: the pure-data front-half admission shape for every
+/// table-driven builtin collection method.  Returns `None` for methods that are
+/// either unknown (→ fail-closed fallback) or genuinely divergent and handled
+/// as explicit code hooks (Vec `contains`/`map`/`filter`/`fold`/`join`).
+#[allow(
+    clippy::match_same_arms,
+    reason = "rows are kept per-method even when arity/arg/ret coincide; their downstream validation/record hooks differ (e.g. HashMap remove uses the owned validator, contains_key the key_value one)"
+)]
+fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<CollectionMethodDesc> {
+    use ArgTemplate::{Elem, Key, Receiver, Value, I64};
+    use RetTemplate::{
+        Bool, Elem as RetElem, OptionVal, SelfTy, Unit, VecOfKey, VecOfVal, I64 as RetI64,
+    };
+    Some(match kind {
+        CollectionKind::HashMap => match method {
+            "insert" => desc(Some(2), &[Key, Value], Unit),
+            "get" => desc(Some(1), &[Key], OptionVal),
+            "remove" => desc(Some(1), &[Key], Bool),
+            "contains_key" => desc(Some(1), &[Key], Bool),
+            "keys" => desc(Some(0), &[], VecOfKey),
+            "values" => desc(Some(0), &[], VecOfVal),
+            "clone" => desc(Some(0), &[], SelfTy),
+            "len" => desc(None, &[], RetI64),
+            "is_empty" => desc(None, &[], Bool),
+            _ => return None,
+        },
+        CollectionKind::HashSet => match method {
+            "insert" => desc(Some(1), &[Elem], Bool),
+            "contains" | "remove" => desc(Some(1), &[Elem], Bool),
+            "clone" => desc(Some(0), &[], SelfTy),
+            "len" => desc(None, &[], RetI64),
+            "is_empty" => desc(None, &[], Bool),
+            "clear" => desc(None, &[], Unit),
+            _ => return None,
+        },
+        CollectionKind::Vec => match method {
+            "push" => desc(Some(1), &[Elem], Unit),
+            "pop" => desc(Some(0), &[], RetElem),
+            "len" => desc(None, &[], RetI64),
+            "get" => desc(Some(1), &[I64], RetElem),
+            "remove" => desc(Some(1), &[I64], Unit),
+            "is_empty" => desc(None, &[], Bool),
+            "clear" => desc(Some(0), &[], Unit),
+            "clone" => desc(Some(0), &[], SelfTy),
+            "set" => desc(None, &[I64, Elem], Unit),
+            "append" | "extend" => desc(None, &[Receiver], Unit),
+            _ => return None,
+        },
+    })
+}
+
+/// The receiver's concrete type arguments for a collection method call, carried
+/// through the descriptor-driven driver.  Only the fields relevant to a given
+/// `CollectionKind` are meaningful (`HashMap` uses `key`/`val`; `HashSet`/`Vec` use
+/// `elem`; `Vec` additionally uses `receiver`/`resolved`); the rest hold the same
+/// placeholder fresh inference vars the legacy resolvers used.
+pub(super) struct CollectionTyCx {
+    key: Ty,
+    val: Ty,
+    elem: Ty,
+    receiver: Ty,
+    resolved: Ty,
+}
+
+impl CollectionTyCx {
+    /// `HashMap<K, V>` receiver type context.
+    fn hashmap(key: Ty, val: Ty) -> Self {
+        Self {
+            key,
+            val,
+            elem: Ty::Unit,
+            receiver: Ty::Unit,
+            resolved: Ty::Unit,
+        }
+    }
+
+    /// `HashSet<elem>` receiver type context.
+    fn hashset(elem: Ty) -> Self {
+        Self {
+            key: Ty::Unit,
+            val: Ty::Unit,
+            elem,
+            receiver: Ty::Unit,
+            resolved: Ty::Unit,
+        }
+    }
+
+    /// `Vec<elem>` receiver type context, carrying the receiver and resolved
+    /// receiver types the Vec arms need (`append`/`extend` and `clone`).
+    fn vec(elem: Ty, receiver: Ty, resolved: Ty) -> Self {
+        Self {
+            key: Ty::Unit,
+            val: Ty::Unit,
+            elem,
+            receiver,
+            resolved,
+        }
+    }
+}
 
 impl Checker {
     fn numeric_method_signedness(ty: &Ty) -> Option<NumericSignedness> {
@@ -2227,14 +2421,6 @@ impl Checker {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Stage-B transitional registry spells out every HashMap/HashSet method target"
-    )]
-    fn collection_dispatch_registry() -> ImplRegistry {
-        collection_dispatch_registry_impl()
-    }
-
     fn record_resolved_collection_call(
         &mut self,
         trait_name: &str,
@@ -2242,7 +2428,11 @@ impl Checker {
         receiver: &TyPattern,
         span: &Span,
     ) {
-        let registry = Self::collection_dispatch_registry();
+        // W4.001 Stage C3 (DI-017): the Stage-B `collection_dispatch_registry`
+        // wrapper has retired; call the impl directly. Authority for HashMap /
+        // HashSet method dispatch is now the resolver, with the result emitted
+        // via `resolved_calls` (no parallel `method_call_rewrites` entry).
+        let registry = collection_dispatch_registry_impl();
         let resolved =
             resolve_method_call(&registry, trait_name, method, receiver, &|marker, ty| {
                 let ty = Self::dispatch_pattern_to_ty(ty);
@@ -2250,18 +2440,50 @@ impl Checker {
             });
         match resolved {
             Ok(call) => {
-                // Transitional dual-emit: legacy admission still owns user-visible diagnostics;
-                // remove once a production reader of resolved_calls lands.
                 self.resolved_calls.insert(SpanKey::from(span), call);
             }
-            Err(LookupError::BoundsNotSatisfied { .. }) => {
-                // Deferred Named-record admissibility may still reject after
-                // full hash-eligibility runs. Do not publish a ResolvedCall
-                // before that legacy allowlist has finally accepted the site.
+            Err(LookupError::BoundsNotSatisfied {
+                unsatisfied,
+                witness,
+                ..
+            }) => {
+                // W4.001 Stage C3 hard cutover: the resolver is now the
+                // sole admission authority for HashMap/HashSet dispatch.
+                // An unsatisfied where-bound (e.g. `K: Hash` failing on
+                // `f64`) becomes a user-facing `BoundsNotSatisfied`
+                // diagnostic with attribution to the witness type.
+                // `MethodCallNoRewrite` is permanently demoted to a
+                // boundary-violation-only diagnostic.
+                let witness_ty = Self::dispatch_pattern_to_ty(&witness);
+                let bound_summary = unsatisfied
+                    .iter()
+                    .map(|b| format!("{}: {}", b.var, b.trait_name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.report_error(
+                    TypeErrorKind::BoundsNotSatisfied,
+                    span,
+                    format!(
+                        "`{}` does not satisfy the required bounds for \
+                         `{trait_name}::{method}` ({bound_summary})",
+                        witness_ty.user_facing()
+                    ),
+                );
             }
-            Err(err) => {
-                panic!(
-                    "collection resolver disagreed with legacy allowlist for `{trait_name}::{method}` on `{receiver:?}`: {err}"
+            Err(LookupError::NoImpl { .. } | LookupError::UnknownMethod { .. }) => {
+                // Unrecognised receiver shape or method — should not occur
+                // because callers gate by ctor/method names matching the
+                // registry. Emit a fail-closed `InvalidOperation` so any
+                // future drift surfaces loudly rather than silently
+                // skipping `resolved_calls` population.
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "internal compiler error: collection resolver could \
+                         not locate `{trait_name}::{method}` for receiver \
+                         `{receiver:?}`"
+                    ),
                 );
             }
         }
@@ -2292,66 +2514,270 @@ impl Checker {
         self.record_resolved_collection_call("Set", method, &receiver, span);
     }
 
-    /// Resolve the runtime C-ABI symbol for a `HashMap` method whose key type
-    /// has been admitted as a `Named` record (the layout-key ABI path).
+    /// Sole admission authority for Vec method dispatch (Stage 3 cutover);
+    /// the per-element-type symbol override remains until Lever 3 (W4.030)
+    /// collapses the scalar/`_layout` duality.
     ///
-    /// Returns the matching `hew_hashmap_<method>_layout` symbol when the
-    /// resolved key type is `HashMapKeyType::Layout`.  Scalar `i64`/`u64` keys
-    /// route through a different (currently unwired) scalar ABI and return
-    /// `None` here — those callers fall through with no rewrite recorded.
-    ///
-    /// This helper does **not** consult the value type: the layout-keyed
-    /// runtime entry points accept any admitted value type via the same
-    /// pointer-of-blob calling convention.  Value-type admissibility is
-    /// enforced separately by `validate_hashmap_owned_element_types`.
-    fn resolve_hashmap_runtime_symbol(
-        &mut self,
-        method: &str,
-        key_ty: &Ty,
-    ) -> Option<&'static str> {
-        let resolved_key = self.subst.resolve(key_ty);
-        if !matches!(
-            HashMapKeyType::from_ty(&resolved_key),
-            Ok(HashMapKeyType::Layout)
-        ) {
-            return None;
+    /// Vec is still split between scalar-specific runtime kernels and
+    /// layout-backed kernels. The registry therefore carries a placeholder
+    /// `hew_vec_*_FAMILY` symbol so the MIR family gate recognises the call,
+    /// while this override writes the concrete symbol selected by the existing
+    /// Vec symbol router. The follow-up scalar/layout collapse removes this
+    /// override; until then this is the authority-transfer seam from registry
+    /// admission to per-element kernel selection.
+    fn record_resolved_vec_call(&mut self, method: &str, elem_ty: &Ty, span: &Span) {
+        let receiver = TyPattern::App {
+            ctor: "Vec".to_string(),
+            args: vec![self.ty_to_dispatch_pattern(elem_ty)],
+        };
+        let key = SpanKey::from(span);
+        self.record_resolved_collection_call("Seq", method, &receiver, span);
+        if !self.resolved_calls.contains_key(&key) {
+            return;
         }
-        Some(match method {
-            "insert" => "hew_hashmap_insert_layout",
-            "get" => "hew_hashmap_get_layout",
-            "contains_key" => "hew_hashmap_contains_key_layout",
-            "remove" => "hew_hashmap_remove_layout",
-            "len" => "hew_hashmap_len_layout",
-            _ => return None,
-        })
+
+        let Some(symbol_name) = self.resolve_vec_runtime_symbol(method, elem_ty, span) else {
+            self.resolved_calls.remove(&key);
+            return;
+        };
+        self.resolved_calls
+            .get_mut(&key)
+            .expect("collection resolver inserted Vec call before symbol override")
+            .target
+            .symbol_name = symbol_name.to_string();
     }
 
-    /// Resolve the runtime C-ABI symbol for a `HashSet` method whose element
-    /// type has been admitted as a `Named` record (the layout element ABI
-    /// path).  Returns `None` for non-`Named` elements (string/scalar paths
-    /// route through a different, currently unwired, ABI).
-    fn resolve_hashset_runtime_symbol(
-        &mut self,
-        method: &str,
-        elem_ty: &Ty,
-    ) -> Option<&'static str> {
-        let resolved = self.subst.resolve(elem_ty);
-        if !matches!(resolved, Ty::Named { .. }) {
-            return None;
+    /// Instantiate an [`ArgTemplate`] against the receiver's concrete types.
+    fn collection_arg_ty(template: ArgTemplate, cx: &CollectionTyCx) -> Ty {
+        match template {
+            ArgTemplate::Key => cx.key.clone(),
+            ArgTemplate::Value => cx.val.clone(),
+            ArgTemplate::Elem => cx.elem.clone(),
+            ArgTemplate::I64 => Ty::I64,
+            ArgTemplate::Receiver => cx.receiver.clone(),
         }
-        Some(match method {
-            "insert" => "hew_hashset_insert_layout",
-            "contains" => "hew_hashset_contains_layout",
-            "remove" => "hew_hashset_remove_layout",
-            "len" => "hew_hashset_len_layout",
-            _ => return None,
-        })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "HashMap has multiple methods plus ABI-boundary validation"
-    )]
+    /// Shared argument *walk*: check each supplied argument against its template
+    /// type.  Returns `false` only when a per-collection arg hook signals an
+    /// early `Ty::Error` (today: `HashSet`'s `check_hashset_element_arg`
+    /// coercion).  Missing trailing arguments are skipped — the arity check (if
+    /// any) is the sole authority for argument-count diagnostics, preserving the
+    /// historical `if let Some(arg) = args.first()` behaviour.
+    fn check_collection_args(
+        &mut self,
+        kind: CollectionKind,
+        templates: &[ArgTemplate],
+        cx: &CollectionTyCx,
+        args: &[CallArg],
+        span: &Span,
+    ) -> bool {
+        let _ = span;
+        for (i, template) in templates.iter().enumerate() {
+            let Some(arg) = args.get(i) else {
+                continue;
+            };
+            // HashSet element arguments go through the coercion hook (returns a
+            // bool, early-returns `Ty::Error`) rather than a bare `check_against`.
+            if kind == CollectionKind::HashSet && matches!(template, ArgTemplate::Elem) {
+                if !self.check_hashset_element_arg(&cx.elem, arg) {
+                    return false;
+                }
+                continue;
+            }
+            let expected = Self::collection_arg_ty(*template, cx);
+            let (expr, sp) = arg.expr();
+            self.check_against(expr, sp, &expected);
+        }
+        true
+    }
+
+    /// Construct a collection method's return type from its [`RetTemplate`].
+    ///
+    /// `VecOfKey`/`VecOfVal` route through `make_vec_type`, which itself
+    /// validates the synthesized element type — this MUST run after the
+    /// per-collection element validation hook (it does, because the driver calls
+    /// this last), preserving the historical ordering of the `HashMap`
+    /// `keys`/`values` arms.
+    fn collection_ret(
+        &mut self,
+        kind: CollectionKind,
+        ret: RetTemplate,
+        cx: &CollectionTyCx,
+        span: &Span,
+    ) -> Ty {
+        match ret {
+            RetTemplate::Unit => Ty::Unit,
+            RetTemplate::Bool => Ty::Bool,
+            RetTemplate::I64 => Ty::I64,
+            RetTemplate::OptionVal => Ty::option(cx.val.clone()),
+            RetTemplate::Elem => cx.elem.clone(),
+            RetTemplate::VecOfKey => self.make_vec_type(cx.key.clone(), span),
+            RetTemplate::VecOfVal => self.make_vec_type(cx.val.clone(), span),
+            RetTemplate::SelfTy => match kind {
+                CollectionKind::HashMap => Ty::Named {
+                    builtin: Some(BuiltinType::HashMap),
+                    name: "HashMap".to_string(),
+                    args: vec![cx.key.clone(), cx.val.clone()],
+                },
+                CollectionKind::HashSet => Ty::Named {
+                    builtin: Some(BuiltinType::HashSet),
+                    name: "HashSet".to_string(),
+                    args: vec![cx.elem.clone()],
+                },
+                // Vec `clone` returns the already-resolved receiver type
+                // (`resolved.clone()`), not a reconstructed `Self`.
+                CollectionKind::Vec => cx.resolved.clone(),
+            },
+        }
+    }
+
+    /// Code-side hook dispatch for the genuinely divergent per-collection
+    /// admission policy: element validation, the `HashSet` lowering fact, and
+    /// `ResolvedCall` recording.  This is the "do not centralise the decision"
+    /// half of the refactor — the validators/recorders stay as separate
+    /// functions; this only selects which named hook each `(kind, method)` runs,
+    /// in one place instead of three mirrored resolvers.
+    ///
+    /// Returns `false` (→ caller emits `Ty::Error`) when an element validator
+    /// rejects the call.  The Vec `reject_rc` hook deliberately does NOT
+    /// short-circuit (matching the historical fire-and-continue behaviour).
+    fn run_collection_admission(
+        &mut self,
+        kind: CollectionKind,
+        method: &str,
+        cx: &CollectionTyCx,
+        span: &Span,
+    ) -> bool {
+        match kind {
+            CollectionKind::HashMap => {
+                // Owned-vs-key_value validator split (deliberate per-arm asymmetry).
+                let validated = match method {
+                    "insert" | "get" | "remove" | "keys" | "values" => {
+                        self.validate_hashmap_owned_element_types(&cx.key, &cx.val, span)
+                    }
+                    _ => self.validate_hashmap_key_value_types(&cx.key, &cx.val, span),
+                };
+                if !validated {
+                    return false;
+                }
+                if matches!(method, "insert" | "get" | "remove" | "contains_key" | "len") {
+                    self.record_resolved_hashmap_call(method, &cx.key, &cx.val, span);
+                }
+            }
+            CollectionKind::HashSet => {
+                // Owned (insert) vs plain (rest) validator split.
+                let validated = match method {
+                    "insert" => self.validate_hashset_owned_element_type(&cx.elem, span),
+                    _ => self.validate_hashset_element_type(&cx.elem, span),
+                };
+                if !validated {
+                    return false;
+                }
+                // Every known HashSet arm records a lowering fact (HashMap/Vec
+                // do not) — a genuine per-collection hook.
+                self.record_hashset_lowering_fact(span, &cx.elem);
+                if matches!(
+                    method,
+                    "insert" | "contains" | "remove" | "len" | "is_empty"
+                ) {
+                    self.record_resolved_hashset_call(method, &cx.elem, span);
+                }
+            }
+            CollectionKind::Vec => {
+                // Element Rc-rejection on the mutating/element-consuming arms;
+                // fire-and-continue (does NOT short-circuit, matching history).
+                if matches!(
+                    method,
+                    "push" | "pop" | "get" | "remove" | "set" | "append" | "extend"
+                ) {
+                    self.reject_rc_collection_element("Vec", &cx.elem, span);
+                }
+                // Every table-driven Vec arm records via the symbol-override
+                // recorder using the *resolved* element type.
+                let resolved_elem = self.subst.resolve(&cx.elem);
+                self.record_resolved_vec_call(method, &resolved_elem, span);
+            }
+        }
+        true
+    }
+
+    /// Fail-closed fallback for an unknown collection method: try a user
+    /// `impl Trait for <collection>` body, then synthesize the arguments and
+    /// emit the per-collection `no method `{m}` on {Collection}` diagnostic.
+    fn collection_method_fallback(
+        &mut self,
+        kind: CollectionKind,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let receiver = Ty::Named {
+            builtin: Some(kind.builtin()),
+            name: kind.name().to_string(),
+            args: vec![],
+        };
+        if let Some(ret_ty) =
+            self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
+        {
+            return ret_ty;
+        }
+        for arg in args {
+            let (expr, sp) = arg.expr();
+            self.synthesize(expr, sp);
+        }
+        self.report_error(
+            TypeErrorKind::UndefinedMethod,
+            span,
+            format!("no method `{method}` on {}", kind.name()),
+        );
+        Ty::Error
+    }
+
+    /// The single descriptor-driven front-half admission authority for builtin
+    /// collection method calls, replacing the three mirrored resolvers.
+    ///
+    /// Flow (preserving the historical per-arm ordering exactly):
+    /// arity → arguments → element validation / lowering / recording → return.
+    /// Unknown / genuinely divergent methods (those absent from
+    /// [`collection_method_desc`]) fall through to the fail-closed fallback; the
+    /// Vec-specific `contains`/`map`/`filter`/`fold`/`join` arms and the
+    /// structural-array guard are handled by `check_vec_method` before it
+    /// delegates here.
+    pub(super) fn check_collection_method(
+        &mut self,
+        kind: CollectionKind,
+        cx: &CollectionTyCx,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let Some(desc) = collection_method_desc(kind, method) else {
+            return self.collection_method_fallback(kind, method, args, span);
+        };
+        if let Some(arity) = desc.arity {
+            self.check_arity(args, arity, &format!("`{}::{method}`", kind.name()), span);
+        }
+        if !self.check_collection_args(kind, desc.arg_templates, cx, args, span) {
+            return Ty::Error;
+        }
+        if !self.run_collection_admission(kind, method, cx, span) {
+            return Ty::Error;
+        }
+        self.collection_ret(kind, desc.ret, cx, span)
+    }
+
+    /// Resolve the per-call-site `ResolvedCall` for HashMap/HashSet via the
+    /// registry, populate `resolved_calls`, and surface user-facing
+    /// diagnostics on resolver failure.
+    ///
+    /// After W4.001 Stage C3 this is the sole admission authority for
+    /// HashMap/HashSet method dispatch — the per-V symbol-selection
+    /// helpers (`resolve_hashmap_runtime_symbol` / `_hashset_`) and the
+    /// dual-emit `MethodCallRewrite::RewriteToFunction` arms have retired.
+    /// Unsatisfied `where`-bounds (e.g. `HashMap<f64, _>` failing
+    /// `K: Hash`) emit `TypeErrorKind::BoundsNotSatisfied` with attribution
+    /// to the witness type; missing impls emit `InvalidOperation`.
     pub(super) fn check_hashmap_method(
         &mut self,
         type_args: &[Ty],
@@ -2367,138 +2793,8 @@ impl Checker {
             .get(1)
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
-        match method {
-            "insert" => {
-                self.check_arity(args, 2, "`HashMap::insert`", span);
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &key_ty);
-                }
-                if let Some(arg) = args.get(1) {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &val_ty);
-                }
-                if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_resolved_hashmap_call("insert", &key_ty, &val_ty, span);
-                if let Some(c_symbol) = self.resolve_hashmap_runtime_symbol("insert", &key_ty) {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Unit
-            }
-            "get" => {
-                self.check_arity(args, 1, "`HashMap::get`", span);
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &key_ty);
-                }
-                if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_resolved_hashmap_call("get", &key_ty, &val_ty, span);
-                if let Some(c_symbol) = self.resolve_hashmap_runtime_symbol("get", &key_ty) {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::option(val_ty)
-            }
-            "remove" => {
-                self.check_arity(args, 1, "`HashMap::remove`", span);
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &key_ty);
-                }
-                if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_resolved_hashmap_call("remove", &key_ty, &val_ty, span);
-                if let Some(c_symbol) = self.resolve_hashmap_runtime_symbol("remove", &key_ty) {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Bool
-            }
-            "contains_key" => {
-                self.check_arity(args, 1, "`HashMap::contains_key`", span);
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &key_ty);
-                }
-                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_resolved_hashmap_call("contains_key", &key_ty, &val_ty, span);
-                if let Some(c_symbol) = self.resolve_hashmap_runtime_symbol("contains_key", &key_ty)
-                {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Bool
-            }
-            "keys" => {
-                self.check_arity(args, 0, "`HashMap::keys`", span);
-                if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
-                    return Ty::Error;
-                }
-                self.make_vec_type(key_ty, span)
-            }
-            "values" => {
-                self.check_arity(args, 0, "`HashMap::values`", span);
-                if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
-                    return Ty::Error;
-                }
-                self.make_vec_type(val_ty, span)
-            }
-            "clone" => {
-                self.check_arity(args, 0, "`HashMap::clone`", span);
-                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
-                    return Ty::Error;
-                }
-                Ty::Named {
-                    builtin: Some(BuiltinType::HashMap),
-                    name: "HashMap".to_string(),
-                    args: vec![key_ty.clone(), val_ty.clone()],
-                }
-            }
-            "len" => {
-                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_resolved_hashmap_call("len", &key_ty, &val_ty, span);
-                if let Some(c_symbol) = self.resolve_hashmap_runtime_symbol("len", &key_ty) {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::I64
-            }
-            "is_empty" => {
-                if !self.validate_hashmap_key_value_types(&key_ty, &val_ty, span) {
-                    return Ty::Error;
-                }
-                Ty::Bool
-            }
-            _ => {
-                // Receiver kind for impl table lookup: bare `HashMap` (the
-                // canonical_primitive_or_builtin_key strips type args).
-                let receiver = Ty::Named {
-                    builtin: Some(BuiltinType::HashMap),
-                    name: "HashMap".to_string(),
-                    args: vec![],
-                };
-                if let Some(ret_ty) =
-                    self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
-                {
-                    return ret_ty;
-                }
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    format!("no method `{method}` on HashMap"),
-                );
-                Ty::Error
-            }
-        }
+        let cx = CollectionTyCx::hashmap(key_ty, val_ty);
+        self.check_collection_method(CollectionKind::HashMap, &cx, method, args, span)
     }
 
     pub(super) fn check_hashset_method(
@@ -2512,101 +2808,8 @@ impl Checker {
             .first()
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
-        match method {
-            "insert" => {
-                self.check_arity(args, 1, "`HashSet::insert`", span);
-                if let Some(arg) = args.first() {
-                    if !self.check_hashset_element_arg(&elem_ty, arg) {
-                        return Ty::Error;
-                    }
-                }
-                if !self.validate_hashset_owned_element_type(&elem_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_hashset_lowering_fact(span, &elem_ty);
-                self.record_resolved_hashset_call("insert", &elem_ty, span);
-                if let Some(c_symbol) = self.resolve_hashset_runtime_symbol("insert", &elem_ty) {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Bool
-            }
-            "contains" | "remove" => {
-                self.check_arity(args, 1, &format!("`HashSet::{method}`"), span);
-                if let Some(arg) = args.first() {
-                    if !self.check_hashset_element_arg(&elem_ty, arg) {
-                        return Ty::Error;
-                    }
-                }
-                if !self.validate_hashset_element_type(&elem_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_hashset_lowering_fact(span, &elem_ty);
-                self.record_resolved_hashset_call(method, &elem_ty, span);
-                if let Some(c_symbol) = self.resolve_hashset_runtime_symbol(method, &elem_ty) {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Bool
-            }
-            "clone" => {
-                self.check_arity(args, 0, "`HashSet::clone`", span);
-                if !self.validate_hashset_element_type(&elem_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_hashset_lowering_fact(span, &elem_ty);
-                Ty::Named {
-                    builtin: Some(BuiltinType::HashSet),
-                    name: "HashSet".to_string(),
-                    args: vec![elem_ty.clone()],
-                }
-            }
-            "len" => {
-                if !self.validate_hashset_element_type(&elem_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_hashset_lowering_fact(span, &elem_ty);
-                self.record_resolved_hashset_call("len", &elem_ty, span);
-                if let Some(c_symbol) = self.resolve_hashset_runtime_symbol("len", &elem_ty) {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::I64
-            }
-            "is_empty" => {
-                if !self.validate_hashset_element_type(&elem_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_hashset_lowering_fact(span, &elem_ty);
-                Ty::Bool
-            }
-            "clear" => {
-                if !self.validate_hashset_element_type(&elem_ty, span) {
-                    return Ty::Error;
-                }
-                self.record_hashset_lowering_fact(span, &elem_ty);
-                Ty::Unit
-            }
-            _ => {
-                let receiver = Ty::Named {
-                    builtin: Some(BuiltinType::HashSet),
-                    name: "HashSet".to_string(),
-                    args: vec![],
-                };
-                if let Some(ret_ty) =
-                    self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
-                {
-                    return ret_ty;
-                }
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    format!("no method `{method}` on HashSet"),
-                );
-                Ty::Error
-            }
-        }
+        let cx = CollectionTyCx::hashset(elem_ty);
+        self.check_collection_method(CollectionKind::HashSet, &cx, method, args, span)
     }
 
     pub(super) fn check_rc_method(
@@ -2740,6 +2943,9 @@ impl Checker {
         elem_ty: &Ty,
         span: &Span,
     ) -> Option<&'static str> {
+        if method == "join" {
+            return matches!(elem_ty, Ty::String).then_some("hew_vec_join_str");
+        }
         let sym = crate::stdlib::resolve_vec_method(method, elem_ty, &self.type_defs)?;
         if sym.ends_with("_layout") {
             let supported_bitcopy_method =
@@ -2780,7 +2986,10 @@ impl Checker {
         Some(sym)
     }
 
-    #[allow(clippy::too_many_lines, reason = "Vec has many methods to type-check")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Vec keeps the divergent contains/join/map/filter/fold arms and the structural-array guard inline; the table arms delegate to the shared driver."
+    )]
     pub(super) fn check_vec_method(
         &mut self,
         type_args: &[Ty],
@@ -2800,69 +3009,6 @@ impl Checker {
             .vec_element_contains_structural_array(&elem_ty_before, &mut elem_ty_before_visiting);
         let _ = self.validate_vec_element_type(&elem_ty, span);
         let result = match method {
-            "push" => {
-                self.check_arity(args, 1, "`Vec::push`", span);
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &elem_ty);
-                }
-                self.reject_rc_collection_element("Vec", &elem_ty, span);
-                let resolved_elem = self.subst.resolve(&elem_ty);
-                if let Some(c_symbol) =
-                    self.resolve_vec_runtime_symbol("push", &resolved_elem, span)
-                {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Unit
-            }
-            "pop" => {
-                self.check_arity(args, 0, "`Vec::pop`", span);
-                self.reject_rc_collection_element("Vec", &elem_ty, span);
-                let resolved_elem = self.subst.resolve(&elem_ty);
-                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("pop", &resolved_elem, span)
-                {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                elem_ty.clone()
-            }
-            "len" => {
-                self.record_runtime_method_call_rewrite(span, "len_vec");
-                Ty::I64
-            }
-            "get" => {
-                self.check_arity(args, 1, "`Vec::get`", span);
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &Ty::I64);
-                }
-                self.reject_rc_collection_element("Vec", &elem_ty, span);
-                let resolved_elem = self.subst.resolve(&elem_ty);
-                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("get", &resolved_elem, span)
-                {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                elem_ty.clone()
-            }
-            "remove" => {
-                // `Vec::remove(index)` is index-based; it removes the element at
-                // the given position and returns nothing.  Both the generic
-                // `hew_vec_remove_at` and the layout-backed
-                // `hew_vec_remove_at_layout` have `void` C-ABI return types, so
-                // the checker-side return is `Unit`.
-                self.check_arity(args, 1, "`Vec::remove`", span);
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &Ty::I64);
-                }
-                self.reject_rc_collection_element("Vec", &elem_ty, span);
-                let resolved_elem = self.subst.resolve(&elem_ty);
-                if let Some(c_symbol) =
-                    self.resolve_vec_runtime_symbol("remove", &resolved_elem, span)
-                {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Unit
-            }
             "contains" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -2887,11 +3033,7 @@ impl Checker {
                     if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
                         && is_copy
                     {
-                        if let Some(c_symbol) =
-                            self.resolve_vec_runtime_symbol("contains", &resolved_elem, span)
-                        {
-                            self.record_runtime_method_call_rewrite(span, c_symbol);
-                        }
+                        self.record_resolved_vec_call("contains", &resolved_elem, span);
                     } else if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
                     {
                         // Eligible but not Copy: layout-managed semantics
@@ -2916,61 +3058,10 @@ impl Checker {
                             span,
                         );
                     }
-                } else if let Some(c_symbol) =
-                    self.resolve_vec_runtime_symbol("contains", &resolved_elem, span)
-                {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                } else {
+                    self.record_resolved_vec_call("contains", &resolved_elem, span);
                 }
                 Ty::Bool
-            }
-            "is_empty" => {
-                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("is_empty", &elem_ty, span)
-                {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Bool
-            }
-            "clear" => {
-                self.check_arity(args, 0, "`Vec::clear`", span);
-                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("clear", &elem_ty, span) {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Unit
-            }
-            "clone" => {
-                self.check_arity(args, 0, "`Vec::clone`", span);
-                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("clone", &elem_ty, span) {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                resolved.clone()
-            }
-            "set" => {
-                if let Some(idx) = args.first() {
-                    let (expr, sp) = idx.expr();
-                    self.check_against(expr, sp, &Ty::I64);
-                }
-                if let Some(val) = args.get(1) {
-                    let (expr, sp) = val.expr();
-                    self.check_against(expr, sp, &elem_ty);
-                }
-                self.reject_rc_collection_element("Vec", &elem_ty, span);
-                let resolved_elem = self.subst.resolve(&elem_ty);
-                if let Some(c_symbol) = self.resolve_vec_runtime_symbol("set", &resolved_elem, span)
-                {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Unit
-            }
-            "append" | "extend" => {
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, receiver_ty);
-                }
-                self.reject_rc_collection_element("Vec", &elem_ty, span);
-                if let Some(c_symbol) = self.resolve_vec_runtime_symbol(method, &elem_ty, span) {
-                    self.record_runtime_method_call_rewrite(span, c_symbol);
-                }
-                Ty::Unit
             }
             "join" => {
                 self.check_arity(args, 1, "`Vec::join`", span);
@@ -2979,9 +3070,11 @@ impl Checker {
                     self.check_against(expr, sp, &Ty::String);
                 }
                 if elem_ty == Ty::String {
-                    // Register the runtime rewrite for `Vec<string>::join`;
-                    // non-string element rejection remains the type gate.
-                    self.record_runtime_method_call_rewrite(span, "hew_vec_join_str");
+                    // `Vec<string>::join` is the sole element-type cell;
+                    // non-string element rejection remains the type gate
+                    // below.
+                    let resolved_elem = self.subst.resolve(&elem_ty);
+                    self.record_resolved_vec_call("join", &resolved_elem, span);
                 } else {
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
@@ -3042,7 +3135,28 @@ impl Checker {
                 }
                 self.subst.resolve(&acc_ty)
             }
+            _ if collection_method_desc(CollectionKind::Vec, method).is_some() => {
+                // Table-driven Vec arms (push/pop/len/get/remove/is_empty/
+                // clear/clone/set/append/extend) go through the shared
+                // descriptor-driven driver.  The structural-array pre/post
+                // guard and `validate_vec_element_type` top call stay here
+                // because they wrap the whole dispatch, and contains/join/map/
+                // filter/fold stay above as explicit code arms.  For these
+                // known methods the driver never hits its own fallback and
+                // always returns a value (Vec arg/admission hooks never
+                // short-circuit), so this falls through to the post-guard
+                // exactly as the legacy inline table arms did.
+                let cx =
+                    CollectionTyCx::vec(elem_ty.clone(), receiver_ty.clone(), resolved.clone());
+                self.check_collection_method(CollectionKind::Vec, &cx, method, args, span)
+            }
             _ => {
+                // Unknown method fail-closed fallback.  Kept inline (NOT routed
+                // through the shared `collection_method_fallback`) to preserve
+                // the historical asymmetry: a successful primitive-trait
+                // dispatch `return`s early and bypasses the structural-array
+                // post-guard, whereas the "no method on Vec" path falls through
+                // to it.
                 let receiver = Ty::Named {
                     builtin: Some(BuiltinType::Vec),
                     name: "Vec".to_string(),
@@ -4522,6 +4636,44 @@ impl Checker {
                 _,
             ) => {
                 if let Some(sig) = self.lookup_named_method_sig(name, type_args, method) {
+                    // Mutable-receiver enforcement (Q297 Stage 1): methods
+                    // declared with `var self` (or the named-receiver `var`
+                    // equivalent) require the call-site receiver to be a
+                    // `var`-bound binding. Without this gate, a caller could
+                    // dispatch through an immutable `let`-bound binding and
+                    // silently lose the contract that the trait declared a
+                    // mutable receiver. Mirrors the precedent on `.step()`
+                    // for machines (see further below in this arm).
+                    if sig.requires_mutable_receiver {
+                        let receiver_binding_name = match &receiver.0 {
+                            Expr::Identifier(n) => Some(n.clone()),
+                            _ => None,
+                        };
+                        let receiver_is_mutable = receiver_binding_name
+                            .as_deref()
+                            .and_then(|n| self.env.lookup_ref(n))
+                            .is_some_and(|b| b.is_mutable);
+                        if !receiver_is_mutable {
+                            let receiver_label = if let Some(n) = &receiver_binding_name {
+                                format!("`{n}`")
+                            } else {
+                                "this expression".to_string()
+                            };
+                            self.report_error(
+                                TypeErrorKind::MutabilityError,
+                                span,
+                                format!(
+                                    "method `{method}` on `{name}` requires a mutable binding receiver; \
+                                     {receiver_label} is not declared with `var`",
+                                ),
+                            );
+                        } else if let Some(n) = &receiver_binding_name {
+                            // Mark the binding as written so the unused-mut
+                            // analysis does not flag `var it = …; it.next()`
+                            // as a never-reassigned mutable binding.
+                            self.env.mark_written(n);
+                        }
+                    }
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
                         None,
@@ -4642,6 +4794,41 @@ impl Checker {
                     self.record_named_extern_symbol_rewrite_if_any(
                         name, type_args, method, &sig, span,
                     );
+                    // W3.042 S2-S2: user-defined methods on named types (both
+                    // inherent `impl Type { fn m(...) }` and trait `impl T for
+                    // Type { fn m(...) }`) must record a `RewriteToFunction`
+                    // entry naming the qualified `Type::method` symbol so HIR
+                    // lowering can emit a direct `Call` (with the receiver
+                    // injected as the first argument) instead of falling
+                    // through to `MethodCallNoRewrite`. The qualified symbol
+                    // is the same key that `hew-hir`'s pre-pass seeds into
+                    // `fn_registry` (`HirImplBlock::method_symbol`), so
+                    // resolution succeeds without further wiring.
+                    //
+                    // Skipped when an earlier helper above already recorded a
+                    // rewrite (handle methods, monomorphic-extern symbols), or
+                    // when a dedicated dispatch side-table will be consulted
+                    // by HIR before `method_call_rewrites` (machine
+                    // `step`/`state_name`, actor send/ask, dyn-trait,
+                    // resolved-impl call kernel).
+                    let span_key = SpanKey::from(span);
+                    let already_rewritten = self.method_call_rewrites.contains_key(&span_key)
+                        || self.machine_method_dispatch.contains_key(&span_key)
+                        || self.actor_method_dispatch.contains_key(&span_key)
+                        || self.dyn_trait_method_calls.contains_key(&span_key)
+                        || self.resolved_calls.contains_key(&span_key);
+                    if !already_rewritten {
+                        let method_key = format!("{name}::{method}");
+                        if self.fn_sigs.contains_key(&method_key) {
+                            self.record_method_call_rewrite(
+                                span,
+                                MethodCallRewrite::RewriteToFunction {
+                                    c_symbol: method_key,
+                                    elem_ty: None,
+                                },
+                            );
+                        }
+                    }
                     return applied_sig.return_type;
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.
@@ -4698,6 +4885,45 @@ impl Checker {
                         trait_sig.return_type = trait_sig
                             .return_type
                             .substitute_named_param("Self", &self_ty);
+                        // W3.042 S2-S4: receiver-mutability gate for the
+                        // generic-bound StaticTraitDispatch arm. Mirrors the
+                        // (Ty::Named, _) direct-call gate above (Stage 1):
+                        // when the trait method is declared with `var self`
+                        // the call site must bind the receiver with `var`,
+                        // otherwise a mutating method would silently dispatch
+                        // through an immutable binding and lose the contract.
+                        // The substituted `trait_sig.requires_mutable_receiver`
+                        // is the checker-authoritative source — we do NOT
+                        // re-walk `trait_defs` here (LESSONS `checker-authority`).
+                        if trait_sig.requires_mutable_receiver {
+                            let receiver_binding_name = match &receiver.0 {
+                                Expr::Identifier(n) => Some(n.clone()),
+                                _ => None,
+                            };
+                            let receiver_is_mutable = receiver_binding_name
+                                .as_deref()
+                                .and_then(|n| self.env.lookup_ref(n))
+                                .is_some_and(|b| b.is_mutable);
+                            if !receiver_is_mutable {
+                                let receiver_label = if let Some(n) = &receiver_binding_name {
+                                    format!("`{n}`")
+                                } else {
+                                    "this expression".to_string()
+                                };
+                                self.report_error(
+                                    TypeErrorKind::MutabilityError,
+                                    span,
+                                    format!(
+                                        "trait method `{declaring_trait}::{method}` \
+                                         (statically dispatched on type parameter `{name}`) \
+                                         requires a mutable binding receiver; \
+                                         {receiver_label} is not declared with `var`",
+                                    ),
+                                );
+                            } else if let Some(n) = &receiver_binding_name {
+                                self.env.mark_written(n);
+                            }
+                        }
                         let applied_sig = self.apply_instantiated_call_signature(
                             &trait_sig,
                             None,
@@ -4797,6 +5023,47 @@ impl Checker {
                         // re-derives it from the impl fn or by
                         // walking vtable entries (per Q-β resolution).
                         self.apply_trait_object_bound_substitutions(&mut sig, bound);
+                        // W3.042 S2-S4: receiver-mutability gate for the
+                        // Ty::TraitObject (dyn Trait) dispatch arm. Mirrors
+                        // the (Ty::Named, _) direct-call gate above (Stage 1)
+                        // and the StaticTraitDispatch gate. The substituted
+                        // `sig.requires_mutable_receiver` flag is the
+                        // checker-authoritative source (LESSONS
+                        // `checker-authority`); the flag survives
+                        // `apply_trait_object_bound_substitutions` per the
+                        // FnSig schema (W3.042 plan §3.6). Receiver shape
+                        // for dyn dispatch is always a Box<dyn Trait> bound
+                        // identifier — the same `Expr::Identifier` extraction
+                        // the other arms use applies here.
+                        if sig.requires_mutable_receiver {
+                            let receiver_binding_name = match &receiver.0 {
+                                Expr::Identifier(n) => Some(n.clone()),
+                                _ => None,
+                            };
+                            let receiver_is_mutable = receiver_binding_name
+                                .as_deref()
+                                .and_then(|n| self.env.lookup_ref(n))
+                                .is_some_and(|b| b.is_mutable);
+                            if !receiver_is_mutable {
+                                let receiver_label = if let Some(n) = &receiver_binding_name {
+                                    format!("`{n}`")
+                                } else {
+                                    "this expression".to_string()
+                                };
+                                self.report_error(
+                                    TypeErrorKind::MutabilityError,
+                                    span,
+                                    format!(
+                                        "method `{method}` on `dyn {}` requires a \
+                                         mutable binding receiver; {receiver_label} is \
+                                         not declared with `var`",
+                                        bound.trait_name,
+                                    ),
+                                );
+                            } else if let Some(n) = &receiver_binding_name {
+                                self.env.mark_written(n);
+                            }
+                        }
                         // Record the per-call-site vtable-slot resolution that
                         // HIR/MIR lowering will consume to emit
                         // `Instr::CallTraitMethod`. Slot convention follows
@@ -4914,7 +5181,7 @@ pub fn collection_dispatch_registry_for_tests() -> ImplRegistry {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "Stage-B transitional registry spells out every HashMap/HashSet method target"
+    reason = "transitional registry spells out every collection method target"
 )]
 fn collection_dispatch_registry_impl() -> ImplRegistry {
     let mut registry = ImplRegistry::new();
@@ -5039,9 +5306,53 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                     consumes_receiver: false,
                 },
             ),
+            (
+                "is_empty".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashset_is_empty_layout".to_string(),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+        ],
+    });
+    registry.register(ImplDef {
+        trait_name: "Seq".to_string(),
+        self_pattern: TyPattern::App {
+            ctor: "Vec".to_string(),
+            args: vec![TyPattern::Var("T".to_string())],
+        },
+        where_bounds: vec![],
+        methods: vec![
+            vec_method_target("push", RuntimeAbi::ByRefMut),
+            vec_method_target("pop", RuntimeAbi::ByRefMut),
+            vec_method_target("len", RuntimeAbi::ByRef),
+            vec_method_target("get", RuntimeAbi::ByRef),
+            vec_method_target("set", RuntimeAbi::ByRefMut),
+            vec_method_target("remove", RuntimeAbi::ByRefMut),
+            vec_method_target("contains", RuntimeAbi::ByRef),
+            vec_method_target("is_empty", RuntimeAbi::ByRef),
+            vec_method_target("clear", RuntimeAbi::ByRefMut),
+            vec_method_target("clone", RuntimeAbi::ByRef),
+            vec_method_target("append", RuntimeAbi::ByRefMut),
+            vec_method_target("extend", RuntimeAbi::ByRefMut),
+            vec_method_target("join", RuntimeAbi::ByRef),
         ],
     });
     registry
+}
+
+fn vec_method_target(method: &str, abi: RuntimeAbi) -> (String, MethodTarget) {
+    (
+        method.to_string(),
+        MethodTarget {
+            symbol_name: format!("hew_vec_{method}_FAMILY"),
+            abi,
+            call_hint: CallAbiHint::RuntimeShim,
+            consumes_receiver: false,
+        },
+    )
 }
 #[cfg(test)]
 mod tests {
@@ -5372,95 +5683,125 @@ mod tests {
     }
 
     // ── HashMap/HashSet layout-symbol rewrite recording ──────────────────────
+    //
+    // W4.001 Stage C3 hard cutover: the legacy
+    // `resolve_hashmap_runtime_symbol` / `resolve_hashset_runtime_symbol`
+    // per-V helpers + dual-emit `MethodCallRewrite::RewriteToFunction`
+    // arms retired. Resolver-authority via `record_resolved_collection_call`
+    // is now the sole admission and dispatch path; coverage lives in
+    // `tests/resolved_call_hashmap_coverage.rs` and
+    // `tests/resolved_call_hashset_coverage.rs` (catalog-side) plus the
+    // C2 `resolved_impl_call_hashmap_layout_descriptor_materialisation`
+    // integration test (codegen-side).
 
-    /// `resolve_hashmap_runtime_symbol("insert", Named)` must return
-    /// `Some("hew_hashmap_insert_layout")` and recording that rewrite must
-    /// populate `method_call_rewrites` with the matching
-    /// `MethodCallRewrite::RewriteToFunction`.
-    ///
-    /// This pins the checker-side of the rewrite pipeline for layout-keyed
-    /// `HashMap` operations introduced in this slice.
-    #[test]
-    fn check_hashmap_method_records_insert_rewrite_for_layout_key() {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 200..210;
+    // ── W4.048: descriptor-driven collection method resolver ─────────────────
+    //
+    // Slice 1 isolation tests for the pure-data descriptor table. These pin the
+    // arity / arg-shape / return-shape of every table-driven collection method
+    // so a row edit that would silently drift the front-half admission contract
+    // fails here before it reaches the behaviour-diff corpus.
 
-        // A Named type → HashMapKeyType::Layout → symbol = "hew_hashmap_insert_layout"
-        let key_ty = Ty::Named {
-            builtin: None,
-            name: "Point".to_string(),
-            args: vec![],
-        };
-
-        let symbol = checker.resolve_hashmap_runtime_symbol("insert", &key_ty);
-        assert_eq!(
-            symbol,
-            Some("hew_hashmap_insert_layout"),
-            "resolve_hashmap_runtime_symbol(\"insert\", Named) must return \
-             Some(\"hew_hashmap_insert_layout\")"
-        );
-
-        // Simulate what check_hashmap_method calls at the insert site.
-        if let Some(c_symbol) = symbol {
-            checker.record_runtime_method_call_rewrite(&span, c_symbol);
-        }
-
-        let key = SpanKey::from(&span);
-        assert!(
-            matches!(
-                checker.method_call_rewrites.get(&key),
-                Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                    if c_symbol == "hew_hashmap_insert_layout"
-            ),
-            "method_call_rewrites must contain \
-             RewriteToFunction {{ c_symbol: \"hew_hashmap_insert_layout\" }} \
-             after resolve + record; got: {:?}",
-            checker.method_call_rewrites.get(&key)
-        );
+    fn arity_of(kind: CollectionKind, method: &str) -> Option<usize> {
+        collection_method_desc(kind, method)
+            .expect("known method")
+            .arity
     }
 
-    /// `resolve_hashset_runtime_symbol("insert", Named)` must return
-    /// `Some("hew_hashset_insert_layout")` and recording that rewrite must
-    /// populate `method_call_rewrites` with the matching
-    /// `MethodCallRewrite::RewriteToFunction`.
-    ///
-    /// This pins the checker-side of the rewrite pipeline for layout-backed
-    /// `HashSet` operations introduced in this slice.
     #[test]
-    fn check_hashset_method_records_insert_rewrite_for_layout_elem() {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 220..230;
-
-        // A Named type → matches!(resolved, Ty::Named { .. }) → symbol = "hew_hashset_insert_layout"
-        let elem_ty = Ty::Named {
-            builtin: None,
-            name: "Point".to_string(),
-            args: vec![],
-        };
-
-        let symbol = checker.resolve_hashset_runtime_symbol("insert", &elem_ty);
-        assert_eq!(
-            symbol,
-            Some("hew_hashset_insert_layout"),
-            "resolve_hashset_runtime_symbol(\"insert\", Named) must return \
-             Some(\"hew_hashset_insert_layout\")"
-        );
-
-        if let Some(c_symbol) = symbol {
-            checker.record_runtime_method_call_rewrite(&span, c_symbol);
+    fn descriptor_table_arity_skips_len_and_is_empty() {
+        // `len`/`is_empty` historically never called `check_arity`; the
+        // `Option<usize>` arity field must encode that asymmetry as `None`.
+        for kind in [
+            CollectionKind::HashMap,
+            CollectionKind::HashSet,
+            CollectionKind::Vec,
+        ] {
+            assert_eq!(arity_of(kind, "len"), None, "{kind:?}::len skips arity");
+            assert_eq!(
+                arity_of(kind, "is_empty"),
+                None,
+                "{kind:?}::is_empty skips arity"
+            );
         }
+        // Vec `set`/`append`/`extend` also historically skipped arity.
+        assert_eq!(arity_of(CollectionKind::Vec, "set"), None);
+        assert_eq!(arity_of(CollectionKind::Vec, "append"), None);
+        assert_eq!(arity_of(CollectionKind::Vec, "extend"), None);
+    }
 
-        let key = SpanKey::from(&span);
-        assert!(
-            matches!(
-                checker.method_call_rewrites.get(&key),
-                Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                    if c_symbol == "hew_hashset_insert_layout"
-            ),
-            "method_call_rewrites must contain \
-             RewriteToFunction {{ c_symbol: \"hew_hashset_insert_layout\" }} \
-             after resolve + record; got: {:?}",
-            checker.method_call_rewrites.get(&key)
+    #[test]
+    fn descriptor_table_checked_arities() {
+        assert_eq!(arity_of(CollectionKind::HashMap, "insert"), Some(2));
+        assert_eq!(arity_of(CollectionKind::HashMap, "get"), Some(1));
+        assert_eq!(arity_of(CollectionKind::HashMap, "keys"), Some(0));
+        assert_eq!(arity_of(CollectionKind::HashSet, "insert"), Some(1));
+        assert_eq!(arity_of(CollectionKind::HashSet, "contains"), Some(1));
+        assert_eq!(arity_of(CollectionKind::HashSet, "clone"), Some(0));
+        assert_eq!(arity_of(CollectionKind::Vec, "push"), Some(1));
+        assert_eq!(arity_of(CollectionKind::Vec, "get"), Some(1));
+        assert_eq!(arity_of(CollectionKind::Vec, "pop"), Some(0));
+        assert_eq!(arity_of(CollectionKind::Vec, "clone"), Some(0));
+    }
+
+    #[test]
+    fn descriptor_table_arg_and_return_shapes() {
+        let hm_insert = collection_method_desc(CollectionKind::HashMap, "insert").unwrap();
+        assert_eq!(
+            hm_insert.arg_templates,
+            &[ArgTemplate::Key, ArgTemplate::Value]
         );
+        assert_eq!(hm_insert.ret, RetTemplate::Unit);
+
+        let hm_get = collection_method_desc(CollectionKind::HashMap, "get").unwrap();
+        assert_eq!(hm_get.arg_templates, &[ArgTemplate::Key]);
+        assert_eq!(hm_get.ret, RetTemplate::OptionVal);
+
+        let hm_keys = collection_method_desc(CollectionKind::HashMap, "keys").unwrap();
+        assert_eq!(hm_keys.ret, RetTemplate::VecOfKey);
+        let hm_values = collection_method_desc(CollectionKind::HashMap, "values").unwrap();
+        assert_eq!(hm_values.ret, RetTemplate::VecOfVal);
+
+        let set_insert = collection_method_desc(CollectionKind::HashSet, "insert").unwrap();
+        assert_eq!(set_insert.arg_templates, &[ArgTemplate::Elem]);
+        assert_eq!(set_insert.ret, RetTemplate::Bool);
+
+        let vec_get = collection_method_desc(CollectionKind::Vec, "get").unwrap();
+        assert_eq!(vec_get.arg_templates, &[ArgTemplate::I64]);
+        assert_eq!(vec_get.ret, RetTemplate::Elem);
+
+        let vec_set = collection_method_desc(CollectionKind::Vec, "set").unwrap();
+        assert_eq!(
+            vec_set.arg_templates,
+            &[ArgTemplate::I64, ArgTemplate::Elem]
+        );
+
+        let vec_append = collection_method_desc(CollectionKind::Vec, "append").unwrap();
+        assert_eq!(vec_append.arg_templates, &[ArgTemplate::Receiver]);
+
+        for clone_kind in [
+            CollectionKind::HashMap,
+            CollectionKind::HashSet,
+            CollectionKind::Vec,
+        ] {
+            assert_eq!(
+                collection_method_desc(clone_kind, "clone").unwrap().ret,
+                RetTemplate::SelfTy,
+                "{clone_kind:?}::clone returns Self"
+            );
+        }
+    }
+
+    #[test]
+    fn descriptor_table_unknown_and_divergent_methods_have_no_row() {
+        // Unknown methods → fail-closed fallback (no descriptor row).
+        assert!(collection_method_desc(CollectionKind::HashMap, "frobnicate").is_none());
+        assert!(collection_method_desc(CollectionKind::Vec, "nope").is_none());
+        // Genuinely divergent Vec arms stay code-side hooks, not table rows.
+        for divergent in ["contains", "map", "filter", "fold", "join"] {
+            assert!(
+                collection_method_desc(CollectionKind::Vec, divergent).is_none(),
+                "Vec::{divergent} must remain a code-side hook, not a descriptor row"
+            );
+        }
     }
 }

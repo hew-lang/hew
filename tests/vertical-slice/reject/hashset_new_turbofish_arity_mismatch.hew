@@ -1,0 +1,5 @@
+// HashSet takes exactly one type argument.
+fn main() -> i64 {
+    let _s = HashSet::<i64, i64>::new();
+    0
+}

@@ -3,6 +3,7 @@
 use crate::builtin_names::{builtin_named_type, builtin_named_types, BuiltinMethodRuntime};
 use crate::error::{TypeError, TypeErrorKind};
 use crate::module_registry::ModuleError;
+use crate::resolved_ty::{BoundaryError, ResolvedTy};
 use crate::traits::MarkerTrait;
 use crate::ty::{Ty, TypeVar};
 use crate::unify::unify;
@@ -11,8 +12,8 @@ use hew_parser::ast::{
     Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item,
     LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl,
     RecordDecl, RecordKind, RestartPolicy, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
+    SupervisorStrategy, TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
 };
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::sync::OnceLock;
@@ -24,6 +25,10 @@ mod coerce;
 mod const_eval;
 mod diagnostics;
 pub mod dispatch;
+pub use self::dispatch::{
+    Bound, CallAbiHint, ImplDef, ImplId, ImplRegistry, LookupError, MethodTarget, ResolvedCall,
+    RuntimeAbi, TyPattern,
+};
 mod expressions;
 mod generics;
 mod items;
@@ -446,8 +451,92 @@ impl Checker {
                 .collect()
         };
 
+        // W4.047 P1.1 — build the typed `resolved_expr_types` handoff map.
+        //
+        // Run the single authorised `Ty -> ResolvedTy` conversion over every
+        // surviving (post-contract, post-prune) `expr_types` entry. A
+        // successful conversion proves the type is concrete and admissible;
+        // the entry is stored in the typed map. A conversion *failure* is only
+        // legitimate for a *covered* generic inference var — a pre-monomorphi-
+        // zation type-parameter position that `validate_expr_output_contract`
+        // deliberately retained (its unresolved vars are a subset of the
+        // tracked holes) and that monomorphization resolves downstream. Those
+        // spans are legitimately absent from the typed map.
+        //
+        // ANY OTHER conversion failure (a leaked `Ty::Error`, an unmaterialized
+        // numeric literal, or a var-free unresolved associated projection) is a
+        // fail-open totality gap: an inadmissible type the output contract
+        // should already have pruned + diagnosed *before* the checker→HIR
+        // handoff. The `debug_assert!` below is the totality net — it fires
+        // loudly in debug/test/CI if such a type survives, and is compiled out
+        // of release so this remains a pure, zero-behaviour-change substrate
+        // add (HIR still drives lowering off `expr_types` in Phase 1).
+        let resolved_expr_types_typed: HashMap<SpanKey, ResolvedTy> = {
+            // The totality invariant holds for *accepted* programs only: "every
+            // accepted expression span has a concrete ResolvedTy, OR the program
+            // was rejected." A program that emitted hard errors is rejected and
+            // hands off no CheckedProgram, so error-recovery placeholders
+            // legitimately survive in its `expr_types`. (Errors are still in
+            // `self.errors` here — they are moved into the output below.)
+            let program_accepted = self.errors.is_empty();
+            let mut typed = HashMap::with_capacity(resolved_expr_types.len());
+            for (key, ty) in &resolved_expr_types {
+                match ResolvedTy::from_ty(ty) {
+                    Ok(resolved) => {
+                        typed.insert(key.clone(), resolved);
+                    }
+                    Err(boundary_err) => {
+                        // `ResolvedTy` cannot represent the four checker-internal
+                        // states, so a conversion failure means the span is not
+                        // concrete and is (correctly) omitted from the typed map.
+                        // We classify the omission to keep the totality net honest:
+                        //
+                        //  - `UnresolvedInference` / `UnresolvedAssocProjection`:
+                        //    a *covered* generic position (a type-parameter var or
+                        //    an associated-type projection over one) in a
+                        //    pre-monomorphization body. `validate_expr_output_
+                        //    contract` deliberately retains these (their unresolved
+                        //    vars are a subset of the tracked holes); monomorphi-
+                        //    zation resolves them. Legitimately absent — no gap.
+                        //
+                        //  - `TaintedError`: an error-recovery placeholder. In a
+                        //    *rejected* program this is expected. In an *accepted*
+                        //    program it is an upstream checker bug (the contract
+                        //    gate prunes leaked inference vars but not `Ty::Error`):
+                        //    a span typed `Ty::Error` with no diagnostic, masked
+                        //    downstream by the fail-open `.unwrap_or(Unit)`. The
+                        //    typed map omits it (fail-closed absence, not a Unit
+                        //    guess); the finding is reported for a dedicated lane
+                        //    and Phase 3 converts the downstream miss to a hard
+                        //    `CheckerBoundaryViolation`. KNOWN INSTANCE (W4.047):
+                        //    `ScopeError<i64>.cancelled_count` resolves to
+                        //    `Ty::Error` though `cancelled_count: i64` is declared.
+                        //
+                        //  - `UnmaterializedLiteral`: must NEVER survive —
+                        //    `materialize_literal_defaults` ran at the boundary.
+                        //    A leak here is a genuine literal-defaulting totality
+                        //    hole, so it stays a hard (debug-only) assert.
+                        debug_assert!(
+                            !program_accepted
+                                || !matches!(
+                                    boundary_err,
+                                    BoundaryError::UnmaterializedLiteral { .. }
+                                ),
+                            "W4.047 totality gap: surviving expr_types entry at \
+                             {key:?} has type {ty:?} that fails ResolvedTy::from_ty \
+                             ({boundary_err}) — an unmaterialized numeric literal \
+                             crossed the checker->HIR handoff (literal-defaulting \
+                             totality hole)"
+                        );
+                    }
+                }
+            }
+            typed
+        };
+
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
+            resolved_expr_types: resolved_expr_types_typed,
             is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
             method_call_consumes_receiver: std::mem::take(&mut self.method_call_consumes_receiver),

@@ -12,6 +12,7 @@ fn empty_pipeline(machine_layouts: Vec<MachineLayout>) -> IrPipeline {
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
         diagnostics: Vec::new(),
+        opaque_handle_names: vec![],
         record_layouts: Vec::new(),
         actor_layouts: Vec::new(),
         supervisor_layouts: Vec::new(),

@@ -202,6 +202,7 @@ pub fn forward(source: Stream<string>, dest: Sink<string>) {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 /// Internal paired channel handle.
+#[opaque]
 type StreamPair {
 }
 

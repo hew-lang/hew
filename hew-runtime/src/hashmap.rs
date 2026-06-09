@@ -260,6 +260,19 @@ pub unsafe extern "C" fn hew_hashmap_new_impl() -> *mut HewHashMap {
 // Insert
 // ---------------------------------------------------------------------------
 
+// CUTOVER-TODO(W4.001-C3-S4): The seven legacy `hew_hashmap_*_impl` /
+// `hew_hashmap_*_i64` / `hew_hashmap_*_f64` runtime exports below are no
+// longer reached from codegen — Stage C3 retired the per-V `_impl` /
+// `_<prim>` dispatch arms in `hew-types/src/check/methods.rs` and routes
+// every HashMap method call through the resolver-authority
+// `hew_hashmap_*_layout` family. The legacy symbols remain in this file
+// solely because `hew-runtime/src/hashset.rs` still calls
+// `hew_hashmap_insert_impl` / `hew_hashmap_insert_i64` directly (see
+// `hashset.rs:27, 88, 112`). Retiring them is blocked on porting the
+// HashSet runtime to the layout-descriptor path (tracked as Stage C3
+// follow-up: HashSet layout migration). Do not add new callers; do not
+// reuse the symbol names for layout-path adapters.
+
 /// Insert or update a key with both `i32` and optional string values.
 ///
 /// # Safety
@@ -644,59 +657,6 @@ pub unsafe extern "C" fn hew_hashmap_get_or_default_i32(
             return default;
         }
         (*(*m).entries.add(idx as usize)).value_i32
-    }
-}
-
-/// Deep-clone a `HewHashMap`, duplicating keys and string values.
-///
-/// # Safety
-///
-/// `m` must be a valid `HewHashMap` pointer (or null, which returns null).
-/// The returned pointer must eventually be freed with [`hew_hashmap_free_impl`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_clone_impl(m: *const HewHashMap) -> *mut HewHashMap {
-    cabi_guard!(m.is_null(), ptr::null_mut());
-    // SAFETY: caller guarantees `m` is valid.
-    unsafe {
-        let src = &*m;
-        let cloned: *mut HewHashMap = libc::malloc(core::mem::size_of::<HewHashMap>()).cast(); // ALLOCATOR-PAIRING: libc
-        if cloned.is_null() {
-            libc::abort();
-        }
-        let entries: *mut HewMapEntry =
-            libc::calloc(src.cap, core::mem::size_of::<HewMapEntry>()).cast();
-        if entries.is_null() {
-            libc::free(cloned.cast()); // ALLOCATOR-PAIRING: libc
-            libc::abort();
-        }
-        (*cloned).entries = entries;
-        (*cloned).len = src.len;
-        (*cloned).cap = src.cap;
-
-        for i in 0..src.cap {
-            let src_entry = &*src.entries.add(i);
-            let dst_entry = &mut *entries.add(i);
-            dst_entry.state = src_entry.state;
-            if src_entry.state != OCCUPIED {
-                continue;
-            }
-            dst_entry.key = libc::strdup(src_entry.key);
-            if dst_entry.key.is_null() {
-                libc::abort();
-            }
-            dst_entry.value_i32 = src_entry.value_i32;
-            dst_entry.value_i64 = src_entry.value_i64;
-            dst_entry.value_f64 = src_entry.value_f64;
-            dst_entry.value_str = if src_entry.value_str.is_null() {
-                ptr::null_mut()
-            } else {
-                libc::strdup(src_entry.value_str)
-            };
-            if !src_entry.value_str.is_null() && dst_entry.value_str.is_null() {
-                libc::abort();
-            }
-        }
-        cloned
     }
 }
 
@@ -1400,7 +1360,7 @@ unsafe fn layout_resize(m: *mut HewLayoutHashMap) {
 /// mutate the descriptor bytes; the map no longer reads through the
 /// original pointers. The returned pointer must be freed with
 /// [`hew_hashmap_free_layout`].
-// WASM-TODO(#1451): hew_hashmap_new_with_layout not yet ported to wasm32
+// WASM-TODO(#1820): hew_hashmap_new_with_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_new_with_layout(
     key_layout: *const HewMapKeyLayout,
@@ -1467,6 +1427,176 @@ pub unsafe extern "C" fn hew_hashmap_new_with_layout(
     raw
 }
 
+fn abort_layout_clone(reason: impl Into<String>) -> ! {
+    crate::set_last_error(reason);
+    std::process::abort();
+}
+
+unsafe fn clone_layout_string_blob(src: *const u8, dst: *mut u8, label: &str) {
+    // SAFETY: caller guarantees `src` points to a slot blob containing a
+    // C-string pointer and `dst` points to writable slot storage for the same
+    // blob shape.
+    let src_ptr: *const c_char = unsafe { ptr::read_unaligned(src.cast::<*const c_char>()) };
+    // SAFETY: `src_ptr` is either null or a valid NUL-terminated string by the
+    // descriptor's String ownership contract.
+    let cloned = unsafe { crate::string::hew_string_clone(src_ptr) };
+    if !src_ptr.is_null() && cloned.is_null() {
+        abort_layout_clone(format!("{label}: string clone allocation failed"));
+    }
+    // SAFETY: `dst` is writable for a pointer-sized String blob.
+    unsafe { ptr::write_unaligned(dst.cast::<*mut c_char>(), cloned) };
+}
+
+unsafe fn clone_layout_key_blob(
+    ownership_kind: HewTypeOwnershipKind,
+    src: *const u8,
+    dst: *mut u8,
+    size: usize,
+) {
+    match ownership_kind {
+        HewTypeOwnershipKind::Plain => {
+            // SAFETY: caller guarantees both blobs are valid for `size` bytes.
+            unsafe { ptr::copy_nonoverlapping(src, dst, size) };
+        }
+        HewTypeOwnershipKind::String => {
+            // SAFETY: forwarded blob contract.
+            unsafe { clone_layout_string_blob(src, dst, "hew_hashmap_clone_layout key") };
+        }
+        HewTypeOwnershipKind::LayoutManaged => abort_layout_clone(
+            "hew_hashmap_clone_layout: key layout-managed clone thunk is unavailable",
+        ),
+    }
+}
+
+unsafe fn clone_layout_value_blob(layout: HewMapValueLayout, src: *const u8, dst: *mut u8) {
+    match layout.ownership_kind {
+        HewTypeOwnershipKind::Plain => {
+            if layout.size > 0 {
+                // SAFETY: caller guarantees both blobs are valid for
+                // `layout.size` bytes.
+                unsafe { ptr::copy_nonoverlapping(src, dst, layout.size) };
+            }
+        }
+        HewTypeOwnershipKind::String => {
+            // SAFETY: forwarded blob contract.
+            unsafe { clone_layout_string_blob(src, dst, "hew_hashmap_clone_layout value") };
+        }
+        HewTypeOwnershipKind::LayoutManaged => {
+            let Some(clone_fn) = layout.clone_fn else {
+                abort_layout_clone(
+                    "hew_hashmap_clone_layout: value layout-managed clone thunk is unavailable",
+                );
+            };
+            clone_fn(src.cast::<c_void>(), dst.cast::<c_void>());
+        }
+    }
+}
+
+/// Deep-clone a layout-backed map, duplicating owned slot blobs when the
+/// descriptor provides a concrete clone discipline. Layout-managed keys fail
+/// closed because `HewMapKeyLayout` has no key clone thunk field.
+///
+/// # Safety
+///
+/// `m` must have been returned by [`hew_hashmap_new_with_layout`] (or be null).
+/// The returned pointer must eventually be freed with
+/// [`hew_hashmap_free_layout`].
+// WASM-TODO(#1820): hew_hashmap_clone_layout not yet ported to wasm32
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_clone_layout(
+    m: *const HewLayoutHashMap,
+) -> *mut HewLayoutHashMap {
+    if m.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: shared fail-closed gate (map-only variant).
+    unsafe { validate_op_map(m) };
+
+    // SAFETY: m non-null and constructed via hew_hashmap_new_with_layout.
+    let src = unsafe { &*m };
+    let entries_align = core::cmp::max(src.key_layout.align, src.val_layout.align);
+    if matches!(
+        src.key_layout.ownership_kind,
+        HewTypeOwnershipKind::LayoutManaged
+    ) {
+        abort_layout_clone(
+            "hew_hashmap_clone_layout: key layout-managed clone thunk is unavailable",
+        );
+    }
+    if matches!(
+        src.val_layout.ownership_kind,
+        HewTypeOwnershipKind::LayoutManaged
+    ) && src.val_layout.clone_fn.is_none()
+    {
+        abort_layout_clone(
+            "hew_hashmap_clone_layout: value layout-managed clone thunk is unavailable",
+        );
+    }
+
+    // SAFETY: source map was validated at construction time.
+    let cloned_entries = unsafe { alloc_layout_entries(src.cap, src.stride, entries_align) };
+    let struct_layout = std::alloc::Layout::new::<HewLayoutHashMap>();
+    // SAFETY: non-zero sized layout allocation.
+    let raw_bytes = unsafe { std::alloc::alloc(struct_layout) };
+    if raw_bytes.is_null() {
+        // SAFETY: entries just allocated with these params.
+        unsafe { dealloc_layout_entries(cloned_entries, src.cap, src.stride, entries_align) };
+        std::alloc::handle_alloc_error(struct_layout);
+    }
+    let cloned: *mut HewLayoutHashMap = raw_bytes.cast();
+    // SAFETY: cloned is a fresh allocation of HewLayoutHashMap size.
+    unsafe {
+        ptr::write(
+            cloned,
+            HewLayoutHashMap {
+                entries: cloned_entries,
+                len: src.len,
+                cap: src.cap,
+                key_offset: src.key_offset,
+                val_offset: src.val_offset,
+                stride: src.stride,
+                key_layout: src.key_layout,
+                val_layout: src.val_layout,
+            },
+        );
+    }
+
+    for idx in 0..src.cap {
+        // SAFETY: idx < cap, offsets/stride came from the source map.
+        let src_state = unsafe { *slot_state(src.entries, idx, src.stride) };
+        // SAFETY: idx < cap in the cloned allocation.
+        let dst_state = unsafe { slot_state(cloned_entries, idx, src.stride) };
+        // SAFETY: dst_state is in-bounds.
+        unsafe { *dst_state = src_state };
+        if src_state != OCCUPIED {
+            continue;
+        }
+        // SAFETY: occupied slot has valid blobs at the stored offsets.
+        let src_key = unsafe { slot_key(src.entries, idx, src.stride, src.key_offset) };
+        // SAFETY: destination slot is in-bounds in the cloned allocation.
+        let dst_key = unsafe { slot_key(cloned_entries, idx, src.stride, src.key_offset) };
+        // SAFETY: forwarded blob contracts.
+        unsafe {
+            clone_layout_key_blob(
+                src.key_layout.ownership_kind,
+                src_key,
+                dst_key,
+                src.key_layout.size,
+            );
+        }
+        if src.val_layout.size > 0 {
+            // SAFETY: occupied slot has a valid value blob.
+            let src_val = unsafe { slot_val(src.entries, idx, src.stride, src.val_offset) };
+            // SAFETY: destination slot is in-bounds in the cloned allocation.
+            let dst_val = unsafe { slot_val(cloned_entries, idx, src.stride, src.val_offset) };
+            // SAFETY: forwarded blob contracts.
+            unsafe { clone_layout_value_blob(src.val_layout, src_val, dst_val) };
+        }
+    }
+
+    cloned
+}
+
 // ---------------------------------------------------------------------------
 // Insert / Get / Contains / Remove / Len (layout-backed)
 // ---------------------------------------------------------------------------
@@ -1482,7 +1612,7 @@ pub unsafe extern "C" fn hew_hashmap_new_with_layout(
 /// `m` must be a valid `HewLayoutHashMap`. `key` must point to a readable
 /// blob of the registered key layout. `val` likewise for the value layout
 /// (when size > 0).
-// WASM-TODO(#1451): hew_hashmap_insert_layout not yet ported to wasm32
+// WASM-TODO(#1820): hew_hashmap_insert_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_insert_layout(
     m: *mut HewLayoutHashMap,
@@ -1622,7 +1752,7 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
 /// # Safety
 ///
 /// `m` must be a valid `HewLayoutHashMap`. `key` must point to a valid key blob.
-// WASM-TODO(#1451): hew_hashmap_get_layout not yet ported to wasm32
+// WASM-TODO(#1820): hew_hashmap_get_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_get_layout(
     m: *const HewLayoutHashMap,
@@ -1668,7 +1798,7 @@ pub unsafe extern "C" fn hew_hashmap_get_layout(
 /// # Safety
 ///
 /// Same as [`hew_hashmap_get_layout`].
-// WASM-TODO(#1451): hew_hashmap_contains_key_layout not yet ported to wasm32
+// WASM-TODO(#1820): hew_hashmap_contains_key_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_contains_key_layout(
     m: *const HewLayoutHashMap,
@@ -1684,7 +1814,7 @@ pub unsafe extern "C" fn hew_hashmap_contains_key_layout(
 /// # Safety
 ///
 /// Same as [`hew_hashmap_get_layout`].
-// WASM-TODO(#1451): hew_hashmap_remove_layout not yet ported to wasm32
+// WASM-TODO(#1820): hew_hashmap_remove_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_remove_layout(
     m: *mut HewLayoutHashMap,
@@ -1763,7 +1893,7 @@ pub unsafe extern "C" fn hew_hashmap_remove_layout(
 /// # Safety
 ///
 /// `m` must be a valid `HewLayoutHashMap`.
-// WASM-TODO(#1451): hew_hashmap_len_layout not yet ported to wasm32
+// WASM-TODO(#1820): hew_hashmap_len_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_len_layout(m: *const HewLayoutHashMap) -> i64 {
     // SAFETY: shared fail-closed gate (map-only variant).
@@ -1803,7 +1933,7 @@ pub unsafe extern "C" fn hew_hashmap_len_layout(m: *const HewLayoutHashMap) -> i
 ///
 /// `m` must have been returned by [`hew_hashmap_new_with_layout`] (or be null).
 /// After this call, `m` is invalid.
-// WASM-TODO(#1451): hew_hashmap_free_layout not yet ported to wasm32
+// WASM-TODO(#1820): hew_hashmap_free_layout not yet ported to wasm32
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
     if m.is_null() {
@@ -1876,7 +2006,7 @@ pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{CStr, CString};
+    use std::ffi::CString;
 
     fn colliding_keys() -> (CString, CString) {
         for lhs in 0..64 {
@@ -2123,28 +2253,6 @@ mod tests {
             assert!(!result.is_null());
             assert_eq!(std::ffi::CStr::from_ptr(result).to_string_lossy(), "hello");
             hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn test_hashmap_clone_impl_deep_copy() {
-        // SAFETY: FFI calls use valid hashmap pointers and valid C strings.
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let key_str = CString::new("greeting").unwrap();
-            let key_i64 = CString::new("count").unwrap();
-            let val = CString::new("hello").unwrap();
-            hew_hashmap_insert_impl(m, key_str.as_ptr(), 0, val.as_ptr());
-            hew_hashmap_insert_i64(m, key_i64.as_ptr(), 99);
-
-            let cloned = hew_hashmap_clone_impl(m);
-            assert!(!cloned.is_null());
-            hew_hashmap_free_impl(m);
-
-            let cloned_str = hew_hashmap_get_str_impl(cloned, key_str.as_ptr());
-            assert_eq!(CStr::from_ptr(cloned_str).to_string_lossy(), "hello");
-            assert_eq!(hew_hashmap_get_i64(cloned, key_i64.as_ptr()), 99);
-            hew_hashmap_free_impl(cloned);
         }
     }
 }

@@ -1,0 +1,15 @@
+// Reject fixture: opaque_handle_non_empty_body — `#[opaque]` requires an
+// empty-body struct (an opaque handle has no fields). A field-bearing body is
+// rejected by the parser with E_OPAQUE_TYPE_SHAPE.
+//
+// Harness verb: hew check
+// Expected: rejected.
+
+#[opaque]
+type Bad {
+    n: i64;
+}
+
+fn main() -> i64 {
+    0
+}

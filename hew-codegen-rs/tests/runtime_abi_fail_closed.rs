@@ -85,6 +85,7 @@ fn pipeline_with_call_runtime_abi_parts(
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],

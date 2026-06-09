@@ -9,16 +9,16 @@
 //! - The synthesised function symbols exist with the expected linkage.
 //! - The body shape matches plan §6 Stage 3 (null guard → wholesale memcpy
 //!   → per-field clone with rollback chain → success / null return).
-//! - Per-field clone helpers (`hew_string_clone`, `hew_vec_clone`,
-//!   `hew_bytes_clone_ref`, `hew_hashmap_clone_impl`, `hew_hashset_clone`,
+//! - Per-field clone helpers (`hew_string_clone`, `hew_vec_clone_managed`,
+//!   `hew_bytes_clone_ref`, `hew_hashmap_clone_layout`, `hew_hashset_clone_layout`,
 //!   per-record `__hew_record_clone_inplace_*`) are declared and called.
-//! - Per-field drop helpers (`hew_string_drop`, `hew_vec_free`,
+//! - Per-field drop helpers (`hew_string_drop`, `hew_vec_free_managed`,
 //!   `hew_bytes_drop`, HashMap/HashSet free helpers,
-//!   `__hew_record_drop_inplace_*`) are declared and called. The HashMap/
-//!   HashSet drop arms split on the inner key/elem kind: a UserRecord
-//!   key/elem routes to `*_free_layout`; any other inner kind routes to
-//!   `hew_hashmap_free_impl` / `hew_hashset_free` — matching the
-//!   constructor ABI (`codegen-abi-authority` P0, `lifecycle-symmetry` P0).
+//!   `__hew_record_drop_inplace_*`) are declared and called. Collection
+//!   clone/drop symbols are derived from the single `collection_layout_witness`
+//!   (W5.001/W5.002): Vec routes to the `*_managed` pair, HashMap/HashSet to
+//!   the `*_layout` family — matching the constructor ABI
+//!   (`codegen-abi-authority` P0, `lifecycle-symmetry` P0).
 //! - Reverse-order LIFO drop discipline in the drop fn (CLAUDE.md custom #1).
 //! - Per-field-alloc-fail rollback chain has the correct cardinality
 //!   (one rollback BB per non-trivial field index).
@@ -98,6 +98,7 @@ fn pipeline_with(actors: Vec<ActorLayout>, records: Vec<RecordLayout>) -> IrPipe
         checked_mir: vec![],
         elaborated_mir: vec![],
         diagnostics: vec![],
+        opaque_handle_names: vec![],
         record_layouts: records,
         actor_layouts: actors,
         supervisor_layouts: vec![],
@@ -233,18 +234,34 @@ fn state_clone_chatroom_string_and_vec_clone_with_rollback() {
 
     assert!(ir.contains("define ptr @__hew_state_clone_ChatRoom("));
     assert!(ir.contains("define void @__hew_state_drop_ChatRoom("));
-    // Per-field clone helpers — both must be declared and called.
+    // Per-field clone helpers — both must be declared and called. The Vec
+    // field now routes through the witness-managed pair (W5.002 F0b), not the
+    // legacy `hew_vec_clone`/`hew_vec_free`.
     assert!(
         ir.contains("@hew_string_clone"),
         "expected hew_string_clone declaration; IR:\n{ir}"
     );
     assert!(
-        ir.contains("@hew_vec_clone"),
-        "expected hew_vec_clone declaration; IR:\n{ir}"
+        ir.contains("@hew_vec_clone_managed"),
+        "expected hew_vec_clone_managed declaration; IR:\n{ir}"
     );
     // Per-field drop helpers.
     assert!(ir.contains("@hew_string_drop"));
-    assert!(ir.contains("@hew_vec_free"));
+    assert!(ir.contains("@hew_vec_free_managed"));
+    // Regression guard: the migrated Vec field must NOT *call* the legacy
+    // non-layout pair. (`hew_vec_clone`/`hew_vec_free` may still be *declared*
+    // via the stdlib runtime-ABI predeclaration; only call-site routing
+    // matters here. The trailing `(` excludes the `_managed` symbols.)
+    assert!(
+        !ir.contains("call ptr @hew_vec_clone("),
+        "Vec state field must use the layout-managed clone, not legacy \
+         hew_vec_clone; IR:\n{ir}"
+    );
+    assert!(
+        !ir.contains("call void @hew_vec_free("),
+        "Vec state field must use the layout-managed free, not legacy \
+         hew_vec_free; IR:\n{ir}"
+    );
     // Rollback BB labels: 2 non-trivial fields → 2 rollback BBs.
     assert!(
         ir.contains("rollback_before_step_0"),
@@ -266,14 +283,14 @@ fn state_clone_chatroom_string_and_vec_clone_with_rollback() {
         .unwrap_or(ir.len());
     let drop_body = &ir[drop_fn_start..drop_fn_end];
     let vec_pos = drop_body
-        .find("call void @hew_vec_free")
+        .find("call void @hew_vec_free_managed")
         .expect("vec drop call must appear in drop body");
     let string_pos = drop_body
         .find("call void @hew_string_drop")
         .expect("string drop call must appear in drop body");
     assert!(
         vec_pos < string_pos,
-        "drop must call hew_vec_free BEFORE hew_string_drop (reverse-order LIFO); \
+        "drop must call hew_vec_free_managed BEFORE hew_string_drop (reverse-order LIFO); \
          vec_pos={vec_pos}, string_pos={string_pos}\nbody:\n{drop_body}"
     );
 }
@@ -402,8 +419,9 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
         ir.contains("call i32 @__hew_record_clone_inplace_Entry("),
         "actor clone must invoke nested record's in-place clone helper; IR:\n{ir}"
     );
-    // Entry helper itself must call hew_string_clone + hew_vec_clone
-    // for its two non-trivial fields (id: String, payload: Vec<i32>).
+    // Entry helper itself must call hew_string_clone + hew_vec_clone_managed
+    // for its two non-trivial fields (id: String, payload: Vec<i32>). The Vec
+    // field routes through the witness-managed pair (W5.002 F0b).
     let entry_clone_start = ir
         .find("define internal i32 @__hew_record_clone_inplace_Entry(")
         .expect("Entry clone fn must exist");
@@ -413,7 +431,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
         .unwrap_or(ir.len());
     let entry_body = &ir[entry_clone_start..entry_clone_end];
     assert!(entry_body.contains("@hew_string_clone"));
-    assert!(entry_body.contains("@hew_vec_clone"));
+    assert!(entry_body.contains("@hew_vec_clone_managed"));
 }
 
 /// Connection-bearing actor: clone fn must short-circuit to `ret ptr
@@ -645,25 +663,32 @@ fn state_clone_bytes_refcount_bump_has_no_failure_path() {
     );
 }
 
-/// HashMap and HashSet — legacy (non-layout) ABI pairing.
+/// HashMap and HashSet — string-element collections route to the layout ABI.
 ///
 /// `HashMap<string, i64>` and `HashSet<string>` classify as
 /// `StateFieldCloneKind::HashMap { key: String, val: BitCopy }` /
-/// `HashSet { elem: String }`. The constructor pairing here is
-/// `hew_hashmap_new_impl` ↔ `hew_hashmap_free_impl` and
-/// `hew_hashset_new` ↔ `hew_hashset_free` (the legacy substrate),
-/// so the drop helpers selected by `drop_helper_for_kind` MUST be the
-/// `_impl` / non-layout names. Asserting the layout-keyed free here
-/// would codify an ABI mismatch (`codegen-abi-authority` P0).
+/// `HashSet { elem: String }`. The constructor lowering routes EVERY
+/// `HashMap<K,V>` / `HashSet<T>` handle through
+/// `hew_hashmap_new_with_layout` / `hew_hashset_new_with_layout`
+/// (returning `HewLayoutHashMap*` / `HewLayoutHashSet*`) regardless of the
+/// element kind — there is no `hew_hashmap_new` / `hew_hashset_new` call in
+/// codegen. The clone/drop helpers selected by `clone_helper_for_kind` /
+/// `drop_helper_for_kind` MUST therefore be the layout-keyed names.
+///
+/// Emitting the legacy `hew_hashset_free` / `hew_hashset_clone` (or
+/// `hew_hashmap_free_impl` / `hew_hashmap_clone_impl`) against a layout handle
+/// reinterprets the layout entries as 48-byte `HewMapEntry` records and
+/// corrupts the heap (W4.045 / e5ba9c78 P0 UAF; `lifecycle-symmetry` /
+/// `codegen-abi-authority`).
 #[test]
-fn state_clone_hashmap_and_hashset_legacy_route_to_impl_free() {
+fn state_clone_hashmap_and_hashset_string_elem_route_to_layout_helpers() {
     let storage_ty = ResolvedTy::Named {
         name: "LocalPid".into(),
         args: vec![],
         builtin: None,
     };
     let actor = classified_actor(
-        "MapAndSetLegacy",
+        "MapAndSetStringElem",
         vec!["by_name", "tags"],
         vec![storage_ty.clone(), storage_ty.clone()],
         vec![
@@ -677,39 +702,50 @@ fn state_clone_hashmap_and_hashset_legacy_route_to_impl_free() {
         ],
     );
     let record = RecordLayout {
-        name: "MapAndSetLegacy".into(),
+        name: "MapAndSetStringElem".into(),
         field_tys: actor.state_field_tys.clone(),
     };
     let ir = emit_to_string(
         &pipeline_with(vec![actor], vec![record]),
-        "map-and-set-legacy",
+        "map-and-set-string-elem",
     );
 
-    // Clone side: legacy helpers (clone is not yet split layout/legacy;
-    // tracked W3.003-D — same name for both arms today).
-    assert!(ir.contains("@hew_hashmap_clone_impl"));
-    assert!(ir.contains("@hew_hashset_clone"));
-    // Drop side: legacy primitive-keyed maps/sets MUST route to the
-    // legacy `_impl` / non-layout free helpers. The layout-keyed
-    // helpers must NOT appear (they would consume a HewLayoutHashMap*
-    // produced by `*_new_with_layout`, but a legacy substrate handle
-    // is HewHashMap* — see `hew-runtime/src/hashmap.rs:714` and
-    // `hew-runtime/src/hashset.rs:282`).
+    // Clone side: layout-keyed clone helpers for both collections.
     assert!(
-        ir.contains("@hew_hashmap_free_impl"),
-        "legacy HashMap drop must route to hew_hashmap_free_impl; IR:\n{ir}"
+        ir.contains("@hew_hashmap_clone_layout"),
+        "string-key HashMap clone must route to hew_hashmap_clone_layout; IR:\n{ir}"
     );
     assert!(
-        ir.contains("@hew_hashset_free\n") || ir.contains("@hew_hashset_free("),
-        "legacy HashSet drop must route to hew_hashset_free; IR:\n{ir}"
+        ir.contains("@hew_hashset_clone_layout"),
+        "string-elem HashSet clone must route to hew_hashset_clone_layout; IR:\n{ir}"
+    );
+    // Drop side: layout-keyed free helpers for both collections.
+    assert!(
+        ir.contains("@hew_hashmap_free_layout"),
+        "string-key HashMap drop must route to hew_hashmap_free_layout; IR:\n{ir}"
     );
     assert!(
-        !ir.contains("@hew_hashmap_free_layout"),
-        "legacy HashMap drop must NOT route to layout free; IR:\n{ir}"
+        ir.contains("@hew_hashset_free_layout"),
+        "string-elem HashSet drop must route to hew_hashset_free_layout; IR:\n{ir}"
+    );
+    // The legacy substrate symbols must NOT appear. Use precise matches: the
+    // legacy names are substrings of the layout names (`@hew_hashset_free` ⊂
+    // `@hew_hashset_free_layout`), so anchor on the call/decl terminators.
+    assert!(
+        !ir.contains("@hew_hashmap_free_impl"),
+        "string-key HashMap drop must NOT regress to legacy _impl free; IR:\n{ir}"
     );
     assert!(
-        !ir.contains("@hew_hashset_free_layout"),
-        "legacy HashSet drop must NOT route to layout free; IR:\n{ir}"
+        !ir.contains("@hew_hashmap_clone_impl"),
+        "string-key HashMap clone must NOT regress to legacy _impl clone; IR:\n{ir}"
+    );
+    assert!(
+        !ir.contains("@hew_hashset_free\n") && !ir.contains("@hew_hashset_free("),
+        "string-elem HashSet drop must NOT regress to legacy hew_hashset_free; IR:\n{ir}"
+    );
+    assert!(
+        !ir.contains("@hew_hashset_clone\n") && !ir.contains("@hew_hashset_clone("),
+        "string-elem HashSet clone must NOT regress to legacy hew_hashset_clone; IR:\n{ir}"
     );
 }
 
@@ -759,10 +795,16 @@ fn state_clone_hashmap_and_hashset_layout_route_to_layout_free() {
         "map-and-set-layout",
     );
 
-    // Clone side: same runtime helpers as legacy today (clone ABI
-    // split tracked under W3.003-D).
-    assert!(ir.contains("@hew_hashmap_clone_impl"));
-    assert!(ir.contains("@hew_hashset_clone"));
+    // Clone side: layout-keyed clone helpers (the clone ABI split landed
+    // with the layout-free migration — W4.045 / e5ba9c78).
+    assert!(
+        ir.contains("@hew_hashmap_clone_layout"),
+        "layout-keyed HashMap clone must route to hew_hashmap_clone_layout; IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("@hew_hashset_clone_layout"),
+        "layout-keyed HashSet clone must route to hew_hashset_clone_layout; IR:\n{ir}"
+    );
     // Drop side: layout-keyed maps/sets MUST route to the layout free
     // helpers and MUST NOT regress to the legacy `_impl` / non-layout
     // names (which would treat a HewLayoutHashMap* as a HewHashMap*).
@@ -777,6 +819,14 @@ fn state_clone_hashmap_and_hashset_layout_route_to_layout_free() {
     assert!(
         !ir.contains("@hew_hashmap_free_impl"),
         "layout-keyed HashMap drop must NOT regress to legacy _impl free; IR:\n{ir}"
+    );
+    assert!(
+        !ir.contains("@hew_hashmap_clone_impl"),
+        "layout-keyed HashMap clone must NOT regress to legacy _impl clone; IR:\n{ir}"
+    );
+    assert!(
+        !ir.contains("@hew_hashset_clone\n") && !ir.contains("@hew_hashset_clone("),
+        "layout-keyed HashSet clone must NOT regress to legacy hew_hashset_clone; IR:\n{ir}"
     );
 }
 

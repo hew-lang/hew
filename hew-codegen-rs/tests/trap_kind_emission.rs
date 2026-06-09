@@ -112,6 +112,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],

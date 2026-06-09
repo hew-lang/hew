@@ -217,6 +217,7 @@ fn test_glob_import_resolution() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives."]
 fn test_file_import_const_annotation_rejects_unsupported_hashset() {
     let import = make_user_import(
         &[],
@@ -249,6 +250,7 @@ fn test_file_import_const_annotation_rejects_unsupported_hashset() {
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K/V allowlist retired; resolver now admits Hash+Eq primitives."]
 fn test_user_module_const_annotation_rejects_unsupported_hashset() {
     let import = make_user_import(
         &["myapp", "utils"],
@@ -494,6 +496,7 @@ fn test_pub_type_accessible_qualified() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
     let import = make_user_import(
@@ -533,6 +536,7 @@ fn test_pub_type_import_conflicting_with_local_type_errors() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
     let imported_type = TypeDecl {
@@ -546,6 +550,7 @@ fn test_pub_type_import_conflicting_with_local_type_errors() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
     let import = make_user_import(

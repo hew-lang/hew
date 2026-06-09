@@ -1,0 +1,9 @@
+//! Status: stable
+//! Description: A bare type annotation `HashSet<f64>` on a record field must
+//! be rejected at the type-annotation site with `BoundsNotSatisfied`.
+//! Regression guard that the admissibility predicate's bound-failing branch
+//! is reached from `validate_concrete_hashset_type`, not silently accepted.
+
+type Config { flags: HashSet<f64>; }
+
+fn main() {}

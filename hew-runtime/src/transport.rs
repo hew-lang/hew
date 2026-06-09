@@ -1315,44 +1315,11 @@ pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec
     written
 }
 
-/// Convert a bytes `HewVec` (Vec<i32>) to a NUL-terminated C string.
-///
-/// Each i32 element is treated as a byte value (low 8 bits used).
-/// The returned pointer is heap-allocated and must be freed by the caller
-/// (or left to the Hew runtime's string GC).
-///
-/// # Safety
-///
-/// `vec` must be a valid, non-null pointer to a `HewVec` created by
-/// `hew_vec_new` (i32 elements). The returned pointer is valid until freed.
-#[no_mangle]
-pub unsafe extern "C" fn hew_bytes_to_string(vec: *mut crate::vec::HewVec) -> *mut c_char {
-    if vec.is_null() {
-        return crate::cabi::str_to_malloc("");
-    }
-    // SAFETY: caller guarantees `vec` is a valid HewVec pointer.
-    let len = unsafe { crate::vec::hew_vec_len(vec) };
-    #[expect(clippy::cast_sign_loss, reason = "vec len is always non-negative")]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "vec len fits in usize on all platforms"
-    )]
-    let mut bytes = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        // SAFETY: i < len, so index is in bounds.
-        let val = unsafe { crate::vec::hew_vec_get_i32(vec, i) };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "byte values fit in u8"
-        )]
-        bytes.push(val as u8);
-    }
-    // Strip embedded NUL bytes before creating the C string.
-    bytes.retain(|&b| b != 0);
-    // SAFETY: bytes.as_ptr() is valid for bytes.len() bytes.
-    unsafe { crate::cabi::malloc_cstring(bytes.as_ptr(), bytes.len()) }
-}
+// W4.039 — the native Vec-backed `hew_bytes_to_string(*mut HewVec)` export
+// was deleted when `Bytes -> String` conversion was canonicalised onto the
+// `BytesTriple` ABI. The canonical entry point now lives in
+// `hew-runtime/src/bytes.rs::hew_bytes_to_string` and consumes a single
+// `#[repr(C)] BytesTriple` argument cross-target.
 
 #[cfg(test)]
 mod tests {

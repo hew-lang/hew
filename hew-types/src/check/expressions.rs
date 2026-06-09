@@ -232,10 +232,21 @@ impl Checker {
             Expr::Literal(Literal::Integer { .. }) => Ty::IntLiteral,
             Expr::Literal(Literal::Duration(_)) => Ty::Duration,
 
-            // Identifier lookup — None bypasses record_type (fresh type var each usage)
-            Expr::Identifier(name) if name == "None" => {
-                return Ty::option(Ty::Var(TypeVar::fresh()));
-            }
+            // Builtin `None`: synthesize `Option<fresh>` and fall through to the
+            // universal `record_type` tail (line ~505) like every other arm.
+            // The fresh tyvar is resolved by the surrounding context (fn return,
+            // let-binding, match scrutinee) during unification; the
+            // `check_program` boundary resolve (mod.rs:262/364) then writes back
+            // the post-substitution concrete `Option<T>` at this span. Recording
+            // here — instead of the old early `return`, which bypassed
+            // `record_type` and left HIR's unit-ctor fallback to stamp a bare
+            // `Named{Option, args:[]}` (→ codegen D10) — converges builtin `None`
+            // onto the same record-and-resolve substrate as the user-`TypeDecl`
+            // unit-variant path (`check_against`, expressions.rs:2453). A
+            // genuinely-unconstrained `None` still fails closed: the recorded
+            // `Option<Var>` stays unresolved and `validate_expr_output_contract`
+            // (admissibility.rs) surfaces it as an inference error. See W4.042.
+            Expr::Identifier(name) if name == "None" => Ty::option(Ty::Var(TypeVar::fresh())),
             Expr::Identifier(name) => self.synthesize_identifier(name, span),
 
             // Binary ops
@@ -1186,13 +1197,21 @@ impl Checker {
                     args,
                     ..
                 } if !args.is_empty() => obj_ty.clone(),
+                // W3 collections-sugar S2: `s[a..b]` over `string` returns a
+                // fresh owned `string`. Codepoint-bounds slice, O(n), panic on
+                // invalid bounds. Endpoints are i64 (validated above).
+                Ty::String => Ty::String,
+                // W3 collections-sugar S2: `b[a..b]` over `bytes` returns a
+                // refcounted `bytes` slice. Byte-bounds, O(1), panic on
+                // invalid bounds. Endpoints are i64 (validated above).
+                Ty::Bytes => Ty::Bytes,
                 _ => {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
                         format!(
                             "cannot range-slice `{}`; range-slice syntax `xs[a..b]` is \
-                             supported only for `Vec<T>` receivers",
+                             supported only for `Vec<T>`, `string`, and `bytes` receivers",
                             obj_ty.user_facing()
                         ),
                     );
@@ -1237,6 +1256,20 @@ impl Checker {
             } if !args.is_empty() => {
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 args[0].clone()
+            }
+            // W3 collections-sugar S2: `s[i]` over `string` returns a `char`
+            // at codepoint offset, O(n), panic on OOB. Index is i64. The
+            // checker is authoritative; MIR will route to `hew_string_index`.
+            Ty::String => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                Ty::Char
+            }
+            // W3 collections-sugar S2: `b[i]` over `bytes` returns a `u8`
+            // at byte offset, O(1), panic on OOB. Index is i64. MIR will
+            // route to `hew_bytes_index`.
+            Ty::Bytes => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                Ty::U8
             }
             Ty::Named { name, args, .. } => {
                 if self.type_satisfies_trait_bound(&resolved_obj, "Index") {

@@ -42,6 +42,14 @@
 //! the auto-lock consumer reads `lock_slot_for()` rather than
 //! recomputing.
 
+// The suspend walker visits the `#[deprecated]` `CallTraitMethodStatic`
+// variant exhaustively.
+#![allow(
+    deprecated,
+    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
+              see hew-hir/tests/call_trait_method_static_creation_allowlist.rs"
+)]
+
 use hew_hir::{HirExpr, HirExprKind, HirSelectArmKind};
 use hew_types::{ClosureCaptureMode, ClosureEscapeKind, ResolvedTy};
 
@@ -317,6 +325,11 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             walk_expr_for_suspend(right, found);
         }
         HirExprKind::Unary { operand, .. } => walk_expr_for_suspend(operand, found),
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                walk_expr_for_suspend(elem, found);
+            }
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             walk_expr_for_suspend(callee, found);
             for a in args {
@@ -381,6 +394,7 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
         }
         HirExprKind::CoerceToDynTrait { value, .. } => walk_expr_for_suspend(value, found),
         HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             walk_expr_for_suspend(receiver, found);
             for a in args {

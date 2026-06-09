@@ -105,9 +105,90 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _find_no_mangle_macros(sources: list[tuple]) -> set[str]:
+    """Return names of macro_rules! macros whose bodies emit #[no_mangle] extern "C" fn.
+
+    Uses a simple balanced-brace walk so that macros with deeply nested bodies
+    (e.g. vec_push_primitive!) are detected correctly even when the function
+    name is a macro variable like ``$name``.
+    """
+    no_mangle_macros: set[str] = set()
+    macro_start_re = re.compile(r"\bmacro_rules!\s+(\w+)\s*\{")
+    for _path, source in sources:
+        for m in macro_start_re.finditer(source):
+            macro_name = m.group(1)
+            brace_start = m.end() - 1  # points at the opening '{'
+            # Walk balanced braces to find the end of the macro body.
+            depth = 0
+            body_end = len(source)
+            for i in range(brace_start, len(source)):
+                ch = source[i]
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        body_end = i + 1
+                        break
+            body = source[brace_start:body_end]
+            if "#[no_mangle]" in body and 'extern "C" fn' in body:
+                no_mangle_macros.add(macro_name)
+    return no_mangle_macros
+
+
+def _extract_macro_generated_exports(
+    sources: list[tuple], no_mangle_macros: set[str]
+) -> set[str]:
+    """Extract the function names produced by invocations of no-mangle-emitting macros.
+
+    Handles both plain invocations::
+
+        vec_push_primitive!(hew_vec_push_i32, i32);
+
+    and invocations with outer attributes passed as the first argument::
+
+        vec_contains_primitive!(
+            #[expect(clippy::float_cmp, reason = "...")]
+            hew_vec_contains_f64,
+            f64
+        );
+
+    The first identifier after any leading ``#[...]`` blocks is taken as the
+    generated function name.
+    """
+    exports: set[str] = set()
+    for macro_name in no_mangle_macros:
+        # Match: macro_name!( [optional #[...] attrs]* first_ident
+        invoc_re = re.compile(
+            re.escape(macro_name) + r"!\s*\(\s*"
+            # Skip zero or more outer attribute blocks (#[...]).  The inner
+            # content may contain parenthesised sub-expressions (e.g.
+            # #[expect(reason = "...")]) but never an unescaped ']'.
+            r"(?:#\[[^\]]*(?:\([^)]*\))?[^\]]*\]\s*)*"
+            r"(\w+)",  # the first identifier = generated function name
+            re.DOTALL,
+        )
+        for _path, source in sources:
+            for m in invoc_re.finditer(source):
+                exports.add(m.group(1))
+    return exports
+
+
 def extract_runtime_exports() -> set[str]:
-    """Scan all hew-runtime .rs files for #[no_mangle] function names."""
-    exports = set()
+    """Scan all hew-runtime .rs files for #[no_mangle] function names.
+
+    Two passes are performed:
+
+    1. Direct scan — finds ``#[no_mangle] pub unsafe extern "C" fn name`` where
+       the name is a literal identifier in the source.
+
+    2. Macro-expansion scan — finds ``macro_rules!`` definitions whose bodies
+       contain ``#[no_mangle]`` + ``extern "C" fn``, then collects the first
+       identifier from every invocation of those macros.  This covers patterns
+       like ``vec_push_primitive!(hew_vec_push_i64, i64)`` where the symbol
+       name is the macro's ``$name`` parameter and is invisible to the regex in
+       pass 1.
+    """
     fn_pattern = re.compile(
         r"#\[no_mangle\]"
         r"(?:\s*#\[[^\]]*(?:\([^)]*\))?[^\]]*\])*"  # skip interleaved attrs
@@ -115,10 +196,17 @@ def extract_runtime_exports() -> set[str]:
         r"(\w+)",
         re.DOTALL,
     )
+    sources: list[tuple] = []
+    exports: set[str] = set()
     for rs_file in RUNTIME_SRC.rglob("*.rs"):
         source = rs_file.read_text(encoding=SOURCE_ENCODING)
+        sources.append((rs_file, source))
         for match in fn_pattern.finditer(source):
             exports.add(match.group(1))
+
+    # Pass 2: pick up symbols defined inside macro_rules! bodies.
+    no_mangle_macros = _find_no_mangle_macros(sources)
+    exports.update(_extract_macro_generated_exports(sources, no_mangle_macros))
     return exports
 
 

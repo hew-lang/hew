@@ -197,7 +197,7 @@ fn fstring_without_display_fmt_lang_item_is_fail_closed() {
     // dispatch fail closed instead of fabricating a Display::fmt symbol.
     let mut tc = TypeCheckOutput::default();
     if let StringPart::Expr((_, sp)) = &parts[1] {
-        tc.expr_types.insert(
+        tc.insert_expr_type(
             SpanKey {
                 start: sp.start,
                 end: sp.end,
@@ -282,7 +282,7 @@ fn fstring_named_type_without_impl_is_fail_closed() {
             method_name: Some("fmt".to_string()),
         },
     );
-    tc.expr_types.insert(
+    tc.insert_expr_type(
         SpanKey {
             start: interp_span.start,
             end: interp_span.end,

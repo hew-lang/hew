@@ -499,6 +499,7 @@ pub fn is_dir(path: string) -> bool {
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
+#[opaque]
 type FileReadStream {
 }
 

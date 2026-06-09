@@ -248,8 +248,8 @@ pub struct HewMapValueLayout {
 // **Float K descriptors** ship with `hash_fn = None` / `eq_fn = None`;
 // belt-and-suspenders DI-003 fail-closed-by-absence per plan §4 Stage C0b.
 //
-// **WASM-TODO(#1451):** the layout-backed hashmap path is not yet ported to
-// wasm32 (see `hew-runtime/src/hashmap.rs` WASM-TODO notes on the
+// **WASM-TODO(#1820):** the layout-backed hashmap path is not yet ported to
+// wasm32 (see `hew-runtime/src/hashmap.rs` WASM-parity notes on the
 // `hew_hashmap_*_layout` entry points). The descriptors themselves are pure
 // data and compile on wasm32, but no wasm consumer references them yet.
 

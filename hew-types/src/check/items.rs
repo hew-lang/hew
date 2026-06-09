@@ -1449,7 +1449,29 @@ impl Checker {
             let scope_pushed = self.enter_impl_scope(id, span, Some(type_name.as_str()), true);
 
             for method in &id.methods {
-                if target_is_struct {
+                // Inherent (non-trait) struct impl methods still reject a
+                // mutable receiver: there is no trait contract that a `var
+                // self` receiver could satisfy, so mutations on a by-value
+                // receiver in an inherent method would be local to the
+                // callee's stack frame with no path to the caller.
+                //
+                // Trait impl methods (the `trait_bound.is_some()` arm) lift
+                // this gate: the trait declaration is the authoritative
+                // contract for receiver mutability, and the impl-vs-trait
+                // signature equivalence check (Q004, see
+                // `check_impl_method_against_trait`) enforces that the
+                // impl's receiver mutability matches what the trait
+                // declared. Callers receive a separate "receiver requires
+                // mutable binding" diagnostic at the call site when they
+                // try to dispatch through a non-`var` binding.
+                //
+                // LESSONS row `diagnostic-trust`: keep the diagnostic
+                // surface alive on the inherent-impl path; do not silently
+                // accept what was previously rejected on the trait-impl
+                // path — the trait-impl arm now relies on the trait
+                // declaration + the equivalence check + the call-site
+                // gate to cover the cases this diagnostic used to flag.
+                if target_is_struct && id.trait_bound.is_none() {
                     // Only the first parameter can be the receiver; checking all
                     // params would false-positive on a non-receiver whose type
                     // happens to match the impl target.
@@ -1461,10 +1483,17 @@ impl Checker {
                         self.report_error_with_suggestions(
                             TypeErrorKind::MutabilityError,
                             &self_param.ty.1,
-                            "`var self` in struct impl methods has no effect — struct methods receive self by value".to_string(),
+                            "`var self` on an inherent struct impl method has no effect — \
+                             inherent methods receive self by value with no trait contract \
+                             to make the mutation observable to the caller"
+                                .to_string(),
                             vec![
                                 "return a modified copy of the receiver instead".to_string(),
-                                "convert this type to an actor if you need mutable shared state".to_string(),
+                                "declare the method on a trait whose receiver is `var self`, \
+                                 then implement that trait for this type"
+                                    .to_string(),
+                                "convert this type to an actor if you need mutable shared state"
+                                    .to_string(),
                             ],
                         );
                     }

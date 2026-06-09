@@ -801,12 +801,20 @@ impl Checker {
         }
     }
 
-    fn is_supported_hashmap_key_type(ty: &Ty) -> bool {
-        matches!(ty, Ty::String)
+    fn is_supported_hashmap_key_type(&self, ty: &Ty) -> bool {
+        // W4.001 Stage C3: legacy per-K allowlist retired. Admit any K that
+        // implements both `Hash` and `Eq` markers — the resolver's
+        // `where K: Hash + Eq` bound is the sole admission contract.
+        // Unsatisfied bounds (e.g. `f64: Hash` failing) surface as a
+        // `BoundsNotSatisfied` diagnostic from `record_resolved_hashmap_call`.
+        self.registry.implements_marker(ty, MarkerTrait::Hash)
+            && self.registry.implements_marker(ty, MarkerTrait::Eq)
     }
 
-    fn is_supported_hashmap_value_type(ty: &Ty) -> bool {
-        matches!(ty, Ty::String | Ty::Bool | Ty::Char | Ty::Duration) || ty.is_numeric()
+    fn is_supported_hashmap_value_type(_ty: &Ty) -> bool {
+        // W4.001 Stage C3: resolver imposes no V bound on
+        // `impl<K, V> Map for HashMap<K, V> where K: Hash + Eq`.
+        true
     }
 
     pub(super) fn validate_hashmap_key_value_types(
@@ -854,23 +862,53 @@ impl Checker {
             return true;
         }
 
-        if Self::is_supported_hashmap_key_type(&resolved_key)
+        if self.is_supported_hashmap_key_type(&resolved_key)
             && Self::is_supported_hashmap_value_type(&resolved_val)
         {
             return true;
         }
 
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "HashMap<{}, {}> is not supported; HashMap currently requires \
-                 string keys and scalar/string values (bool, char, integer, \
-                 float, duration, or string)",
-                resolved_key.user_facing(),
-                resolved_val.user_facing()
-            ),
-        );
+        // Key fails resolver bounds (e.g. `f64: Hash`). Emit the structured
+        // `BoundsNotSatisfied(Hash/Eq, K)` diagnostic here and return false
+        // so callers fail closed uniformly (bare-type annotation paths via
+        // `validate_concrete_hashmap_type` plus all HashMap method arms,
+        // including the resolver-bypass arms `is_empty` / `keys` /
+        // `values` / `clone`). Method arms that also invoke
+        // `record_resolved_hashmap_call` short-circuit on `Ty::Error`
+        // before reaching the resolver, so no double-emit.
+        if !self.has_bounds_not_satisfied_at(span) {
+            let hash_ok = self
+                .registry
+                .implements_marker(&resolved_key, MarkerTrait::Hash);
+            let eq_ok = self
+                .registry
+                .implements_marker(&resolved_key, MarkerTrait::Eq);
+            let mut missing: Vec<&'static str> = Vec::new();
+            if !hash_ok {
+                missing.push("Hash");
+            }
+            if !eq_ok {
+                missing.push("Eq");
+            }
+            let bound_summary = if missing.is_empty() {
+                "Hash + Eq".to_string()
+            } else {
+                missing
+                    .iter()
+                    .map(|m| format!("K: {m}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "`{}` does not satisfy the required bounds for `Map` \
+                     ({bound_summary})",
+                    resolved_key.user_facing()
+                ),
+            );
+        }
         false
     }
 
@@ -930,16 +968,63 @@ impl Checker {
             return true;
         }
 
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "HashSet<{}> is not supported; only HashSet<String>, 64-bit integer element types, \
-                 and Copy record element types are currently supported",
-                resolved.user_facing()
-            ),
-        );
+        // W4.001 Stage C3: legacy per-element allowlist retired. Admit any
+        // T that implements `Hash + Eq`; otherwise emit a structured
+        // `BoundsNotSatisfied` diagnostic and fail closed (see the
+        // matching rationale in `validate_hashmap_key_value_types`).
+        if self
+            .registry
+            .implements_marker(&resolved, MarkerTrait::Hash)
+            && self.registry.implements_marker(&resolved, MarkerTrait::Eq)
+        {
+            return true;
+        }
+
+        if !self.has_bounds_not_satisfied_at(span) {
+            let hash_ok = self
+                .registry
+                .implements_marker(&resolved, MarkerTrait::Hash);
+            let eq_ok = self.registry.implements_marker(&resolved, MarkerTrait::Eq);
+            let mut missing: Vec<&'static str> = Vec::new();
+            if !hash_ok {
+                missing.push("Hash");
+            }
+            if !eq_ok {
+                missing.push("Eq");
+            }
+            let bound_summary = if missing.is_empty() {
+                "Hash + Eq".to_string()
+            } else {
+                missing
+                    .iter()
+                    .map(|m| format!("T: {m}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "`{}` does not satisfy the required bounds for `Set` \
+                     ({bound_summary})",
+                    resolved.user_facing()
+                ),
+            );
+        }
         false
+    }
+
+    /// Returns true if a `BoundsNotSatisfied` diagnostic has already been
+    /// recorded at the exact span. Used by the collection-admissibility
+    /// fail-closed paths to suppress duplicate emissions when the same
+    /// type annotation is validated via multiple call sites (e.g. once
+    /// from `validate_concrete_hashmap_type` and again from the
+    /// right-hand-side expression's inferred-type validation).
+    fn has_bounds_not_satisfied_at(&self, span: &Span) -> bool {
+        let key = SpanKey::from(span);
+        self.errors.iter().any(|e| {
+            matches!(e.kind, TypeErrorKind::BoundsNotSatisfied) && SpanKey::from(&e.span) == key
+        })
     }
 
     pub(super) fn validate_hashset_owned_element_type(
@@ -1764,6 +1849,7 @@ mod tests {
                 accepts_kwargs: false,
                 doc_comment: None,
                 extern_symbol: None,
+                requires_mutable_receiver: false,
             },
         )]);
         let mut type_defs = HashMap::new(); // "T" is not a user-defined type

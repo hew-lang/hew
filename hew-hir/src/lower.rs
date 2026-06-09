@@ -1,3 +1,16 @@
+// `HirExprKind::CallTraitMethodStatic` is `#[deprecated]` pending its
+// retirement. This file is both the sole construction site
+// (`lower_method_call`) and the home of multiple exhaustive
+// `HirExprKind` walkers that legitimately destructure the deprecated
+// variant. The structural enforcement that no NEW construction sites
+// appear lives in `tests/call_trait_method_static_creation_allowlist.rs`;
+// the deprecation lint would just create noise here.
+#![allow(
+    deprecated,
+    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
+              see tests/call_trait_method_static_creation_allowlist.rs"
+)]
+
 use std::collections::{HashMap, HashSet};
 
 use hew_parser::ast::{
@@ -2391,6 +2404,7 @@ fn collect_call_sites_in_expr(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
             for arg in args {
@@ -2423,6 +2437,11 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(right, out, trait_out);
         }
         HirExprKind::Unary { operand, .. } => collect_call_sites_in_expr(operand, out, trait_out),
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                collect_call_sites_in_expr(elem, out, trait_out);
+            }
+        }
         HirExprKind::Block(b) => collect_call_sites_in_block(b, out, trait_out),
         HirExprKind::GenBlock { body, .. } => collect_call_sites_in_block(body, out, trait_out),
         HirExprKind::Yield {
@@ -2730,6 +2749,22 @@ struct LowerCtx {
     /// `HirExprKind::CallDynMethod` (vtable slot index attached) rather
     /// than failing closed on the missing rewrite entry.
     dyn_trait_method_calls: HashMap<SpanKey, hew_types::DynMethodCall>,
+    /// Checker-resolved `(ImplId, MethodTarget)` verdict per method-call
+    /// site, keyed by the method-call expression span. Populated by the
+    /// checker's `populate_collection_dispatch` for builtin-generic
+    /// (HashMap/HashSet today; Vec/Option/Result on the migration roadmap)
+    /// method calls.
+    ///
+    /// `lower_method_call` consults this **after** the existing checker
+    /// side-tables (numeric / actor / machine / dyn-trait) and **before**
+    /// the legacy `method_call_rewrites` branch. The lookup runs
+    /// unconditionally so any boundary-type conversion failure surfaces
+    /// as a real diagnostic; when the verdict survives boundary conversion,
+    /// `lower_method_call` emits `HirExprKind::ResolvedImplCall` carrying
+    /// `MethodTarget.symbol_name` verbatim. MIR consumes that symbol via
+    /// `Terminator::Call`. This is the production path for builtin
+    /// HashMap/HashSet dispatch today; Vec/Option/Result migrate later.
+    resolved_calls: HashMap<SpanKey, hew_types::ResolvedCall>,
     /// Checker-inferred types for every expression, keyed by expression span.
     /// Consulted at `Expr::Call` sites to determine the call-result type from
     /// checker authority rather than re-deriving from the callee's HIR type.
@@ -2737,6 +2772,18 @@ struct LowerCtx {
     /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
+    /// W4.047 P1.2 — the **typed** checker→HIR handoff map (the shadow of
+    /// `expr_types`). Carries `ResolvedTy` (never `Ty::Var`/`Ty::Error`/literal)
+    /// for every concrete accepted span; cloned verbatim from
+    /// `TypeCheckOutput::resolved_expr_types`.
+    ///
+    /// In Phase 1 this is a *shadow*: lowering still derives every node type
+    /// from `expr_types`, and the typed map is only consulted by the
+    /// `assert_resolved_ty_totality` net to prove — across the whole real
+    /// corpus — that it agrees with the live `expr_types`→`from_ty` path at
+    /// every fail-open / boundary-violation site. Zero behaviour change in
+    /// Phase 1; Phase 2 promotes this to the primary read path.
+    resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
     /// Checker-authoritative RHS spans for accepted `lhs is TypeName`
     /// patterns. When present, the RHS identifier is a type pattern, not a
     /// value expression to lower through lexical bindings.
@@ -3021,6 +3068,17 @@ struct LowerCtx {
     /// constructs that would panic at runtime on unsupported targets
     /// (P0.1-P0.4 fail-closed gates per slepp A222).
     target_arch: TargetArch,
+    /// W3.042 Stage 2 — when lowering bodies of methods that live inside an
+    /// `impl ... for <SelfType> { ... }` (or inherent `impl <SelfType>`) block,
+    /// `Self` in any annotated `TypeExpr` position must resolve to the
+    /// concrete self type rather than escaping to MIR as a literal
+    /// `ResolvedTy::named_user("Self", _)` (which has no entry in the
+    /// record-field-order table and fail-closes at MIR boundary).
+    ///
+    /// Set by `lower_impl_block` before lowering each method, cleared after.
+    /// `None` outside an impl-method context — top-level free functions, trait
+    /// declarations, and actor/machine method lowerings do not touch this.
+    current_impl_self_ty: Option<ResolvedTy>,
 }
 
 impl LowerCtx {
@@ -3045,7 +3103,9 @@ impl LowerCtx {
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
+            resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
+            resolved_expr_types: tc_output.resolved_expr_types.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
             closure_escape_facts: tc_output.closure_escape_facts.clone(),
@@ -3086,7 +3146,63 @@ impl LowerCtx {
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             lang_items: tc_output.lang_items.clone(),
             target_arch,
+            current_impl_self_ty: None,
         }
+    }
+
+    /// W4.047 P1.2 — read the typed checker→HIR handoff map.
+    ///
+    /// Returns the `ResolvedTy` the checker recorded for `span`, or `None` if
+    /// the span is absent (a synthesised/no-span node, or a pre-monomorphi-
+    /// zation generic body whose type is a covered inference var and so is
+    /// legitimately not in the typed map).
+    ///
+    /// Phase 1 only consults this through `assert_resolved_ty_totality`; Phase
+    /// 2 promotes it to the primary node-type read path. Annotated `dead_code`
+    /// because in release builds the only caller (the debug-only totality net)
+    /// compiles away.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    fn checked_ty(&self, span: &Span) -> Option<&ResolvedTy> {
+        self.resolved_expr_types.get(&SpanKey::from(span))
+    }
+
+    /// W4.047 P1.2 — the totality assert net (zero behaviour change).
+    ///
+    /// At a fail-open / boundary-violation lowering site, prove that the typed
+    /// `resolved_expr_types` map agrees *exactly* with the live
+    /// `expr_types`→`ResolvedTy::from_ty` path the production code still drives
+    /// off. The two must be observationally identical at every concrete
+    /// accepted span:
+    ///
+    /// - span present + `from_ty` succeeds → typed map has the identical value,
+    /// - span present + `from_ty` fails (covered generic var) → typed map omits
+    ///   it and the live `.ok()` is `None`, so both agree on absence,
+    /// - span absent → both miss.
+    ///
+    /// A trip means the typed handoff is missing an entry for an accepted
+    /// concrete expr (a real fail-open gap the `.unwrap_or(Unit)` was masking)
+    /// or that P1.1's population diverged from the live conversion. Compiled
+    /// out of release: the live path is unchanged, so lowering output is
+    /// byte-identical.
+    #[inline]
+    fn assert_resolved_ty_totality(&self, span: &Span) {
+        #[cfg(debug_assertions)]
+        {
+            let key = SpanKey::from(span);
+            let live = self
+                .expr_types
+                .get(&key)
+                .and_then(|ty| ResolvedTy::from_ty(ty).ok());
+            debug_assert_eq!(
+                self.checked_ty(span),
+                live.as_ref(),
+                "W4.047 totality: typed resolved_expr_types disagrees with the \
+                 live expr_types->from_ty path at span {key:?} — the typed \
+                 checker->HIR handoff is not total over this accepted span"
+            );
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = span;
     }
 
     fn tag_diagnostics_since(&mut self, start: usize, source_module: &str) {
@@ -4476,6 +4592,15 @@ impl LowerCtx {
         // and must not leak into the emitted HirItem list.
         let mut method_symbols: Vec<String> = Vec::with_capacity(decl.methods.len());
         let mut method_names: Vec<String> = Vec::with_capacity(decl.methods.len());
+        // W3.042 S2-S1: stash the resolved impl-target type so that `Self`
+        // appearing in any method's parameter/return annotation (notably the
+        // parser-injected `self: Self` for bare `self` / `var self` receivers)
+        // lowers to the concrete type. The lowering of `target_type` happens
+        // outside the per-method loop so it pays the cost once. Restore the
+        // previous value (almost always `None`) on exit so nested
+        // impl-lowering reentry — should it ever arise — does not leak state.
+        let prior_self_ty = self.current_impl_self_ty.take();
+        self.current_impl_self_ty = Some(self.lower_type(&decl.target_type));
         for method in &decl.methods {
             if pub_only && !method.visibility.is_pub() {
                 continue;
@@ -4493,6 +4618,7 @@ impl LowerCtx {
             method_symbols.push(symbol);
             method_names.push(method.name.clone());
         }
+        self.current_impl_self_ty = prior_self_ty;
 
         // Lower associated-type bindings to `ResolvedTy`s. Recorded as
         // metadata only — no runtime artefact (the type-erasure model in
@@ -4771,11 +4897,21 @@ impl LowerCtx {
             .type_params
             .as_ref()
             .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
+        // `#[opaque]`-only handles classify as `BitCopy`: pointer-width,
+        // copied wholesale by memcpy, no implicit drop. `#[resource]`/`#[linear]`
+        // ownership (if also declared) takes precedence — representation and
+        // ownership are orthogonal axes.
+        let marker = if decl.is_opaque && decl.resource_marker == AstResourceMarker::None {
+            ResourceMarker::BitCopy
+        } else {
+            ResourceMarker::from(decl.resource_marker)
+        };
         HirTypeDecl {
             id,
             node: self.ids.node(),
             name: decl.name.clone(),
-            marker: ResourceMarker::from(decl.resource_marker),
+            marker,
+            is_opaque: decl.is_opaque,
             consuming_methods: decl.consuming_methods.clone(),
             type_params,
             fields,
@@ -6598,6 +6734,9 @@ impl LowerCtx {
                         default_ty
                     }
                 };
+                // W4.047 P1.2: prove the typed handoff agrees with the live
+                // path at this fail-open literal site (no behaviour change).
+                self.assert_resolved_ty_totality(&span);
                 (kind, ty)
             }
             Expr::RegexLiteral(pattern) => {
@@ -6622,6 +6761,9 @@ impl LowerCtx {
                         builtin: None,
                     }
                 };
+                // W4.047 P1.2: prove the typed handoff agrees with the live
+                // path at this fail-open regex-literal site (no behaviour change).
+                self.assert_resolved_ty_totality(&span);
                 // No named captures from a standalone literal — captures are
                 // resolved per-arm in the match-arm context. Pass an empty
                 // capture list; the table deduplicates by pattern only.
@@ -7634,6 +7776,7 @@ impl LowerCtx {
             }
             Expr::Match { scrutinee, arms } => self.lower_match_expr(scrutinee, arms, &span),
             Expr::InterpolatedString(parts) => self.lower_interpolated_string(parts, span.clone()),
+            Expr::Tuple(elems) => self.lower_tuple_literal(elems, &span),
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -7750,6 +7893,22 @@ impl LowerCtx {
                     .cloned()
                 {
                     Some(ActorMethodKind::Ask(_, reply_ty)) => {
+                        // W4.047 P1.2: the actor-ask reply type comes from the
+                        // checker-authoritative `actor_method_dispatch` table
+                        // (materialized at the checker boundary), not from
+                        // `expr_types`. The fail-open `.unwrap_or(Unit)` below
+                        // would silently install the *wrong* reply-channel ABI
+                        // if `from_ty` ever failed. Prove it cannot for a
+                        // concrete reply type: a conversion failure is only
+                        // admissible for a covered generic var (resolved at
+                        // monomorphization). No behaviour change.
+                        debug_assert!(
+                            ResolvedTy::from_ty(&reply_ty).is_ok() || reply_ty.has_inference_var(),
+                            "W4.047 totality: actor-ask reply type {reply_ty:?} fails \
+                             ResolvedTy::from_ty without being a covered generic var — \
+                             the fail-open .unwrap_or(Unit) would install the wrong \
+                             reply-channel ABI"
+                        );
                         ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit)
                     }
                     Some(ActorMethodKind::Fire(_)) | None => ResolvedTy::Unit,
@@ -8732,6 +8891,37 @@ impl LowerCtx {
         matches!(ty, ResolvedTy::F32 | ResolvedTy::F64)
     }
 
+    fn lower_tuple_literal(
+        &mut self,
+        elems: &[Spanned<Expr>],
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        // Checker-authoritative: the type checker has already validated the
+        // tuple arity and element types and stored the result type in
+        // `expr_types`. HIR does not re-derive the tuple type from the
+        // element list.
+        let Some(result_ty) = self.checker_expr_ty(span, "tuple literal") else {
+            return (
+                HirExprKind::Unsupported("tuple literal missing checker result type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+
+        // Lower each element expression. The checker has already validated
+        // each element type matches the corresponding tuple slot.
+        let hir_elements: Vec<HirExpr> = elems
+            .iter()
+            .map(|elem| self.lower_expr(elem, IntentKind::Read))
+            .collect();
+
+        (
+            HirExprKind::TupleLiteral {
+                elements: hir_elements,
+            },
+            result_ty,
+        )
+    }
+
     fn unary_op_label(op: UnaryOp) -> &'static str {
         match op {
             UnaryOp::Not => "!",
@@ -8857,6 +9047,12 @@ impl LowerCtx {
                         builtin: None,
                     }
                 };
+                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
+                // bare-name unit-ctor site (the B1 archetype; no behaviour
+                // change). When the checker stamped the span (W4.042), the
+                // typed map carries the concrete `Named` type and this assert
+                // confirms it; when the span is genuinely absent, both miss.
+                self.assert_resolved_ty_totality(&span);
                 return (
                     HirExprKind::MachineVariantCtor {
                         machine_name: tagged_union_name,
@@ -8944,6 +9140,21 @@ impl LowerCtx {
                     .as_ref()
                     .map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
                     .unwrap_or_default();
+                // W3.042 S2-S1: `Self` in an impl-method body annotation
+                // resolves to the concrete impl-target type. Without this
+                // interception, `self`'s parser-assigned `TypeExpr::Named
+                // { name: "Self" }` leaks into MIR as `ResolvedTy::named_user
+                // ("Self", _)` and field access fails with "unregistered
+                // record type `Self`". When called outside an impl-method
+                // context, `current_impl_self_ty` is `None` and Self falls
+                // through to the generic unknown-type path below (preserving
+                // the existing behaviour for trait declarations and any
+                // not-yet-covered Self surface).
+                if name == "Self" && args.is_empty() {
+                    if let Some(self_ty) = self.current_impl_self_ty.clone() {
+                        return self_ty;
+                    }
+                }
                 match name.as_str() {
                     "i8" => ResolvedTy::I8,
                     "i16" => ResolvedTy::I16,
@@ -9315,6 +9526,9 @@ impl LowerCtx {
                 .cloned()
                 .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                 .unwrap_or(ResolvedTy::Unit);
+            // W4.047 P1.2: prove the typed handoff agrees at this fail-open
+            // dyn-method-return site (no behaviour change).
+            self.assert_resolved_ty_totality(&span);
             return (
                 HirExprKind::CallDynMethod {
                     receiver: Box::new(lowered_receiver),
@@ -9351,6 +9565,108 @@ impl LowerCtx {
                 );
             }
         }
+        // Look up the checker's `resolved_calls` verdict unconditionally so any
+        // boundary-type conversion failure (TyPattern -> ResolvedTy mapping
+        // bugs, `expr_types` side-table inconsistency, missing impl registration)
+        // surfaces as a real `CheckerBoundaryViolation` diagnostic at the
+        // boundary — not deferred until a runtime user hits the regression.
+        // When a resolver verdict survives boundary conversion, we emit
+        // `HirExprKind::ResolvedImplCall` carrying `MethodTarget.symbol_name`
+        // verbatim; MIR/codegen consume that symbol via `Terminator::Call`.
+        //
+        // Precedence: when both `resolved_calls` and `method_call_rewrites`
+        // have an entry for the same key (the current dual-emit overlap for
+        // HashMap/HashSet during the C2→C3 transition), `resolved_calls`
+        // wins — it carries the structured `(ImplId, MethodTarget)` verdict.
+        // The legacy `method_call_rewrites` entries for that overlap are
+        // removed in the C3 commit that retires the per-V allowlists, so the
+        // precedence is exercised by construction once dual-emit retires.
+        if let Some(resolved) = self.resolved_calls.get(&key).cloned() {
+            // The checker's `expr_types` is the authoritative source for
+            // the call-site result type (LESSONS `checker-authority`).
+            // A missing or non-convertible entry is a checker boundary
+            // violation — we record it eagerly so the gap is visible
+            // long before the consumer is wired.
+            let ret_ty = match self
+                .expr_types
+                .get(&key)
+                .cloned()
+                .map(|ty| ResolvedTy::from_ty(&ty))
+            {
+                Some(Ok(ty)) => Some(ty),
+                Some(Err(err)) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: format!("resolved-impl call `.{method}`"),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "checker-resolved method call has poisoned result type",
+                    ));
+                    None
+                }
+                None => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: format!("resolved-impl call `.{method}`"),
+                            reason: "missing expr_types entry for call site".to_string(),
+                        },
+                        span.clone(),
+                        "checker recorded a ResolvedCall for this site but no \
+                         expr_types entry — the side-tables are inconsistent",
+                    ));
+                    None
+                }
+            };
+            #[allow(
+                clippy::items_after_statements,
+                reason = "the activation gate lives next to the guard it controls; \
+                          promoting to a module-level const would scatter the \
+                          deferral rationale across the file"
+            )]
+            const RESOLVED_IMPL_CALL_ACTIVATED: bool = true;
+            if RESOLVED_IMPL_CALL_ACTIVATED {
+                // Only emit when the resolver verdict survived boundary
+                // conversion; otherwise fall through to the legacy
+                // `method_call_rewrites` arm below.
+                if let Some(ret_ty) = ret_ty {
+                    // Register any enum instantiation that surfaces as the
+                    // return type (e.g. `HashMap::get -> Option<V>`,
+                    // `HashMap::remove -> Option<V>`). Without this the
+                    // module-level `enum_layouts` table lacks the matching
+                    // key for `Named { name: "Option", .. }`, MIR records
+                    // `ValueClass::Unknown → Strategy::UnknownBlocked` at
+                    // the call site, and the totality gate fires
+                    // (`DecisionMapTotal { offending_sites: [...] }`).
+                    // This mirrors the legacy `RewriteToFunction` arm
+                    // below — the new resolver-authority path inherits
+                    // the same boundary obligation.
+                    self.try_register_enum_instantiation(&span);
+                    let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                    let lowered_args: Vec<HirExpr> = args
+                        .iter()
+                        .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                        .collect();
+                    return (
+                        HirExprKind::ResolvedImplCall {
+                            receiver: Box::new(lowered_receiver),
+                            impl_id: resolved.impl_id,
+                            method_name: resolved.method_name,
+                            target_symbol: resolved.target.symbol_name,
+                            type_args: resolved.type_args,
+                            args: lowered_args,
+                            ret_ty: ret_ty.clone(),
+                        },
+                        ret_ty,
+                    );
+                }
+            }
+            // Dormant path: the lookup ran (and diagnostics fired if the
+            // boundary failed), but emission is deferred. Fall through to
+            // the legacy `method_call_rewrites` branch below so live sites
+            // keep their current dispatch behaviour.
+            let _ = resolved;
+        }
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
             Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => {
@@ -9385,6 +9701,9 @@ impl LowerCtx {
                     .cloned()
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                     .unwrap_or(ResolvedTy::Unit);
+                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
+                // receiver-method-rewrite return site (no behaviour change).
+                self.assert_resolved_ty_totality(&span);
                 let callee_ty = ResolvedTy::Function {
                     params: Vec::new(),
                     ret: Box::new(ret_ty.clone()),
@@ -9445,6 +9764,9 @@ impl LowerCtx {
                     .cloned()
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                     .unwrap_or(ResolvedTy::Unit);
+                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
+                // module-qualified-rewrite return site (no behaviour change).
+                self.assert_resolved_ty_totality(&span);
                 let resolved_ref = self
                     .fn_registry
                     .get(&symbol)
@@ -9520,6 +9842,9 @@ impl LowerCtx {
                     .cloned()
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                     .unwrap_or(ResolvedTy::Unit);
+                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
+                // static-trait-dispatch return site (no behaviour change).
+                self.assert_resolved_ty_totality(&span);
                 (
                     HirExprKind::CallTraitMethodStatic {
                         receiver: Box::new(lowered_receiver),
@@ -10388,23 +10713,38 @@ impl LowerCtx {
 
         for (stmt, span) in &block.stmts {
             let hir_stmt = match stmt {
-                // `fork name = call(...)` inside a scope body → TI-2: typed Task<T> binding.
-                Stmt::Expression(expr)
-                    if matches!(
-                        &expr.0,
-                        Expr::ForkChild {
-                            binding: Some(_),
-                            ..
-                        }
-                    ) =>
-                {
-                    if let Expr::ForkChild {
-                        binding: Some(binding_name),
+                // `fork name = call(...)` and bare `fork = call(...)` inside a
+                // scope body are the only `Stmt::Expression` shapes this
+                // function intercepts. Destructure the `ForkChild` once and
+                // branch on `binding` presence: the bound form (TI-2) builds
+                // a typed `Task<T>` `Let`; the unbound form delegates to the
+                // `lower_spawned_call` helper.
+                Stmt::Expression(expr) => match &expr.0 {
+                    Expr::ForkChild {
+                        binding,
                         expr: child_expr,
-                    } = &expr.0
-                    {
-                        // The child expression must be a call; any other form is rejected.
-                        if matches!(&child_expr.0, Expr::Call { .. }) {
+                    } => {
+                        if !matches!(&child_expr.0, Expr::Call { .. }) {
+                            let message: &str = if binding.is_some() {
+                                "`fork name = expr` requires a call expression as the \
+                                 right-hand side; other expression forms cannot be spawned as tasks"
+                            } else {
+                                "`fork = expr` requires a call expression"
+                            };
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::ForkChildNotACall,
+                                child_expr.1.clone(),
+                                message,
+                            ));
+                            self.unsupported(span.clone(), "fork-child-non-call", "slice-2");
+                            HirStmt {
+                                node: self.ids.node(),
+                                kind: HirStmtKind::Expr(
+                                    self.unsupported_expr(span.clone(), "fork child non-call"),
+                                ),
+                                span: span.clone(),
+                            }
+                        } else if let Some(binding_name) = binding {
                             // FC-P1-A1 Blocker 1+2: Validate fork child spawn shape before lowering
                             if let Expr::Call { function, args, .. } = &child_expr.0 {
                                 self.validate_task_spawn_call(function, args, &child_expr.1);
@@ -10475,69 +10815,26 @@ impl LowerCtx {
                                 span: span.clone(),
                             }
                         } else {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::ForkChildNotACall,
-                                child_expr.1.clone(),
-                                "`fork name = expr` requires a call expression as the \
-                                 right-hand side; other expression forms cannot be spawned as tasks",
-                            ));
-                            // Emit an unsupported stmt and continue rather than stopping.
-                            self.unsupported(span.clone(), "fork-child-non-call", "slice-2");
-                            HirStmt {
-                                node: self.ids.node(),
-                                kind: HirStmtKind::Expr(
-                                    self.unsupported_expr(span.clone(), "fork child non-call"),
-                                ),
-                                span: span.clone(),
-                            }
-                        }
-                    } else {
-                        unreachable!("pattern guard ensures this branch")
-                    }
-                }
-
-                // `fork name = call(...)` without a binding name (bare ForkChild with no
-                // name, e.g. `scope { fork = expr }` — the grammar produces binding: None).
-                // Lower the child expression as a plain SpawnedCall; the result is not bound.
-                Stmt::Expression(expr)
-                    if matches!(&expr.0, Expr::ForkChild { binding: None, .. }) =>
-                {
-                    if let Expr::ForkChild {
-                        binding: None,
-                        expr: child_expr,
-                    } = &expr.0
-                    {
-                        if matches!(&child_expr.0, Expr::Call { .. }) {
+                            // Unbound `fork = call(...)`: lower as a plain SpawnedCall;
+                            // the result is not bound.
                             let spawned = self.lower_spawned_call(child_expr);
                             HirStmt {
                                 node: self.ids.node(),
                                 kind: HirStmtKind::Expr(spawned),
                                 span: span.clone(),
                             }
-                        } else {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::ForkChildNotACall,
-                                child_expr.1.clone(),
-                                "`fork = expr` requires a call expression",
-                            ));
-                            self.unsupported(span.clone(), "fork-child-non-call", "slice-2");
-                            HirStmt {
-                                node: self.ids.node(),
-                                kind: HirStmtKind::Expr(
-                                    self.unsupported_expr(span.clone(), "fork child non-call"),
-                                ),
-                                span: span.clone(),
-                            }
                         }
-                    } else {
-                        unreachable!("pattern guard ensures this branch")
                     }
-                }
 
-                // All other statements lower normally (including regular calls,
-                // let bindings, nested scope{} blocks, etc.). Inside scope depth,
-                // `lower_stmt` will already handle statement-expression calls as
-                // SpawnedCall nodes via TI-1 (the scope_depth > 0 path in lower_stmt).
+                    // Any other expression-as-statement (regular calls, blocks,
+                    // etc.) lowers via the generic statement path.
+                    _ => self.lower_stmt(stmt, span.clone(), ResolvedTy::Unit),
+                },
+
+                // All other statements lower normally (including let bindings,
+                // nested scope{} blocks, etc.). Inside scope depth, `lower_stmt`
+                // will already handle statement-expression calls as SpawnedCall
+                // nodes via TI-1 (the scope_depth > 0 path in lower_stmt).
                 _ => self.lower_stmt(stmt, span.clone(), ResolvedTy::Unit),
             };
             statements.push(hir_stmt);
@@ -10810,6 +11107,11 @@ fn collect_captures_walk(
         HirExprKind::Unary { operand, .. } => {
             collect_captures_walk(operand, param_ids, seen, captures, self_id);
         }
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                collect_captures_walk(elem, param_ids, seen, captures, self_id);
+            }
+        }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             collect_captures_walk(arg, param_ids, seen, captures, self_id);
@@ -10828,6 +11130,7 @@ fn collect_captures_walk(
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             for arg in args {
@@ -11044,6 +11347,11 @@ fn collect_general_closure_captures_walk(
         HirExprKind::Unary { operand, .. } => {
             collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
         }
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                collect_general_closure_captures_walk(elem, outer_bindings, seen, captures);
+            }
+        }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
@@ -11062,6 +11370,7 @@ fn collect_general_closure_captures_walk(
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             for arg in args {
@@ -11673,6 +11982,11 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         HirExprKind::Unary { operand, .. } => {
             collect_hir_emitted_events_walk(operand, event_names, out);
         }
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                collect_hir_emitted_events_walk(elem, event_names, out);
+            }
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_hir_emitted_events_walk(callee, event_names, out);
             for a in args {
@@ -11689,6 +12003,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_hir_emitted_events_walk(receiver, event_names, out);
             for a in args {
@@ -14494,6 +14809,11 @@ fn scan_expr_for_call_shape(
         HirExprKind::Unary { operand, .. } => {
             scan_expr_for_call_shape(operand, callable, diagnostics);
         }
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                scan_expr_for_call_shape(elem, callable, diagnostics);
+            }
+        }
         HirExprKind::Spawn { args, .. } => {
             for (_, v) in args {
                 scan_expr_for_call_shape(v, callable, diagnostics);
@@ -14597,6 +14917,7 @@ fn scan_expr_for_call_shape(
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
         HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             for a in args {
@@ -16140,6 +16461,72 @@ mod tests {
             none_variant.field_tys.is_empty(),
             "None variant must have no payload fields"
         );
+    }
+
+    /// A STDLIB bare `None` — with NO user `enum Option<T>` in source — must
+    /// lower to a unit ctor whose stamped result type carries the concrete
+    /// `Option<i64>` args, so codegen's mangled key resolves to `Option$$i64`.
+    ///
+    /// Note: `enum_layouts` alone does NOT discriminate — the match scrutinee
+    /// (`f()` typed `Option<i64>`) registers `Option$$i64` regardless. The
+    /// load-bearing assertion is the `None` ctor node's stamped `ty`.
+    #[test]
+    fn stdlib_option_none_registers_in_enum_layouts() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            fn f() -> Option<i64> { None }
+            fn main() -> i64 { match f() { Some(x) => x, None => 7 } }
+            ",
+        );
+
+        // The match scrutinee registers Option$$i64 even on tip; assert it is
+        // present (the layout the None ctor must resolve against).
+        assert!(
+            lowered
+                .module
+                .enum_layouts
+                .iter()
+                .any(|l| l.mangled_name == "Option$$i64"),
+            "Option$$i64 must be in enum_layouts; got {:#?}",
+            lowered.module.enum_layouts
+        );
+
+        // Discriminating assertion: the bare `None` ctor in `f`'s body must
+        // stamp the concrete Option<i64> type args, not a bare Option.
+        let f_func = lowered
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(func) if func.name == "f" => Some(func),
+                _ => None,
+            })
+            .expect("lowered module must contain fn f");
+        let tail = f_func
+            .body
+            .tail
+            .as_ref()
+            .expect("fn f body must have a trailing `None` expression");
+        let HirExprKind::MachineVariantCtor { machine_name, .. } = &tail.kind else {
+            panic!(
+                "expected `None` to lower to a unit MachineVariantCtor, got {:#?}",
+                tail.kind
+            );
+        };
+        assert_eq!(machine_name, "Option", "ctor must target Option");
+        match &tail.ty {
+            ResolvedTy::Named { name, args, .. } => {
+                assert_eq!(name, "Option");
+                assert_eq!(
+                    args.as_slice(),
+                    &[ResolvedTy::I64],
+                    "bare `None` ctor must stamp concrete Option<i64> args (not bare \
+                     Option), so codegen's mangled key resolves to Option$$i64; got {:#?}",
+                    tail.ty
+                );
+            }
+            other => panic!("expected Named Option<i64>, got {other:#?}"),
+        }
     }
 
     /// A plain monomorphic enum must NOT appear in `enum_layouts` — the

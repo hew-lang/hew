@@ -136,6 +136,7 @@ fn cancellation_token_has_no_cancel_method() {
 }
 
 #[test]
+#[ignore = "Vec dispatch migrated to the resolved-call kernel (W4.027 Stage 3); legacy `MethodCallRewrite::RewriteToFunction` Vec entries no longer exist. Coverage of the same surface lives in the structural `no_legacy_vec_rewrite` test plus `resolved_call_registry_lookup`."]
 fn vec_copy_record_layout_methods_record_runtime_rewrites() {
     let output = check_source(
         r"
@@ -217,6 +218,74 @@ fn vec_tuple_string_new_constructor_preserves_existing_typecheck_behavior() {
 }
 
 #[test]
+fn hashmap_new_turbofish_typechecks() {
+    let output = check_source(
+        r"
+        record Key { id: i64 }
+
+        fn main() {
+            let _m = HashMap::<Key, i64>::new();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "HashMap::<K, V>::new() should type-check with explicit type args: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashset_new_turbofish_typechecks() {
+    let output = check_source(
+        r"
+        fn main() {
+            let _s = HashSet::<i64>::new();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "HashSet::<T>::new() should type-check with explicit type args: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_new_turbofish_arity_mismatch_is_rejected() {
+    let output = check_source(
+        r"
+        fn main() {
+            let _m = HashMap::<i64>::new();
+        }
+        ",
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "HashMap::<K>::new() must produce an arity diagnostic",
+    );
+}
+
+#[test]
+fn hashset_new_turbofish_arity_mismatch_is_rejected() {
+    let output = check_source(
+        r"
+        fn main() {
+            let _s = HashSet::<i64, i64>::new();
+        }
+        ",
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "HashSet::<T, U>::new() must produce an arity diagnostic",
+    );
+}
+
+#[test]
 fn vec_new_with_error_element_remains_error_typed() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let span = 0..8;
@@ -278,6 +347,7 @@ fn vec_layout_managed_record_new_remains_fail_closed() {
 }
 
 #[test]
+#[ignore = "Vec dispatch migrated to the resolved-call kernel (W4.027 Stage 3); legacy `MethodCallRewrite::RewriteToFunction` Vec entries no longer exist. The acceptance side of this assertion (no errors) is covered by run-pass fixture `examples/v05/vec_run_pass.hew`."]
 fn vec_layout_remove_copy_record_records_rewrite() {
     // W3.003: `Vec::remove(idx)` on a Copy record is now runtime-backed via
     // `hew_vec_remove_at_layout`.  The checker must lift the gate and record
@@ -348,6 +418,7 @@ fn vec_layout_unsupported_method_remains_fail_closed() {
 }
 
 #[test]
+#[ignore = "Vec dispatch migrated to the resolved-call kernel (W4.027 Stage 3); legacy `MethodCallRewrite::RewriteToFunction` Vec entries no longer exist. Acceptance of equality-eligible Copy records is covered by run-pass fixture `examples/v05/vec_run_pass.hew` (which exercises `Vec<Point>::contains`)."]
 fn vec_layout_contains_eligible_record_records_thunk_rewrite() {
     // W3.032 Slice 3e: a Copy record with all-integer fields is
     // equality-eligible; `Vec::contains` must record the
@@ -474,7 +545,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
 }
 
 #[test]
-fn vec_contains_f64_scalar_still_accepted() {
+fn vec_contains_f64_typechecks() {
     let output = check_source(
         r"
         fn main() {
@@ -489,14 +560,15 @@ fn vec_contains_f64_scalar_still_accepted() {
         "scalar Vec<f64>::contains should remain accepted: {:#?}",
         output.errors
     );
+
+    // After the W4.027 Stage 3 resolved-call kernel cutover, Vec dispatch is
+    // recorded via `resolved_calls`, not the legacy `method_call_rewrites` side table.
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_vec_contains_f64"
-        )),
-        "scalar Vec<f64>::contains must still route to hew_vec_contains_f64: {:#?}",
-        output.method_call_rewrites
+        output.resolved_calls.values().any(|call| {
+            call.method_name == "contains" && call.target.symbol_name == "hew_vec_contains_f64"
+        }),
+        "Vec<f64>::contains must route to hew_vec_contains_f64 via resolved_calls: {:#?}",
+        output.resolved_calls
     );
 }
 
@@ -807,6 +879,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
     let outer = TypeDecl {
@@ -832,6 +905,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
     let plain = TypeDecl {
@@ -857,6 +931,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
 
@@ -1057,6 +1132,12 @@ fn concrete_vec_validation_reaches_function_wrapped_vec() {
 
 #[test]
 fn concrete_hashset_validation_reaches_pointer_wrapped_hashset() {
+    // W4.001 Stage C3: per-element allowlist retired. `HashSet<bool>` is
+    // admitted (bool implements Hash + Eq). The traversal still reaches
+    // the wrapped HashSet — exercised here by verifying the pointer wrapper
+    // walks into the element type without panicking. Behaviour-shape tests
+    // for unsupported elements now live at the resolver site
+    // (`record_resolved_hashset_call` emitting `BoundsNotSatisfied`).
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let ty = Ty::Pointer {
         is_mutable: false,
@@ -1067,14 +1148,20 @@ fn concrete_hashset_validation_reaches_pointer_wrapped_hashset() {
         }),
     };
 
-    assert!(!checker.validate_concrete_hashset_type(&ty, &(0..0)));
-    assert!(checker.errors.iter().any(|err| {
-        err.kind == TypeErrorKind::InvalidOperation && err.message.contains("HashSet<bool>")
-    }));
+    assert!(checker.validate_concrete_hashset_type(&ty, &(0..0)));
+    assert!(
+        checker.errors.is_empty(),
+        "Stage C3: HashSet<bool> must admit cleanly; errors: {:?}",
+        checker.errors
+    );
 }
 
 #[test]
 fn concrete_hashmap_validation_reaches_tuple_wrapped_hashmap() {
+    // W4.001 Stage C3: per-K/V allowlist retired. `HashMap<i64, String>` is
+    // admitted (i64 implements Hash + Eq). Verifies the traversal still
+    // walks into the tuple-wrapped HashMap; rejection-shape tests now live
+    // at the resolver site (BoundsNotSatisfied with witness attribution).
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let ty = Ty::Tuple(vec![
         Ty::Named {
@@ -1085,11 +1172,12 @@ fn concrete_hashmap_validation_reaches_tuple_wrapped_hashmap() {
         Ty::Unit,
     ]);
 
-    assert!(!checker.validate_concrete_hashmap_type(&ty, &(0..0)));
-    assert!(checker
-        .errors
-        .iter()
-        .any(|err| err.kind == TypeErrorKind::InvalidOperation && err.message.contains("HashMap")));
+    assert!(checker.validate_concrete_hashmap_type(&ty, &(0..0)));
+    assert!(
+        checker.errors.is_empty(),
+        "Stage C3: HashMap<i64, String> must admit cleanly; errors: {:?}",
+        checker.errors
+    );
 }
 
 #[test]
@@ -1177,6 +1265,171 @@ fn actor_decl_registers_rcfree_members_for_collection_checks() {
         }),
         "ActorRef<Worker> should not emit a HashSet UnsafeCollectionElement error, got: {:?}",
         checker.errors
+    );
+}
+
+// ── W5.004 (F1a): `#[intrinsic]` floor-protocol placement gate (A605) ──────
+//
+// The `#[intrinsic("…")]` surface is compiler-internal-only. A declaration is
+// accepted only inside a designated stdlib-floor module; anywhere else —
+// including the user's root module — is a hard `E_INTRINSIC_OUTSIDE_FLOOR`
+// error so no user-reachable path can wire itself to a compiler intrinsic.
+
+/// Build a single-module program whose one module has the given dotted path
+/// (e.g. `["std", "math"]`) and contains `source`'s items.
+fn check_source_in_module(source: &str, module_path: Vec<String>) -> TypeCheckOutput {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "module source must parse cleanly, got: {:?}",
+        parsed.errors
+    );
+    let root_id = ModuleId::root();
+    let mod_id = ModuleId::new(module_path);
+    let module = Module {
+        id: mod_id.clone(),
+        items: parsed.program.items,
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(module).unwrap();
+    mg.topo_order = vec![mod_id, root_id];
+    let program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&program)
+}
+
+#[test]
+fn intrinsic_in_floor_module_is_accepted() {
+    // `std.math` is the canonical floor module for math intrinsics; the
+    // bodyless `#[intrinsic("math.sqrt")]` declaration must register cleanly.
+    let output = check_source_in_module(
+        r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#,
+        vec!["std".to_string(), "math".to_string()],
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::IntrinsicOutsideFloor { .. })),
+        "intrinsic declared in floor module `std.math` must be accepted, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn intrinsic_in_user_root_module_is_rejected() {
+    // A user program declaring `#[intrinsic]` at the root module must be
+    // rejected: the root/user module is never a floor module (fail-closed).
+    let output = check_source(r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#);
+    let hit = output.errors.iter().find_map(|e| match &e.kind {
+        TypeErrorKind::IntrinsicOutsideFloor {
+            intrinsic_key,
+            module,
+        } => Some((intrinsic_key.clone(), module.clone())),
+        _ => None,
+    });
+    let (key, module) =
+        hit.expect("root-module `#[intrinsic]` declaration must be rejected as outside the floor");
+    assert_eq!(key, "math.sqrt", "diagnostic must name the intrinsic key");
+    assert_eq!(
+        module, "(root)",
+        "diagnostic must label the offending module as the root/user module"
+    );
+}
+
+#[test]
+fn intrinsic_in_non_floor_module_is_rejected() {
+    // A non-floor module (here a user `app` module) is likewise rejected,
+    // proving the gate is an explicit allowlist, not "any module with a path".
+    let output = check_source_in_module(
+        r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#,
+        vec!["app".to_string()],
+    );
+    let hit = output.errors.iter().find_map(|e| match &e.kind {
+        TypeErrorKind::IntrinsicOutsideFloor { module, .. } => Some(module.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        hit.as_deref(),
+        Some("app"),
+        "non-floor module `app` must be rejected with its path in the diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn normal_function_does_not_trip_intrinsic_gate() {
+    // Functions without `#[intrinsic]` are never touched by the floor gate,
+    // even in a user module.
+    let output = check_source("pub fn add(a: i64, b: i64) -> i64 { a + b }");
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::IntrinsicOutsideFloor { .. })),
+        "non-intrinsic function must not trip the floor gate, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn intrinsic_on_impl_method_in_floor_module_is_rejected() {
+    // `#[intrinsic]` on an impl method inside std.math must be REJECTED even
+    // though std.math is an allowlisted floor module.  Only top-level free
+    // functions in floor modules are valid intrinsic declarations; method
+    // dispatch slots are never wired to compiler intrinsics (A605).
+    //
+    // The test asserts both legs of the fail-closed guarantee:
+    //   1. The method-keyed entry does NOT appear in `intrinsic_declarations`.
+    //   2. An `IntrinsicOnMethod` diagnostic IS emitted naming the key and
+    //      the intrinsic catalog key.
+    let source = r#"
+type MathHelper {}
+impl MathHelper {
+    #[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;
+}
+"#;
+    let output = check_source_in_module(source, vec!["std".to_string(), "math".to_string()]);
+
+    // Leg 1: must NOT be in intrinsic_declarations.
+    let method_key_present = output
+        .intrinsic_declarations
+        .keys()
+        .any(|k| k.contains("::"));
+    assert!(
+        !method_key_present,
+        "impl-method intrinsic must not be inserted into intrinsic_declarations; \
+         got: {:?}",
+        output.intrinsic_declarations
+    );
+
+    // Leg 2: must emit IntrinsicOnMethod naming both the catalog key and the
+    // method key.
+    let hit = output.errors.iter().find_map(|e| match &e.kind {
+        TypeErrorKind::IntrinsicOnMethod {
+            intrinsic_key,
+            method_key,
+        } => Some((intrinsic_key.clone(), method_key.clone())),
+        _ => None,
+    });
+    let (catalog_key, method_key) = hit.expect(
+        "impl-method `#[intrinsic]` in a floor module must emit IntrinsicOnMethod diagnostic",
+    );
+    assert_eq!(
+        catalog_key, "math.sqrt",
+        "IntrinsicOnMethod diagnostic must name the intrinsic catalog key"
+    );
+    assert!(
+        method_key.contains("::"),
+        "IntrinsicOnMethod diagnostic must carry the method-shaped key (contains `::`);\
+         got: {method_key:?}"
     );
 }
 
@@ -6248,6 +6501,7 @@ fn user_module_registers_types() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
     let import = make_user_import(
@@ -6884,6 +7138,7 @@ fn local_type_impl_no_orphan_warning() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
     let impl_decl = ImplDecl {
@@ -6978,6 +7233,7 @@ fn test_file_import_private_items_not_visible() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     });
 
@@ -8269,6 +8525,43 @@ fn literal_coercion_i32_overflow() {
             .any(|e| e.message.contains("does not fit")),
         "expected range error: {:?}",
         checker.errors
+    );
+}
+
+#[test]
+fn int_literal_infers_from_annotated_binding() {
+    let output = check_source(
+        r"
+        fn main() {
+            let x: i32 = 1;
+            let y: u8 = 255;
+            let z: i16 = -12;
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "integer literals should infer from adjacent annotations: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn int_literal_inference_rejects_out_of_range_annotation() {
+    let output = check_source(
+        r"
+        fn main() {
+            let x: i32 = 2147483648;
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("does not fit")),
+        "out-of-range literal must reject against inferred i32 context: {:#?}",
+        output.errors
     );
 }
 
@@ -12343,6 +12636,7 @@ mod non_root_module_inference_scope {
             wire: None,
             is_indirect: false,
             resource_marker: hew_parser::ast::ResourceMarker::None,
+            is_opaque: false,
             consuming_methods: Vec::new(),
         };
         let impl_decl = ImplDecl {
@@ -12854,6 +13148,7 @@ fn module_graph_body_private_local_type_is_available() {
         doc_comment: None,
         wire: None,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
 
@@ -16359,7 +16654,7 @@ mod for_loop_iterable_fail_closed {
 
             impl Iterator for Counter {
                 type Item = i32;
-                fn next(self) -> Option<i32> {
+                fn next(var self) -> Option<i32> {
                     Some(self.val)
                 }
             }
@@ -16382,6 +16677,12 @@ mod for_loop_iterable_fail_closed {
 
     #[test]
     fn builtin_dyn_iterator_item_binding_smoke() {
+        // W3.042 S2-S4: the dyn-trait dispatch gate enforces that
+        // `Iterator::next` (declared `var self` in `std/builtins.hew`)
+        // is called only on a `var`-bound receiver. The parameter is
+        // therefore declared `var iter` so the method dispatch picks the
+        // mutable-receiver path; without `var` here the call is correctly
+        // rejected with a MutabilityError naming `dyn Iterator`.
         let output = check_source(
             r"
             type Counter {
@@ -16390,12 +16691,12 @@ mod for_loop_iterable_fail_closed {
 
             impl Iterator for Counter {
                 type Item = i32;
-                fn next(self) -> Option<i32> {
+                fn next(var self) -> Option<i32> {
                     Some(self.val)
                 }
             }
 
-            fn use_iter(iter: dyn Iterator<Item = i32>) -> Option<i32> {
+            fn use_iter(var iter: dyn Iterator<Item = i32>) -> Option<i32> {
                 iter.next()
             }
 
@@ -17332,6 +17633,7 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
                 wire: None,
                 is_indirect: false,
                 resource_marker: hew_parser::ast::ResourceMarker::None,
+                is_opaque: false,
                 consuming_methods: Vec::new(),
             };
             checker.register_type_decl(&td);
@@ -17391,6 +17693,7 @@ fn handle_bearing_registration_scales_linearly_not_quadratically() {
                 wire: None,
                 is_indirect: false,
                 resource_marker: hew_parser::ast::ResourceMarker::None,
+                is_opaque: false,
                 consuming_methods: Vec::new(),
             };
             checker.register_type_decl(&td);
@@ -17826,12 +18129,12 @@ mod record_admission {
 
     #[test]
     fn field_write_rejected() {
-        // Assigning to a record field must be rejected unconditionally (A-D3).
+        // Assigning to a record field through an immutable binding must be rejected.
         let output = check_source(
             r"
             record Point { x: i64, y: i64 }
             fn main() {
-                var p: Point = Point { x: 1, y: 2 };
+                let p: Point = Point { x: 1, y: 2 };
                 p.x = 5;
             }
             ",
@@ -17843,6 +18146,24 @@ mod record_admission {
         assert!(
             has_rejection,
             "field assignment on a record must be rejected; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn field_write_through_mutable_binding_accepted() {
+        let output = check_source(
+            r"
+            record Point { x: i64, y: i64 }
+            fn main() {
+                var p: Point = Point { x: 1, y: 2 };
+                p.x = 5;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "field assignment through a mutable record binding must type-check; got: {:#?}",
             output.errors
         );
     }
@@ -18485,7 +18806,7 @@ mod assoc_types_slice1 {
             r"
             trait Iterator {
                 type Item;
-                fn next(val: Self) -> Option<Self::Item>;
+                fn next(var val: Self) -> Option<Self::Item>;
             }
 
             type Counter {
@@ -18494,7 +18815,7 @@ mod assoc_types_slice1 {
 
             impl Iterator for Counter {
                 type Item = i64;
-                fn next(c: Counter) -> Option<i64> { Some(c.value) }
+                fn next(var c: Counter) -> Option<i64> { Some(c.value) }
             }
             ",
         );
@@ -18731,7 +19052,7 @@ mod assoc_types_slice2 {
             r"
             trait Iterator {
                 type Item;
-                fn next(it: Self) -> Option<Self::Item>;
+                fn next(var it: Self) -> Option<Self::Item>;
             }
 
             type Counter {
@@ -18740,7 +19061,7 @@ mod assoc_types_slice2 {
 
             impl Iterator for Counter {
                 type Item = i64;
-                fn next(c: Counter) -> Option<i64> { Some(c.value) }
+                fn next(var c: Counter) -> Option<i64> { Some(c.value) }
             }
 
             fn make<I: Iterator>(it: I) -> Option<I::Item> {
@@ -18806,14 +19127,14 @@ mod assoc_types_slice2 {
             r"
             trait Iterator {
                 type Item;
-                fn next(it: Self) -> Option<Self::Item>;
+                fn next(var it: Self) -> Option<Self::Item>;
             }
 
             type Counter {}
 
             impl Iterator for Counter {
                 type Item = i64;
-                fn next(c: Counter) -> Option<i64> { None }
+                fn next(var c: Counter) -> Option<i64> { None }
             }
 
             fn collect<I: Iterator>(it: I) -> Vec<I::Item> {
@@ -20689,4 +21010,510 @@ fn empty_extern_symbol_template_is_rejected_with_empty_reason() {
         })
         .expect("expected InvalidExternSymbolTemplate diagnostic");
     assert_eq!(reason, "empty template");
+}
+
+// ---------------------------------------------------------------------------
+// Q297 Stage 1 — receiver-mutability flag plumbing.
+//
+// These tests replace the descoped accept fixtures
+// `iter_next_mut_receiver.hew` (S1-V2) and `iter_var_receiver_drop_once.hew`
+// (S1-V5). End-to-end coverage of those shapes is blocked on pre-existing
+// gaps (`Self`-substitution at the MIR boundary for user trait-impl bodies
+// and `MethodCallNoRewrite` on direct `v.into_iter()` / `it.next()` outside
+// the for-loop desugar). The checker-level invariant — that the
+// `requires_mutable_receiver` flag is populated everywhere the call-site
+// gate reads it from — is exactly what Stage 1 owns, so we pin it here.
+
+#[test]
+fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
+    // `lookup_named_method_sig` prefers `td.methods` before `fn_sigs`, so
+    // the flag must be set in BOTH tables. Missing either one silently
+    // disables the caller-side mutable-binding gate.
+    let output = check_source(
+        r"
+        type Counter { val: i32 }
+
+        impl Iterator for Counter {
+            type Item = i32;
+            fn next(var self) -> Option<i32> {
+                Some(self.val)
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:?}",
+        output.errors,
+    );
+    let sig = output
+        .fn_sigs
+        .get("Counter::next")
+        .expect("Counter::next must be registered in fn_sigs");
+    assert!(
+        sig.requires_mutable_receiver,
+        "fn_sigs[Counter::next].requires_mutable_receiver must be true for `var self`",
+    );
+    let td = output
+        .type_defs
+        .get("Counter")
+        .expect("Counter type must be registered");
+    let method_sig = td
+        .methods
+        .get("next")
+        .expect("Counter::next must be present in td.methods");
+    assert!(
+        method_sig.requires_mutable_receiver,
+        "td.methods[next].requires_mutable_receiver must be true for `var self`",
+    );
+}
+
+#[test]
+fn q297_immut_self_method_records_no_mut_receiver_flag() {
+    // Negative control: a plain `self` receiver must NOT carry the flag.
+    let output = check_source(
+        r"
+        type Counter { val: i32 }
+
+        impl Counter {
+            fn peek(self) -> i32 { self.val }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:?}",
+        output.errors,
+    );
+    let sig = output
+        .fn_sigs
+        .get("Counter::peek")
+        .expect("Counter::peek must be registered");
+    assert!(
+        !sig.requires_mutable_receiver,
+        "plain `self` receiver must not set requires_mutable_receiver",
+    );
+}
+
+#[test]
+fn q297_trait_var_self_vs_impl_self_rejects_with_receiver_mutability_detail() {
+    // Trait declares `var self`; impl uses plain `self`. Q004's
+    // receiver-mutability axis (added in Stage 1) must reject this.
+    let output = check_source(
+        r"
+        trait Bump {
+            fn step(var self) -> i64;
+        }
+
+        type Box { n: i64 }
+
+        impl Bump for Box {
+            fn step(self) -> i64 { self.n }
+        }
+        ",
+    );
+    let mismatch = output.errors.iter().find(|e| {
+        matches!(
+            &e.kind,
+            TypeErrorKind::TraitImplSignatureMismatch { detail, .. }
+                if *detail == "receiver mutability"
+        )
+    });
+    assert!(
+        mismatch.is_some(),
+        "expected TraitImplSignatureMismatch(receiver mutability), got: {:?}",
+        output.errors,
+    );
+}
+
+#[test]
+fn q297_let_bound_receiver_rejects_var_self_method_call() {
+    // Caller-side gate: a `let`-bound (immutable) receiver cannot dispatch
+    // through a method that requires `var self`. Use a trait-impl shape —
+    // Stage 1 keeps the long-standing rejection of `var self` on inherent
+    // impls; the relaxation only applies to trait impls where the trait
+    // contract gives the mutation observable meaning.
+    let output = check_source(
+        r"
+        trait Bump {
+            fn step(var self) -> i64;
+        }
+
+        type Counter { val: i64 }
+
+        impl Bump for Counter {
+            fn step(var self) -> i64 {
+                self.val = self.val + 1;
+                self.val
+            }
+        }
+
+        fn main() {
+            let c = Counter { val: 0 };
+            c.step();
+        }
+        ",
+    );
+    let mutability = output.errors.iter().find(|e| {
+        matches!(e.kind, TypeErrorKind::MutabilityError)
+            && e.message.contains("requires a mutable binding receiver")
+    });
+    assert!(
+        mutability.is_some(),
+        "expected MutabilityError on let-bound receiver, got: {:?}",
+        output.errors,
+    );
+}
+
+#[test]
+fn q297_var_bound_receiver_accepts_var_self_method_call() {
+    // Positive control for the caller-side gate: a `var`-bound receiver
+    // must dispatch cleanly through the same `var self` trait method.
+    let output = check_source(
+        r"
+        trait Bump {
+            fn step(var self) -> i64;
+        }
+
+        type Counter { val: i64 }
+
+        impl Bump for Counter {
+            fn step(var self) -> i64 {
+                self.val = self.val + 1;
+                self.val
+            }
+        }
+
+        fn main() {
+            var c = Counter { val: 0 };
+            c.step();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "var-bound receiver must accept var-self trait-method call, got: {:?}",
+        output.errors,
+    );
+}
+
+#[test]
+fn w3042_static_trait_dispatch_let_bound_receiver_rejects_var_self_method() {
+    // W3.042 S2-S4: receiver-mutability gate on the generic-bound
+    // StaticTraitDispatch sub-arm. A `let`-bound generic-typed receiver
+    // dispatched through a trait method that declares `var self` must
+    // emit a MutabilityError that names the dispatch kind so the
+    // diagnostic is distinguishable from the (Ty::Named, _) variant.
+    let output = check_source(
+        r"
+        trait Bump {
+            fn step(var self) -> i64;
+        }
+
+        type Counter { val: i64 }
+
+        impl Bump for Counter {
+            fn step(var self) -> i64 {
+                self.val = self.val + 1;
+                self.val
+            }
+        }
+
+        fn pump<I: Bump>(it: I) -> i64 {
+            it.step()
+        }
+
+        fn main() {
+            var c = Counter { val: 0 };
+            pump(c);
+        }
+        ",
+    );
+    let mutability = output.errors.iter().find(|e| {
+        matches!(e.kind, TypeErrorKind::MutabilityError)
+            && e.message
+                .contains("statically dispatched on type parameter")
+            && e.message.contains("requires a mutable binding receiver")
+    });
+    assert!(
+        mutability.is_some(),
+        "expected StaticTraitDispatch MutabilityError on let-bound generic receiver, got: {:?}",
+        output.errors,
+    );
+}
+
+#[test]
+fn w3042_static_trait_dispatch_var_bound_receiver_accepts_var_self_method() {
+    // Positive control: a `var`-bound generic-typed receiver dispatched
+    // through the same `var self` trait method must type-check clean.
+    let output = check_source(
+        r"
+        trait Bump {
+            fn step(var self) -> i64;
+        }
+
+        type Counter { val: i64 }
+
+        impl Bump for Counter {
+            fn step(var self) -> i64 {
+                self.val = self.val + 1;
+                self.val
+            }
+        }
+
+        fn pump<I: Bump>(var it: I) -> i64 {
+            it.step()
+        }
+
+        fn main() {
+            var c = Counter { val: 0 };
+            pump(c);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| !matches!(e.kind, TypeErrorKind::MutabilityError)),
+        "var-bound generic receiver must accept var-self trait-method call, got: {:?}",
+        output.errors,
+    );
+}
+
+#[test]
+fn w3042_dyn_trait_let_bound_receiver_rejects_var_self_method() {
+    // W3.042 S2-S4: receiver-mutability gate on the Ty::TraitObject /
+    // DynMethodCall arm. A `let`-bound `Box<dyn Trait>` receiver
+    // dispatched through a trait method that declares `var self` must
+    // emit a MutabilityError that names `dyn <Trait>` so the diagnostic
+    // is distinguishable from the (Ty::Named, _) and StaticTraitDispatch
+    // variants.
+    let output = check_source(
+        r"
+        trait Bump {
+            fn step(var self) -> i64;
+        }
+
+        type Counter { val: i64 }
+
+        impl Bump for Counter {
+            fn step(var self) -> i64 {
+                self.val = self.val + 1;
+                self.val
+            }
+        }
+
+        fn invoke(b: dyn Bump) -> i64 {
+            b.step()
+        }
+
+        fn main() {
+            invoke(Counter { val: 0 });
+        }
+        ",
+    );
+    let mutability = output.errors.iter().find(|e| {
+        matches!(e.kind, TypeErrorKind::MutabilityError)
+            && e.message.contains("dyn Bump")
+            && e.message.contains("requires a mutable binding receiver")
+    });
+    assert!(
+        mutability.is_some(),
+        "expected DynMethodCall MutabilityError on let-bound dyn receiver, got: {:?}",
+        output.errors,
+    );
+}
+
+#[test]
+fn q297_stdlib_iterator_next_and_vec_iter_carry_mut_receiver_flag() {
+    // Stage 1 flipped `Iterator::next` in `std/builtins.hew` to `var self`
+    // and updated the `VecIter` impl in lockstep. Pin the impl-side
+    // registration: `register_builtins_hew_impls` feeds the `impl<T>
+    // Iterator for VecIter<T>` block through the same Pass-2 path that
+    // user impls use, so `td.methods[next]` on `VecIter` must carry the
+    // receiver-mutability flag for `lookup_named_method_sig` to surface
+    // it to the caller-side gate. (The bare trait declaration in
+    // builtins.hew is intentionally not promoted into `fn_sigs` — see
+    // `register_builtins_hew_impls` doc comment — so we pin the
+    // load-bearing impl side rather than the trait side.)
+    let output = check_source("");
+    let td = output
+        .type_defs
+        .get("VecIter")
+        .expect("VecIter must be pre-registered from std/builtins.hew");
+    let next_sig = td
+        .methods
+        .get("next")
+        .expect("VecIter::next must be present in td.methods");
+    assert!(
+        next_sig.requires_mutable_receiver,
+        "VecIter::next must declare `var self` to match the trait after Q297 Stage 1; \
+         td.methods[next].requires_mutable_receiver was false",
+    );
+}
+
+// ── W4.042: builtin `None` checker-boundary type record ───────────────────────
+//
+// True root cause (re-plan, tip d81529ba): `synthesize_inner`'s
+// `Expr::Identifier("None")` arm early-`return`s `Ty::option(Var)` and bypasses
+// the universal `record_type(span, &ty)` tail every other arm reaches. With no
+// `expr_types` entry the `check_program` boundary resolve has nothing to write
+// back, so the post-unification concrete `Option<i64>` is never recorded at the
+// `None` span. Downstream, HIR's unit-ctor fallback stamps a bare
+// `Named{Option, args:[]}` → codegen D10. The v1 root cause (a no-op in the HIR
+// walker `try_register_enum_instantiation`) was REFUTED: that walker works.
+
+/// Bare builtin `None` under an `Option<i64>` return must leave a resolvable
+/// `expr_types` entry that finalizes to the POST-SUBSTITUTION concrete
+/// `Option<i64>` — not `Option<Var>` and not absent.
+#[test]
+fn builtin_none_records_option_type_at_span() {
+    let src = "fn f() -> Option<i64> { None }\nfn main() { let _x = f(); }";
+    let out = check_source(src);
+    assert!(
+        out.errors.is_empty(),
+        "unexpected type errors: {:#?}",
+        out.errors
+    );
+    let none_start = src.find("None").expect("source must contain `None`");
+    // The AST identifier span keys the `expr_types` entry; match on its start
+    // offset (the exact span end is a parser detail) and require exactly one
+    // entry begins there.
+    let mut matches = out.expr_types.iter().filter(|(k, _)| k.start == none_start);
+    let (_, recorded) = matches.next().unwrap_or_else(|| {
+        panic!(
+            "no expr_types entry for the bare `None` at offset {none_start}; entries: {:#?}",
+            out.expr_types
+        )
+    });
+    assert!(
+        matches.next().is_none(),
+        "expected exactly one expr_types entry starting at the `None` offset"
+    );
+    match recorded {
+        Ty::Named { name, args, .. } => {
+            assert_eq!(
+                name, "Option",
+                "recorded type must be Option, got {recorded:?}"
+            );
+            assert_eq!(
+                args.as_slice(),
+                &[Ty::I64],
+                "recorded `None` type must be finalized to the concrete Option<i64> \
+                 (post-substitution), not Option<Var>; got {recorded:?}"
+            );
+        }
+        other => panic!("expected Named Option<i64>, got {other:?}"),
+    }
+}
+
+/// Fail-closed regression guard (must PASS on tip and stay passing): a
+/// genuinely-unconstrained `None` must still surface an inference error — the
+/// Stage 2 record change must NOT paper this over with a bogus literal default.
+#[test]
+fn unconstrained_none_is_inference_error() {
+    let out = check_source("fn main() { let x = None; }");
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "unconstrained `None` must remain a fail-closed inference error; got {:#?}",
+        out.errors
+    );
+}
+
+// ---------------------------------------------------------------------------
+// W4.047 P1.3: typed `resolved_expr_types` handoff population invariants.
+//
+// These probe the substrate added in P1.1/P1.2 directly at the checker
+// boundary: the typed map must be exactly the `ResolvedTy::from_ty` image of
+// the concrete entries in `expr_types`, never a superset (no fabricated types)
+// and never under-populated for concrete spans (totality for accepted
+// programs). They are the unit-level half of the totality evidence.
+// ---------------------------------------------------------------------------
+
+/// For a real accepted program, `resolved_expr_types` is exactly the
+/// `from_ty`-image of the *concrete* entries in `expr_types`: every typed entry
+/// agrees with `from_ty(expr_types[k])`, and every `expr_types` entry that
+/// `from_ty` accepts is present in the typed map. This is the population
+/// invariant the HIR shadow assert relies on being tautological.
+#[test]
+fn resolved_expr_types_is_exact_from_ty_image_of_concrete_expr_types() {
+    let out = check_source(
+        "fn add(a: i64, b: i64) -> i64 { a + b }\n\
+         fn main() { let x: i64 = add(40, 2); let y: bool = x > 0; }",
+    );
+    assert!(
+        out.errors.is_empty(),
+        "fixture must type-check cleanly; got {:#?}",
+        out.errors
+    );
+
+    // No fabricated entries: every typed key exists in expr_types and matches.
+    for (key, resolved) in &out.resolved_expr_types {
+        let ty = out.expr_types.get(key).unwrap_or_else(|| {
+            panic!("resolved_expr_types key {key:?} absent from expr_types (fabricated)")
+        });
+        let expected = ResolvedTy::from_ty(ty).unwrap_or_else(|e| {
+            panic!("typed map holds {key:?} but expr_types type {ty:?} fails from_ty: {e}")
+        });
+        assert_eq!(
+            resolved, &expected,
+            "typed entry for {key:?} disagrees with from_ty(expr_types[{key:?}])"
+        );
+    }
+
+    // Totality: every concrete expr_types entry is present in the typed map.
+    for (key, ty) in &out.expr_types {
+        if ResolvedTy::from_ty(ty).is_ok() {
+            assert!(
+                out.resolved_expr_types.contains_key(key),
+                "concrete expr_types entry {key:?} ({ty:?}) missing from typed handoff map"
+            );
+        }
+    }
+}
+
+/// A concrete accepted program populates a non-empty typed map (the handoff is
+/// actually carrying data, not silently empty), and every entry is a
+/// well-formed `ResolvedTy` with no residual boundary state.
+#[test]
+fn resolved_expr_types_populated_and_concrete_for_concrete_program() {
+    let out = check_source("fn main() { let x: i64 = 7; let y: bool = x == 7; }");
+    assert!(out.errors.is_empty(), "fixture must type-check cleanly");
+    assert!(
+        !out.resolved_expr_types.is_empty(),
+        "concrete program must hand off at least one typed expr"
+    );
+}
+
+/// `TypeCheckOutput::insert_expr_type` keeps the two maps in sync exactly as
+/// the boundary does: a concrete type lands in both maps; a non-concrete type
+/// (a leaked inference var) lands only in `expr_types`, leaving the typed map
+/// correctly absent (fail-closed omission, never a fabricated guess).
+#[test]
+fn insert_expr_type_mirrors_boundary_concreteness_split() {
+    let mut out = TypeCheckOutput::default();
+    let concrete = SpanKey { start: 0, end: 4 };
+    let leaked = SpanKey { start: 4, end: 8 };
+
+    out.insert_expr_type(concrete.clone(), Ty::I64);
+    out.insert_expr_type(leaked.clone(), Ty::Var(TypeVar::fresh()));
+
+    assert_eq!(out.expr_types.get(&concrete), Some(&Ty::I64));
+    assert_eq!(
+        out.resolved_expr_types.get(&concrete),
+        Some(&ResolvedTy::from_ty(&Ty::I64).unwrap()),
+        "concrete type must populate the typed handoff map"
+    );
+
+    assert!(
+        out.expr_types.contains_key(&leaked),
+        "leaked inference var still recorded in the Ty side-table"
+    );
+    assert!(
+        !out.resolved_expr_types.contains_key(&leaked),
+        "leaked inference var must be absent from the typed handoff map"
+    );
 }

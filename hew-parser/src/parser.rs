@@ -1867,6 +1867,10 @@ impl<'src> Parser<'src> {
         // `#[resource]` and `#[linear]` are consumed here and do not propagate
         // to TypeBodyItem fields or the formatter's attribute list.
         let resource_marker = self.extract_resource_marker(attrs);
+        // `#[opaque]` marks a pointer-width opaque runtime handle. Validated
+        // post-body (must be an empty-body struct). Representation axis —
+        // orthogonal to the `resource_marker` ownership axis.
+        let is_opaque = attrs.iter().any(|a| a.name == "opaque");
 
         let kind = match self.peek() {
             Some(Token::Type) => {
@@ -1917,6 +1921,14 @@ impl<'src> Parser<'src> {
 
         self.expect(&Token::RightBrace)?;
 
+        if is_opaque && (kind != TypeDeclKind::Struct || !body.is_empty()) {
+            self.error(
+                "#[opaque] type must be an empty-body struct — an opaque handle \
+                 has no fields and is produced only via FFI [E_OPAQUE_TYPE_SHAPE]"
+                    .to_string(),
+            );
+        }
+
         Some(TypeDecl {
             visibility,
             kind,
@@ -1928,6 +1940,7 @@ impl<'src> Parser<'src> {
             wire: None,
             is_indirect: false,
             resource_marker,
+            is_opaque,
             consuming_methods,
         })
     }
@@ -2059,13 +2072,21 @@ impl<'src> Parser<'src> {
     /// consumer, so we leave the slice untouched.
     ///
     /// Valid type-decl attributes: `resource`, `linear`, `wire`, `json`,
-    /// `yaml`, `deprecated`.  Anything else triggers `E_UNKNOWN_TYPE_MARKER`.
+    /// `yaml`, `deprecated`, `opaque`.  Anything else triggers `E_UNKNOWN_TYPE_MARKER`.
     fn extract_resource_marker(&mut self, attrs: &[Attribute]) -> ResourceMarker {
         // Known-valid attributes for type declarations.  These are consumed by
-        // other parser paths (wire metadata, deprecation, naming-case); only
-        // `resource` and `linear` belong to the ownership-discipline surface.
-        const KNOWN_TYPE_ATTRS: &[&str] =
-            &["resource", "linear", "wire", "json", "yaml", "deprecated"];
+        // other parser paths (wire metadata, deprecation, naming-case, opaque
+        // representation); only `resource` and `linear` belong to the
+        // ownership-discipline surface this helper returns.
+        const KNOWN_TYPE_ATTRS: &[&str] = &[
+            "resource",
+            "linear",
+            "wire",
+            "json",
+            "yaml",
+            "deprecated",
+            "opaque",
+        ];
 
         let mut resource_span: Option<std::ops::Range<usize>> = None;
         let mut linear_span: Option<std::ops::Range<usize>> = None;
@@ -3571,6 +3592,7 @@ impl<'src> Parser<'src> {
             }),
             is_indirect: false,
             resource_marker: ResourceMarker::None,
+            is_opaque: false,
             consuming_methods: Vec::new(),
         })
     }
@@ -4422,11 +4444,12 @@ impl<'src> Parser<'src> {
                     .tokens
                     .get(self.pos.wrapping_sub(1))
                     .map_or(self.peek_span(), |(_, s)| s.clone());
-                if allow_implicit_self
-                    && params.is_empty()
-                    && !is_mutable
-                    && self.peek() != Some(&Token::Colon)
-                {
+                // `self` and `var self` are both valid implicit receivers.
+                // The receiver-mutability axis is the contract carrier for
+                // trait methods with mutable receivers (see `Iterator::next`
+                // in `std/builtins.hew`); rejecting `var self` here would
+                // make the surface unreachable from valid programs.
+                if allow_implicit_self && params.is_empty() && self.peek() != Some(&Token::Colon) {
                     params.push(Param {
                         name,
                         ty: (
@@ -4436,7 +4459,7 @@ impl<'src> Parser<'src> {
                             },
                             span,
                         ),
-                        is_mutable: false,
+                        is_mutable,
                     });
                     if !self.eat(&Token::Comma) {
                         break;

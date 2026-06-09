@@ -1,0 +1,29 @@
+// W3 collections-sugar S2: `s[i]` returns a `char` at codepoint offset.
+//
+// Exercises:
+//   checker   synthesize_index single-element arm  →  Ty::String + i64 → Ty::Char
+//   HIR       HirExprKind::Index { ty: Char }
+//   MIR       lower_string_index → hew_string_index(s, 1)
+//   runtime   walks UTF-8 to the 2nd codepoint of "hello" → 'e'
+//   codegen   hew_string_index returns i32 (codepoint); char-typed dest
+//             alloca is i32-shaped per ResolvedTy::Char lowering.
+//
+// We cannot directly compare char in expression position here, so the
+// fixture indexes into a single-char string and returns its byte length
+// as proof the receiver was the new codepoint-indexed entry rather than
+// a panic. ("héllo"[1] is 'é' = U+00E9, 2 UTF-8 bytes when re-stringified.)
+//
+// To keep the exit code deterministic with the current limited char API,
+// we instead slice [1..2] (one codepoint) and report the byte length,
+// while still exercising hew_string_index in the body via assignment.
+fn main() -> i64 {
+    let s: string = "hello";
+    // Exercise the index path; the result is bound so codegen must emit
+    // a hew_string_index call (no DCE for FFI sites today).
+    let c: char = s[1];
+    // Independent of `c`, slice [1..2] and report byte length (== 1 for
+    // ASCII 'e'). This both proves the slice path works and confirms
+    // the index path did not abort on a valid in-bounds offset.
+    let slice: string = s[1..2];
+    slice.len()
+}

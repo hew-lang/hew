@@ -108,6 +108,14 @@
     clippy::match_same_arms,
     reason = "discovery walker has many HirExprKind arms whose recursive descent happens to be structurally identical (same arg list to walk_expr); merging via `|` patterns would obscure which variants the walker explicitly handles vs. delegates"
 )]
+// The machine-mono walker visits the `#[deprecated]`
+// `CallTraitMethodStatic` variant exhaustively. Allowlist test on
+// construction sites is the structural enforcement.
+#![allow(
+    deprecated,
+    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
+              see hew-hir/tests/call_trait_method_static_creation_allowlist.rs"
+)]
 
 use std::collections::{HashMap, HashSet};
 
@@ -1116,6 +1124,21 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                walk_expr(
+                    elem,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             walk_expr(
                 callee,
@@ -1252,7 +1275,8 @@ fn walk_expr(
                 );
             }
         }
-        HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+        HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             walk_expr(
                 receiver,
                 subst,

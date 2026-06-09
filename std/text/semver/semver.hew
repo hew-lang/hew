@@ -31,28 +31,28 @@ type Version {
 /// Methods available on a parsed `Version`.
 trait VersionMethods {
     /// Return the major version number.
-    fn major(ver: Version) -> i64;
+    fn major(self) -> i64;
 
     /// Return the minor version number.
-    fn minor(ver: Version) -> i64;
+    fn minor(self) -> i64;
 
     /// Return the patch version number.
-    fn patch(ver: Version) -> i64;
+    fn patch(self) -> i64;
 
     /// Return the pre-release label, or an empty string if none.
-    fn pre(ver: Version) -> string;
+    fn pre(self) -> string;
 
     /// Compare this version to another. Returns -1, 0, or 1.
-    fn compare(ver: Version, other: Version) -> i64;
+    fn compare(self, other: Version) -> i64;
 
     /// Test whether this version satisfies a version requirement string.
-    fn matches(ver: Version, req: string) -> bool;
+    fn matches(self, req: string) -> bool;
 
     /// Return the version as a string.
-    fn to_string(ver: Version) -> string;
+    fn to_string(self) -> string;
 
     /// No-op for compatibility (struct versions don't need manual freeing).
-    fn free(ver: Version);
+    fn free(self);
 }
 
 impl VersionMethods for Version {

@@ -65,6 +65,7 @@ extern "C" {
     fn hew_hashset_contains_layout(s: *const c_void, elem: *const c_void) -> bool;
     fn hew_hashset_remove_layout(s: *mut c_void, elem: *const c_void) -> bool;
     fn hew_hashset_len_layout(s: *const c_void) -> i64;
+    fn hew_hashset_is_empty_layout(s: *const c_void) -> bool;
 }
 
 /// Statically-known set of kernel symbols this gate has *proved linkable*.
@@ -109,6 +110,10 @@ fn known_linked_kernel_symbols() -> HashMap<&'static str, *const ()> {
     m.insert(
         "hew_hashset_len_layout",
         hew_hashset_len_layout as *const (),
+    );
+    m.insert(
+        "hew_hashset_is_empty_layout",
+        hew_hashset_is_empty_layout as *const (),
     );
     m
 }
@@ -226,6 +231,14 @@ fn every_stage_b_method_target_symbol_is_link_resolved() {
     for (_impl_id, def) in registry.iter() {
         for (method_name, target) in &def.methods {
             let symbol = target.symbol_name.as_str();
+            if def.trait_name == "Seq" && symbol.ends_with("_FAMILY") {
+                // Vec keeps per-element scalar/layout symbol selection in
+                // `resolve_vec_runtime_symbol`; the registry row is only the
+                // resolved-call admission substrate until that duality is
+                // collapsed. Placeholder family roots are intentionally not
+                // runtime exports.
+                continue;
+            }
             checked.insert(symbol.to_string());
             let resolved = linked.get(symbol).copied().filter(|p| !p.is_null());
             if resolved.is_none() {
@@ -271,6 +284,12 @@ fn every_stage_b_symbol_uses_canonical_kernel_suffix() {
     let mut violations: Vec<String> = Vec::new();
     for (_impl_id, def) in registry.iter() {
         for (method_name, target) in &def.methods {
+            if def.trait_name == "Seq" && target.symbol_name.ends_with("_FAMILY") {
+                // Vec placeholder roots are overwritten per call site by
+                // `resolve_vec_runtime_symbol`; only concrete HashMap/HashSet
+                // kernel symbols participate in this suffix invariant.
+                continue;
+            }
             if !target.symbol_name.ends_with("_layout") {
                 violations.push(format!(
                     "{trait_name}::{method_name} -> `{symbol}` (must end in `_layout`)",

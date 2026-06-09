@@ -319,6 +319,11 @@
         "name": "SendError"
       },
       {
+        "id": "type:VecIter",
+        "kind": "record",
+        "name": "VecIter"
+      },
+      {
         "id": "type:bool",
         "kind": "bool",
         "name": "bool"
@@ -384,7 +389,7 @@
       }
     ]
   },
-  "package_id": "pkg:d15e0210a48614a7",
+  "package_id": "pkg:f63a2380186cdb34",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

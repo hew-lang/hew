@@ -67,6 +67,18 @@ changes.
 
 ## Removed in v0.5
 
+### `std::collections::hashset` module
+
+- **Removed:** the Hew-source module `std::collections::hashset` and its
+  opaque `HashSet` handle API (`hashset.new()`, `insert_int`,
+  `insert_string`, `contains_int`, `contains_string`, `remove_int`,
+  `remove_string`, `clear`, and `free`).
+- **Replacement:** use built-in `HashSet<T>` directly, for example
+  `HashSet::<i64>::new()` or `HashSet::<String>::new()`, with `.insert()`,
+  `.contains()`, `.remove()`, `.len()`, and `.is_empty()`.
+- **Behaviour change:** built-in `HashSet<T>` releases through RAII; callers
+  do not call `free()`.
+
 ### `HewScope` runtime substrate + `hew_scope_*` C ABI
 
 - **Removed:** the `hew-runtime::scope` module (`HewScope`, `hew_scope_new`,

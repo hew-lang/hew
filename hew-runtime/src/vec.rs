@@ -157,6 +157,39 @@ unsafe fn abort_layout_aware_operation() -> ! {
     }
 }
 
+/// Fail-closed abort for the witness-managed Vec clone when the element layout
+/// is `LayoutManaged`.
+///
+/// `HewTypeLayout` carries only `{size, align, ownership_kind}` — it has no
+/// per-element clone thunk — so a faithful deep clone of layout-managed
+/// elements is impossible until the descriptor is extended (the `Vec<owned>`
+/// follow-on). This mirrors `hew_hashmap_clone_layout`'s "layout-managed clone
+/// thunk is unavailable" abort: fail closed rather than bit-copy owned handles
+/// and reintroduce the W4.045 UAF/double-free class
+/// (`codegen-abi-authority` / `lifecycle-symmetry` P0).
+unsafe fn abort_layout_managed_clone_unavailable() -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        let msg = b"PANIC: Vec layout-managed element clone thunk is unavailable\n\0";
+        write_stderr(&msg[..msg.len() - 1]);
+        libc::abort();
+    }
+}
+
+/// Drop-side companion to [`abort_layout_managed_clone_unavailable`]. Mirrors
+/// `hew_hashmap_free_layout`'s fail-closed layout-managed path: dropping a
+/// layout-managed element requires a descriptor drop thunk that `HewTypeLayout`
+/// does not yet carry, so a populated layout-managed Vec fails closed instead
+/// of leaking or mis-freeing element-owned heap.
+unsafe fn abort_layout_managed_drop_unavailable() -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        let msg = b"PANIC: Vec layout-managed element drop thunk is unavailable\n\0";
+        write_stderr(&msg[..msg.len() - 1]);
+        libc::abort();
+    }
+}
+
 /// Abort when a C caller omits the required layout Vec equality thunk.
 unsafe fn abort_null_eq_fn() -> ! {
     // SAFETY: writing to stderr and aborting is always safe.
@@ -440,65 +473,33 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
 // Push
 // ---------------------------------------------------------------------------
 
-/// Push an `i32` value onto the vec.
-///
-/// # Safety
-///
-/// `v` must be a valid `HewVec` pointer created by one of the `new` functions.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_push_i32(v: *mut HewVec, val: i32) {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let len = (*v).len;
-        let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
-        };
-        ensure_cap(v, new_len);
-        let slot = (*v).data.cast::<i32>().add(len);
-        slot.write(val);
-        (*v).len = new_len;
-    }
+macro_rules! vec_push_primitive {
+    ($name:ident, $ty:ty) => {
+        /// Push a primitive value onto the vec.
+        ///
+        /// # Safety
+        ///
+        /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(v: *mut HewVec, val: $ty) {
+            // SAFETY: caller guarantees `v` is valid.
+            unsafe {
+                let len = (*v).len;
+                let Some(new_len) = len.checked_add(1) else {
+                    libc::abort();
+                };
+                ensure_cap(v, new_len);
+                let slot = (*v).data.cast::<$ty>().add(len);
+                slot.write(val);
+                (*v).len = new_len;
+            }
+        }
+    };
 }
 
-/// Push a `bool` value onto the vec.
-///
-/// # Safety
-///
-/// `v` must be a valid bool `HewVec` pointer created by [`hew_vec_new_bool`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_push_bool(v: *mut HewVec, val: bool) {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let len = (*v).len;
-        let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
-        };
-        ensure_cap(v, new_len);
-        let slot = (*v).data.cast::<bool>().add(len);
-        slot.write(val);
-        (*v).len = new_len;
-    }
-}
-
-/// Push an `i64` value onto the vec.
-///
-/// # Safety
-///
-/// `v` must be a valid `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_push_i64(v: *mut HewVec, val: i64) {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let len = (*v).len;
-        let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
-        };
-        ensure_cap(v, new_len);
-        let slot = (*v).data.cast::<i64>().add(len);
-        slot.write(val);
-        (*v).len = new_len;
-    }
-}
+vec_push_primitive!(hew_vec_push_i32, i32);
+vec_push_primitive!(hew_vec_push_bool, bool);
+vec_push_primitive!(hew_vec_push_i64, i64);
 
 /// Push a string onto the vec. The string is duplicated with `strdup`.
 ///
@@ -524,100 +525,37 @@ pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const c_char) {
     }
 }
 
-/// Push an `f64` value onto the vec.
-///
-/// # Safety
-///
-/// `v` must be a valid `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_push_f64(v: *mut HewVec, val: f64) {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let len = (*v).len;
-        let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
-        };
-        ensure_cap(v, new_len);
-        let slot = (*v).data.cast::<f64>().add(len);
-        slot.write(val);
-        (*v).len = new_len;
-    }
-}
-
-/// Push a raw pointer onto the vec (for `Vec<ActorRef<T>>` etc.).
-///
-/// # Safety
-///
-/// `v` must be a valid pointer `HewVec`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_push_ptr(v: *mut HewVec, val: *mut c_void) {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let len = (*v).len;
-        let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
-        };
-        ensure_cap(v, new_len);
-        let slot = (*v).data.cast::<*mut c_void>().add(len);
-        slot.write(val);
-        (*v).len = new_len;
-    }
-}
+vec_push_primitive!(hew_vec_push_f64, f64);
+vec_push_primitive!(hew_vec_push_ptr, *mut c_void);
 
 // ---------------------------------------------------------------------------
 // Get
 // ---------------------------------------------------------------------------
 
-/// Get an `i32` at `index`. Aborts if out of bounds.
-///
-/// # Safety
-///
-/// `v` must be a valid i32 `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32 {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob(index, (*v).len);
+macro_rules! vec_get_primitive {
+    ($name:ident, $ty:ty) => {
+        /// Get a primitive value at `index`. Aborts if out of bounds.
+        ///
+        /// # Safety
+        ///
+        /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(v: *mut HewVec, index: i64) -> $ty {
+            // SAFETY: caller guarantees `v` is valid.
+            unsafe {
+                let index = index as usize;
+                if index >= (*v).len {
+                    abort_oob(index, (*v).len);
+                }
+                (*v).data.cast::<$ty>().add(index).read()
+            }
         }
-        (*v).data.cast::<i32>().add(index).read()
-    }
+    };
 }
 
-/// Get a `bool` at `index`. Aborts if out of bounds.
-///
-/// # Safety
-///
-/// `v` must be a valid bool `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_get_bool(v: *mut HewVec, index: i64) -> bool {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob(index, (*v).len);
-        }
-        (*v).data.cast::<bool>().add(index).read()
-    }
-}
-
-/// Get an `i64` at `index`. Aborts if out of bounds.
-///
-/// # Safety
-///
-/// `v` must be a valid i64 `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64 {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob(index, (*v).len);
-        }
-        (*v).data.cast::<i64>().add(index).read()
-    }
-}
+vec_get_primitive!(hew_vec_get_i32, i32);
+vec_get_primitive!(hew_vec_get_bool, bool);
+vec_get_primitive!(hew_vec_get_i64, i64);
 
 /// Get a string pointer at `index`. Aborts if out of bounds.
 ///
@@ -647,39 +585,8 @@ pub unsafe extern "C" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c
     }
 }
 
-/// Get an `f64` at `index`. Aborts if out of bounds.
-///
-/// # Safety
-///
-/// `v` must be a valid f64 `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_get_f64(v: *mut HewVec, index: i64) -> f64 {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob(index, (*v).len);
-        }
-        (*v).data.cast::<f64>().add(index).read()
-    }
-}
-
-/// Get a raw pointer at `index`. Aborts if out of bounds.
-///
-/// # Safety
-///
-/// `v` must be a valid pointer `HewVec`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob(index, (*v).len);
-        }
-        (*v).data.cast::<*mut c_void>().add(index).read()
-    }
-}
+vec_get_primitive!(hew_vec_get_f64, f64);
+vec_get_primitive!(hew_vec_get_ptr, *mut c_void);
 
 // ---------------------------------------------------------------------------
 // Range-slice (C-3)
@@ -987,56 +894,49 @@ pub unsafe extern "C" fn hew_vec_set_f64(v: *mut HewVec, index: i64, val: f64) {
 // Pop
 // ---------------------------------------------------------------------------
 
-/// Pop the last `i32`. Aborts if empty.
-///
-/// # Safety
-///
-/// `v` must be a valid i32 `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_pop_i32(v: *mut HewVec) -> i32 {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        if (*v).len == 0 {
-            abort_pop_empty();
+macro_rules! vec_pop_primitive {
+    ($name:ident, $ty:ty) => {
+        /// Pop the last primitive value. Aborts if empty.
+        ///
+        /// # Safety
+        ///
+        /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(v: *mut HewVec) -> $ty {
+            // SAFETY: caller guarantees `v` is valid.
+            unsafe {
+                if (*v).len == 0 {
+                    abort_pop_empty();
+                }
+                (*v).len -= 1;
+                (*v).data.cast::<$ty>().add((*v).len).read()
+            }
         }
-        (*v).len -= 1;
-        (*v).data.cast::<i32>().add((*v).len).read()
-    }
+    };
+    ($name:ident, $ty:ty, $null_ret:expr) => {
+        /// Pop the last primitive value. Returns the supplied null value for a null vec.
+        ///
+        /// # Safety
+        ///
+        /// Non-null `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(v: *mut HewVec) -> $ty {
+            cabi_guard!(v.is_null(), $null_ret);
+            // SAFETY: caller guarantees `v` is valid.
+            unsafe {
+                if (*v).len == 0 {
+                    abort_pop_empty();
+                }
+                (*v).len -= 1;
+                (*v).data.cast::<$ty>().add((*v).len).read()
+            }
+        }
+    };
 }
 
-/// Pop the last `bool`. Aborts if empty.
-///
-/// # Safety
-///
-/// `v` must be a valid bool `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_pop_bool(v: *mut HewVec) -> bool {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        if (*v).len == 0 {
-            abort_pop_empty();
-        }
-        (*v).len -= 1;
-        (*v).data.cast::<bool>().add((*v).len).read()
-    }
-}
-
-/// Pop the last `i64`. Aborts if empty.
-///
-/// # Safety
-///
-/// `v` must be a valid i64 `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_pop_i64(v: *mut HewVec) -> i64 {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        if (*v).len == 0 {
-            abort_pop_empty();
-        }
-        (*v).len -= 1;
-        (*v).data.cast::<i64>().add((*v).len).read()
-    }
-}
+vec_pop_primitive!(hew_vec_pop_i32, i32);
+vec_pop_primitive!(hew_vec_pop_bool, bool);
+vec_pop_primitive!(hew_vec_pop_i64, i64);
 
 /// Pop the last string pointer. The caller now owns the returned pointer.
 /// Aborts if empty.
@@ -1056,22 +956,8 @@ pub unsafe extern "C" fn hew_vec_pop_str(v: *mut HewVec) -> *const c_char {
     }
 }
 
-/// Pop the last `f64`. Aborts if empty.
-///
-/// # Safety
-///
-/// `v` must be a valid f64 `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_pop_f64(v: *mut HewVec) -> f64 {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        if (*v).len == 0 {
-            abort_pop_empty();
-        }
-        (*v).len -= 1;
-        (*v).data.cast::<f64>().add((*v).len).read()
-    }
-}
+vec_pop_primitive!(hew_vec_pop_f64, f64);
+vec_pop_primitive!(hew_vec_pop_ptr, *mut c_void, ptr::null_mut());
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -1167,6 +1053,57 @@ pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
             }
             libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
         }
+    }
+}
+
+/// Free a witness-managed `Vec<T>` handle, applying the element ownership
+/// discipline recorded in the handle's layout descriptor.
+///
+/// This is the drop half of the single layout-witness pair that codegen
+/// derives from `collection_layout_witness` (W5.002 F0b). Codegen routes every
+/// actor-state `Vec<T>` field through `hew_vec_clone_managed` /
+/// `hew_vec_free_managed`, so the allocate side and free side can never select
+/// mismatched runtime symbols — the structural retirement of the W4.045 UAF
+/// class for Vec (`codegen-abi-authority` / `lifecycle-symmetry` P0). The
+/// element layout lives *inside the handle* (`(*v).layout`, stamped by the
+/// constructor), exactly as `hew_hashmap_free_layout` reads its value layout
+/// from the map, so this symbol is single-arg and never takes a separate
+/// descriptor at the call site.
+///
+/// Ownership dispatch:
+/// - layout absent (legacy typed constructor) → `elem_kind`-driven free:
+///   `String` frees each slot, every other kind is covered by the bulk buffer.
+/// - layout `Plain` → bulk buffer free.
+/// - layout `String` → per-slot string free.
+/// - layout `LayoutManaged` with live elements → fail closed
+///   ([`abort_layout_managed_drop_unavailable`]): `HewTypeLayout` carries no
+///   drop thunk, mirroring `hew_hashmap_free_layout`'s fail-closed key path.
+///
+/// A null `v` is a documented no-op (`boundary-fail-closed` P0: `free(null)`
+/// is the only permitted silent-return shape).
+///
+/// # Safety
+///
+/// `v` must have been returned by [`hew_vec_clone_managed`] or a `hew_vec_new*`
+/// constructor (or be null). After this call, `v` is invalid and must not be
+/// used.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_free_managed(v: *mut HewVec) {
+    // SAFETY: caller guarantees `v` was allocated with malloc (or is null).
+    unsafe {
+        if v.is_null() {
+            return;
+        }
+        if layout_requires_fail_closed_drop(v) && (*v).len != 0 {
+            abort_layout_managed_drop_unavailable();
+        }
+        if !(*v).data.is_null() {
+            if (*v).elem_kind == ElemKind::String {
+                free_string_elements(v);
+            }
+            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
+        }
+        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
     }
 }
 
@@ -1322,6 +1259,94 @@ pub unsafe extern "C" fn hew_vec_clone_layout(
     }
 }
 
+/// Deep-clone a witness-managed `Vec<T>` handle, applying the element ownership
+/// discipline recorded in the handle's layout descriptor.
+///
+/// Clone half of the single layout-witness pair (see [`hew_vec_free_managed`]).
+/// Unlike the legacy [`hew_vec_clone`] — which calls `abort_if_layout_aware`
+/// and therefore *aborts* on any layout-backed Vec (e.g. a `Vec<Point>`
+/// actor-state field) — this entry point clones layout-backed `Plain` and
+/// `String` Vecs and only fails closed for `LayoutManaged` elements, whose
+/// per-element clone thunk `HewTypeLayout` does not yet carry. The element
+/// layout is read from the handle (`(*v).layout`) exactly as
+/// `hew_hashmap_clone_layout` reads its embedded value layout, so the symbol
+/// is single-arg and pairs with the constructor that stamped the descriptor.
+///
+/// The clone preserves the source descriptor so it frees with the *same*
+/// discipline through [`hew_vec_free_managed`] — clone/free symmetry, the
+/// W4.045 UAF guard.
+///
+/// Ownership dispatch:
+/// - layout absent → `elem_kind`-driven clone (`String` `strdup`s each slot,
+///   every other kind bulk-copies).
+/// - layout `Plain` → fresh layout-backed vec + bulk byte copy.
+/// - layout `String` → fresh layout-backed vec + per-slot `strdup`.
+/// - layout `LayoutManaged` with live elements → fail closed
+///   ([`abort_layout_managed_clone_unavailable`]).
+///
+/// A null `v` returns null (`boundary-fail-closed` P0).
+///
+/// # Safety
+///
+/// `v` must be a valid `HewVec` pointer (or null). The returned pointer must
+/// eventually be freed with [`hew_vec_free_managed`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_clone_managed(v: *const HewVec) -> *mut HewVec {
+    cabi_guard!(v.is_null(), ptr::null_mut());
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let src = &*v;
+        // Fail closed before allocating anything if the element layout demands
+        // descriptor-thunk-driven clone semantics that HewTypeLayout cannot yet
+        // express (mirrors hew_hashmap_clone_layout's unavailable-thunk path).
+        if layout_requires_fail_closed_drop(v) && src.len != 0 {
+            abort_layout_managed_clone_unavailable();
+        }
+        let new_v = if src.layout.is_null() {
+            hew_vec_new_with_elem_size(
+                #[expect(clippy::cast_possible_wrap, reason = "elem_size is small, fits in i64")]
+                {
+                    src.elem_size as i64
+                },
+            )
+        } else {
+            // Preserve the layout descriptor so the clone frees with the same
+            // discipline (clone/free symmetry — W4.045 UAF class).
+            hew_vec_new_with_layout(src.layout)
+        };
+        if new_v.is_null() {
+            libc::abort();
+        }
+        (*new_v).elem_kind = src.elem_kind;
+        if src.len == 0 {
+            return new_v;
+        }
+        // ensure_cap (not ensure_cap_raw) would re-apply the legacy
+        // "no layout-aware ops" guard and abort on a layout-backed source.
+        ensure_cap_raw(new_v, src.len);
+        if src.elem_kind == ElemKind::String {
+            for i in 0..src.len {
+                let src_ptr = src.data.cast::<*const c_char>().add(i).read();
+                let duped = if src_ptr.is_null() {
+                    ptr::null_mut()
+                } else {
+                    let result = libc::strdup(src_ptr);
+                    if result.is_null() {
+                        libc::abort();
+                    }
+                    result
+                };
+                (*new_v).data.cast::<*mut c_char>().add(i).write(duped);
+            }
+        } else {
+            let byte_count = src.len * src.elem_size;
+            core::ptr::copy_nonoverlapping(src.data, (*new_v).data, byte_count);
+        }
+        (*new_v).len = src.len;
+        new_v
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Append (bulk)
 // ---------------------------------------------------------------------------
@@ -1377,124 +1402,81 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
 // Contains
 // ---------------------------------------------------------------------------
 
-/// Check if the i32 vec contains `val`. Returns 1 if found, 0 otherwise.
-///
-/// # Safety
-///
-/// `v` must be a valid i32 `HewVec` pointer (or null).
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_contains_i32(v: *const HewVec, val: i32) -> i32 {
-    cabi_guard!(v.is_null(), 0);
-    // SAFETY: caller guarantees `v` is a valid i32 HewVec.
-    unsafe {
-        let len = (*v).len;
-        let data = (*v).data.cast::<i32>();
-        for i in 0..len {
-            if data.add(i).read() == val {
-                return 1;
+macro_rules! vec_contains_primitive {
+    ($(#[$meta:meta])* $name:ident, $ty:ty) => {
+        $(#[$meta])*
+        /// Check whether the vec contains a primitive value. Returns 1 if found, 0 otherwise.
+        ///
+        /// # Safety
+        ///
+        /// Non-null `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(v: *const HewVec, val: $ty) -> i32 {
+            cabi_guard!(v.is_null(), 0);
+            // SAFETY: caller guarantees `v` is a valid HewVec for `$ty`.
+            unsafe {
+                let len = (*v).len;
+                let data = (*v).data.cast::<$ty>();
+                for i in 0..len {
+                    if data.add(i).read() == val {
+                        return 1;
+                    }
+                }
+                0
             }
         }
-        0
-    }
+    };
 }
 
-/// Remove the first occurrence of `val` from the i32 vec.
-/// Shifts subsequent elements left. No-op if not found.
-///
-/// # Safety
-///
-/// `v` must be a valid i32 `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_remove_i32(v: *mut HewVec, val: i32) {
-    cabi_guard!(v.is_null());
-    // SAFETY: caller guarantees `v` is a valid i32 HewVec.
-    unsafe {
-        let len = (*v).len;
-        let data = (*v).data.cast::<i32>();
-        for i in 0..len {
-            if data.add(i).read() == val {
-                // Shift elements left
-                core::ptr::copy(data.add(i + 1), data.add(i), len - i - 1);
-                (*v).len -= 1;
-                return;
+macro_rules! vec_remove_primitive {
+    ($(#[$meta:meta])* $name:ident, $ty:ty) => {
+        $(#[$meta])*
+        /// Remove the first occurrence of a primitive value from the vec.
+        ///
+        /// # Safety
+        ///
+        /// Non-null `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(v: *mut HewVec, val: $ty) {
+            cabi_guard!(v.is_null());
+            // SAFETY: caller guarantees `v` is a valid HewVec for `$ty`.
+            unsafe {
+                let len = (*v).len;
+                let data = (*v).data.cast::<$ty>();
+                for i in 0..len {
+                    if data.add(i).read() == val {
+                        core::ptr::copy(data.add(i + 1), data.add(i), len - i - 1);
+                        (*v).len -= 1;
+                        return;
+                    }
+                }
             }
         }
-    }
+    };
 }
 
-/// Remove the first occurrence of `val` from the i64 vec.
-/// Shifts subsequent elements left. No-op if not found.
-///
-/// # Safety
-///
-/// `v` must be a valid i64 `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_remove_i64(v: *mut HewVec, val: i64) {
-    cabi_guard!(v.is_null());
-    // SAFETY: caller guarantees `v` is a valid i64 HewVec.
-    unsafe {
-        let len = (*v).len;
-        let data = (*v).data.cast::<i64>();
-        for i in 0..len {
-            if data.add(i).read() == val {
-                // Shift elements left
-                core::ptr::copy(data.add(i + 1), data.add(i), len - i - 1);
-                (*v).len -= 1;
-                return;
-            }
-        }
-    }
-}
+vec_contains_primitive!(hew_vec_contains_i32, i32);
+vec_contains_primitive!(hew_vec_contains_i64, i64);
+vec_contains_primitive!(
+    #[expect(
+        clippy::float_cmp,
+        reason = "C ABI semantics: exact f64 equality match is intentional"
+    )]
+    hew_vec_contains_f64,
+    f64
+);
 
-/// Remove the first occurrence of `val` from the f64 vec.
-/// Shifts subsequent elements left. No-op if not found.
-///
-/// # Safety
-///
-/// `v` must be a valid f64 `HewVec` pointer.
-#[expect(
-    clippy::float_cmp,
-    reason = "exact equality is intentional for element removal"
-)]
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_remove_f64(v: *mut HewVec, val: f64) {
-    cabi_guard!(v.is_null());
-    // SAFETY: caller guarantees `v` is a valid f64 HewVec.
-    unsafe {
-        let len = (*v).len;
-        let data = (*v).data.cast::<f64>();
-        for i in 0..len {
-            if data.add(i).read() == val {
-                core::ptr::copy(data.add(i + 1), data.add(i), len - i - 1);
-                (*v).len -= 1;
-                return;
-            }
-        }
-    }
-}
-
-/// Remove the first occurrence of `val` (pointer) from the vec.
-/// Shifts subsequent elements left. No-op if not found.
-///
-/// # Safety
-///
-/// `v` must be a valid pointer `HewVec`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_remove_ptr(v: *mut HewVec, val: *mut c_void) {
-    cabi_guard!(v.is_null());
-    // SAFETY: caller guarantees `v` is a valid pointer HewVec.
-    unsafe {
-        let len = (*v).len;
-        let data = (*v).data.cast::<*mut c_void>();
-        for i in 0..len {
-            if data.add(i).read() == val {
-                core::ptr::copy(data.add(i + 1), data.add(i), len - i - 1);
-                (*v).len -= 1;
-                return;
-            }
-        }
-    }
-}
+vec_remove_primitive!(hew_vec_remove_i32, i32);
+vec_remove_primitive!(hew_vec_remove_i64, i64);
+vec_remove_primitive!(
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact equality is intentional for element removal"
+    )]
+    hew_vec_remove_f64,
+    f64
+);
+vec_remove_primitive!(hew_vec_remove_ptr, *mut c_void);
 
 /// Remove the element at `index`, shifting subsequent elements left.
 ///
@@ -1604,70 +1586,6 @@ pub unsafe extern "C" fn hew_vec_set_ptr(v: *mut HewVec, index: i64, val: *mut c
             abort_oob(index, (*v).len);
         }
         (*v).data.cast::<*mut c_void>().add(index).write(val);
-    }
-}
-
-/// Pop the last pointer. Aborts if empty.
-///
-/// # Safety
-///
-/// `v` must be a valid pointer `HewVec` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_pop_ptr(v: *mut HewVec) -> *mut c_void {
-    cabi_guard!(v.is_null(), ptr::null_mut());
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        if (*v).len == 0 {
-            abort_pop_empty();
-        }
-        (*v).len -= 1;
-        (*v).data.cast::<*mut c_void>().add((*v).len).read()
-    }
-}
-
-/// Check if the i64 vec contains `val`. Returns 1 if found, 0 otherwise.
-///
-/// # Safety
-///
-/// `v` must be a valid i64 `HewVec` pointer (or null).
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_contains_i64(v: *const HewVec, val: i64) -> i32 {
-    cabi_guard!(v.is_null(), 0);
-    // SAFETY: caller guarantees `v` is a valid i64 HewVec.
-    unsafe {
-        let len = (*v).len;
-        let data = (*v).data.cast::<i64>();
-        for i in 0..len {
-            if data.add(i).read() == val {
-                return 1;
-            }
-        }
-        0
-    }
-}
-
-/// Check if the f64 vec contains `val`. Returns 1 if found, 0 otherwise.
-///
-/// # Safety
-///
-/// `v` must be a valid f64 `HewVec` pointer (or null).
-#[no_mangle]
-#[expect(
-    clippy::float_cmp,
-    reason = "C ABI semantics: exact f64 equality match is intentional"
-)]
-pub unsafe extern "C" fn hew_vec_contains_f64(v: *const HewVec, val: f64) -> i32 {
-    cabi_guard!(v.is_null(), 0);
-    // SAFETY: caller guarantees `v` is a valid f64 HewVec.
-    unsafe {
-        let len = (*v).len;
-        let data = (*v).data.cast::<f64>();
-        for i in 0..len {
-            if data.add(i).read() == val {
-                return 1;
-            }
-        }
-        0
     }
 }
 
@@ -3124,6 +3042,214 @@ mod tests {
         unsafe {
             let v = hew_vec_new_with_layout(&raw const layout);
             hew_vec_clone_layout(v, &raw const layout);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Witness-managed Vec clone/free pair (hew_vec_clone_managed /
+    // hew_vec_free_managed — W5.002 F0b)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn vec_clone_managed_null_returns_null() {
+        // SAFETY: null is a documented boundary-fail-closed shape.
+        unsafe {
+            assert!(hew_vec_clone_managed(ptr::null()).is_null());
+        }
+    }
+
+    #[test]
+    fn vec_free_managed_null_is_noop() {
+        // SAFETY: free(null) is the only permitted silent-return shape.
+        unsafe {
+            hew_vec_free_managed(ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn vec_clone_managed_plain_primitive_roundtrip() {
+        // SAFETY: FFI calls use a valid i64 HewVec (layout absent).
+        unsafe {
+            let v = hew_vec_new_i64();
+            hew_vec_push_i64(v, 11);
+            hew_vec_push_i64(v, 22);
+            hew_vec_push_i64(v, 33);
+
+            let cloned = hew_vec_clone_managed(v);
+            assert!(!cloned.is_null());
+            assert_eq!(hew_vec_len(cloned), 3);
+            assert_eq!(hew_vec_get_i64(cloned, 0), 11);
+            assert_eq!(hew_vec_get_i64(cloned, 1), 22);
+            assert_eq!(hew_vec_get_i64(cloned, 2), 33);
+
+            // Independence: mutating the source leaves the clone intact.
+            hew_vec_set_i64(v, 0, 99);
+            assert_eq!(hew_vec_get_i64(cloned, 0), 11);
+
+            hew_vec_free_managed(cloned);
+            hew_vec_free_managed(v);
+        }
+    }
+
+    #[test]
+    fn vec_clone_managed_string_elements_are_independent() {
+        // SAFETY: FFI calls use a valid string HewVec and valid C strings.
+        unsafe {
+            let v = hew_vec_new_str();
+            let a = CString::new("alpha").unwrap();
+            let b = CString::new("beta").unwrap();
+            hew_vec_push_str(v, a.as_ptr());
+            hew_vec_push_str(v, b.as_ptr());
+
+            let cloned = hew_vec_clone_managed(v);
+            assert!(!cloned.is_null());
+            assert_eq!(hew_vec_len(cloned), 2);
+            assert_eq!((*cloned).elem_kind, ElemKind::String);
+
+            let c0 = hew_vec_get_str(cloned, 0);
+            assert_eq!(std::ffi::CStr::from_ptr(c0).to_string_lossy(), "alpha");
+
+            // Freeing the clone (per-slot strdup'd strings) must not invalidate
+            // the source strings.
+            hew_vec_free_managed(cloned);
+            let s0 = hew_vec_get_str(v, 0);
+            assert_eq!(std::ffi::CStr::from_ptr(s0).to_string_lossy(), "alpha");
+            hew_vec_free_managed(v);
+        }
+    }
+
+    #[test]
+    fn vec_clone_managed_layout_backed_plain_roundtrip() {
+        // Legacy `hew_vec_clone` aborts on a layout-backed Vec via
+        // `abort_if_layout_aware`; the managed clone must succeed and preserve
+        // the descriptor so the clone frees with the same discipline.
+        #[repr(C)]
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+        let layout = point_layout();
+        // SAFETY: layout is valid and outlives both vecs.
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            push_point(v, 10, 20, &layout);
+            push_point(v, 30, 40, &layout);
+
+            let cloned = hew_vec_clone_managed(v);
+            assert!(!cloned.is_null());
+            assert_eq!(hew_vec_len(cloned), 2);
+            assert!(!(*cloned).layout.is_null());
+            assert_eq!((*cloned).elem_size, layout.size);
+            assert_eq!(get_point(cloned, 0, &layout), (10, 20));
+            assert_eq!(get_point(cloned, 1, &layout), (30, 40));
+
+            // Independence across the layout-backed copy.
+            let mutated = Point { x: 7, y: 8 };
+            hew_vec_set_layout(
+                v,
+                0,
+                (&raw const mutated).cast(),
+                (&raw const layout).cast(),
+            );
+            assert_eq!(get_point(cloned, 0, &layout), (10, 20));
+
+            // Free both through the managed drop (clone/free symmetry).
+            hew_vec_free_managed(cloned);
+            hew_vec_free_managed(v);
+        }
+    }
+
+    #[test]
+    fn vec_free_managed_empty_layout_backed_is_safe() {
+        let layout = point_layout();
+        // SAFETY: layout is valid and outlives the vec.
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            // Empty layout-managed-free path: no elements, no fail-closed abort.
+            hew_vec_free_managed(v);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn vec_clone_managed_layout_managed_aborts() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "vec::tests::_helper_vec_clone_managed_layout_managed",
+                "--include-ignored",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "LayoutManaged managed-clone must terminate abnormally"
+        );
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        assert!(
+            stderr.contains("Vec layout-managed element clone thunk is unavailable"),
+            "LayoutManaged managed-clone must report the fail-closed diagnostic; got: {stderr}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[ignore = "helper for vec_clone_managed_layout_managed_aborts — must abort"]
+    fn _helper_vec_clone_managed_layout_managed() {
+        let layout = HewTypeLayout {
+            size: 16,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+        // SAFETY: FFI calls use a valid layout pointer; the abort is expected.
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            // Force a live element so the fail-closed guard fires (an empty
+            // layout-managed vec is droppable/cloneable without thunks).
+            (*v).len = 1;
+            hew_vec_clone_managed(v);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn vec_free_managed_layout_managed_aborts() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "vec::tests::_helper_vec_free_managed_layout_managed",
+                "--include-ignored",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "LayoutManaged managed-free must terminate abnormally"
+        );
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        assert!(
+            stderr.contains("Vec layout-managed element drop thunk is unavailable"),
+            "LayoutManaged managed-free must report the fail-closed diagnostic; got: {stderr}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[ignore = "helper for vec_free_managed_layout_managed_aborts — must abort"]
+    fn _helper_vec_free_managed_layout_managed() {
+        let layout = HewTypeLayout {
+            size: 16,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+        // SAFETY: FFI calls use a valid layout pointer; the abort is expected.
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            // Pretend a live element exists so the fail-closed drop guard fires.
+            (*v).len = 1;
+            hew_vec_free_managed(v);
         }
     }
 }

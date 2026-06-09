@@ -1,0 +1,31 @@
+// Reject fixture: q004_trait_impl_sig_wrong_return.
+//
+// Impl method's return type does not match the trait's declared return type
+// after substituting `Self` and projecting `Self::Item`. Q004 pins this as a
+// LOCAL diagnostic at the impl method's span (TraitImplSignatureMismatch),
+// not a confusing downstream "type does not satisfy trait" at the call site.
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - TraitImplSignatureMismatch
+//   - "return type"
+
+pub trait Container {
+    type Item;
+    fn unwrap(self) -> Option<Self::Item>;
+}
+
+pub type Holder {
+    n: i64;
+}
+
+impl Container for Holder {
+    type Item = i64;
+    fn unwrap(h: Holder) -> i64 {
+        h.n
+    }
+}
+
+fn main() -> i64 {
+    0
+}

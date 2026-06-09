@@ -21,6 +21,7 @@
 ///
 /// Created by `regex.new(pattern)`. Call `free()` before the value goes out of
 /// scope; dropping without `free()` is a resource leak.
+#[opaque]
 type Pattern {
 }
 
@@ -35,18 +36,18 @@ trait PatternMethods {
     /// assert(re.is_match("hello"));
     /// re.free();
     /// ```
-    fn is_match(pat: Pattern, input: string) -> bool;
+    fn is_match(self, input: string) -> bool;
 
     /// Ergonomic alias for `is_match`. Returns `true` when the pattern matches
     /// anywhere in `input`. Provided so call sites can read as
     /// `pattern.matches(text)` — a one-to-one replacement for the removed
     /// `text =~ pattern` operator.
-    fn matches(pat: Pattern, input: string) -> bool;
+    fn matches(self, input: string) -> bool;
 
     /// Find the first match of the pattern in the input string.
     ///
     /// Returns the matched substring, or an empty string if no match.
-    fn find(pat: Pattern, input: string) -> string;
+    fn find(self, input: string) -> string;
 
     /// Replace all occurrences of the pattern with the replacement string.
     ///
@@ -58,18 +59,18 @@ trait PatternMethods {
     /// // result == "abcNdefN"
     /// re.free();
     /// ```
-    fn replace(pat: Pattern, input: string, replacement: string) -> string;
+    fn replace(self, input: string, replacement: string) -> string;
 
     /// Clone the compiled pattern, producing an independent copy.
     ///
     /// Each clone must be dropped or freed independently.
-    fn clone(pat: Pattern) -> Pattern;
+    fn clone(self) -> Pattern;
 
     /// Canonical release path for `Pattern`.
     ///
     /// Callers MUST invoke `free()` before the value goes out of scope;
     /// dropping without `free()` is a resource leak.
-    fn free(pat: Pattern);
+    fn free(self);
 }
 
 impl PatternMethods for Pattern {

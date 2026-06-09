@@ -151,6 +151,13 @@ extern "C" {
     pub fn hew_vec_sort_f64(v: *mut HewVec);
     pub fn hew_vec_clone(v: *const HewVec) -> *mut HewVec;
     pub fn hew_vec_clone_layout(v: *const HewVec, layout: *const HewTypeLayout) -> *mut HewVec;
+    // Witness-managed clone/free pair (W5.002 F0b). Single-arg, descriptor read
+    // from the handle (`(*v).layout`), mirroring the HashMap/HashSet
+    // `*_clone_layout`/`*_free_layout` family. Codegen derives both from
+    // `collection_layout_witness`, so the allocate/free symbols can never drift
+    // (W4.045 UAF class).
+    pub fn hew_vec_clone_managed(v: *const HewVec) -> *mut HewVec;
+    pub fn hew_vec_free_managed(v: *mut HewVec);
     pub fn hew_vec_append(dst: *mut HewVec, src: *const HewVec);
     pub fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64);
     pub fn hew_vec_truncate(v: *mut HewVec, new_len: i64);

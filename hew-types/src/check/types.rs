@@ -2,6 +2,7 @@ use crate::env::{TypeBindingId, TypeEnv};
 use crate::error::TypeError;
 use crate::lowering_facts::LoweringFact;
 use crate::module_registry::ModuleRegistry;
+use crate::resolved_ty::ResolvedTy;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
 use hew_parser::ast::{Span, Spanned, TraitBound, TraitMethod, TypeExpr};
@@ -76,6 +77,30 @@ impl ExecutionContextReader {
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// W4.047 P1.1 — the **typed** checker→HIR handoff side-table.
+    ///
+    /// Carries the post-substitution, post-literal-defaulting [`ResolvedTy`]
+    /// for every accepted expression span whose type is *concrete*. The value
+    /// type `ResolvedTy` makes the four checker-internal states (`Ty::Var`,
+    /// `Ty::Error`, unmaterialized `Ty::IntLiteral`/`Ty::FloatLiteral`)
+    /// unrepresentable by construction, so an entry here is provably clean.
+    ///
+    /// **Totality contract:** populated at the `check_program` boundary by
+    /// running [`ResolvedTy::from_ty`] over every surviving `expr_types` entry
+    /// (after `validate_checker_output_contract` has pruned/diagnosed leaked
+    /// inference and error types). The map is therefore *total over concrete
+    /// accepted spans*. The only spans legitimately absent are pre-monomorphi-
+    /// zation generic bodies whose type is a *covered* inference var (a type
+    /// parameter `validate_expr_output_contract` retained because its
+    /// unresolved vars are a subset of the tracked holes); monomorphization
+    /// resolves those later. There is no "no entry → guess" third state for a
+    /// concrete accepted expression.
+    ///
+    /// In Phase 1 (W4.047) this is a transitional *shadow* of `expr_types`:
+    /// HIR lowering still drives off `expr_types` and only asserts agreement
+    /// (zero behaviour change). Phase 2 promotes this to the primary read path;
+    /// Phase 4 removes the `Ty`-typed `expr_types` HIR type-derivation reads.
+    pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
     /// RHS spans of accepted `lhs is TypeName` type patterns.
     ///
     /// The parser still represents the RHS as an identifier expression; this
@@ -798,6 +823,28 @@ pub struct ArmResolution {
     pub payload_bindings: Vec<PayloadBinding>,
 }
 
+impl TypeCheckOutput {
+    /// Record an expression's checker type, keeping the `Ty`-typed
+    /// `expr_types` side-table and the typed `resolved_expr_types` handoff
+    /// map (W4.047) in sync.
+    ///
+    /// Mirrors the `check_program` boundary's totality contract: a *concrete*
+    /// type populates both maps (via the single authorised
+    /// [`ResolvedTy::from_ty`] conversion); a non-concrete type (a leaked
+    /// inference var, an error placeholder, or an unmaterialized literal)
+    /// populates only `expr_types`, leaving the typed map correctly absent.
+    ///
+    /// Use this from tests/fixtures that hand-build a `TypeCheckOutput` so the
+    /// two maps never drift — a direct `expr_types.insert` would leave the
+    /// typed handoff under-populated and trip the HIR totality shadow assert.
+    pub fn insert_expr_type(&mut self, span: SpanKey, ty: Ty) {
+        if let Ok(resolved) = ResolvedTy::from_ty(&ty) {
+            self.resolved_expr_types.insert(span.clone(), resolved);
+        }
+        self.expr_types.insert(span, ty);
+    }
+}
+
 impl Default for TypeCheckOutput {
     /// Produce an empty `TypeCheckOutput` with no resolved types, rewrites, or
     /// diagnostics. Useful in tests that exercise HIR lowering without
@@ -806,6 +853,7 @@ impl Default for TypeCheckOutput {
     fn default() -> Self {
         Self {
             expr_types: HashMap::new(),
+            resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),
@@ -1484,6 +1532,13 @@ pub enum TypeDefKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "FnSig is the canonical fn-signature record; each bool encodes \
+              a distinct cross-cutting attribute (async/pure/kwargs/mutable-receiver) \
+              that downstream passes need to query individually — collapsing into \
+              an enum would force per-flag enum-variant matches at every read site"
+)]
 pub struct FnSig {
     pub type_params: Vec<String>,
     pub type_param_bounds: HashMap<String, Vec<String>>,
@@ -1513,6 +1568,19 @@ pub struct FnSig {
     ///
     /// `None` for every signature that does not carry the attribute.
     pub extern_symbol: Option<crate::extern_symbol::ExternSymbolSpec>,
+    /// `true` iff this signature was declared with a mutable receiver
+    /// (`fn next(var self)` or a named-receiver variant marked `var`).
+    ///
+    /// Populated by the registration pass when the first parameter is a
+    /// receiver (per [`Self::is_receiver_param`]) AND `param.is_mutable` is
+    /// set. Consumed by the method-dispatch site to enforce that the call
+    /// receiver is a `var`-bound binding (mirrors the precedent in
+    /// `methods.rs::step` — see Q297 Stage 1).
+    ///
+    /// Default `false` for every signature without a receiver, for
+    /// signatures whose receiver was declared by-value, and for free
+    /// functions whose first parameter happens to be named `self`.
+    pub requires_mutable_receiver: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1534,6 +1602,7 @@ impl Default for FnSig {
             accepts_kwargs: false,
             doc_comment: None,
             extern_symbol: None,
+            requires_mutable_receiver: false,
         }
     }
 }

@@ -50,12 +50,11 @@ pub fn read_all() -> string {
 
 // ── Declarative bytes receiver FFI ───────────────────────────────────
 //
-// The current native bytes ABI is Vec<i32>-backed: string.to_bytes(),
-// transport reads, and hew_bytes_to_string all exchange HewVec byte buffers.
-// Bind the checked-in runtime symbols verbatim rather than inventing
-// hew_bytes_len/get/pop/set names that do not exist.
+// Native bytes now has a dedicated push ABI. The remaining collection-like
+// helpers stay on the checked-in Vec symbols until corresponding hew_bytes_*
+// runtime entries exist.
 impl bytes {
-    #[extern_symbol(hew_vec_push_i32)]
+    #[extern_symbol(hew_bytes_push)]
     fn push(buf: bytes, byte: i32) {}
     #[extern_symbol(hew_vec_pop_i32)]
     fn pop(buf: bytes) -> i32 {

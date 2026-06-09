@@ -728,6 +728,64 @@ pub enum TypeErrorKind {
         /// Short deterministic reason; safe to pin in tests.
         reason: String,
     },
+    /// An impl-block method's declared signature does not match the trait
+    /// method's signature after substituting `Self` with the impl target type
+    /// and the trait's type parameters with the impl-supplied type arguments.
+    ///
+    /// Emitted at the impl method's declaration span so the diagnostic fires
+    /// locally where the user wrote the wrong shape, instead of cascading
+    /// downstream as a confusing "type does not satisfy trait" at a call site.
+    /// See LESSONS row `diagnostic-trust` (P1).
+    ///
+    /// Envelope code: `E_TRAIT_IMPL_SIGNATURE_MISMATCH`.
+    TraitImplSignatureMismatch {
+        /// Trait whose method declaration was violated.
+        trait_name: String,
+        /// Method name whose impl-side signature diverges from the trait.
+        method_name: String,
+        /// Short label for the kind of divergence: `"arity"`, `"parameter"`,
+        /// or `"return type"`. Used by tests to pin diagnostic precision.
+        detail: &'static str,
+    },
+    /// A function carrying `#[intrinsic("…")]` was declared outside the
+    /// designated stdlib-floor modules.
+    ///
+    /// A605 (ratified): the `#[intrinsic]` surface is compiler-internal-only.
+    /// Memory/lifecycle intrinsics (`alloc`/`size_of`/typed-ptr/auto-`Drop`)
+    /// and the existing math intrinsics must never be user-declarable; doing so
+    /// would leak unsafe/aliasing primitives onto the surface, violating the
+    /// durable "Hew feels immutable at the surface" tenet. The gate is
+    /// fail-closed: any module not on the floor allowlist — including the
+    /// root/user module — is rejected, so a user program (or any non-floor
+    /// module) cannot wire itself to a compiler intrinsic.
+    ///
+    /// Envelope code: `E_INTRINSIC_OUTSIDE_FLOOR`.
+    IntrinsicOutsideFloor {
+        /// The intrinsic catalog key from the `#[intrinsic("…")]` attribute.
+        intrinsic_key: String,
+        /// The module path where the declaration appeared (`"(root)"` for the
+        /// user's root module). Used by tests to pin diagnostic precision.
+        module: String,
+    },
+    /// A `#[intrinsic("…")]` attribute was placed on an impl-block method
+    /// rather than a top-level free function.
+    ///
+    /// A605 (ratified): `#[intrinsic]` is valid **only** on top-level free
+    /// functions inside a stdlib-floor module. Impl methods, trait-impl
+    /// methods, and actor methods are never intrinsics — the compiler wires
+    /// intrinsics to standalone catalog entries, not to method dispatch
+    /// slots. Fail-closed: a method-shaped declaration is rejected even if
+    /// it appears inside an allowlisted floor module, and is never inserted
+    /// into `intrinsic_declarations`.
+    ///
+    /// Envelope code: `E_INTRINSIC_ON_METHOD`.
+    IntrinsicOnMethod {
+        /// The intrinsic catalog key from the `#[intrinsic("…")]` attribute.
+        intrinsic_key: String,
+        /// The fully-qualified method key (`"Type::method"`) that carried
+        /// the attribute. Used by tests to pin diagnostic precision.
+        method_key: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -803,6 +861,9 @@ impl TypeErrorKind {
             Self::InvalidExternSymbolTemplate { .. } => "InvalidExternSymbolTemplate",
             Self::MissingActorTypeArgs { .. } => "MissingActorTypeArgs",
             Self::ActorTypeArgArityMismatch { .. } => "ActorTypeArgArityMismatch",
+            Self::TraitImplSignatureMismatch { .. } => "TraitImplSignatureMismatch",
+            Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",
+            Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
         }
     }
 }

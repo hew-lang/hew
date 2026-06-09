@@ -34,9 +34,9 @@ use hew_cabi::map::{HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout};
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{validate_descriptor_ownership, validate_key_layout};
 use hew_runtime::hashset::{
-    hew_hashset_contains_layout, hew_hashset_free_layout, hew_hashset_insert_layout,
-    hew_hashset_len_layout, hew_hashset_new_with_layout, hew_hashset_remove_layout,
-    validate_set_op, validate_set_op_elem,
+    hew_hashset_clone_layout, hew_hashset_contains_layout, hew_hashset_free_layout,
+    hew_hashset_insert_layout, hew_hashset_len_layout, hew_hashset_new_with_layout,
+    hew_hashset_remove_layout, validate_set_op, validate_set_op_elem,
 };
 
 // ---------------------------------------------------------------------------
@@ -182,6 +182,72 @@ fn layout_hashset_len_after_insert_remove() {
 fn layout_hashset_free_null_is_noop() {
     // SAFETY: null is explicitly handled by hew_hashset_free_layout.
     unsafe { hew_hashset_free_layout(ptr::null_mut()) };
+}
+
+/// `hew_hashset_clone_layout` deep-copies a non-empty set: the clone observes
+/// every original element, and the two handles are independent storage (freed
+/// separately, with no double-free / use-after-free).
+///
+/// W4.045 regression: pre-fix the codegen emitted the legacy
+/// `hew_hashset_clone` against a `HewLayoutHashSet*`, reinterpreting the
+/// 16-byte layout entries as 48-byte map entries. This drives the corrected
+/// layout clone over a populated set so a sanitizer build (`make asan`) flags
+/// any invalid free or out-of-bounds read.
+#[test]
+fn layout_hashset_clone_deep_copies_non_empty() {
+    let kl = elem_layout_point();
+    // SAFETY: layout is valid; all set pointers are from the layout ctor/clone.
+    unsafe {
+        let src = hew_hashset_new_with_layout(&raw const kl);
+
+        let a: [i64; 2] = [1, 2];
+        let b: [i64; 2] = [3, 4];
+        let c: [i64; 2] = [5, 6];
+        hew_hashset_insert_layout(src, a.as_ptr().cast::<c_void>());
+        hew_hashset_insert_layout(src, b.as_ptr().cast::<c_void>());
+        hew_hashset_insert_layout(src, c.as_ptr().cast::<c_void>());
+        assert_eq!(hew_hashset_len_layout(src), 3);
+
+        let clone = hew_hashset_clone_layout(src.cast_const());
+        assert!(!clone.is_null(), "clone of non-null set must be non-null");
+        assert_eq!(
+            hew_hashset_len_layout(clone),
+            3,
+            "clone must contain every source element"
+        );
+        for elem in [&a, &b, &c] {
+            assert!(
+                hew_hashset_contains_layout(clone, elem.as_ptr().cast::<c_void>()),
+                "clone must contain each original element"
+            );
+        }
+
+        // Independence: removing from the source must not touch the clone.
+        hew_hashset_remove_layout(src, a.as_ptr().cast::<c_void>());
+        assert_eq!(hew_hashset_len_layout(src), 2);
+        assert_eq!(
+            hew_hashset_len_layout(clone),
+            3,
+            "mutating the source must not affect the clone"
+        );
+        assert!(
+            hew_hashset_contains_layout(clone, a.as_ptr().cast::<c_void>()),
+            "clone must retain an element removed from the source"
+        );
+
+        // Both handles free cleanly — distinct backing allocations.
+        hew_hashset_free_layout(src);
+        hew_hashset_free_layout(clone);
+    }
+}
+
+/// `hew_hashset_clone_layout(null)` returns null (null-in / null-out),
+/// mirroring `hew_hashset_clone` and `hew_hashmap_clone_layout`.
+#[test]
+fn layout_hashset_clone_null_returns_null() {
+    // SAFETY: null is explicitly handled by hew_hashset_clone_layout.
+    let cloned = unsafe { hew_hashset_clone_layout(ptr::null()) };
+    assert!(cloned.is_null(), "clone of null must return null");
 }
 
 // ---------------------------------------------------------------------------

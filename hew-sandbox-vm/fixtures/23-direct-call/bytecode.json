@@ -212,6 +212,11 @@
         "name": "T"
       },
       {
+        "id": "type:VecIter",
+        "kind": "record",
+        "name": "VecIter"
+      },
+      {
         "id": "type:bool",
         "kind": "bool",
         "name": "bool"
@@ -278,7 +283,7 @@
       }
     ]
   },
-  "package_id": "pkg:db3d35a6fb0dfca5",
+  "package_id": "pkg:e608ac07de9c5b92",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

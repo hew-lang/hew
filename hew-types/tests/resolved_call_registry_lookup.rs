@@ -30,11 +30,13 @@
 //! that no production reader of `resolved_calls` exists; the field is
 //! exercised here purely against the dispatch substrate.
 
+use hew_types::check::collection_dispatch_registry_for_tests;
 use hew_types::check::dispatch::{
     match_pattern, resolve_method_call, Bound, CallAbiHint, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, RuntimeAbi, TyPattern,
 };
 use hew_types::traits::MarkerTrait;
+use std::collections::BTreeSet;
 
 // ---- Test fixtures ---------------------------------------------------------
 
@@ -298,4 +300,57 @@ fn registry_round_trips_via_serde_json_proving_data_only_shape() {
     let decoded_resolved: hew_types::check::dispatch::ResolvedCall =
         serde_json::from_str(&resolved_json).expect("ResolvedCall round-trips");
     assert_eq!(resolved, decoded_resolved);
+}
+
+#[test]
+fn production_registry_exposes_vec_seq_methods_with_one_type_arg() {
+    let registry = collection_dispatch_registry_for_tests();
+    let (seq_id, seq_impl) = registry
+        .iter()
+        .find(|(_, def)| def.trait_name == "Seq")
+        .expect("collection registry must expose the Vec-backed Seq impl");
+
+    assert_eq!(
+        seq_impl.self_pattern,
+        app("Vec", vec![var("T")]),
+        "Seq impl must bind exactly Vec<T>"
+    );
+    assert!(
+        seq_impl.where_bounds.is_empty(),
+        "Vec dispatch has no registry where-bounds; per-element gates stay in the Vec symbol router"
+    );
+
+    let methods: BTreeSet<&str> = seq_impl
+        .methods
+        .iter()
+        .map(|(method, _)| method.as_str())
+        .collect();
+    let expected = BTreeSet::from([
+        "push", "pop", "len", "get", "set", "remove", "contains", "is_empty", "clear", "clone",
+        "append", "extend", "join",
+    ]);
+    assert_eq!(methods, expected);
+
+    let receiver = app("Vec", vec![primitive("i64")]);
+    for (method, target) in &seq_impl.methods {
+        let resolved = resolve_method_call(&registry, "Seq", method, &receiver, &hash_eq_satisfied)
+            .unwrap_or_else(|err| panic!("Seq::{method} rejected for Vec<i64>: {err:?}"));
+        assert_eq!(resolved.impl_id, seq_id);
+        assert_eq!(
+            resolved.type_args,
+            vec![primitive("i64")],
+            "Seq::{method} must carry the single Vec element type arg"
+        );
+        assert!(
+            resolved.target.symbol_name.starts_with("hew_vec_"),
+            "Seq::{method} placeholder must stay in the hew_vec_* family"
+        );
+        assert!(
+            resolved.target.symbol_name.ends_with("_FAMILY"),
+            "Seq::{method} registry symbol is a placeholder until Vec's per-element override runs"
+        );
+        assert_eq!(resolved.target.abi, target.abi);
+        assert_eq!(resolved.target.call_hint, CallAbiHint::RuntimeShim);
+        assert!(!resolved.target.consumes_receiver);
+    }
 }

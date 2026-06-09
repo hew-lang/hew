@@ -73,6 +73,67 @@ impl Checker {
         }
     }
 
+    fn lower_turbofish_elem(
+        &mut self,
+        constructor_name: &str,
+        expected_arity: usize,
+        supplied_args: &[Spanned<TypeExpr>],
+        span: &Span,
+    ) -> Option<Vec<Ty>> {
+        if supplied_args.len() != expected_arity {
+            self.report_error(
+                TypeErrorKind::ArityMismatch,
+                span,
+                format!(
+                    "`{constructor_name}` takes {expected_arity} type argument{} but {} {} supplied",
+                    if expected_arity == 1 { "" } else { "s" },
+                    supplied_args.len(),
+                    if supplied_args.len() == 1 { "was" } else { "were" }
+                ),
+            );
+            return None;
+        }
+
+        Some(
+            supplied_args
+                .iter()
+                .map(|type_arg| self.resolve_type_expr(type_arg))
+                .collect(),
+        )
+    }
+
+    fn lower_turbofish_collection_constructor(
+        &mut self,
+        constructor_name: &str,
+        builtin: crate::BuiltinType,
+        expected_arity: usize,
+        supplied_args: &[Spanned<TypeExpr>],
+        span: &Span,
+    ) -> Option<Ty> {
+        let lowered =
+            self.lower_turbofish_elem(constructor_name, expected_arity, supplied_args, span)?;
+        let resolved_args: Vec<Ty> = lowered.iter().map(|ty| self.subst.resolve(ty)).collect();
+        let result_ty = Ty::Named {
+            builtin: Some(builtin),
+            name: constructor_name.to_string(),
+            args: resolved_args,
+        };
+        match builtin {
+            crate::BuiltinType::HashMap => {
+                self.validate_concrete_hashmap_type(&result_ty, span);
+            }
+            crate::BuiltinType::HashSet => {
+                self.validate_concrete_hashset_type(&result_ty, span);
+            }
+            crate::BuiltinType::Vec => {
+                self.validate_concrete_vec_type(&result_ty, span);
+            }
+            _ => {}
+        }
+        self.record_type(span, &result_ty);
+        Some(result_ty)
+    }
+
     pub(super) fn record_concrete_call_type_args(&mut self, span: &Span, type_args: &[Ty]) {
         let concrete: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
         if concrete.iter().all(|ty| !ty.has_inference_var()) {
@@ -243,13 +304,52 @@ impl Checker {
             _ => return None,
         };
 
-        // Non-`Vec::new` constructors with explicit type args are not handled
-        // here — fall through to the generic call resolver.
-        if type_args.is_some() && func_name != "Vec::new" {
+        // Constructors with explicit type args that are not covered here fall
+        // through to the generic call resolver.
+        if type_args.is_some()
+            && !matches!(
+                func_name.as_str(),
+                "Vec::new" | "HashMap::new" | "HashSet::new"
+            )
+        {
             return None;
         }
 
         let resolved_expected = self.subst.resolve(expected);
+
+        if let Some(targs) = type_args {
+            match func_name.as_str() {
+                "HashMap::new" => {
+                    self.check_arity(args, 0, "`HashMap::new`", span);
+                    let Some(result_ty) = self.lower_turbofish_collection_constructor(
+                        "HashMap",
+                        crate::BuiltinType::HashMap,
+                        2,
+                        targs,
+                        span,
+                    ) else {
+                        self.record_type(span, &Ty::Error);
+                        return Some(Ty::Error);
+                    };
+                    return Some(result_ty);
+                }
+                "HashSet::new" => {
+                    self.check_arity(args, 0, "`HashSet::new`", span);
+                    let Some(result_ty) = self.lower_turbofish_collection_constructor(
+                        "HashSet",
+                        crate::BuiltinType::HashSet,
+                        1,
+                        targs,
+                        span,
+                    ) else {
+                        self.record_type(span, &Ty::Error);
+                        return Some(Ty::Error);
+                    };
+                    return Some(result_ty);
+                }
+                _ => {}
+            }
+        }
 
         if func_name == "Vec::new" {
             self.check_arity(args, 0, "`Vec::new`", span);
@@ -258,21 +358,11 @@ impl Checker {
             // `Vec::new::<T>()`) takes priority over the expected-type
             // annotation path (`let v: Vec<T> = Vec::new()`).
             let elem_ty: Ty = if let Some(targs) = type_args {
-                // Turbofish path: Vec takes exactly one type argument.
-                if targs.len() != 1 {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!(
-                            "`Vec` takes 1 type argument but {} {} supplied",
-                            targs.len(),
-                            if targs.len() == 1 { "was" } else { "were" }
-                        ),
-                    );
+                let Some(mut lowered) = self.lower_turbofish_elem("Vec", 1, targs, span) else {
                     self.record_type(span, &Ty::Error);
                     return Some(Ty::Error);
-                }
-                self.resolve_type_expr(&targs[0])
+                };
+                lowered.remove(0)
             } else {
                 // Expected-type path: infer element type from the surrounding
                 // `Vec<T>` annotation.
@@ -603,19 +693,10 @@ impl Checker {
             "Vec::new" if type_args.is_some() => {
                 self.check_arity(args, 0, "`Vec::new`", span);
                 let targs = type_args.expect("guarded by `is_some()` above");
-                if targs.len() != 1 {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!(
-                            "`Vec` takes 1 type argument but {} {} supplied",
-                            targs.len(),
-                            if targs.len() == 1 { "was" } else { "were" }
-                        ),
-                    );
+                let Some(mut lowered) = self.lower_turbofish_elem("Vec", 1, targs, span) else {
                     return Ty::Error;
-                }
-                let elem_ty = self.resolve_type_expr(&targs[0]);
+                };
+                let elem_ty = lowered.remove(0);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 // Inherit the layout+Copy guard from check_call_against_expected_constructor.
                 if crate::stdlib::vec_element_runtime_suffix(&resolved_elem, &self.type_defs)
@@ -645,6 +726,34 @@ impl Checker {
                     args: vec![resolved_elem],
                 };
                 self.record_type(span, &result_ty);
+                return result_ty;
+            }
+            "HashMap::new" if type_args.is_some() => {
+                self.check_arity(args, 0, "`HashMap::new`", span);
+                let targs = type_args.expect("guarded by `is_some()` above");
+                let Some(result_ty) = self.lower_turbofish_collection_constructor(
+                    "HashMap",
+                    crate::BuiltinType::HashMap,
+                    2,
+                    targs,
+                    span,
+                ) else {
+                    return Ty::Error;
+                };
+                return result_ty;
+            }
+            "HashSet::new" if type_args.is_some() => {
+                self.check_arity(args, 0, "`HashSet::new`", span);
+                let targs = type_args.expect("guarded by `is_some()` above");
+                let Some(result_ty) = self.lower_turbofish_collection_constructor(
+                    "HashSet",
+                    crate::BuiltinType::HashSet,
+                    1,
+                    targs,
+                    span,
+                ) else {
+                    return Ty::Error;
+                };
                 return result_ty;
             }
             "Some" => {

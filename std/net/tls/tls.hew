@@ -29,6 +29,7 @@ import std::fs;
 /// An established TLS connection to a remote host.
 ///
 /// Created by `tls.connect(host, port)`. Must be released with `close()`.
+#[opaque]
 type TlsStream {
 }
 
@@ -80,21 +81,21 @@ trait TlsStreamMethods {
     /// Write raw bytes to the TLS stream.
     ///
     /// Returns the number of bytes written, or −1 on error.
-    fn write(stream: TlsStream, data: bytes) -> i64;
+    fn write(self, data: bytes) -> i64;
 
     /// Write raw bytes to the TLS stream.
     ///
     /// Returns the number of bytes written, or `Err(fs.IoError)` on failure.
-    fn try_write(stream: TlsStream, data: bytes) -> Result<i64, fs.IoError>;
+    fn try_write(self, data: bytes) -> Result<i64, fs.IoError>;
 
     /// Read up to `size` bytes from the TLS stream.
     ///
     /// Returns `Ok(bytes)` on success or orderly EOF, or `Err(fs.IoError)` on
     /// retryable/TLS/I-O failures. Use `last_error()` for the precise class.
-    fn read(stream: TlsStream, size: i64) -> Result<bytes, fs.IoError>;
+    fn read(self, size: i64) -> Result<bytes, fs.IoError>;
 
     /// Close the TLS connection and release resources.
-    fn close(stream: TlsStream);
+    fn close(self);
 }
 
 impl TlsStreamMethods for TlsStream {

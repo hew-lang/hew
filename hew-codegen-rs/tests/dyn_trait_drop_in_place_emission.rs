@@ -99,6 +99,7 @@ fn pipeline_with(
         checked_mir: vec![],
         elaborated_mir: vec![],
         diagnostics: vec![],
+        opaque_handle_names: vec![],
         record_layouts,
         actor_layouts: vec![],
         supervisor_layouts: vec![],

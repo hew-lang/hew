@@ -114,11 +114,19 @@ pub enum StateFieldCloneKind {
     /// (`hew-runtime/src/bytes.rs:238,254`.)
     Bytes,
 
-    /// `Vec<T>` — `hew_vec_clone` / `hew_vec_free`. The inner element
-    /// classification is carried for Stage 3 to decide whether the
-    /// runtime helper's generic byte-clone is sound (`BitCopy` element)
-    /// or whether a per-element deep walk is required (owned-heap
-    /// element).
+    /// `Vec<T>` — actor-state clone/drop routes through the layout-managed
+    /// witness pair `hew_vec_clone_managed` / `hew_vec_free_managed`, derived
+    /// by codegen from `collection_layout_witness` (the sole clone/drop symbol
+    /// authority, alongside the HashMap/HashSet `*_layout` family). The managed
+    /// pair reads the `HewTypeLayout` descriptor stamped into the handle at
+    /// construction and clones/frees layout-backed `Plain`/`String` Vecs,
+    /// failing closed only on `LayoutManaged` elements. The legacy
+    /// `hew_vec_clone` / `hew_vec_free` symbols are NOT used for state fields;
+    /// they remain only for non-state Vec paths (locals, returns, user
+    /// `Vec.clone()`) and their retirement is W5.003 scope. The inner element
+    /// classification is carried for Stage 3 to decide whether the layout-absent
+    /// fallback's generic byte-clone is sound (`BitCopy` element) or whether a
+    /// per-element deep walk is required (owned-heap element).
     Vec { elem: Box<StateFieldCloneKind> },
 
     /// `HashMap<K, V>` — gated on `hew_hashmap_*` runtime helper

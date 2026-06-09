@@ -347,6 +347,7 @@ fn vec_index_mir_wraps_in_pipeline_without_errors() {
         checked_mir: vec![],
         elaborated_mir: vec![],
         diagnostics: vec![],
+        opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],

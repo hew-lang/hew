@@ -23,19 +23,20 @@
 ///
 /// Created by `path.glob(pattern)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
+#[opaque]
 type GlobResult {
 }
 
 /// Methods available on a `GlobResult`.
 trait GlobResultMethods {
     /// Return the number of matched paths.
-    fn count(res: GlobResult) -> i64;
+    fn count(self) -> i64;
 
     /// Return the matched path at the given index.
-    fn get(res: GlobResult, index: i64) -> string;
+    fn get(self, index: i64) -> string;
 
     /// Release the glob result resources.
-    fn free(res: GlobResult);
+    fn free(self);
 }
 
 impl GlobResultMethods for GlobResult {

@@ -23,63 +23,63 @@
 /// Common `Value` methods implemented by stdlib encodings with opaque handles.
 trait CanonicalValueMethods {
     /// Serialize the value back to its source encoding.
-    fn stringify(val: Self) -> string;
+    fn stringify(self) -> string;
 
     /// Return the canonical shared type tag.
-    fn type_of(val: Self) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
+    fn type_of(self) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the boolean value (0 or 1).
-    fn get_bool(val: Self) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
+    fn get_bool(self) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
     /// Extract the integer value.
-    fn get_int(val: Self) -> i64;
+    fn get_int(self) -> i64;
 
     /// Extract the floating-point value.
-    fn get_float(val: Self) -> f64;
+    fn get_float(self) -> f64;
 
     /// Extract the string value.
-    fn get_string(val: Self) -> string;
+    fn get_string(self) -> string;
 
     /// Look up a field by key in an object-like value.
-    fn get_field(val: Self, key: string) -> Self;
+    fn get_field(self, key: string) -> Self;
 
     /// Return the number of elements in an array-like value.
-    fn array_len(val: Self) -> i64;
+    fn array_len(self) -> i64;
 
     /// Return the element at the given index in an array-like value.
-    fn array_get(val: Self, index: i64) -> Self;
+    fn array_get(self, index: i64) -> Self;
 
     /// Release the value resources.
-    fn free(val: Self);
+    fn free(self);
 
     // ── Fluent builders shared across JSON/TOML/YAML ───────────────────────
     /// Set a string field on an object-like value. Returns the object for chaining.
-    fn with_string(obj: Self, key: string, val: string) -> Self;
+    fn with_string(self, key: string, val: string) -> Self;
 
     /// Set an integer field. Returns the object for chaining.
-    fn with_int(obj: Self, key: string, val: i64) -> Self;
+    fn with_int(self, key: string, val: i64) -> Self;
 
     /// Set a float field. Returns the object for chaining.
-    fn with_float(obj: Self, key: string, val: f64) -> Self;
+    fn with_float(self, key: string, val: f64) -> Self;
 
     /// Set a boolean field. Returns the object for chaining.
-    fn with_bool(obj: Self, key: string, val: bool) -> Self;
+    fn with_bool(self, key: string, val: bool) -> Self;
 
     /// Set a child value on an object-like value. The child is consumed.
-    fn with(obj: Self, key: string, child: Self) -> Self;
+    fn with(self, key: string, child: Self) -> Self;
 
     /// Push a child value onto an array-like value. The child is consumed.
-    fn push(arr: Self, child: Self) -> Self;
+    fn push(self, child: Self) -> Self;
 
     /// Push an integer onto an array-like value.
-    fn push_int(arr: Self, val: i64) -> Self;
+    fn push_int(self, val: i64) -> Self;
 
     /// Push a string onto an array-like value.
-    fn push_string(arr: Self, val: string) -> Self;
+    fn push_string(self, val: string) -> Self;
 
     /// Push a float onto an array-like value.
-    fn push_float(arr: Self, val: f64) -> Self;
+    fn push_float(self, val: f64) -> Self;
 
     /// Push a boolean onto an array-like value.
-    fn push_bool(arr: Self, val: bool) -> Self;
+    fn push_bool(self, val: bool) -> Self;
 }
 
 // Future: fn view(val: Self) -> WireView;

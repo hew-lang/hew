@@ -32,26 +32,26 @@ type Message {
 /// Methods available on a protobuf `Message`.
 trait MessageMethods {
     /// Set a string field by field number.
-    fn set_string(msg: Message, field_number: i64, value: string);
+    fn set_string(self, field_number: i64, value: string);
 
     /// Get a string field by field number.
     ///
     /// Returns an empty string if the field is not set.
-    fn get_string(msg: Message, field_number: i64) -> string;
+    fn get_string(self, field_number: i64) -> string;
 
     /// Set a varint (integer) field by field number.
-    fn set_varint(msg: Message, field_number: i64, value: i64);
+    fn set_varint(self, field_number: i64, value: i64);
 
     /// Get a varint (integer) field by field number.
     ///
     /// Returns `fallback` if the field is not set.
-    fn get_varint(msg: Message, field_number: i64, fallback: i64) -> i64;
+    fn get_varint(self, field_number: i64, fallback: i64) -> i64;
 
     /// Test whether a field is present in the message.
-    fn has_field(msg: Message, field_number: i64) -> bool;
+    fn has_field(self, field_number: i64) -> bool;
 
     /// Release the message resources.
-    fn free(msg: Message);
+    fn free(self);
 }
 
 impl MessageMethods for Message {

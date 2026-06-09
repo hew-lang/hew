@@ -74,6 +74,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
         }],
         elaborated_mir: Vec::new(),
         diagnostics: Vec::new(),
+        opaque_handle_names: vec![],
         record_layouts: Vec::new(),
         actor_layouts: Vec::new(),
         supervisor_layouts: Vec::new(),

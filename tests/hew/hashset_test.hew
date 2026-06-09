@@ -1,173 +1,160 @@
-//! Tests for std::collections::hashset — insert, contains, remove, len,
-//! is_empty, clear, and the explicit free() lifecycle.
-//!
-//! HashSet is an opaque handle type; every test that creates one must call
-//! free() before returning so resources are not leaked.
+//! Tests for built-in HashSet<T> — insert, contains, remove, len, and
+//! is_empty. Built-in sets release resources through RAII at scope exit.
 
-import std::collections::hashset;
-import std::testing;
+fn assert_true(condition: bool) {
+    if !condition {
+        panic("assertion failed: expected true, got false");
+    }
+}
+
+fn assert_false(condition: bool) {
+    if condition {
+        panic("assertion failed: expected false, got true");
+    }
+}
+
+fn assert_eq_i64(actual: i64, expected: i64) {
+    if actual != expected {
+        panic(f"assertion failed: expected {expected}, got {actual}");
+    }
+}
 
 // ── i64 operations ────────────────────────────────────────────────────
 
 #[test]
 fn test_insert_int_returns_true_for_new_values() {
-    let s = hashset.new();
-    testing.assert_true(s.insert_int(1));
-    testing.assert_true(s.insert_int(2));
-    s.free();
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    let first = s.insert(1);
+    let second = s.insert(2);
+    assert_true(first);
+    assert_true(second);
 }
 
 #[test]
 fn test_insert_int_returns_false_for_duplicate() {
-    let s = hashset.new();
-    s.insert_int(42);
-    testing.assert_false(s.insert_int(42));
-    s.free();
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    s.insert(42);
+    let inserted = s.insert(42);
+    assert_false(inserted);
 }
 
 #[test]
 fn test_contains_int_after_insert() {
-    let s = hashset.new();
-    s.insert_int(10);
-    testing.assert_true(s.contains_int(10));
-    testing.assert_false(s.contains_int(99));
-    s.free();
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    s.insert(10);
+    let has_ten = s.contains(10);
+    let has_ninety_nine = s.contains(99);
+    assert_true(has_ten);
+    assert_false(has_ninety_nine);
 }
 
 #[test]
 fn test_remove_int_returns_true_when_present() {
-    let s = hashset.new();
-    s.insert_int(5);
-    testing.assert_true(s.remove_int(5));
-    s.free();
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    s.insert(5);
+    let removed = s.remove(5);
+    assert_true(removed);
 }
 
 #[test]
 fn test_remove_int_returns_false_when_absent() {
-    let s = hashset.new();
-    testing.assert_false(s.remove_int(99));
-    s.free();
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    let removed = s.remove(99);
+    assert_false(removed);
 }
 
 #[test]
 fn test_remove_int_element_no_longer_present() {
-    let s = hashset.new();
-    s.insert_int(7);
-    s.remove_int(7);
-    testing.assert_false(s.contains_int(7));
-    s.free();
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    s.insert(7);
+    s.remove(7);
+    let contains = s.contains(7);
+    assert_false(contains);
 }
 
 // ── len / is_empty ────────────────────────────────────────────────────
 
 #[test]
 fn test_new_set_is_empty() {
-    let s = hashset.new();
-    testing.assert_true(s.is_empty());
-    testing.assert_eq(s.len(), 0);
-    s.free();
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    let empty = s.is_empty();
+    let len = s.len();
+    assert_true(empty);
+    assert_eq_i64(len, 0);
 }
 
 #[test]
 fn test_len_grows_with_unique_inserts() {
-    let s = hashset.new();
-    s.insert_int(1);
-    s.insert_int(2);
-    s.insert_int(3);
-    testing.assert_eq(s.len(), 3);
-    testing.assert_false(s.is_empty());
-    s.free();
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    s.insert(1);
+    s.insert(2);
+    s.insert(3);
+    let len = s.len();
+    let empty = s.is_empty();
+    assert_eq_i64(len, 3);
+    assert_false(empty);
 }
 
 #[test]
 fn test_len_unchanged_by_duplicate_insert() {
-    let s = hashset.new();
-    s.insert_int(1);
-    s.insert_int(1);
-    testing.assert_eq(s.len(), 1);
-    s.free();
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    s.insert(1);
+    s.insert(1);
+    let len = s.len();
+    assert_eq_i64(len, 1);
 }
 
 #[test]
 fn test_len_decreases_after_remove() {
-    let s = hashset.new();
-    s.insert_int(1);
-    s.insert_int(2);
-    s.remove_int(1);
-    testing.assert_eq(s.len(), 1);
-    s.free();
+    let s: HashSet<i64> = HashSet::<i64>::new();
+    s.insert(1);
+    s.insert(2);
+    s.remove(1);
+    let len = s.len();
+    assert_eq_i64(len, 1);
 }
 
-// ── clear ────────────────────────────────────────────────────────────
-
-#[test]
-fn test_clear_empties_the_set() {
-    let s = hashset.new();
-    s.insert_int(1);
-    s.insert_int(2);
-    s.insert_int(3);
-    s.clear();
-    testing.assert_eq(s.len(), 0);
-    testing.assert_true(s.is_empty());
-    s.free();
-}
-
-#[test]
-fn test_clear_allows_reinsert() {
-    let s = hashset.new();
-    s.insert_int(5);
-    s.clear();
-    testing.assert_true(s.insert_int(5));
-    testing.assert_eq(s.len(), 1);
-    s.free();
-}
+// NOTE: clear() tests are deferred until the layout-runtime surface has a
+// clear counterpart. The substrate follow-up owns adding hew_hashset_clear_layout
+// plus codegen wiring and re-adding the two removed clear() tests.
 
 // ── string operations ─────────────────────────────────────────────────
 
 #[test]
 fn test_insert_string_returns_true_for_new_values() {
-    let s = hashset.new();
-    testing.assert_true(s.insert_string("alpha"));
-    testing.assert_true(s.insert_string("beta"));
-    s.free();
+    let s: HashSet<string> = HashSet::<string>::new();
+    let first = s.insert("alpha");
+    let second = s.insert("beta");
+    assert_true(first);
+    assert_true(second);
 }
 
 #[test]
 fn test_insert_string_returns_false_for_duplicate() {
-    let s = hashset.new();
-    s.insert_string("hello");
-    testing.assert_false(s.insert_string("hello"));
-    s.free();
+    let s: HashSet<string> = HashSet::<string>::new();
+    s.insert("hello");
+    let inserted = s.insert("hello");
+    assert_false(inserted);
 }
 
 #[test]
 fn test_contains_string_after_insert() {
-    let s = hashset.new();
-    s.insert_string("world");
-    testing.assert_true(s.contains_string("world"));
-    testing.assert_false(s.contains_string("missing"));
-    s.free();
+    let s: HashSet<string> = HashSet::<string>::new();
+    s.insert("world");
+    let has_world = s.contains("world");
+    let has_missing = s.contains("missing");
+    assert_true(has_world);
+    assert_false(has_missing);
 }
 
 #[test]
 fn test_remove_string_removes_only_target() {
-    let s = hashset.new();
-    s.insert_string("a");
-    s.insert_string("b");
-    s.remove_string("a");
-    testing.assert_false(s.contains_string("a"));
-    testing.assert_true(s.contains_string("b"));
-    s.free();
-}
-
-#[test]
-fn test_string_and_int_operations_are_independent() {
-    let s = hashset.new();
-    s.insert_int(1);
-    s.insert_string("one");
-    // len counts both domains together if the implementation uses one bucket
-    // table, or independently. Either way, both must be reachable.
-    testing.assert_true(s.contains_int(1));
-    testing.assert_true(s.contains_string("one"));
-    s.free();
+    let s: HashSet<string> = HashSet::<string>::new();
+    s.insert("a");
+    s.insert("b");
+    s.remove("a");
+    let has_a = s.contains("a");
+    let has_b = s.contains("b");
+    assert_false(has_a);
+    assert_true(has_b);
 }

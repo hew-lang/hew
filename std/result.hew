@@ -194,19 +194,21 @@ pub fn unwrap_or_f64(r: Result<f64, string>, fallback: f64) -> f64 {
 impl<T, E> Result<T, E> {
     #[extern_symbol(hew_result_is_ok)]
     fn is_ok(r: Result<T, E>) -> bool {
-        false
+        panic("hew_result_is_ok: declarative FFI body reached without rewrite")
     }
 
     #[extern_symbol(hew_result_is_err)]
     fn is_err(r: Result<T, E>) -> bool {
-        false
+        panic("hew_result_is_err: declarative FFI body reached without rewrite")
     }
 
     #[extern_symbol("hew_result_unwrap_{T}")]
-    fn unwrap(r: Result<T, E>) -> T {}
+    fn unwrap(r: Result<T, E>) -> T {
+        panic("hew_result_unwrap: declarative FFI body reached without rewrite")
+    }
 
     #[extern_symbol("hew_result_unwrap_or_{T}")]
     fn unwrap_or(r: Result<T, E>, fallback: T) -> T {
-        fallback
+        panic("hew_result_unwrap_or: declarative FFI body reached without rewrite")
     }
 }

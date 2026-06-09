@@ -30,6 +30,7 @@
 import std::string;
 
 /// A handle to a completed command invocation inside the runtime.
+#[opaque]
 type ProcessResultHandle {
 }
 
@@ -39,6 +40,7 @@ type ProcessResultHandle {
 /// the process exits, or `kill()` to terminate it. Dropping the
 /// handle reaps it automatically; a still-running child is killed
 /// and waited on at scope exit.
+#[opaque]
 type Child {
 }
 
@@ -60,12 +62,12 @@ trait ChildMethods {
     /// Block until the child process exits and return its exit code.
     ///
     /// Returns 0 for success, non-zero for failure.
-    fn wait(child: Child) -> i64;
+    fn wait(self) -> i64;
 
     /// Terminate the child process.
     ///
     /// Returns 0 on success, non-zero on error.
-    fn kill(child: Child) -> i64;
+    fn kill(self) -> i64;
 }
 
 impl ChildMethods for Child {

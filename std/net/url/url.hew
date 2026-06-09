@@ -25,37 +25,38 @@ import std::string;
 ///
 /// Created by `url.parse(s)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
+#[opaque]
 type Url {
 }
 
 /// Methods available on a parsed `Url`.
 trait UrlMethods {
     /// Return the URL scheme (e.g. `"https"`).
-    fn scheme(u: Url) -> string;
+    fn scheme(self) -> string;
 
     /// Return the host name.
-    fn host(u: Url) -> string;
+    fn host(self) -> string;
 
     /// Return the explicit port number, if specified.
-    fn port(u: Url) -> Option<i64>;
+    fn port(self) -> Option<i64>;
 
     /// Return the path component.
-    fn path(u: Url) -> string;
+    fn path(self) -> string;
 
     /// Return the query string (without the leading `?`).
-    fn query(u: Url) -> string;
+    fn query(self) -> string;
 
     /// Return the fragment (without the leading `#`).
-    fn fragment(u: Url) -> string;
+    fn fragment(self) -> string;
 
     /// Return the full URL as a string.
-    fn to_string(u: Url) -> string;
+    fn to_string(self) -> string;
 
     /// Resolve a relative path onto this URL, returning a new `Url`.
-    fn resolve(u: Url, path: string) -> Url;
+    fn resolve(self, path: string) -> Url;
 
     /// Release the parsed URL resources.
-    fn free(u: Url);
+    fn free(self);
 }
 
 impl UrlMethods for Url {

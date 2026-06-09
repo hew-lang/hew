@@ -40,16 +40,17 @@ fn layout_element_hashset_methods_dual_emit_resolved_calls() {
         output.errors
     );
 
+    // Stage C3 cutover: HashSet dual-emit retired; resolved_calls is the sole authority.
     let symbols = rewrite_symbols(&output);
-    for symbol in [
+    for legacy in [
         "hew_hashset_insert_layout",
         "hew_hashset_contains_layout",
         "hew_hashset_remove_layout",
         "hew_hashset_len_layout",
     ] {
         assert!(
-            symbols.contains(symbol),
-            "expected legacy MethodCallRewrite symbol {symbol}; got {symbols:#?}",
+            !symbols.contains(legacy),
+            "Stage C3: legacy MethodCallRewrite symbol {legacy} must no longer be emitted; got {symbols:#?}",
         );
     }
 

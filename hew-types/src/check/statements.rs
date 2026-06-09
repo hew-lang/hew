@@ -598,25 +598,37 @@ impl Checker {
                         .insert(SpanKey::from(&target.1), kind);
                 }
 
-                // Reject field-write on record types.  Records are immutable
-                // value types (A-D3): field assignment `r.x = v` is always
-                // rejected even through `var`.  Use functional update syntax
-                // `R { x: v, ..r }` (A-5) instead.
+                // Record fields follow the same write rule as other aggregate
+                // fields: immutable roots (`let r`, parameters) reject at the
+                // root mutability check below; mutable roots (`var r`) may be
+                // updated in place.  Keep the record-specific diagnostic for
+                // roots that are known immutable so users see the value-type
+                // rule, not just a generic binding error.
                 if let Expr::FieldAccess { object, field } = &target.0 {
                     let obj_ty = self.synthesize(&object.0, &object.1);
                     let resolved = self.subst.resolve(&obj_ty);
                     if let Ty::Named { name, .. } = &resolved {
-                        if self
-                            .lookup_type_def(name)
-                            .is_some_and(|td| td.kind == TypeDefKind::Record)
+                        let root_is_mutable = Self::assignment_root_binding_name(&target.0)
+                            .is_some_and(|root| {
+                                self.current_actor_fields.iter().any(|field| field == root)
+                                    || self
+                                        .env
+                                        .lookup_ref(root)
+                                        .is_some_and(|binding| binding.is_mutable)
+                            });
+                        if !root_is_mutable
+                            && self
+                                .lookup_type_def(name)
+                                .is_some_and(|td| td.kind == TypeDefKind::Record)
                         {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
                                 span,
                                 format!(
-                                    "cannot assign to field `{field}` of record `{name}`; \
-                                     records are immutable value types — use functional update \
-                                     syntax `{name} {{ {field}: <value>, ..old }}` instead"
+                                    "cannot assign to field `{field}` of record `{name}` through \
+                                    an immutable binding; declare the binding mutable or use \
+                                    functional update syntax `{name} {{ {field}: <value>, ..old }}` \
+                                    instead"
                                 ),
                             );
                         }

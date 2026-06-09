@@ -1285,14 +1285,14 @@ pub unsafe extern "C" fn hew_string_reverse_utf8(s: *const c_char) -> *mut c_cha
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> *mut crate::vec::HewVec {
     // SAFETY: hew_vec_new creates a Vec<i32>-style HewVec, matching what
-    // hew_tcp_write / hew_bytes_to_string expect (i32-element vecs).
+    // hew_tcp_write expects (i32-element vec, byte values in low 8 bits).
     let v = unsafe { crate::vec::hew_vec_new() };
     cabi_guard!(s.is_null(), v);
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     for &b in bytes {
         // SAFETY: v is a valid HewVec; push each byte as i32 to match
-        // the convention used by hew_tcp_read and hew_bytes_to_string.
+        // the convention used by hew_tcp_read.
         unsafe {
             crate::vec::hew_vec_push_i32(v, i32::from(b));
         };
@@ -1316,6 +1316,149 @@ pub unsafe extern "C" fn hew_string_join(
 ) -> *mut c_char {
     // SAFETY: forwarding identical contract to hew_vec_join_str.
     unsafe { hew_vec_join_str(v, sep) }
+}
+
+// ---------------------------------------------------------------------------
+// W3 collections-sugar S2 — fail-closed codepoint indexing / slicing
+// ---------------------------------------------------------------------------
+//
+// These four runtime entries back the compiler-emitted `s[i]` and `s[a..b]`
+// sugar (Q-CS1 locked semantics): codepoint-offset, panic on invalid bounds,
+// fresh owned slice. They intentionally do NOT reuse:
+//
+// - `hew_string_char_at`        — byte-indexed + returns -1.
+// - `hew_string_char_at_utf8`   — codepoint-indexed but returns -1 sentinel.
+// - `hew_string_slice`          — byte-clamping + returns empty on OOB.
+// - `hew_string_substring_utf8` — codepoint-based but returns null on error.
+//
+// LESSONS: boundary-fail-closed (P0) — sentinel/clamp returns silently
+// corrupted user code; the new intrinsics abort the process on any invalid
+// input rather than producing a poisoned value.
+
+/// Abort with a string-indexing panic message (codepoint OOB / invalid bounds).
+///
+/// # Safety
+///
+/// Always aborts — safe to call from any context.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_abort_index_oob() -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        let msg = b"PANIC: string index/slice out of bounds or invalid UTF-8\n";
+        #[cfg(not(target_os = "windows"))]
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+        #[cfg(target_os = "windows")]
+        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
+        libc::abort();
+    }
+}
+
+/// Return the Unicode codepoint at codepoint offset `index` in `s`.
+///
+/// Semantics (Q-CS1):
+/// - O(n) walk of the UTF-8 stream.
+/// - Aborts if `s` is null, contains invalid UTF-8, `index < 0`, or
+///   `index >= char_count(s)`. No `-1` sentinel.
+/// - Returns a Unicode scalar value as `i32` (1:1 with Hew's `char`).
+///
+/// # Safety
+///
+/// `s` must be a valid NUL-terminated C string (or null, which aborts).
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "index is bounds-checked >= 0 above before cast to usize"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "i64 -> usize: usize >= 32 bits on all supported targets; \
+              real string codepoint counts never exceed usize::MAX"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_index(s: *const c_char, index: i64) -> i32 {
+    if s.is_null() || index < 0 {
+        // SAFETY: abort is always safe.
+        unsafe { hew_string_abort_index_oob() };
+    }
+    // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
+    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
+        // SAFETY: abort is always safe.
+        unsafe { hew_string_abort_index_oob() };
+    };
+    // i64 -> usize: index is non-negative; truncation only matters when
+    // index > usize::MAX which is unrepresentable in a real string.
+    let idx = index as usize;
+    let Some(ch) = rust_str.chars().nth(idx) else {
+        // SAFETY: abort is always safe.
+        unsafe { hew_string_abort_index_oob() };
+    };
+    ch as i32
+}
+
+/// Slice `s` by codepoint range `[start, end)`, returning a freshly malloc'd
+/// owned C string. Caller must `free` the result (via `hew_string_drop`).
+///
+/// Semantics (Q-CS1):
+/// - O(n) walk; fresh owned allocation (LESSONS:
+///   stdlib-borrowed-param-return-guard P0 — the returned pointer never
+///   aliases the input).
+/// - Aborts if `s` is null, contains invalid UTF-8, `start < 0`, `end < 0`,
+///   `start > end`, or `end > char_count(s)`. No null / empty fallback.
+///
+/// # Safety
+///
+/// `s` must be a valid NUL-terminated C string (or null, which aborts).
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "start and end are bounds-checked >= 0 above before cast to usize"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "i64 -> usize: usize >= 32 bits on all supported targets; \
+              real string codepoint counts never exceed usize::MAX"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_slice_codepoints(
+    s: *const c_char,
+    start: i64,
+    end: i64,
+) -> *mut c_char {
+    if s.is_null() || start < 0 || end < 0 || start > end {
+        // SAFETY: abort is always safe.
+        unsafe { hew_string_abort_index_oob() };
+    }
+    // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
+    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
+        // SAFETY: abort is always safe.
+        unsafe { hew_string_abort_index_oob() };
+    };
+    let start_idx = start as usize;
+    let end_idx = end as usize;
+    // Two-pass: confirm end is in range, then materialise. We cannot collect
+    // first and then bounds-check on the collected length because that would
+    // silently clamp `end > char_count` to the available codepoints. Walk
+    // once to find char_count up to end+1 to detect over-runs.
+    let mut chars = rust_str.chars();
+    // Skip `start` codepoints; if we run out, that is also OOB.
+    for _ in 0..start_idx {
+        if chars.next().is_none() {
+            // SAFETY: abort is always safe.
+            unsafe { hew_string_abort_index_oob() };
+        }
+    }
+    let take_n = end_idx - start_idx;
+    let mut buf = String::new();
+    for _ in 0..take_n {
+        let Some(ch) = chars.next() else {
+            // SAFETY: abort is always safe.
+            unsafe { hew_string_abort_index_oob() };
+        };
+        buf.push(ch);
+    }
+    let bytes = buf.as_bytes();
+    // SAFETY: bytes points to valid UTF-8 (built from `char` pushes) with
+    // known length. malloc_cstring NUL-terminates a fresh allocation —
+    // disjoint from the input pointer.
+    unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
 }
 
 #[cfg(test)]
@@ -1794,5 +1937,171 @@ mod tests {
         // SAFETY: v is a valid HewVec.
         unsafe { crate::vec::hew_vec_free(v) };
         assert_eq!(result, "a,b,c");
+    }
+
+    // ------------------------------------------------------------------
+    // W3 collections-sugar S2 — hew_string_index /
+    // hew_string_slice_codepoints tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn string_index_ascii() {
+        let s = CString::new("hello").unwrap();
+        // SAFETY: s is a valid NUL-terminated C string; index in bounds.
+        assert_eq!(unsafe { hew_string_index(s.as_ptr(), 0) }, i32::from(b'h'));
+        // SAFETY: s is a valid NUL-terminated C string; index in bounds.
+        assert_eq!(unsafe { hew_string_index(s.as_ptr(), 4) }, i32::from(b'o'));
+    }
+
+    #[test]
+    fn string_index_multibyte() {
+        // "héllo" has codepoint sequence: h, é (U+00E9), l, l, o.
+        let s = CString::new("héllo").unwrap();
+        // SAFETY: s is a valid NUL-terminated C string; index in bounds.
+        assert_eq!(unsafe { hew_string_index(s.as_ptr(), 0) }, i32::from(b'h'));
+        // SAFETY: s is a valid NUL-terminated C string; index in bounds.
+        assert_eq!(unsafe { hew_string_index(s.as_ptr(), 1) }, 0x00E9);
+        // SAFETY: s is a valid NUL-terminated C string; index in bounds.
+        assert_eq!(unsafe { hew_string_index(s.as_ptr(), 4) }, i32::from(b'o'));
+    }
+
+    #[test]
+    fn string_slice_ascii_fresh_alloc() {
+        // Drop-safety: the returned pointer must be a fresh allocation,
+        // disjoint from the input. We free the input first, then read
+        // the slice — if the slice borrowed from the input this would
+        // be use-after-free.
+        // SAFETY: requesting 6 bytes from malloc.
+        let input = unsafe { libc::malloc(6) }.cast::<c_char>();
+        // SAFETY: input is a fresh 6-byte allocation; source is 6 bytes
+        // including the trailing NUL.
+        unsafe {
+            libc::memcpy(input.cast(), c"hello".as_ptr().cast(), 6);
+        }
+        // SAFETY: input is a valid NUL-terminated C string per the memcpy.
+        let slice = unsafe { hew_string_slice_codepoints(input, 1, 4) };
+        assert!(!slice.is_null());
+        assert_ne!(slice as usize, input as usize);
+        // SAFETY: input was malloc'd above.
+        unsafe { libc::free(input.cast()) };
+        // After freeing the input, slice is still valid.
+        // SAFETY: read_and_free takes ownership of the malloc'd slice.
+        assert_eq!(unsafe { read_and_free(slice) }, "ell");
+    }
+
+    #[test]
+    fn string_slice_multibyte_codepoints() {
+        let s = CString::new("héllo").unwrap();
+        // SAFETY: s is a valid NUL-terminated C string; bounds in range.
+        let slice = unsafe { hew_string_slice_codepoints(s.as_ptr(), 1, 4) };
+        // SAFETY: read_and_free takes ownership of the malloc'd slice.
+        assert_eq!(unsafe { read_and_free(slice) }, "éll");
+    }
+
+    #[test]
+    fn string_slice_full_range() {
+        let s = CString::new("héllo").unwrap();
+        // SAFETY: s is a valid NUL-terminated C string; bounds in range.
+        let slice = unsafe { hew_string_slice_codepoints(s.as_ptr(), 0, 5) };
+        // SAFETY: read_and_free takes ownership of the malloc'd slice.
+        assert_eq!(unsafe { read_and_free(slice) }, "héllo");
+    }
+
+    #[test]
+    fn string_slice_empty() {
+        let s = CString::new("héllo").unwrap();
+        // SAFETY: s is a valid NUL-terminated C string; bounds in range.
+        let slice = unsafe { hew_string_slice_codepoints(s.as_ptr(), 2, 2) };
+        // SAFETY: read_and_free takes ownership of the malloc'd slice.
+        assert_eq!(unsafe { read_and_free(slice) }, "");
+    }
+
+    // Subprocess-spawning abort tests (mirrors the pattern in bytes.rs).
+    // Each parent test spawns the in-process helper `string_abort_helper`
+    // with the case name in HEW_STRING_ABORT_CASE; the helper triggers
+    // the matching `libc::abort()`-on-OOB path. Parent asserts child
+    // exited non-zero.
+
+    #[test]
+    fn string_index_oob_aborts() {
+        run_aborting_subprocess("string_index_oob_aborts");
+    }
+
+    #[test]
+    fn string_index_negative_aborts() {
+        run_aborting_subprocess("string_index_negative_aborts");
+    }
+
+    #[test]
+    fn string_index_null_aborts() {
+        run_aborting_subprocess("string_index_null_aborts");
+    }
+
+    #[test]
+    fn string_slice_oob_aborts() {
+        run_aborting_subprocess("string_slice_oob_aborts");
+    }
+
+    #[test]
+    fn string_slice_inverted_aborts() {
+        run_aborting_subprocess("string_slice_inverted_aborts");
+    }
+
+    #[test]
+    fn string_slice_negative_aborts() {
+        run_aborting_subprocess("string_slice_negative_aborts");
+    }
+
+    fn run_aborting_subprocess(case: &str) {
+        let exe = std::env::current_exe().expect("current_exe");
+        let status = std::process::Command::new(exe)
+            .args([
+                "--quiet",
+                "--exact",
+                "--nocapture",
+                "string::tests::string_abort_helper",
+            ])
+            .env("HEW_STRING_ABORT_CASE", case)
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("spawn");
+        assert!(!status.success(), "child did not abort");
+    }
+
+    #[test]
+    fn string_abort_helper() {
+        let Ok(case) = std::env::var("HEW_STRING_ABORT_CASE") else {
+            return;
+        };
+        let s = CString::new("héllo").unwrap();
+        match case.as_str() {
+            "string_index_oob_aborts" => {
+                // SAFETY: s is a valid C string; intentional OOB triggers abort.
+                let _ = unsafe { hew_string_index(s.as_ptr(), 5) };
+            }
+            "string_index_negative_aborts" => {
+                // SAFETY: s is a valid C string; negative index triggers abort.
+                let _ = unsafe { hew_string_index(s.as_ptr(), -1) };
+            }
+            "string_index_null_aborts" => {
+                // SAFETY: null pointer triggers abort (by design).
+                let _ = unsafe { hew_string_index(core::ptr::null(), 0) };
+            }
+            "string_slice_oob_aborts" => {
+                // SAFETY: s is a valid C string; OOB end triggers abort.
+                let _ = unsafe { hew_string_slice_codepoints(s.as_ptr(), 0, 6) };
+            }
+            "string_slice_inverted_aborts" => {
+                // SAFETY: s is a valid C string; start>end triggers abort.
+                let _ = unsafe { hew_string_slice_codepoints(s.as_ptr(), 3, 1) };
+            }
+            "string_slice_negative_aborts" => {
+                // SAFETY: s is a valid C string; negative start triggers abort.
+                let _ = unsafe { hew_string_slice_codepoints(s.as_ptr(), -1, 2) };
+            }
+            other => panic!("unknown abort case: {other}"),
+        }
+        unreachable!("abort case {case} should have terminated the process");
     }
 }

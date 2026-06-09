@@ -1,3 +1,12 @@
+// The dump pass renders the `#[deprecated]` `CallTraitMethodStatic`
+// variant alongside the new `ResolvedImplCall`. Allowlist test on
+// construction sites is the structural enforcement.
+#![allow(
+    deprecated,
+    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
+              see hew-hir/tests/call_trait_method_static_creation_allowlist.rs"
+)]
+
 use std::fmt::Write as _;
 
 use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
@@ -735,6 +744,32 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
+        HirExprKind::ResolvedImplCall {
+            receiver,
+            impl_id,
+            method_name,
+            target_symbol,
+            type_args,
+            args,
+            ret_ty,
+        } => {
+            writeln!(
+                out,
+                "{pad}  resolved-impl-call impl_id={} {method_name} -> {target_symbol} [type_args={}] -> {}",
+                impl_id.0,
+                type_args
+                    .iter()
+                    .map(|pat| format!("{pat}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                ret_ty.user_facing()
+            )
+            .expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            for arg in args {
+                dump_expr(out, arg, indent + 4);
+            }
+        }
         HirExprKind::NumericMethod {
             receiver,
             arg,
@@ -885,6 +920,13 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::Unary { op, operand, .. } => {
             writeln!(out, "{pad}  unary {op:?}").expect("write to string");
             dump_expr(out, operand, indent + 4);
+        }
+        HirExprKind::TupleLiteral { elements } => {
+            writeln!(out, "{pad}  tuple literal ({} elements)", elements.len())
+                .expect("write to string");
+            for elem in elements {
+                dump_expr(out, elem, indent + 4);
+            }
         }
         HirExprKind::WhileLet {
             scrutinee,

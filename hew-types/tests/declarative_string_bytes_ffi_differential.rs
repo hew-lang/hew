@@ -107,7 +107,7 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
         output.errors
     );
     for symbol in [
-        "hew_vec_push_i32",
+        "hew_bytes_push",
         "hew_vec_pop_i32",
         "hew_vec_len",
         "hew_vec_get_i32",

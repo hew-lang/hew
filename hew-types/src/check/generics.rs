@@ -1020,6 +1020,18 @@ impl Checker {
                 .unwrap_or_default();
             let type_param_bounds =
                 self.collect_type_param_bounds(m.type_params.as_ref(), m.where_clause.as_ref());
+            // W3.042 S2-S4: propagate `requires_mutable_receiver` from the
+            // trait declaration's receiver parameter so the dyn-trait
+            // dispatch gate in `(Ty::TraitObject, _)` (and any other
+            // consumer that reads the substituted `FnSig`) sees the flag.
+            // The substituted `FnSig` is recorded on `DynMethodCall` and
+            // travels with the vtable slot resolution; without this the
+            // flag is permanently cleared at the trait-method-lookup
+            // boundary and the dyn dispatch gate cannot fire.
+            let requires_mutable_receiver = m
+                .params
+                .first()
+                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
             return Some(FnSig {
                 type_params,
                 type_param_bounds,
@@ -1027,6 +1039,7 @@ impl Checker {
                 params,
                 return_type,
                 is_pure: m.is_pure,
+                requires_mutable_receiver,
                 ..FnSig::default()
             });
         }
@@ -1141,6 +1154,17 @@ impl Checker {
             let type_param_bounds =
                 self.collect_type_param_bounds(m.type_params.as_ref(), m.where_clause.as_ref());
             // This trait directly declares the method — it IS the declaring trait.
+            // W3.042 S2-S4: propagate `requires_mutable_receiver` from the
+            // trait declaration's receiver parameter so the static-dispatch
+            // gate in `(Ty::Named, _)`'s generic-bound sub-arm can consult
+            // the substituted `trait_sig.requires_mutable_receiver` flag.
+            // Without this, `fn step(var self)` on the trait reaches the
+            // dispatch site with the flag cleared and the call site
+            // erroneously admits a `let`-bound receiver.
+            let requires_mutable_receiver = m
+                .params
+                .first()
+                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
             return Some((
                 trait_name.to_string(),
                 FnSig {
@@ -1150,6 +1174,7 @@ impl Checker {
                     params,
                     return_type,
                     is_pure: m.is_pure,
+                    requires_mutable_receiver,
                     ..FnSig::default()
                 },
             ));

@@ -525,20 +525,27 @@ pub unsafe extern "C" fn hew_bytes_eq(
     a_slice == b_slice
 }
 
-/// Convert a byte region to a NUL-terminated UTF-8 C string (lossy).
+/// Convert a `Bytes` value to a NUL-terminated UTF-8 C string (lossy).
+///
+/// This is the canonical `Bytes -> String` runtime conversion. It consumes
+/// the triple representation directly (single `BytesTriple` struct argument,
+/// `#[repr(C)]` — passes ABI-equivalently to the LLVM `{ptr, i32, i32}`
+/// struct that codegen materialises for a `bytes`-typed argument).
 ///
 /// Invalid UTF-8 sequences are replaced with U+FFFD. The returned pointer is
-/// allocated via `libc::malloc`; the caller must `libc::free` it.
+/// allocated via `libc::malloc`; the caller (typically the Hew string GC)
+/// must `libc::free` it.
 ///
 /// # Safety
 ///
-/// If `len > 0`, `ptr + offset` must be valid for `len` bytes.
+/// If `triple.len > 0`, `triple.ptr + triple.offset` must be valid for
+/// `triple.len` bytes. A null `ptr` is treated as the empty byte region.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_to_str(ptr: *const u8, offset: u32, len: u32) -> *const u8 {
-    if len == 0 || ptr.is_null() {
+pub unsafe extern "C" fn hew_bytes_to_string(triple: BytesTriple) -> *mut std::ffi::c_char {
+    if triple.len == 0 || triple.ptr.is_null() {
         // Return an empty NUL-terminated string.
         // SAFETY: Allocating 1 byte.
-        let out = unsafe { libc::malloc(1) }.cast::<u8>();
+        let out = unsafe { libc::malloc(1) }.cast::<std::ffi::c_char>();
         if out.is_null() {
             // SAFETY: abort is always safe.
             unsafe { libc::abort() };
@@ -549,19 +556,21 @@ pub unsafe extern "C" fn hew_bytes_to_str(ptr: *const u8, offset: u32, len: u32)
     }
 
     // SAFETY: ptr + offset is valid for len bytes per caller contract.
-    let data = unsafe { std::slice::from_raw_parts(ptr.add(offset as usize), len as usize) };
+    let data = unsafe {
+        std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
+    };
     let s = String::from_utf8_lossy(data);
     let bytes = s.as_bytes();
     let alloc_size = bytes.len() + 1; // +1 for NUL
                                       // SAFETY: alloc_size > 0.
-    let out = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
+    let out = unsafe { libc::malloc(alloc_size) }.cast::<std::ffi::c_char>();
     if out.is_null() {
         // SAFETY: abort is always safe.
         unsafe { libc::abort() };
     }
     // SAFETY: out is freshly allocated with alloc_size bytes; bytes.len() < alloc_size.
     unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), bytes.len());
         *out.add(bytes.len()) = 0; // NUL terminator
     }
     out
@@ -619,35 +628,184 @@ pub unsafe extern "C" fn hew_bytes_from_str(str_ptr: *const u8) -> BytesTriple {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+// W4.039 — the wasm-gated Vec-backed `hew_bytes_to_string` was deleted
+// when `hew_bytes_to_string` was canonicalised onto the `BytesTriple`
+// ABI (single `#[repr(C)] BytesTriple` argument). The canonical
+// definition above is target-agnostic; no wasm-specific override is
+// needed.
+
+// ---------------------------------------------------------------------------
+// W3 collections-sugar S2 — fail-closed byte indexing / slicing
+// ---------------------------------------------------------------------------
+//
+// These two runtime entries back the compiler-emitted `b[i]` and `b[a..b]`
+// sugar (Q-CS2 locked semantics):
+//
+// - `b[i]`    -> `u8` at byte offset, O(1), abort on OOB.
+// - `b[a..b]` -> `bytes` slice (refcount bump on shared buffer), O(1),
+//   abort on invalid bounds.
+//
+// LESSONS: boundary-fail-closed (P0) — no sentinel byte, no empty-slice
+// clamp. Codegen will pass the receiver as a `BytesTriple` (ptr/offset/len)
+// and the integer endpoints as i64.
+
+/// Abort with a bytes-indexing panic message (OOB / invalid bounds).
+///
+/// # Safety
+///
+/// Always aborts — safe to call from any context.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_to_string(
-    vec: *mut crate::vec::HewVec,
-) -> *mut std::ffi::c_char {
-    if vec.is_null() {
-        return crate::cabi::str_to_malloc("");
+pub unsafe extern "C" fn hew_bytes_abort_index_oob() -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        let msg = b"PANIC: bytes index/slice out of bounds\n";
+        #[cfg(not(target_os = "windows"))]
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+        #[cfg(target_os = "windows")]
+        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
+        libc::abort();
     }
-    // SAFETY: caller guarantees `vec` is a valid HewVec pointer.
-    let len = unsafe { crate::vec::hew_vec_len(vec) };
-    #[expect(clippy::cast_sign_loss, reason = "vec len is always non-negative")]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "vec len fits in usize on all platforms"
-    )]
-    let mut bytes = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        // SAFETY: i < len, so index is in bounds.
-        let val = unsafe { crate::vec::hew_vec_get_i32(vec, i) };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "byte values fit in u8"
-        )]
-        bytes.push(val as u8);
+}
+
+/// Abort with a bytes offset-arithmetic-overflow panic message.
+///
+/// Used by `hew_bytes_index` / `hew_bytes_slice` when `offset + N`
+/// would wrap past `u32::MAX`. A wrapped offset would silently shift
+/// the active region pointer (`offset` -> `ptr + offset_usize`) to a
+/// wrong place inside the underlying allocation — a memory-safety
+/// hazard. Fail closed (LESSONS row P0:49 boundary-fail-closed).
+///
+/// # Safety
+///
+/// Always aborts — safe to call from any context.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_abort_offset_overflow() -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        let msg = b"PANIC: bytes slice/index offset arithmetic overflow (u32)\n";
+        #[cfg(not(target_os = "windows"))]
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+        #[cfg(target_os = "windows")]
+        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
+        libc::abort();
     }
-    bytes.retain(|&b| b != 0);
-    // SAFETY: bytes.as_ptr() is valid for bytes.len() bytes.
-    unsafe { crate::cabi::malloc_cstring(bytes.as_ptr(), bytes.len()) }
+}
+
+/// Return the byte at byte offset `index` in the bytes value
+/// `(ptr, offset, len)`.
+///
+/// Semantics (Q-CS2):
+/// - O(1) load.
+/// - Aborts if `index < 0` or `index >= len`. No sentinel return value.
+/// - A null `ptr` is only valid when `len == 0`, in which case any index
+///   is OOB and aborts.
+///
+/// # Safety
+///
+/// `(ptr, offset, len)` must be a valid `BytesTriple` representation: either
+/// `ptr` is null and `len == 0`, or `ptr` points to a `hew_bytes_*`
+/// allocation whose active region `[offset, offset+len)` is in bounds.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "index is bounds-checked >= 0 before cast to u32"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "index is bounds-checked < len (u32) before cast"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_index(ptr: *mut u8, offset: u32, len: u32, index: i64) -> u8 {
+    if index < 0 || index >= i64::from(len) || ptr.is_null() {
+        // SAFETY: abort is always safe.
+        unsafe { hew_bytes_abort_index_oob() };
+    }
+    let idx = index as u32;
+    // Checked `offset + idx`: a triple constructed via `hew_bytes_slice`
+    // on a buffer near `u32::MAX` capacity (or a malformed externally-
+    // supplied triple) could overflow here. In `--release` Rust does
+    // NOT panic on `+` overflow — it wraps — which would silently shift
+    // the read pointer to a wrong place in the allocation. Abort
+    // explicitly (boundary-fail-closed, LESSONS P0:49).
+    let Some(byte_off) = offset.checked_add(idx) else {
+        // SAFETY: abort is always safe.
+        unsafe { hew_bytes_abort_offset_overflow() };
+    };
+    // SAFETY: ptr is non-null and byte_off < offset+len <= allocation
+    // capacity per caller contract; the checked_add above proved the
+    // u32 add did not wrap.
+    let read_at = unsafe { ptr.add(byte_off as usize) };
+    // SAFETY: read_at is within the buffer per the bounds check above.
+    unsafe { *read_at }
+}
+
+/// Slice the bytes value `(ptr, offset, len)` by byte range `[start, end)`.
+///
+/// Semantics (Q-CS2):
+/// - O(1): no copy. The returned `BytesTriple` shares the same allocation,
+///   with `offset` advanced by `start` and `len` set to `end - start`.
+/// - Increments the underlying refcount when the result is non-empty so the
+///   shared allocation survives independently of the input handle (drop
+///   safety: caller of the slice releases their reference via
+///   `hew_bytes_drop` on `result.ptr`).
+/// - Aborts if `start < 0`, `end < 0`, `start > end`, or `end > len`.
+///
+/// # Safety
+///
+/// `(ptr, offset, len)` must be a valid `BytesTriple` representation as for
+/// [`hew_bytes_index`].
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "start and end are bounds-checked >= 0 before cast to u32"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "start and end are bounds-checked <= len (u32) before cast"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_slice(
+    ptr: *mut u8,
+    offset: u32,
+    len: u32,
+    start: i64,
+    end: i64,
+) -> BytesTriple {
+    if start < 0 || end < 0 || start > end || end > i64::from(len) {
+        // SAFETY: abort is always safe.
+        unsafe { hew_bytes_abort_index_oob() };
+    }
+    let s = start as u32;
+    let e = end as u32;
+    let new_len = e - s;
+    if new_len == 0 {
+        // Empty slice — represent as a null/0/0 triple so drop is a no-op
+        // and we do not retain a reference to the underlying buffer.
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+    }
+    // Non-empty slice shares the underlying allocation.
+    // Compute the new offset FIRST so a checked-add failure aborts
+    // BEFORE the refcount bump (no leak on the overflow path; release
+    // mode would otherwise wrap silently and produce a triple pointing
+    // at the wrong place in the allocation — boundary-fail-closed
+    // LESSONS P0:49).
+    let Some(new_offset) = offset.checked_add(s) else {
+        // SAFETY: abort is always safe.
+        unsafe { hew_bytes_abort_offset_overflow() };
+    };
+    // Bump the refcount so the slice owner can independently drop
+    // their handle (drop-safety triad: sync/async-cancel/actor-
+    // shutdown all release exactly once).
+    // SAFETY: ptr is non-null (len > 0 above means ptr was non-null per
+    // the bounds check `end > i64::from(len)` plus `new_len > 0`).
+    unsafe { hew_bytes_clone_ref(ptr) };
+    BytesTriple {
+        ptr,
+        offset: new_offset,
+        len: new_len,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -848,10 +1006,14 @@ mod tests {
             let result = hew_bytes_from_str(std::ptr::null());
             assert!(result.ptr.is_null());
 
-            let s = hew_bytes_to_str(std::ptr::null(), 0, 0);
+            let s = hew_bytes_to_string(BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            });
             assert!(!s.is_null());
             assert_eq!(*s, 0);
-            libc::free(s as *mut _);
+            libc::free(s.cast::<libc::c_void>());
 
             assert!(hew_bytes_eq(std::ptr::null(), 0, 0, std::ptr::null(), 0, 0,));
         }
@@ -910,15 +1072,15 @@ mod tests {
         let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
 
         // SAFETY: triple.ptr + offset is valid for triple.len bytes.
-        let cstr = unsafe { hew_bytes_to_str(triple.ptr, triple.offset, triple.len) };
+        let cstr = unsafe { hew_bytes_to_string(triple) };
         assert!(!cstr.is_null());
 
         // SAFETY: cstr is a valid NUL-terminated C string.
-        let s = unsafe { std::ffi::CStr::from_ptr(cstr.cast()) };
+        let s = unsafe { std::ffi::CStr::from_ptr(cstr) };
         assert_eq!(s.to_str().unwrap(), "hello world");
 
         // SAFETY: cstr is a valid NUL-terminated string.
-        let round_trip = unsafe { hew_bytes_from_str(cstr) };
+        let round_trip = unsafe { hew_bytes_from_str(cstr.cast::<u8>()) };
         assert_eq!(round_trip.len, 11);
 
         // SAFETY: round_trip.ptr + offset is valid for round_trip.len bytes.
@@ -932,7 +1094,7 @@ mod tests {
 
         // SAFETY: All pointers are valid.
         unsafe {
-            libc::free(cstr as *mut _);
+            libc::free(cstr.cast::<libc::c_void>());
             hew_bytes_drop(triple.ptr);
             hew_bytes_drop(round_trip.ptr);
         }
@@ -966,5 +1128,254 @@ mod tests {
 
         // SAFETY: triple.ptr is valid.
         unsafe { hew_bytes_drop(triple.ptr) };
+    }
+
+    // ------------------------------------------------------------------
+    // W3 collections-sugar S2 — hew_bytes_index / hew_bytes_slice tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: every unsafe call is a direct FFI invocation with arguments \
+                  explicitly visible inline; documenting each block adds noise without value"
+    )]
+    fn bytes_index_in_range() {
+        let data = b"Hewlang";
+        let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
+        assert_eq!(
+            unsafe { hew_bytes_index(triple.ptr, triple.offset, triple.len, 0) },
+            b'H'
+        );
+        assert_eq!(
+            unsafe { hew_bytes_index(triple.ptr, triple.offset, triple.len, 6) },
+            b'g'
+        );
+        unsafe { hew_bytes_drop(triple.ptr) };
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_index_respects_offset() {
+        // Slice first, then index into the slice — confirms `offset` is honoured.
+        let data = b"abcdefgh";
+        let base = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
+        let slice = unsafe { hew_bytes_slice(base.ptr, base.offset, base.len, 2, 5) };
+        // slice covers "cde"; index 0 -> 'c', index 2 -> 'e'.
+        assert_eq!(slice.len, 3);
+        assert_eq!(slice.offset, base.offset + 2);
+        assert_eq!(
+            unsafe { hew_bytes_index(slice.ptr, slice.offset, slice.len, 0) },
+            b'c'
+        );
+        assert_eq!(
+            unsafe { hew_bytes_index(slice.ptr, slice.offset, slice.len, 2) },
+            b'e'
+        );
+        unsafe { hew_bytes_drop(slice.ptr) };
+        unsafe { hew_bytes_drop(base.ptr) };
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_slice_bumps_refcount_and_outlives_input() {
+        // Drop-safety: build a heap-owned `bytes`, slice it, drop the original,
+        // then read through the slice. The slice must remain valid.
+        let triple = unsafe { hew_bytes_from_static(b"abcdef".as_ptr(), 6) };
+        let slice = unsafe { hew_bytes_slice(triple.ptr, triple.offset, triple.len, 1, 4) };
+        // After slicing a 3-byte region, refcount on the shared buffer must be 2.
+        unsafe {
+            assert_eq!(refcount(triple.ptr).load(Ordering::Relaxed), 2);
+        }
+        unsafe { hew_bytes_drop(triple.ptr) };
+        // The slice still points at "bcd".
+        unsafe {
+            assert_eq!(refcount(slice.ptr).load(Ordering::Relaxed), 1);
+        }
+        assert_eq!(slice.len, 3);
+        assert_eq!(
+            unsafe { hew_bytes_index(slice.ptr, slice.offset, slice.len, 0) },
+            b'b'
+        );
+        assert_eq!(
+            unsafe { hew_bytes_index(slice.ptr, slice.offset, slice.len, 2) },
+            b'd'
+        );
+        unsafe { hew_bytes_drop(slice.ptr) };
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_slice_empty_returns_null_triple() {
+        let triple = unsafe { hew_bytes_from_static(b"abc".as_ptr(), 3) };
+        let empty = unsafe { hew_bytes_slice(triple.ptr, triple.offset, triple.len, 1, 1) };
+        assert!(empty.ptr.is_null());
+        assert_eq!(empty.len, 0);
+        // Refcount on the original must NOT have been bumped for an empty slice.
+        unsafe {
+            assert_eq!(refcount(triple.ptr).load(Ordering::Relaxed), 1);
+        }
+        unsafe { hew_bytes_drop(triple.ptr) };
+    }
+
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
+    )]
+    fn bytes_slice_full_range_clones() {
+        // start == 0, end == len: shares the buffer, refcount = 2.
+        let triple = unsafe { hew_bytes_from_static(b"xyz".as_ptr(), 3) };
+        let full = unsafe { hew_bytes_slice(triple.ptr, triple.offset, triple.len, 0, 3) };
+        assert_eq!(full.len, 3);
+        assert_eq!(full.offset, triple.offset);
+        unsafe {
+            assert_eq!(refcount(triple.ptr).load(Ordering::Relaxed), 2);
+        }
+        unsafe { hew_bytes_drop(full.ptr) };
+        unsafe { hew_bytes_drop(triple.ptr) };
+    }
+
+    #[test]
+    fn bytes_index_oob_aborts() {
+        run_aborting_subprocess("bytes_index_oob_aborts");
+    }
+
+    #[test]
+    fn bytes_index_negative_aborts() {
+        run_aborting_subprocess("bytes_index_negative_aborts");
+    }
+
+    #[test]
+    fn bytes_slice_oob_aborts() {
+        run_aborting_subprocess("bytes_slice_oob_aborts");
+    }
+
+    #[test]
+    fn bytes_slice_inverted_aborts() {
+        run_aborting_subprocess("bytes_slice_inverted_aborts");
+    }
+
+    // Offset-arithmetic overflow guards.  A malformed (or hostile)
+    // `BytesTriple` with `offset` near `u32::MAX` could wrap when
+    // `offset + start` (slice) or `offset + idx` (index) is computed.
+    // In release mode Rust does NOT panic on `+` overflow — the wrap
+    // would silently mis-point at the wrong place in the underlying
+    // allocation. The new `hew_bytes_abort_offset_overflow` path
+    // catches it; these tests exercise the abort.
+    #[test]
+    fn bytes_index_offset_overflow_aborts() {
+        run_aborting_subprocess("bytes_index_offset_overflow_aborts");
+    }
+
+    #[test]
+    fn bytes_slice_offset_overflow_aborts() {
+        run_aborting_subprocess("bytes_slice_offset_overflow_aborts");
+    }
+
+    // Spawn ourself with HEW_BYTES_ABORT_CASE set; the matching env-driven
+    // test below runs the FFI call that aborts. The parent test asserts
+    // (via `should_panic`) that the child exited non-zero (i.e. aborted).
+    fn run_aborting_subprocess(case: &str) {
+        let exe = std::env::current_exe().expect("current_exe");
+        let status = std::process::Command::new(exe)
+            .args([
+                "--quiet",
+                "--exact",
+                "--nocapture",
+                "bytes::tests::bytes_abort_helper",
+            ])
+            .env("HEW_BYTES_ABORT_CASE", case)
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("spawn");
+        // If the child aborted, status.success() is false — the test passes
+        // by NOT panicking here. If the child returned cleanly, we panic so
+        // the `should_panic` parent test fails loudly.
+        assert!(!status.success(), "child did not abort");
+    }
+
+    /// In-process helper: when invoked with `HEW_BYTES_ABORT_CASE` set,
+    /// trigger the corresponding aborting FFI call. Without the env var,
+    /// this test is a no-op (so plain `cargo test` runs the parent tests
+    /// which then spawn this helper).
+    #[test]
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test helper: every unsafe call is an FFI invocation that intentionally \
+                  aborts the process; the abort path is the documented behaviour under test"
+    )]
+    fn bytes_abort_helper() {
+        let Ok(case) = std::env::var("HEW_BYTES_ABORT_CASE") else {
+            return;
+        };
+        let triple = unsafe { hew_bytes_from_static(b"abc".as_ptr(), 3) };
+        match case.as_str() {
+            "bytes_index_oob_aborts" => unsafe {
+                let _ = hew_bytes_index(triple.ptr, triple.offset, triple.len, 3);
+            },
+            "bytes_index_negative_aborts" => unsafe {
+                let _ = hew_bytes_index(triple.ptr, triple.offset, triple.len, -1);
+            },
+            "bytes_slice_oob_aborts" => unsafe {
+                let _ = hew_bytes_slice(triple.ptr, triple.offset, triple.len, 0, 4);
+            },
+            "bytes_slice_inverted_aborts" => unsafe {
+                let _ = hew_bytes_slice(triple.ptr, triple.offset, triple.len, 2, 1);
+            },
+            // Construct a synthetic triple with `offset` near u32::MAX.
+            // We do NOT dereference the resulting "ptr" — both abort
+            // paths trip on the checked-add BEFORE any pointer read.
+            // The triple's `ptr` is the real heap allocation; the
+            // `offset` field is a forged near-max value (the kind of
+            // value a long chain of slice operations on a buffer at
+            // capacity could converge on, or that a malformed
+            // externally-supplied triple could carry).
+            "bytes_index_offset_overflow_aborts" => unsafe {
+                // offset = u32::MAX - 4, len = 5. Indexing past 0 will
+                // exercise `offset + idx`. Specifically idx=4 makes
+                // `offset + 4 = u32::MAX`, which does not overflow;
+                // idx=5 would be OOB (caught first); so we need offset
+                // such that `offset + idx` overflows BEFORE the OOB
+                // check fires. Set offset = u32::MAX, len = 1: idx in
+                // [0,1) means idx=0; `u32::MAX + 0` is fine. Need
+                // index >= 1 to trigger overflow — but the OOB check
+                // fires first. Use a higher `len` so the OOB check
+                // passes but the add overflows:
+                //   offset = u32::MAX - 2, len = 5
+                //   valid index in [0,5); idx=3 -> u32::MAX+1 wraps.
+                let bad_triple = BytesTriple {
+                    ptr: triple.ptr,
+                    offset: u32::MAX - 2,
+                    len: 5,
+                };
+                let _ = hew_bytes_index(bad_triple.ptr, bad_triple.offset, bad_triple.len, 3);
+            },
+            "bytes_slice_offset_overflow_aborts" => unsafe {
+                // offset = u32::MAX - 2, len = 10. Slice [0..10) is in
+                // range w.r.t. `end > len`; `offset + 3` then wraps.
+                // We use start=3, end=10 so the bounds check passes
+                // (start<=end, end<=len) before the checked add fires.
+                let bad_triple = BytesTriple {
+                    ptr: triple.ptr,
+                    offset: u32::MAX - 2,
+                    len: 10,
+                };
+                let _ = hew_bytes_slice(bad_triple.ptr, bad_triple.offset, bad_triple.len, 3, 10);
+            },
+            other => panic!("unknown abort case: {other}"),
+        }
+        // Unreachable on the abort-paths.
+        unreachable!("abort case {case} should have terminated the process");
     }
 }

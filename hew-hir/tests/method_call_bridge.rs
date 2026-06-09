@@ -7,6 +7,15 @@
 //!      diagnostic and no silently-wrong HIR.
 //!   3. A `RewriteToFunction` entry for a non-Unit-returning method (e.g. `len`)
 //!      preserves the return type from the checker's `expr_types` table.
+//!
+//! Post-W4.001 Stage C3 (DI-017): `HashMap` / `HashSet` method calls are no longer
+//! covered by `method_call_rewrites`; they flow through the parallel
+//! `resolved_calls` channel as `HirExprKind::ResolvedImplCall`. The bridge
+//! tests below intentionally exercise non-collection methods (Duplex, string)
+//! that still use the legacy rewrite path. The `_fails_closed` test asserts
+//! the boundary-violation contract — `MethodCallNoRewrite` after Stage C3 is
+//! a fail-closed compiler-bug signal, not a user-reachable diagnostic for
+//! `HashMap`/`HashSet` (those now surface as `BoundsNotSatisfied` at the checker).
 
 use hew_hir::{lower_program, HirDiagnosticKind, HirExprKind, HirStmtKind, ResolutionCtx};
 use hew_types::module_registry::ModuleRegistry;

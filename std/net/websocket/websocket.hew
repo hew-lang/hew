@@ -39,6 +39,7 @@ import std::fs;
 ///
 /// Created by calling `websocket.connect(url)`. Use `send_text()` to
 /// send messages and `recv()` to receive them.
+#[opaque]
 type Conn {
 }
 
@@ -53,13 +54,13 @@ type Message {
 /// Methods available on a WebSocket `Conn`.
 trait ConnMethods {
     /// Send a text message over the connection. Return 0 on success.
-    fn send_text(conn: Conn, msg: string) -> i64;
+    fn send_text(self, msg: string) -> i64;
 
     /// Send a text message over the connection.
-    fn try_send_text(conn: Conn, msg: string) -> Result<(), fs.IoError>;
+    fn try_send_text(self, msg: string) -> Result<(), fs.IoError>;
 
     /// Block until a message is received and return it.
-    fn recv(conn: Conn) -> Message;
+    fn recv(self) -> Message;
 
     /// Receive a message with a per-call deadline.
     ///
@@ -67,10 +68,10 @@ trait ConnMethods {
     /// Returns `Err(IoError::TimedOut(0))` on deadline expiry. On other
     /// failures returns `Err(IoError::Other(0))` (WebSocket errors carry
     /// no OS errno channel).
-    fn recv_timeout(conn: Conn, deadline_ms: i64) -> Result<Message, fs.IoError>;
+    fn recv_timeout(self, deadline_ms: i64) -> Result<Message, fs.IoError>;
 
     /// Close the WebSocket connection.
-    fn close(conn: Conn);
+    fn close(self);
 
     /// Attach this connection to an actor (Erlang-style active mode).
     /// The runtime reads frames in a background thread and delivers
@@ -81,7 +82,7 @@ trait ConnMethods {
     /// `handler` is the actor that will receive on_message and on_close.
     /// `on_message_type` is the msg_type index for the on_message receive fn.
     /// `on_close_type` is the msg_type index for the on_close receive fn.
-    fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64);
+    fn attach(self, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64);
 }
 
 impl ConnMethods for Conn {
@@ -139,12 +140,12 @@ impl ConnMethods for Conn {
 /// Methods available on a WebSocket `Message`.
 trait MessageMethods {
     /// Get the message type (0=text, 1=binary, 2=ping, 3=pong, 4=close, -1=error).
-    fn msg_type(msg: Message) -> i32; // INTERNAL-ABI: opaque frame-type enum; planned enum migration
+    fn msg_type(self) -> i32; // INTERNAL-ABI: opaque frame-type enum; planned enum migration
     /// Extract the text content of a text message.
-    fn text(msg: Message) -> string;
+    fn text(self) -> string;
 
     /// Release the message resources.
-    fn free(msg: Message);
+    fn free(self);
 }
 
 impl MessageMethods for Message {
@@ -171,6 +172,7 @@ impl MessageMethods for Message {
 ///
 /// Created by calling `websocket.listen(addr)`. Use `accept()` to wait
 /// for the next client connection.
+#[opaque]
 type Server {
 }
 
@@ -178,13 +180,13 @@ type Server {
 trait ServerMethods {
     /// Accept the next WebSocket connection. Blocks until a client
     /// connects and completes the handshake.
-    fn accept(server: Server) -> Conn;
+    fn accept(self) -> Conn;
 
     /// Get the port the server is listening on.
-    fn port(server: Server) -> i64;
+    fn port(self) -> i64;
 
     /// Close the server and stop listening.
-    fn close(server: Server);
+    fn close(self);
 }
 
 impl ServerMethods for Server {

@@ -41,8 +41,10 @@ fn layout_key_hashmap_methods_dual_emit_resolved_calls() {
         output.errors
     );
 
+    // Stage C3 cutover: dual-emit is retired. The legacy `method_call_rewrites` channel no longer
+    // receives HashMap runtime symbols; authority lives entirely in `resolved_calls`.
     let symbols = rewrite_symbols(&output);
-    for symbol in [
+    for legacy in [
         "hew_hashmap_insert_layout",
         "hew_hashmap_get_layout",
         "hew_hashmap_contains_key_layout",
@@ -50,15 +52,15 @@ fn layout_key_hashmap_methods_dual_emit_resolved_calls() {
         "hew_hashmap_len_layout",
     ] {
         assert!(
-            symbols.contains(symbol),
-            "expected legacy MethodCallRewrite symbol {symbol}; got {symbols:#?}",
+            !symbols.contains(legacy),
+            "Stage C3: legacy MethodCallRewrite symbol {legacy} must no longer be emitted; got {symbols:#?}",
         );
     }
 
     assert_eq!(
         output.resolved_calls.len(),
         5,
-        "every legacy-green HashMap runtime rewrite should have a parallel ResolvedCall: {:#?}",
+        "every HashMap method call site should produce a ResolvedCall: {:#?}",
         output.resolved_calls
     );
 
@@ -94,12 +96,13 @@ fn layout_key_hashmap_methods_dual_emit_resolved_calls() {
         );
         assert!(
             !call.target.consumes_receiver,
-            "legacy HashMap runtime methods do not consume the receiver"
+            "HashMap runtime methods do not consume the receiver"
         );
     }
 }
 
 #[test]
+#[ignore = "W4.001 Stage C3: legacy per-K allowlist retired; HashMap<i64,i64> is now admitted (i64 impls Hash+Eq) via the resolver authority path."]
 fn unsupported_i64_key_hashmap_stays_checker_rejected_and_unresolved() {
     let output = typecheck(
         r"

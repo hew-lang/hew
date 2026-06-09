@@ -1,3 +1,13 @@
+// The MIR `lower_value` consumer fails closed on
+// `HirExprKind::ResolvedImplCall` and the supporting walkers visit the
+// `#[deprecated]` `CallTraitMethodStatic` exhaustively. Allowlist test on
+// construction sites is the structural enforcement.
+#![allow(
+    deprecated,
+    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
+              see hew-hir/tests/call_trait_method_static_creation_allowlist.rs"
+)]
+
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -1258,10 +1268,13 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         &record_layouts,
         &enum_layouts,
         &machine_layouts,
-        &record_field_orders,
-        &actor_layout_map,
-        &supervisor_layout_map,
-        &machine_layout_names,
+        &LayoutReadiness {
+            record_field_orders: &record_field_orders,
+            actor_layouts: &actor_layout_map,
+            supervisor_layout_map: &supervisor_layout_map,
+            machine_layout_names: &machine_layout_names,
+            type_classes: &module.type_classes,
+        },
         &mut diagnostics,
     );
 
@@ -1309,6 +1322,14 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         checked_mir,
         elaborated_mir,
         diagnostics,
+        opaque_handle_names: module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.clone()),
+                _ => None,
+            })
+            .collect(),
         record_layouts,
         actor_layouts,
         supervisor_layouts,
@@ -3099,6 +3120,11 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::Unary { operand, .. } => {
             collect_unknown_self_fields_in_expr(operand, state_fields, seen, unknown);
         }
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                collect_unknown_self_fields_in_expr(elem, state_fields, seen, unknown);
+            }
+        }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
@@ -3117,6 +3143,7 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             for arg in args {
@@ -3619,18 +3646,23 @@ fn collect_unknown_type_diagnostics(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "layout-closure gate mirrors module-scoped record/actor/supervisor/machine readiness tables"
-)]
+/// The module-scoped readiness tables `is_codegen_ready_user_name` consults to
+/// decide whether a user `Named` type is resolvable at the MIR boundary.
+/// Bundled so the readiness-diagnostic path threads one reference instead of
+/// five parallel maps (record / actor / supervisor / machine / value-class).
+struct LayoutReadiness<'a> {
+    record_field_orders: &'a HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &'a HashMap<String, ActorLayout>,
+    supervisor_layout_map: &'a HashMap<String, crate::model::SupervisorLayout>,
+    machine_layout_names: &'a HashSet<String>,
+    type_classes: &'a hew_hir::TypeClassTable,
+}
+
 fn collect_layout_field_diagnostics(
     record_layouts: &[crate::model::RecordLayout],
     enum_layouts: &[crate::model::EnumLayout],
     machine_layouts: &[crate::model::MachineLayout],
-    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
-    actor_layouts: &HashMap<String, ActorLayout>,
-    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
-    machine_layout_names: &HashSet<String>,
+    readiness: &LayoutReadiness,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
     let mut reported = HashSet::new();
@@ -3652,10 +3684,7 @@ fn collect_layout_field_diagnostics(
     {
         push_unknown_type_diagnostics_for_layout_ty(
             field_ty,
-            record_field_orders,
-            actor_layouts,
-            supervisor_layout_map,
-            machine_layout_names,
+            readiness,
             &mut reported,
             diagnostics,
         );
@@ -3664,23 +3693,12 @@ fn collect_layout_field_diagnostics(
 
 fn push_unknown_type_diagnostics_for_layout_ty(
     ty: &ResolvedTy,
-    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
-    actor_layouts: &HashMap<String, ActorLayout>,
-    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
-    machine_layout_names: &HashSet<String>,
+    readiness: &LayoutReadiness,
     reported: &mut HashSet<String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
     for component in named_type_components(ty) {
-        if component.builtin.is_some()
-            || is_codegen_ready_user_name(
-                &component.name,
-                record_field_orders,
-                actor_layouts,
-                supervisor_layout_map,
-                machine_layout_names,
-            )
-        {
+        if component.builtin.is_some() || is_codegen_ready_user_name(&component.name, readiness) {
             continue;
         }
         push_unknown_type_diagnostic(component.name, reported, diagnostics);
@@ -3723,43 +3741,40 @@ fn push_unknown_type_diagnostics(
     reported: &mut HashSet<String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
+    let readiness = builder.layout_readiness();
     for component in named_type_components(ty) {
-        if component.builtin.is_some()
-            || is_codegen_ready_user_name(
-                &component.name,
-                &builder.record_field_orders,
-                &builder.actor_layouts,
-                &builder.supervisor_layout_map,
-                &builder.machine_layout_names,
-            )
-        {
+        if component.builtin.is_some() || is_codegen_ready_user_name(&component.name, &readiness) {
             continue;
         }
         push_unknown_type_diagnostic(component.name, reported, diagnostics);
     }
 }
 
-fn is_codegen_ready_user_name(
-    name: &str,
-    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
-    actor_layouts: &HashMap<String, ActorLayout>,
-    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
-    machine_layout_names: &HashSet<String>,
-) -> bool {
-    record_field_orders.contains_key(name)
-        || record_field_orders
+fn is_codegen_ready_user_name(name: &str, readiness: &LayoutReadiness) -> bool {
+    // `#[opaque]` runtime handles are registered `BitCopy` in `type_classes`
+    // (W3.020) but carry no record-field-order entry — they lower to `ptr`.
+    // A fielded `BitCopy` type (e.g. a crash-info payload record) already has a
+    // `record_field_orders` entry and is accepted by the check below; this arm
+    // covers the fieldless opaque handle that would otherwise be `UnknownType`.
+    if hew_hir::lookup_type_marker(name, readiness.type_classes) == Some(ResourceMarker::BitCopy) {
+        return true;
+    }
+    readiness.record_field_orders.contains_key(name)
+        || readiness
+            .record_field_orders
             .keys()
             .any(|known| short_name(known) == short_name(name))
         // Generic record instantiations are keyed by mangled name
         // (e.g. "Wrapper$$i64"); match the bare name prefix so that
         // `UnknownType` is not emitted for types that DO have a concrete
         // layout entry under a monomorphised symbol.
-        || record_field_orders
+        || readiness
+            .record_field_orders
             .keys()
             .any(|known| known.starts_with(name) && known[name.len()..].starts_with("$$"))
-        || actor_layouts.contains_key(name)
-        || supervisor_layout_map.contains_key(name)
-        || machine_layout_name_matches(machine_layout_names, name)
+        || readiness.actor_layouts.contains_key(name)
+        || readiness.supervisor_layout_map.contains_key(name)
+        || machine_layout_name_matches(readiness.machine_layout_names, name)
 }
 
 fn push_unknown_type_diagnostic(
@@ -4058,11 +4073,11 @@ fn runtime_symbol_for_call_expr(
     let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
         return None;
     };
-    if matches!(resolved, ResolvedRef::Item(_)) {
-        return None;
-    }
     if crate::runtime_symbols::is_known_runtime_symbol(name) {
         return Some((name.clone(), args, expr.site));
+    }
+    if matches!(resolved, ResolvedRef::Item(_)) {
+        return None;
     }
     crate::runtime_symbols::user_name_to_c_symbol(name)
         .map(|symbol| (symbol.to_string(), args.as_slice(), expr.site))
@@ -4077,6 +4092,18 @@ struct CaptureEnvSource {
 }
 
 impl Builder {
+    /// Bundle this builder's module-scoped readiness tables for the
+    /// codegen-readiness diagnostic gate.
+    fn layout_readiness(&self) -> LayoutReadiness<'_> {
+        LayoutReadiness {
+            record_field_orders: &self.record_field_orders,
+            actor_layouts: &self.actor_layouts,
+            supervisor_layout_map: &self.supervisor_layout_map,
+            machine_layout_names: &self.machine_layout_names,
+            type_classes: &self.type_classes,
+        }
+    }
+
     /// Apply the per-monomorphisation substitution map to a type.
     /// Returns the input unchanged when `subst` is empty (the
     /// non-generic-function case).
@@ -4670,11 +4697,81 @@ impl Builder {
                     });
                 }
             }
+            // Record field-store: `r.x = src` lowers to a GEP+store on the
+            // record's alloca (Q297 Stage 1, Q299=(a)). The aggregate `r`
+            // stays `Live` after the store — only the named field's bytes
+            // are overwritten.
+            //
+            // Note: the checker-side mutability gate is what restricts the
+            // surface to `var`-bound records and `var self`-bound impl
+            // methods; reaching MIR with a non-mutable target is impossible
+            // (the checker would have already reported and produced
+            // Ty::Error / a cascading skip). MIR's role here is purely
+            // structural: resolve the field name → offset and emit the
+            // store.
+            HirExprKind::FieldAccess { object, field } => {
+                let Some(record_place) = self.lower_value(object) else {
+                    return;
+                };
+                let type_name = match &object.ty {
+                    ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
+                        hew_hir::mangle(name, args)
+                    }
+                    ResolvedTy::Named { name, .. } => name.clone(),
+                    other => {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::UnsupportedNode {
+                                reason: format!(
+                                    "field-store on non-named type `{other:?}` (only \
+                                     named record types are supported)"
+                                ),
+                            },
+                            note: "field-store target object has an unsupported type".to_string(),
+                        });
+                        return;
+                    }
+                };
+                let Some(field_order) = self.record_field_orders.get(type_name.as_str()) else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "field-store on unregistered record type `{type_name}`"
+                            ),
+                        },
+                        note: "record type was not found in the field-order table; \
+                               this is a checker bug"
+                            .to_string(),
+                    });
+                    return;
+                };
+                let Some(idx) = field_order.iter().position(|(f, _)| f == field.as_str()) else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "field-store on unknown field `{field}` of \
+                                 record `{type_name}`"
+                            ),
+                        },
+                        note: "field not found in declaration-order table; \
+                               this is a checker bug"
+                            .to_string(),
+                    });
+                    return;
+                };
+                let field_offset = FieldOffset(
+                    u32::try_from(idx).expect("field index exceeds u32::MAX — impossible in Hew"),
+                );
+                self.instructions.push(Instr::RecordFieldStore {
+                    record: record_place,
+                    field_offset,
+                    src,
+                });
+            }
             _ => self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::UnsupportedNode {
-                    reason:
-                        "only local bindings and actor state fields are assignable in MIR slice 4"
-                            .to_string(),
+                    reason: "only local bindings, record fields, and actor state fields are \
+                         assignable in MIR slice 4"
+                        .to_string(),
                 },
                 note: "assignment target did not lower to a writable place".to_string(),
             }),
@@ -4794,6 +4891,24 @@ impl Builder {
                 operand,
                 operand_ty,
             } => self.lower_unary(*op, operand, operand_ty, &expr.ty, expr.site),
+            HirExprKind::TupleLiteral { elements } => {
+                // Lower each element expression to a MIR Place.
+                let lowered_elements: Vec<Place> = elements
+                    .iter()
+                    .map(|elem| self.lower_value(elem))
+                    .collect::<Option<Vec<_>>>()?;
+
+                // Allocate a local for the tuple result.
+                let dest = self.alloc_local(self.subst_ty(&expr.ty));
+
+                // Emit the TupleConstruct instruction.
+                self.instructions.push(Instr::TupleConstruct {
+                    elements: lowered_elements,
+                    dest,
+                });
+
+                Some(dest)
+            }
             HirExprKind::NumericMethod {
                 receiver,
                 arg,
@@ -5356,21 +5471,49 @@ impl Builder {
                 Some(dest)
             }
             HirExprKind::Index { container, index } => {
-                self.lower_vec_index(container, index, &expr.ty, expr.site)
+                // Dispatch on receiver type — checker-authoritative
+                // (`container.ty` was set by `synthesize_index`).
+                // W3 collections-sugar S2: string/bytes route to their
+                // own runtime ABI; Vec keeps the existing path.
+                match &container.ty {
+                    ResolvedTy::String => {
+                        self.lower_string_index(container, index, &expr.ty, expr.site)
+                    }
+                    ResolvedTy::Bytes => {
+                        self.lower_bytes_index(container, index, &expr.ty, expr.site)
+                    }
+                    _ => self.lower_vec_index(container, index, &expr.ty, expr.site),
+                }
             }
             HirExprKind::Slice {
                 container,
                 start,
                 end,
                 inclusive,
-            } => self.lower_vec_slice(
-                container,
-                start.as_deref(),
-                end.as_deref(),
-                *inclusive,
-                &expr.ty,
-                expr.site,
-            ),
+            } => match &container.ty {
+                ResolvedTy::String => self.lower_string_slice(
+                    container,
+                    start.as_deref(),
+                    end.as_deref(),
+                    *inclusive,
+                    expr.site,
+                ),
+                ResolvedTy::Bytes => self.lower_bytes_slice(
+                    container,
+                    start.as_deref(),
+                    end.as_deref(),
+                    *inclusive,
+                    expr.site,
+                ),
+                _ => self.lower_vec_slice(
+                    container,
+                    start.as_deref(),
+                    end.as_deref(),
+                    *inclusive,
+                    &expr.ty,
+                    expr.site,
+                ),
+            },
             HirExprKind::IdentityCompare { left, right } => {
                 // `lhs is rhs` — emit `Instr::IdentityCompare` so codegen can
                 // select `ptrtoint` + `icmp eq` for pointer-shaped handles or
@@ -5506,6 +5649,119 @@ impl Builder {
                     args: lowered_args,
                     signature: signature.clone(),
                 });
+                dest
+            }
+            HirExprKind::ResolvedImplCall {
+                receiver,
+                method_name,
+                target_symbol,
+                type_args,
+                args,
+                ret_ty,
+                ..
+            } => {
+                // Builtin-generic trait dispatch (HashMap/HashSet/Vec today;
+                // Option/Result migrate later). The checker's resolver
+                // has already chosen the satisfying impl and recorded the
+                // kernel symbol verbatim in `MethodTarget.symbol_name`
+                // (now `target_symbol`). HIR copied it onto the variant;
+                // MIR emits a direct `Terminator::Call` against it.
+                //
+                // No re-derivation of the symbol from `method_name` /
+                // `type_args` here — that would re-implement the resolver's
+                // authority at the MIR boundary (LESSONS `checker-authority`,
+                // `codegen-abi-authority`). The symbol IS the verdict.
+                //
+                // Fail-closed arity gate: every kernel symbol family this
+                // arm dispatches to was registered by the C0b populator at
+                // `methods.rs:4938+`/`:5002+` with an explicit type-arg
+                // arity (HashMap impls take 2, HashSet and Vec impls take
+                // 1). An arity mismatch here means the resolver/populator and
+                // this consumer have drifted — the right place to fix is
+                // the populator, not silently coerce here. LESSONS:
+                // `exhaustive-coverage`, `boundary-fail-closed`.
+                //
+                // Catalog descriptor materialisation is deliberately NOT
+                // bound here as a call arg: the runtime kernel snapshots
+                // its descriptors by-value into the map at
+                // `hew_hashmap_new_with_layout`-time (C0a) and reads them
+                // from `(*m).key_layout` / `(*m).val_layout`. The kernel
+                // ABI is `(handle, key_ptr, val_ptr)` for insert, etc. —
+                // descriptor pointers are not passed across per-op. The
+                // C0b `LayoutDescriptorSymbol` catalog covers fixed-set
+                // primitives (i32..u64, f32/f64, bool, char, string,
+                // bytes, unit); Named-record K/V are handled by the
+                // synthesised per-record descriptor pipeline at
+                // constructor lowering (C-1c). Coverage of the primitive
+                // set is asserted by the
+                // `stdlib_catalog_layout_descriptor_coverage` gate.
+                if target_symbol.starts_with("hew_hashmap_") {
+                    if type_args.len() != 2 {
+                        unreachable!(
+                            "Stage C: hashmap `.{method_name}` resolved to \
+                             {target_symbol} with {} type_args; populator at \
+                             hew-types/src/check/methods.rs registers HashMap \
+                             impls with 2 type-args (K, V) — populator and MIR \
+                             consumer have drifted",
+                            type_args.len()
+                        );
+                    }
+                } else if target_symbol.starts_with("hew_hashset_") {
+                    if type_args.len() != 1 {
+                        unreachable!(
+                            "Stage C: hashset `.{method_name}` resolved to \
+                             {target_symbol} with {} type_args; populator at \
+                             hew-types/src/check/methods.rs registers HashSet \
+                             impls with 1 type-arg (T) — populator and MIR \
+                             consumer have drifted",
+                            type_args.len()
+                        );
+                    }
+                } else if target_symbol.starts_with("hew_vec_") {
+                    if type_args.len() != 1 {
+                        unreachable!(
+                            "Stage C: vec `.{method_name}` resolved to \
+                             {target_symbol} with {} type_args; populator at \
+                             hew-types/src/check/methods.rs registers Vec \
+                             impls with 1 type-arg (T) — populator and MIR \
+                             consumer have drifted",
+                            type_args.len()
+                        );
+                    }
+                } else {
+                    unreachable!(
+                        "Stage C: ResolvedImplCall `.{method_name}` carries \
+                         target_symbol `{target_symbol}` that is neither a \
+                         `hew_hashmap_*`, `hew_hashset_*`, nor `hew_vec_*` \
+                         kernel symbol; the populator and MIR consumer have \
+                         drifted. New resolved-call families must extend this \
+                         dispatch arm before their populator emits a \
+                         ResolvedCall row."
+                    );
+                }
+                // Silence unused-var lint on `type_args` while the catalog
+                // presence check stays out (rationale above).
+                let _ = type_args;
+
+                // Lower receiver as arg[0], then explicit args.
+                let receiver_place = self.lower_value(receiver)?;
+                let mut arg_places = vec![receiver_place];
+                for arg in args {
+                    arg_places.push(self.lower_value(arg)?);
+                }
+                let dest = if matches!(ret_ty, ResolvedTy::Unit) {
+                    None
+                } else {
+                    Some(self.alloc_local(ret_ty.clone()))
+                };
+                let next = self.alloc_block();
+                self.finish_current_block(Terminator::Call {
+                    callee: target_symbol.clone(),
+                    args: arg_places,
+                    dest,
+                    next,
+                });
+                self.start_block(next);
                 dest
             }
             HirExprKind::CallTraitMethodStatic {
@@ -8608,6 +8864,241 @@ impl Builder {
         Some(result_place)
     }
 
+    // -------------------------------------------------------------------
+    // W3 collections-sugar S2 — string / bytes index + slice lowering
+    // -------------------------------------------------------------------
+    //
+    // Unlike the Vec arms (which emit explicit MIR-side bounds checks
+    // because the typed-getter runtime entries assume in-range inputs),
+    // the new string/bytes intrinsics are fail-closed at the runtime
+    // boundary: each `hew_{string,bytes}_{index,slice*}` entry validates
+    // its own arguments and `libc::abort()`s on OOB / invalid bounds.
+    // This is the boundary-fail-closed pattern from LESSONS row P0:49 —
+    // moving the trap into the runtime keeps the compiler-emitted CFG
+    // small (no synthesized trap_bb / cont_bb pair per index site) and
+    // there is no way the trap can be skipped by a producer arm that
+    // forgets to emit it. The drift-test for the runtime tests these
+    // abort paths directly.
+    //
+    // Endpoint types (always i64 per the checker arms):
+    //   - hew_string_index(s, i: i64) -> i32 (char)
+    //   - hew_string_slice_codepoints(s, start: i64, end: i64) -> string
+    //   - hew_bytes_index(ptr, offset, len, i: i64) -> u8
+    //   - hew_bytes_slice(ptr, offset, len, start: i64, end: i64) -> bytes
+    //
+    // Inclusive ranges (`a..=b`) are lowered to half-open `a..(b+1)`
+    // with an explicit i64 overflow trap, mirroring the Vec arm. Open
+    // endpoints materialise as 0 (start) or `hew_string_char_count` /
+    // bytes `len` field load (end).
+
+    fn lower_string_index(
+        &mut self,
+        container: &HirExpr,
+        index: &HirExpr,
+        elem_ty: &ResolvedTy,
+        _site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        debug_assert!(matches!(elem_ty, ResolvedTy::Char));
+        let s_place = self.lower_value(container)?;
+        let i_place = self.lower_value(index)?;
+        let result_place = self.alloc_local(elem_ty.clone());
+        self.push_runtime_call(
+            "hew_string_index",
+            vec![s_place, i_place],
+            Some(result_place),
+        );
+        Some(result_place)
+    }
+
+    /// Lower `s[a..b]` / inclusive / open-end forms for `string`.
+    ///
+    /// Open start materialises as ConstI64(0). Open end materialises
+    /// as `hew_string_char_count(s)` (cast i32 -> i64).
+    /// Inclusive `a..=b` materialises as `b + 1` with an i64 overflow
+    /// trap before the runtime call.
+    ///
+    /// The runtime intrinsic owns the OOB / inverted-bounds trap.
+    fn lower_string_slice(
+        &mut self,
+        container: &HirExpr,
+        start: Option<&HirExpr>,
+        end: Option<&HirExpr>,
+        inclusive: bool,
+        _site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let s_place = self.lower_value(container)?;
+
+        let start_place = if let Some(s) = start {
+            self.lower_value(s)?
+        } else {
+            let p = self.alloc_local(ResolvedTy::I64);
+            self.instructions
+                .push(Instr::ConstI64 { dest: p, value: 0 });
+            p
+        };
+
+        let end_place = if let Some(e) = end {
+            let base = self.lower_value(e)?;
+            if inclusive {
+                self.bump_inclusive_endpoint(base)
+            } else {
+                base
+            }
+        } else {
+            // Open end on string slice would require widening
+            // `hew_string_char_count`'s i32 return to i64 before passing
+            // to `hew_string_slice_codepoints`; the MIR substrate has no
+            // direct i32->i64 sign-extension instruction today.  Fail
+            // closed at MIR construction rather than silently emit a
+            // type-mismatched call.  W3 collections-sugar S2c surface
+            // covers the closed `s[a..b]` and inclusive `s[a..=b]`
+            // forms; open-end follows when a `hew_string_char_count_i64`
+            // helper or a MIR-level IntExtend instruction lands.
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "open-end string slice (s[a..] / s[..])".to_string(),
+                    site: container.site,
+                },
+                note: "W3 collections-sugar S2: closed string ranges \
+                       `s[a..b]` and `s[a..=b]` are supported; open-end \
+                       forms await an i64-returning char-count helper. \
+                       Use an explicit upper bound for now."
+                    .to_string(),
+            });
+            return None;
+        };
+
+        let result_place = self.alloc_local(ResolvedTy::String);
+        self.push_runtime_call(
+            "hew_string_slice_codepoints",
+            vec![s_place, start_place, end_place],
+            Some(result_place),
+        );
+        Some(result_place)
+    }
+
+    fn lower_bytes_index(
+        &mut self,
+        container: &HirExpr,
+        index: &HirExpr,
+        elem_ty: &ResolvedTy,
+        _site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        debug_assert!(matches!(elem_ty, ResolvedTy::U8));
+        let bytes_place = self.lower_value(container)?;
+        let i_place = self.lower_value(index)?;
+        let result_place = self.alloc_local(elem_ty.clone());
+        // Bytes values are codegen-represented as a 3-field triple
+        // {ptr, offset, len}; codegen unpacks `bytes_place` into the
+        // three runtime-ABI arguments. The MIR-level RuntimeCall lists
+        // a single Place for the bytes receiver — codegen knows how
+        // to expand it for the bytes-typed slot. The runtime asserts
+        // bounds and aborts on OOB.
+        self.push_runtime_call(
+            "hew_bytes_index",
+            vec![bytes_place, i_place],
+            Some(result_place),
+        );
+        Some(result_place)
+    }
+
+    fn lower_bytes_slice(
+        &mut self,
+        container: &HirExpr,
+        start: Option<&HirExpr>,
+        end: Option<&HirExpr>,
+        inclusive: bool,
+        _site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let bytes_place = self.lower_value(container)?;
+
+        let start_place = if let Some(s) = start {
+            self.lower_value(s)?
+        } else {
+            let p = self.alloc_local(ResolvedTy::I64);
+            self.instructions
+                .push(Instr::ConstI64 { dest: p, value: 0 });
+            p
+        };
+
+        let end_place = if let Some(e) = end {
+            let base = self.lower_value(e)?;
+            if inclusive {
+                self.bump_inclusive_endpoint(base)
+            } else {
+                base
+            }
+        } else {
+            // Open end: codegen reads `len` directly off the bytes
+            // triple when materialising `hew_bytes_slice`'s args. To
+            // avoid that backchannel here, emit a sentinel constant
+            // equal to `i64::MAX`: the runtime's `end > len` check
+            // would normally trap, but the open-end form is rare and
+            // the cleanest fix is to call a tiny `hew_bytes_len`
+            // helper.  TODO when codegen wires bytes-triple aware
+            // open-end: replace with a hew_bytes_len call.
+            //
+            // For S2c we conservatively bail on open-end bytes
+            // slicing so the unsupported case fails closed at MIR
+            // construction rather than silently trapping in the
+            // runtime with a misleading "end > len" message.
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "open-end bytes slice (b[a..])".to_string(),
+                    site: container.site,
+                },
+                note: "W3 collections-sugar S2: closed bytes ranges \
+                       `b[a..b]` and `b[a..=b]` are supported; open-end \
+                       `b[a..]` / `b[..]` await a `hew_bytes_len` runtime \
+                       helper. Use an explicit upper bound for now."
+                    .to_string(),
+            });
+            return None;
+        };
+
+        let result_place = self.alloc_local(ResolvedTy::Bytes);
+        self.push_runtime_call(
+            "hew_bytes_slice",
+            vec![bytes_place, start_place, end_place],
+            Some(result_place),
+        );
+        Some(result_place)
+    }
+
+    /// Bump a half-open endpoint to its inclusive equivalent: `b + 1`
+    /// with an i64 overflow trap. Shared by string and bytes inclusive
+    /// range lowering; mirrors the same pattern used by the Vec arm.
+    fn bump_inclusive_endpoint(&mut self, base: Place) -> Place {
+        let one_place = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: one_place,
+            value: 1,
+        });
+        let bumped = self.alloc_local(ResolvedTy::I64);
+        let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntArithChecked {
+            op: IntArithOp::Add,
+            signed: IntSignedness::Signed,
+            dest: bumped,
+            lhs: base,
+            rhs: one_place,
+            overflow_flag,
+        });
+        let overflow_trap_bb = self.alloc_block();
+        let after_inc_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: overflow_flag,
+            then_target: overflow_trap_bb,
+            else_target: after_inc_bb,
+        });
+        self.start_block(overflow_trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::IntegerOverflow,
+        });
+        self.start_block(after_inc_bb);
+        bumped
+    }
+
     /// Lower a recognised `hew_*` runtime-ABI call to
     /// `Instr::CallRuntimeAbi`.
     ///
@@ -9240,6 +9731,7 @@ impl Builder {
             "hew_actor_link" | "hew_actor_monitor" => {
                 self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
             }
+            "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
             "hew_option_is_none"
             | "hew_option_is_some"
             | "hew_option_unwrap_f64"
@@ -9275,6 +9767,44 @@ impl Builder {
                 None
             }
         }
+    }
+
+    fn lower_bytes_push(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_push` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_bytes_push` expects a bytes receiver and one byte argument, got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        if context == RuntimeCallContext::ValueNeeded {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_push` value result".to_string(),
+                    site,
+                },
+                note: "`hew_bytes_push` returns unit and is currently wired for \
+                       statement-position mutation only"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        let bytes = self.lower_value(&hir_args[0])?;
+        let byte = self.lower_value(&hir_args[1])?;
+        self.push_runtime_call("hew_bytes_push", vec![bytes, byte], None);
+        None
     }
 
     fn lower_option_result_runtime_call(
@@ -12281,9 +12811,16 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             places
         }
         Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
+        Instr::RecordFieldStore { record, src, .. } => vec![*record, *src],
         Instr::ActorStateFieldLoad { dest, .. } => vec![*dest],
         Instr::ActorStateFieldStore { src, .. } => vec![*src],
         Instr::TupleFieldLoad { tuple, dest, .. } => vec![*tuple, *dest],
+        Instr::TupleConstruct { elements, dest } => {
+            let mut places = Vec::with_capacity(elements.len() + 1);
+            places.extend(elements.iter().copied());
+            places.push(*dest);
+            places
+        }
         Instr::FloatLit { dest, .. } => vec![*dest],
         Instr::FloatAdd { dest, lhs, rhs, .. }
         | Instr::FloatSub { dest, lhs, rhs, .. }
@@ -12563,6 +13100,7 @@ fn classify_dyn_trait_storage(
         HirExprKind::CoerceToDynTrait { .. } => Ok(TraitObjectStorage::FrameOwned),
         HirExprKind::Call { .. }
         | HirExprKind::CallTraitMethodStatic { .. }
+        | HirExprKind::ResolvedImplCall { .. }
         | HirExprKind::CallDynMethod { .. } => Ok(TraitObjectStorage::HeapBoxed),
         HirExprKind::BindingRef { resolved, .. } => {
             if let ResolvedRef::Binding(id) = resolved {
@@ -14659,6 +15197,7 @@ mod enum_layout_tests {
             node: HirNodeId(0),
             name: "Shape".to_string(),
             marker: ResourceMarker::None,
+            is_opaque: false,
             consuming_methods: vec![],
             type_params: vec![],
             fields: vec![],
@@ -14716,6 +15255,7 @@ mod enum_layout_tests {
             node: HirNodeId(1),
             name: "Colour".to_string(),
             marker: ResourceMarker::None,
+            is_opaque: false,
             consuming_methods: vec![],
             type_params: vec![],
             fields: vec![],
@@ -14758,6 +15298,7 @@ mod enum_layout_tests {
             node: HirNodeId(10),
             name: "Option".to_string(),
             marker: ResourceMarker::None,
+            is_opaque: false,
             consuming_methods: vec![],
             type_params: vec!["T".to_string()],
             fields: vec![],

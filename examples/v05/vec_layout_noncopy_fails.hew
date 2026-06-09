@@ -1,0 +1,9 @@
+// Vec layout-backed non-Copy element rejection fixture.
+
+record Owner { name: string }
+
+fn probe(owners: Vec<Owner>) {
+    owners.push(Owner { name: "hew" });
+}
+
+fn main() {}

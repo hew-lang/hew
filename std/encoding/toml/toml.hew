@@ -49,63 +49,63 @@ type Value {
 trait ValueMethods: CanonicalValueMethods {
     /// Return the type tag (0=null reserved, 1=bool, 2=i64, 3=float,
     /// 4=string, 5=array, 6=table, 7=datetime).
-    fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
+    fn type_of(self) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the string value.
-    fn get_string(val: Value) -> string;
+    fn get_string(self) -> string;
 
     /// Extract the integer value.
-    fn get_int(val: Value) -> i64;
+    fn get_int(self) -> i64;
 
     /// Extract the floating-point value.
-    fn get_float(val: Value) -> f64;
+    fn get_float(self) -> f64;
 
     /// Extract the boolean value (0 or 1).
-    fn get_bool(val: Value) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
+    fn get_bool(self) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
     /// Look up a field by key in a TOML table.
-    fn get_field(val: Value, key: string) -> Value;
+    fn get_field(self, key: string) -> Value;
 
     /// Return the number of elements in a TOML array.
-    fn array_len(val: Value) -> i64;
+    fn array_len(self) -> i64;
 
     /// Return the element at the given index in a TOML array.
-    fn array_get(val: Value, index: i64) -> Value;
+    fn array_get(self, index: i64) -> Value;
 
     /// Serialize the value back to a TOML string.
-    fn stringify(val: Value) -> string;
+    fn stringify(self) -> string;
 
     /// Release the value resources.
-    fn free(val: Value);
+    fn free(self);
 
     // ── Fluent builders ─────────────────────────────────────────
     /// Set a string field on a table. Returns the table for chaining.
-    fn with_string(tbl: Value, key: string, val: string) -> Value;
+    fn with_string(self, key: string, val: string) -> Value;
 
     /// Set an integer field. Returns the table for chaining.
-    fn with_int(tbl: Value, key: string, val: i64) -> Value;
+    fn with_int(self, key: string, val: i64) -> Value;
 
     /// Set a float field. Returns the table for chaining.
-    fn with_float(tbl: Value, key: string, val: f64) -> Value;
+    fn with_float(self, key: string, val: f64) -> Value;
 
     /// Set a boolean field. Returns the table for chaining.
-    fn with_bool(tbl: Value, key: string, val: bool) -> Value;
+    fn with_bool(self, key: string, val: bool) -> Value;
 
     /// Set a Value child on a table. The child is consumed. Returns the table.
-    fn with(tbl: Value, key: string, child: Value) -> Value;
+    fn with(self, key: string, child: Value) -> Value;
 
     /// Push a Value onto an array. The child is consumed. Returns the array.
-    fn push(arr: Value, child: Value) -> Value;
+    fn push(self, child: Value) -> Value;
 
     /// Push an integer onto an array. Returns the array.
-    fn push_int(arr: Value, val: i64) -> Value;
+    fn push_int(self, val: i64) -> Value;
 
     /// Push a string onto an array. Returns the array.
-    fn push_string(arr: Value, val: string) -> Value;
+    fn push_string(self, val: string) -> Value;
 
     /// Push a float onto an array. Returns the array.
-    fn push_float(arr: Value, val: f64) -> Value;
+    fn push_float(self, val: f64) -> Value;
 
     /// Push a boolean onto an array. Returns the array.
-    fn push_bool(arr: Value, val: bool) -> Value;
+    fn push_bool(self, val: bool) -> Value;
 }
 
 impl CanonicalValueMethods for Value {

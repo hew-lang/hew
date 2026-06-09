@@ -134,6 +134,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],

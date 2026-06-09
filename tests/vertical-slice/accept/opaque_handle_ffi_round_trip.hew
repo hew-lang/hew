@@ -1,0 +1,28 @@
+// Accept fixture: opaque_handle_ffi_round_trip — an `#[opaque]` runtime handle
+// lowers to a bare LLVM `ptr` that round-trips through `extern "C"` functions
+// taking/returning the runtime's `*mut T`. Exercises the full W3.020 pipeline:
+// parser attribute -> HIR BitCopy value-class -> MIR codegen-readiness boundary
+// -> codegen `ptr` resolution -> link against the real `hew_deque_*` runtime.
+//
+// Harness verb: hew compile + run
+// Expected: clean compile + exit 3 (three elements pushed).
+
+#[opaque]
+type Dq {}
+
+extern "C" {
+    fn hew_deque_new() -> Dq;
+    fn hew_deque_push_back(dq: Dq, value: i64);
+    fn hew_deque_len(dq: Dq) -> i64;
+    fn hew_deque_free(dq: Dq);
+}
+
+fn main() -> i64 {
+    let dq = unsafe { hew_deque_new() };
+    unsafe { hew_deque_push_back(dq, 10) };
+    unsafe { hew_deque_push_back(dq, 20) };
+    unsafe { hew_deque_push_back(dq, 30) };
+    let n = unsafe { hew_deque_len(dq) };
+    unsafe { hew_deque_free(dq) };
+    n
+}

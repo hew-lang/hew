@@ -31,10 +31,6 @@
 //! }
 //! ```
 
-import std::io;
-
-import std::path;
-
 // ── Error type ───────────────────────────────────────────────────────
 /// Structured error type for file-system and network operations.
 ///
@@ -149,8 +145,49 @@ pub fn io_error_cancelled() -> IoError {
 }
 
 fn missing_parent(target: string) -> bool {
-    let parent = path.dirname(target);
+    let parent = dirname(target);
     parent != "" && !exists(parent)
+}
+
+fn dirname(p: string) -> string {
+    let s = strip_trailing_slash(p);
+    let pos = last_slash_pos(s);
+    if pos < 0 {
+        return "";
+    }
+    if pos == 0 {
+        return "/";
+    }
+    s.slice(0, pos)
+}
+
+fn strip_trailing_slash(p: string) -> string {
+    if p == "/" {
+        return "" + p;
+    }
+    if p.len() > 1 && p.ends_with("/") {
+        return p.slice(0, p.len() - 1);
+    }
+    "" + p
+}
+
+fn last_slash_pos(s: string) -> i64 {
+    let first = s.find("/");
+    if first < 0 {
+        return -1;
+    }
+    var last = first;
+    var search_from = first + 1;
+    while search_from < s.len() {
+        let rest = s.slice(search_from, s.len());
+        let next = rest.find("/");
+        if next < 0 {
+            return last;
+        }
+        last = search_from + next;
+        search_from = last + 1;
+    }
+    last
 }
 
 fn write_error(target: string) -> IoError {

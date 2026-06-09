@@ -576,6 +576,7 @@ mod tests {
             cont_tag: AtomicI32::new(ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         })
     }
 
@@ -1006,6 +1007,7 @@ mod forced_ordering_probe {
             cont_tag: AtomicI32::new(ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         })
     }
 

@@ -1246,6 +1246,46 @@ pub(crate) fn reactor_detach_actor(actor_key: usize) {
     }
 }
 
+/// Remove the one-shot resume registration that owns `read_slot`.
+///
+/// This is the deadline/cancellation sibling of actor teardown: scrub the
+/// registration before waking the parked actor so late readiness cannot deposit
+/// into the cancelled slot. The `Registration` drop remains the single authority
+/// for releasing the reactor-owned read-slot ref.
+pub(crate) fn reactor_detach_read_slot(read_slot: *mut crate::read_slot::HewReadSlot) -> bool {
+    if read_slot.is_null() {
+        return false;
+    }
+    let fds = REACTOR_STATE.access(|state| {
+        let owned: Vec<c_int> = state
+            .registry
+            .iter()
+            .filter_map(|(fd, reg)| match reg.mode {
+                RegMode::Resume { read_slot: slot } if slot == read_slot => Some(*fd),
+                _ => None,
+            })
+            .collect();
+        for fd in &owned {
+            state.registry.remove(fd);
+            state.conn_to_fd.retain(|_, mapped| mapped != fd);
+        }
+        let before_pending = state.pending.len();
+        state.pending.retain(|req| match req {
+            Pending::Add { reg, .. } => match reg.mode {
+                RegMode::Resume { read_slot: slot } => slot != read_slot,
+                RegMode::AutoSend { .. } => true,
+            },
+            _ => true,
+        });
+        if !owned.is_empty() {
+            crate::observe::record_reactor_unregistration(owned.len() as u64);
+        }
+        (owned, before_pending != state.pending.len())
+    });
+    queue_unregister_fds(&fds.0);
+    !fds.0.is_empty() || fds.1
+}
+
 /// Remove every registry + pending entry owned by `actor_key` under the
 /// [`ReactorState`] lock, returning the fds whose registrations were already in
 /// the registry (those need a poller-side `EPOLL_CTL_DEL`). Scrubbed
@@ -1927,10 +1967,10 @@ mod tests {
 
         handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
 
-        // The deposit was dropped (cancelled): status stays Pending, no buffer.
+        // The deposit was dropped (cancelled): status is typed, no buffer.
         assert_eq!(
             unsafe { crate::read_slot::hew_read_slot_status(slot) },
-            crate::read_slot::ReadStatus::Pending as i32,
+            crate::read_slot::ReadStatus::Cancelled as i32,
             "a cancelled slot must not receive a data deposit"
         );
         // Creator ref free reclaims the slot (no leak).

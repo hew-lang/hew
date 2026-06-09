@@ -148,6 +148,32 @@ fn clear_reply_channel_on(ctx: *mut crate::execution_context::HewExecutionContex
     }
 }
 
+fn stash_suspended_cancel_token(a: &HewActor, token: *mut crate::task_scope::HewCancellationToken) {
+    if token.is_null() {
+        return;
+    }
+    // SAFETY: the dispatch execution context holds a live token; retain it for
+    // the parked continuation's resume context.
+    unsafe { crate::task_scope::hew_cancel_token_retain(token) };
+    let old = a
+        .suspended_cancel_token
+        .swap(token.cast(), Ordering::AcqRel);
+    if !old.is_null() {
+        // SAFETY: the actor slot owned the old retained token.
+        unsafe { crate::task_scope::hew_cancel_token_release(old.cast()) };
+    }
+}
+
+fn clear_suspended_cancel_token(a: &HewActor) {
+    let token = a
+        .suspended_cancel_token
+        .swap(std::ptr::null_mut(), Ordering::AcqRel);
+    if !token.is_null() {
+        // SAFETY: the actor slot owned this retained token.
+        unsafe { crate::task_scope::hew_cancel_token_release(token.cast()) };
+    }
+}
+
 fn restore_current_context_after_dispatch() {
     let ctx = crate::execution_context::current_context();
     if !ctx.is_null() {
@@ -897,13 +923,14 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     // a scheduler-owned stack carrier for the duration of the resume, restored
     // after (mirroring the fresh-dispatch carrier install/restore).
     let stashed_reply = a.suspended_reply_channel.load(Ordering::Acquire);
+    let stashed_cancel_token = a.suspended_cancel_token.load(Ordering::Acquire);
     let mut resume_context = HewExecutionContext {
         actor,
         actor_id: a.id,
         parent_supervisor: a.supervisor,
         supervisor_child_index: a.supervisor_child_index,
         flags: 0,
-        cancel_token: std::ptr::null_mut(),
+        cancel_token: stashed_cancel_token.cast(),
         task_scope: std::ptr::null_mut(),
         arena: a.arena,
         trace: crate::tracing::HewTraceContext::default(),
@@ -931,6 +958,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     if matches!(poll, Some(crate::cont::ResumePoll::Ready) | None) {
         a.suspended_reply_channel
             .store(std::ptr::null_mut(), Ordering::Release);
+        clear_suspended_cancel_token(a);
     }
 
     match poll {
@@ -1463,6 +1491,28 @@ fn activate_actor(actor: *mut HewActor) {
                     if !suspend_handle.is_null() {
                         a.suspended_reply_channel
                             .store(msg_ref.reply_channel, Ordering::Release);
+                        stash_suspended_cancel_token(a, execution_context.cancel_token.cast());
+                    }
+
+                    // SEC-2 sibling edge: a Rust unwind caught by `catch_unwind`
+                    // (`dispatch_result` is `Err`) that crossed a child
+                    // suspending-closure ramp / `hew_cont_resume` bypassed the
+                    // codegen swap-pop and driver-channel teardown, leaving the
+                    // outer context pointed at the driver channel with the driver
+                    // channel's refs live. Restore the outer reply routing and
+                    // tear those channels down BEFORE the normal teardown below
+                    // reads `current_reply_channel_consumed_on` / clears the reply
+                    // channel — otherwise it reads and nulls the wrong channel and
+                    // corrupts the outer ask routing (mirrors the native crash
+                    // branch). No-double-free: this fires only while a swap is
+                    // still open; the normal-return (`Ok`) edge already popped its
+                    // own frames via the codegen swap-pop, so the swap stack is
+                    // empty there and this is intentionally skipped. The child
+                    // never deposited (it unwound), so the unwind releases both the
+                    // retained sender ref and the creator ref, matching the codegen
+                    // abandon path.
+                    if dispatch_result.is_err() {
+                        crate::execution_context::reply_channel_swap_unwind();
                     }
 
                     let reply_consumed =
@@ -1533,6 +1583,7 @@ fn activate_actor(actor: *mut HewActor) {
                             // of this activation's lifecycle.
                             return;
                         }
+                        clear_suspended_cancel_token(a);
                         // Park refused (actor concurrently stopped/crashed): the
                         // handle was destroyed once inside the park guard. Fall
                         // through to the standard settle so the terminal state is
@@ -1560,6 +1611,14 @@ fn activate_actor(actor: *mut HewActor) {
                     unsafe {
                         let _ = crate::actor::hew_actor_state_lock_release_after_panic(actor);
                     }
+                    // A child suspending-closure call that trapped/longjmped
+                    // bypassed the driver's swap-pop and driver-channel teardown,
+                    // leaving the outer context pointing at the driver channel and
+                    // the driver channel's refs live. Restore the outer reply
+                    // routing and tear those channels down BEFORE we read the
+                    // dispatch reply channel below, so the fallback reply targets
+                    // the real outer channel and no channel ref leaks.
+                    crate::execution_context::reply_channel_swap_unwind();
                     // Capture the crashed dispatch's reply-channel state from
                     // the still-installed ctx before restoring `prev_context`.
                     // The ctx pointer becomes stale after the restore, so we
@@ -2226,6 +2285,7 @@ mod tests {
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -3012,6 +3072,7 @@ mod tests {
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -3852,6 +3913,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single scenario test keeps setup, hook assertion, and cleanup together"
+    )]
     fn activate_keeps_worker_active_until_reenqueue_decision_finishes() {
         static HOOK_SEEN: AtomicBool = AtomicBool::new(false);
 
@@ -3937,6 +4002,7 @@ mod tests {
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -3973,5 +4039,145 @@ mod tests {
             drop(unsafe { Box::from_raw(ptr) });
         }
         ACTIVE_WORKERS.store(0, Ordering::Release);
+    }
+
+    thread_local! {
+        /// Passes the test's driver-owned channel into the C-ABI dispatch fn
+        /// (which cannot take extra args) so the handler can open the swap with
+        /// the exact channel the test created and later verifies is torn down.
+        static CATCH_UNWIND_SWAP_DRIVER: std::cell::Cell<*mut c_void> =
+            const { std::cell::Cell::new(std::ptr::null_mut()) };
+    }
+
+    /// A dispatch handler that models a child suspending-closure call which
+    /// Rust-unwinds (panics) WHILE its scoped reply-channel swap is still open —
+    /// exactly the bypass the `catch_unwind` `Err` edge must clean up. It
+    /// installs the driver channel as a scoped swap (as the
+    /// `SuspendingCallClosure` driver does) and then panics BEFORE the codegen
+    /// swap-pop runs, so the swap is left open across the unwind.
+    unsafe extern "C-unwind" fn swap_open_then_panic_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut std::ffi::c_void,
+        _msg_type: i32,
+        _data: *mut std::ffi::c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        let driver = CATCH_UNWIND_SWAP_DRIVER.with(std::cell::Cell::get);
+        crate::execution_context::hew_context_reply_channel_swap_push(driver);
+        panic!("suspending-closure child Rust-unwound with the reply-channel swap open");
+    }
+
+    /// SEC-2 SIBLING EDGE regression: a Rust unwind caught by the dispatcher's
+    /// `catch_unwind` (`dispatch_result == Err`) that crossed a child
+    /// suspending-closure ramp while the scoped reply-channel swap was still
+    /// OPEN must be cleaned up on the `Err` teardown edge, mirroring the native
+    /// siglongjmp crash branch. Drives the FULL production dispatch loop
+    /// (`activate_actor` → lock acquire → `catch_unwind(dispatch)` → `Err` →
+    /// swap unwind → teardown) with a real ask message carrying the OUTER reply
+    /// channel and a handler that opens the swap then panics, and asserts:
+    ///   * the driver-owned channel is torn down exactly once (no leak), and
+    ///   * ONLY the driver — the OUTER ask channel is left intact, so the outer
+    ///     ask still routes to its own channel (not the driver channel), and
+    ///   * with no double-free: the outer channel is still a live, free-once
+    ///     channel and the swap stack is fully drained.
+    ///
+    /// Pre-fix the `Err` edge skipped `reply_channel_swap_unwind`, so the driver
+    /// channel leaked and the teardown read/cleared the wrong (driver) channel
+    /// and nulled the real outer message reply.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn catch_unwind_err_edge_unwinds_open_swap_and_frees_driver_channel() {
+        let _sched = NoWorkerSchedulerForTest::install();
+
+        let baseline = crate::reply_channel::active_channel_count();
+        assert_eq!(
+            crate::execution_context::reply_channel_swap_stack_depth(),
+            0,
+            "the swap stack starts empty"
+        );
+
+        // OUTER ask channel: the message's reply channel — the real outer
+        // routing lane that must survive the child's unwind. One ref (the
+        // sender-side ref an ask mints and the node carries).
+        let outer_ch = crate::reply_channel::hew_reply_channel_new();
+        assert!(!outer_ch.is_null());
+
+        // DRIVER-owned channel for the child suspending-closure swap: new
+        // (creator ref) + retain (sender ref), exactly as the
+        // `SuspendingCallClosure` driver wires it. The unwind must free BOTH
+        // refs because the child never deposited.
+        let driver_ch = crate::reply_channel::hew_reply_channel_new();
+        assert!(!driver_ch.is_null());
+        // SAFETY: driver_ch was just created and is live.
+        unsafe { crate::reply_channel::hew_reply_channel_retain(driver_ch) };
+        CATCH_UNWIND_SWAP_DRIVER.with(|c| c.set(driver_ch.cast()));
+
+        assert_eq!(
+            crate::reply_channel::active_channel_count(),
+            baseline + 2,
+            "outer + driver channels are live before dispatch"
+        );
+
+        // One ask message carrying the OUTER reply channel.
+        // SAFETY: fresh mailbox with a single ask message to drive one dispatch.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox is live; null payload of size 0 with a valid
+            // outer reply channel is a well-formed ask send.
+            unsafe {
+                mailbox::hew_mailbox_send_with_reply(
+                    mailbox.cast(),
+                    1,
+                    ptr::null_mut(),
+                    0,
+                    outer_ch.cast(),
+                )
+            },
+            0
+        );
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(swap_open_then_panic_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        // Drive the dispatch: the handler opens the swap then Rust-unwinds; the
+        // dispatcher's `catch_unwind` catches it (`Err`) and the `Err` edge
+        // unwinds the still-open swap and tears the driver channel down BEFORE
+        // the normal reply teardown reads/clears the reply channel.
+        activate_actor(actor_ptr);
+
+        assert_eq!(
+            crate::execution_context::reply_channel_swap_stack_depth(),
+            0,
+            "the catch_unwind Err edge drained every open swap (no leftover frame)"
+        );
+        assert_eq!(
+            crate::reply_channel::active_channel_count(),
+            baseline + 1,
+            "the driver channel was torn down exactly once on the catch_unwind Err \
+             edge — and ONLY the driver: the outer ask channel survives, so the \
+             outer ask still routes to its own channel; no leak, no wrong-channel free"
+        );
+
+        // The OUTER channel is still a live, free-once channel: releasing its
+        // sole ref reclaims it exactly once (no double-free / corruption from
+        // the swap bracket crossing the unwind).
+        // SAFETY: outer_ch is live and holds exactly one ref.
+        unsafe { crate::reply_channel::hew_reply_channel_free(outer_ch) };
+        assert_eq!(
+            crate::reply_channel::active_channel_count(),
+            baseline,
+            "the outer channel was intact and freed exactly once"
+        );
+
+        CATCH_UNWIND_SWAP_DRIVER.with(|c| c.set(std::ptr::null_mut()));
+        // SAFETY: single-threaded test; mailbox unused afterwards.
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
     }
 }

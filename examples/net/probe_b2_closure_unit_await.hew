@@ -1,0 +1,42 @@
+// CODE-1 regression fixture: a UNIT-returning suspending closure.
+//
+// `read_once` awaits the captured Connection but DISCARDS the read value, so the
+// closure's logical return is unit. The call site still lowers to
+// `Terminator::SuspendingCallClosure` (the body carries an `await` suspend), and
+// the driver's finish path takes the unit branch — which must release BOTH the
+// retained sender ref and the creator ref so the driver reply channel is
+// reclaimed exactly once (no leaked sender reference). Running it under both
+// pools proves the unit path suspends, resumes, and completes cleanly.
+import std::net;
+
+extern "C" {
+    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
+}
+
+actor Reader {
+    let addr: string;
+    receive fn go(unused: i64) {
+        sleep_ms(200);
+        let conn = net.connect(addr);
+        let read_once = || {
+            let _ = await conn.read_string();
+        };
+        read_once();
+        println("reader-unit-done");
+        let _ = conn.close();
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let reader = spawn Reader(addr: f"127.0.0.1:{port}");
+    reader.go(0);
+    let client = listener.accept();
+    client.write_string("hello-from-server");
+    sleep_ms(500);
+    let _ = client.close();
+    println("server-done");
+}

@@ -109,6 +109,7 @@ pub struct HewActor {
     pub cont_tag: AtomicI32,
     pub pending_wake: AtomicBool,
     pub suspended_reply_channel: AtomicPtr<c_void>,
+    pub suspended_cancel_token: AtomicPtr<c_void>,
 }
 
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
@@ -1891,6 +1892,7 @@ mod tests {
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -4706,6 +4708,7 @@ mod tests {
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

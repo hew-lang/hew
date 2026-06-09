@@ -974,6 +974,11 @@ pub struct HewActor {
     /// `resume_park`. Null when the handler had no reply channel (a
     /// fire-and-forget handler that suspended) or between dispatches.
     pub suspended_reply_channel: AtomicPtr<c_void>,
+
+    /// Cancel token retained from the execution context that produced the
+    /// suspended continuation. The resume edge installs it into the temporary
+    /// `HewExecutionContext`, then clears/releases it when the await frame exits.
+    pub suspended_cancel_token: AtomicPtr<c_void>,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -984,6 +989,17 @@ unsafe impl Send for HewActor {}
 // SAFETY: Concurrent reads/writes of shared mutable fields use atomics.
 // Raw-pointer fields are lifecycle-managed by scheduler CAS transitions.
 unsafe impl Sync for HewActor {}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn clear_suspended_cancel_token(actor: &HewActor) {
+    let token = actor
+        .suspended_cancel_token
+        .swap(std::ptr::null_mut(), Ordering::AcqRel);
+    if !token.is_null() {
+        // SAFETY: the actor slot owns a retained task-scope cancellation token.
+        unsafe { crate::task_scope::hew_cancel_token_release(token.cast()) };
+    }
+}
 
 // ── Codegen-mirrored ABI offsets ────────────────────────────────────────
 //
@@ -1933,6 +1949,7 @@ fn build_spawned_actor(
         cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
         pending_wake: AtomicBool::new(false),
         suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+        suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
     })
 }
 
@@ -2945,6 +2962,7 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
         // owns the slot (it won the `… → Destroyed` CAS), so the state CAS is
         // race-free against a resume (which would have refused the destroy).
         if destroyed.is_ok() {
+            clear_suspended_cancel_token(a);
             let _ = a.actor_state.compare_exchange(
                 HewActorState::Suspended as i32,
                 HewActorState::Stopped as i32,
@@ -3035,6 +3053,8 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
     // verdict reproduced as a UAF is closed.
     #[cfg(all(test, not(target_arch = "wasm32")))]
     run_free_post_latch_hook(actor);
+
+    clear_suspended_cancel_token(a);
 
     // Remove from live tracking. If the actor was already consumed by
     // cleanup_all_actors (returns false), skip freeing to avoid
@@ -5505,6 +5525,7 @@ mod tests {
                 cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
                 pending_wake: AtomicBool::new(false),
                 suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+                suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             }));
             (actor, mailbox)
         }
@@ -5544,6 +5565,7 @@ mod tests {
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };
@@ -8412,6 +8434,7 @@ mod tests {
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };

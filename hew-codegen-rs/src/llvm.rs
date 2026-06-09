@@ -1225,6 +1225,37 @@ fn intern_runtime_decl<'ctx>(
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         "hew_reply_channel_signal_ready" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // ── suspendable-callee driver (Terminator::SuspendingCallClosure) ─────
+        // The continuation-handle verbs the driver calls to run a closure-invoke
+        // callee coroutine (`hew-runtime/src/cont.rs`). Identical declarations to
+        // the actor-dispatch trampoline's get-or-declare locals (llvm.rs ~26563).
+        // hew_cont_resume(handle: *mut c_void) -> void (cont.rs:216).
+        "hew_cont_resume" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_cont_poll(handle: *mut c_void, out_value: *mut c_void) -> ResumePoll
+        // (cont.rs:271). `ResumePoll` is `#[repr(i32)]` (Pending=0, Ready=1), so
+        // the C return is i32; the driver reads Ready as "callee completed".
+        "hew_cont_poll" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_cont_destroy(handle: *mut c_void) -> void (cont.rs:296). The SOLE
+        // teardown owner of the child coro frame; null-safe.
+        "hew_cont_destroy" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_context_reply_channel_swap_push(ch: *mut c_void) -> void
+        // (`hew-runtime/src/execution_context.rs`). Opens a SCOPED reply-channel
+        // swap: installs `ch` as the current execution context's reply channel,
+        // clears the consumed bit, and pushes the saved outer pointer + consumed
+        // bit onto the per-worker swap stack. The driver brackets each
+        // SYNCHRONOUS child-advancing call (ramp / resume) with push/pop so the
+        // child closure coroutine's `Return` arm (`hew_get_reply_channel` +
+        // `hew_reply`) deposits onto the driver-owned channel rather than the
+        // ambient actor channel, AND the child's consumed-bit flip is isolated
+        // from the outer dispatch's fallback/orphan-reply routing.
+        "hew_context_reply_channel_swap_push" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_context_reply_channel_swap_pop() -> void
+        // (`hew-runtime/src/execution_context.rs`). Closes the innermost swap on
+        // the NORMAL-return edge: restores the outer reply-channel pointer +
+        // consumed bit. The crash/trap edge instead unwinds the whole stack from
+        // the scheduler (`reply_channel_swap_unwind`), so restoration is
+        // structurally guaranteed on every exit path.
+        "hew_context_reply_channel_swap_pop" => ctx.void_type().fn_type(&[], false),
         // ── NEW-1 read slot (non-blocking `await conn.read()`) ───────────────
         // hew_read_slot_new() -> *mut HewReadSlot
         // (`hew-runtime/src/read_slot.rs`). Box-allocates a fresh one-shot read
@@ -20717,6 +20748,17 @@ struct SuspendingReadEmit {
     cleanup: u32,
 }
 
+/// Carrier for [`emit_suspending_call_closure_terminator`] — the
+/// suspendable-callee driver (`Terminator::SuspendingCallClosure`).
+struct SuspendingCallClosureEmit<'a> {
+    callee: Place,
+    args: Vec<Place>,
+    ret_ty: &'a ResolvedTy,
+    result_dest: Option<Place>,
+    resume: u32,
+    cleanup: u32,
+}
+
 /// Emit the caller-side non-blocking `await conn.read()` (NEW-1
 /// `Terminator::SuspendingRead`). The fd-readiness analogue of
 /// [`emit_suspending_ask_terminator`].
@@ -21410,6 +21452,461 @@ fn emit_suspending_ask_terminator<'ctx>(
         .llvm_ctx("suspending ask err br")?;
 
     let _ = ptr_ty;
+    Ok(())
+}
+
+/// Emit the suspendable-callee driver (`Terminator::SuspendingCallClosure`): call
+/// a closure whose body `await`s across the coroutine boundary, drive that callee
+/// coroutine, and PROPAGATE its suspension up into THIS calling coroutine.
+///
+/// Shape (the driver loop):
+/// ```text
+///   ctx       = <live execution context>            ; the closure's ctx arg
+///   (fn,env)  = <load closure pair>
+///   ch        = hew_reply_channel_new()             ; driver-owned result box
+///   hew_context_reply_channel_swap_push(ch)         ; scoped: route child Return -> ch
+///   child     = fn(ctx, env, args...)               ; ramp -> coro handle (ptr)
+///               hew_context_reply_channel_swap_pop()
+///   br check_done
+/// check_done:                                        ; driver loop header
+///   poll = hew_cont_poll(child, null)               ; Ready(1) => child completed
+///   br (poll == Ready) -> finish, do_suspend
+/// do_suspend:                                        ; coro.suspend (non-final)
+///   switch coro.suspend [default -> return handle, 0 -> resume_child, 1 -> abandon]
+/// resume_child:                                      ; reactor woke the actor
+///   hew_context_reply_channel_swap_push(ch)
+///   hew_cont_resume(child)                           ; run child to next suspend/done
+///   hew_context_reply_channel_swap_pop()
+///   br check_done                                    ; multi-suspend re-parks here
+/// abandon:                                           ; caller destroyed while parked
+///   hew_cont_destroy(child); cancel+free(ch); br shared cleanup
+/// finish:                                            ; child completed
+///   reply = hew_reply_wait(ch)                       ; the deposited return value
+///   *result_dest = *reply; free(reply)               ; non-unit only
+///   [unit only: free(ch) sender ref]                 ; child deposited nothing
+///   hew_reply_channel_free(ch); hew_cont_destroy(child)
+///   br resume_bb
+/// ```
+/// The child's `Return` runs synchronously inside the ramp/`hew_cont_resume`
+/// call, so the swap window covers its `hew_reply` deposit. The swap is a SCOPED
+/// transfer of BOTH the reply-channel pointer AND the consumed bit (saved on
+/// push, restored on pop), and the scheduler crash-recovery edge unwinds any
+/// still-open swap (`reply_channel_swap_unwind`) — so the outer dispatch's
+/// reply routing is restored and the driver channel is torn down on EVERY exit
+/// edge (normal return, trap, cancel, unwind), not just the normal-return path.
+/// The child's OWN read
+/// suspend registers `self = hew_actor_self()` as the wake target, so the reactor
+/// wakes the calling ACTOR, whose parked outer coroutine resumes at `resume_child`
+/// and re-resumes the child handle (R2 wake-target threading).
+#[allow(
+    clippy::too_many_lines,
+    reason = "the full suspendable-callee driver — ramp invoke + the park/resume \
+              loop + the completion value binding — is kept in one place so the \
+              suspend point and the value routing it depends on are read together"
+)]
+fn emit_suspending_call_closure_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingCallClosureEmit<'_>,
+) -> CodegenResult<()> {
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
+    // The coro prologue must be present (lower_function detects the suspend
+    // carrier via `has_suspend` and emits it). Fail closed otherwise (R2 / the
+    // Lane-B silent-no-op class).
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Terminator::SuspendingCallClosure reached codegen but the function carries \
+             no coro prologue state — lower_function must detect the suspend carrier \
+             (has_suspend) and emit the prologue before the body"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingCallClosure resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingCallClosure cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+
+    // Resolve the live execution context (the closure's leading ctx arg — the
+    // resume-installed context after a suspend, not the dangling spilled param).
+    let ctx_ptr = closure_call_context(fn_ctx)?;
+
+    // Load the two-pointer closure pair (fn-ptr + env-ptr) exactly as
+    // `lower_call_closure` does.
+    let (callee_ptr, callee_ty) = place_pointer(fn_ctx, term.callee)?;
+    let pair_ty = match callee_ty {
+        BasicTypeEnum::StructType(st) if st.count_fields() == 2 => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "SuspendingCallClosure callee must be the two-pointer closure pair, got {other:?}"
+            )));
+        }
+    };
+    let pair = fn_ctx
+        .builder
+        .build_load(pair_ty, callee_ptr, "suspending_closure_pair_load")
+        .llvm_ctx("SuspendingCallClosure pair load")?
+        .into_struct_value();
+    let fn_ptr = fn_ctx
+        .builder
+        .build_extract_value(pair, 0, "suspending_closure_fn_extract")
+        .llvm_ctx("SuspendingCallClosure fn extract")?
+        .into_pointer_value();
+    let env_ptr = fn_ctx
+        .builder
+        .build_extract_value(pair, 1, "suspending_closure_env_extract")
+        .llvm_ctx("SuspendingCallClosure env extract")?
+        .into_pointer_value();
+
+    // Build the ramp call signature. The callee is a coroutine RAMP whose LLVM
+    // return is the `coro.begin` handle (`ptr`), NOT `ret_ty` — this is the fix
+    // to the plain `lower_call_closure` ABI mismatch.
+    let mut param_tys: Vec<BasicMetadataTypeEnum> =
+        Vec::with_capacity(term.args.len().saturating_add(2));
+    param_tys.push(ptr_ty.into());
+    param_tys.push(ptr_ty.into());
+    let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
+        Vec::with_capacity(term.args.len().saturating_add(2));
+    arg_vals.push(ctx_ptr.into());
+    arg_vals.push(env_ptr.into());
+    for arg in &term.args {
+        let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+        param_tys.push(metadata_type_from_basic(arg_ty));
+        let loaded = fn_ctx
+            .builder
+            .build_load(arg_ty, arg_ptr, "suspending_closure_arg")
+            .llvm_ctx("SuspendingCallClosure arg load")?;
+        arg_vals.push(metadata_value_from_basic(loaded));
+    }
+    let ramp_fn_ty = fn_type_for_return(fn_ctx.ctx, Some(ptr_ty.into()), &param_tys);
+
+    // Driver-owned reply channel: the child closure coroutine's `Return` arm
+    // deposits its logical value here (via the swapped-in context reply channel).
+    let ch_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_new",
+    )?;
+    let ch = fn_ctx
+        .builder
+        .build_call(ch_new, &[], "suspending_closure_ch")
+        .llvm_ctx("hew_reply_channel_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_reply_channel_new returned void".into()))?
+        .into_pointer_value();
+    // Ref accounting (mirrors the SuspendingAsk model): `new` gives the +1
+    // wait-side (creator) ref this driver frees on the completion edge. We
+    // UNCONDITIONALLY retain one sender ref here (Option B): for a non-unit
+    // return the child's `Return` deposit (`hew_reply`) RELEASES this sender ref
+    // (otherwise it would free the channel out from under `hew_reply_wait` —
+    // use-after-free); for a unit/never return the child deposits nothing, so
+    // the sender ref stays live and the unit finish path releases it explicitly
+    // below. Keeping the retain unconditional means the channel always carries
+    // exactly two refs whenever the child has NOT deposited (the abandon and the
+    // crash-unwind edges both free two), so trap/cancel/unwind teardown is a
+    // single uniform rule.
+    let ch_retain = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_retain",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(ch_retain, &[ch.into()], "suspending_closure_ch_retain")
+        .llvm_ctx("hew_reply_channel_retain call")?;
+
+    let swap_push_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_context_reply_channel_swap_push",
+    )?;
+    let swap_pop_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_context_reply_channel_swap_pop",
+    )?;
+    let cont_poll_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_cont_poll",
+    )?;
+    let cont_resume_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_cont_resume",
+    )?;
+    let cont_destroy_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_cont_destroy",
+    )?;
+    let ch_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_free",
+    )?;
+
+    // Helper: open/close a SCOPED swap of `ch` around a synchronous child call.
+    // `swap_in` saves the outer reply-channel pointer + consumed bit and installs
+    // `ch`; `swap_out` restores both. The crash/trap edge is covered separately
+    // by the scheduler's `reply_channel_swap_unwind`, so restoration is
+    // structurally guaranteed on every exit path, not just the normal return.
+    let swap_in = |label: &str| -> CodegenResult<()> {
+        fn_ctx
+            .builder
+            .build_call(swap_push_fn, &[ch.into()], label)
+            .llvm_ctx("hew_context_reply_channel_swap_push call")?;
+        Ok(())
+    };
+    let swap_out = |label: &str| -> CodegenResult<()> {
+        fn_ctx
+            .builder
+            .build_call(swap_pop_fn, &[], label)
+            .llvm_ctx("hew_context_reply_channel_swap_pop call")?;
+        Ok(())
+    };
+
+    // ── invoke the ramp under the swapped-in channel ───────────────────────────
+    swap_in("suspending_closure_swap_in")?;
+    let child = fn_ctx
+        .builder
+        .build_indirect_call(ramp_fn_ty, fn_ptr, &arg_vals, "suspending_closure_child")
+        .llvm_ctx("SuspendingCallClosure ramp call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(
+                "suspending closure ramp returned void; a coroutine ramp must return its \
+                 coro.begin handle (ptr)"
+                    .into(),
+            )
+        })?
+        .into_pointer_value();
+    swap_out("suspending_closure_swap_out")?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending closure call block has no parent function".into())
+        })?;
+    let check_done_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_closure_check_done");
+    let do_suspend_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_closure_suspend");
+    let resume_child_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_closure_resume_child");
+    let abandon_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_closure_abandon");
+    let finish_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_closure_finish");
+
+    fn_ctx
+        .builder
+        .build_unconditional_branch(check_done_bb)
+        .llvm_ctx("suspending closure -> check_done br")?;
+
+    // ── check_done: poll the child for completion (Ready) vs still-suspended. ──
+    fn_ctx.builder.position_at_end(check_done_bb);
+    let poll = fn_ctx
+        .builder
+        .build_call(
+            cont_poll_fn,
+            &[child.into(), ptr_ty.const_null().into()],
+            "suspending_closure_poll",
+        )
+        .llvm_ctx("hew_cont_poll call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_cont_poll returned void".into()))?
+        .into_int_value();
+    // ResumePoll::Ready == 1 → the child reached its final suspend (completed).
+    let is_ready = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            poll,
+            i32_ty.const_int(1, false),
+            "suspending_closure_is_ready",
+        )
+        .llvm_ctx("suspending closure ready compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_ready, finish_bb, do_suspend_bb)
+        .llvm_ctx("suspending closure poll branch")?;
+
+    // ── do_suspend: park THIS coroutine (non-final). default -> executor; case
+    // 0 -> resume_child; case 1 -> abandon. ───────────────────────────────────
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    let cc = crate::coro::CoroContext {
+        ctx: fn_ctx.ctx,
+        llvm_mod: fn_ctx.llvm_mod,
+        builder: &fn_ctx.builder,
+        function: parent,
+        handle: coro.handle,
+        id_token: coro.id_token,
+    };
+    cc.emit_suspend(
+        resume_child_bb,
+        abandon_bb,
+        coro.suspend_return_block,
+        false,
+        "suspending_closure",
+    )?;
+
+    // ── resume_child: the reactor woke the calling actor; re-resume the child
+    // (under the swapped-in channel) and re-poll. Multi-suspend closure bodies
+    // re-park here on the next yield. ─────────────────────────────────────────
+    fn_ctx.builder.position_at_end(resume_child_bb);
+    swap_in("suspending_closure_resume_swap_in")?;
+    fn_ctx
+        .builder
+        .build_call(cont_resume_fn, &[child.into()], "suspending_closure_resume")
+        .llvm_ctx("hew_cont_resume call")?;
+    swap_out("suspending_closure_resume_swap_out")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(check_done_bb)
+        .llvm_ctx("suspending closure resume -> check_done br")?;
+
+    // ── abandon: the parked continuation was destroyed without resuming. Destroy
+    // the child handle + cancel/free the driver channel, then join the shared
+    // coro cleanup (frame-free + coro.end). ───────────────────────────────────
+    fn_ctx.builder.position_at_end(abandon_bb);
+    fn_ctx
+        .builder
+        .build_call(
+            cont_destroy_fn,
+            &[child.into()],
+            "suspending_closure_abandon_destroy",
+        )
+        .llvm_ctx("hew_cont_destroy (abandon) call")?;
+    let ch_cancel = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_cancel",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(ch_cancel, &[ch.into()], "suspending_closure_abandon_cancel")
+        .llvm_ctx("hew_reply_channel_cancel (abandon) call")?;
+    // The destroyed child never deposits, so its retained sender ref is never
+    // released by `hew_reply`; release BOTH the sender ref and the creator ref
+    // here so the channel is freed exactly once (no leak).
+    fn_ctx
+        .builder
+        .build_call(
+            ch_free,
+            &[ch.into()],
+            "suspending_closure_abandon_free_sender",
+        )
+        .llvm_ctx("hew_reply_channel_free (abandon sender) call")?;
+    fn_ctx
+        .builder
+        .build_call(
+            ch_free,
+            &[ch.into()],
+            "suspending_closure_abandon_free_creator",
+        )
+        .llvm_ctx("hew_reply_channel_free (abandon creator) call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(coro.cleanup_block)
+        .llvm_ctx("suspending closure abandon -> shared cleanup br")?;
+
+    // ── finish: the child completed and (for a non-unit closure) deposited its
+    // return value onto `ch`. Bind it, free the reply payload + channel, destroy
+    // the child frame, and branch to the MIR resume block. ────────────────────
+    fn_ctx.builder.position_at_end(finish_bb);
+    if let Some(dest) = term.result_dest {
+        // A unit/never logical return deposits no reply (the coro Return arm only
+        // deposits a non-unit logical value), so `hew_reply_wait` is reached ONLY
+        // when a value was deposited — it returns it on the fast path (the deposit
+        // ran synchronously inside the resume above, before `done`).
+        let _ = term.ret_ty;
+        let reply_wait = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_reply_wait",
+        )?;
+        let reply_ptr = fn_ctx
+            .builder
+            .build_call(reply_wait, &[ch.into()], "suspending_closure_reply")
+            .llvm_ctx("hew_reply_wait call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
+            .into_pointer_value();
+        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+        let reply_val = fn_ctx
+            .builder
+            .build_load(dest_ty, reply_ptr, "suspending_closure_reply_value")
+            .llvm_ctx("suspending closure reply load")?;
+        fn_ctx
+            .builder
+            .build_store(dest_ptr, reply_val)
+            .llvm_ctx("suspending closure reply store")?;
+        let free = get_or_declare_free(fn_ctx);
+        fn_ctx
+            .builder
+            .build_call(free, &[reply_ptr.into()], "suspending_closure_reply_free")
+            .llvm_ctx("free suspending closure reply")?;
+    } else {
+        // Unit/never logical return: the child deposited NOTHING (the coro Return
+        // arm only deposits a non-unit logical value), so the sender ref retained
+        // above was never released by `hew_reply`. Release it here so the unit
+        // finish path frees BOTH refs (sender now + creator below) and the channel
+        // is reclaimed exactly once — fixing the unit-closure reply-channel leak.
+        fn_ctx
+            .builder
+            .build_call(
+                ch_free,
+                &[ch.into()],
+                "suspending_closure_ok_unit_free_sender",
+            )
+            .llvm_ctx("hew_reply_channel_free (ok unit sender) call")?;
+    }
+    fn_ctx
+        .builder
+        .build_call(ch_free, &[ch.into()], "suspending_closure_ok_ch_free")
+        .llvm_ctx("hew_reply_channel_free (ok) call")?;
+    fn_ctx
+        .builder
+        .build_call(
+            cont_destroy_fn,
+            &[child.into()],
+            "suspending_closure_ok_destroy",
+        )
+        .llvm_ctx("hew_cont_destroy (ok) call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(resume_bb)
+        .llvm_ctx("suspending closure ok -> resume br")?;
+
     Ok(())
 }
 
@@ -23521,6 +24018,24 @@ fn lower_terminator<'ctx>(
                 cleanup: *cleanup,
             },
         )?,
+        Terminator::SuspendingCallClosure {
+            callee,
+            args,
+            ret_ty,
+            result_dest,
+            resume,
+            cleanup,
+        } => emit_suspending_call_closure_terminator(
+            fn_ctx,
+            SuspendingCallClosureEmit {
+                callee: *callee,
+                args: args.clone(),
+                ret_ty,
+                result_dest: *result_dest,
+                resume: *resume,
+                cleanup: *cleanup,
+            },
+        )?,
         Terminator::RemoteAsk {
             actor,
             msg_type,
@@ -25056,6 +25571,7 @@ fn declare_function<'ctx>(
             Terminator::Suspend { .. }
                 | Terminator::SuspendingAsk { .. }
                 | Terminator::SuspendingRead { .. }
+                | Terminator::SuspendingCallClosure { .. }
         )
     });
     let return_ty_llvm = if is_coroutine {
@@ -25487,6 +26003,7 @@ fn lower_function<'ctx>(
             Terminator::Suspend { .. }
                 | Terminator::SuspendingAsk { .. }
                 | Terminator::SuspendingRead { .. }
+                | Terminator::SuspendingCallClosure { .. }
         )
     });
 
@@ -26953,6 +27470,7 @@ fn build_module_for_target<'ctx>(
                                 Terminator::Suspend { .. }
                                     | Terminator::SuspendingAsk { .. }
                                     | Terminator::SuspendingRead { .. }
+                                    | Terminator::SuspendingCallClosure { .. }
                             )
                         })
                     })

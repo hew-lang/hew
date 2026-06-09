@@ -24,7 +24,8 @@ use hew_runtime::timer::{
 };
 use hew_runtime::timer_wheel::{
     hew_timer_wheel_cancel, hew_timer_wheel_free, hew_timer_wheel_new,
-    hew_timer_wheel_next_deadline_ms, hew_timer_wheel_schedule, hew_timer_wheel_tick,
+    hew_timer_wheel_next_deadline_ms, hew_timer_wheel_schedule, hew_timer_wheel_schedule_handle,
+    hew_timer_wheel_tick,
 };
 
 // ── Shared helpers ──────────────────────────────────────────────────────
@@ -437,8 +438,8 @@ fn wheel_cancel_prevents_firing() {
 
     unsafe {
         let tw = hew_timer_wheel_new();
-        let e = hew_timer_wheel_schedule(tw, 10, counting_cb, ptr::null_mut());
-        hew_timer_wheel_cancel(tw, e);
+        let h = hew_timer_wheel_schedule_handle(tw, 10, counting_cb, ptr::null_mut());
+        hew_timer_wheel_cancel(tw, h.entry, h.generation);
 
         hew_simtime_advance_ms(20);
         let fired = hew_timer_wheel_tick(tw);
@@ -564,7 +565,7 @@ fn wheel_null_safety() {
         assert!(
             hew_timer_wheel_schedule(ptr::null_mut(), 100, counting_cb, ptr::null_mut()).is_null()
         );
-        hew_timer_wheel_cancel(ptr::null_mut(), ptr::null_mut());
+        hew_timer_wheel_cancel(ptr::null_mut(), ptr::null_mut(), 0);
         assert_eq!(hew_timer_wheel_tick(ptr::null_mut()), 0);
         assert_eq!(hew_timer_wheel_next_deadline_ms(ptr::null_mut()), -1);
         hew_timer_wheel_free(ptr::null_mut());
@@ -602,8 +603,8 @@ fn wheel_cancel_l1_timer() {
     unsafe {
         let tw = hew_timer_wheel_new();
 
-        let e = hew_timer_wheel_schedule(tw, 500, counting_cb, ptr::null_mut());
-        hew_timer_wheel_cancel(tw, e);
+        let h = hew_timer_wheel_schedule_handle(tw, 500, counting_cb, ptr::null_mut());
+        hew_timer_wheel_cancel(tw, h.entry, h.generation);
 
         hew_simtime_advance_ms(600);
         let fired = hew_timer_wheel_tick(tw);
@@ -620,9 +621,9 @@ fn wheel_cancelled_timer_excluded_from_next_deadline() {
     unsafe {
         let tw = hew_timer_wheel_new();
 
-        let e = hew_timer_wheel_schedule(tw, 50, counting_cb, ptr::null_mut());
+        let h = hew_timer_wheel_schedule_handle(tw, 50, counting_cb, ptr::null_mut());
         hew_timer_wheel_schedule(tw, 200, counting_cb, ptr::null_mut());
-        hew_timer_wheel_cancel(tw, e);
+        hew_timer_wheel_cancel(tw, h.entry, h.generation);
 
         let next = hew_timer_wheel_next_deadline_ms(tw);
         // With the 50ms timer cancelled, the next should be ~200ms.

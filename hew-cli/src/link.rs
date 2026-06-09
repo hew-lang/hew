@@ -211,16 +211,14 @@ pub fn link_executable(
         }
     }
 
-    // ── Linux cross-arch sysroot (probe, non-fatal) ───────────────────
-    // On Debian/Ubuntu multiarch hosts, cross-arch libs live under
-    // /usr/<arch-tuple>/.  Passing --sysroot directs clang/lld there so the
-    // target arch's libc, libpthread, etc. resolve correctly without a full
-    // cross-toolchain installation.  If the sysroot is absent the link still
-    // proceeds — it succeeds when the system linker finds the target libs via
-    // other search paths (e.g. multiarch symlinks in /usr/lib/).
+    // ── Linux cross-arch GCC toolchain (probe, non-fatal) ──────────────
+    // Debian/Ubuntu cross libc linker scripts under /usr/<arch-tuple>/lib use
+    // absolute paths, so do not pass that directory as --sysroot.  Instead,
+    // point clang at the installed GCC cross toolchain so it finds crtbeginS.o
+    // and libgcc while keeping "/" as the effective sysroot for those scripts.
     #[cfg(target_os = "linux")]
-    if let Some(sysroot) = find_linux_cross_sysroot(target) {
-        cmd.arg("--sysroot").arg(sysroot);
+    if let Some(gcc_toolchain) = find_linux_cross_gcc_toolchain(target) {
+        cmd.arg(format!("--gcc-toolchain={gcc_toolchain}"));
     }
 
     // ── Windows CRT linkage fixup (target-driven) ─────────────────────
@@ -375,21 +373,43 @@ where
     }
 }
 
-/// Probe for a Debian/Ubuntu multiarch sysroot for Linux cross-arch linking.
+/// Probe for the Debian/Ubuntu multiarch tuple for Linux cross-arch linking.
 ///
 /// Returns `None` when:
-/// - the target arch is the same as the host arch (no sysroot needed), or
+/// - the target arch is the same as the host arch (no cross paths needed), or
 /// - the arch has no known Debian multiarch tuple, or
-/// - the sysroot directory does not exist on this host.
+/// - the multiarch directory does not exist on this host.
 ///
-/// Sysroot paths follow the Debian/Ubuntu multiarch convention:
+/// Paths follow the Debian/Ubuntu multiarch convention:
 /// - `/usr/aarch64-linux-gnu` — aarch64 cross-libs on an `x86_64` host
 /// - `/usr/x86_64-linux-gnu` — `x86_64` cross-libs on an aarch64 host
-///
-/// The sysroot is non-fatal: the link proceeds even when absent and succeeds
-/// when the system linker already finds the target libs via other paths.
 #[cfg(target_os = "linux")]
-fn find_linux_cross_sysroot(target: &TargetSpec) -> Option<std::path::PathBuf> {
+fn linux_cross_multiarch_tuple(target: &TargetSpec) -> Option<&'static str> {
+    let arch_tuple = linux_cross_arch_tuple(target)?;
+    let multiarch_root = std::path::Path::new("/usr").join(arch_tuple);
+    if multiarch_root.is_dir() {
+        Some(arch_tuple)
+    } else {
+        None
+    }
+}
+
+/// Probe for the GCC cross toolchain root that clang needs for Linux
+/// cross-arch startup objects (`crtbeginS.o`) and libgcc search paths.
+#[cfg(target_os = "linux")]
+fn find_linux_cross_gcc_toolchain(target: &TargetSpec) -> Option<&'static str> {
+    let arch_tuple = linux_cross_multiarch_tuple(target)?;
+    let gcc_cross_root = std::path::Path::new("/usr/lib/gcc-cross").join(arch_tuple);
+
+    if gcc_cross_root.is_dir() {
+        Some("/usr")
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_cross_arch_tuple(target: &TargetSpec) -> Option<&'static str> {
     use crate::target::{TargetArch, TargetOs};
 
     if target.os() != TargetOs::Linux {
@@ -407,14 +427,9 @@ fn find_linux_cross_sysroot(target: &TargetSpec) -> Option<std::path::PathBuf> {
     let is_host_arch = cfg!(target_arch = "aarch64") && arch_tuple == "aarch64-linux-gnu"
         || cfg!(target_arch = "x86_64") && arch_tuple == "x86_64-linux-gnu";
     if is_host_arch {
-        return None;
-    }
-
-    let path = std::path::PathBuf::from(format!("/usr/{arch_tuple}"));
-    if path.is_dir() {
-        Some(path)
-    } else {
         None
+    } else {
+        Some(arch_tuple)
     }
 }
 

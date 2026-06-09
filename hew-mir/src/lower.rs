@@ -5024,6 +5024,19 @@ struct Builder {
     generated_functions: Vec<LoweredFunction>,
     closure_record_layouts: Vec<crate::model::RecordLayout>,
     capture_env_sources: HashMap<BindingId, CaptureEnvSource>,
+    /// Bindings that hold a closure value whose resolved invoke-shim carries a
+    /// suspend terminator (the suspendable-callee discriminator). Populated by
+    /// the `Let` handler from the shim's lowered MIR carriers — the SAME
+    /// structural fact codegen's `is_coroutine` reads — so a call to such a
+    /// binding lowers to `Terminator::SuspendingCallClosure` (the driver) rather
+    /// than the direct `Instr::CallClosure`. A non-suspending closure is never
+    /// inserted, keeping it on the direct path (no spurious coroutine driving).
+    suspending_closure_bindings: HashSet<BindingId>,
+    /// Transient: set by `lower_closure_literal` to the just-lowered closure's
+    /// body-suspends verdict (derived from its shim's MIR carriers) so the `Let`
+    /// handler can attribute it to the bound binding. Reset around each closure
+    /// lowering; only read immediately after lowering a `HirExprKind::Closure`.
+    pending_closure_literal_suspends: Option<bool>,
     /// Reserved context for the later transition-body lowering slice. When
     /// set, the `BindingId` identifies the step function's `self` parameter
     /// slot so `HirExprKind::MachineFieldAccess` can address payload reads
@@ -6137,10 +6150,23 @@ impl Builder {
                 } else {
                     false
                 };
+                self.pending_closure_literal_suspends = None;
                 let value_place = self.lower_value(value);
                 if pending {
                     self.pending_lambda_actor_handle = None;
                 }
+                // Suspendable-callee discriminator: when this binding holds a
+                // closure literal whose invoke-shim carries a suspend terminator,
+                // record it so a later `read_once()` call lowers to the driving
+                // `Terminator::SuspendingCallClosure` rather than the direct
+                // `Instr::CallClosure` (a non-suspending closure is never
+                // recorded — it stays on the direct path).
+                if matches!(value.kind, HirExprKind::Closure { .. })
+                    && self.pending_closure_literal_suspends == Some(true)
+                {
+                    self.suspending_closure_bindings.insert(binding.id);
+                }
+                self.pending_closure_literal_suspends = None;
                 self.decide(value);
                 self.statements.push(MirStatement::Bind {
                     binding: binding.id,
@@ -6959,6 +6985,25 @@ impl Builder {
                     callee.ty,
                     ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
                 ) {
+                    // Suspendable-callee discriminator: a call to a binding that
+                    // holds a closure whose body `await`s across the coroutine
+                    // boundary drives the callee coroutine and PROPAGATES its
+                    // suspension into this caller — lowered to the driving
+                    // `Terminator::SuspendingCallClosure`. Only fires inside a
+                    // suspendable caller (one whose call-conv carries the
+                    // execution context): a `Default` caller has no parkable
+                    // continuation, so a suspending closure cannot be driven
+                    // there and the existing direct path (which fails closed in
+                    // codegen) is kept.
+                    let callee_suspends =
+                        self.current_function_call_conv.carries_execution_context()
+                            && matches!(
+                                &callee.kind,
+                                HirExprKind::BindingRef {
+                                    resolved: ResolvedRef::Binding(id),
+                                    ..
+                                } if self.suspending_closure_bindings.contains(id)
+                            );
                     let callee_place = self.lower_value(callee)?;
                     let mut arg_places = Vec::with_capacity(args.len());
                     for arg in args {
@@ -6970,6 +7015,22 @@ impl Builder {
                     } else {
                         Some(self.alloc_local(ret_ty.clone()))
                     };
+                    if callee_suspends {
+                        // The driver rides the multi-suspend epilogue: `cleanup`
+                        // reuses `resume` exactly as `SuspendingRead`/`Ask` do
+                        // (the carrier owns no separate MIR cleanup block).
+                        let next = self.alloc_block();
+                        self.finish_current_block(Terminator::SuspendingCallClosure {
+                            callee: callee_place,
+                            args: arg_places,
+                            ret_ty,
+                            result_dest: dest,
+                            resume: next,
+                            cleanup: next,
+                        });
+                        self.start_block(next);
+                        return dest;
+                    }
                     self.instructions.push(Instr::CallClosure {
                         callee: callee_place,
                         args: arg_places,
@@ -9809,6 +9870,7 @@ impl Builder {
                     | Terminator::Suspend { .. }
                     | Terminator::SuspendingAsk { .. }
                     | Terminator::SuspendingRead { .. }
+                    | Terminator::SuspendingCallClosure { .. }
                     | Terminator::Select { .. } => false,
                 }
             }
@@ -13257,7 +13319,7 @@ impl Builder {
             });
             return None;
         }
-        let (fn_symbol, env_ty, env_place) =
+        let (fn_symbol, env_ty, env_place, _suspends) =
             self.materialize_closure_env(callee, params, ret_ty, body, captures)?;
         let task_place = self.alloc_local(task_ty.clone());
         self.push_runtime_call("hew_task_new", vec![], Some(task_place));
@@ -14938,21 +15000,6 @@ impl Builder {
         to_string: bool,
         expr: &HirExpr,
     ) -> Option<Place> {
-        if self.current_function_call_conv == crate::model::FunctionCallConv::ClosureInvoke
-            && self.conn_await_reads_captured_binding(conn)
-        {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "await on a captured Connection inside a closure".to_string(),
-                    site: expr.site,
-                },
-                note: "await on a captured Connection inside a closure is not yet supported; \
-                       perform the await in the actor handler body"
-                    .to_string(),
-            });
-            return None;
-        }
-
         let conn_place = self.lower_value(conn)?;
         let bytes_ty = ResolvedTy::Bytes;
 
@@ -15000,16 +15047,6 @@ impl Builder {
         });
         self.start_block(next);
         Some(string_dest)
-    }
-
-    fn conn_await_reads_captured_binding(&self, conn: &HirExpr) -> bool {
-        matches!(
-            &conn.kind,
-            HirExprKind::BindingRef {
-                resolved: hew_hir::ResolvedRef::Binding(binding),
-                ..
-            } if self.capture_env_sources.contains_key(binding)
-        )
     }
 
     fn remote_actor_method_info(
@@ -15396,8 +15433,12 @@ impl Builder {
         captures: &[hew_hir::HirClosureCapture],
         escape_kind: hew_types::ClosureEscapeKind,
     ) -> Option<Place> {
-        let (shim_name, _env_ty, env_place) =
+        let (shim_name, _env_ty, env_place, suspends) =
             self.materialize_closure_env(expr, params, ret_ty, body, captures)?;
+        // Record the body-suspends verdict so the enclosing `Let` handler can
+        // attribute it to the bound binding (the suspendable-callee
+        // discriminator the closure-call site reads).
+        self.pending_closure_literal_suspends = Some(suspends);
 
         // Build the foundation-API layout (plan §15.1). Stored on the
         // builder so downstream consumers (generator codegen, auto-lock
@@ -15457,7 +15498,7 @@ impl Builder {
         ret_ty: &ResolvedTy,
         body: &HirExpr,
         captures: &[hew_hir::HirClosureCapture],
-    ) -> Option<(String, ResolvedTy, Place)> {
+    ) -> Option<(String, ResolvedTy, Place, bool)> {
         let closure_id = self.next_closure_id;
         self.next_closure_id = self
             .next_closure_id
@@ -15524,9 +15565,21 @@ impl Builder {
         });
 
         let lowered = self.lower_closure_shim(&shim_name, &env_ty, params, ret_ty, body, captures);
+        // The suspendable-callee discriminator: the closure's invoke shim is a
+        // coroutine iff its lowered MIR carries a suspend terminator — the
+        // IDENTICAL structural fact codegen's `is_coroutine` reads off the same
+        // shim (`hew-codegen-rs` `declare_function`/`lower_function`). Deriving
+        // the call-site driver decision from the same carriers makes the two
+        // sites agree by construction (container-abi-ctor-op-agreement) — there
+        // is no second suspends-tracker to drift.
+        let suspends = lowered
+            .raw
+            .blocks
+            .iter()
+            .any(|b| terminator_is_suspend_carrier(&b.terminator));
         self.generated_functions.push(lowered);
 
-        Some((shim_name, env_ty, env_place))
+        Some((shim_name, env_ty, env_place, suspends))
     }
 
     #[allow(
@@ -17438,6 +17491,9 @@ fn validate_cross_block_split_consume(
             }
             | Terminator::SuspendingRead {
                 resume, cleanup, ..
+            }
+            | Terminator::SuspendingCallClosure {
+                resume, cleanup, ..
             } => {
                 emit(*resume);
                 emit(*cleanup);
@@ -17470,6 +17526,9 @@ fn validate_cross_block_split_consume(
                 resume, cleanup, ..
             }
             | Terminator::SuspendingRead {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingCallClosure {
                 resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
@@ -18027,6 +18086,22 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
 /// returned value moved to `ReturnSlot` earlier, an actor `Send`/`Ask`
 /// payload, a `select` arm payload, a `yield` value) is aliased out and
 /// excluded from scope-exit drop.
+/// True when a terminator is a SUSPEND CARRIER — the structural fact codegen's
+/// `is_coroutine` / `has_suspend` read to lower a function as a
+/// `presplitcoroutine`. The single authority both the MIR closure-call
+/// discriminator and the codegen coroutine boundary derive from, so they can
+/// never disagree (`container-abi-ctor-op-agreement`).
+#[must_use]
+pub fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
+    matches!(
+        term,
+        Terminator::Suspend { .. }
+            | Terminator::SuspendingAsk { .. }
+            | Terminator::SuspendingRead { .. }
+            | Terminator::SuspendingCallClosure { .. }
+    )
+}
+
 #[allow(
     clippy::match_same_arms,
     reason = "exhaustive match over every Terminator variant; Send and Ask \
@@ -18061,6 +18136,15 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // `SuspendingRead` reads `conn` (the read source); `result_dest` is a
         // write slot bound on the resume edge, not a source.
         Terminator::SuspendingRead { conn, .. } => vec![*conn],
+        // The suspendable-callee driver reads the closure pair (`callee`) and
+        // its forwarded `args`; `result_dest` is a write slot bound on the
+        // completion edge, not a source.
+        Terminator::SuspendingCallClosure { callee, args, .. } => {
+            let mut places = Vec::with_capacity(args.len() + 1);
+            places.push(*callee);
+            places.extend(args.iter().copied());
+            places
+        }
         Terminator::RemoteAsk {
             actor,
             value,
@@ -18279,6 +18363,10 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         // `SuspendingRead` carries only `conn` (a connection handle read), never
         // a generator-yielded `local`, so it never escapes one.
         | Terminator::SuspendingRead { .. }
+        // The suspendable-callee driver's `args` are borrows (same posture as
+        // `Call`/`Instr::Call*`); the closure callee does not retain a fresh
+        // yielded value, so this terminator never escapes `local`.
+        | Terminator::SuspendingCallClosure { .. }
         | Terminator::MakeGenerator { .. } => false,
         // A bare `Return` moves the function's ReturnSlot (already written by an
         // earlier `Move`, caught by the instr scan); `Return` itself carries no
@@ -21500,6 +21588,15 @@ fn enumerate_exits(
             // additionally cancels + frees the read slot), never at the suspend
             // site.
             | Terminator::SuspendingRead {
+                resume, cleanup, ..
+            }
+            // The suspendable-callee driver is a suspend point with the
+            // identical drop posture: live state (the child handle + driver
+            // reply channel) rides the coro frame across the park, dropped
+            // exactly once by the `cleanup` outline on `coro.destroy` (the
+            // abandon edge additionally destroys the child handle + frees the
+            // channel), never at the suspend site.
+            | Terminator::SuspendingCallClosure {
                 resume, cleanup, ..
             } => (
                 ExitPath::Suspend {

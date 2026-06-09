@@ -10,6 +10,10 @@
 )]
 
 use crate::actor::HewActor;
+use crate::await_cancel::{
+    hew_await_cancel_complete, hew_await_cancel_free, hew_await_cancel_retain,
+};
+use crate::await_cancel::{hew_await_cancel_status, AwaitCancelStatus, HewAwaitCancel};
 use crate::util::{CondvarExt, MutexExt};
 use std::ffi::c_void;
 use std::ptr;
@@ -76,6 +80,8 @@ pub struct HewReplyChannel {
     lock: Mutex<()>,
     /// Condvar signalled by [`hew_reply`].
     cond: Condvar,
+    /// Optional common cancellation/deadline record attached to a suspended ask.
+    await_cancel: AtomicPtr<HewAwaitCancel>,
 }
 
 // SAFETY: `HewReplyChannel` is designed for cross-thread use. The atomic
@@ -116,6 +122,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         caller_actor: AtomicPtr::new(ptr::null_mut()),
         lock: Mutex::new(()),
         cond: Condvar::new(),
+        await_cancel: AtomicPtr::new(ptr::null_mut()),
     }))
 }
 
@@ -146,6 +153,54 @@ pub unsafe extern "C" fn hew_reply_channel_set_parked_waiter(
     // SAFETY: caller guarantees `ch` is a live reply-channel reference.
     unsafe {
         (*ch).caller_actor.store(actor, Ordering::Release);
+    }
+}
+
+/// Attach a shared await-cancellation registration to this suspended reply wait.
+///
+/// # Safety
+///
+/// `ch` must be a live reply channel and `reg`, when non-null, must be a live
+/// await-cancellation registration. The channel retains the registration until
+/// final free or replacement.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_set_await_cancel(
+    ch: *mut HewReplyChannel,
+    reg: *mut HewAwaitCancel,
+) {
+    if ch.is_null() {
+        return;
+    }
+    if !reg.is_null() {
+        // SAFETY: caller provides a live registration to retain for the channel.
+        unsafe { hew_await_cancel_retain(reg) };
+    }
+    // SAFETY: caller holds a live channel reference.
+    let old = unsafe { (*ch).await_cancel.swap(reg, Ordering::AcqRel) };
+    if !old.is_null() {
+        // SAFETY: releases the channel's previous retained registration.
+        unsafe { hew_await_cancel_free(old) };
+    }
+}
+
+/// Cleanup callback for [`crate::await_cancel::HewAwaitCancel`] reply waits.
+///
+/// # Safety
+///
+/// `source` must be a live reply-channel reference retained by the suspended ask
+/// source. The callback is invoked at most once by the common await CAS.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_cancel_cleanup(source: *mut c_void, _status: i32) {
+    let ch = source.cast::<HewReplyChannel>();
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: await-cancel source contract supplies a live channel reference.
+    unsafe {
+        (*ch).cancelled.store(true, Ordering::Release);
+        let guard = (*ch).lock.lock_or_recover();
+        (*ch).cond.notify_one();
+        drop(guard);
     }
 }
 
@@ -207,6 +262,11 @@ unsafe fn publish_reply_from_sender_ref(
         (*ch).value_size = value_size;
         // Release barrier ensures value writes are visible to the waiter.
         (*ch).ready.store(true, Ordering::Release);
+        let await_cancel = (*ch).await_cancel.load(Ordering::Acquire);
+        if !await_cancel.is_null() {
+            // SAFETY: the channel holds a retained registration reference.
+            hew_await_cancel_complete(await_cancel);
+        }
 
         // Waiter-kind branch (W6.010, E5/E6). A parked-continuation waiter
         // (`caller_actor` non-null) is woken by re-enqueuing its actor; the
@@ -583,6 +643,10 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut HewReplyChannel) {
             debug_untrack_libc_alloc((*ch).value.cast());
             libc::free((*ch).value);
         }
+        let await_cancel = (*ch).await_cancel.load(Ordering::Acquire);
+        if !await_cancel.is_null() {
+            hew_await_cancel_free(await_cancel);
+        }
         #[cfg(test)]
         ACTIVE_CHANNELS.fetch_sub(1, Ordering::Relaxed);
         drop(Box::from_raw(ch));
@@ -603,10 +667,40 @@ pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut HewReplyChannel) {
     if ch.is_null() {
         return;
     }
-
     // SAFETY: Caller guarantees `ch` is valid while cancellation is recorded.
     unsafe {
         (*ch).cancelled.store(true, Ordering::Release);
+    }
+}
+
+/// Return the attached suspended-await status for a reply channel.
+///
+/// When no common registration is attached, this reports the legacy channel
+/// state (`Completed` if ready, `Cancelled` if tombstoned, otherwise `Pending`).
+///
+/// # Safety
+///
+/// `ch` must be null or a live reply channel reference.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_await_status(ch: *mut HewReplyChannel) -> i32 {
+    if ch.is_null() {
+        return AwaitCancelStatus::Cancelled as i32;
+    }
+    // SAFETY: caller holds a live channel reference.
+    let await_cancel = unsafe { (*ch).await_cancel.load(Ordering::Acquire) };
+    if !await_cancel.is_null() {
+        // SAFETY: the channel holds a retained registration reference.
+        return unsafe { hew_await_cancel_status(await_cancel) };
+    }
+    // SAFETY: caller holds a live channel reference.
+    unsafe {
+        if (*ch).ready.load(Ordering::Acquire) {
+            AwaitCancelStatus::Completed as i32
+        } else if (*ch).cancelled.load(Ordering::Acquire) {
+            AwaitCancelStatus::Cancelled as i32
+        } else {
+            AwaitCancelStatus::Pending as i32
+        }
     }
 }
 
@@ -765,6 +859,67 @@ mod tests {
 
             let _ = hew_reply(ch, ptr::null_mut(), 0);
         }
+    }
+
+    #[test]
+    fn await_cancel_cleanup_tombstones_reply_channel_exactly_once() {
+        static CLEANUPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn cleanup(source: *mut c_void, status: i32) {
+            let _ = status;
+            CLEANUPS.fetch_add(1, Ordering::AcqRel);
+            // SAFETY: the registration source is the live reply channel for this test.
+            unsafe {
+                hew_reply_channel_cancel_cleanup(source, AwaitCancelStatus::Cancelled as i32);
+            };
+        }
+
+        let _guard = crate::runtime_test_guard();
+        CLEANUPS.store(0, Ordering::Release);
+        let pre = active_channel_count();
+        let ch = hew_reply_channel_new();
+        // SAFETY: this test owns the newly-created channel and registration until
+        // the final frees below.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            let reg = crate::await_cancel::hew_await_cancel_new(
+                ptr::null_mut(),
+                Some(cleanup),
+                ch.cast(),
+            );
+            hew_reply_channel_set_await_cancel(ch, reg);
+
+            assert_eq!(
+                crate::await_cancel::hew_await_cancel_cancel(
+                    reg,
+                    AwaitCancelStatus::Cancelled as i32,
+                    0,
+                ),
+                1
+            );
+            assert_eq!(
+                crate::await_cancel::hew_await_cancel_cancel(
+                    reg,
+                    AwaitCancelStatus::TimedOut as i32,
+                    0,
+                ),
+                0
+            );
+            assert_eq!(CLEANUPS.load(Ordering::Acquire), 1);
+            assert_eq!(
+                hew_reply_channel_await_status(ch),
+                AwaitCancelStatus::Cancelled as i32
+            );
+
+            hew_reply_channel_free(ch);
+            let _ = hew_reply(ch, ptr::null_mut(), 0);
+            hew_await_cancel_free(reg);
+        }
+        assert_eq!(
+            active_channel_count(),
+            pre,
+            "cancelled suspended ask must release the waiter and late sender exactly once"
+        );
     }
 
     #[test]

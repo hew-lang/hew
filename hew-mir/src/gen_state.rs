@@ -153,6 +153,13 @@ fn terminator_reads(term: &Terminator) -> Vec<Place> {
         // `SuspendingRead` reads `conn` (the read source); `result_dest` is a
         // write slot bound on the resume edge, not a read.
         Terminator::SuspendingRead { conn, .. } => vec![*conn],
+        // The suspendable-callee driver reads the closure pair + forwarded args;
+        // `result_dest` is a write slot bound on the completion edge, not a read.
+        Terminator::SuspendingCallClosure { callee, args, .. } => {
+            let mut r = vec![*callee];
+            r.extend(args.iter().copied());
+            r
+        }
         Terminator::RemoteAsk {
             actor,
             value,

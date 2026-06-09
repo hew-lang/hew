@@ -24,8 +24,12 @@
     reason = "FFI entry-point module; SAFETY documented at each fn signature."
 )]
 
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
 
+use crate::await_cancel::{
+    hew_await_cancel_complete, hew_await_cancel_free, hew_await_cancel_retain,
+};
+use crate::await_cancel::{AwaitCancelStatus, HewAwaitCancel};
 use crate::bytes::BytesTriple;
 
 /// The deposit status the reactor records into a read slot before waking the
@@ -51,6 +55,10 @@ pub enum ReadStatus {
     /// (the error variant is the empty-buffer signal the blocking path also
     /// uses; NEW-6 layers a typed-error surface on top of this).
     Error = 3,
+    /// The suspended read was explicitly cancelled before readiness completed.
+    Cancelled = 4,
+    /// The suspended read deadline elapsed before readiness completed.
+    TimedOut = 5,
 }
 
 impl ReadStatus {
@@ -60,6 +68,8 @@ impl ReadStatus {
             1 => ReadStatus::Data,
             2 => ReadStatus::Eof,
             3 => ReadStatus::Error,
+            4 => ReadStatus::Cancelled,
+            5 => ReadStatus::TimedOut,
             _ => ReadStatus::Pending,
         }
     }
@@ -99,6 +109,8 @@ pub struct HewReadSlot {
     /// takes ownership; the abandon edge drops the buffer if a deposit landed
     /// before cancellation.
     value: BytesTriple,
+    /// Optional common cancellation/deadline record attached to this wait.
+    await_cancel: AtomicPtr<HewAwaitCancel>,
 }
 
 // SAFETY: `HewReadSlot` is designed for cross-thread use. `status` is the
@@ -125,6 +137,7 @@ pub extern "C" fn hew_read_slot_new() -> *mut HewReadSlot {
             offset: 0,
             len: 0,
         },
+        await_cancel: AtomicPtr::new(std::ptr::null_mut()),
     }))
 }
 
@@ -185,6 +198,11 @@ pub unsafe extern "C" fn hew_read_slot_free(slot: *mut HewReadSlot) {
         // `hew_bytes_from_static`; nothing else references it after the box drop.
         unsafe { crate::bytes::hew_bytes_drop(boxed.value.ptr) };
     }
+    let await_cancel = boxed.await_cancel.load(Ordering::Acquire);
+    if !await_cancel.is_null() {
+        // SAFETY: the slot retained this registration when it attached it.
+        unsafe { hew_await_cancel_free(await_cancel) };
+    }
     drop(boxed);
 }
 
@@ -202,7 +220,81 @@ pub unsafe extern "C" fn hew_read_slot_cancel(slot: *mut HewReadSlot) {
         return;
     }
     // SAFETY: caller holds a ref.
-    unsafe { (*slot).cancelled.store(1, Ordering::Release) };
+    unsafe {
+        (*slot).cancelled.store(1, Ordering::Release);
+        let _ = read_slot_cancel_with_status(slot, ReadStatus::Cancelled);
+    }
+}
+
+unsafe fn read_slot_cancel_with_status(slot: *mut HewReadSlot, status: ReadStatus) -> bool {
+    if slot.is_null() {
+        return false;
+    }
+    debug_assert!(
+        matches!(status, ReadStatus::Cancelled | ReadStatus::TimedOut),
+        "read_slot_cancel_with_status only accepts cancel/deadline statuses"
+    );
+    // SAFETY: caller holds a live slot ref.
+    let s = unsafe { &*slot };
+    s.cancelled.store(1, Ordering::Release);
+    s.status
+        .compare_exchange(
+            ReadStatus::Pending as i32,
+            status as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+}
+
+/// Attach a shared await-cancellation registration to this read slot.
+///
+/// # Safety
+///
+/// `slot` must be a live read slot and `reg`, when non-null, must be a live
+/// await-cancellation registration. The slot retains the registration until the
+/// slot's final free or replacement.
+#[no_mangle]
+pub unsafe extern "C" fn hew_read_slot_set_await_cancel(
+    slot: *mut HewReadSlot,
+    reg: *mut HewAwaitCancel,
+) {
+    if slot.is_null() {
+        return;
+    }
+    if !reg.is_null() {
+        // SAFETY: caller provides a live registration to retain for the slot.
+        unsafe { hew_await_cancel_retain(reg) };
+    }
+    // SAFETY: caller holds a live slot ref.
+    let old = unsafe { (*slot).await_cancel.swap(reg, Ordering::AcqRel) };
+    if !old.is_null() {
+        // SAFETY: releases the slot's previous retained registration.
+        unsafe { hew_await_cancel_free(old) };
+    }
+}
+
+/// Cleanup callback for [`crate::await_cancel::HewAwaitCancel`] read waits.
+///
+/// # Safety
+///
+/// `source` must be a live `HewReadSlot` reference held by the read-slot source.
+#[no_mangle]
+pub unsafe extern "C" fn hew_read_slot_cancel_cleanup(source: *mut std::ffi::c_void, status: i32) {
+    let slot = source.cast::<HewReadSlot>();
+    if slot.is_null() {
+        return;
+    }
+    let read_status = if status == AwaitCancelStatus::TimedOut as i32 {
+        ReadStatus::TimedOut
+    } else {
+        ReadStatus::Cancelled
+    };
+    // SAFETY: await-cancel source contract supplies a live slot reference.
+    unsafe {
+        let _ = read_slot_cancel_with_status(slot, read_status);
+        crate::reactor::reactor_detach_read_slot(slot);
+    }
 }
 
 /// Read the deposit status without consuming it. The resume edge branches on
@@ -297,8 +389,38 @@ pub(crate) unsafe fn read_slot_deposit_data(slot: *mut HewReadSlot, triple: Byte
         let value_ptr = std::ptr::addr_of!(s.value).cast_mut();
         (*value_ptr) = triple;
     }
-    s.status.store(ReadStatus::Data as i32, Ordering::Release);
-    true
+    if s.status
+        .compare_exchange(
+            ReadStatus::Pending as i32,
+            ReadStatus::Data as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        let await_cancel = s.await_cancel.load(Ordering::Acquire);
+        if !await_cancel.is_null() {
+            // SAFETY: slot holds a retained registration reference.
+            unsafe { hew_await_cancel_complete(await_cancel) };
+        }
+        true
+    } else {
+        // Cancellation/deadline won after we copied the value into the slot but
+        // before the Data CAS. Drop the buffer here and leave the terminal
+        // status intact so the resume edge sees Cancelled/TimedOut.
+        if !triple.ptr.is_null() {
+            // SAFETY: the slot did not publish ownership; this thread drops it.
+            unsafe { crate::bytes::hew_bytes_drop(triple.ptr) };
+        }
+        // SAFETY: the Data CAS failed, so no reader can observe this slot value
+        // as published data; clear the raw fields before returning terminal state.
+        unsafe {
+            let value_ptr = std::ptr::addr_of!(s.value).cast_mut();
+            (*value_ptr).ptr = std::ptr::null_mut();
+            (*value_ptr).len = 0;
+        }
+        false
+    }
 }
 
 /// Deposit a terminal status (EOF / error) into the slot and report whether the
@@ -317,8 +439,24 @@ pub(crate) unsafe fn read_slot_deposit_status(slot: *mut HewReadSlot, status: Re
     if s.cancelled.load(Ordering::Acquire) != 0 {
         return false;
     }
-    s.status.store(status as i32, Ordering::Release);
-    true
+    if s.status
+        .compare_exchange(
+            ReadStatus::Pending as i32,
+            status as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        let await_cancel = s.await_cancel.load(Ordering::Acquire);
+        if !await_cancel.is_null() {
+            // SAFETY: slot holds a retained registration reference.
+            unsafe { hew_await_cancel_complete(await_cancel) };
+        }
+        true
+    } else {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -371,10 +509,10 @@ mod tests {
         let triple = make_triple(b"abandoned");
         let wake = unsafe { read_slot_deposit_data(slot, triple) };
         assert!(!wake, "cancelled slot must not wake");
-        // The buffer was dropped inside deposit; status stays Pending.
+        // The buffer was dropped inside deposit; cancellation is now typed.
         assert_eq!(
             unsafe { hew_read_slot_status(slot) },
-            ReadStatus::Pending as i32
+            ReadStatus::Cancelled as i32
         );
         unsafe { hew_read_slot_free(slot) };
     }
@@ -424,6 +562,64 @@ mod tests {
         assert_eq!(ReadStatus::from_i32(1), ReadStatus::Data);
         assert_eq!(ReadStatus::from_i32(2), ReadStatus::Eof);
         assert_eq!(ReadStatus::from_i32(3), ReadStatus::Error);
+        assert_eq!(ReadStatus::from_i32(4), ReadStatus::Cancelled);
+        assert_eq!(ReadStatus::from_i32(5), ReadStatus::TimedOut);
         assert_eq!(ReadStatus::from_i32(99), ReadStatus::Pending);
+    }
+
+    #[test]
+    fn await_cancel_cleanup_cancels_read_slot_exactly_once() {
+        static CLEANUPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn cleanup(source: *mut std::ffi::c_void, status: i32) {
+            CLEANUPS.fetch_add(1, Ordering::AcqRel);
+            // SAFETY: the registration source is the live read slot for this test.
+            unsafe { hew_read_slot_cancel_cleanup(source, status) };
+        }
+
+        CLEANUPS.store(0, Ordering::Release);
+        let slot = hew_read_slot_new();
+        // SAFETY: test passes a live slot as the cleanup source.
+        let reg = unsafe {
+            crate::await_cancel::hew_await_cancel_new(
+                std::ptr::null_mut(),
+                Some(cleanup),
+                slot.cast(),
+            )
+        };
+        unsafe { hew_read_slot_set_await_cancel(slot, reg) };
+
+        assert_eq!(
+            unsafe {
+                crate::await_cancel::hew_await_cancel_cancel(
+                    reg,
+                    AwaitCancelStatus::Cancelled as i32,
+                    0,
+                )
+            },
+            1
+        );
+        assert_eq!(
+            unsafe {
+                crate::await_cancel::hew_await_cancel_cancel(
+                    reg,
+                    AwaitCancelStatus::TimedOut as i32,
+                    0,
+                )
+            },
+            0
+        );
+        assert_eq!(CLEANUPS.load(Ordering::Acquire), 1);
+        assert_eq!(
+            unsafe { hew_read_slot_status(slot) },
+            ReadStatus::Cancelled as i32
+        );
+
+        let triple = make_triple(b"late");
+        assert!(!unsafe { read_slot_deposit_data(slot, triple) });
+        unsafe {
+            crate::await_cancel::hew_await_cancel_free(reg);
+            hew_read_slot_free(slot);
+        }
     }
 }

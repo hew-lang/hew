@@ -1819,6 +1819,12 @@ impl BasicBlock {
             }
             | Terminator::SuspendingRead {
                 resume, cleanup, ..
+            }
+            // The suspendable-callee driver parks the calling coroutine on a
+            // `coro.suspend` exactly like the read/ask ramps: the default edge
+            // exits to the executor; resume + cleanup are the in-CFG successors.
+            | Terminator::SuspendingCallClosure {
+                resume, cleanup, ..
             } => vec![*resume, *cleanup],
         }
     }
@@ -2076,6 +2082,47 @@ pub enum Terminator {
         /// Block reached on the coro switch cleanup edge (case 1) — the frame's
         /// teardown when the parked continuation is abandoned (`coro.destroy`);
         /// the read slot is cancelled + freed there.
+        cleanup: u32,
+    },
+    /// Suspendable closure call (the suspendable-callee driver). Calling a
+    /// closure whose body itself `await`s across the coroutine boundary — the
+    /// closure-invoke ramp is a `presplitcoroutine` returning a `coro.begin`
+    /// handle, not a plain value. This terminator drives that callee coroutine
+    /// and PROPAGATES its suspension up into THIS (calling) coroutine: codegen
+    /// invokes the callee ramp, then loops `hew_cont_done`/`hew_cont_resume`,
+    /// parking the calling worker via `coro.suspend` whenever the callee yields
+    /// (freeing the worker, NEW-1/NEW-3 style) and rebinding the callee's
+    /// deposited return value into `result_dest` on completion.
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` / `is_coroutine`: any function whose CFG contains this
+    /// terminator is lowered as a `presplitcoroutine`. The seam pattern-setter
+    /// for the suspendable-callee family (W2 follows). Emitted ONLY when the MIR
+    /// lowering proved the callee closure's resolved shim carries a suspend
+    /// terminator (the structural discriminator codegen's `is_coroutine` reads
+    /// from the same shim); a non-suspending closure keeps `Instr::CallClosure`.
+    SuspendingCallClosure {
+        /// The closure pair value (fn-ptr + env) being invoked. Read by codegen
+        /// to build the indirect ramp call.
+        callee: Place,
+        /// The user arguments forwarded to the closure (after the implicit
+        /// `ctx`/`env` leading pair). Reads.
+        args: Vec<Place>,
+        /// The closure's logical return type — sizes the result binding read
+        /// off the driver-owned reply channel on the completion edge.
+        ret_ty: ResolvedTy,
+        /// The slot the callee's deposited return value is bound into on the
+        /// completion edge. `None` for a unit-returning closure (no value to
+        /// bind). Identical role to [`Terminator::SuspendingRead::result_dest`].
+        result_dest: Option<Place>,
+        /// Block reached on the coro switch resume edge (case 0) after the
+        /// reactor woke the calling actor and the callee was re-resumed to
+        /// completion and its result bound. The original `next` of the call.
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the calling
+        /// frame's teardown when the parked continuation is abandoned
+        /// (`coro.destroy`); the child handle + driver channel are destroyed
+        /// there.
         cleanup: u32,
     },
     /// Remote actor ask: send `value` to a `RemotePid<T>` and construct

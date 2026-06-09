@@ -42,6 +42,7 @@ const MAX_MS: u64 = (L1_SIZE as u64) * L1_MS; // 16384
 #[derive(Debug)]
 pub struct HewTimerEntry {
     deadline_ms: u64,
+    generation: u64,
     cb: Option<HewTimerCb>,
     data: *mut c_void,
     cancelled: c_int,
@@ -58,6 +59,7 @@ struct WheelInner {
     l1: [*mut HewTimerEntry; L1_SIZE],
     overflow: *mut HewTimerEntry,
     current_ms: u64,
+    next_generation: u64,
 }
 
 // SAFETY: All raw pointers are owned exclusively by the wheel and only
@@ -68,6 +70,23 @@ unsafe impl Send for WheelInner {}
 #[derive(Debug)]
 pub struct HewTimerWheel {
     inner: Mutex<WheelInner>,
+}
+
+/// Identity-bearing timer handle used for cancellation.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct HewTimerHandle {
+    pub entry: *mut HewTimerEntry,
+    pub generation: u64,
+}
+
+impl HewTimerHandle {
+    const fn null() -> Self {
+        Self {
+            entry: ptr::null_mut(),
+            generation: 0,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +248,43 @@ fn cascade_overflow(w: &mut WheelInner) {
     }
 }
 
+fn mark_entry_cancelled_in_list(
+    mut head: *mut HewTimerEntry,
+    entry: *mut HewTimerEntry,
+    generation: u64,
+) -> bool {
+    while !head.is_null() {
+        // SAFETY: `head` is a live entry in the wheel list; caller holds the lock.
+        let head_generation = unsafe { (*head).generation };
+        if head == entry && head_generation == generation {
+            // SAFETY: `head` is a live entry in the wheel list; caller holds the lock.
+            unsafe {
+                (*head).cancelled = 1;
+            }
+            return true;
+        }
+        // SAFETY: walking live wheel entries under the lock.
+        unsafe {
+            head = (*head).next;
+        }
+    }
+    false
+}
+
+fn mark_entry_cancelled(w: &WheelInner, entry: *mut HewTimerEntry, generation: u64) {
+    for slot in &w.l0 {
+        if mark_entry_cancelled_in_list(*slot, entry, generation) {
+            return;
+        }
+    }
+    for slot in &w.l1 {
+        if mark_entry_cancelled_in_list(*slot, entry, generation) {
+            return;
+        }
+    }
+    let _ = mark_entry_cancelled_in_list(w.overflow, entry, generation);
+}
+
 // ---------------------------------------------------------------------------
 // C ABI exports
 // ---------------------------------------------------------------------------
@@ -248,6 +304,7 @@ pub unsafe extern "C" fn hew_timer_wheel_new() -> *mut HewTimerWheel {
             l1: [ptr::null_mut(); L1_SIZE],
             overflow: ptr::null_mut(),
             current_ms: now,
+            next_generation: 1,
         }),
     });
     Box::into_raw(tw)
@@ -283,7 +340,9 @@ pub unsafe extern "C" fn hew_timer_wheel_free(tw: *mut HewTimerWheel) {
 
 /// Schedule a timer to fire after `delay_ms` milliseconds.
 ///
-/// Returns a pointer to the entry (for cancellation).
+/// Returns the raw timer entry pointer. Callers that need to cancel must use
+/// [`hew_timer_wheel_schedule_handle`] instead so cancellation can validate the
+/// entry generation.
 ///
 /// # Safety
 ///
@@ -296,7 +355,24 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule(
     cb: HewTimerCb,
     data: *mut c_void,
 ) -> *mut HewTimerEntry {
-    cabi_guard!(tw.is_null(), ptr::null_mut());
+    // SAFETY: upheld by this function's caller.
+    unsafe { hew_timer_wheel_schedule_handle(tw, delay_ms, cb, data).entry }
+}
+
+/// Schedule a timer and return the identity-bearing handle needed to cancel it.
+///
+/// # Safety
+///
+/// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`].  `cb`
+/// and `data` must remain valid until the timer fires or is cancelled.
+#[no_mangle]
+pub unsafe extern "C" fn hew_timer_wheel_schedule_handle(
+    tw: *mut HewTimerWheel,
+    delay_ms: u64,
+    cb: HewTimerCb,
+    data: *mut c_void,
+) -> HewTimerHandle {
+    cabi_guard!(tw.is_null(), HewTimerHandle::null());
     // SAFETY: caller guarantees `tw` is valid.
     let wheel = unsafe { &*tw };
     let mut w = wheel
@@ -304,8 +380,16 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
+    if w.next_generation == 0 {
+        crate::set_last_error("timer entry generation space exhausted");
+        return HewTimerHandle::null();
+    }
+    let generation = w.next_generation;
+    w.next_generation = w.next_generation.wrapping_add(1);
+
     let entry = Box::into_raw(Box::new(HewTimerEntry {
         deadline_ms: w.current_ms + delay_ms,
+        generation,
         cb: Some(cb),
         data,
         cancelled: 0,
@@ -313,7 +397,7 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule(
     }));
 
     insert_entry(&mut w, entry);
-    entry
+    HewTimerHandle { entry, generation }
 }
 
 /// Mark a timer entry as cancelled.
@@ -321,35 +405,28 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule(
 /// # Safety
 ///
 /// `tw` must be valid.  `entry` must have been returned by
-/// [`hew_timer_wheel_schedule`] on the same wheel and not yet freed.
+/// [`hew_timer_wheel_schedule_handle`] on the same wheel and `generation` must
+/// be the generation returned in the same handle.  Concurrent deadline firing
+/// may already have unlinked and freed `entry`; stale entries are ignored after
+/// validating liveness and identity under the wheel lock.
 #[no_mangle]
-pub unsafe extern "C" fn hew_timer_wheel_cancel(tw: *mut HewTimerWheel, entry: *mut HewTimerEntry) {
-    cabi_guard!(tw.is_null() || entry.is_null());
-    // SAFETY: caller guarantees both pointers are valid.
+pub unsafe extern "C" fn hew_timer_wheel_cancel(
+    tw: *mut HewTimerWheel,
+    entry: *mut HewTimerEntry,
+    generation: u64,
+) {
+    cabi_guard!(tw.is_null() || entry.is_null() || generation == 0);
+    // SAFETY: caller guarantees `tw` is valid.
     let wheel = unsafe { &*tw };
-    let _w = wheel
+    let w = wheel
         .inner
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // SAFETY: entry is valid per caller contract; accessed under the lock.
-    unsafe {
-        (*entry).cancelled = 1;
-    }
+    mark_entry_cancelled(&w, entry, generation);
 }
 
-/// Advance the wheel to the current time and fire all expired timers.
-///
-/// Returns the total number of timers fired.
-///
-/// # Safety
-///
-/// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`].  All
-/// callback/data pairs must still be valid.
-#[no_mangle]
-pub unsafe extern "C" fn hew_timer_wheel_tick(tw: *mut HewTimerWheel) -> c_int {
+unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_int {
     cabi_guard!(tw.is_null(), 0);
-    // SAFETY: hew_now_ms has no preconditions; caller guarantees `tw` is valid.
-    let now = unsafe { hew_now_ms() };
     // SAFETY: caller guarantees `tw` is valid.
     let wheel = unsafe { &*tw };
 
@@ -424,6 +501,22 @@ pub unsafe extern "C" fn hew_timer_wheel_tick(tw: *mut HewTimerWheel) -> c_int {
     }
 
     total_fired
+}
+
+/// Advance the wheel to the current time and fire all expired timers.
+///
+/// Returns the total number of timers fired.
+///
+/// # Safety
+///
+/// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`].  All
+/// callback/data pairs must still be valid.
+#[no_mangle]
+pub unsafe extern "C" fn hew_timer_wheel_tick(tw: *mut HewTimerWheel) -> c_int {
+    // SAFETY: hew_now_ms has no preconditions; caller guarantees `tw` is valid.
+    let now = unsafe { hew_now_ms() };
+    // SAFETY: upheld by this function's caller.
+    unsafe { timer_wheel_tick_to(tw, now) }
 }
 
 /// Return milliseconds until the next pending timer, or −1 if none exist.
@@ -539,8 +632,8 @@ mod tests {
         // SAFETY: standard lifecycle calls.
         unsafe {
             let tw = hew_timer_wheel_new();
-            let e = hew_timer_wheel_schedule(tw, 0, test_cb, ptr::null_mut());
-            hew_timer_wheel_cancel(tw, e);
+            let h = hew_timer_wheel_schedule_handle(tw, 0, test_cb, ptr::null_mut());
+            hew_timer_wheel_cancel(tw, h.entry, h.generation);
             let fired = hew_timer_wheel_tick(tw);
             assert_eq!(fired, 0);
             assert_eq!(FIRE_COUNT.load(Ordering::SeqCst), 0);
@@ -565,7 +658,15 @@ mod tests {
             assert!(
                 hew_timer_wheel_schedule(ptr::null_mut(), 100, test_cb, ptr::null_mut()).is_null()
             );
-            hew_timer_wheel_cancel(ptr::null_mut(), ptr::null_mut());
+            assert!(hew_timer_wheel_schedule_handle(
+                ptr::null_mut(),
+                100,
+                test_cb,
+                ptr::null_mut()
+            )
+            .entry
+            .is_null());
+            hew_timer_wheel_cancel(ptr::null_mut(), ptr::null_mut(), 0);
             assert_eq!(hew_timer_wheel_tick(ptr::null_mut()), 0);
             assert_eq!(hew_timer_wheel_next_deadline_ms(ptr::null_mut()), -1);
             hew_timer_wheel_free(ptr::null_mut());
@@ -580,12 +681,14 @@ mod tests {
             l1: [ptr::null_mut(); L1_SIZE],
             overflow: ptr::null_mut(),
             current_ms,
+            next_generation: 1,
         }
     }
 
     fn make_entry_at(deadline_ms: u64) -> *mut HewTimerEntry {
         Box::into_raw(Box::new(HewTimerEntry {
             deadline_ms,
+            generation: 1,
             cb: None,
             data: ptr::null_mut(),
             cancelled: 0,
@@ -638,6 +741,7 @@ mod tests {
                 l1: [ptr::null_mut(); L1_SIZE],
                 overflow: ptr::null_mut(),
                 current_ms,
+                next_generation: 1,
             }),
         }))
     }
@@ -933,9 +1037,9 @@ mod tests {
         // SAFETY: using make_timer_wheel for deterministic time.
         unsafe {
             let tw = make_timer_wheel(1000);
-            let e = hew_timer_wheel_schedule(tw, 10, test_cb, ptr::null_mut());
+            let h = hew_timer_wheel_schedule_handle(tw, 10, test_cb, ptr::null_mut());
             hew_timer_wheel_schedule(tw, 100, test_cb, ptr::null_mut());
-            hew_timer_wheel_cancel(tw, e);
+            hew_timer_wheel_cancel(tw, h.entry, h.generation);
             assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 100);
             hew_timer_wheel_free(tw);
         }
@@ -946,10 +1050,10 @@ mod tests {
         // SAFETY: using make_timer_wheel for deterministic time.
         unsafe {
             let tw = make_timer_wheel(0);
-            let e1 = hew_timer_wheel_schedule(tw, 10, test_cb, ptr::null_mut());
-            let e2 = hew_timer_wheel_schedule(tw, 500, test_cb, ptr::null_mut());
-            hew_timer_wheel_cancel(tw, e1);
-            hew_timer_wheel_cancel(tw, e2);
+            let h1 = hew_timer_wheel_schedule_handle(tw, 10, test_cb, ptr::null_mut());
+            let h2 = hew_timer_wheel_schedule_handle(tw, 500, test_cb, ptr::null_mut());
+            hew_timer_wheel_cancel(tw, h1.entry, h1.generation);
+            hew_timer_wheel_cancel(tw, h2.entry, h2.generation);
             assert_eq!(hew_timer_wheel_next_deadline_ms(tw), -1);
             hew_timer_wheel_free(tw);
         }
@@ -995,9 +1099,82 @@ mod tests {
         // SAFETY: double-cancel must not panic.
         unsafe {
             let tw = make_timer_wheel(0);
-            let e = hew_timer_wheel_schedule(tw, 100, test_cb, ptr::null_mut());
-            hew_timer_wheel_cancel(tw, e);
-            hew_timer_wheel_cancel(tw, e);
+            let h = hew_timer_wheel_schedule_handle(tw, 100, test_cb, ptr::null_mut());
+            hew_timer_wheel_cancel(tw, h.entry, h.generation);
+            hew_timer_wheel_cancel(tw, h.entry, h.generation);
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn probe_b_stale_cancel_does_not_cancel_reused_entry_address() {
+        FIRE_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: this test reuses one allocation slot with explicit lifetime
+        // boundaries to model allocator reuse of E's address for E2.
+        unsafe {
+            let mut storage = Box::new(std::mem::MaybeUninit::<HewTimerEntry>::uninit());
+            let entry = storage.as_mut_ptr().cast::<HewTimerEntry>();
+            ptr::write(
+                entry,
+                HewTimerEntry {
+                    deadline_ms: 1,
+                    generation: 41,
+                    cb: Some(test_cb),
+                    data: ptr::null_mut(),
+                    cancelled: 0,
+                    next: ptr::null_mut(),
+                },
+            );
+            let stale_entry = entry;
+            let stale_generation = (*entry).generation;
+            ptr::drop_in_place(entry);
+
+            ptr::write(
+                entry,
+                HewTimerEntry {
+                    deadline_ms: 10,
+                    generation: 42,
+                    cb: Some(test_cb),
+                    data: ptr::null_mut(),
+                    cancelled: 0,
+                    next: ptr::null_mut(),
+                },
+            );
+            let mut w = make_wheel_at(0);
+            insert_entry(&mut w, entry);
+            mark_entry_cancelled(&w, stale_entry, stale_generation);
+            assert_eq!(
+                (*entry).cancelled,
+                0,
+                "stale generation must not cancel a new live entry at the same address"
+            );
+
+            let mut expired = Vec::new();
+            collect_expired_entries(&raw mut w.l0[10], 10, &mut expired);
+            assert_eq!(expired.len(), 1);
+            let expired_entry = expired.pop().unwrap();
+            assert_eq!(expired_entry.cancelled, 0);
+            if let Some(cb) = expired_entry.cb {
+                cb(expired_entry.data);
+            }
+            assert_eq!(FIRE_COUNT.load(Ordering::SeqCst), 1);
+            ptr::drop_in_place(entry);
+        }
+    }
+
+    #[test]
+    fn cancel_after_tick_free_is_ignored() {
+        FIRE_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: the stale cancel models a source-completion thread that
+        // already captured the timer entry before the deadline thread fired it.
+        unsafe {
+            let tw = make_timer_wheel(0);
+            let h = hew_timer_wheel_schedule_handle(tw, 1, test_cb, ptr::null_mut());
+
+            assert_eq!(timer_wheel_tick_to(tw, 1), 1);
+            assert_eq!(FIRE_COUNT.load(Ordering::SeqCst), 1);
+
+            hew_timer_wheel_cancel(tw, h.entry, h.generation);
             hew_timer_wheel_free(tw);
         }
     }

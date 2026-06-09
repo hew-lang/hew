@@ -9,6 +9,7 @@
 )]
 
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::mem::offset_of;
 use std::ptr;
@@ -194,6 +195,165 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
     // SAFETY: scheduler-installed contexts remain valid for the lifetime of
     // the dispatch; `require_current_context` returned non-null.
     unsafe { (*ctx).reply_channel }
+}
+
+/// A single open reply-channel swap recorded on the per-worker swap stack.
+///
+/// The suspendable-callee driver (`Terminator::SuspendingCallClosure`) brackets
+/// each SYNCHRONOUS child-advancing call (the closure-invoke ramp and every
+/// `hew_cont_resume`) with a swap so the child closure coroutine's `Return` arm
+/// (`hew_get_reply_channel` + `hew_reply`) deposits onto the driver-owned
+/// channel rather than the ambient actor channel. The swap is a SCOPED TRANSFER
+/// of BOTH the `reply_channel` pointer AND the consumed bit: the child's
+/// `hew_reply` flips the consumed bit on the currently-installed context, so the
+/// bracket must save the outer dispatch's consumed state on entry and restore it
+/// on exit, otherwise the child's consumption corrupts the outer dispatch's
+/// fallback/orphan-reply routing (the scheduler reads that bit to decide whether
+/// to publish the outer ask's fallback reply).
+struct ReplyChannelSwap {
+    /// The context the swap mutated; restoration targets this exact context.
+    ctx: *mut HewExecutionContext,
+    /// The outer reply channel to restore on exit.
+    saved_channel: *mut c_void,
+    /// The outer consumed bit to restore on exit.
+    saved_consumed: bool,
+    /// The driver-owned channel installed for the bracket. Freed only on the
+    /// trap/cancel/unwind edge (`hew_context_reply_channel_swap_unwind`); the
+    /// normal-return pop leaves it live for the codegen finish/abandon teardown.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(dead_code, reason = "read only by the native-only crash unwind path")
+    )]
+    driver_channel: *mut c_void,
+}
+
+thread_local! {
+    /// Per-worker stack of open reply-channel swaps. Nesting arises when a child
+    /// closure body itself drives another suspending closure synchronously before
+    /// it parks; each bracket pushes on entry and pops on exit, so the stack is
+    /// empty whenever a dispatch returns to the scheduler on the normal path.
+    static REPLY_CHANNEL_SWAP_STACK: RefCell<Vec<ReplyChannelSwap>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Restore the outer reply-channel pointer AND consumed bit recorded by `swap`.
+fn restore_reply_channel_swap(swap: &ReplyChannelSwap) {
+    if swap.ctx.is_null() {
+        return;
+    }
+    // SAFETY: the swap recorded the exact context it mutated; that context is
+    // still backed by live dispatch storage on this worker (the swap window
+    // never spans a park, and the crash path runs on the same worker frame).
+    unsafe {
+        (*swap.ctx).reply_channel = swap.saved_channel;
+        if swap.saved_consumed {
+            (*swap.ctx).flags |= HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
+        } else {
+            (*swap.ctx).flags &= !HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
+        }
+    }
+}
+
+/// Open a scoped reply-channel swap: install `ch` as the current context's
+/// reply channel, clear the consumed bit so the child's deposit starts from a
+/// clean slate, and push the saved outer pointer + consumed bit onto the
+/// per-worker swap stack for later restoration.
+///
+/// No-op if no execution context is installed.
+#[no_mangle]
+pub extern "C" fn hew_context_reply_channel_swap_push(ch: *mut c_void) {
+    let ctx = current_context();
+    if ctx.is_null() {
+        return;
+    }
+    // SAFETY: scheduler-installed contexts remain valid for the lifetime of the
+    // dispatch; the current-context pointer is non-null per the guard.
+    let (saved_channel, saved_consumed) = unsafe {
+        let saved_channel = (*ctx).reply_channel;
+        let saved_consumed = ((*ctx).flags & HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED) != 0;
+        (*ctx).reply_channel = ch;
+        (*ctx).flags &= !HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED;
+        (saved_channel, saved_consumed)
+    };
+    REPLY_CHANNEL_SWAP_STACK.with(|stack| {
+        stack.borrow_mut().push(ReplyChannelSwap {
+            ctx,
+            saved_channel,
+            saved_consumed,
+            driver_channel: ch,
+        });
+    });
+}
+
+/// Close the innermost reply-channel swap on the NORMAL-return edge: pop the
+/// stack and restore the outer reply-channel pointer + consumed bit. The
+/// driver-owned channel is left live for the codegen finish/abandon teardown.
+///
+/// No-op if the stack is empty (defensive; the codegen brackets are balanced).
+#[no_mangle]
+pub extern "C" fn hew_context_reply_channel_swap_pop() {
+    let swap = REPLY_CHANNEL_SWAP_STACK.with(|stack| stack.borrow_mut().pop());
+    if let Some(swap) = swap {
+        restore_reply_channel_swap(&swap);
+    }
+}
+
+/// Unwind ALL open reply-channel swaps on the trap/cancel/unwind edge.
+///
+/// A child closure that traps/longjmps OR Rust-unwinds mid-call bypasses the
+/// codegen swap-pop and the driver-channel teardown, leaving the outer context
+/// pointing at the driver channel and the driver channel's refs live. Both
+/// sibling scheduler exit edges call this BEFORE they read the dispatch reply
+/// channel, so the outer reply routing is restored and the driver channels are
+/// torn down exactly once:
+/// * the native signal/`siglongjmp` crash-recovery frame (mirroring
+///   `hew_actor_state_lock_release_after_panic`), and
+/// * the `catch_unwind` `Err` edge when the generated handler Rust-unwound.
+///
+/// The child never deposited (it trapped/unwound), so both the retained sender
+/// ref and the creator ref are released, matching the codegen abandon path.
+///
+/// No-double-free: the normal-return edge already popped its own frames via the
+/// codegen swap-pop, so the swap stack is empty there and neither sibling edge
+/// double-restores or double-frees a channel the normal teardown owns.
+///
+/// Native-only: the scheduler module (and the crash-reply machinery it pairs
+/// with — `clear_reply_channel_on`, `current_reply_channel_consumed_on`) is
+/// native-only; the WASM scheduler aborts on hard traps and does not drive the
+/// suspending-closure swap.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn reply_channel_swap_unwind() {
+    loop {
+        let swap = REPLY_CHANNEL_SWAP_STACK.with(|stack| stack.borrow_mut().pop());
+        let Some(swap) = swap else { break };
+        restore_reply_channel_swap(&swap);
+        if !swap.driver_channel.is_null() {
+            // SAFETY: `driver_channel` is a live `HewReplyChannel` created by the
+            // driver via `hew_reply_channel_new` and retained once; teardown
+            // cancels and releases both refs, matching the abandon path.
+            unsafe { teardown_driver_channel(swap.driver_channel) };
+        }
+    }
+}
+
+/// Test-only: current depth of the per-worker reply-channel swap stack. A
+/// non-zero depth after a dispatch returns to the scheduler signals a swap that
+/// leaked across an exit edge (the bug the trap/unwind unwinders close).
+#[cfg(test)]
+pub(crate) fn reply_channel_swap_stack_depth() -> usize {
+    REPLY_CHANNEL_SWAP_STACK.with(|stack| stack.borrow().len())
+}
+
+/// Cancel + free both refs of a driver-owned reply channel on the crash edge.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn teardown_driver_channel(ch: *mut c_void) {
+    let typed = ch.cast();
+    // SAFETY: caller guarantees `ch` is a live driver-owned reply channel.
+    unsafe {
+        crate::reply_channel::hew_reply_channel_cancel(typed);
+        crate::reply_channel::hew_reply_channel_free(typed);
+        crate::reply_channel::hew_reply_channel_free(typed);
+    }
 }
 
 /// Mark the current dispatch's reply channel as consumed if it matches `ch`.
@@ -464,5 +624,190 @@ mod tests {
         // this assertion holds on all targets (128 on native 64-bit, 96 on
         // wasm32) without needing per-target conditional compilation.
         assert_eq!(std::mem::size_of::<HewExecutionContext>(), HEW_CTX_SIZE);
+    }
+
+    /// SEC-1 regression: a scoped reply-channel swap must transfer BOTH the
+    /// reply-channel pointer AND the consumed bit, so the child closure's
+    /// `hew_reply` (which flips the consumed bit on the currently-installed
+    /// context) cannot corrupt the OUTER dispatch's consumed state.
+    ///
+    /// Pre-fix the swap moved only the pointer: the child's deposit left the
+    /// outer context flagged `HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED` for the child
+    /// channel after the pointer was swapped back, which suppressed the real
+    /// outer fallback/orphan reply. Post-fix the consumed bit is saved on push
+    /// and restored on pop, so the outer dispatch is left exactly as it was.
+    #[test]
+    fn scoped_swap_isolates_child_consumed_bit_from_outer() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+
+        let outer_ch: *mut c_void = 0x0A0A_0A0A_usize as *mut c_void;
+        let driver_ch: *mut c_void = 0x0D0D_0D0D_usize as *mut c_void;
+
+        let mut ctx = HewExecutionContext {
+            reply_channel: outer_ch,
+            ..HewExecutionContext::default()
+        };
+        let ctx_ptr = &raw mut ctx;
+        let prev = set_current_context(ctx_ptr);
+        assert!(prev.is_null());
+
+        // The outer dispatch has NOT consumed its reply channel yet.
+        // SAFETY: ctx_ptr is the live stack slot installed above.
+        let initial_flags = unsafe { (*ctx_ptr).flags };
+        assert_eq!(initial_flags & HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED, 0);
+
+        hew_context_reply_channel_swap_push(driver_ch);
+        // SAFETY: ctx_ptr is the live installed context.
+        unsafe {
+            assert_eq!(
+                (*ctx_ptr).reply_channel,
+                driver_ch,
+                "push installs driver ch"
+            );
+            assert_eq!(
+                (*ctx_ptr).flags & HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED,
+                0,
+                "push clears the consumed bit for a clean child deposit"
+            );
+        }
+
+        // The child closure's `Return` arm deposits onto the driver channel,
+        // flipping the consumed bit on the currently-installed (outer) context.
+        mark_current_reply_channel_consumed(driver_ch);
+        // SAFETY: ctx_ptr is the live installed context.
+        let after_deposit = unsafe { (*ctx_ptr).flags };
+        assert_ne!(
+            after_deposit & HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED,
+            0,
+            "child deposit marks the installed context consumed"
+        );
+
+        hew_context_reply_channel_swap_pop();
+        // SAFETY: ctx_ptr is the live installed context.
+        unsafe {
+            assert_eq!(
+                (*ctx_ptr).reply_channel,
+                outer_ch,
+                "pop restores the outer reply channel"
+            );
+            assert_eq!(
+                (*ctx_ptr).flags & HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED,
+                0,
+                "pop restores the outer consumed bit — the child's consumption is \
+                 isolated from the outer dispatch (SEC-1)"
+            );
+        }
+        assert_eq!(
+            REPLY_CHANNEL_SWAP_STACK.with(|stack| stack.borrow().len()),
+            0,
+            "the swap stack is drained after a balanced push/pop"
+        );
+
+        let _ = set_current_context(prev);
+    }
+
+    /// SEC-2 regression: a child closure that traps/longjmps mid-call bypasses
+    /// the codegen swap-pop and driver-channel teardown. The scheduler crash-
+    /// recovery edge must unwind every open swap BEFORE it reads the dispatch
+    /// reply channel, so the outer reply routing is restored AND the driver-
+    /// owned channel is torn down exactly once (no leak, no reply to the wrong
+    /// channel).
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn crash_unwind_restores_outer_routing_and_frees_driver_channel() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+
+        let baseline = crate::reply_channel::active_channel_count();
+
+        // The driver creates the channel (creator ref) and retains one sender
+        // ref, exactly as the SuspendingCallClosure driver does.
+        let driver_ch = crate::reply_channel::hew_reply_channel_new();
+        assert!(!driver_ch.is_null());
+        // SAFETY: driver_ch was just created and is live.
+        unsafe { crate::reply_channel::hew_reply_channel_retain(driver_ch) };
+        assert_eq!(
+            crate::reply_channel::active_channel_count(),
+            baseline + 1,
+            "driver channel is live (new + retain = one active channel, two refs)"
+        );
+
+        let outer_ch: *mut c_void = 0x0A0A_0A0A_usize as *mut c_void;
+        let mut ctx = HewExecutionContext {
+            reply_channel: outer_ch,
+            ..HewExecutionContext::default()
+        };
+        let ctx_ptr = &raw mut ctx;
+        let prev = set_current_context(ctx_ptr);
+        assert!(prev.is_null());
+
+        hew_context_reply_channel_swap_push(driver_ch.cast());
+        // SAFETY: ctx_ptr is the live installed context.
+        let installed = unsafe { (*ctx_ptr).reply_channel };
+        assert_eq!(installed, driver_ch.cast());
+
+        // The child traps WITHOUT depositing (no `hew_reply`): the swap stays
+        // open and both channel refs stay live. The crash-recovery edge unwinds.
+        reply_channel_swap_unwind();
+
+        // SAFETY: ctx_ptr is the live installed context.
+        let restored = unsafe { (*ctx_ptr).reply_channel };
+        assert_eq!(
+            restored, outer_ch,
+            "unwind restores the outer reply channel so the crash fallback routes \
+             to the real outer ask, not the driver channel (SEC-2)"
+        );
+        assert_eq!(
+            REPLY_CHANNEL_SWAP_STACK.with(|stack| stack.borrow().len()),
+            0,
+            "unwind drains every open swap"
+        );
+        assert_eq!(
+            crate::reply_channel::active_channel_count(),
+            baseline,
+            "unwind tears the driver channel down exactly once — no channel ref leak"
+        );
+
+        let _ = set_current_context(prev);
+    }
+
+    /// CODE-1 regression (ref-accounting contract): the driver UNCONDITIONALLY
+    /// retains one sender ref. A unit/never-returning closure body deposits
+    /// nothing (it skips `hew_reply`), so the unit finish path must release BOTH
+    /// the retained sender ref and the creator ref. Releasing only one — the
+    /// pre-fix behavior — leaks the channel. This pins the two-free rule the
+    /// codegen unit finish path now emits.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn unit_suspending_closure_finish_releases_both_channel_refs() {
+        let _runtime_guard = crate::runtime_test_guard();
+
+        let baseline = crate::reply_channel::active_channel_count();
+
+        // Driver setup for a unit closure: new (creator ref) + retain (sender ref).
+        let ch = crate::reply_channel::hew_reply_channel_new();
+        assert!(!ch.is_null());
+        // SAFETY: ch was just created and is live.
+        unsafe { crate::reply_channel::hew_reply_channel_retain(ch) };
+
+        // The pre-fix unit finish path freed only ONE ref — demonstrate that this
+        // leaves the channel live (the leak the fix removes).
+        // SAFETY: ch is live; this releases the creator ref only.
+        unsafe { crate::reply_channel::hew_reply_channel_free(ch) };
+        assert_eq!(
+            crate::reply_channel::active_channel_count(),
+            baseline + 1,
+            "releasing only one ref leaks the channel (the pre-fix unit finish bug)"
+        );
+
+        // The fixed unit finish path releases the SECOND (retained sender) ref.
+        // SAFETY: ch still holds one ref; this releases it, reclaiming the channel.
+        unsafe { crate::reply_channel::hew_reply_channel_free(ch) };
+        assert_eq!(
+            crate::reply_channel::active_channel_count(),
+            baseline,
+            "the unit finish path's two frees reclaim the channel exactly once (CODE-1)"
+        );
     }
 }

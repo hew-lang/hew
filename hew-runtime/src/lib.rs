@@ -536,6 +536,8 @@ pub mod reply_channel_wasm;
 pub mod semaphore;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod await_cancel;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod blocking_pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod task_scope;

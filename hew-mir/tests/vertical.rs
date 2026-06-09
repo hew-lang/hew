@@ -3,7 +3,7 @@ use hew_mir::{
     lower_hir_module, CmpPred, Instr, MirCheck, MirDiagnosticKind, MirStatement, Place, Terminator,
     TrapKind,
 };
-use hew_types::TypeCheckOutput;
+use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 
 // ---------- @resource / @linear surface ----------
 //
@@ -482,6 +482,150 @@ fn unknown_user_type_rejected_at_mir_boundary() {
             .iter()
             .any(|d| matches!(d.kind, MirDiagnosticKind::UnknownType { .. })),
         "unknown named type must produce UnknownType at MIR boundary: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn registered_fieldless_user_type_still_requires_codegen_readiness() {
+    // A fieldless declared type is present in HIR type_classes but has no record
+    // layout for codegen to resolve. The MIR gate must not treat checker knownness
+    // alone as readiness.
+    let parsed = hew_parser::parse(
+        r"
+        #[linear]
+        type Token {
+            fn consume(consuming self) -> i64 { 0 }
+        }
+        fn f(x: Token) -> i64 { 0 }
+        ",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let pipeline = lower_hir_module(&output.module);
+
+    assert!(
+        pipeline.diagnostics.iter().any(|d| {
+            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "Token")
+        }),
+        "fieldless registered Token must fail MIR readiness: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn non_bitcopy_user_record_instantiation_reports_precise_valueclass_diagnostic() {
+    let parsed = hew_parser::parse(
+        r#"
+        pub type Wrapper<T> { inner: T }
+        fn main() -> i64 {
+            let w = Wrapper { inner: "owned" };
+            0
+        }
+        "#,
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(tc_output.errors.is_empty(), "{:?}", tc_output.errors);
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let pipeline = lower_hir_module(&output.module);
+
+    assert!(
+        pipeline.diagnostics.iter().any(|d| {
+            matches!(
+                &d.kind,
+                MirDiagnosticKind::UnsupportedUserRecordValueClass { name, reason }
+                    if name == "Wrapper$$string" && reason.contains("field `inner`")
+            )
+        }),
+        "Wrapper<string> must produce precise W3.029 diagnostic: {:?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, MirDiagnosticKind::DecisionMapTotal { .. })),
+        "precise user-record value-class diagnostic should suppress generic DecisionMapTotal: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn record_field_closure_accepts_registered_enum_field_type() {
+    // Mirrors the Stage-1-provable part of the CrashNotification.kind: CrashKind
+    // route: the record field closure is walked, and a registered enum field type
+    // is accepted as codegen-ready by MIR.
+    let parsed = hew_parser::parse(
+        r"
+        type CrashNotification {
+            kind: CrashKind
+        }
+        enum CrashKind { Fatal }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let pipeline = lower_hir_module(&output.module);
+
+    assert!(
+        !pipeline.diagnostics.iter().any(|d| {
+            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "CrashKind")
+        }),
+        "registered CrashKind enum field must be MIR-ready: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn record_field_closure_rejects_unready_user_field_type() {
+    let parsed = hew_parser::parse(
+        r"
+        type Wrapper {
+            missing: Missing
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let pipeline = lower_hir_module(&output.module);
+
+    assert!(
+        pipeline.diagnostics.iter().any(|d| {
+            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "Missing")
+        }),
+        "unready record field type must fail MIR field-closure readiness: {:?}",
         pipeline.diagnostics
     );
 }

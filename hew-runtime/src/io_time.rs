@@ -107,6 +107,121 @@ pub unsafe extern "C" fn hew_now_ms() -> u64 {
     monotonic_ms()
 }
 
+/// Return the current monotonic clock time in nanoseconds.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_instant_now() -> i64 {
+    let ms = crate::deterministic::simtime_now().unwrap_or_else(monotonic_ms);
+    i64::try_from(ms)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1_000_000)
+}
+
+/// Return elapsed nanoseconds since `instant_ns`.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_instant_elapsed(instant_ns: i64) -> i64 {
+    // SAFETY: hew_instant_now has no preconditions.
+    let now = unsafe { hew_instant_now() };
+    now.saturating_sub(instant_ns)
+}
+
+/// Return the saturating duration between two instant nanosecond stamps.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_instant_duration_since(later_ns: i64, earlier_ns: i64) -> i64 {
+    later_ns.saturating_sub(earlier_ns)
+}
+
+/// Return duration nanoseconds unchanged.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duration_nanos(duration_ns: i64) -> i64 {
+    duration_ns
+}
+
+/// Return duration whole microseconds.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duration_micros(duration_ns: i64) -> i64 {
+    duration_ns / 1_000
+}
+
+/// Return duration whole milliseconds.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duration_millis(duration_ns: i64) -> i64 {
+    duration_ns / 1_000_000
+}
+
+/// Return duration whole seconds.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duration_secs(duration_ns: i64) -> i64 {
+    duration_ns / 1_000_000_000
+}
+
+/// Return duration whole minutes.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duration_mins(duration_ns: i64) -> i64 {
+    duration_ns / 60_000_000_000
+}
+
+/// Return duration whole hours.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duration_hours(duration_ns: i64) -> i64 {
+    duration_ns / 3_600_000_000_000
+}
+
+/// Return the saturating absolute value of a duration.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duration_abs(duration_ns: i64) -> i64 {
+    duration_ns.saturating_abs()
+}
+
+/// Return 1 if a duration is zero, otherwise 0.
+///
+/// # Safety
+///
+/// No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duration_is_zero(duration_ns: i64) -> i32 {
+    i32::from(duration_ns == 0)
+}
+
 // ---------------------------------------------------------------------------
 // I/O Poller (epoll on Linux, kqueue on FreeBSD/macOS, stub elsewhere)
 // ---------------------------------------------------------------------------

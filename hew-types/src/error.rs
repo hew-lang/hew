@@ -354,6 +354,12 @@ pub enum TypeErrorKind {
     UndefinedField,
     /// Method not found on type
     UndefinedMethod,
+    /// A trait-bounded method call resolves to multiple distinct declaring
+    /// traits after supertrait expansion and dedup, so static dispatch
+    /// cannot pick one without qualification. Distinct from
+    /// `UndefinedMethod`: the method is found in multiple traits, not
+    /// missing. See W3.022 §4 V6 / V14.
+    AmbiguousTraitMethod,
     /// Value cannot be sent to another actor
     InvalidSend,
     /// Operation not supported for this type
@@ -650,6 +656,22 @@ pub enum TypeErrorKind {
         /// The trait name that carried the unknown positional type arguments.
         trait_name: String,
     },
+    /// A `#[extern_symbol("…")]` attribute's template payload failed the
+    /// Stage-2 grammar check defined in
+    /// `crate::extern_symbol::ExternSymbolTemplate::parse`.
+    ///
+    /// The grammar is deliberately narrow (literal runs of
+    /// `[A-Za-z0-9_]` interleaved with `{T}` placeholders); see the
+    /// `extern_symbol` module for the full spec. `reason` is the
+    /// short, deterministic string from
+    /// `TemplateError::reason()` — Stage-5 diagnostic-precision tests
+    /// pin against these exact spellings.
+    ///
+    /// Envelope code (planned, wired in Stage 3): `E_W3_001_INVALID_EXTERN_SYMBOL_TEMPLATE`.
+    InvalidExternSymbolTemplate {
+        /// Short deterministic reason; safe to pin in tests.
+        reason: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -666,6 +688,7 @@ impl TypeErrorKind {
             Self::UndefinedFunction => "UndefinedFunction",
             Self::UndefinedField => "UndefinedField",
             Self::UndefinedMethod => "UndefinedMethod",
+            Self::AmbiguousTraitMethod => "AmbiguousTraitMethod",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
             Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",
@@ -717,6 +740,7 @@ impl TypeErrorKind {
             Self::InvalidRegexLiteral { .. } => "InvalidRegexLiteral",
             Self::RegexPatternNotString { .. } => "RegexPatternNotString",
             Self::UnknownTraitBoundShape { .. } => "UnknownTraitBoundShape",
+            Self::InvalidExternSymbolTemplate { .. } => "InvalidExternSymbolTemplate",
         }
     }
 }

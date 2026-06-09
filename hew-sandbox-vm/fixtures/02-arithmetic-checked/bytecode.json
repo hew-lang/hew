@@ -189,6 +189,11 @@
     "supervisors": [],
     "types": [
       {
+        "id": "type:Instant",
+        "kind": "record",
+        "name": "Instant"
+      },
+      {
         "id": "type:LocalPid",
         "kind": "record",
         "name": "LocalPid"
@@ -269,7 +274,7 @@
       }
     ]
   },
-  "package_id": "pkg:2b70c25ff47f29e3",
+  "package_id": "pkg:e50d2d1e87a9d907",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

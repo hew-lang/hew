@@ -92,6 +92,9 @@ pub struct CommonBuildArgs {
     /// Override package search directory (default: .adze/packages/).
     #[arg(long, value_name = "DIR")]
     pub pkg_path: Option<PathBuf>,
+    /// Override project directory for manifest and package resolution.
+    #[arg(long, value_name = "DIR")]
+    pub project_dir: Option<PathBuf>,
 }
 
 impl CommonBuildArgs {
@@ -108,6 +111,7 @@ impl CommonBuildArgs {
             no_typecheck: self.no_typecheck,
             werror: self.werror,
             pkg_path: self.pkg_path.clone(),
+            project_dir: self.project_dir.clone(),
             ..Default::default()
         }
     }
@@ -213,6 +217,9 @@ pub struct CheckArgs {
     /// (the legacy path). Default off; opt-in for Phase α.
     #[arg(long)]
     pub explain_cow: bool,
+    /// Target triple.
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Surface diagnostic-only stack-allocation hints from the type checker.
@@ -226,7 +233,10 @@ pub struct CheckArgs {
 
 impl CheckArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
-        self.common.base_compile_options()
+        crate::compile::CompileOptions {
+            target: self.target.clone(),
+            ..self.common.base_compile_options()
+        }
     }
 }
 

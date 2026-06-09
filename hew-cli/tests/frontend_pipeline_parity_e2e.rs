@@ -187,14 +187,13 @@ fn manifest_undeclared_import_rejected_identically() {
 
 /// Source using a `re"..."` regex literal triggers implicit injection of
 /// `import std::text::regex;` by `inject_implicit_imports`.  The frontend
-/// should accept the source on both paths (the implicit import is resolved
-/// via `std::`, which is always builtin).
+/// should accept the source at the frontend layer on both paths (the implicit
+/// import is resolved via `std::`, which is always builtin).
 ///
-/// This test verifies that both `hew check` and `hew compile` share the same
-/// frontend verdict (success) and produce the same (empty) frontend diagnostic
-/// body.  `hew compile` may then fail at HIR/MIR for other reasons during the
-/// v0.5 cutover; that is a post-frontend concern and is not the invariant
-/// tested here.
+/// Stage 2 routes `hew check` through HIR/MIR too, so both commands may then
+/// fail after the frontend on regex-literal MIR support. The invariant here is
+/// only that neither path emits frontend-layer diagnostics for the implicit
+/// import.
 #[test]
 fn regex_literal_implicit_import_same_frontend_verdict() {
     let tmp = tempfile::Builder::new()
@@ -213,21 +212,17 @@ fn regex_literal_implicit_import_same_frontend_verdict() {
 
     let check_out = run_check(path);
 
-    // `hew check` must accept: the frontend resolves `re"..."` via the
-    // implicit `std::text::regex` injection and the type-checker is happy.
-    assert!(
-        check_out.status.success(),
-        "hew check should accept a re\"...\" literal (implicit std::text::regex import):\n{}",
-        describe_output(&check_out),
-    );
-
-    // The frontend diagnostics emitted by `hew check` must be empty — no
-    // span-attributed lines at all.  The `hew check` stdout/stderr must only
-    // contain the `<file>: OK` status line.
+    // The frontend diagnostics emitted by `hew check` must be empty. Stage 2
+    // may reject later at HIR/MIR, and those later gates now use source
+    // attribution too, so filter them out by diagnostic code.
     let check_stderr = strip_ansi(&String::from_utf8_lossy(&check_out.stderr));
     let check_diag_lines: Vec<&str> = check_stderr
         .lines()
-        .filter(|l| l.contains(": error:") || l.contains(": warning:"))
+        .filter(|l| {
+            (l.contains(": error:") || l.contains(": warning:"))
+                && !l.contains("E_MIR")
+                && !l.contains("E_NOT_YET_IMPLEMENTED")
+        })
         .collect();
     assert!(
         check_diag_lines.is_empty(),

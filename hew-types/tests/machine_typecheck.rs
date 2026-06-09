@@ -1501,3 +1501,362 @@ machine Lifecycle<T: NonExistentTrait> {
         output.errors
     );
 }
+
+// ── State entry/exit lifecycle block checks ──────────────────────────────────
+
+/// A machine with well-typed entry/exit blocks must type-check without errors.
+#[test]
+fn machine_state_entry_exit_well_typed_no_errors() {
+    let output = typecheck_isolated(
+        r"
+        machine Door {
+            state Closed {
+                entry { let _x: i64 = 1; }
+                exit  { let _y: i64 = 2; }
+            }
+            state Open;
+
+            event Push;
+            event Pull;
+
+            on Push: Closed -> Open;
+            on Push: Open   -> Open;
+            on Pull: Open   -> Closed;
+            on Pull: Closed -> Closed;
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "machine with well-typed entry/exit blocks must type-check without errors, got: {:?}",
+        output.errors
+    );
+}
+
+/// A type error inside a state entry block must be reported.
+#[test]
+fn machine_state_entry_type_error_reported() {
+    let output = typecheck_isolated(
+        r"
+        machine Door {
+            state Closed {
+                entry {
+                    // assigning a bool to an i64 — must be a type error
+                    let _x: i64 = true;
+                }
+            }
+            state Open;
+
+            event Push;
+            event Pull;
+
+            on Push: Closed -> Open;
+            on Push: Open   -> Open;
+            on Pull: Open   -> Closed;
+            on Pull: Closed -> Closed;
+        }
+        ",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "type error inside state entry block must produce a diagnostic"
+    );
+}
+
+/// A type error inside a state exit block must be reported.
+#[test]
+fn machine_state_exit_type_error_reported() {
+    let output = typecheck_isolated(
+        r"
+        machine Door {
+            state Open {
+                exit {
+                    // assigning a bool to an i64 — must be a type error
+                    let _x: i64 = true;
+                }
+            }
+            state Closed;
+
+            event Push;
+            event Pull;
+
+            on Push: Closed -> Open;
+            on Push: Open   -> Open;
+            on Pull: Open   -> Closed;
+            on Pull: Closed -> Closed;
+        }
+        ",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "type error inside state exit block must produce a diagnostic"
+    );
+}
+
+/// Referencing `event` inside a state entry block is a name-resolution error.
+/// `event` is only in scope inside transition bodies — never in lifecycle hooks.
+#[test]
+fn machine_state_entry_event_binding_not_in_scope() {
+    let output = typecheck_isolated(
+        r"
+        machine Door {
+            state Closed {
+                entry {
+                    // `event` is a transition-scope binding; must be undefined here
+                    let _e = event;
+                }
+            }
+            state Open;
+
+            event Push;
+            event Pull;
+
+            on Push: Closed -> Open;
+            on Push: Open   -> Open;
+            on Pull: Open   -> Closed;
+            on Pull: Closed -> Closed;
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedVariable && e.message.contains("event")),
+        "referencing `event` inside a state entry block must be UndefinedVariable, got: {:?}",
+        output.errors
+    );
+}
+
+/// Same rejection: `event` inside a state exit block.
+#[test]
+fn machine_state_exit_event_binding_not_in_scope() {
+    let output = typecheck_isolated(
+        r"
+        machine Door {
+            state Open {
+                exit {
+                    // `event` is a transition-scope binding; must be undefined here
+                    let _e = event;
+                }
+            }
+            state Closed;
+
+            event Push;
+            event Pull;
+
+            on Push: Closed -> Open;
+            on Push: Open   -> Open;
+            on Pull: Open   -> Closed;
+            on Pull: Closed -> Closed;
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedVariable && e.message.contains("event")),
+        "referencing `event` inside a state exit block must be UndefinedVariable, got: {:?}",
+        output.errors
+    );
+}
+
+/// `state` IS in scope inside entry/exit — reading it must not produce an error.
+#[test]
+fn machine_state_entry_state_binding_in_scope() {
+    let output = typecheck_isolated(
+        r"
+        machine Door {
+            state Closed {
+                entry {
+                    // `state` is the machine value; discarding it must be fine
+                    let _s = state;
+                }
+            }
+            state Open;
+
+            event Push;
+            event Pull;
+
+            on Push: Closed -> Open;
+            on Push: Open   -> Open;
+            on Pull: Open   -> Closed;
+            on Pull: Closed -> Closed;
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "`state` must be in scope inside an entry block, got: {:?}",
+        output.errors
+    );
+}
+
+/// Payload state fields resolve in an entry block.
+/// `state.seq` must type-check to `i64` when the state is `Established { seq: i64 }`.
+#[test]
+fn machine_state_entry_payload_field_resolves() {
+    let output = typecheck_isolated(
+        r"
+        machine TcpState {
+            state Closed;
+            state Established {
+                entry {
+                    // `state.seq` must resolve - payload field on the current state
+                    let _n: i64 = state.seq;
+                }
+                seq: i64;
+            }
+
+            event Connect;
+            event Disconnect;
+
+            on Connect:    Closed      -> Established { seq: 0 }
+            on Connect:    Established -> Established { seq: state.seq }
+            on Disconnect: Closed      -> Closed;
+            on Disconnect: Established -> Closed;
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "payload field `state.seq` must resolve inside a state entry block, got: {:?}",
+        output.errors
+    );
+}
+
+/// Payload state fields resolve in an exit block.
+/// `state.seq` must type-check to `i64` when the state is `Established { seq: i64 }`.
+#[test]
+fn machine_state_exit_payload_field_resolves() {
+    let output = typecheck_isolated(
+        r"
+        machine TcpState {
+            state Closed;
+            state Established {
+                exit {
+                    // `state.seq` must resolve - payload field on the current state
+                    let _n: i64 = state.seq;
+                }
+                seq: i64;
+            }
+
+            event Connect;
+            event Disconnect;
+
+            on Connect:    Closed      -> Established { seq: 0 }
+            on Connect:    Established -> Established { seq: state.seq }
+            on Disconnect: Closed      -> Closed;
+            on Disconnect: Established -> Closed;
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "payload field `state.seq` must resolve inside a state exit block, got: {:?}",
+        output.errors
+    );
+}
+
+/// A field that does not exist on the payload state must be an error in entry.
+#[test]
+fn machine_state_entry_nonexistent_payload_field_errors() {
+    let output = typecheck_isolated(
+        r"
+        machine TcpState {
+            state Closed;
+            state Established {
+                entry {
+                    let _n: i64 = state.no_such_field;
+                }
+                seq: i64;
+            }
+
+            event Connect;
+            event Disconnect;
+
+            on Connect:    Closed      -> Established { seq: 0 }
+            on Connect:    Established -> Established { seq: state.seq }
+            on Disconnect: Closed      -> Closed;
+            on Disconnect: Established -> Closed;
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedField),
+        "accessing a nonexistent payload field in entry must be UndefinedField, got: {:?}",
+        output.errors
+    );
+}
+
+/// Transition guard expressions must still be type-checked (regression guard).
+/// A guard with a type error must be reported.
+#[test]
+fn machine_transition_guard_type_error_reported() {
+    let output = typecheck_isolated(
+        r"
+        machine Door {
+            state Closed;
+            state Open;
+
+            event Push;
+            event Pull;
+
+            // guard expects bool, but 42 is i64 — type error
+            on Push: Closed -> Open when 42;
+            on Push: Open   -> Open;
+            on Pull: Open   -> Closed;
+            on Pull: Closed -> Closed;
+        }
+        ",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "type error in transition guard must produce a diagnostic"
+    );
+}
+
+/// A machine that has both entry/exit blocks and exhaustiveness gaps must
+/// produce both kinds of diagnostics.
+#[test]
+fn machine_entry_exit_errors_and_exhaustiveness_both_reported() {
+    let output = typecheck_isolated(
+        r"
+        machine Door {
+            state Closed {
+                entry { let _x: i64 = true; }   // type error
+            }
+            state Open;
+
+            event Push;
+            event Pull;
+
+            on Push: Closed -> Open;
+            // Missing: Open -> Push and both Pull transitions
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            e.kind,
+            TypeErrorKind::Mismatch {
+                ref expected,
+                ref actual
+            } if expected == "i64" && actual == "bool"
+        )),
+        "entry-block lifecycle type error must be reported alongside exhaustiveness, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
+        "exhaustiveness gap must still be reported alongside entry-block error, got: {:?}",
+        output.errors
+    );
+}

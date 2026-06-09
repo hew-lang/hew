@@ -310,6 +310,44 @@ pub struct ActorLayout {
     pub cycle_capable: bool,
     /// Receive handlers in message-type order.
     pub handlers: Vec<ActorHandlerLayout>,
+    /// Mangled symbol of the per-actor synthesized C-ABI clone fn that
+    /// codegen (Stage 2/3 of W2.002) emits and that the W2.001 runtime
+    /// registers via `hew_actor_set_state_clone`. `None` for layouts
+    /// produced before W2.002 Stage 2 lands or for actor declarations
+    /// whose state shape is not yet classifier-supported (per
+    /// `state_field_clone_kinds`). Stage 2 codegen fail-closes
+    /// (`CodegenError::FailClosed`) when this is `None` at a spawn or
+    /// supervisor-child site — it never silently elides the
+    /// registration.
+    ///
+    /// Substrate-first (dispatch-invariant #1): the field lives on
+    /// every `ActorLayout`, populated even for trivial-state actors
+    /// where the synthesized body is `malloc + memcpy`. Plan
+    /// `.tmp/orchestration/plans/waves/w2/w2.002-state-clone-codegen-
+    /// plan.md` §4.2 emission policy.
+    pub state_clone_fn_symbol: Option<String>,
+    /// Companion to `state_clone_fn_symbol`: mangled symbol of the
+    /// per-actor synthesized C-ABI drop fn that the runtime registers
+    /// via `hew_actor_set_state_drop`. Paired emission is load-bearing
+    /// — `state_clone_fn_symbol = Some` with `state_drop_fn_symbol =
+    /// None` would convert a memory leak into a use-after-free once
+    /// Q185(c) is lifted (plan §8.8). Stage 2 codegen consumes the
+    /// pair atomically.
+    pub state_drop_fn_symbol: Option<String>,
+    /// Per-state-field clone classification (W2.002 Stage 1). Index
+    /// `i` corresponds to `state_field_tys[i]` /
+    /// `state_field_names[i]`. The vector is empty iff
+    /// `state_field_tys` is empty (zero-state actors); otherwise it
+    /// has the same length as `state_field_tys`.
+    ///
+    /// `None` for layouts where Stage 1 classification failed
+    /// (`ClassificationError` surfaced as a `MirDiagnostic` and
+    /// `state_clone_fn_symbol` / `state_drop_fn_symbol` are also
+    /// `None` for the same actor — paired absence). Stage 2 codegen
+    /// must skip clone+drop registration for such actors and rely on
+    /// the W2.001 runtime's `state_clone_fn = NULL` fall-through
+    /// (which blocks supervisor restart per `actor.rs:766`).
+    pub state_field_clone_kinds: Option<Vec<crate::state_clone::StateFieldCloneKind>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -585,12 +623,18 @@ pub enum FunctionCallConv {
     Default,
     ActorHandler,
     ClosureInvoke,
+    /// Synthetic adapter that gives a default-callconv free function the
+    /// execution-context-bearing task-entry ABI required by `SpawnTaskDirect`.
+    TaskEntry,
 }
 
 impl FunctionCallConv {
     #[must_use]
     pub fn carries_execution_context(self) -> bool {
-        matches!(self, Self::ActorHandler | Self::ClosureInvoke)
+        matches!(
+            self,
+            Self::ActorHandler | Self::ClosureInvoke | Self::TaskEntry
+        )
     }
 }
 
@@ -1433,6 +1477,27 @@ pub enum Instr {
     /// Bitwise XOR `dest = lhs ^ rhs`. Same well-defined semantics as
     /// `IntBitAnd`; no traps or overflow conditions.
     IntBitXor { dest: Place, lhs: Place, rhs: Place },
+    /// Logical boolean NOT `dest = !operand`. Produces canonical bool storage
+    /// (`0` or `1`) rather than bitwise-complementing the bool byte.
+    BoolNot { dest: Place, operand: Place },
+    /// Checked integer unary negation `dest = -operand`.
+    ///
+    /// Codegen lowers this through `llvm.{s,u}sub.with.overflow.iN(0, operand)`
+    /// and stores the overflow flag for the producer-emitted trap branch.
+    IntNegChecked {
+        signed: IntSignedness,
+        dest: Place,
+        operand: Place,
+        overflow_flag: Place,
+    },
+    /// IEEE 754 unary negation `dest = -operand`.
+    FloatNeg {
+        dest: Place,
+        operand: Place,
+        width: FloatWidth,
+    },
+    /// Bitwise NOT `dest = ~operand` for integer operands.
+    IntBitNot { dest: Place, operand: Place },
     /// Left shift `dest = lhs << rhs`. No signedness on the shift
     /// itself (LLVM `shl`). Producers must check `(rhs as unsigned) >=
     /// bit_width(dest)` before emitting this instruction and branch to
@@ -2575,6 +2640,9 @@ pub enum MirDiagnosticKind {
     /// D10: a named user type had no known `ValueClass` at the MIR boundary.
     /// Only builtin types are supported in slice 1.
     UnknownType { name: String },
+    /// W3.029: a declared user record/type aggregate reached the MIR
+    /// decision boundary, but its field closure is not entirely `BitCopy`.
+    UnsupportedUserRecordValueClass { name: String, reason: String },
     /// Defense-in-depth: an `HirExprKind::Unsupported` node reached MIR
     /// lowering.  The HIR diagnostic should have stopped the pipeline earlier.
     UnsupportedNode { reason: String },
@@ -2637,6 +2705,64 @@ pub enum MirDiagnosticKind {
         symbol: String,
         existing: String,
         duplicate: String,
+    },
+    /// W2.002 Stage 1: per-actor state-field clone classification could
+    /// not place one of the state fields into the closed
+    /// `StateFieldCloneKind` variant set. Carries the actor name, the
+    /// 0-based field index, the field name (for diagnostic locality),
+    /// and the underlying `ClassificationError`'s `Display` rendering.
+    ///
+    /// Surfaced from `classify_actor_state_fields` during
+    /// `lower_hir_module`. Stage 2 codegen MUST NOT emit clone/drop
+    /// registration for any actor whose `state_clone_fn_symbol` is
+    /// `None`; that field is set to `None` whenever this diagnostic
+    /// fires, so the two states track together (paired absence —
+    /// substrate-first per dispatch-invariant #1).
+    ActorStateCloneClassificationFailed {
+        actor: String,
+        field_index: usize,
+        field_name: String,
+        reason: String,
+    },
+    /// W3.022 V10: A `CallTraitMethodStatic` reached MIR with no concrete
+    /// substitution for its `receiver_type_param`. After Stage 3 (impl-level
+    /// type params flow into `HirFn::type_params`), unspecialised generic
+    /// origins are skipped at the module-emission level (`lower_hir_module`
+    /// continues past any `HirFn` with non-empty `type_params`), so any
+    /// emitted MIR function reaching this path indicates a checker/HIR
+    /// invariant violation: the call survived into a *concrete* function
+    /// body without the substitution map carrying the type-param binding.
+    /// Fail-closed per `boundary-fail-closed` / `td-debt-not-runtime-surprise`.
+    UnresolvedStaticDispatchSubstitution {
+        receiver_type_param: String,
+        declaring_trait: String,
+        method_name: String,
+        site: SiteId,
+    },
+    /// W3.022: structured static-dispatch lookup failed. The substitution
+    /// resolved the receiver to a concrete type, but the `(declaring_trait,
+    /// self_type_name, method_name)` triple is absent from the
+    /// `hew_hir::dispatch::build_trait_impl_method_index` registry built
+    /// from `HirItem::Impl` metadata. Indicates either a checker bug
+    /// (admitted a static dispatch with no matching impl) or HIR-lowering
+    /// drift between impl-block lowering and the registry builder.
+    /// Fail-closed; never reconstruct the impl symbol from a display name.
+    StaticDispatchImplNotFound {
+        declaring_trait: String,
+        self_type_name: String,
+        method_name: String,
+        site: SiteId,
+    },
+    /// W3.022: structured static-dispatch lookup resolved to a generic
+    /// impl method (`impl_type_params` non-empty), but the corresponding
+    /// monomorphisation (mangled symbol) was not registered in
+    /// `module_fn_names`. Indicates that HIR's `closure_under_substitution`
+    /// failed to enqueue the impl-method `MonoKey` for this concrete
+    /// instantiation. Fail-closed.
+    StaticDispatchMonomorphisationMissing {
+        method_symbol: String,
+        mangled: String,
+        site: SiteId,
     },
 }
 

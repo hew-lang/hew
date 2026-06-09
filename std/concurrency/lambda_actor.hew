@@ -1,0 +1,56 @@
+//! Lambda-actor handle declarations backed by native runtime FFI.
+
+pub type LambdaActorHandle {
+}
+
+pub type LambdaActorWeakHandle {
+}
+
+impl LambdaActorHandle {
+    #[extern_symbol(hew_lambda_actor_new)]
+    pub fn new(mailbox_capacity: i64, shape: i32) -> LambdaActorHandle {
+        LambdaActorHandle {  }
+    }
+
+    #[extern_symbol(hew_lambda_actor_send)]
+    pub fn send(handle: LambdaActorHandle, msg: bytes) -> i32 {
+        0
+    }
+
+    #[extern_symbol(hew_lambda_actor_ask)]
+    pub fn ask(handle: LambdaActorHandle, msg: bytes) -> i32 {
+        0
+    }
+
+    #[extern_symbol(hew_lambda_actor_clone)]
+    pub fn clone(handle: LambdaActorHandle) -> LambdaActorHandle {
+        handle
+    }
+
+    #[extern_symbol(hew_lambda_actor_release)]
+    pub fn release(handle: LambdaActorHandle) -> i32 {
+        0
+    }
+
+    #[extern_symbol(hew_lambda_actor_downgrade)]
+    pub fn downgrade(handle: LambdaActorHandle) -> LambdaActorWeakHandle {
+        LambdaActorWeakHandle {  }
+    }
+}
+
+impl LambdaActorWeakHandle {
+    #[extern_symbol(hew_lambda_actor_weak_send)]
+    pub fn send(weak: LambdaActorWeakHandle, msg: bytes) -> i32 {
+        0
+    }
+
+    #[extern_symbol(hew_lambda_actor_weak_clone)]
+    pub fn clone(weak: LambdaActorWeakHandle) -> LambdaActorWeakHandle {
+        weak
+    }
+
+    #[extern_symbol(hew_lambda_actor_weak_drop)]
+    pub fn release(weak: LambdaActorWeakHandle) -> i32 {
+        0
+    }
+}

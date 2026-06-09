@@ -240,9 +240,8 @@ block-beta
     end
 
     block:L3["<b>L3: Actors & Supervision</b>"]
-        columns 4
+        columns 3
         actor["actor.rs<br/>HewActor<br/>HewActorState (6 states)"]
-        scope["scope.rs<br/>HewScope<br/>MAX_ACTORS=64"]
         actor_group["actor_group.rs<br/>Actor Groups"]
         supervisor["supervisor.rs<br/>HewChildSpec<br/>OneForOne/OneForAll/RestForOne"]
     end
@@ -284,7 +283,6 @@ block-beta
 | `HEW_MSG_BUDGET`         | 256    | `actor.rs`     |
 | `HEW_DEFAULT_REDUCTIONS` | 4000   | `actor.rs`     |
 | `HEW_MAX_WORKERS`        | 256    | `actor.rs`     |
-| `HEW_SCOPE_MAX_ACTORS`   | 64     | `scope.rs`     |
 | `MAX_CONNS`              | 64     | `transport.rs` |
 | `MAX_FRAME_SIZE`         | 16 MiB | `transport.rs` |
 | `PARK_TIMEOUT`           | 10 ms  | `scheduler.rs` |

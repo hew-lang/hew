@@ -45,7 +45,7 @@ fn build_subcommand_is_rejected_as_unrecognised() {
 }
 
 #[test]
-fn net_parameter_surface_fixture_checks_cleanly() {
+fn net_parameter_surface_fixture_reaches_deep_gate() {
     let source = repo_root().join("hew-types/tests/fixtures/net_parameter_surfaces_typecheck.hew");
     let source_arg = source.to_str().expect("source path should be valid UTF-8");
 
@@ -54,11 +54,20 @@ fn net_parameter_surface_fixture_checks_cleanly() {
         .current_dir(repo_root())
         .output()
         .expect("run hew check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        output.status.success(),
-        "hew check {} failed\n{}",
+        !output.status.success(),
+        "Stage 2 check should reject {} after frontend typechecking\n{}",
         source.display(),
         describe_output(&output),
+    );
+    assert!(
+        stderr.contains("E_HIR") || stderr.contains("E_NOT_YET_IMPLEMENTED"),
+        "fixture should reach the HIR/MIR deep gates, not fail in argument parsing or file loading:\n{stderr}",
+    );
+    assert!(
+        !stderr.contains("type errors found"),
+        "net parameter surface fixture should still pass the frontend typecheck before deep gates:\n{stderr}",
     );
 }

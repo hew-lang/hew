@@ -49,6 +49,7 @@ fn colour_red_pipeline() -> IrPipeline {
     let colour_ty = ResolvedTy::Named {
         name: "Colour".to_string(),
         args: vec![],
+        builtin: None,
     };
     let enum_layout = EnumLayout {
         name: "Colour".to_string(),

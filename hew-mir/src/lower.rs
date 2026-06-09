@@ -1,16 +1,21 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use hew_hir::stdlib_catalog;
 use hew_hir::{
-    named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn,
-    HirItem, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineTransition, HirModule,
-    HirNodeId, HirSelect, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
+    named_type_components, named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock,
+    HirExpr, HirExprKind, HirFn, HirItem, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
+    HirMachineTransition, HirModule, HirNodeId, HirSelect, HirSelectArmKind, HirStmt, HirStmtKind,
+    HirSupervisorChild, HirSupervisorDecl, IntentKind, ResolvedRef, ResourceMarker, ScopeId,
+    SiteId, ValueClass,
 };
-use hew_parser::ast::BinaryOp;
+use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_types::{
-    ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily, NumericMethodOp,
-    NumericSignedness, ResolvedTy,
+    BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
+    NumericMethodOp, NumericSignedness, ResolvedTy,
 };
 
 use crate::dataflow;
@@ -21,6 +26,8 @@ use crate::model::{
     MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm,
     SelectArmKind, Strategy, Terminator, ThirFunction, TrapKind,
 };
+
+type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
 
 const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
 const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
@@ -145,6 +152,15 @@ fn float_width(ty: &ResolvedTy) -> Option<FloatWidth> {
     }
 }
 
+fn unary_op_label(op: UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Not => "!",
+        UnaryOp::Negate => "-",
+        UnaryOp::BitNot => "~",
+        UnaryOp::RawDeref => "*",
+    }
+}
+
 /// Return the signed minimum value for a concrete signed integer type
 /// as an `i64`. Used to emit the `lhs == iN::MIN` constant in the
 /// signed-MIN/-1 trap check for `/` and `%`.
@@ -166,11 +182,11 @@ fn signed_min_value(ty: &ResolvedTy) -> Option<i64> {
 
 fn actor_name_from_handle_ty(ty: &ResolvedTy) -> Option<&str> {
     match ty {
-        ResolvedTy::Named { name, args }
+        ResolvedTy::Named { name, args, .. }
             if matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor") && args.len() == 1 =>
         {
             match &args[0] {
-                ResolvedTy::Named { name, args } if args.is_empty() => Some(name.as_str()),
+                ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
                 _ => None,
             }
         }
@@ -182,10 +198,7 @@ fn named_type_marker(
     ty: &ResolvedTy,
     type_classes: &hew_hir::TypeClassTable,
 ) -> Option<ResourceMarker> {
-    match ty {
-        ResolvedTy::Named { name, .. } => hew_hir::lookup_type_marker(name, type_classes),
-        _ => None,
-    }
+    hew_hir::lookup_type_marker_for_ty(ty, type_classes)
 }
 
 fn builtin_registration_fields_match(
@@ -204,7 +217,7 @@ fn is_crash_info_payload_ty(
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
 ) -> bool {
-    let ResolvedTy::Named { name, args } = ty else {
+    let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
     };
     if !args.is_empty() || named_type_marker(ty, type_classes) != Some(ResourceMarker::BitCopy) {
@@ -360,6 +373,7 @@ fn check_function(
         .decisions
         .iter()
         .filter(|d| d.strategy == Strategy::UnknownBlocked)
+        .filter(|d| !is_unsupported_user_record_value_class_ty(&d.ty, builder))
         .map(|d| d.site)
         .collect();
     if !offending.is_empty() {
@@ -506,6 +520,98 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                             .collect(),
                     });
                 }
+                // W2.002 Stage 1 — per-actor state-field clone
+                // classification. Run BEFORE constructing the
+                // `ActorLayout` so the classifier outcome decides
+                // whether to populate the `state_clone_fn_symbol` /
+                // `state_drop_fn_symbol` pair (paired Some/None per the
+                // model.rs field doc; substrate-first per dispatch-
+                // invariant #1).
+                //
+                // The classifier sees the cumulative `record_layouts`
+                // built so far; user records declared above the actor
+                // in source order are visible. Records declared *below*
+                // the actor are not — but the v0.5 corpus has no
+                // forward-reference users, and the HIR-side resolution
+                // already rejects forward references at type-resolve
+                // time. If a future amendment lifts the
+                // forward-reference restriction, this loop will need a
+                // two-pass pattern (collect records first, then build
+                // actor layouts) — for now this is the same
+                // declaration-order invariant the rest of the loop
+                // relies on.
+                let state_field_tys: Vec<ResolvedTy> = actor
+                    .state_fields
+                    .iter()
+                    .map(|field| field.ty.clone())
+                    .collect();
+                let classification = crate::state_clone::classify_actor_state_fields(
+                    &state_field_tys,
+                    &record_layouts,
+                );
+                let (clone_sym, drop_sym, clone_kinds) = match classification {
+                    Ok(kinds) => (
+                        Some(crate::state_clone::mangle_actor_state_clone_fn(&actor.name)),
+                        Some(crate::state_clone::mangle_actor_state_drop_fn(&actor.name)),
+                        Some(kinds),
+                    ),
+                    Err(err) => {
+                        // Locate the failing field index by re-running
+                        // the classifier per-field with a fresh visited
+                        // set. This is O(n) on the field count (always
+                        // small — actor state has at most a handful of
+                        // fields in the corpus) and produces a precise
+                        // diagnostic anchor rather than blaming the
+                        // whole actor. If every per-field run somehow
+                        // succeeds (impossible given the collected
+                        // error, but defensive), fall back to index 0
+                        // with a marker reason rather than `unreachable!`.
+                        let mut field_index = 0usize;
+                        let mut field_name = actor
+                            .state_fields
+                            .first()
+                            .map(|f| f.name.clone())
+                            .unwrap_or_default();
+                        let mut found = false;
+                        for (idx, field) in actor.state_fields.iter().enumerate() {
+                            let mut v = std::collections::HashSet::new();
+                            if crate::state_clone::classify_state_field(
+                                &field.ty,
+                                &record_layouts,
+                                &mut v,
+                            )
+                            .is_err()
+                            {
+                                field_index = idx;
+                                field_name.clone_from(&field.name);
+                                found = true;
+                                break;
+                            }
+                        }
+                        let reason = if found {
+                            format!("{err}")
+                        } else {
+                            format!(
+                                "{err} (per-field re-run could not localise; \
+                                 classifier saw an aggregate error)"
+                            )
+                        };
+                        diagnostics.push(crate::model::MirDiagnostic {
+                            kind:
+                                crate::model::MirDiagnosticKind::ActorStateCloneClassificationFailed {
+                                    actor: actor.name.clone(),
+                                    field_index,
+                                    field_name,
+                                    reason: reason.clone(),
+                                },
+                            note: format!(
+                                "actor `{}` state-field classifier failed: {}",
+                                actor.name, reason
+                            ),
+                        });
+                        (None, None, None)
+                    }
+                };
                 actor_layouts.push(crate::model::ActorLayout {
                     name: actor.name.clone(),
                     state_field_names: actor
@@ -552,6 +658,9 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     max_heap_bytes: actor.max_heap_bytes,
                     cycle_capable: actor.cycle_capable,
                     handlers: lower_actor_handler_layouts(actor),
+                    state_clone_fn_symbol: clone_sym,
+                    state_drop_fn_symbol: drop_sym,
+                    state_field_clone_kinds: clone_kinds,
                 });
             }
             HirItem::Supervisor(sup) => {
@@ -696,6 +805,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         .cloned()
         .map(|layout| (layout.name.clone(), layout))
         .collect();
+    let task_entry_adapter_symbols = TaskEntryAdapterSymbols::default();
 
     // Recognised tagged-union type names: every machine plus its synthesised
     // `<Machine>Event` companion. Walks `module.items` directly because the
@@ -763,6 +873,9 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             stdlib_catalog::BuiltinLinkage::CompilerIntrinsic { .. }
         ) {
             module_fn_names.insert(entry.name.to_string());
+            if let Some(symbol) = entry.linkage.runtime_symbol() {
+                module_fn_names.insert(symbol.to_string());
+            }
         }
     }
     for item in &module.items {
@@ -781,6 +894,17 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     for mono in &module.monomorphisations {
         module_fn_names.insert(mono.mangled_name.clone());
     }
+    let module_generic_fn_names: HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Function(func) if !func.type_params.is_empty() => Some(func.name.clone()),
+            _ => None,
+        })
+        .collect();
+    // Structured static-trait-dispatch registry. Built once from
+    // `HirItem::Impl` metadata and threaded into every user-fn builder.
+    let trait_impl_index = hew_hir::dispatch::build_trait_impl_method_index(&module.items);
     let mut emitted_actor_handler_symbols: HashMap<String, String> = module_fn_names
         .iter()
         .map(|name| (name.clone(), format!("function `{name}`")))
@@ -816,9 +940,12 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &machine_layout_names,
                     None,
                     &module_fn_names,
+                    &module_generic_fn_names,
+                    &trait_impl_index,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     crate::model::FunctionCallConv::Default,
+                    task_entry_adapter_symbols.clone(),
                 );
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
@@ -845,9 +972,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &actor_layout_map,
                     &machine_layout_names,
                     &module_fn_names,
+                    &module_generic_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     &mut emitted_actor_handler_symbols,
+                    &task_entry_adapter_symbols,
                     &mut diagnostics,
                 );
                 for lowered in lowered_handlers {
@@ -878,9 +1007,11 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &actor_layout_map,
                     &machine_layout_names,
                     &module_fn_names,
+                    &module_generic_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     &mut emitted_actor_handler_symbols,
+                    &task_entry_adapter_symbols,
                     &mut diagnostics,
                 ) {
                     thir.push(lowered.thir);
@@ -933,6 +1064,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                     &supervisor_layout_map,
                     &machine_layout_names,
                     &module_fn_names,
+                    &module_generic_fn_names,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                 );
@@ -1027,9 +1159,12 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
             &machine_layout_names,
             None,
             &module_fn_names,
+            &module_generic_fn_names,
+            &trait_impl_index,
             &module.call_site_type_args,
             &module.supervisor_child_slots,
             crate::model::FunctionCallConv::Default,
+            task_entry_adapter_symbols.clone(),
         );
         thir.push(lowered.thir);
         raw_mir.push(lowered.raw);
@@ -1048,6 +1183,17 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         }
         diagnostics.extend(lowered.diagnostics);
     }
+
+    collect_layout_field_diagnostics(
+        &record_layouts,
+        &enum_layouts,
+        &machine_layouts,
+        &record_field_orders,
+        &actor_layout_map,
+        &supervisor_layout_map,
+        &machine_layout_names,
+        &mut diagnostics,
+    );
 
     // Mirror HirModule::regex_literals into the IrPipeline so codegen can
     // emit module-init globals without re-reading HIR. Each entry's literal_id
@@ -1104,9 +1250,11 @@ fn lower_actor_receive_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
     let state_fields: HashSet<String> = actor
@@ -1186,9 +1334,12 @@ fn lower_actor_receive_handlers(
             machine_layout_names,
             Some(&actor.name),
             module_fn_names,
+            module_generic_fn_names,
+            &HashMap::new(),
             call_site_type_args,
             supervisor_child_slots,
             crate::model::FunctionCallConv::ActorHandler,
+            task_entry_adapter_symbols.clone(),
         ));
     }
 
@@ -1206,9 +1357,11 @@ fn lower_actor_body_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
     let mut lowered = Vec::new();
@@ -1221,9 +1374,11 @@ fn lower_actor_body_handlers(
             actor_layouts,
             machine_layout_names,
             module_fn_names,
+            module_generic_fn_names,
             call_site_type_args,
             supervisor_child_slots,
             emitted_symbols,
+            task_entry_adapter_symbols,
             diagnostics,
         ) {
             lowered.push(func);
@@ -1236,9 +1391,11 @@ fn lower_actor_body_handlers(
         actor_layouts,
         machine_layout_names,
         module_fn_names,
+        module_generic_fn_names,
         call_site_type_args,
         supervisor_child_slots,
         emitted_symbols,
+        task_entry_adapter_symbols,
         diagnostics,
     ));
     lowered.extend(lower_actor_receive_handlers(
@@ -1248,9 +1405,11 @@ fn lower_actor_body_handlers(
         actor_layouts,
         machine_layout_names,
         module_fn_names,
+        module_generic_fn_names,
         call_site_type_args,
         supervisor_child_slots,
         emitted_symbols,
+        task_entry_adapter_symbols,
         diagnostics,
     ));
     lowered
@@ -1268,9 +1427,11 @@ fn lower_actor_init_handler(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Option<LoweredFunction> {
     let emit_name = mangle_actor_init_handler(&actor.name);
@@ -1310,9 +1471,12 @@ fn lower_actor_init_handler(
         machine_layout_names,
         Some(&actor.name),
         module_fn_names,
+        module_generic_fn_names,
+        &HashMap::new(),
         call_site_type_args,
         supervisor_child_slots,
         crate::model::FunctionCallConv::ActorHandler,
+        task_entry_adapter_symbols.clone(),
     ))
 }
 
@@ -1331,9 +1495,11 @@ fn lower_actor_lifecycle_handlers(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
     let mut lowered = Vec::new();
@@ -1378,9 +1544,12 @@ fn lower_actor_lifecycle_handlers(
                     machine_layout_names,
                     Some(&actor.name),
                     module_fn_names,
+                    module_generic_fn_names,
+                    &HashMap::new(),
                     call_site_type_args,
                     supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
+                    task_entry_adapter_symbols.clone(),
                 ));
             }
             HirLifecycleHookKind::Stop => {
@@ -1415,9 +1584,12 @@ fn lower_actor_lifecycle_handlers(
                     machine_layout_names,
                     Some(&actor.name),
                     module_fn_names,
+                    module_generic_fn_names,
+                    &HashMap::new(),
                     call_site_type_args,
                     supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
+                    task_entry_adapter_symbols.clone(),
                 ));
             }
             HirLifecycleHookKind::Crash => {
@@ -1591,9 +1763,12 @@ fn lower_actor_lifecycle_handlers(
                     machine_layout_names,
                     Some(&actor.name),
                     module_fn_names,
+                    module_generic_fn_names,
+                    &HashMap::new(),
                     call_site_type_args,
                     supervisor_child_slots,
                     crate::model::FunctionCallConv::ActorHandler,
+                    task_entry_adapter_symbols.clone(),
                 ));
             }
             HirLifecycleHookKind::Upgrade => push_lifecycle_not_wired_diagnostic(
@@ -1738,6 +1913,7 @@ fn synthesize_machine_step_fn(
     supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
 ) -> LoweredFunction {
@@ -1750,10 +1926,12 @@ fn synthesize_machine_step_fn(
     let self_ty = ResolvedTy::Named {
         name: md.name.clone(),
         args: type_args.clone(),
+        builtin: None,
     };
     let event_ty = ResolvedTy::Named {
         name: format!("{}Event", md.name),
         args: type_args.clone(),
+        builtin: None,
     };
     let return_ty = self_ty.clone();
 
@@ -1778,6 +1956,7 @@ fn synthesize_machine_step_fn(
         supervisor_layout_map: supervisor_layout_map.clone(),
         machine_layout_names: machine_layout_names.clone(),
         module_fn_names: module_fn_names.clone(),
+        module_generic_fn_names: module_generic_fn_names.clone(),
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         current_function_symbol: emit_name.clone(),
@@ -2145,15 +2324,22 @@ fn is_machine_state_passthrough(expr: &hew_hir::HirExpr) -> bool {
 
 fn default_machine_type_params_to_i64(ty: &ResolvedTy, md: &HirMachineDecl) -> ResolvedTy {
     match ty {
-        ResolvedTy::Named { name, args } if args.is_empty() && md.type_params.contains(name) => {
+        ResolvedTy::Named { name, args, .. }
+            if args.is_empty() && md.type_params.contains(name) =>
+        {
             ResolvedTy::I64
         }
-        ResolvedTy::Named { name, args } => ResolvedTy::Named {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+        } => ResolvedTy::Named {
             name: name.clone(),
             args: args
                 .iter()
                 .map(|arg| default_machine_type_params_to_i64(arg, md))
                 .collect(),
+            builtin: *builtin,
         },
         ResolvedTy::Tuple(elems) => ResolvedTy::Tuple(
             elems
@@ -2415,7 +2601,9 @@ fn local_pid_of(actor_name: &str) -> ResolvedTy {
         args: vec![ResolvedTy::Named {
             name: actor_name.to_string(),
             args: vec![],
+            builtin: None,
         }],
+        builtin: Some(hew_types::BuiltinType::LocalPid),
     }
 }
 
@@ -2463,9 +2651,11 @@ fn lower_supervisor_bootstrap(
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Option<LoweredFunction> {
     let emit_name = mangle_supervisor_bootstrap(&sup.name);
@@ -2683,6 +2873,8 @@ fn lower_supervisor_bootstrap(
         // Builder.
         None,
         module_fn_names,
+        module_generic_fn_names,
+        &HashMap::new(),
         call_site_type_args,
         supervisor_child_slots,
         // `FunctionCallConv::Default`: codegen replaces the bootstrap body
@@ -2696,6 +2888,7 @@ fn lower_supervisor_bootstrap(
         // supervisor's own actor is spawned by `hew_supervisor_start`, not
         // by the bootstrap's call_conv.
         crate::model::FunctionCallConv::Default,
+        Rc::clone(task_entry_adapter_symbols),
     ))
 }
 
@@ -2779,6 +2972,9 @@ fn collect_unknown_self_fields_in_block(
                 collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => {
+                collect_unknown_self_fields_in_expr(body, state_fields, seen, unknown);
+            }
         }
     }
     if let Some(tail) = &block.tail {
@@ -2809,6 +3005,9 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(right, state_fields, seen, unknown);
         }
+        HirExprKind::Unary { operand, .. } => {
+            collect_unknown_self_fields_in_expr(operand, state_fields, seen, unknown);
+        }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
@@ -2826,7 +3025,8 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             for arg in args {
                 collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
@@ -3099,9 +3299,15 @@ fn lower_function(
     machine_layout_names: &HashSet<String>,
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    trait_impl_index: &HashMap<
+        hew_hir::dispatch::TraitImplKey,
+        hew_hir::dispatch::TraitImplMethodEntry,
+    >,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     call_conv: crate::model::FunctionCallConv,
+    task_entry_adapter_symbols: TaskEntryAdapterSymbols,
 ) -> LoweredFunction {
     let mut builder = Builder {
         type_classes: type_classes.clone(),
@@ -3133,10 +3339,14 @@ fn lower_function(
             })
             .unwrap_or_default(),
         module_fn_names: module_fn_names.clone(),
+        module_generic_fn_names: module_generic_fn_names.clone(),
+        trait_impl_index: trait_impl_index.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         current_function_symbol: emit_name.clone(),
+        current_function_call_conv: call_conv,
+        task_entry_adapter_symbols,
         ..Builder::default()
     };
     // Allocate parameter locals BEFORE lowering the function body so
@@ -3289,9 +3499,11 @@ fn collect_unknown_type_diagnostics(
     let mut reported = HashSet::new();
 
     for param in &func.params {
-        push_unknown_type_diagnostics(&param.ty, builder, &mut reported, diagnostics);
+        let substituted = builder.subst_ty(&param.ty);
+        push_unknown_type_diagnostics(&substituted, builder, &mut reported, diagnostics);
     }
-    push_unknown_type_diagnostics(&func.return_ty, builder, &mut reported, diagnostics);
+    let substituted_ret = builder.subst_ty(&func.return_ty);
+    push_unknown_type_diagnostics(&substituted_ret, builder, &mut reported, diagnostics);
 
     for decision in &builder.decisions {
         push_unknown_type_diagnostics(&decision.ty, builder, &mut reported, diagnostics);
@@ -3315,38 +3527,147 @@ fn collect_unknown_type_diagnostics(
     }
 }
 
-/// Emit `UnknownType` diagnostics for each Named type in `ty` that is absent
-/// from `type_classes`. Names present in the registry are known — they carry
-/// a HIR marker — and must not be treated as unknown.
-/// This implements §3.1 "Checker authority survives downstream": the MIR layer
-/// consumes the HIR checker's `type_classes` decision rather than re-deriving
-/// Named-type knownness independently.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "layout-closure gate mirrors module-scoped record/actor/supervisor/machine readiness tables"
+)]
+fn collect_layout_field_diagnostics(
+    record_layouts: &[crate::model::RecordLayout],
+    enum_layouts: &[crate::model::EnumLayout],
+    machine_layouts: &[crate::model::MachineLayout],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
+    machine_layout_names: &HashSet<String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) {
+    let mut reported = HashSet::new();
+    for field_ty in record_layouts
+        .iter()
+        .flat_map(|layout| layout.field_tys.iter())
+        .chain(
+            enum_layouts
+                .iter()
+                .flat_map(|layout| layout.variants.iter())
+                .flat_map(|variant| variant.field_tys.iter()),
+        )
+        .chain(
+            machine_layouts
+                .iter()
+                .flat_map(|layout| layout.variants.iter().chain(layout.events.iter()))
+                .flat_map(|variant| variant.field_tys.iter()),
+        )
+    {
+        push_unknown_type_diagnostics_for_layout_ty(
+            field_ty,
+            record_field_orders,
+            actor_layouts,
+            supervisor_layout_map,
+            machine_layout_names,
+            &mut reported,
+            diagnostics,
+        );
+    }
+}
+
+fn push_unknown_type_diagnostics_for_layout_ty(
+    ty: &ResolvedTy,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
+    machine_layout_names: &HashSet<String>,
+    reported: &mut HashSet<String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) {
+    for component in named_type_components(ty) {
+        if component.builtin.is_some()
+            || is_codegen_ready_user_name(
+                &component.name,
+                record_field_orders,
+                actor_layouts,
+                supervisor_layout_map,
+                machine_layout_names,
+            )
+        {
+            continue;
+        }
+        push_unknown_type_diagnostic(component.name, reported, diagnostics);
+    }
+}
+
+fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: None,
+        } if args.is_empty() => Some(name.clone()),
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: None,
+        } => Some(hew_hir::mangle(name, args)),
+        _ => None,
+    }
+}
+
+fn is_unsupported_user_record_value_class_ty(ty: &ResolvedTy, builder: &Builder) -> bool {
+    let Some(key) = user_record_layout_key(ty) else {
+        return false;
+    };
+    builder
+        .record_field_orders
+        .get(&key)
+        .is_some_and(|fields| !fields.is_empty())
+}
+
+/// Emit `UnknownType` diagnostics for user-named types that are not part of
+/// the MIR layout graph codegen can resolve. Builtin-discriminated names bypass
+/// only this user-name readiness predicate; unsupported builtin lowering remains
+/// guarded by the downstream fail-closed paths.
 fn push_unknown_type_diagnostics(
     ty: &ResolvedTy,
     builder: &Builder,
     reported: &mut HashSet<String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
-    for name in named_type_names(ty) {
-        if builder.type_classes.contains_key(&name)
-            || matches!(name.as_str(), "LocalPid" | "ActorRef" | "Actor")
-            || matches!(name.as_str(), "Vec" | "HashMap" | "HashSet")
-            || builder.actor_layouts.contains_key(&name)
-            || builder.supervisor_layout_map.contains_key(&name)
-            || machine_layout_name_matches(&builder.machine_layout_names, &name)
-            // `Generator<Y, R>` is the checker-supplied type for gen-block
-            // expressions. The S3a shell uses it as a placeholder; S3b/S4
-            // replace the shell with a real state-record type. Silence the
-            // UnknownType diagnostic so gen-block lowering compiles cleanly
-            // at S3a without requiring a full type-class registration.
-            // WHEN-OBSOLETE: when S3b synthesises the GenN nominal and
-            // registers it in the type-class table, this arm is unreachable.
-            || name == "Generator"
+    for component in named_type_components(ty) {
+        if component.builtin.is_some()
+            || is_codegen_ready_user_name(
+                &component.name,
+                &builder.record_field_orders,
+                &builder.actor_layouts,
+                &builder.supervisor_layout_map,
+                &builder.machine_layout_names,
+            )
         {
             continue;
         }
-        push_unknown_type_diagnostic(name, reported, diagnostics);
+        push_unknown_type_diagnostic(component.name, reported, diagnostics);
     }
+}
+
+fn is_codegen_ready_user_name(
+    name: &str,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
+    machine_layout_names: &HashSet<String>,
+) -> bool {
+    record_field_orders.contains_key(name)
+        || record_field_orders
+            .keys()
+            .any(|known| short_name(known) == short_name(name))
+        // Generic record instantiations are keyed by mangled name
+        // (e.g. "Wrapper$$i64"); match the bare name prefix so that
+        // `UnknownType` is not emitted for types that DO have a concrete
+        // layout entry under a monomorphised symbol.
+        || record_field_orders
+            .keys()
+            .any(|known| known.starts_with(name) && known[name.len()..].starts_with("$$"))
+        || actor_layouts.contains_key(name)
+        || supervisor_layout_map.contains_key(name)
+        || machine_layout_name_matches(machine_layout_names, name)
 }
 
 fn push_unknown_type_diagnostic(
@@ -3404,6 +3725,14 @@ struct Builder {
     /// `start_block(id)` after a `finish_current_block(...)` seals the
     /// previous block into `pending_blocks`.
     current_block_id: u32,
+    /// Set when the most recent `finish_current_block` was followed by
+    /// `start_block` for a block that has no predecessor in the CFG —
+    /// typically the synthetic continuation block opened after an
+    /// explicit early `return` seals its block with `Terminator::Return`.
+    /// `finalize_blocks` drops this block from the function's CFG when
+    /// it is observed to be empty, so the dead-end does not appear as
+    /// an additional `Return` exit in `drop_plans`.
+    cursor_unreachable: bool,
     /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
     /// `Place::Local(i as u32)`.
     locals: Vec<ResolvedTy>,
@@ -3415,6 +3744,10 @@ struct Builder {
     owned_locals: Vec<(hew_hir::BindingId, String, ResolvedTy)>,
     /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
     diagnostics: Vec<MirDiagnostic>,
+    /// Per-function de-duplication for W3.029 user-aggregate value-class
+    /// diagnostics. Keyed by the same bare/mangled record-layout key used by
+    /// `record_field_orders`.
+    unsupported_user_record_value_classes: HashSet<String>,
     /// Per-named-type marker registry, cloned from the parent `HirModule` at
     /// builder construction. Read by every `ValueClass::of_ty` call site in
     /// MIR lowering so the marker is the single fact about whether a Named
@@ -3501,6 +3834,22 @@ struct Builder {
     /// references (calling a function declared later in the file) are
     /// handled correctly.
     module_fn_names: HashSet<String>,
+    module_generic_fn_names: HashSet<String>,
+    /// Structured static-dispatch registry — `(declaring_trait,
+    /// self_type_name, method_name) → impl method symbol + impl type
+    /// params`. Built once from `HirItem::Impl` metadata in
+    /// `lower_program_with_*` and cloned into every builder so the
+    /// `CallTraitMethodStatic` arm can resolve through structured HIR
+    /// facts rather than reconstructing the impl symbol from a display
+    /// name. Empty for builders constructed via `Builder::default()`
+    /// (machine step shells, actor handler shims) — those bodies do
+    /// not host generic-bounded trait method calls.
+    #[allow(
+        dead_code,
+        reason = "prepared for structured dispatch; MIR uses type-name derivation in this slice"
+    )]
+    trait_impl_index:
+        HashMap<hew_hir::dispatch::TraitImplKey, hew_hir::dispatch::TraitImplMethodEntry>,
     /// Substitution map from origin-fn type-parameter symbols to
     /// concrete `ResolvedTy`s, populated only when this Builder is
     /// lowering a generic function under a specific monomorphisation.
@@ -3529,6 +3878,8 @@ struct Builder {
     supervisor_child_slots: HashMap<hew_hir::SiteId, hew_types::ChildSlot>,
     current_task_scope: Option<Place>,
     current_function_symbol: String,
+    current_function_call_conv: crate::model::FunctionCallConv,
+    task_entry_adapter_symbols: TaskEntryAdapterSymbols,
     next_closure_id: u32,
     generated_functions: Vec<LoweredFunction>,
     closure_record_layouts: Vec<crate::model::RecordLayout>,
@@ -3563,6 +3914,23 @@ struct Builder {
     /// `lower_hir_module` flattens them into `IrPipeline.gen_state_layouts`
     /// so codegen consumes them by gen-body function name.
     gen_state_layouts: Vec<crate::model::GenStateLayout>,
+    /// Per-scope deferred bodies collected during statement lowering.
+    /// Key: the `ScopeId` of the HIR scope that owns the defer.
+    /// Value: deferred body expressions in registration order (FIFO).
+    /// `emit_pending_defers(scope_id)` drains and lowers them in LIFO
+    /// (reverse registration) order at every exit from that scope.
+    ///
+    /// Q205-B: bindings inside defer bodies resolve by lexical reference
+    /// at execution time — mutable vars observe their final value;
+    /// moved/consumed bindings are rejected by the move-checker at the
+    /// materialization site.
+    pending_defers: HashMap<ScopeId, Vec<HirExpr>>,
+    /// Stack of active scope IDs in nesting order (outermost at index 0,
+    /// innermost at the end). Pushed when entering a `Block` expression or
+    /// `function_body`; popped on exit. Read by `emit_defers_for_return` to
+    /// walk the full scope chain on early-return paths, emitting defers for
+    /// every enclosing scope that has registered bodies.
+    active_scopes: Vec<ScopeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3605,6 +3973,56 @@ impl Builder {
         }
         hew_hir::lower::substitute_ty(ty, &self.subst)
     }
+    /// Materialize all pending defers for `scope_id` in LIFO order.
+    ///
+    /// Called at every exit from a scope: the tail of a `Block` expression,
+    /// the end of `function_body`, and (Stage 2) before early returns.
+    /// Each deferred body expression is lowered inline — the result value
+    /// is discarded (defer bodies are side-effect-only; their type is Unit
+    /// per HIR lowering). LIFO ordering matches the Go/Swift/Zig defer
+    /// discipline: last-registered runs first.
+    fn emit_pending_defers(&mut self, scope_id: ScopeId) {
+        let Some(defers) = self.pending_defers.remove(&scope_id) else {
+            return;
+        };
+        // LIFO: iterate in reverse registration order.
+        for body in defers.into_iter().rev() {
+            // Lower the deferred body for its side effects. The result
+            // Place is discarded — Q205-B mandates defer bodies are
+            // effect-only (Unit-typed). Bindings resolve by lexical
+            // reference at this point, observing their final value.
+            let _ = self.lower_value(&body);
+        }
+    }
+
+    /// Emit defers for an early-return path. Walks `active_scopes` from
+    /// innermost to outermost, cloning and lowering each scope's pending
+    /// defers in LIFO order. Uses clone (not remove) because the normal
+    /// scope-exit path or a sibling control-flow branch may still need the
+    /// defers — only the canonical `emit_pending_defers` at normal scope
+    /// exit drains them permanently.
+    ///
+    /// Q205-B: mutable vars observe their final value at this program point
+    /// because the defer bodies are lowered inline here. Moved/consumed
+    /// bindings are caught by the MIR move-checker at the materialization
+    /// site — a use-after-move in the defer body produces a checker-stream
+    /// violation exactly as it would at a normal scope exit.
+    fn emit_defers_for_return(&mut self) {
+        // Walk from innermost scope to outermost (reverse of push order).
+        for i in (0..self.active_scopes.len()).rev() {
+            let scope_id = self.active_scopes[i];
+            let Some(defers) = self.pending_defers.get(&scope_id) else {
+                continue;
+            };
+            // Clone — do not drain; sibling branches may still need these.
+            let defers = defers.clone();
+            // LIFO within this scope.
+            for body in defers.into_iter().rev() {
+                let _ = self.lower_value(&body);
+            }
+        }
+    }
+
     /// Allocate one `Place::Local` per function parameter and register each
     /// in `binding_locals` so that `BindingRef` expressions in the function
     /// body resolve to a real slot.
@@ -3706,6 +4124,22 @@ impl Builder {
             self.instructions.len(),
         );
         self.current_block_id = id;
+        // A fresh `start_block` always opens a normally-reachable cursor.
+        // The early-return path that needs a dead block calls
+        // `start_dead_block` instead to flag the dead-end.
+        self.cursor_unreachable = false;
+    }
+
+    /// Open a fresh continuation block whose only predecessor would be
+    /// post-return source code. The block is flagged `cursor_unreachable`
+    /// so `finalize_blocks` can drop it if it remains empty when the
+    /// function body finishes — preventing a synthetic Return exit with
+    /// an empty drop plan from polluting `drop_plans`. Source code that
+    /// lexically follows the `return` still lowers cleanly into this
+    /// block; the block is kept (with no predecessor) and LLVM DCEs it.
+    fn start_dead_block(&mut self, id: u32) {
+        self.start_block(id);
+        self.cursor_unreachable = true;
     }
 
     /// Finalise the function's CFG by sealing the in-flight current
@@ -3715,14 +4149,36 @@ impl Builder {
     /// during the function-body walk; Slice 2's `If` lowering is the
     /// first writer to produce a non-trivial CFG here.
     fn finalize_blocks(&mut self, terminator: Terminator) -> Vec<BasicBlock> {
-        let last = BasicBlock {
-            id: self.current_block_id,
-            statements: std::mem::take(&mut self.statements),
-            instructions: std::mem::take(&mut self.instructions),
-            terminator,
-        };
         let mut blocks = std::mem::take(&mut self.pending_blocks);
-        blocks.push(last);
+        // Drop a synthetic dead-end cursor (from an early-return seal)
+        // when no producer has written into it — keeping the empty
+        // block would surface a spurious `Return` exit in `drop_plans`
+        // with an Uninit-filtered (empty) drop list, masking real
+        // `cleanup-all-exits` violations on the reachable Return paths.
+        // When the dead cursor accumulated content (e.g. a function-end
+        // `emit_pending_defers` drained the function-scope defers into
+        // it), keep the block — the content is unreachable at runtime
+        // but the block must exist for the producer-side invariants
+        // that drained into it to remain self-consistent.
+        let drop_empty_dead_cursor =
+            self.cursor_unreachable && self.statements.is_empty() && self.instructions.is_empty();
+        if drop_empty_dead_cursor {
+            // Clear the buffers defensively — they should already be
+            // empty per the `drop_empty_dead_cursor` predicate above,
+            // but keeping the state-reset explicit guards future
+            // callers from observing stale `take`-leftover state.
+            self.statements.clear();
+            self.instructions.clear();
+        } else {
+            let last = BasicBlock {
+                id: self.current_block_id,
+                statements: std::mem::take(&mut self.statements),
+                instructions: std::mem::take(&mut self.instructions),
+                terminator,
+            };
+            blocks.push(last);
+        }
+        self.cursor_unreachable = false;
         // Sort by id so consumers can index by position when they want
         // RPO-ish iteration. Construction order is already monotone
         // because `alloc_block` is monotone, so this is a no-op in
@@ -3733,6 +4189,7 @@ impl Builder {
     }
 
     fn function_body(&mut self, func: &HirFn) {
+        self.active_scopes.push(func.body.scope);
         for stmt in &func.body.statements {
             self.stmt(stmt);
         }
@@ -3740,21 +4197,29 @@ impl Builder {
             let value_place = self.lower_value(tail);
             self.decide(tail);
             self.mark_returned_binding_moved(tail);
-            self.statements.push(MirStatement::Return {
-                site: Some(tail.site),
-                ty: self.subst_ty(&tail.ty),
-            });
-            // Backend stream: write the tail's value into the return slot.
-            // If `lower_value` declined to produce a Place (an unsupported
-            // construct in the spine subset), skip the move; the
-            // `Unsupported` diagnostic already short-circuits the pipeline.
+            // Secure the tail value into the return slot BEFORE running
+            // function-scope defers. Q205-B: defer bodies observe their
+            // referenced bindings at scope-exit execution time — a defer
+            // that mutates a `var` named by the tail expression must not
+            // be able to corrupt the returned value. Materialising the
+            // Move first locks in the value the caller observes.
             if let Some(src) = value_place {
                 self.instructions.push(Instr::Move {
                     dest: Place::ReturnSlot,
                     src,
                 });
             }
+            self.emit_pending_defers(func.body.scope);
+            self.statements.push(MirStatement::Return {
+                site: Some(tail.site),
+                ty: self.subst_ty(&tail.ty),
+            });
+        } else {
+            // No tail expression — implicit unit return. Still emit defers
+            // for the function body scope.
+            self.emit_pending_defers(func.body.scope);
         }
+        self.active_scopes.pop();
     }
 
     #[allow(
@@ -3913,18 +4378,54 @@ impl Builder {
                     site: Some(expr.site),
                     ty: self.subst_ty(&expr.ty),
                 });
+                // Move the return value to ReturnSlot BEFORE executing
+                // defers — the value is secured so defers cannot corrupt it.
                 if let Some(src) = value_place {
                     self.instructions.push(Instr::Move {
                         dest: Place::ReturnSlot,
                         src,
                     });
                 }
+                // Emit defers for all enclosing scopes (innermost first).
+                // Q205-B: defers observe the binding state at this program
+                // point — mutable vars have their final value; moved bindings
+                // are flagged by the move-checker.
+                self.emit_defers_for_return();
+                // Seal the current basic block with Terminator::Return so
+                // codegen actually emits an early return at this program
+                // point. Codegen consumes the block terminator (not the
+                // `MirStatement::Return` THIR marker), so without sealing
+                // the block here the post-`return` statements would
+                // continue executing — turning `return` into a no-op.
+                // Start a fresh cursor block to hold any source code
+                // that lexically follows the return; that block has no
+                // predecessor and is dead-code-eliminated by LLVM.
+                self.finish_current_block(Terminator::Return);
+                let dead = self.alloc_block();
+                self.start_dead_block(dead);
             }
             HirStmtKind::Return(None) => {
+                // Emit defers before the unit return.
+                self.emit_defers_for_return();
                 self.statements.push(MirStatement::Return {
                     site: None,
                     ty: ResolvedTy::Unit,
                 });
+                // Same seal-and-fresh-cursor discipline as Return(Some):
+                // codegen needs a Terminator::Return for the early-exit
+                // path to actually take effect at runtime.
+                self.finish_current_block(Terminator::Return);
+                let dead = self.alloc_block();
+                self.start_dead_block(dead);
+            }
+            HirStmtKind::Defer { body, scope_id } => {
+                // Record the deferred body for materialization at scope exit.
+                // Q205-B: bindings are resolved by lexical reference at execution
+                // time; moved/consumed bindings are validated at materialization.
+                self.pending_defers
+                    .entry(*scope_id)
+                    .or_default()
+                    .push(body.as_ref().clone());
             }
         }
     }
@@ -4084,6 +4585,11 @@ impl Builder {
                     _ => None,
                 }
             }
+            HirExprKind::Unary {
+                op,
+                operand,
+                operand_ty,
+            } => self.lower_unary(*op, operand, operand_ty, &expr.ty, expr.site),
             HirExprKind::NumericMethod {
                 receiver,
                 arg,
@@ -4256,10 +4762,37 @@ impl Builder {
                 // their nested expressions via `lower_value`, so a block
                 // embedded in any of those forms reaches this arm and is
                 // lowered the same way.
+                self.active_scopes.push(block.scope);
                 for stmt in &block.statements {
                     self.stmt(stmt);
                 }
-                block.tail.as_ref().and_then(|tail| self.lower_value(tail))
+                // Secure the block's tail value into a fresh local BEFORE
+                // running this scope's defers. Q205-B: defers observe
+                // bindings at scope-exit time, so a defer that mutates a
+                // `var` named by the tail expression would corrupt the
+                // block's value if the consumer read the original Place
+                // after the defer ran. Materialising the Move into a
+                // dedicated local locks in the result; the defer body
+                // may still mutate the source binding, but the block's
+                // observable value Place is untouched.
+                let result = if let Some(tail) = block.tail.as_ref() {
+                    if let Some(src) = self.lower_value(tail) {
+                        let secured = self.alloc_local(self.subst_ty(&tail.ty));
+                        self.instructions.push(Instr::Move { dest: secured, src });
+                        Some(secured)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                // Materialize defers registered for this scope in LIFO order.
+                // Runs after the tail expression's value has been secured
+                // into a fresh local so cleanup cannot corrupt the block's
+                // observable result.
+                self.emit_pending_defers(block.scope);
+                self.active_scopes.pop();
+                result
             }
             HirExprKind::If {
                 condition,
@@ -4275,9 +4808,9 @@ impl Builder {
                 // registered under the mangled name; for a monomorphic
                 // record `args` is empty and the bare name is the key.
                 let record_key = match &expr.ty {
-                    ResolvedTy::Named { name: tname, args } if !args.is_empty() => {
-                        hew_hir::mangle(tname, args)
-                    }
+                    ResolvedTy::Named {
+                        name: tname, args, ..
+                    } if !args.is_empty() => hew_hir::mangle(tname, args),
                     _ => name.clone(),
                 };
                 // Look up the declaration-order field list for this record.
@@ -4431,7 +4964,7 @@ impl Builder {
                             // We detect nesting on `expr.ty`, not `object.ty`
                             // (which is always `LocalPid<ParentSupervisor>`).
                             let is_nested = matches!(&expr.ty,
-                                ResolvedTy::Named { name, args }
+                                ResolvedTy::Named { name, args, .. }
                                 if name == "LocalPid"
                                     && args.len() == 1
                                     && matches!(&args[0],
@@ -4467,7 +5000,7 @@ impl Builder {
                 // `b.value`) the key is the mangled name `Box$$i64`; for a
                 // monomorphic record the key is the bare name.
                 let type_name = match &object.ty {
-                    ResolvedTy::Named { name, args } if !args.is_empty() => {
+                    ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
                         hew_hir::mangle(name, args)
                     }
                     ResolvedTy::Named { name, .. } => name.clone(),
@@ -4697,6 +5230,170 @@ impl Builder {
                     slot: *slot,
                     args: lowered_args,
                 });
+                dest
+            }
+            HirExprKind::CallTraitMethodStatic {
+                receiver,
+                receiver_type_param,
+                declaring_trait,
+                method_name,
+                args,
+                ret_ty,
+                ..
+            } => {
+                // Static trait dispatch via structured impl registry.
+                //
+                // Resolution path:
+                //   1. Substitute `receiver_type_param` through the
+                //      monomorphisation `subst` map to obtain a concrete
+                //      receiver `ResolvedTy`. If no substitution exists
+                //      the call survived into a concrete function body —
+                //      this is a checker/HIR invariant violation;
+                //      fail-closed with `UnresolvedStaticDispatchSubstitution`.
+                //   2. Project the concrete `ResolvedTy` to its canonical
+                //      `(self_type_name, type_args)` via
+                //      `hew_hir::dispatch::receiver_self_type_for_impl_lookup`.
+                //      The name matches `HirImplBlock::self_type_name`;
+                //      we DO NOT reconstruct an impl symbol from it.
+                //   3. Look up `(declaring_trait, self_type_name,
+                //      method_name)` in `self.trait_impl_index` — the
+                //      structured registry built once from
+                //      `HirItem::Impl` metadata. The hit carries the
+                //      canonical `method_symbol` produced by
+                //      `HirImplBlock::method_symbol` at impl-block
+                //      lowering, plus impl-level type parameter names.
+                //   4. If the impl is generic, mangle `(method_symbol,
+                //      type_args)` to reach the per-instantiation
+                //      symbol HIR's `closure_under_substitution`
+                //      registered.
+                //
+                // Each step uses structured HIR facts (`declaring_trait`
+                // and `method_name` from the call site, `self_type_name`
+                // and `method_symbol` from `HirImplBlock`). No call-site
+                // display-name parsing, no `<Type>::<method>` string
+                // construction.
+                let resolved_ret_ty = self.subst_ty(ret_ty);
+                let Some(concrete_ty) = self.subst.get(receiver_type_param).cloned() else {
+                    // (1) failure path — no substitution.
+                    self.lower_value(receiver);
+                    for arg in args {
+                        self.lower_value(arg);
+                    }
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnresolvedStaticDispatchSubstitution {
+                            receiver_type_param: receiver_type_param.clone(),
+                            declaring_trait: declaring_trait.clone(),
+                            method_name: method_name.clone(),
+                            site: expr.site,
+                        },
+                        note: format!(
+                            "static trait dispatch `{declaring_trait}::{method_name}` reached \
+                             MIR in a concrete function body without a substitution for \
+                             receiver type parameter `{receiver_type_param}`; this indicates \
+                             a missing monomorphization binding (the generic origin should \
+                             not be emitted)"
+                        ),
+                    });
+                    return None;
+                };
+                // (2) canonical (self_type_name, type_args).
+                let Some((self_type_name, type_args)) =
+                    hew_hir::dispatch::receiver_self_type_for_impl_lookup(&concrete_ty)
+                else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "static trait dispatch on receiver shape `{concrete_ty:?}` \
+                                 for `{declaring_trait}::{method_name}`"
+                            ),
+                            site: expr.site,
+                        },
+                        note: "receiver type has no canonical impl-self name; \
+                               static dispatch supports nominal and primitive receivers only"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                // (3) structured registry lookup.
+                let key = (
+                    declaring_trait.clone(),
+                    self_type_name.clone(),
+                    method_name.clone(),
+                );
+                let Some(entry) = self.trait_impl_index.get(&key).cloned() else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::StaticDispatchImplNotFound {
+                            declaring_trait: declaring_trait.clone(),
+                            self_type_name: self_type_name.clone(),
+                            method_name: method_name.clone(),
+                            site: expr.site,
+                        },
+                        note: format!(
+                            "no impl of trait `{declaring_trait}` for `{self_type_name}` \
+                             registered in the static-dispatch index; the checker should \
+                             have rejected this call"
+                        ),
+                    });
+                    return None;
+                };
+                // (4) generic-impl monomorphisation mangling.
+                let callee_symbol = if entry.impl_type_params.is_empty() {
+                    if !self.module_fn_names.contains(&entry.method_symbol) {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::StaticDispatchImplNotFound {
+                                declaring_trait: declaring_trait.clone(),
+                                self_type_name: self_type_name.clone(),
+                                method_name: method_name.clone(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "impl method `{}` is registered in the static-dispatch \
+                                 index but not in module_fn_names",
+                                entry.method_symbol
+                            ),
+                        });
+                        return None;
+                    }
+                    entry.method_symbol.clone()
+                } else {
+                    let mangled = hew_hir::monomorph::mangle(&entry.method_symbol, &type_args);
+                    if !self.module_fn_names.contains(&mangled) {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::StaticDispatchMonomorphisationMissing {
+                                method_symbol: entry.method_symbol.clone(),
+                                mangled: mangled.clone(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "static dispatch resolved to generic impl method `{}` \
+                                 but no monomorphisation `{}` was registered by HIR's \
+                                 closure_under_substitution",
+                                entry.method_symbol, mangled
+                            ),
+                        });
+                        return None;
+                    }
+                    mangled
+                };
+                // Lower receiver as first arg + the explicit args.
+                let receiver_place = self.lower_value(receiver)?;
+                let mut arg_places = vec![receiver_place];
+                for arg in args {
+                    arg_places.push(self.lower_value(arg)?);
+                }
+                let dest = if matches!(resolved_ret_ty, ResolvedTy::Unit) {
+                    None
+                } else {
+                    Some(self.alloc_local(resolved_ret_ty))
+                };
+                let next = self.alloc_block();
+                self.finish_current_block(Terminator::Call {
+                    callee: callee_symbol,
+                    args: arg_places,
+                    dest,
+                    next,
+                });
+                self.start_block(next);
                 dest
             }
             HirExprKind::MachineEmit { event_idx, fields } => {
@@ -4968,6 +5665,10 @@ impl Builder {
                     args: match &receiver.ty {
                         ResolvedTy::Named { args, .. } => args.clone(),
                         _ => Vec::new(),
+                    },
+                    builtin: match &receiver.ty {
+                        ResolvedTy::Named { builtin, .. } => *builtin,
+                        _ => None,
                     },
                 };
                 let ret_local = self.alloc_local(ret_ty.clone());
@@ -5431,6 +6132,92 @@ impl Builder {
         // expression's caller can keep emitting into the success path.
         self.start_block(cont_bb);
         Some(dest)
+    }
+
+    fn lower_unary(
+        &mut self,
+        op: UnaryOp,
+        operand: &HirExpr,
+        operand_ty: &ResolvedTy,
+        result_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let operand_place = self.lower_value(operand)?;
+        let dest = self.alloc_local(result_ty.clone());
+        match op {
+            UnaryOp::Not if operand_ty == &ResolvedTy::Bool && result_ty == &ResolvedTy::Bool => {
+                self.instructions.push(Instr::BoolNot {
+                    dest,
+                    operand: operand_place,
+                });
+                Some(dest)
+            }
+            UnaryOp::Negate if operand_ty == result_ty => {
+                if let Some(width) = float_width(result_ty) {
+                    self.instructions.push(Instr::FloatNeg {
+                        dest,
+                        operand: operand_place,
+                        width,
+                    });
+                    return Some(dest);
+                }
+                let Some(signed) = integer_signedness(result_ty) else {
+                    self.locals.pop();
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!("unary `-` on non-numeric type `{result_ty}`"),
+                            site,
+                        },
+                        note: "unary negation requires an integer or float result type".to_string(),
+                    });
+                    return None;
+                };
+                let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+                self.instructions.push(Instr::IntNegChecked {
+                    signed,
+                    dest,
+                    operand: operand_place,
+                    overflow_flag,
+                });
+                let trap_bb = self.alloc_block();
+                let cont_bb = self.alloc_block();
+                self.finish_current_block(Terminator::Branch {
+                    cond: overflow_flag,
+                    then_target: trap_bb,
+                    else_target: cont_bb,
+                });
+                self.start_block(trap_bb);
+                self.finish_current_block(Terminator::Trap {
+                    kind: TrapKind::IntegerOverflow,
+                });
+                self.start_block(cont_bb);
+                Some(dest)
+            }
+            UnaryOp::BitNot
+                if operand_ty == result_ty && integer_signedness(result_ty).is_some() =>
+            {
+                self.instructions.push(Instr::IntBitNot {
+                    dest,
+                    operand: operand_place,
+                });
+                Some(dest)
+            }
+            UnaryOp::RawDeref | UnaryOp::Not | UnaryOp::Negate | UnaryOp::BitNot => {
+                self.locals.pop();
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "unary operator `{}` for operand `{operand_ty}` -> `{result_ty}`",
+                            unary_op_label(op)
+                        ),
+                        site,
+                    },
+                    note: "HIR unary node carried a typed shape the MIR producer does not support"
+                        .to_string(),
+                });
+                None
+            }
+        }
     }
 
     /// Lower integer `/` and `%` with divide-by-zero and (for signed
@@ -6685,12 +7472,15 @@ impl Builder {
 
         // Body: lower statements then loop back.
         self.start_block(body_bb);
+        self.active_scopes.push(body.scope);
         for stmt in &body.statements {
             self.stmt(stmt);
         }
         if let Some(tail) = &body.tail {
             let _ = self.lower_value(tail);
         }
+        self.emit_pending_defers(body.scope);
+        self.active_scopes.pop();
         self.finish_current_block(Terminator::Goto { target: header_bb });
 
         // Exit: subsequent lowering continues here.
@@ -6835,12 +7625,15 @@ impl Builder {
             overwritten_bindings.push((binding.binding, previous));
         }
 
+        self.active_scopes.push(body.scope);
         for stmt in &body.statements {
             self.stmt(stmt);
         }
         if let Some(tail) = &body.tail {
             let _ = self.lower_value(tail);
         }
+        self.emit_pending_defers(body.scope);
+        self.active_scopes.pop();
 
         // Restore the prior `binding_locals` entries so the binding scope
         // ends at the body's end — matches Match-arm body-block semantics.
@@ -6999,12 +7792,15 @@ impl Builder {
             ty: ResolvedTy::I64,
         });
 
+        self.active_scopes.push(body.scope);
         for stmt in &body.statements {
             self.stmt(stmt);
         }
         if let Some(tail) = &body.tail {
             let _ = self.lower_value(tail);
         }
+        self.emit_pending_defers(body.scope);
+        self.active_scopes.pop();
 
         // Increment: counter = counter + 1 (checked; trap on overflow).
         // WHY checked: a loop that reaches i64::MAX and tries to step past it
@@ -7352,7 +8148,7 @@ impl Builder {
     ) -> Option<Place> {
         // Resolve element type from the result Vec<T> for runtime dispatch.
         let elem_ty = match result_ty {
-            ResolvedTy::Named { name, args } if name == "Vec" && !args.is_empty() => {
+            ResolvedTy::Named { name, args, .. } if name == "Vec" && !args.is_empty() => {
                 args[0].clone()
             }
             other => {
@@ -7563,6 +8359,7 @@ impl Builder {
         ResolvedTy::Named {
             name: "HewTaskScope".to_string(),
             args: vec![],
+            builtin: None,
         }
     }
 
@@ -7585,12 +8382,15 @@ impl Builder {
         );
 
         let saved_scope = self.current_task_scope.replace(scope_place);
+        self.active_scopes.push(body.scope);
         for stmt in &body.statements {
             self.stmt(stmt);
         }
         if let Some(tail) = &body.tail {
             let _ = self.lower_value(tail);
         }
+        self.emit_pending_defers(body.scope);
+        self.active_scopes.pop();
         self.current_task_scope = saved_scope;
 
         self.push_runtime_call("hew_task_scope_join_all", vec![scope_place], None);
@@ -7615,6 +8415,39 @@ impl Builder {
         site: hew_hir::SiteId,
         construct: &str,
     ) -> Option<String> {
+        if self
+            .call_site_type_args
+            .get(&site)
+            .is_some_and(|type_args| !type_args.is_empty())
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: construct.to_string(),
+                    site,
+                },
+                note: "generic free-function task spawning is not yet implemented; \
+                       W4.010 keeps generic spawned free functions fail-closed until \
+                       the task-entry adapter can resolve monomorphised callees"
+                    .to_string(),
+            });
+            return None;
+        }
+        if matches!(
+            &callee.kind,
+            HirExprKind::BindingRef { name, .. } if self.module_generic_fn_names.contains(name)
+        ) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: construct.to_string(),
+                    site,
+                },
+                note: "generic free-function task spawning is not yet implemented; \
+                       W4.010 keeps generic spawned free functions fail-closed until \
+                       the task-entry adapter can resolve monomorphised callees"
+                    .to_string(),
+            });
+            return None;
+        }
         if !args.is_empty() || !matches!(ret_ty, ResolvedTy::Unit) {
             for arg in args {
                 let _ = self.lower_value(arg);
@@ -7650,6 +8483,121 @@ impl Builder {
         }
     }
 
+    fn mir_sanitize_symbol(symbol: &str) -> String {
+        symbol
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect()
+    }
+
+    fn task_entry_adapter_symbol(callee_symbol: &str) -> String {
+        format!(
+            "__hew_task_entry_{}",
+            Self::mir_sanitize_symbol(callee_symbol)
+        )
+    }
+
+    fn ensure_task_entry_adapter(&mut self, callee_symbol: &str) -> String {
+        let adapter_symbol = Self::task_entry_adapter_symbol(callee_symbol);
+        if !self
+            .task_entry_adapter_symbols
+            .borrow_mut()
+            .insert(adapter_symbol.clone())
+        {
+            return adapter_symbol;
+        }
+        let lowered = self.synthesize_task_entry_adapter(callee_symbol, &adapter_symbol);
+        self.generated_functions.push(lowered);
+        adapter_symbol
+    }
+
+    fn synthesize_task_entry_adapter(
+        &self,
+        callee_symbol: &str,
+        adapter_symbol: &str,
+    ) -> LoweredFunction {
+        let mut blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Call {
+                    callee: callee_symbol.to_string(),
+                    args: vec![],
+                    dest: None,
+                    next: 1,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        bracket_actor_handler_blocks(&mut blocks);
+
+        let thir = ThirFunction {
+            name: adapter_symbol.to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+        };
+        let raw = RawMirFunction {
+            name: adapter_symbol.to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: crate::model::FunctionCallConv::TaskEntry,
+            params: vec![],
+            locals: vec![],
+            blocks,
+            decisions: vec![],
+        };
+        let builder = Builder {
+            type_classes: self.type_classes.clone(),
+            record_field_orders: self.record_field_orders.clone(),
+            actor_layouts: self.actor_layouts.clone(),
+            supervisor_layout_map: self.supervisor_layout_map.clone(),
+            machine_layout_names: self.machine_layout_names.clone(),
+            module_fn_names: self.module_fn_names.clone(),
+            module_generic_fn_names: self.module_generic_fn_names.clone(),
+            subst: self.subst.clone(),
+            call_site_type_args: self.call_site_type_args.clone(),
+            supervisor_child_slots: self.supervisor_child_slots.clone(),
+            current_function_symbol: adapter_symbol.to_string(),
+            current_function_call_conv: crate::model::FunctionCallConv::TaskEntry,
+            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            ..Builder::default()
+        };
+        let mut dataflow_result = dataflow::analyze(&raw.blocks, &builder.type_classes, &[]);
+        dataflow_result
+            .checks
+            .extend(crate::model::validate_context_markers(&raw));
+        let diagnostics: Vec<MirDiagnostic> = dataflow_result
+            .checks
+            .iter()
+            .filter_map(check_to_diagnostic)
+            .collect();
+        let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+        let checked = CheckedMirFunction {
+            name: adapter_symbol.to_string(),
+            return_ty: ResolvedTy::Unit,
+            blocks: raw.blocks.clone(),
+            decisions: vec![],
+            checks: dataflow_result.checks.clone(),
+            cooperate_sites,
+        };
+        let elaborated = elaborate(&checked, &builder, &[], &dataflow_result);
+        LoweredFunction {
+            thir,
+            raw,
+            checked,
+            elaborated,
+            diagnostics,
+            generated: vec![],
+            record_layouts: vec![],
+            gen_state_layouts: vec![],
+        }
+    }
+
     fn lower_spawned_call_task(
         &mut self,
         callee: &HirExpr,
@@ -7679,6 +8627,31 @@ impl Builder {
             });
             return None;
         };
+        if !self.current_function_call_conv.carries_execution_context() {
+            let callee_name = match &callee.kind {
+                HirExprKind::BindingRef { name, .. } => name.as_str(),
+                HirExprKind::Closure { .. } => "<closure>",
+                _ => "<callee>",
+            };
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "cannot spawn `{callee_name}` from `{}`",
+                        self.current_function_symbol
+                    ),
+                    site,
+                },
+                note: format!(
+                    "`scope {{ fork ... }}` requires an enclosing ctx-bearing execution context, \
+                     but `{}` has Default call-conv (no execution-context parameter). Move this \
+                     spawn into an actor handler body or an actor-internal helper. Caller-side \
+                     ctx-routing for top-level `fn main` is tracked under \
+                     W4.010-followup-caller-ctx-routing.",
+                    self.current_function_symbol
+                ),
+            });
+            return None;
+        }
         if matches!(callee.kind, HirExprKind::Closure { .. }) {
             return self.lower_spawned_closure_task(
                 callee,
@@ -7689,8 +8662,9 @@ impl Builder {
                 site,
             );
         }
-        let callee_symbol =
+        let user_callee_symbol =
             self.direct_no_arg_unit_callee(callee, args, inner, site, "spawned call")?;
+        let callee_symbol = self.ensure_task_entry_adapter(&user_callee_symbol);
 
         let task_place = self.alloc_local(task_ty.clone());
         self.push_runtime_call("hew_task_new", vec![], Some(task_place));
@@ -8109,6 +9083,7 @@ impl Builder {
         let local0 = self.alloc_local(ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![],
+            builtin: Some(hew_types::BuiltinType::Duplex),
         });
         let Place::Local(n0) = local0 else {
             unreachable!("alloc_local returns Place::Local");
@@ -8118,6 +9093,7 @@ impl Builder {
         let local1 = self.alloc_local(ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![],
+            builtin: Some(hew_types::BuiltinType::Duplex),
         });
         let Place::Local(n1) = local1 else {
             unreachable!("alloc_local returns Place::Local");
@@ -8247,6 +9223,7 @@ impl Builder {
         let result_place = self.alloc_local(ResolvedTy::Named {
             name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
             args: vec![],
+            builtin: None,
         });
 
         // Emit the runtime call. The dest carries the 16-byte struct return value.
@@ -8653,7 +9630,7 @@ impl Builder {
                     let stream_place = self.lower_value(stream)?;
                     let stream_ty = self.subst_ty(&stream.ty);
                     let item_ty = match stream_ty {
-                        ResolvedTy::Named { name, mut args }
+                        ResolvedTy::Named { name, mut args, .. }
                             if name == "Stream" && args.len() == 1 =>
                         {
                             args.remove(0)
@@ -8976,6 +9953,7 @@ impl Builder {
         let state_ty = ResolvedTy::Named {
             name: actor_name.to_string(),
             args: Vec::new(),
+            builtin: None,
         };
         let dest = self.alloc_local(state_ty.clone());
         let mut fields = Vec::new();
@@ -9144,6 +10122,7 @@ impl Builder {
         let env_ty = ResolvedTy::Named {
             name: env_name.clone(),
             args: vec![],
+            builtin: None,
         };
 
         self.closure_record_layouts
@@ -9221,6 +10200,7 @@ impl Builder {
             record_field_orders: self.record_field_orders.clone(),
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
+            module_generic_fn_names: self.module_generic_fn_names.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             // A closure may capture a supervisor PID and access a child slot
@@ -9230,6 +10210,8 @@ impl Builder {
             // fires correctly for any closure body that contains such an access.
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             current_function_symbol: shim_name.to_string(),
+            current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
+            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             ..Builder::default()
         };
 
@@ -9470,10 +10452,13 @@ impl Builder {
             record_field_orders: self.record_field_orders.clone(),
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
+            module_generic_fn_names: self.module_generic_fn_names.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             current_function_symbol: body_name.clone(),
+            current_function_call_conv: crate::model::FunctionCallConv::Default,
+            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             in_gen_body: true,
             ..Builder::default()
         };
@@ -9498,6 +10483,7 @@ impl Builder {
         // Lower all statements in the gen-block body. Yields inside the body
         // call `lower_yield_expr` which emits `Terminator::Yield` and advances
         // the cursor to a fresh resume block.
+        body_builder.active_scopes.push(body.scope);
         for stmt in &body.statements {
             body_builder.stmt(stmt);
         }
@@ -9510,6 +10496,8 @@ impl Builder {
                 });
             }
         }
+        body_builder.emit_pending_defers(body.scope);
+        body_builder.active_scopes.pop();
 
         // Seal the last block with `Terminator::Return`. For a gen body
         // this represents the generator completing (returns `return_ty` which
@@ -9753,11 +10741,18 @@ impl Builder {
         {
             return;
         }
+        // Substitute the expression type through the monomorphisation
+        // map BEFORE classifying — generic origins lowered under a
+        // substitution carry `expr.ty` as the raw `T` / `Wrapper<U>`
+        // and would otherwise resolve to `ValueClass::Unknown` →
+        // `Strategy::UnknownBlocked`, failing the
+        // `DecisionMapTotal` invariant for well-typed mono'd bodies.
+        let resolved_ty = self.subst_ty(&expr.ty);
         let value_class = if expr.value_class == ValueClass::Unknown {
-            let inferred = ValueClass::of_ty(&expr.ty, &self.type_classes);
+            let inferred = ValueClass::of_ty(&resolved_ty, &self.type_classes);
             if inferred != ValueClass::Unknown {
                 inferred
-            } else if self.is_known_actor_runtime_ty(&expr.ty) {
+            } else if self.is_known_actor_runtime_ty(&resolved_ty) {
                 ValueClass::BitCopy
             } else {
                 ValueClass::Unknown
@@ -9765,6 +10760,9 @@ impl Builder {
         } else {
             expr.value_class
         };
+        if value_class == ValueClass::Unknown {
+            self.push_unsupported_user_record_value_class(&resolved_ty);
+        }
         let strategy = match value_class {
             ValueClass::CowValue => Strategy::CowShare,
             // `@linear` and `@resource` (AffineResource) both move by default;
@@ -9796,11 +10794,54 @@ impl Builder {
         };
         self.decisions.push(DecisionFact {
             site: expr.site,
-            ty: self.subst_ty(&expr.ty),
+            ty: resolved_ty,
             value_class,
             intent: expr.intent,
             strategy,
             why: "first vertical-slice classifier".to_string(),
+        });
+    }
+
+    fn push_unsupported_user_record_value_class(&mut self, ty: &ResolvedTy) {
+        let Some(key) = user_record_layout_key(ty) else {
+            return;
+        };
+        let Some(fields) = self.record_field_orders.get(&key) else {
+            return;
+        };
+        if fields.is_empty()
+            || !self
+                .unsupported_user_record_value_classes
+                .insert(key.clone())
+        {
+            return;
+        }
+
+        let reason = fields
+            .iter()
+            .find_map(|(field_name, field_ty)| {
+                let field_class = ValueClass::of_ty(field_ty, &self.type_classes);
+                (field_class != ValueClass::BitCopy).then(|| {
+                    format!(
+                        "field `{field_name}` has value class {field_class:?}; \
+                         user record/type aggregates are BitCopy only when every \
+                         substituted field is BitCopy"
+                    )
+                })
+            })
+            .unwrap_or_else(|| {
+                "record layout is present but no BitCopy value-class registration was produced"
+                    .to_string()
+            });
+
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::UnsupportedUserRecordValueClass {
+                name: key.clone(),
+                reason: reason.clone(),
+            },
+            note: format!(
+                "W3.029 user record/type value-class inference rejected `{key}`: {reason}"
+            ),
         });
     }
 
@@ -9819,15 +10860,13 @@ impl Builder {
             // `Generator<Y, R>` is the checker-supplied type for a gen-block
             // expression. The S3a shell allocates a local of this type as a
             // placeholder; S3b replaces it with the real state-record type.
-            // Classify as BitCopy so the decision-map check passes and the
-            // shell compiles. The state-record will carry its own drop
-            // semantics once S3b + S4 land.
-            // WHY BitCopy: the shell is a zero-size placeholder — it has no
-            // heap resources until S3b synthesises the state struct.
-            // WHEN-OBSOLETE: when S3b emits the state record type and S4
-            // wires the constructor; the real drop kind will replace this.
-            ResolvedTy::Named { name, .. } if name == "Generator" => true,
-            ResolvedTy::Named { name, args } if args.is_empty() => {
+            // Classify only the builtin-discriminated generator as BitCopy so
+            // a user type named `Generator` still follows normal readiness.
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Generator),
+                ..
+            } => true,
+            ResolvedTy::Named { name, args, .. } if args.is_empty() => {
                 self.actor_layouts.contains_key(name)
                     || machine_layout_name_matches(&self.machine_layout_names, name)
             }
@@ -10780,6 +11819,15 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             overflow_flag,
             ..
         } => vec![*dest, *lhs, *rhs, *overflow_flag],
+        Instr::BoolNot { dest, operand }
+        | Instr::FloatNeg { dest, operand, .. }
+        | Instr::IntBitNot { dest, operand } => vec![*dest, *operand],
+        Instr::IntNegChecked {
+            dest,
+            operand,
+            overflow_flag,
+            ..
+        } => vec![*dest, *operand, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
         Instr::Drop { place, .. } => vec![*place],
         Instr::CallRuntimeAbi(call) => {
@@ -11346,9 +12394,12 @@ mod slice3_invariants {
                 &HashSet::new(),
                 None,
                 &HashSet::new(),
+                &HashSet::new(),
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 crate::model::FunctionCallConv::ActorHandler,
+                TaskEntryAdapterSymbols::default(),
             );
             let offsets: Vec<_> = lowered
                 .raw
@@ -11379,6 +12430,7 @@ mod slice3_invariants {
         ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![ResolvedTy::I64, ResolvedTy::I64],
+            builtin: None,
         }
     }
 
@@ -12318,6 +13370,7 @@ mod slice3_narrowing_proptests {
         ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![ResolvedTy::I64, ResolvedTy::I64],
+            builtin: None,
         }
     }
 
@@ -12552,6 +13605,7 @@ mod slice35_cross_block_proptests {
         ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![ResolvedTy::I64, ResolvedTy::I64],
+            builtin: None,
         }
     }
 
@@ -12934,6 +13988,7 @@ mod enum_layout_tests {
     fn minimal_module(items: Vec<HirItem>) -> HirModule {
         HirModule {
             items,
+            diagnostic_source_modules: HashMap::default(),
             type_classes: hew_hir::TypeClassTable::default(),
             monomorphisations: vec![],
             call_site_type_args: HashMap::<SiteId, _>::default(),
@@ -13087,6 +14142,7 @@ mod enum_layout_tests {
                     vec![ResolvedTy::Named {
                         name: "T".to_string(),
                         args: vec![],
+                        builtin: None,
                     }],
                 ),
                 unit_variant("None"),

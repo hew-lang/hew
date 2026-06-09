@@ -898,6 +898,130 @@ impl Checker {
         }
         None
     }
+
+    /// Like `lookup_trait_method` but returns the *declaring* trait name alongside
+    /// the signature. The declaring trait is the trait whose `trait_defs` entry
+    /// directly contains the method (not a supertrait walk result).
+    ///
+    /// Used by static trait dispatch to distinguish a method declared in trait A
+    /// but reached through bound B (where `trait B: A`).
+    pub(super) fn lookup_trait_method_with_origin(
+        &mut self,
+        trait_name: &str,
+        method: &str,
+    ) -> Option<(String, FnSig)> {
+        self.lookup_trait_method_with_origin_inner(trait_name, method, true)
+    }
+
+    /// Walk `trait_name` and ALL of its (transitive) supertraits, collecting
+    /// every trait that DIRECTLY declares a method named `method` in its
+    /// `trait_defs` entry. The returned `Vec` is sorted + deduplicated so
+    /// repeated bound paths collapse to a stable set.
+    ///
+    /// This is the supertrait-aware companion to
+    /// `lookup_trait_method_with_origin`, which returns only the first
+    /// declaring trait it encounters. Used by the static-dispatch path to
+    /// detect supertrait-redeclaration ambiguity (plan §4 V14): if the same
+    /// method name is directly declared by both a trait and one of its
+    /// supertraits, a bound `T: SubTrait` reaches the method via two
+    /// distinct declaring traits and the call site is ambiguous.
+    pub(super) fn collect_all_declaring_traits_for_method(
+        &self,
+        trait_name: &str,
+        method: &str,
+    ) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut stack: Vec<String> = vec![trait_name.to_string()];
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            let declares_directly = self
+                .trait_defs
+                .get(&current)
+                .is_some_and(|info| info.methods.iter().any(|m| m.name == method));
+            if declares_directly {
+                out.push(current.clone());
+            }
+            if let Some(supers) = self.trait_super.get(&current) {
+                for s in supers {
+                    stack.push(s.clone());
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn lookup_trait_method_with_origin_inner(
+        &mut self,
+        trait_name: &str,
+        method: &str,
+        skip_receiver: bool,
+    ) -> Option<(String, FnSig)> {
+        // Check the trait's own methods first (direct declaration).
+        let found_method = self
+            .trait_defs
+            .get(trait_name)
+            .and_then(|info| info.methods.iter().find(|m| m.name == method).cloned());
+        if let Some(m) = found_method {
+            let skip = if skip_receiver {
+                usize::from(m.params.first().is_some_and(|p| self.is_receiver_param(p)))
+            } else {
+                0
+            };
+            let prev_trait_self = self
+                .current_trait_for_self_projection
+                .replace(trait_name.to_string());
+            let params: Vec<Ty> = m
+                .params
+                .iter()
+                .skip(skip)
+                .map(|p| self.resolve_type_expr(&p.ty))
+                .collect();
+            let return_type = m
+                .return_type
+                .as_ref()
+                .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
+            self.current_trait_for_self_projection = prev_trait_self;
+            let param_names: Vec<String> =
+                m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
+            let type_params = m
+                .type_params
+                .as_ref()
+                .map(|params| params.iter().map(|tp| tp.name.clone()).collect())
+                .unwrap_or_default();
+            let type_param_bounds =
+                self.collect_type_param_bounds(m.type_params.as_ref(), m.where_clause.as_ref());
+            // This trait directly declares the method — it IS the declaring trait.
+            return Some((
+                trait_name.to_string(),
+                FnSig {
+                    type_params,
+                    type_param_bounds,
+                    param_names,
+                    params,
+                    return_type,
+                    is_pure: m.is_pure,
+                    ..FnSig::default()
+                },
+            ));
+        }
+        // Walk super-traits — propagate origin unchanged from the recursion.
+        let supers = self.trait_super.get(trait_name).cloned();
+        if let Some(supers) = supers {
+            for super_trait in &supers {
+                if let Some(result) =
+                    self.lookup_trait_method_with_origin_inner(super_trait, method, skip_receiver)
+                {
+                    return Some(result);
+                }
+            }
+        }
+        None
+    }
 }
 
 fn substitute_trait_object_assoc_bindings(

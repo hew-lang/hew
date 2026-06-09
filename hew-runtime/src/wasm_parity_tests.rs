@@ -214,6 +214,33 @@ fn last_error_message() -> Option<String> {
     }
 }
 
+unsafe extern "C" fn wasm_parity_state_drop(_state: *mut c_void) {}
+
+unsafe extern "C-unwind" fn wasm_parity_state_clone(_src: *const c_void) -> *mut c_void {
+    std::ptr::null_mut()
+}
+
+#[test]
+fn actor_state_clone_drop_setters_remain_linkable_and_mutate_slots() {
+    let _guard = crate::runtime_test_guard();
+    let mut actor = stub_wasm_actor(std::ptr::null_mut());
+
+    let set_drop: unsafe extern "C" fn(*mut HewActor, unsafe extern "C" fn(*mut c_void)) =
+        crate::actor::hew_actor_set_state_drop;
+    let set_clone: unsafe extern "C" fn(*mut HewActor, crate::actor::HewStateCloneFn) =
+        crate::actor::hew_actor_set_state_clone;
+
+    // SAFETY: `actor` is a live test-owned HewActor and both callbacks have
+    // the exact ABI expected by the setter contracts.
+    unsafe {
+        set_drop(actor.as_mut(), wasm_parity_state_drop);
+        set_clone(actor.as_mut(), wasm_parity_state_clone);
+    }
+
+    assert!(actor.state_drop_fn.is_some());
+    assert!(actor.state_clone_fn.is_some());
+}
+
 #[test]
 fn coalesced_mailbox_metrics_match_native_and_wasm() {
     assert_eq!(native_coalesce_snapshot(), wasm_coalesce_snapshot());

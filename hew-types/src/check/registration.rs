@@ -13,6 +13,13 @@ use crate::BuiltinType;
 /// inline programs in tests).
 const CLOSABLE_HEW: &str = include_str!("../../../std/io/closable.hew");
 
+/// Embedded source for `std/concurrency/lambda_actor.hew`.
+///
+/// Like `std::io::closable`, this is a pure-Hew stdlib surface whose
+/// methods must be visible to inline typechecker tests even when the
+/// module graph did not pre-populate `resolved_items`.
+const LAMBDA_ACTOR_HEW: &str = include_str!("../../../std/concurrency/lambda_actor.hew");
+
 /// Embedded source for the built-in actor monitor handle wrapper.
 ///
 /// This copy intentionally omits the `import std::io::closable;` line used by
@@ -703,15 +710,10 @@ impl Checker {
             ]),
         );
 
-        // Register the eleven `impl Display for <primitive>` blanket impls
-        // declared in `std/builtins.hew`.  Without this, method-form
-        // primitive Display dispatch (`x.fmt()` for `x: i64` etc.) cannot
-        // find an entry in `primitive_trait_impls` because the file is not
-        // routed through any `import` that would invoke
-        // `register_stdlib_hew_items` for the root module.  The Display
-        // *marker* (`MarkerTrait::Display`) already satisfies `T: Display`
-        // bounds for `print` / `println`, but receiver-keyed method dispatch
-        // (Stage A2 / A3) reads the impl table directly.  See #1669.
+        // Register the compiled-in primitive/builtin receiver impls that must
+        // be visible without an explicit stdlib import: Display blanket impls
+        // from `std/builtins.hew`, plus declarative string/bytes FFI receiver
+        // methods from `std/string.hew` and `std/io.hew`.
         self.register_builtins_hew_impls();
         if !self.module_registry.has_search_paths() {
             self.register_builtin_closable_surface();
@@ -721,12 +723,13 @@ impl Checker {
         }
     }
 
-    /// Parse the compiled-in `std/builtins.hew` source and feed only its
-    /// `Item::Impl` blocks through the existing stdlib registration path.
+    /// Parse compiled-in stdlib receiver impl sources and feed only the
+    /// selected `Item::Impl` blocks through the existing stdlib registration
+    /// path.
     ///
     /// `register_stdlib_hew_items` runs Pass 1 (types/traits/functions) and
-    /// Pass 2 (impl methods) on its input.  We deliberately filter to just
-    /// the impl items so:
+    /// Pass 2 (impl methods) on its input.  For `std/builtins.hew` we
+    /// deliberately filter to just the impl items so:
     ///
     /// - The `pub trait Display { fn fmt(...) }` declaration is not
     ///   inserted into `trait_defs`, leaving the existing user-redeclare
@@ -826,6 +829,50 @@ impl Checker {
         // (none of which fire for primitive targets that lack a
         // `type_defs` entry).
         self.register_stdlib_hew_items("builtins", &impl_items);
+        self.register_compiled_stdlib_receiver_impls(
+            "string",
+            include_str!("../../../std/string.hew"),
+            &["string"],
+        );
+        self.register_compiled_stdlib_receiver_impls(
+            "io",
+            include_str!("../../../std/io.hew"),
+            &["bytes"],
+        );
+    }
+
+    fn register_compiled_stdlib_receiver_impls(
+        &mut self,
+        module_short: &str,
+        source: &str,
+        receiver_names: &[&str],
+    ) {
+        let parsed = hew_parser::parse(source);
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/{module_short}.hew failed to parse: {:?}",
+            parsed.errors
+        );
+        if !parsed.errors.is_empty() {
+            return;
+        }
+        let impl_items: Vec<Spanned<Item>> = parsed
+            .program
+            .items
+            .into_iter()
+            .filter(|(item, _)| {
+                let Item::Impl(id) = item else {
+                    return false;
+                };
+                let TypeExpr::Named { name, .. } = &id.target_type.0 else {
+                    return false;
+                };
+                receiver_names.iter().any(|receiver| name == receiver)
+            })
+            .collect();
+        if !impl_items.is_empty() {
+            self.register_stdlib_hew_items(module_short, &impl_items);
+        }
     }
 
     fn register_builtin_closable_surface(&mut self) {
@@ -2691,6 +2738,71 @@ impl Checker {
             }
         }
 
+        // Check state entry/exit lifecycle blocks.
+        //
+        // Scope: `state` (the machine value) is in scope; `event` is NOT
+        // bound here — entry/exit are state lifecycle hooks, not transition
+        // event scopes.  Referencing `event` inside an entry/exit block is
+        // therefore an undefined-variable error, which is the intended
+        // fail-closed behaviour.
+        for state in &md.states {
+            let has_lifecycle = state.entry.is_some() || state.exit.is_some();
+            if !has_lifecycle {
+                continue;
+            }
+
+            // Push generic-param bounds so that type-param-bound resolution
+            // inside a lifecycle block mirrors what transition bodies see.
+            let machine_bounds_scope =
+                self.collect_type_param_scope_with_bounds(Some(&md.type_params), None);
+            let pushed_machine_bounds = !machine_bounds_scope.is_empty();
+            if pushed_machine_bounds {
+                self.current_type_param_bounds.push(machine_bounds_scope);
+            }
+
+            self.env.push_scope();
+            // Bind `state` as the machine self-type — identical binding to
+            // the one used inside transition bodies, so that field access on
+            // payload states resolves correctly.
+            let machine_args: Vec<Ty> = md
+                .type_params
+                .iter()
+                .map(|param| Ty::Named {
+                    builtin: None,
+                    name: param.name.clone(),
+                    args: vec![],
+                })
+                .collect();
+            self.env.define(
+                "state".to_string(),
+                Ty::Named {
+                    builtin: None,
+                    name: md.name.clone(),
+                    args: machine_args,
+                },
+                false,
+            );
+            // NOTE: `event` is deliberately NOT bound here.
+            let previous_lifecycle = self
+                .current_machine_lifecycle
+                .replace((md.name.clone(), state.name.clone()));
+
+            if let Some(entry_block) = &state.entry {
+                // Entry blocks are statement-sequences; their trailing value
+                // (if any) is discarded — we check without an expected type.
+                self.check_block(entry_block, None);
+            }
+            if let Some(exit_block) = &state.exit {
+                self.check_block(exit_block, None);
+            }
+
+            self.current_machine_lifecycle = previous_lifecycle;
+            self.env.pop_scope();
+            if pushed_machine_bounds {
+                self.current_type_param_bounds.pop();
+            }
+        }
+
         // Check that every (state, event) pair is covered
         // If has_default is true, unhandled pairs default to self-transition
         for state in &state_names {
@@ -3724,6 +3836,87 @@ impl Checker {
         }
     }
 
+    /// Ingest a `#[extern_symbol("…")]` attribute (Stage 2 of W3.001).
+    ///
+    /// Stage 1 already validated the attribute's **attachment position**
+    /// (parser rejects it on free fns, actors, trait fns,
+    /// type-decl methods). This helper runs at FnSig-ingest time on
+    /// the surviving attachment sites (extern `"C"` block fns,
+    /// inherent impl methods, trait-impl methods) and:
+    ///
+    /// 1. Finds the (at most one) `extern_symbol` attribute.
+    /// 2. Parses its template via
+    ///    [`crate::extern_symbol::ExternSymbolTemplate::parse`].
+    /// 3. On success returns a populated
+    ///    [`crate::extern_symbol::ExternSymbolSpec`].
+    /// 4. On failure emits a span-anchored
+    ///    [`TypeErrorKind::InvalidExternSymbolTemplate`] diagnostic
+    ///    and returns `None` (fail-closed: the `FnSig` records no
+    ///    template, so Stage-3 monomorphic dispatch will surface the
+    ///    same call site as an unresolved-symbol diagnostic rather
+    ///    than silently routing through a malformed template).
+    ///
+    /// Returns `None` when no `extern_symbol` attribute is present —
+    /// the normal case for ordinary functions and methods.
+    pub(super) fn ingest_extern_symbol_attrs(
+        &mut self,
+        attrs: &[Attribute],
+    ) -> Option<crate::extern_symbol::ExternSymbolSpec> {
+        let attr = attrs.iter().find(|a| a.name == "extern_symbol")?;
+        // Stage 1 parser accepts only a single positional string argument
+        // for `#[extern_symbol("...")]` (see hew-parser tests at
+        // `extern_symbol_attribute_on_*_is_captured`). If a future
+        // parser regression lets a malformed shape through, fail closed
+        // with a precise diagnostic rather than panic.
+        let raw_payload = match attr.args.as_slice() {
+            [AttributeArg::Positional(s)] => s.as_str(),
+            [] => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidExternSymbolTemplate {
+                        reason: "missing template string — expected `#[extern_symbol(\"...\")]`"
+                            .to_string(),
+                    },
+                    attr.span.clone(),
+                    "`#[extern_symbol]` requires a single string argument naming the C-ABI \
+                     runtime symbol (with optional `{T}` placeholders for per-monomorphization \
+                     dispatch)"
+                        .to_string(),
+                ));
+                return None;
+            }
+            _ => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidExternSymbolTemplate {
+                        reason: "expected exactly one positional string argument".to_string(),
+                    },
+                    attr.span.clone(),
+                    "`#[extern_symbol(\"hew_symbol\")]` accepts exactly one positional string \
+                     argument; multi-argument and key-value forms are not part of the W3.001 \
+                     grammar"
+                        .to_string(),
+                ));
+                return None;
+            }
+        };
+        match crate::extern_symbol::ExternSymbolTemplate::parse(raw_payload) {
+            Ok(template) => Some(crate::extern_symbol::ExternSymbolSpec {
+                template,
+                span: attr.span.clone(),
+            }),
+            Err(err) => {
+                let reason = err.reason();
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidExternSymbolTemplate {
+                        reason: reason.clone(),
+                    },
+                    attr.span.clone(),
+                    format!("invalid `#[extern_symbol]` template: {reason}"),
+                ));
+                None
+            }
+        }
+    }
+
     pub(super) fn register_fn_sig_with_name(&mut self, name: &str, fd: &FnDecl) {
         // Only filter out the receiver for methods (Type::method), not free
         // functions that happen to have a parameter named `self`.
@@ -3789,6 +3982,7 @@ impl Checker {
             is_async: fd.is_async,
             is_pure: fd.is_pure,
             doc_comment: fd.doc_comment.clone(),
+            extern_symbol: self.ingest_extern_symbol_attrs(&fd.attributes),
             ..FnSig::default()
         };
 
@@ -3819,6 +4013,14 @@ impl Checker {
     ///
     /// Returns the built `FnSig` for callers that need to insert it
     /// on additional type names (e.g., qualified aliases).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single-source-of-truth for impl-method registration; \
+                  factoring sub-passes would obscure the ordering invariants \
+                  the surrounding code relies on (bounds push/pop, \
+                  receiver-skip, double-write of fn_sigs + td.methods, \
+                  W3.001 Stage-2 extern_symbol mirror)"
+    )]
     pub(super) fn register_impl_method(
         &mut self,
         type_name: &str,
@@ -3928,6 +4130,19 @@ impl Checker {
             }
         }
 
+        // Re-use the structured `extern_symbol` already parsed by
+        // `register_fn_sig_with_name` above. Re-parsing the attribute
+        // here would emit duplicate `InvalidExternSymbolTemplate`
+        // diagnostics for the same source span; cloning the resolved
+        // spec keeps the diagnostic surface single-shot while still
+        // propagating the field onto the `td.methods` entry consumed
+        // by Stage-3 method-call rewrites.
+        let extern_symbol = {
+            let key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
+                .unwrap_or_else(|| method_key.clone());
+            self.fn_sigs.get(&key).and_then(|s| s.extern_symbol.clone())
+        };
+
         let sig = FnSig {
             type_params: all_type_params,
             type_param_bounds,
@@ -3936,6 +4151,7 @@ impl Checker {
             return_type,
             is_async: method.is_async,
             is_pure: method.is_pure,
+            extern_symbol,
             ..FnSig::default()
         };
         if let Some(td) = self.lookup_type_def_mut(type_name) {
@@ -4179,6 +4395,7 @@ impl Checker {
                 param_names,
                 params,
                 return_type,
+                extern_symbol: self.ingest_extern_symbol_attrs(&f.attributes),
                 ..FnSig::default()
             };
             let key = scoped_module_item_name(self.current_module.as_deref(), &f.name)
@@ -4363,6 +4580,28 @@ impl Checker {
                             debug_assert!(
                                 parsed.errors.is_empty(),
                                 "std/io/closable.hew failed to parse: {:?}",
+                                parsed.errors,
+                            );
+                            if parsed.errors.is_empty() {
+                                let items: Vec<_> = parsed.program.items.into_iter().collect();
+                                self.register_stdlib_hew_items(&short, &items);
+                            }
+                        }
+                    }
+
+                    if module_path == "std::concurrency::lambda_actor"
+                        && decl.resolved_items.is_none()
+                    {
+                        let identity = format!("module:{module_path}");
+                        if !self
+                            .registered_stdlib_hew_sources
+                            .contains(identity.as_str())
+                        {
+                            self.registered_stdlib_hew_sources.insert(identity);
+                            let parsed = hew_parser::parse(LAMBDA_ACTOR_HEW);
+                            debug_assert!(
+                                parsed.errors.is_empty(),
+                                "std/concurrency/lambda_actor.hew failed to parse: {:?}",
                                 parsed.errors,
                             );
                             if parsed.errors.is_empty() {

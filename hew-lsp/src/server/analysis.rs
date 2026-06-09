@@ -2,6 +2,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use dashmap::DashMap;
 use hew_analysis::util::compute_line_offsets;
+use hew_hir::{
+    lower_program_host_target, verify_hir, HirDiagnostic, HirDiagnosticKind, ResolutionCtx,
+};
 use hew_parser::ast::{ImportDecl, Item};
 use hew_parser::{ParseDiagnosticKind, ParseResult};
 use hew_types::error::{Severity, TypeErrorKind};
@@ -581,60 +584,72 @@ pub(super) fn analyze_document(
         .iter()
         .any(|e| e.severity == hew_parser::Severity::Error);
 
-    let (type_output, module_sources, dangling_import_diagnostics, cycle_diagnostics) =
-        if has_parse_errors {
-            (None, HashMap::new(), HashMap::new(), HashMap::new())
+    let (
+        type_output,
+        hir_diagnostics,
+        module_sources,
+        dangling_import_diagnostics,
+        cycle_diagnostics,
+    ) = if has_parse_errors {
+        (
+            None,
+            Vec::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        )
+    } else {
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
+            build_module_search_paths(),
+        ));
+        // Clone the program so we can inject resolved_items for user-module
+        // imports without mutating the parse_result stored in DocumentState
+        // (other LSP features use the raw AST and do not need resolved_items).
+        let mut program = parse_result.program.clone();
+        populate_user_module_imports(uri, &mut program.items, documents);
+        let module_graph_build = build_document_module_graph(uri, &program);
+        let (module_graph, dangling_import_diagnostics, cycle_diagnostics) =
+            match module_graph_build {
+                Some(ModuleGraphBuildResult::Ready(build)) => (
+                    Some(build.graph),
+                    build_dangling_import_diagnostics(
+                        source,
+                        &line_offsets,
+                        uri,
+                        &build.dangling_imports,
+                        documents,
+                    ),
+                    HashMap::new(),
+                ),
+                Some(ModuleGraphBuildResult::Cycle(cycle)) => (
+                    None,
+                    build_dangling_import_diagnostics(
+                        source,
+                        &line_offsets,
+                        uri,
+                        &cycle.dangling_imports,
+                        documents,
+                    ),
+                    build_module_cycle_diagnostics(source, &line_offsets, uri, &cycle, documents),
+                ),
+                None => (None, HashMap::new(), HashMap::new()),
+            };
+        program.module_graph = module_graph;
+        let module_sources = build_module_source_map(&program, documents);
+        let type_output = checker.check_program(&program);
+        let hir_diagnostics = if type_output.errors.is_empty() {
+            collect_hir_diagnostics(&program, &type_output)
         } else {
-            let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
-                build_module_search_paths(),
-            ));
-            // Clone the program so we can inject resolved_items for user-module
-            // imports without mutating the parse_result stored in DocumentState
-            // (other LSP features use the raw AST and do not need resolved_items).
-            let mut program = parse_result.program.clone();
-            populate_user_module_imports(uri, &mut program.items, documents);
-            let module_graph_build = build_document_module_graph(uri, &program);
-            let (module_graph, dangling_import_diagnostics, cycle_diagnostics) =
-                match module_graph_build {
-                    Some(ModuleGraphBuildResult::Ready(build)) => (
-                        Some(build.graph),
-                        build_dangling_import_diagnostics(
-                            source,
-                            &line_offsets,
-                            uri,
-                            &build.dangling_imports,
-                            documents,
-                        ),
-                        HashMap::new(),
-                    ),
-                    Some(ModuleGraphBuildResult::Cycle(cycle)) => (
-                        None,
-                        build_dangling_import_diagnostics(
-                            source,
-                            &line_offsets,
-                            uri,
-                            &cycle.dangling_imports,
-                            documents,
-                        ),
-                        build_module_cycle_diagnostics(
-                            source,
-                            &line_offsets,
-                            uri,
-                            &cycle,
-                            documents,
-                        ),
-                    ),
-                    None => (None, HashMap::new(), HashMap::new()),
-                };
-            program.module_graph = module_graph;
-            let module_sources = build_module_source_map(&program, documents);
-            (
-                Some(checker.check_program(&program)),
-                module_sources,
-                dangling_import_diagnostics,
-                cycle_diagnostics,
-            )
+            Vec::new()
         };
+        (
+            Some(type_output),
+            hir_diagnostics,
+            module_sources,
+            dangling_import_diagnostics,
+            cycle_diagnostics,
+        )
+    };
 
     let mut diagnostics_by_uri = build_diagnostics_by_uri(
         uri,
@@ -644,6 +659,14 @@ pub(super) fn analyze_document(
         type_output.as_ref(),
         &module_sources,
     );
+    let hir_lsp_diagnostics = build_hir_lsp_diagnostics(
+        uri,
+        source,
+        &line_offsets,
+        &module_sources,
+        &hir_diagnostics,
+    );
+    merge_diagnostics(&mut diagnostics_by_uri, &hir_lsp_diagnostics);
     merge_diagnostics(&mut diagnostics_by_uri, &dangling_import_diagnostics);
     merge_diagnostics(&mut diagnostics_by_uri, &cycle_diagnostics);
 
@@ -888,6 +911,142 @@ pub(super) fn build_diagnostics_by_uri(
     diagnostics_by_uri
 }
 
+fn collect_hir_diagnostics(
+    program: &hew_parser::ast::Program,
+    type_output: &TypeCheckOutput,
+) -> Vec<HirDiagnostic> {
+    let lower_output = lower_program_host_target(program, type_output, &ResolutionCtx);
+    dedup_hir_diagnostics(lower_output.diagnostics, verify_hir(&lower_output.module))
+}
+
+fn dedup_hir_diagnostics(
+    mut lower_diagnostics: Vec<HirDiagnostic>,
+    verifier_diagnostics: Vec<HirDiagnostic>,
+) -> Vec<HirDiagnostic> {
+    for diagnostic in verifier_diagnostics {
+        let already_present = lower_diagnostics
+            .iter()
+            .any(|existing| existing.kind == diagnostic.kind && existing.span == diagnostic.span);
+        if !already_present {
+            lower_diagnostics.push(diagnostic);
+        }
+    }
+    lower_diagnostics
+}
+
+fn build_hir_lsp_diagnostics(
+    root_uri: &Url,
+    root_source: &str,
+    root_line_offsets: &[usize],
+    module_sources: &HashMap<String, DiagnosticSource>,
+    hir_diagnostics: &[HirDiagnostic],
+) -> DiagnosticMap {
+    let mut diagnostics_by_uri = DiagnosticMap::new();
+
+    for diagnostic in hir_diagnostics {
+        let unavailable_source = diagnostic
+            .source_module
+            .as_ref()
+            .filter(|module_name| !module_sources.contains_key(*module_name));
+        let target = diagnostic
+            .source_module
+            .as_ref()
+            .and_then(|module_name| module_sources.get(module_name));
+        let (target_uri, target_source, target_line_offsets) = if let Some(target) = target {
+            (
+                target.uri.clone(),
+                target.source.as_str(),
+                target.line_offsets.as_slice(),
+            )
+        } else {
+            (root_uri.clone(), root_source, root_line_offsets)
+        };
+        let base_message = hir_diagnostic_message(&diagnostic.kind, &diagnostic.note);
+        let message = if let Some(module_name) = unavailable_source {
+            format!("[module '{module_name}' source unavailable] {base_message}")
+        } else {
+            base_message
+        };
+        let range = if unavailable_source.is_some() {
+            zero_range()
+        } else {
+            super::span_to_range(target_source, target_line_offsets, &diagnostic.span)
+        };
+        let related_information = if diagnostic.secondary_spans.is_empty() {
+            None
+        } else {
+            Some(
+                diagnostic
+                    .secondary_spans
+                    .iter()
+                    .map(|(span, label)| DiagnosticRelatedInformation {
+                        location: Location {
+                            uri: target_uri.clone(),
+                            range: if unavailable_source.is_some() {
+                                zero_range()
+                            } else {
+                                super::span_to_range(target_source, target_line_offsets, span)
+                            },
+                        },
+                        message: label.clone(),
+                    })
+                    .collect(),
+            )
+        };
+        insert_diagnostic(
+            &mut diagnostics_by_uri,
+            target_uri,
+            Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("hew-hir".to_string()),
+                message,
+                related_information,
+                data: Some(hir_diagnostic_data(&diagnostic.kind)),
+                ..Default::default()
+            },
+        );
+    }
+
+    diagnostics_by_uri
+}
+
+fn hir_diagnostic_message(kind: &HirDiagnosticKind, note: &str) -> String {
+    let base = match kind {
+        HirDiagnosticKind::NotYetImplemented {
+            construct,
+            owning_pass,
+        } => format!("not yet implemented: {construct} (planned: {owning_pass})"),
+        _ => hir_diagnostic_kind_string(kind),
+    };
+
+    if note.is_empty() {
+        base
+    } else {
+        format!("{base}\n\nnote: {note}")
+    }
+}
+
+fn hir_diagnostic_data(kind: &HirDiagnosticKind) -> serde_json::Value {
+    serde_json::json!({
+        "kind": hir_diagnostic_kind_string(kind),
+        "source": "hir",
+    })
+}
+
+fn hir_diagnostic_kind_string(kind: &HirDiagnosticKind) -> String {
+    let debug = format!("{kind:?}");
+    let end = debug.find([' ', '{', '(']).unwrap_or(debug.len());
+    debug[..end].to_string()
+}
+
+fn zero_range() -> tower_lsp::lsp_types::Range {
+    tower_lsp::lsp_types::Range::new(
+        tower_lsp::lsp_types::Position::new(0, 0),
+        tower_lsp::lsp_types::Position::new(0, 0),
+    )
+}
+
 /// Convert a type-checker `Severity` to the corresponding LSP `DiagnosticSeverity`.
 ///
 /// This is the authoritative severity mapping: the `TypeError` struct carries the
@@ -926,5 +1085,267 @@ fn unnecessary_diagnostic_tags(kind: &TypeErrorKind) -> Option<Vec<DiagnosticTag
         | TypeErrorKind::DeadCode
         | TypeErrorKind::UnreachableCode => Some(vec![DiagnosticTag::UNNECESSARY]),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hew_hir::{HirItem, HirModule, HirNodeId};
+    use hew_parser::ast::Span;
+    use tower_lsp::lsp_types::Position;
+
+    use super::*;
+
+    #[test]
+    fn hir_root_diagnostics_render_to_root_uri() {
+        let source = "fn main() {}\n";
+        let line_offsets = compute_line_offsets(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let diagnostics = vec![HirDiagnostic::new(
+            HirDiagnosticKind::TaskCannotEscape,
+            3..7,
+            "task handles must stay inside fork bodies",
+        )];
+
+        let by_uri =
+            build_hir_lsp_diagnostics(&uri, source, &line_offsets, &HashMap::new(), &diagnostics);
+        let rendered = by_uri
+            .get(&uri)
+            .expect("root diagnostics must stay on the root URI");
+        let diagnostic = rendered.first().expect("expected one HIR diagnostic");
+
+        assert_eq!(diagnostic.source.as_deref(), Some("hew-hir"));
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diagnostic.range.start, Position::new(0, 3));
+        assert_eq!(diagnostic.range.end, Position::new(0, 7));
+        assert_eq!(
+            diagnostic
+                .data
+                .as_ref()
+                .and_then(|data| data.get("kind"))
+                .and_then(serde_json::Value::as_str),
+            Some("TaskCannotEscape")
+        );
+    }
+
+    #[test]
+    fn hir_non_root_diagnostics_route_to_imported_uri() {
+        let root_uri = Url::parse("file:///project/main.hew").unwrap();
+        let helper_uri = Url::parse("file:///project/helper.hew").unwrap();
+        let root_source = "fn main() {}\n";
+        let helper_source = "fn helper() { bogus }\n";
+        let diagnostics = vec![HirDiagnostic::new(
+            HirDiagnosticKind::UnresolvedSymbol {
+                name: "bogus".to_string(),
+            },
+            14..19,
+            "imported helper body references an unresolved name",
+        )
+        .with_source_module(Some("helper".to_string()))];
+        let module_sources = HashMap::from([(
+            "helper".to_string(),
+            DiagnosticSource {
+                uri: helper_uri.clone(),
+                source: helper_source.to_string(),
+                line_offsets: compute_line_offsets(helper_source),
+            },
+        )]);
+
+        let by_uri = build_hir_lsp_diagnostics(
+            &root_uri,
+            root_source,
+            &compute_line_offsets(root_source),
+            &module_sources,
+            &diagnostics,
+        );
+        let helper_diags = by_uri
+            .get(&helper_uri)
+            .expect("imported-module HIR diagnostics must route to the imported URI");
+        let diagnostic = helper_diags
+            .first()
+            .expect("expected one imported-module diagnostic");
+
+        assert_eq!(diagnostic.range.start, Position::new(0, 14));
+        assert_eq!(diagnostic.range.end, Position::new(0, 19));
+    }
+
+    #[test]
+    fn hir_source_map_miss_fails_closed_to_root_zero_range() {
+        let root_uri = Url::parse("file:///project/main.hew").unwrap();
+        let root_source = "fn main() {}\n";
+        let diagnostics = vec![HirDiagnostic::new(
+            HirDiagnosticKind::UnresolvedSymbol {
+                name: "phantom".to_string(),
+            },
+            99..120,
+            "phantom import body references an unresolved name",
+        )
+        .with_source_module(Some("phantom".to_string()))];
+
+        let by_uri = build_hir_lsp_diagnostics(
+            &root_uri,
+            root_source,
+            &compute_line_offsets(root_source),
+            &HashMap::new(),
+            &diagnostics,
+        );
+        let root_diags = by_uri
+            .get(&root_uri)
+            .expect("source-map miss must still publish a diagnostic on the root URI");
+        let diagnostic = root_diags
+            .first()
+            .expect("expected one fail-closed diagnostic");
+
+        assert_eq!(diagnostic.range, zero_range());
+        assert!(diagnostic
+            .message
+            .starts_with("[module 'phantom' source unavailable]"));
+    }
+
+    #[test]
+    fn hir_secondary_spans_render_as_related_information() {
+        let root_uri = Url::parse("file:///project/main.hew").unwrap();
+        let root_source = "fn main() { abc }\nfn helper() {}\n";
+        let diagnostic = HirDiagnostic::new(
+            HirDiagnosticKind::MachineEffectParityViolation {
+                machine_name: "M".to_string(),
+                state_name: "S".to_string(),
+                field_name: "field".to_string(),
+                transition_event: "tick".to_string(),
+                is_entry_conflict: true,
+            },
+            12..15,
+            "transition conflicts with state entry",
+        )
+        .with_secondary_spans(vec![(21..27, "conflicting state entry".to_string())]);
+
+        let by_uri = build_hir_lsp_diagnostics(
+            &root_uri,
+            root_source,
+            &compute_line_offsets(root_source),
+            &HashMap::new(),
+            &[diagnostic],
+        );
+        let rendered = by_uri
+            .get(&root_uri)
+            .and_then(|diagnostics| diagnostics.first())
+            .expect("expected one root diagnostic");
+        let related = rendered
+            .related_information
+            .as_ref()
+            .expect("secondary spans should render as related information");
+
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].location.uri, root_uri);
+        assert_eq!(related[0].location.range.start, Position::new(1, 3));
+    }
+
+    #[test]
+    fn verifier_only_hir_diagnostics_are_rendered() {
+        let source = "fn main() -> i64 { 1 }\n";
+        let line_offsets = compute_line_offsets(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let span = 19..20;
+
+        let combined =
+            dedup_hir_diagnostics(Vec::new(), verify_hir(&duplicate_node_module(span.clone())));
+        assert_eq!(combined.len(), 1, "expected one verifier-only diagnostic");
+
+        let by_uri =
+            build_hir_lsp_diagnostics(&uri, source, &line_offsets, &HashMap::new(), &combined);
+        let rendered = by_uri
+            .get(&uri)
+            .and_then(|diagnostics| diagnostics.first())
+            .expect("verifier-only HIR diagnostic should render to LSP");
+
+        assert_eq!(rendered.source.as_deref(), Some("hew-hir"));
+        assert_eq!(
+            rendered
+                .data
+                .as_ref()
+                .and_then(|data| data.get("kind"))
+                .and_then(serde_json::Value::as_str),
+            Some("DuplicateNodeId")
+        );
+    }
+
+    #[test]
+    fn duplicate_verifier_hir_diagnostics_are_suppressed_by_kind_and_span() {
+        let span = 19..20;
+        let lower_diagnostic = HirDiagnostic::new(
+            HirDiagnosticKind::DuplicateNodeId { id: HirNodeId(1) },
+            span.clone(),
+            "lowering already reported duplicate HIR node id",
+        );
+
+        let combined = dedup_hir_diagnostics(
+            vec![lower_diagnostic.clone()],
+            verify_hir(&duplicate_node_module(span)),
+        );
+
+        assert_eq!(
+            combined.len(),
+            1,
+            "duplicate verifier diagnostic should be suppressed"
+        );
+        assert_eq!(combined[0], lower_diagnostic);
+    }
+
+    #[test]
+    fn analyze_document_skips_hir_when_typecheck_fails() {
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let document = analyze_document(&uri, "fn main() -> i32 { missing }", &DashMap::new());
+
+        let root_diags = document
+            .diagnostics_by_uri
+            .get(&uri)
+            .expect("root document should always have a diagnostics entry");
+
+        assert!(
+            root_diags
+                .iter()
+                .all(|diagnostic| diagnostic.source.as_deref() != Some("hew-hir")),
+            "HIR diagnostics must not run when type checking reports errors: {root_diags:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_document_publishes_hir_diagnostics_after_successful_typecheck() {
+        let main_uri = Url::parse("file:///project/main.hew").unwrap();
+        let document = analyze_document(
+            &main_uri,
+            "fn main() { let r = select { }; }\n",
+            &DashMap::new(),
+        );
+        let root_diags = document
+            .diagnostics_by_uri
+            .get(&main_uri)
+            .expect("root document should always have a diagnostics entry");
+
+        assert!(
+            root_diags
+                .iter()
+                .any(|diagnostic| diagnostic.source.as_deref() == Some("hew-hir")),
+            "expected HIR diagnostics after successful typecheck: {root_diags:?}"
+        );
+    }
+
+    fn duplicate_node_module(span: Span) -> HirModule {
+        let source = "fn main() -> i64 { 1 }\n";
+        let parse_result = hew_parser::parse(source);
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        let mut module =
+            lower_program_host_target(&parse_result.program, &type_output, &ResolutionCtx).module;
+        let HirItem::Function(function) = module.items.first_mut().expect("expected one function")
+        else {
+            panic!("expected a function item")
+        };
+        function.body.span = span.clone();
+        if let Some(tail) = function.body.tail.as_mut() {
+            tail.node = function.body.node;
+            tail.span = span;
+        }
+        module
     }
 }

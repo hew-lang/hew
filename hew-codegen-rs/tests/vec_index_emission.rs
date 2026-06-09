@@ -46,6 +46,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![ResolvedTy::I64],
+        builtin: None,
     };
 
     let vec_place = Place::Local(0);

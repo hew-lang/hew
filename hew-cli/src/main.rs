@@ -75,40 +75,12 @@ fn hew_main() {
 // Sub-commands
 // ---------------------------------------------------------------------------
 
-/// Map an HIR diagnostic kind to a user-visible prefix string.
-/// `NotYetImplemented` uses `E_NOT_YET_IMPLEMENTED` to mirror the MIR
-/// mapping (see `diagnostic_prefix` below). All other HIR diagnostics
-/// use `E_HIR` so the user sees a structured family prefix rather than a
-/// raw `{:?}` dump.
-fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
-    match kind {
-        hew_hir::HirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
-        _ => "E_HIR",
-    }
-}
-
 /// Surface the diagnostic family in the CLI prefix so users see what
 /// gate tripped at a glance. `MirCheck` findings (move/init/aliasing
 /// legality) are a distinct family from spine-subset rejections; the
 /// kind in the debug payload disambiguates further.
 fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
-    match kind {
-        hew_mir::MirDiagnosticKind::UseAfterConsume { .. }
-        | hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. }
-        | hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
-        | hew_mir::MirDiagnosticKind::MustConsume { .. }
-        | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
-        | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
-        | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "E_MIR_CHECK",
-        hew_mir::MirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
-        hew_mir::MirDiagnosticKind::UnknownType { .. }
-        | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
-        | hew_mir::MirDiagnosticKind::UnresolvedPlace { .. }
-        | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { .. }
-        | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
-        | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
-        | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { .. } => "E_MIR",
-    }
+    diagnostic::mir_diagnostic_prefix(kind)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,9 +150,13 @@ fn lower_file_to_mir(
         }
     }
     if !hir_diagnostics.is_empty() {
-        for diagnostic in &hir_diagnostics {
-            eprintln!("{} {diagnostic:?}", hir_diagnostic_prefix(&diagnostic.kind));
-        }
+        let frontend_diagnostics = hew_compile::hir_diagnostics_to_frontend(
+            &state.program,
+            &state.source,
+            &input,
+            hir_diagnostics,
+        );
+        compile::render_frontend_diagnostics(&frontend_diagnostics);
         return Err(());
     }
 
@@ -193,6 +169,67 @@ fn lower_file_to_mir(
     }
 
     Ok(pipeline)
+}
+
+fn hir_target_arch(target: &target::TargetSpec) -> hew_hir::TargetArch {
+    match target.arch() {
+        target::TargetArch::Aarch64 => hew_hir::TargetArch::Aarch64,
+        target::TargetArch::X86_64 => hew_hir::TargetArch::X86_64,
+        target::TargetArch::Wasm32 => hew_hir::TargetArch::Wasm32,
+    }
+}
+
+fn run_check_deep_gates(
+    input: &str,
+    target: &target::TargetSpec,
+    state: &hew_compile::FileFrontendState,
+) -> Result<(), ()> {
+    let Some(tco) = state.typecheck_result.tco.as_ref() else {
+        return Ok(());
+    };
+
+    let lower_output = hew_hir::lower_program(
+        &state.program,
+        tco,
+        &hew_hir::ResolutionCtx,
+        hir_target_arch(target),
+    );
+    let mut hir_diagnostics = lower_output.diagnostics;
+    let verifier_diags = hew_hir::verify_hir(&lower_output.module);
+    for diag in verifier_diags {
+        let already_present = hir_diagnostics
+            .iter()
+            .any(|d| d.kind == diag.kind && d.span == diag.span);
+        if !already_present {
+            hir_diagnostics.push(diag);
+        }
+    }
+    if !hir_diagnostics.is_empty() {
+        let frontend_diagnostics = hew_compile::hir_diagnostics_to_frontend(
+            &state.program,
+            &state.source,
+            input,
+            hir_diagnostics,
+        );
+        compile::render_frontend_diagnostics(&frontend_diagnostics);
+        return Err(());
+    }
+
+    let pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    if !pipeline.diagnostics.is_empty() {
+        let module_source_map = diagnostic::build_module_source_map(&state.program);
+        let site_spans = hew_hir::collect_site_spans(&lower_output.module);
+        diagnostic::render_mir_diagnostics(
+            &state.source,
+            input,
+            &module_source_map,
+            &site_spans,
+            &pipeline.diagnostics,
+        );
+        return Err(());
+    }
+
+    Ok(())
 }
 
 fn emit_module(
@@ -307,9 +344,13 @@ pub(crate) fn compile_native_from_program(
         }
     }
     if !hir_diagnostics.is_empty() {
-        for diagnostic in &hir_diagnostics {
-            eprintln!("{} {diagnostic:?}", hir_diagnostic_prefix(&diagnostic.kind));
-        }
+        let frontend_diagnostics = hew_compile::hir_diagnostics_to_frontend(
+            &state.program,
+            &state.source,
+            source_label,
+            hir_diagnostics,
+        );
+        compile::render_frontend_diagnostics(&frontend_diagnostics);
         return Err(());
     }
 
@@ -589,64 +630,39 @@ fn resolve_run_target(requested: Option<&str>) -> target::ExecutionTarget {
 fn cmd_check(a: &args::CheckArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
+    let target =
+        target::TargetSpec::from_requested(options.target.as_deref()).unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        });
+    let frontend_options = compile::frontend_options(&target, &options);
 
-    if a.show_stack_hints {
-        // Run the frontend through `check_file` so we can surface the
-        // typechecker's stack-allocation hints. The hints render before the
-        // OK/error verdict so the user sees them in declaration order
-        // independent of the exit code.
-        let frontend_options = compile::frontend_options_for_check(&options);
-        match hew_compile::check_file(&input, &frontend_options) {
-            Ok(out) => {
-                diagnostic::print_stack_hints(&out.source, &input, &out.stack_hints);
-                eprintln!("{input}: OK");
-            }
-            Err(failure) => {
-                // Surface the source-span diagnostics and error message in the
-                // same shape as the no-flag path: span-attributed lines first,
-                // then the failure summary. `render_frontend_diagnostics` is
-                // reused so the user sees identical output to the no-flag path.
-                compile::render_frontend_diagnostics(&failure.diagnostics);
-                eprintln!("{}", failure.message);
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
-
-    if a.explain_cow {
-        // Use check_file_with_explain_cow so we can access actor_send_aliasing.
-        match compile::check_explain_cow(&input, &options) {
-            Ok(result) => {
-                compile::render_frontend_diagnostics_pub(&result.diagnostics);
-                explain_cow::render_explain_cow(
-                    &result.actor_send_aliasing,
-                    &result.source,
-                    &input,
-                    &mut std::io::stdout(),
-                );
-                eprintln!("{input}: OK");
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
-
-    let frontend_options = compile::frontend_options_for_check(&options);
-    match hew_compile::check_file(&input, &frontend_options) {
-        Ok(result) => {
-            compile::render_frontend_diagnostics(&result.diagnostics);
-            eprintln!("{input}: OK");
-        }
+    let (result, state) = match hew_compile::check_file_with_state(&input, &frontend_options) {
+        Ok(result) => result,
         Err(failure) => {
             compile::render_frontend_diagnostics(&failure.diagnostics);
             eprintln!("{}", failure.message);
             std::process::exit(1);
         }
+    };
+
+    compile::render_frontend_diagnostics(&result.diagnostics);
+    if a.show_stack_hints {
+        diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
+    } else if a.explain_cow {
+        explain_cow::render_explain_cow(
+            &result.actor_send_aliasing,
+            &result.source,
+            &input,
+            &mut std::io::stdout(),
+        );
     }
+
+    if run_check_deep_gates(&input, &target, &state).is_err() {
+        std::process::exit(1);
+    }
+
+    eprintln!("{input}: OK");
 }
 
 fn cmd_debug(a: &args::DebugArgs) {

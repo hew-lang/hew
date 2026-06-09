@@ -5,7 +5,7 @@ use hew_parser::ast::{
     LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl,
     RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt,
     StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl,
-    TypeDeclKind, TypeExpr, VariantKind,
+    TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
 };
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildKind, ChildSlot,
@@ -16,10 +16,10 @@ use hew_types::{
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
-use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef, SiteId};
+use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{
     contains_recursive_polymorphic_self, substitute_type_params, EnumLayoutRegistry, EnumMonoKey,
-    EnumVariantLayout, MonoKey, MonoRegistry, RecordLayoutRegistry, RecordMonoKey,
+    EnumVariantLayout, MonoKey, MonoRegistry, RecordLayout, RecordLayoutRegistry, RecordMonoKey,
     MONOMORPHISATION_REGISTRY_CAP,
 };
 use crate::node::{
@@ -206,6 +206,13 @@ impl LowerOutput {
     /// - [`HirDiagnosticKind::IndirectCallUnsupported`] — a call expression
     ///   has an unresolved callee with callable static type that the MIR
     ///   producer cannot dispatch.
+    /// - [`HirDiagnosticKind::SupervisorSpawnArgsUnsupported`] — the program
+    ///   calls `spawn AppSupervisor(...)` with init args.
+    /// - [`HirDiagnosticKind::VecIndexElementTypeUnsupported`] — `xs[i]` on
+    ///   a `Vec<T>` whose element type `T` has no `hew_vec_get_T` getter.
+    /// - [`HirDiagnosticKind::VecSliceElementTypeUnsupported`] — `xs[a..b]`
+    ///   on a `Vec<T>` whose element type `T` has no
+    ///   `hew_vec_slice_range_T` runtime symbol.
     ///
     /// Callers that want to continue despite non-fatal diagnostics should
     /// check `.diagnostics` directly.  This method is the recommended
@@ -226,7 +233,8 @@ impl LowerOutput {
                 d.kind,
                 crate::HirDiagnosticKind::CheckerBoundaryViolation { .. }
                     | crate::HirDiagnosticKind::RecordLayoutMissing { .. }
-                    | crate::HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper { .. }
+                    | crate::HirDiagnosticKind::ImportedBodyMissingPrivateHelper { .. }
+                    | crate::HirDiagnosticKind::ImportedFreeFnBodyUnresolvedBareCall { .. }
                     | crate::HirDiagnosticKind::TargetCoroutineUnsupported { .. }
                     | crate::HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm { .. }
                     | crate::HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
@@ -244,6 +252,9 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::PlatformSizedShiftUnsupported { .. }
                     | crate::HirDiagnosticKind::CallableUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::IndirectCallUnsupported { .. }
+                    | crate::HirDiagnosticKind::SupervisorSpawnArgsUnsupported { .. }
+                    | crate::HirDiagnosticKind::VecIndexElementTypeUnsupported { .. }
+                    | crate::HirDiagnosticKind::VecSliceElementTypeUnsupported { .. }
             )
         });
         if has_fatal {
@@ -255,7 +266,7 @@ impl LowerOutput {
 }
 
 /// Pre-collected signature of a top-level function item.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FnEntry {
     id: ItemId,
     return_ty: ResolvedTy,
@@ -448,6 +459,30 @@ pub fn lower_program_with_mono_cap(
                                 },
                             );
                         }
+                        Item::Record(decl) if decl.visibility.is_pub() => {
+                            let id = ctx.ids.item();
+                            let type_params: Vec<String> = decl
+                                .type_params
+                                .as_ref()
+                                .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
+                            let fields: Vec<(String, ResolvedTy)> = match &decl.kind {
+                                RecordKind::Named(rfs) => rfs
+                                    .iter()
+                                    .map(|rf| (rf.name.clone(), ctx.lower_type(&rf.ty)))
+                                    .collect(),
+                                RecordKind::Tuple(_) => Vec::new(),
+                            };
+                            ctx.record_registry.insert(
+                                decl.name.clone(),
+                                RecordEntry {
+                                    id,
+                                    type_params,
+                                    fields,
+                                },
+                            );
+                            ctx.type_classes
+                                .insert(decl.name.clone(), (ResourceMarker::None, None));
+                        }
                         // Register extern fn signatures declared by imported
                         // modules so call sites in user code resolve them
                         // through `BindingRef::Item` like any other top-level
@@ -489,7 +524,7 @@ pub fn lower_program_with_mono_cap(
                                 }
                             }
                         }
-                        // Non-pub Function/TypeDecl fall here (not exported to importers).
+                        // Non-pub Function/TypeDecl/Record fall here (not exported to importers).
                         Item::Import(_)
                         | Item::Const(_)
                         | Item::Function(_)
@@ -534,6 +569,8 @@ pub fn lower_program_with_mono_cap(
                         fields,
                     },
                 );
+                ctx.type_classes
+                    .insert(decl.name.clone(), (ResourceMarker::None, None));
             }
             Item::Record(decl) => {
                 let id = ctx.ids.item();
@@ -920,6 +957,7 @@ pub fn lower_program_with_mono_cap(
                             .map(|p| ResolvedTy::Named {
                                 name: (*p).to_string(),
                                 args: Vec::new(),
+                                builtin: None,
                             })
                             .collect(),
                     )
@@ -992,6 +1030,23 @@ pub fn lower_program_with_mono_cap(
     // gains TargetSpec threading (see audit `:5336`, `:5564`, `:5696`).
     check_binary_operator_gates(&mut ctx, program);
 
+    // FC-P1-A3: Supervisor spawn args gate. Same survival-ordering rationale
+    // as the wasm gate above — dispatched AFTER `ctx.diagnostics.clear()` so
+    // the SupervisorSpawnArgsUnsupported diagnostics survive into the final
+    // LowerOutput. The checker already rejects supervisor declarations with
+    // init params; this HIR gate is defense-in-depth that catches any future
+    // surface which reaches MIR (`hew-mir/src/lower.rs:8852`) before the
+    // checker guard does. Per slepp A222: compile-time fail-closed instead of
+    // a `NotYetImplemented` runtime-style diagnostic at MIR-lowering time.
+    check_supervisor_spawn_gate(&mut ctx, program);
+
+    // FC-P1-E: Vec<T> index/slice element-type gates. Dispatched HERE (after
+    // the diagnostics.clear above) so the gate's VecIndex/Slice element-type
+    // diagnostics survive into the final LowerOutput. Target-independent: the
+    // runtime ABI lacks `hew_vec_get_T` / `hew_vec_slice_range_T` for the
+    // rejected element types on every target.
+    check_vec_index_element_type_gates(&mut ctx, program);
+
     // Second pass: lower type declarations and populate the per-module
     // type-class registry. Stored here so the source-order pass can emit them
     // in program order without a second lowering call. Function bodies depend
@@ -1000,12 +1055,13 @@ pub fn lower_program_with_mono_cap(
     // so this pre-pass can safely run before the combined item pass below.
     let mut type_decl_cache: HashMap<*const hew_parser::ast::TypeDecl, HirTypeDecl> =
         HashMap::new();
+    let mut diagnostic_source_modules: HashMap<ItemId, String> = HashMap::new();
     for (item, span) in &program.items {
         if let Item::TypeDecl(decl) = item {
             let hir_decl = ctx.lower_type_decl(decl, span.clone());
             let builtin_registration =
                 crate::builtin_type_classes::builtin_type_registration(&hir_decl.name);
-            let marker = builtin_or_hir_marker(&hir_decl.name, hir_decl.marker);
+            let marker = hir_decl.marker;
             let close_method = if marker == ResourceMarker::Resource {
                 builtin_registration
                     .and_then(|registration| registration.close_method.map(str::to_string))
@@ -1050,6 +1106,8 @@ pub fn lower_program_with_mono_cap(
             }
             let module_short = mod_id.path.last().map_or("", String::as_str);
             if let Some(module) = mg.modules.get(mod_id) {
+                let source_module = mod_id.path.join(".");
+                let diag_start = ctx.diagnostics.len();
                 for (item, span) in &module.items {
                     match item {
                         Item::TypeDecl(decl)
@@ -1095,6 +1153,7 @@ pub fn lower_program_with_mono_cap(
                         | Item::Record(_) => {}
                     }
                 }
+                ctx.tag_diagnostics_since(diag_start, &source_module);
             }
         }
     }
@@ -1127,16 +1186,17 @@ pub fn lower_program_with_mono_cap(
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
+                let source_module = mod_id.path.join(".");
+                let diag_start = ctx.diagnostics.len();
                 for (item, span) in &module.items {
                     match item {
                         Item::TypeDecl(decl)
                             if decl.visibility.is_pub() && decl.kind == TypeDeclKind::Enum =>
                         {
                             let hir_decl = ctx.lower_type_decl(decl, span.clone());
-                            let marker = builtin_or_hir_marker(&hir_decl.name, hir_decl.marker);
                             ctx.type_classes
                                 .entry(hir_decl.name.clone())
-                                .or_insert((marker, None));
+                                .or_insert((hir_decl.marker, None));
                             if !hir_decl.variants.is_empty() {
                                 ctx.enum_variants_by_name
                                     .insert(hir_decl.name.clone(), hir_decl.variants.clone());
@@ -1226,6 +1286,7 @@ pub fn lower_program_with_mono_cap(
                         | Item::Record(_) => {}
                     }
                 }
+                ctx.tag_diagnostics_since(diag_start, &source_module);
             }
         }
     }
@@ -1433,16 +1494,93 @@ pub fn lower_program_with_mono_cap(
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
+                let source_module = mod_id.path.join(".");
+                let diag_start = ctx.diagnostics.len();
+                let item_start = items.len();
+                let module_short = mod_id.path.last().map_or("", String::as_str);
+                // Per-module helper sets used by the imported-body scan in
+                // both the free-fn (Item::Function) and impl-method
+                // (Item::Impl) arms. Computed once per module so the two
+                // arms agree on which same-module callees count as
+                // private vs. pub and so iteration cost is linear in the
+                // module's item count rather than quadratic across arms.
+                let same_module_private_fns: HashSet<String> = module
+                    .items
+                    .iter()
+                    .filter_map(|(it, _)| {
+                        if let Item::Function(f) = it {
+                            if !f.visibility.is_pub() {
+                                return Some(f.name.clone());
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                let same_module_private_fn_decls: HashMap<String, &FnDecl> = module
+                    .items
+                    .iter()
+                    .filter_map(|(it, _)| {
+                        if let Item::Function(f) = it {
+                            if !f.visibility.is_pub() {
+                                return Some((f.name.clone(), f));
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                let same_module_pub_fns: HashSet<String> = module
+                    .items
+                    .iter()
+                    .filter_map(|(it, _)| {
+                        if let Item::Function(f) = it {
+                            if f.visibility.is_pub() {
+                                return Some(f.name.clone());
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                let imported_private_closure =
+                    collect_imported_private_fn_closure(module, &same_module_private_fns);
+                for helper_name in &imported_private_closure {
+                    if let Some(helper) = same_module_private_fn_decls.get(helper_name) {
+                        let qualified =
+                            crate::mangle_dotted_name(&format!("{module_short}.{}", helper.name));
+                        ctx.register_fn_entry(&qualified, helper);
+                    }
+                }
+                let same_module_fn_rewrites: HashMap<String, String> = same_module_pub_fns
+                    .iter()
+                    .chain(imported_private_closure.iter())
+                    .map(|name| {
+                        (
+                            name.clone(),
+                            crate::mangle_dotted_name(&format!("{module_short}.{name}")),
+                        )
+                    })
+                    .collect();
                 for (item, span) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
-                            let module_short = mod_id.path.last().map_or("", String::as_str);
                             let qualified =
                                 crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
-                            items.push(HirItem::Function(ctx.lower_fn_with_name(
+                            items.push(HirItem::Function(ctx.lower_imported_fn_with_name(
                                 func,
                                 &qualified,
                                 span.clone(),
+                                &same_module_fn_rewrites,
+                            )));
+                        }
+                        Item::Function(func)
+                            if imported_private_closure.contains(func.name.as_str()) =>
+                        {
+                            let qualified =
+                                crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
+                            items.push(HirItem::Function(ctx.lower_imported_fn_with_name(
+                                func,
+                                &qualified,
+                                span.clone(),
+                                &same_module_fn_rewrites,
                             )));
                         }
                         Item::TypeDecl(decl) if decl.visibility.is_pub() => {
@@ -1512,19 +1650,6 @@ pub fn lower_program_with_mono_cap(
                         // so the root cause is identified at the module boundary
                         // rather than silently producing an `UnresolvedSymbol`.
                         Item::Impl(impl_decl) => {
-                            let module_short = mod_id.path.last().map_or("", String::as_str);
-                            let private_fns: HashSet<String> = module
-                                .items
-                                .iter()
-                                .filter_map(|(it, _)| {
-                                    if let Item::Function(f) = it {
-                                        if !f.visibility.is_pub() {
-                                            return Some(f.name.clone());
-                                        }
-                                    }
-                                    None
-                                })
-                                .collect();
                             if let TypeExpr::Named { .. } = &impl_decl.target_type.0 {
                                 let mut any_blocked = false;
                                 for method in &impl_decl.methods {
@@ -1533,13 +1658,17 @@ pub fn lower_program_with_mono_cap(
                                     if !method.visibility.is_pub() {
                                         continue;
                                     }
-                                    let blocked =
-                                        collect_private_fn_refs(&method.body, &private_fns);
+                                    let blocked = collect_bare_fn_call_refs(
+                                        &method.body,
+                                        &same_module_private_fns,
+                                    );
                                     for helper_fn in blocked {
                                         ctx.diagnostics.push(HirDiagnostic::new(
-                                            HirDiagnosticKind::ImportedImplBodyMissingPrivateHelper {
+                                            HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
                                                 module: module_short.to_string(),
                                                 helper_fn,
+                                                item_kind:
+                                                    crate::diagnostic::ImportedItemKind::ImplMethod,
                                             },
                                             span.clone(),
                                             "imported impl method body calls a private helper \
@@ -1577,6 +1706,12 @@ pub fn lower_program_with_mono_cap(
                         | Item::Supervisor(_) => {}
                     }
                 }
+                ctx.tag_diagnostics_since(diag_start, &source_module);
+                record_source_modules_for_items(
+                    &items[item_start..],
+                    &source_module,
+                    &mut diagnostic_source_modules,
+                );
             }
         }
     }
@@ -1614,6 +1749,12 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.diagnostics,
     );
 
+    finalize_user_record_value_classes(
+        &ctx.record_registry,
+        &record_layouts,
+        &mut ctx.type_classes,
+    );
+
     // FC-P1-B: HIR pre-pass for call-shape gates. Lifts MIR's call-shape
     // fail-closed diagnostics (`hew-mir/src/lower.rs:4194` / `:4236`) to the
     // HIR boundary so unresolved-Item callees and indirect-callable
@@ -1627,6 +1768,7 @@ pub fn lower_program_with_mono_cap(
     LowerOutput {
         module: HirModule {
             items,
+            diagnostic_source_modules,
             type_classes: ctx.type_classes,
             monomorphisations,
             call_site_type_args,
@@ -1636,6 +1778,67 @@ pub fn lower_program_with_mono_cap(
             regex_literals: ctx.regex_literals,
         },
         diagnostics: ctx.diagnostics,
+    }
+}
+
+fn finalize_user_record_value_classes(
+    record_registry: &HashMap<String, RecordEntry>,
+    record_layouts: &[RecordLayout],
+    type_classes: &mut crate::value_class::TypeClassTable,
+) {
+    for name in record_registry.keys() {
+        type_classes
+            .entry(name.clone())
+            .or_insert((ResourceMarker::None, None));
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        for (name, entry) in record_registry {
+            let Some((marker, _)) = type_classes.get(name) else {
+                continue;
+            };
+            if *marker != ResourceMarker::None
+                || !entry.type_params.is_empty()
+                || entry.fields.is_empty()
+            {
+                continue;
+            }
+            if entry.fields.iter().all(|(_, ty)| {
+                crate::value_class::ValueClass::of_ty(ty, type_classes)
+                    == crate::value_class::ValueClass::BitCopy
+            }) {
+                if let Some((marker, _)) = type_classes.get_mut(name) {
+                    *marker = ResourceMarker::BitCopy;
+                    changed = true;
+                }
+            }
+        }
+
+        for layout in record_layouts {
+            if layout.fields.is_empty() {
+                continue;
+            }
+            if type_classes
+                .get(&layout.mangled_name)
+                .is_some_and(|(marker, _)| *marker != ResourceMarker::None)
+            {
+                continue;
+            }
+            if layout.fields.iter().all(|(_, ty)| {
+                crate::value_class::ValueClass::of_ty(ty, type_classes)
+                    == crate::value_class::ValueClass::BitCopy
+            }) {
+                type_classes.insert(layout.mangled_name.clone(), (ResourceMarker::BitCopy, None));
+                changed = true;
+            } else {
+                type_classes
+                    .entry(layout.mangled_name.clone())
+                    .or_insert((ResourceMarker::None, None));
+            }
+        }
     }
 }
 
@@ -1649,6 +1852,23 @@ pub fn lower_program_with_mono_cap(
 /// hit. Skips inner calls whose substituted args still contain any
 /// abstract type-parameter symbol (no monomorphisation is possible
 /// without a concrete instantiation).
+/// A `CallTraitMethodStatic` site discovered inside a function body.
+/// Carries enough info to derive the impl-method monomorphisation once the
+/// surrounding function's type params have been substituted.
+struct TraitMethodStaticSite {
+    /// Type-parameter name of the receiver (e.g. "T" in `fn display<T: Show>`).
+    receiver_type_param: String,
+    /// Trait that directly declares the method (e.g. "Show") — used as the
+    /// structured registry key so we don't reverse-parse the impl symbol.
+    declaring_trait: String,
+    /// Method name on the declaring trait (e.g. "show").
+    method_name: String,
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "two-phase worklist: direct calls + trait method sites"
+)]
 fn closure_under_substitution(
     items: &[HirItem],
     call_site_type_args: &HashMap<SiteId, Vec<ResolvedTy>>,
@@ -1668,6 +1888,11 @@ fn closure_under_substitution(
             fn_info.insert(f.name.clone(), (f.id, f.type_params.clone()));
         }
     }
+    // Structured `(declaring_trait, self_type_name, method_name)` index
+    // built from `HirItem::Impl` metadata. Static-dispatch monomorphisation
+    // resolves trait method calls through this rather than reconstructing
+    // the impl symbol from a receiver display name.
+    let impl_index = crate::dispatch::build_trait_impl_method_index(items);
 
     let mut seen: HashSet<MonoKey> = monomorphisations.iter().map(|m| m.key.clone()).collect();
     let mut worklist: Vec<MonoKey> = monomorphisations.iter().map(|m| m.key.clone()).collect();
@@ -1686,7 +1911,10 @@ fn closure_under_substitution(
             .collect();
         // Walk the body to discover Call sites.
         let mut inner_sites: Vec<(String, SiteId)> = Vec::new();
-        collect_call_sites_in_block(&origin.body, &mut inner_sites);
+        let mut trait_method_sites: Vec<TraitMethodStaticSite> = Vec::new();
+        collect_call_sites_in_block(&origin.body, &mut inner_sites, &mut trait_method_sites);
+
+        // ── Direct Call sites (existing logic) ───────────────────────────
         for (callee_name, site) in inner_sites {
             let Some((origin_id, type_params)) = fn_info.get(&callee_name).cloned() else {
                 continue;
@@ -1736,29 +1964,140 @@ fn closure_under_substitution(
             });
             worklist.push(new_key);
         }
+
+        // ── CallTraitMethodStatic sites (impl-method monomorphisation) ───
+        // When a generic function body contains `item.show()` via a trait
+        // bound, and this mono's substitution resolves the receiver type
+        // param to a concrete type, look up the matching impl method via
+        // the structured registry — `(declaring_trait, self_type_name,
+        // method_name)` — and register the impl method's monomorphisation.
+        for tms in trait_method_sites {
+            let Some(concrete_ty) = subst.get(&tms.receiver_type_param) else {
+                continue;
+            };
+            // Canonical (self_type_name, type_args) for impl lookup.
+            let Some((self_type_name, type_args)) =
+                crate::dispatch::receiver_self_type_for_impl_lookup(concrete_ty)
+            else {
+                continue;
+            };
+            // Structured registry lookup. The key is built from HIR-side
+            // structured fields only — no symbol-name parsing.
+            let key = (
+                tms.declaring_trait.clone(),
+                self_type_name.clone(),
+                tms.method_name.clone(),
+            );
+            let Some(entry) = impl_index.get(&key) else {
+                continue;
+            };
+            // Non-generic impl methods need no per-instantiation
+            // registration; their bare symbol is already a module fn.
+            if entry.impl_type_params.is_empty() {
+                continue;
+            }
+            // Find the origin fn that owns this impl method symbol so
+            // we can build a `MonoKey` whose `origin` points at the
+            // pre-substitution body.
+            let Some((origin_id, origin_type_params)) = fn_info.get(&entry.method_symbol).cloned()
+            else {
+                continue;
+            };
+            if origin_type_params.is_empty() {
+                // Impl-block carried type params but the per-method
+                // origin did not — invariant violation upstream;
+                // skip to avoid wrong monomorphisation.
+                continue;
+            }
+            // Skip if type_args still contain abstract symbols.
+            if type_args
+                .iter()
+                .any(|t| contains_abstract_symbol(t, &fn_info))
+            {
+                continue;
+            }
+            let new_key = MonoKey {
+                origin: origin_id,
+                origin_name: entry.method_symbol.clone(),
+                type_args: type_args.clone(),
+            };
+            if !seen.insert(new_key.clone()) {
+                continue;
+            }
+            if monomorphisations.len() >= cap {
+                if !cap_diag_emitted {
+                    cap_diag_emitted = true;
+                    diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::MonomorphisationCapExceeded { cap },
+                        0..0,
+                        "too many distinct generic-function instantiations discovered \
+                         during inner-call closure; the compiler refuses to \
+                         monomorphise beyond the configured cap",
+                    ));
+                }
+                continue;
+            }
+            let mangled = mangle(&entry.method_symbol, &type_args);
+            monomorphisations.push(MonomorphizedFn {
+                key: new_key.clone(),
+                mangled_name: mangled,
+            });
+            worklist.push(new_key);
+        }
     }
 }
 
-fn collect_call_sites_in_block(block: &HirBlock, out: &mut Vec<(String, SiteId)>) {
+fn collect_call_sites_in_block(
+    block: &HirBlock,
+    out: &mut Vec<(String, SiteId)>,
+    trait_out: &mut Vec<TraitMethodStaticSite>,
+) {
     for stmt in &block.statements {
-        collect_call_sites_in_stmt(stmt, out);
+        collect_call_sites_in_stmt(stmt, out, trait_out);
     }
     if let Some(tail) = &block.tail {
-        collect_call_sites_in_expr(tail, out);
+        collect_call_sites_in_expr(tail, out, trait_out);
     }
 }
 
-fn collect_call_sites_in_stmt(stmt: &HirStmt, out: &mut Vec<(String, SiteId)>) {
+fn record_source_modules_for_items(
+    items: &[HirItem],
+    source_module: &str,
+    diagnostic_source_modules: &mut HashMap<ItemId, String>,
+) {
+    for item in items {
+        let id = match item {
+            HirItem::Function(item) => item.id,
+            HirItem::TypeDecl(item) => item.id,
+            HirItem::Machine(item) => item.id,
+            HirItem::Record(item) => item.id,
+            HirItem::Actor(item) => item.id,
+            HirItem::Supervisor(item) => item.id,
+            HirItem::Impl(item) => item.id,
+            HirItem::ExternFn(item) => item.id,
+        };
+        diagnostic_source_modules.insert(id, source_module.to_string());
+    }
+}
+
+fn collect_call_sites_in_stmt(
+    stmt: &HirStmt,
+    out: &mut Vec<(String, SiteId)>,
+    trait_out: &mut Vec<TraitMethodStaticSite>,
+) {
     match &stmt.kind {
         HirStmtKind::Let(_, Some(e)) | HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
-            collect_call_sites_in_expr(e, out);
+            collect_call_sites_in_expr(e, out, trait_out);
         }
         HirStmtKind::Assign { target, value } => {
-            collect_call_sites_in_expr(target, out);
-            collect_call_sites_in_expr(value, out);
+            collect_call_sites_in_expr(target, out, trait_out);
+            collect_call_sites_in_expr(value, out, trait_out);
         }
         // Let-without-value and bare return have no sub-expression to collect.
         HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+        HirStmtKind::Defer { body, .. } => {
+            collect_call_sites_in_expr(body, out, trait_out);
+        }
     }
 }
 
@@ -1766,71 +2105,99 @@ fn collect_call_sites_in_stmt(stmt: &HirStmt, out: &mut Vec<(String, SiteId)>) {
     clippy::too_many_lines,
     reason = "single recursive walker spanning all HirExprKind variants"
 )]
-fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
+fn collect_call_sites_in_expr(
+    expr: &HirExpr,
+    out: &mut Vec<(String, SiteId)>,
+    trait_out: &mut Vec<TraitMethodStaticSite>,
+) {
     match &expr.kind {
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             // Record the site if callee is a direct BindingRef name.
             if let HirExprKind::BindingRef { name, .. } = &callee.kind {
                 out.push((name.clone(), expr.site));
             }
-            collect_call_sites_in_expr(callee, out);
+            collect_call_sites_in_expr(callee, out, trait_out);
             for a in args {
-                collect_call_sites_in_expr(a, out);
+                collect_call_sites_in_expr(a, out, trait_out);
             }
         }
         HirExprKind::Spawn { args, .. } => {
             for (_, arg) in args {
-                collect_call_sites_in_expr(arg, out);
+                collect_call_sites_in_expr(arg, out, trait_out);
             }
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. } => {
-            collect_call_sites_in_expr(receiver, out);
+            collect_call_sites_in_expr(receiver, out, trait_out);
             for arg in args {
-                collect_call_sites_in_expr(arg, out);
+                collect_call_sites_in_expr(arg, out, trait_out);
+            }
+        }
+        HirExprKind::CallTraitMethodStatic {
+            receiver,
+            receiver_type_param,
+            declaring_trait,
+            method_name,
+            args,
+            ..
+        } => {
+            // Record this as a trait-method static dispatch site for the
+            // monomorphisation closure to resolve once the enclosing
+            // function's type params are substituted.
+            trait_out.push(TraitMethodStaticSite {
+                receiver_type_param: receiver_type_param.clone(),
+                declaring_trait: declaring_trait.clone(),
+                method_name: method_name.clone(),
+            });
+            collect_call_sites_in_expr(receiver, out, trait_out);
+            for arg in args {
+                collect_call_sites_in_expr(arg, out, trait_out);
             }
         }
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
-            collect_call_sites_in_expr(left, out);
-            collect_call_sites_in_expr(right, out);
+            collect_call_sites_in_expr(left, out, trait_out);
+            collect_call_sites_in_expr(right, out, trait_out);
         }
-        HirExprKind::Block(b) => collect_call_sites_in_block(b, out),
-        HirExprKind::GenBlock { body, .. } => collect_call_sites_in_block(body, out),
+        HirExprKind::Unary { operand, .. } => collect_call_sites_in_expr(operand, out, trait_out),
+        HirExprKind::Block(b) => collect_call_sites_in_block(b, out, trait_out),
+        HirExprKind::GenBlock { body, .. } => collect_call_sites_in_block(body, out, trait_out),
         HirExprKind::Yield {
             value: Some(value), ..
-        } => collect_call_sites_in_expr(value, out),
+        } => collect_call_sites_in_expr(value, out, trait_out),
         HirExprKind::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            collect_call_sites_in_expr(condition, out);
-            collect_call_sites_in_expr(then_expr, out);
+            collect_call_sites_in_expr(condition, out, trait_out);
+            collect_call_sites_in_expr(then_expr, out, trait_out);
             if let Some(e) = else_expr {
-                collect_call_sites_in_expr(e, out);
+                collect_call_sites_in_expr(e, out, trait_out);
             }
         }
         HirExprKind::StructInit { fields, base, .. } => {
             for (_, e) in fields {
-                collect_call_sites_in_expr(e, out);
+                collect_call_sites_in_expr(e, out, trait_out);
             }
             if let Some(b) = base {
-                collect_call_sites_in_expr(b, out);
+                collect_call_sites_in_expr(b, out, trait_out);
             }
         }
-        HirExprKind::FieldAccess { object, .. } => collect_call_sites_in_expr(object, out),
+        HirExprKind::FieldAccess { object, .. } => {
+            collect_call_sites_in_expr(object, out, trait_out);
+        }
         HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => {
-            collect_call_sites_in_block(body, out);
+            collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
-            collect_call_sites_in_expr(duration, out);
-            collect_call_sites_in_block(body, out);
+            collect_call_sites_in_expr(duration, out, trait_out);
+            collect_call_sites_in_block(body, out, trait_out);
         }
-        HirExprKind::TupleIndex { tuple, .. } => collect_call_sites_in_expr(tuple, out),
+        HirExprKind::TupleIndex { tuple, .. } => collect_call_sites_in_expr(tuple, out, trait_out),
         HirExprKind::Index { container, index } => {
-            collect_call_sites_in_expr(container, out);
-            collect_call_sites_in_expr(index, out);
+            collect_call_sites_in_expr(container, out, trait_out);
+            collect_call_sites_in_expr(index, out, trait_out);
         }
         HirExprKind::Slice {
             container,
@@ -1838,66 +2205,66 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             end,
             ..
         } => {
-            collect_call_sites_in_expr(container, out);
+            collect_call_sites_in_expr(container, out, trait_out);
             if let Some(s) = start {
-                collect_call_sites_in_expr(s, out);
+                collect_call_sites_in_expr(s, out, trait_out);
             }
             if let Some(e) = end {
-                collect_call_sites_in_expr(e, out);
+                collect_call_sites_in_expr(e, out, trait_out);
             }
         }
         HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
-            collect_call_sites_in_expr(body, out);
+            collect_call_sites_in_expr(body, out, trait_out);
         }
         HirExprKind::While { condition, body } => {
-            collect_call_sites_in_expr(condition, out);
-            collect_call_sites_in_block(body, out);
+            collect_call_sites_in_expr(condition, out, trait_out);
+            collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::ForRange {
             start, end, body, ..
         } => {
-            collect_call_sites_in_expr(start, out);
-            collect_call_sites_in_expr(end, out);
-            collect_call_sites_in_block(body, out);
+            collect_call_sites_in_expr(start, out, trait_out);
+            collect_call_sites_in_expr(end, out, trait_out);
+            collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::Match { scrutinee, arms } => {
-            collect_call_sites_in_expr(scrutinee, out);
+            collect_call_sites_in_expr(scrutinee, out, trait_out);
             for arm in arms {
-                collect_call_sites_in_expr(&arm.body, out);
+                collect_call_sites_in_expr(&arm.body, out, trait_out);
             }
         }
         HirExprKind::WhileLet {
             scrutinee, body, ..
         } => {
-            collect_call_sites_in_expr(scrutinee, out);
-            collect_call_sites_in_block(body, out);
+            collect_call_sites_in_expr(scrutinee, out, trait_out);
+            collect_call_sites_in_block(body, out, trait_out);
         }
         // Variants that carry sub-expressions not yet covered above.
         HirExprKind::NumericMethod { receiver, arg, .. } => {
-            collect_call_sites_in_expr(receiver, out);
-            collect_call_sites_in_expr(arg, out);
+            collect_call_sites_in_expr(receiver, out, trait_out);
+            collect_call_sites_in_expr(arg, out, trait_out);
         }
         HirExprKind::CoerceToDynTrait { value, .. } => {
-            collect_call_sites_in_expr(value, out);
+            collect_call_sites_in_expr(value, out, trait_out);
         }
         HirExprKind::MachineEmit { fields, .. } => {
             for (_, e) in fields {
-                collect_call_sites_in_expr(e, out);
+                collect_call_sites_in_expr(e, out, trait_out);
             }
         }
         HirExprKind::MachineStep {
             receiver, event, ..
         } => {
-            collect_call_sites_in_expr(receiver, out);
-            collect_call_sites_in_expr(event, out);
+            collect_call_sites_in_expr(receiver, out, trait_out);
+            collect_call_sites_in_expr(event, out, trait_out);
         }
         HirExprKind::MachineStateName { receiver, .. } => {
-            collect_call_sites_in_expr(receiver, out);
+            collect_call_sites_in_expr(receiver, out, trait_out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
             if let Some(fields) = payload {
                 for (_, e) in fields {
-                    collect_call_sites_in_expr(e, out);
+                    collect_call_sites_in_expr(e, out, trait_out);
                 }
             }
         }
@@ -1905,22 +2272,22 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             for arm in &sel.arms {
                 match &arm.kind {
                     HirSelectArmKind::StreamNext { stream } => {
-                        collect_call_sites_in_expr(stream, out);
+                        collect_call_sites_in_expr(stream, out, trait_out);
                     }
                     HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        collect_call_sites_in_expr(actor, out);
+                        collect_call_sites_in_expr(actor, out, trait_out);
                         for a in args {
-                            collect_call_sites_in_expr(a, out);
+                            collect_call_sites_in_expr(a, out, trait_out);
                         }
                     }
                     HirSelectArmKind::TaskAwait { task } => {
-                        collect_call_sites_in_expr(task, out);
+                        collect_call_sites_in_expr(task, out, trait_out);
                     }
                     HirSelectArmKind::AfterTimer { duration } => {
-                        collect_call_sites_in_expr(duration, out);
+                        collect_call_sites_in_expr(duration, out, trait_out);
                     }
                 }
-                collect_call_sites_in_expr(&arm.body, out);
+                collect_call_sites_in_expr(&arm.body, out, trait_out);
             }
         }
         // Leaf variants: no sub-expressions, so no call sites to collect.
@@ -1946,12 +2313,17 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
     subst: &HashMap<String, ResolvedTy, S>,
 ) -> ResolvedTy {
     match ty {
-        ResolvedTy::Named { name, args } if args.is_empty() && subst.contains_key(name) => {
+        ResolvedTy::Named { name, args, .. } if args.is_empty() && subst.contains_key(name) => {
             subst[name].clone()
         }
-        ResolvedTy::Named { name, args } => ResolvedTy::Named {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+        } => ResolvedTy::Named {
             name: name.clone(),
             args: args.iter().map(|a| substitute_ty(a, subst)).collect(),
+            builtin: *builtin,
         },
         ResolvedTy::Tuple(items) => {
             ResolvedTy::Tuple(items.iter().map(|t| substitute_ty(t, subst)).collect())
@@ -1983,15 +2355,6 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
     }
 }
 
-fn builtin_or_hir_marker(name: &str, fallback: ResourceMarker) -> ResourceMarker {
-    crate::builtin_type_classes::builtin_type_registration(name)
-        .map_or(fallback, |registration| registration.marker)
-}
-
-fn builtin_or_decl_marker(name: &str, fallback: AstResourceMarker) -> ResourceMarker {
-    builtin_or_hir_marker(name, ResourceMarker::from(fallback))
-}
-
 fn contains_abstract_symbol(
     ty: &ResolvedTy,
     fn_info: &HashMap<String, (ItemId, Vec<String>)>,
@@ -2004,7 +2367,7 @@ fn contains_abstract_symbol(
             .any(|(_, params)| params.iter().any(|p| p == name))
     };
     match ty {
-        ResolvedTy::Named { name, args } => {
+        ResolvedTy::Named { name, args, .. } => {
             if args.is_empty() && is_type_param(name) {
                 return true;
             }
@@ -2041,6 +2404,11 @@ struct LowerCtx {
     scopes: Vec<ScopeMap>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
+    /// Same-module bare-call rewrites active while lowering an imported module
+    /// free-function body. Keys are source-visible bare identifiers; values are
+    /// the qualified, native-symbol-safe `fn_registry` keys emitted for that
+    /// imported module.
+    imported_fn_rewrites: Option<HashMap<String, String>>,
     /// Per-named-type marker + close-method registry. Pre-populated from
     /// every `Item::TypeDecl` before function bodies lower so that
     /// `ValueClass::of_ty` can resolve `Named` types as the body is walked.
@@ -2106,6 +2474,11 @@ struct LowerCtx {
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
     /// bool supports nested `scope{}` blocks correctly.
     scope_depth: u32,
+    /// The `ScopeId` of the innermost lexical block currently being lowered.
+    /// Updated by `lower_block` immediately after `self.ids.scope()` allocates
+    /// the block's identity. Read by `Stmt::Defer` lowering to tag the deferred
+    /// body with the owning scope so MIR can materialise it at scope exits.
+    current_scope_id: ScopeId,
     /// Set to `true` immediately before lowering the expression of a
     /// `Stmt::Expression` statement. `lower_expr` consumes it via
     /// `mem::replace(…, false)` at entry, so all recursive calls see `false`.
@@ -2376,6 +2749,7 @@ impl LowerCtx {
             ids: IdGen::default(),
             scopes: Vec::new(),
             fn_registry: HashMap::new(),
+            imported_fn_rewrites: None,
             type_classes,
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
@@ -2390,6 +2764,7 @@ impl LowerCtx {
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
             generator_yield_tys: Vec::new(),
             scope_depth: 0,
+            current_scope_id: ScopeId(0),
             statement_position: false,
             current_actor_self: None,
             call_type_args: tc_output.call_type_args.clone(),
@@ -2424,6 +2799,15 @@ impl LowerCtx {
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             lang_items: tc_output.lang_items.clone(),
             target_arch,
+        }
+    }
+
+    fn tag_diagnostics_since(&mut self, start: usize, source_module: &str) {
+        debug_assert!(start <= self.diagnostics.len());
+        for diagnostic in self.diagnostics.iter_mut().skip(start) {
+            if diagnostic.source_module.is_none() {
+                diagnostic.source_module = Some(source_module.to_string());
+            }
         }
     }
 
@@ -2478,7 +2862,7 @@ impl LowerCtx {
     /// at the outer non-generic callsite where `type_args` is `[]`.
     fn contains_abstract_type_param(&self, ty: &ResolvedTy) -> bool {
         match ty {
-            ResolvedTy::Named { name, args } => {
+            ResolvedTy::Named { name, args, .. } => {
                 if self.is_type_param_symbol(name) {
                     return true;
                 }
@@ -2522,6 +2906,12 @@ impl LowerCtx {
             .any(|entry| entry.type_params.iter().any(|p| p == name))
     }
 
+    fn imported_rewrite_symbol(&self, name: &str) -> Option<&str> {
+        self.imported_fn_rewrites
+            .as_ref()
+            .and_then(|rewrites| rewrites.get(name).map(String::as_str))
+    }
+
     fn record_monomorphisation(
         &mut self,
         callee_expr: &hew_parser::ast::Expr,
@@ -2535,7 +2925,12 @@ impl LowerCtx {
             // for G-1.a.
             return;
         };
-        let Some(entry) = self.fn_registry.get(name) else {
+        let registry_name = if self.lookup(name).is_none() {
+            self.imported_rewrite_symbol(name).unwrap_or(name)
+        } else {
+            name
+        };
+        let Some(entry) = self.fn_registry.get(registry_name) else {
             // Callee is not a top-level user fn — skip (builtin,
             // runtime-symbol, or unresolved). Filtering on `fn_registry`
             // membership inherently excludes runtime-symbol callees
@@ -2554,7 +2949,7 @@ impl LowerCtx {
             return;
         }
         let origin = entry.id;
-        let origin_name = name.clone();
+        let origin_name = registry_name.to_string();
         let key = SpanKey::from(call_span);
         let Some(type_args_raw) = self.call_type_args.get(&key).cloned() else {
             // Generic callee with no recorded type args at this site.
@@ -2799,15 +3194,56 @@ impl LowerCtx {
 
 /// Collect the names of private helper functions that are referenced by direct
 /// `Expr::Call { function: Expr::Identifier(name) }` within `body` and whose
-/// names appear in `private_fns`. Method-call syntax (`foo.bar()`) is not
+/// names appear in `candidate_fns`. Method-call syntax (`foo.bar()`) is not
 /// tracked — only bare identifier callees are considered. Returns a sorted,
 /// deduplicated list of matching names.
-fn collect_private_fn_refs(body: &Block, private_fns: &HashSet<String>) -> Vec<String> {
+fn collect_bare_fn_call_refs(body: &Block, candidate_fns: &HashSet<String>) -> Vec<String> {
     let mut found = Vec::new();
-    scan_block_for_private_refs(body, private_fns, &mut found);
+    scan_block_for_private_refs(body, candidate_fns, &mut found);
     found.sort_unstable();
     found.dedup();
     found
+}
+
+fn collect_imported_private_fn_closure(
+    module: &hew_parser::module::Module,
+    private_fns: &HashSet<String>,
+) -> HashSet<String> {
+    let private_fn_bodies: HashMap<String, &Block> = module
+        .items
+        .iter()
+        .filter_map(|(item, _)| {
+            if let Item::Function(func) = item {
+                if !func.visibility.is_pub() {
+                    return Some((func.name.clone(), &func.body));
+                }
+            }
+            None
+        })
+        .collect();
+    let mut reachable = HashSet::new();
+    let mut worklist = Vec::new();
+    for (item, _) in &module.items {
+        if let Item::Function(func) = item {
+            if func.visibility.is_pub() {
+                for helper in collect_bare_fn_call_refs(&func.body, private_fns) {
+                    if reachable.insert(helper.clone()) {
+                        worklist.push(helper);
+                    }
+                }
+            }
+        }
+    }
+    while let Some(helper) = worklist.pop() {
+        if let Some(body) = private_fn_bodies.get(&helper) {
+            for next in collect_bare_fn_call_refs(body, private_fns) {
+                if reachable.insert(next.clone()) {
+                    worklist.push(next);
+                }
+            }
+        }
+    }
+    reachable
 }
 
 fn scan_block_for_private_refs(block: &Block, pf: &HashSet<String>, out: &mut Vec<String>) {
@@ -3093,16 +3529,19 @@ impl LowerCtx {
             let index = u32::try_from(index).expect("stdlib catalog fits in u32");
             let id = ItemId(u32::MAX - index);
             let param_tys = builtin.params.iter().map(|ty| ty.to_resolved()).collect();
-            self.fn_registry.insert(
-                builtin.name.to_string(),
-                FnEntry {
-                    id,
-                    return_ty: builtin.return_ty.to_resolved(),
-                    param_tys,
-                    linkage: Some(builtin.linkage),
-                    type_params: Vec::new(),
-                },
-            );
+            let return_ty = builtin.return_ty.to_resolved();
+            let entry = FnEntry {
+                id,
+                return_ty,
+                param_tys,
+                linkage: Some(builtin.linkage),
+                type_params: Vec::new(),
+            };
+            self.fn_registry
+                .insert(builtin.name.to_string(), entry.clone());
+            if let Some(symbol) = builtin.linkage.runtime_symbol() {
+                self.fn_registry.insert(symbol.to_string(), entry);
+            }
         }
         // Checker-registered runtime-builtin functions that have no stdlib_catalog
         // entry and no AST `fn` item.  The HIR verifier rejects `Unresolved`
@@ -3136,6 +3575,7 @@ impl LowerCtx {
                         .canonical_name()
                         .to_string(),
                     args: vec![ResolvedTy::Unit],
+                    builtin: Some(hew_types::BuiltinType::LocalPid),
                 }],
                 linkage: None,
                 type_params: Vec::new(),
@@ -3733,17 +4173,23 @@ impl LowerCtx {
         // methods are lowered; private methods are not accessible to importers
         // and must not leak into the emitted HirItem list.
         let mut method_symbols: Vec<String> = Vec::with_capacity(decl.methods.len());
+        let mut method_names: Vec<String> = Vec::with_capacity(decl.methods.len());
         for method in &decl.methods {
             if pub_only && !method.visibility.is_pub() {
                 continue;
             }
             let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
-            items.push(HirItem::Function(self.lower_fn_with_name(
+            // Pass impl-level type params so that methods of e.g. `impl<U> Trait for Wrapper<U>`
+            // carry `U` as a `HirFn::type_params` entry — required for monomorphization
+            // of generic-over-generic impl methods (W3.022 Stage 3).
+            items.push(HirItem::Function(self.lower_fn_with_name_and_impl_params(
                 method,
                 &symbol,
                 span.clone(),
+                &type_params,
             )));
             method_symbols.push(symbol);
+            method_names.push(method.name.clone());
         }
 
         // Lower associated-type bindings to `ResolvedTy`s. Recorded as
@@ -3763,6 +4209,7 @@ impl LowerCtx {
             type_params,
             type_aliases,
             method_symbols,
+            method_names,
             span,
         }));
     }
@@ -3772,6 +4219,37 @@ impl LowerCtx {
         func: &FnDecl,
         name: &str,
         span: std::ops::Range<usize>,
+    ) -> HirFn {
+        self.lower_fn_with_name_and_impl_params(func, name, span, &[])
+    }
+
+    fn lower_imported_fn_with_name(
+        &mut self,
+        func: &FnDecl,
+        name: &str,
+        span: std::ops::Range<usize>,
+        rewrites: &HashMap<String, String>,
+    ) -> HirFn {
+        let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
+        let lowered = self.lower_fn_with_name(func, name, span);
+        self.imported_fn_rewrites = previous_rewrites;
+        lowered
+    }
+
+    /// Variant of `lower_fn_with_name` that prepends impl-block-level type
+    /// parameters into the lowered `HirFn::type_params`. Used by
+    /// `lower_impl_block` so that methods of `impl<U> Trait for Wrapper<U>`
+    /// carry `U` and can be monomorphized per concrete instantiation.
+    ///
+    /// The combined `type_params` is `impl_type_params ++ method.type_params`,
+    /// matching how `Wrapper<U>::show` is logically `fn show<U>(w: Wrapper<U>) -> ...`
+    /// once the impl-level binder is flattened into the method.
+    fn lower_fn_with_name_and_impl_params(
+        &mut self,
+        func: &FnDecl,
+        name: &str,
+        span: std::ops::Range<usize>,
+        impl_type_params: &[String],
     ) -> HirFn {
         // Use the stable ItemId pre-allocated during the first pass.
         let id = self
@@ -3794,15 +4272,23 @@ impl LowerCtx {
         let body = self.lower_block(&func.body, &return_ty);
         self.pop_scope();
 
+        let method_type_params: Vec<String> = func
+            .type_params
+            .as_ref()
+            .map(|params| params.iter().map(|param| param.name.clone()).collect())
+            .unwrap_or_default();
+        let mut type_params: Vec<String> =
+            Vec::with_capacity(impl_type_params.len() + method_type_params.len());
+        type_params.extend(impl_type_params.iter().cloned());
+        // A method MAY shadow an impl-level type param name; that is a
+        // checker-level concern. Here we just concatenate.
+        type_params.extend(method_type_params);
+
         HirFn {
             id,
             node: self.ids.node(),
             name: name.to_string(),
-            type_params: func
-                .type_params
-                .as_ref()
-                .map(|params| params.iter().map(|param| param.name.clone()).collect())
-                .unwrap_or_default(),
+            type_params,
             params,
             return_ty,
             body,
@@ -3930,7 +4416,7 @@ impl LowerCtx {
             id,
             node: self.ids.node(),
             name: decl.name.clone(),
-            marker: builtin_or_decl_marker(&decl.name, decl.resource_marker),
+            marker: ResourceMarker::from(decl.resource_marker),
             consuming_methods: decl.consuming_methods.clone(),
             type_params,
             fields,
@@ -4752,6 +5238,7 @@ impl LowerCtx {
     fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
         self.push_scope();
         let scope = self.ids.scope();
+        let prev_scope_id = std::mem::replace(&mut self.current_scope_id, scope);
         let mut statements = Vec::new();
         for (stmt, span) in &block.stmts {
             statements.extend(self.lower_stmt_multi(stmt, span.clone(), expected_ty.clone()));
@@ -4763,6 +5250,7 @@ impl LowerCtx {
         let ty = tail
             .as_ref()
             .map_or(ResolvedTy::Unit, |expr| expr.ty.clone());
+        self.current_scope_id = prev_scope_id;
         self.pop_scope();
 
         HirBlock {
@@ -5569,6 +6057,13 @@ impl LowerCtx {
                 };
                 HirStmtKind::Expr(match_expr)
             }
+            Stmt::Defer(body_expr) => {
+                let body = self.lower_expr(body_expr, IntentKind::Read);
+                HirStmtKind::Defer {
+                    body: Box::new(body),
+                    scope_id: self.current_scope_id,
+                }
+            }
             _ => {
                 self.unsupported(span.clone(), "statement", "slice-2");
                 HirStmtKind::Expr(self.unsupported_expr(span.clone(), "unsupported statement"))
@@ -5677,11 +6172,13 @@ impl LowerCtx {
                     ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::Named {
                         name: "regex.Pattern".to_string(),
                         args: Vec::new(),
+                        builtin: None,
                     })
                 } else {
                     ResolvedTy::Named {
                         name: "regex.Pattern".to_string(),
                         args: Vec::new(),
+                        builtin: None,
                     }
                 };
                 // No named captures from a standalone literal — captures are
@@ -5711,6 +6208,7 @@ impl LowerCtx {
                     let machine_ty = ResolvedTy::Named {
                         name: machine_name.clone(),
                         args: Vec::new(),
+                        builtin: None,
                     };
                     (
                         HirExprKind::MachineVariantCtor {
@@ -5737,6 +6235,7 @@ impl LowerCtx {
                     ty,
                 )
             }
+            Expr::Unary { op, operand } => self.lower_unary_expr(*op, operand, &span),
             Expr::Call { function, args, .. } => {
                 let mut args = args
                     .iter()
@@ -5987,6 +6486,7 @@ impl LowerCtx {
                                 ResolvedTy::Named {
                                     name: type_name.clone(),
                                     args: Vec::new(),
+                                    builtin: None,
                                 }
                             }
                         }
@@ -5994,6 +6494,7 @@ impl LowerCtx {
                         ResolvedTy::Named {
                             name: type_name.clone(),
                             args: Vec::new(),
+                            builtin: None,
                         }
                     };
                     (
@@ -6032,6 +6533,7 @@ impl LowerCtx {
                     let machine_ty = ResolvedTy::Named {
                         name: machine_name.clone(),
                         args: Vec::new(),
+                        builtin: None,
                     };
                     // Break out of the match to let the outer wrapper build the HirExpr.
                     // We use a nested block that evaluates to `(kind, ty)`.
@@ -6082,6 +6584,7 @@ impl LowerCtx {
                         ResolvedTy::Named {
                             name: name.clone(),
                             args: resolved_type_args,
+                            builtin: None,
                         },
                     )
                 }
@@ -7001,6 +7504,7 @@ impl LowerCtx {
         ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: vec![msg_ty, reply_ty],
+            builtin: Some(hew_types::BuiltinType::Duplex),
         }
     }
 
@@ -7049,6 +7553,7 @@ impl LowerCtx {
                     ResolvedTy::Named {
                         name: "Generator".to_string(),
                         args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
+                        builtin: Some(hew_types::BuiltinType::Generator),
                     }
                 }
             }
@@ -7064,11 +7569,12 @@ impl LowerCtx {
             ResolvedTy::Named {
                 name: "Generator".to_string(),
                 args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
+                builtin: Some(hew_types::BuiltinType::Generator),
             }
         };
 
         let (yield_ty, return_ty) = match &gen_ty {
-            ResolvedTy::Named { name, args } if name == "Generator" && args.len() == 2 => {
+            ResolvedTy::Named { name, args, .. } if name == "Generator" && args.len() == 2 => {
                 (args[0].clone(), args[1].clone())
             }
             other => {
@@ -7599,6 +8105,186 @@ impl LowerCtx {
         }
     }
 
+    fn lower_unary_expr(
+        &mut self,
+        op: UnaryOp,
+        operand: &Spanned<Expr>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let operand_expr = self.lower_expr(operand, IntentKind::Read);
+
+        if op == UnaryOp::RawDeref {
+            self.unsupported(
+                span.clone(),
+                "raw pointer unary dereference",
+                "m5-raw-pointers",
+            );
+            return (
+                HirExprKind::Unsupported("unsupported raw pointer unary dereference".into()),
+                ResolvedTy::Unit,
+            );
+        }
+
+        let Some(result_ty) = self.checker_expr_ty(span, "unary expression") else {
+            return (
+                HirExprKind::Unsupported("unary expression missing checker result type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+        let Some(operand_ty) = self.checker_unary_operand_ty(op, operand, &result_ty) else {
+            return (
+                HirExprKind::Unsupported("unary expression missing checker operand type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+
+        if !Self::unary_shape_supported(op, &operand_ty, &result_ty) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::UnaryOperatorUnsupportedInMir {
+                    op: Self::unary_op_label(op).to_string(),
+                    operand_ty: operand_ty.to_string(),
+                    result_ty: result_ty.to_string(),
+                },
+                span.clone(),
+                "checker-approved unary expression has no MIR/codegen lowering for this typed shape",
+            ));
+            return (
+                HirExprKind::Unsupported(format!(
+                    "unsupported unary `{}` for operand `{operand_ty}` -> `{result_ty}`",
+                    Self::unary_op_label(op)
+                )),
+                result_ty,
+            );
+        }
+
+        (
+            HirExprKind::Unary {
+                op,
+                operand: Box::new(operand_expr),
+                operand_ty,
+            },
+            result_ty,
+        )
+    }
+
+    fn checker_expr_ty(&mut self, span: &Span, label: &str) -> Option<ResolvedTy> {
+        let key = SpanKey::from(span);
+        let Some(ty) = self.expr_types.get(&key).cloned() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: label.to_string(),
+                    reason: "missing expr_types entry".to_string(),
+                },
+                span.clone(),
+                "checker-authoritative expression type is required for unary lowering",
+            ));
+            return None;
+        };
+        match ResolvedTy::from_ty(&ty) {
+            Ok(resolved) => Some(resolved),
+            Err(err) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: label.to_string(),
+                        reason: err.to_string(),
+                    },
+                    span.clone(),
+                    "checker-authoritative unary type failed boundary conversion",
+                ));
+                None
+            }
+        }
+    }
+
+    fn checker_unary_operand_ty(
+        &mut self,
+        op: UnaryOp,
+        operand: &Spanned<Expr>,
+        result_ty: &ResolvedTy,
+    ) -> Option<ResolvedTy> {
+        let key = SpanKey::from(&operand.1);
+        match self.expr_types.get(&key).cloned() {
+            Some(ty) => match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => Some(resolved),
+                Err(_) if Self::unary_literal_operand_uses_result_ty(op, &operand.0) => {
+                    Some(result_ty.clone())
+                }
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "unary operand".to_string(),
+                            reason: err.to_string(),
+                        },
+                        operand.1.clone(),
+                        "checker-authoritative unary operand type failed boundary conversion",
+                    ));
+                    None
+                }
+            },
+            None if Self::unary_literal_operand_uses_result_ty(op, &operand.0) => {
+                Some(result_ty.clone())
+            }
+            None => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "unary operand".to_string(),
+                        reason: "missing expr_types entry".to_string(),
+                    },
+                    operand.1.clone(),
+                    "checker-authoritative expression type is required for unary lowering",
+                ));
+                None
+            }
+        }
+    }
+
+    fn unary_literal_operand_uses_result_ty(op: UnaryOp, operand: &Expr) -> bool {
+        matches!(operand, Expr::Literal(_))
+            && matches!(op, UnaryOp::Not | UnaryOp::Negate | UnaryOp::BitNot)
+    }
+
+    fn unary_shape_supported(op: UnaryOp, operand_ty: &ResolvedTy, result_ty: &ResolvedTy) -> bool {
+        match op {
+            UnaryOp::Not => operand_ty == &ResolvedTy::Bool && result_ty == &ResolvedTy::Bool,
+            UnaryOp::Negate => {
+                operand_ty == result_ty
+                    && (Self::resolved_is_integer(operand_ty)
+                        || Self::resolved_is_float(operand_ty))
+            }
+            UnaryOp::BitNot => operand_ty == result_ty && Self::resolved_is_integer(operand_ty),
+            UnaryOp::RawDeref => false,
+        }
+    }
+
+    fn resolved_is_integer(ty: &ResolvedTy) -> bool {
+        matches!(
+            ty,
+            ResolvedTy::I8
+                | ResolvedTy::I16
+                | ResolvedTy::I32
+                | ResolvedTy::I64
+                | ResolvedTy::U8
+                | ResolvedTy::U16
+                | ResolvedTy::U32
+                | ResolvedTy::U64
+                | ResolvedTy::Isize
+                | ResolvedTy::Usize
+        )
+    }
+
+    fn resolved_is_float(ty: &ResolvedTy) -> bool {
+        matches!(ty, ResolvedTy::F32 | ResolvedTy::F64)
+    }
+
+    fn unary_op_label(op: UnaryOp) -> &'static str {
+        match op {
+            UnaryOp::Not => "!",
+            UnaryOp::Negate => "-",
+            UnaryOp::BitNot => "~",
+            UnaryOp::RawDeref => "*",
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "multi-branch identifier resolution: context readers, bindings, fn_sigs, \
@@ -7701,6 +8387,7 @@ impl LowerCtx {
                             ResolvedTy::Named {
                                 name: tagged_union_name.clone(),
                                 args: Vec::new(),
+                                builtin: None,
                             }
                         }
                     }
@@ -7711,6 +8398,7 @@ impl LowerCtx {
                     ResolvedTy::Named {
                         name: tagged_union_name.clone(),
                         args: Vec::new(),
+                        builtin: None,
                     }
                 };
                 return (
@@ -7722,6 +8410,32 @@ impl LowerCtx {
                     result_ty,
                 );
             }
+        }
+        if let Some(symbol) = self.imported_rewrite_symbol(name).map(str::to_string) {
+            if let Some(entry) = self.fn_registry.get(&symbol) {
+                let fn_ty = ResolvedTy::Function {
+                    params: entry.param_tys.clone(),
+                    ret: Box::new(entry.return_ty.clone()),
+                };
+                let id = entry.id;
+                return (
+                    HirExprKind::BindingRef {
+                        name: symbol,
+                        resolved: ResolvedRef::Item(id),
+                    },
+                    fn_ty,
+                );
+            }
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.to_string(),
+                    reason: format!(
+                        "imported same-module callee `{symbol}` missing from HIR fn registry"
+                    ),
+                },
+                span.clone(),
+                "imported free-function body rewrite target was not registered",
+            ));
         }
         if let Some(entry) = self.fn_registry.get(name) {
             // Known function item — expose as a function-typed reference so
@@ -7794,7 +8508,7 @@ impl LowerCtx {
                     "char" | "Char" => ResolvedTy::Char,
                     "string" | "str" => ResolvedTy::String,
                     "duration" => ResolvedTy::Duration,
-                    "Bytes" => ResolvedTy::Bytes,
+                    "bytes" | "Bytes" => ResolvedTy::Bytes,
                     "Unit" | "()" => ResolvedTy::Unit,
                     // `Task` is a compiler-internal value class with no user-source
                     // syntax. Writing `Task<T>` in any annotation position is a
@@ -7809,10 +8523,19 @@ impl LowerCtx {
                         ));
                         ResolvedTy::Unit
                     }
-                    _ => ResolvedTy::Named {
-                        name: name.clone(),
-                        args,
-                    },
+                    _ => {
+                        if let Some(registration) =
+                            crate::builtin_type_classes::builtin_type_registration(name)
+                        {
+                            ResolvedTy::named_builtin(
+                                registration.name(),
+                                registration.builtin,
+                                args,
+                            )
+                        } else {
+                            ResolvedTy::named_user(name.clone(), args)
+                        }
+                    }
                 }
             }
             TypeExpr::Infer => {
@@ -8310,6 +9033,39 @@ impl LowerCtx {
                     ResolvedTy::Unit,
                 )
             }
+            Some(MethodCallRewrite::StaticTraitDispatch {
+                receiver_type_param,
+                bound_trait,
+                declaring_trait,
+                method_name,
+            }) => {
+                // Static trait dispatch: emit `CallTraitMethodStatic` carrying
+                // the structured metadata. MIR resolves the concrete callee from
+                // the monomorphization substitution map.
+                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                let lowered_args: Vec<HirExpr> = args
+                    .iter()
+                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .collect();
+                let ret_ty = self
+                    .expr_types
+                    .get(&key)
+                    .cloned()
+                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+                    .unwrap_or(ResolvedTy::Unit);
+                (
+                    HirExprKind::CallTraitMethodStatic {
+                        receiver: Box::new(lowered_receiver),
+                        receiver_type_param,
+                        bound_trait,
+                        declaring_trait,
+                        method_name,
+                        args: lowered_args,
+                        ret_ty: ret_ty.clone(),
+                    },
+                    ret_ty,
+                )
+            }
             None => {
                 if let Expr::Identifier(module_name) = &receiver.0 {
                     if let Some(module) = self.missing_stdlib_module_import(module_name) {
@@ -8436,7 +9192,10 @@ impl LowerCtx {
         // instantiations, including nested ones inside the type args.
         let mut worklist: Vec<ResolvedTy> = vec![resolved];
         while let Some(ty) = worklist.pop() {
-            let ResolvedTy::Named { ref name, ref args } = ty else {
+            let ResolvedTy::Named {
+                ref name, ref args, ..
+            } = ty
+            else {
                 continue;
             };
             // Only act if this enum has type params and this call provides args.
@@ -8560,6 +9319,7 @@ impl LowerCtx {
                     ResolvedTy::Named {
                         name: type_name_owned.clone(),
                         args: Vec::new(),
+                        builtin: None,
                     }
                 }
             }
@@ -8575,6 +9335,7 @@ impl LowerCtx {
             ResolvedTy::Named {
                 name: type_name_owned.clone(),
                 args: Vec::new(),
+                builtin: None,
             }
         };
         (
@@ -8802,10 +9563,12 @@ impl LowerCtx {
         let machine_ty = ResolvedTy::Named {
             name: machine_name.clone(),
             args: Vec::new(),
+            builtin: None,
         };
         let event_ty = ResolvedTy::Named {
             name: format!("{machine_name}Event"),
             args: Vec::new(),
+            builtin: None,
         };
         let _state = self.bind("state".to_string(), machine_ty, false, span.clone());
         let _event = self.bind("event".to_string(), event_ty, false, span);
@@ -9187,6 +9950,14 @@ impl LowerCtx {
                             // `AwaitTaskResultUnsupported` gate at MIR :7871 fires
                             // when the non-unit result is awaited, not when spawned.
                             let call_hir = self.lower_expr(child_expr, IntentKind::Consume);
+                            let call_site = call_hir.site;
+                            let explicit_type_args = match &child_expr.0 {
+                                Expr::Call {
+                                    type_args: Some(type_args),
+                                    ..
+                                } => Some(type_args.clone()),
+                                _ => None,
+                            };
                             let call_ret_ty = call_hir.ty.clone();
 
                             let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
@@ -9197,9 +9968,23 @@ impl LowerCtx {
                             };
 
                             // Re-wrap as a SpawnedCall node with Task<T> type.
+                            let spawned_site = self.ids.site();
+                            let type_args = self
+                                .call_site_type_args
+                                .get(&call_site)
+                                .cloned()
+                                .or_else(|| {
+                                    explicit_type_args.map(|args| {
+                                        args.iter().map(|arg| self.lower_type(arg)).collect()
+                                    })
+                                });
+                            if let Some(type_args) = type_args {
+                                self.call_site_type_args.insert(spawned_site, type_args);
+                            }
+
                             let spawned = HirExpr {
                                 node: self.ids.node(),
-                                site: self.ids.site(),
+                                site: spawned_site,
                                 value_class: ValueClass::Linear, // Task handles are linear (consume-once).
                                 ty: task_ty.clone(),
                                 intent: IntentKind::Consume,
@@ -9331,6 +10116,14 @@ impl LowerCtx {
         // task is gated (MIR :7871, `AwaitTaskResultUnsupported`). Gating at
         // spawn time would break the TI-1/TI-2/TI-4 canonical invariants.
         let call_hir = self.lower_expr(expr, IntentKind::Consume);
+        let call_site = call_hir.site;
+        let explicit_type_args = match &expr.0 {
+            Expr::Call {
+                type_args: Some(type_args),
+                ..
+            } => Some(type_args.clone()),
+            _ => None,
+        };
         let call_ret_ty = call_hir.ty.clone();
 
         let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
@@ -9340,9 +10133,21 @@ impl LowerCtx {
             return self.unsupported_expr(span, "lower_spawned_call on non-call");
         };
 
+        let spawned_site = self.ids.site();
+        let type_args = self
+            .call_site_type_args
+            .get(&call_site)
+            .cloned()
+            .or_else(|| {
+                explicit_type_args.map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
+            });
+        if let Some(type_args) = type_args {
+            self.call_site_type_args.insert(spawned_site, type_args);
+        }
+
         HirExpr {
             node: self.ids.node(),
-            site: self.ids.site(),
+            site: spawned_site,
             value_class: ValueClass::Linear, // Task handles are linear (consume-once).
             ty: task_ty.clone(),
             intent: IntentKind::Consume,
@@ -9532,6 +10337,9 @@ fn collect_captures_walk(
             collect_captures_walk(left, param_ids, seen, captures, self_id);
             collect_captures_walk(right, param_ids, seen, captures, self_id);
         }
+        HirExprKind::Unary { operand, .. } => {
+            collect_captures_walk(operand, param_ids, seen, captures, self_id);
+        }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             collect_captures_walk(arg, param_ids, seen, captures, self_id);
@@ -9549,7 +10357,8 @@ fn collect_captures_walk(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             for arg in args {
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
@@ -9761,6 +10570,9 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(right, outer_bindings, seen, captures);
         }
+        HirExprKind::Unary { operand, .. } => {
+            collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
+        }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
@@ -9778,7 +10590,8 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             for arg in args {
                 collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
@@ -9964,6 +10777,9 @@ fn collect_general_closure_captures_walk_block(
                 collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => {
+                collect_general_closure_captures_walk(body, outer_bindings, seen, captures);
+            }
         }
     }
     if let Some(tail) = &block.tail {
@@ -9991,6 +10807,9 @@ fn collect_captures_walk_block(
                 collect_captures_walk(value, param_ids, seen, captures, self_id);
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => {
+                collect_captures_walk(body, param_ids, seen, captures, self_id);
+            }
         }
     }
     if let Some(tail) = &block.tail {
@@ -10331,6 +11150,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                         collect_hir_emitted_events_walk(value, event_names, out);
                     }
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                    HirStmtKind::Defer { body, .. } => {
+                        collect_hir_emitted_events_walk(body, event_names, out);
+                    }
                 }
             }
             if let Some(tail) = &block.tail {
@@ -10349,6 +11171,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                         collect_hir_emitted_events_walk(value, event_names, out);
                     }
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                    HirStmtKind::Defer { body, .. } => {
+                        collect_hir_emitted_events_walk(body, event_names, out);
+                    }
                 }
             }
             if let Some(tail) = &body.tail {
@@ -10373,6 +11198,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             collect_hir_emitted_events_walk(left, event_names, out);
             collect_hir_emitted_events_walk(right, event_names, out);
         }
+        HirExprKind::Unary { operand, .. } => {
+            collect_hir_emitted_events_walk(operand, event_names, out);
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_hir_emitted_events_walk(callee, event_names, out);
             for a in args {
@@ -10388,7 +11216,8 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         // Additional expression forms whose sub-expressions can contain emits.
         HirExprKind::ActorSend { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. } => {
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             collect_hir_emitted_events_walk(receiver, event_names, out);
             for a in args {
                 collect_hir_emitted_events_walk(a, event_names, out);
@@ -10422,6 +11251,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                         collect_hir_emitted_events_walk(value, event_names, out);
                     }
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                    HirStmtKind::Defer { body, .. } => {
+                        collect_hir_emitted_events_walk(body, event_names, out);
+                    }
                 }
             }
             if let Some(tail) = &body.tail {
@@ -10441,6 +11273,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                         collect_hir_emitted_events_walk(value, event_names, out);
                     }
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                    HirStmtKind::Defer { body, .. } => {
+                        collect_hir_emitted_events_walk(body, event_names, out);
+                    }
                 }
             }
             if let Some(tail) = &body.tail {
@@ -10460,6 +11295,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                         collect_hir_emitted_events_walk(value, event_names, out);
                     }
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                    HirStmtKind::Defer { body, .. } => {
+                        collect_hir_emitted_events_walk(body, event_names, out);
+                    }
                 }
             }
             if let Some(tail) = &body.tail {
@@ -10482,6 +11320,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                         collect_hir_emitted_events_walk(value, event_names, out);
                     }
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                    HirStmtKind::Defer { body, .. } => {
+                        collect_hir_emitted_events_walk(body, event_names, out);
+                    }
                 }
             }
             if let Some(tail) = &body.tail {
@@ -10503,6 +11344,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                         collect_hir_emitted_events_walk(value, event_names, out);
                     }
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                    HirStmtKind::Defer { body, .. } => {
+                        collect_hir_emitted_events_walk(body, event_names, out);
+                    }
                 }
             }
             if let Some(tail) = &body.tail {
@@ -10831,7 +11675,32 @@ fn check_wasm_blocking_recv_gate(ctx: &mut LowerCtx, program: &Program) {
                     scan_block_for_blocking_recv(&method.body, &mut ctx.diagnostics);
                 }
             }
-            // Const, Trait, Supervisor, Machine, Struct, Enum, Use, Module, etc.
+            // A242 invariant: HIR pre-pass walkers that visit user expression
+            // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
+            // FOUR Item::Machine positions:
+            //   1. each state's `entry` block
+            //   2. each state's `exit` block
+            //   3. each transition's `guard` expression (if any)
+            //   4. each transition's `body` expression (action)
+            // Partial coverage (e.g. transitions but not states) is a BLOCK in
+            // cross-eco review.
+            Item::Machine(machine) => {
+                for state in &machine.states {
+                    if let Some(entry) = &state.entry {
+                        scan_block_for_blocking_recv(entry, &mut ctx.diagnostics);
+                    }
+                    if let Some(exit) = &state.exit {
+                        scan_block_for_blocking_recv(exit, &mut ctx.diagnostics);
+                    }
+                }
+                for transition in &machine.transitions {
+                    if let Some(guard) = &transition.guard {
+                        scan_expr_for_blocking_recv(&guard.0, &mut ctx.diagnostics);
+                    }
+                    scan_expr_for_blocking_recv(&transition.body.0, &mut ctx.diagnostics);
+                }
+            }
+            // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc.
             // do not carry user expression bodies that can call `.recv()`.
             _ => {}
         }
@@ -11148,9 +12017,158 @@ fn check_task_gates(ctx: &mut LowerCtx, program: &Program) {
                     scan_block_for_task_gates(&method.body, ctx, program);
                 }
             }
-            // Const, Trait, Supervisor, Machine, Struct, Enum, Use, Module, etc.
+            // A242 invariant: HIR pre-pass walkers that visit user expression
+            // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
+            // FOUR Item::Machine positions:
+            //   1. each state's `entry` block
+            //   2. each state's `exit` block
+            //   3. each transition's `guard` expression (if any)
+            //   4. each transition's `body` expression (action)
+            // Partial coverage (e.g. transitions but not states) is a BLOCK in
+            // cross-eco review.
+            Item::Machine(machine) => {
+                for state in &machine.states {
+                    if let Some(entry) = &state.entry {
+                        scan_block_for_task_gates(entry, ctx, program);
+                    }
+                    if let Some(exit) = &state.exit {
+                        scan_block_for_task_gates(exit, ctx, program);
+                    }
+                }
+                for transition in &machine.transitions {
+                    if let Some(guard) = &transition.guard {
+                        scan_expr_for_task_gates(&guard.0, &guard.1, ctx, program);
+                    }
+                    scan_expr_for_task_gates(&transition.body.0, &transition.body.1, ctx, program);
+                }
+            }
+            // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc.
             // do not carry user expression bodies with task spawns.
             _ => {}
+        }
+    }
+}
+
+// ── FC-P1-A3: Supervisor spawn args gate ─────────────────────────────────────
+
+/// Pre-pass that rejects `spawn AppSupervisor(...)` with non-empty init args.
+///
+/// Supervisors take their child specs declaratively (in the `supervisor`
+/// declaration body); spawn-time init args have no defined semantics. The
+/// checker already rejects supervisor *declarations* that take init params,
+/// but this HIR gate is defense-in-depth: it catches any future surface that
+/// could reach MIR (`hew-mir/src/lower.rs:8852`) before the checker guard does.
+///
+/// Per slepp A222 (fail-closed): surface a HIR fatal diagnostic at compile
+/// time instead of a `NotYetImplemented` runtime-style diagnostic at MIR-
+/// lowering time.
+/// Structured supervisor registry consumed by the spawn-args gate.
+///
+/// Replaces the FC-P1-A3 v1 single-`HashSet<String>` approach (which lost
+/// module context and produced both false negatives — `spawn other.Sup(args)`
+/// on an imported supervisor slipped through — and false positives —
+/// `spawn other.Root(args)` was rejected when the local `Root` was a
+/// supervisor but `other.Root` was an actor). The structured form preserves
+/// the spawn site's module qualifier so the lookup is module-scoped, matching
+/// the checker's own resolution discipline.
+///
+/// Discharges the A237 string-fragility pattern (see LESSONS
+/// `string-identifier-fragility-vs-structured-resolution`).
+struct SupervisorRegistry {
+    /// Supervisor names declared at the root program level. Consulted for
+    /// bare-identifier spawn targets (`spawn Sup(args)`).
+    root: std::collections::HashSet<String>,
+    /// Supervisor names declared in each imported module, keyed by the
+    /// module's short name (last path segment). Consulted for module-qualified
+    /// spawn targets (`spawn module.Sup(args)`).
+    by_module: std::collections::HashMap<String, std::collections::HashSet<String>>,
+}
+
+impl SupervisorRegistry {
+    /// True iff the program declares no supervisors anywhere (root or any
+    /// module). When true, the gate walk can short-circuit.
+    fn is_empty(&self) -> bool {
+        self.root.is_empty()
+            && self
+                .by_module
+                .values()
+                .all(std::collections::HashSet::is_empty)
+    }
+}
+
+/// Collect supervisor declarations from the root program AND every module in
+/// the program's `module_graph` (when present). Module-graph coverage is
+/// required to reject `spawn other.MyServiceSup(args)` for supervisors
+/// declared in imported modules.
+fn collect_supervisor_registry(program: &Program) -> SupervisorRegistry {
+    let mut root: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (item, _) in &program.items {
+        if let Item::Supervisor(decl) = item {
+            root.insert(decl.name.clone());
+        }
+    }
+    let mut by_module: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    if let Some(mg) = &program.module_graph {
+        for (mod_id, module) in &mg.modules {
+            if *mod_id == mg.root {
+                continue;
+            }
+            let module_short = mod_id.path.last().map_or("", String::as_str);
+            if module_short.is_empty() {
+                continue;
+            }
+            let entry = by_module.entry(module_short.to_string()).or_default();
+            for (item, _) in &module.items {
+                if let Item::Supervisor(decl) = item {
+                    entry.insert(decl.name.clone());
+                }
+            }
+        }
+    }
+    SupervisorRegistry { root, by_module }
+}
+
+fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
+    let registry = collect_supervisor_registry(program);
+    if registry.is_empty() {
+        // No supervisors declared anywhere → no spawn site can target one;
+        // skip the walk entirely.
+        return;
+    }
+
+    // Walk root items. `current_module = None` selects the root supervisor
+    // set for bare-name spawn targets.
+    for (item, _span) in &program.items {
+        scan_item_for_supervisor_spawn(item, None, &registry, &mut ctx.diagnostics);
+    }
+    // Walk every non-root module in the program's module graph. A supervisor
+    // spawn with args inside a function/actor/impl/machine body in an imported
+    // module must trigger the gate the same way the root does (A242: pre-pass
+    // walkers must visit every body-bearing position in every module they're
+    // logically scoped to, not just the root program).
+    //
+    // `current_module = Some(short_name)` scopes the bare-identifier lookup
+    // to that module's own supervisor set. Bare identifiers in module bodies
+    // resolve under the module's local scope (cf. checker's resolution
+    // rules — root names are NOT auto-imported into modules; a module wanting
+    // to spawn a root supervisor must reach it via a module-qualified path,
+    // which dispatches through `Expr::FieldAccess` below). Without this
+    // scoping we'd both (a) miss `spawn LocalSup(args)` inside an imported
+    // module whose `LocalSup` isn't declared at root (false-negative) and
+    // (b) reject `spawn Foo(args)` inside an imported module that happens
+    // to share a name with a root-declared supervisor even though the
+    // module's `Foo` is something else entirely (false-positive). Both
+    // failure modes are documented in the rev2 cross-eco finding.
+    if let Some(mg) = &program.module_graph {
+        for (mod_id, module) in &mg.modules {
+            if *mod_id == mg.root {
+                continue;
+            }
+            let module_short = mod_id.path.last().map(String::as_str);
+            for (item, _) in &module.items {
+                scan_item_for_supervisor_spawn(item, module_short, &registry, &mut ctx.diagnostics);
+            }
         }
     }
 }
@@ -12690,6 +13708,9 @@ fn build_callable_set(
     let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
     for entry in stdlib_catalog::entries() {
         set.insert(entry.name.to_string());
+        if let Some(symbol) = entry.linkage.runtime_symbol() {
+            set.insert(symbol.to_string());
+        }
     }
     for item in items {
         match item {
@@ -12799,10 +13820,108 @@ fn scan_block_for_call_shape(
                 scan_expr_for_call_shape(e, callable, diagnostics);
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => {
+                scan_expr_for_call_shape(body, callable, diagnostics);
+            }
         }
     }
     if let Some(tail) = &block.tail {
         scan_expr_for_call_shape(tail, callable, diagnostics);
+    }
+}
+
+/// Dispatch one `Item` to its body-bearing positions. Centralised so the
+/// root-items loop and the module-graph loop emit identical coverage, and so
+/// `Item::Machine`'s four positions (per A242) are handled in one place.
+fn scan_item_for_supervisor_spawn(
+    item: &Item,
+    current_module: Option<&str>,
+    registry: &SupervisorRegistry,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    match item {
+        Item::Function(fn_decl) => {
+            scan_block_for_supervisor_spawn(&fn_decl.body, current_module, registry, diagnostics);
+        }
+        Item::Actor(actor_decl) => {
+            if let Some(init) = &actor_decl.init {
+                scan_block_for_supervisor_spawn(&init.body, current_module, registry, diagnostics);
+            }
+            for recv_fn in &actor_decl.receive_fns {
+                scan_block_for_supervisor_spawn(
+                    &recv_fn.body,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+            for method in &actor_decl.methods {
+                scan_block_for_supervisor_spawn(
+                    &method.body,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+        }
+        Item::Impl(impl_decl) => {
+            for method in &impl_decl.methods {
+                scan_block_for_supervisor_spawn(
+                    &method.body,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+        }
+        // A242 invariant: HIR pre-pass walkers that visit user expression
+        // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
+        // FOUR Item::Machine positions:
+        //   1. each state's `entry` block
+        //   2. each state's `exit` block
+        //   3. each transition's `guard` expression (if any)
+        //   4. each transition's `body` expression (action)
+        // Partial coverage (e.g. transitions but not states) is a BLOCK in
+        // cross-eco review (6th instance documented this session).
+        Item::Machine(machine) => {
+            for state in &machine.states {
+                if let Some(entry) = &state.entry {
+                    scan_block_for_supervisor_spawn(entry, current_module, registry, diagnostics);
+                }
+                if let Some(exit) = &state.exit {
+                    scan_block_for_supervisor_spawn(exit, current_module, registry, diagnostics);
+                }
+            }
+            for transition in &machine.transitions {
+                if let Some(guard) = &transition.guard {
+                    scan_expr_for_supervisor_spawn(&guard.0, current_module, registry, diagnostics);
+                }
+                scan_expr_for_supervisor_spawn(
+                    &transition.body.0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+        }
+        // Const, Trait, Supervisor, Record, TypeDecl, TypeAlias, Wire,
+        // Import, ExternBlock: no user expression bodies that can call
+        // `spawn`.
+        _ => {}
+    }
+}
+
+fn scan_block_for_supervisor_spawn(
+    block: &hew_parser::ast::Block,
+    current_module: Option<&str>,
+    registry: &SupervisorRegistry,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for (stmt, _) in &block.stmts {
+        scan_stmt_for_supervisor_spawn(stmt, current_module, registry, diagnostics);
+    }
+    if let Some(trailing) = &block.trailing_expr {
+        scan_expr_for_supervisor_spawn(&trailing.0, current_module, registry, diagnostics);
     }
 }
 
@@ -12886,6 +14005,9 @@ fn scan_expr_for_call_shape(
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             scan_expr_for_call_shape(left, callable, diagnostics);
             scan_expr_for_call_shape(right, callable, diagnostics);
+        }
+        HirExprKind::Unary { operand, .. } => {
+            scan_expr_for_call_shape(operand, callable, diagnostics);
         }
         HirExprKind::Spawn { args, .. } => {
             for (_, v) in args {
@@ -12989,7 +14111,8 @@ fn scan_expr_for_call_shape(
         HirExprKind::CoerceToDynTrait { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
-        HirExprKind::CallDynMethod { receiver, args, .. } => {
+        HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             for a in args {
                 scan_expr_for_call_shape(a, callable, diagnostics);
@@ -13059,6 +14182,866 @@ fn scan_expr_for_call_shape(
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
     }
+}
+
+#[allow(
+    clippy::match_same_arms,
+    reason = "explicit per-Stmt-variant arms read more clearly than collapsed or-patterns for this walker"
+)]
+fn scan_stmt_for_supervisor_spawn(
+    stmt: &hew_parser::ast::Stmt,
+    current_module: Option<&str>,
+    registry: &SupervisorRegistry,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    match stmt {
+        Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
+            scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+        }
+        Stmt::Assign { target, value, .. } => {
+            scan_expr_for_supervisor_spawn(&target.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&value.0, current_module, registry, diagnostics);
+        }
+        Stmt::Expression(e) => {
+            scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+        }
+        Stmt::Return(Some(e)) => {
+            scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+        }
+        Stmt::Defer(e) => {
+            scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+        }
+        Stmt::Break { value: Some(v), .. } => {
+            scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            scan_expr_for_supervisor_spawn(&condition.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(then_block, current_module, registry, diagnostics);
+            if let Some(eb) = else_block {
+                scan_else_block_for_supervisor_spawn(eb, current_module, registry, diagnostics);
+            }
+        }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+            if let Some(eb) = else_body {
+                scan_block_for_supervisor_spawn(eb, current_module, registry, diagnostics);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            scan_expr_for_supervisor_spawn(&scrutinee.0, current_module, registry, diagnostics);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_supervisor_spawn(&g.0, current_module, registry, diagnostics);
+                }
+                scan_expr_for_supervisor_spawn(&arm.body.0, current_module, registry, diagnostics);
+            }
+        }
+        Stmt::Loop { body, .. } => {
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+        }
+        Stmt::For { iterable, body, .. } => {
+            scan_expr_for_supervisor_spawn(&iterable.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            scan_expr_for_supervisor_spawn(&condition.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+        }
+        // Stmt::Break, Stmt::Continue, Stmt::Return(None), and other leaf
+        // statements carry no sub-expression to scan.
+        _ => {}
+    }
+}
+
+fn scan_else_block_for_supervisor_spawn(
+    eb: &hew_parser::ast::ElseBlock,
+    current_module: Option<&str>,
+    registry: &SupervisorRegistry,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    if let Some(stmt) = &eb.if_stmt {
+        scan_stmt_for_supervisor_spawn(&stmt.0, current_module, registry, diagnostics);
+    }
+    if let Some(b) = &eb.block {
+        scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
+    }
+}
+
+/// Recursively walk an expression tree looking for `Expr::Spawn` whose target
+/// names a known supervisor and whose args list is non-empty.
+///
+/// `current_module` scopes bare-identifier resolution: `None` for root-program
+/// bodies, `Some(short_name)` for non-root module bodies. The supervisor set
+/// consulted for a bare `spawn Name(args)` is the set the checker would use
+/// when resolving that bare identifier — root's set at root, the module's own
+/// set in a module body. Module-qualified `spawn mod.Name(args)` always
+/// consults `mod`'s set regardless of `current_module`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive Expr-variant walker mirrors scan_expr_for_blocking_recv above"
+)]
+fn scan_expr_for_supervisor_spawn(
+    expr: &Expr,
+    current_module: Option<&str>,
+    registry: &SupervisorRegistry,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    match expr {
+        Expr::Spawn { target, args } => {
+            // Module-scoped supervisor lookup.
+            //
+            // Two recognised spawn-target surface forms carry different
+            // module qualifiers; the gate must consult the *correct*
+            // module's supervisor set — not a flat union — to avoid both
+            // false negatives (a module-local supervisor slipping through
+            // because the root has no same-named supervisor) and false
+            // positives (a root supervisor name rejecting an unrelated
+            // module-local actor that happens to share the name).
+            //
+            //   bare `spawn Sup(args)` at root            → root supervisors
+            //   bare `spawn Sup(args)` in module `M`      → M's supervisors
+            //   `spawn mod.Sup(args)` (anywhere)          → mod's supervisors
+            //
+            // Bare identifiers in module bodies resolve against the module's
+            // own scope; root names are not auto-imported, so falling back
+            // to root's set would generate false positives. A module that
+            // intends to spawn a root supervisor must reach it via a
+            // module-qualified path, which dispatches through the
+            // `Expr::FieldAccess` arm below. Discharges A237 / LESSONS
+            // `string-identifier-fragility-vs-structured-resolution` and
+            // the rev2 cross-eco finding on module-context threading.
+            let resolved: Option<&str> = match &target.0 {
+                Expr::Identifier(name) => {
+                    let set = match current_module {
+                        Some(m) => registry.by_module.get(m),
+                        None => Some(&registry.root),
+                    };
+                    set.and_then(|s| s.get(name).map(String::as_str))
+                }
+                Expr::FieldAccess { object, field } => {
+                    if let Expr::Identifier(module) = &object.0 {
+                        registry
+                            .by_module
+                            .get(module)
+                            .and_then(|set| set.get(field).map(String::as_str))
+                    } else {
+                        // Non-`Identifier` object (e.g. `foo().Sup`) is not a
+                        // module-qualified spawn; the checker would already
+                        // reject this shape upstream, so the gate stays
+                        // silent here.
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(name) = resolved {
+                if !args.is_empty() {
+                    diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::SupervisorSpawnArgsUnsupported {
+                            supervisor_name: name.to_string(),
+                        },
+                        target.1.clone(),
+                        format!(
+                            "supervisor `{name}` cannot be spawned with init args: \
+                             supervisors take their child specs declaratively in the \
+                             `supervisor` body; spawn-time init args have no defined \
+                             semantics. Use `spawn {name}` with no arguments."
+                        ),
+                    ));
+                }
+            }
+            // Recurse into target + args so a nested supervisor spawn inside
+            // an arg expression is also caught.
+            scan_expr_for_supervisor_spawn(&target.0, current_module, registry, diagnostics);
+            for (_, v) in args {
+                scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            scan_expr_for_supervisor_spawn(&receiver.0, current_module, registry, diagnostics);
+            for arg in args {
+                scan_expr_for_supervisor_spawn(
+                    &arg.expr().0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+        }
+        Expr::Call { function, args, .. } => {
+            scan_expr_for_supervisor_spawn(&function.0, current_module, registry, diagnostics);
+            for arg in args {
+                scan_expr_for_supervisor_spawn(
+                    &arg.expr().0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            scan_expr_for_supervisor_spawn(&left.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&right.0, current_module, registry, diagnostics);
+        }
+        Expr::Unary { operand, .. } => {
+            scan_expr_for_supervisor_spawn(&operand.0, current_module, registry, diagnostics);
+        }
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+            for e in es {
+                scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            scan_expr_for_supervisor_spawn(&value.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&count.0, current_module, registry, diagnostics);
+        }
+        Expr::Block(b)
+        | Expr::Scope { body: b }
+        | Expr::ForkBlock { body: b }
+        | Expr::GenBlock { body: b } => {
+            scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
+        }
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+            ..
+        } => {
+            scan_expr_for_supervisor_spawn(&condition.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&then_block.0, current_module, registry, diagnostics);
+            if let Some(e) = else_block {
+                scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+            if let Some(b) = else_body {
+                scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            scan_expr_for_supervisor_spawn(&scrutinee.0, current_module, registry, diagnostics);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_supervisor_spawn(&g.0, current_module, registry, diagnostics);
+                }
+                scan_expr_for_supervisor_spawn(&arm.body.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            scan_expr_for_supervisor_spawn(&body.0, current_module, registry, diagnostics);
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            scan_expr_for_supervisor_spawn(&duration.0, current_module, registry, diagnostics);
+            scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
+        }
+        Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
+            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+        }
+        Expr::StructInit { fields, base, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+            }
+            if let Some(b) = base {
+                scan_expr_for_supervisor_spawn(&b.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                scan_expr_for_supervisor_spawn(&k.0, current_module, registry, diagnostics);
+                scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let hew_parser::ast::StringPart::Expr(e) = part {
+                    scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+                }
+            }
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                scan_expr_for_supervisor_spawn(
+                    &arm.source.0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+                scan_expr_for_supervisor_spawn(&arm.body.0, current_module, registry, diagnostics);
+            }
+            if let Some(t) = timeout {
+                scan_expr_for_supervisor_spawn(
+                    &t.duration.0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
+                scan_expr_for_supervisor_spawn(&t.body.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::Timeout { expr, duration } => {
+            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&duration.0, current_module, registry, diagnostics);
+        }
+        Expr::UnsafeBlock(b) => {
+            scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
+        }
+        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
+            scan_expr_for_supervisor_spawn(&object.0, current_module, registry, diagnostics);
+        }
+        Expr::Index { object, index } => {
+            scan_expr_for_supervisor_spawn(&object.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&index.0, current_module, registry, diagnostics);
+        }
+        Expr::Is { lhs, rhs } => {
+            scan_expr_for_supervisor_spawn(&lhs.0, current_module, registry, diagnostics);
+            scan_expr_for_supervisor_spawn(&rhs.0, current_module, registry, diagnostics);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                scan_expr_for_supervisor_spawn(&s.0, current_module, registry, diagnostics);
+            }
+            if let Some(e) = end {
+                scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::Yield(Some(e)) => {
+            scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+        }
+        Expr::MachineEmit { fields, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
+            }
+        }
+        // Leaf nodes (Identifier, literals, etc.) and any other Expr variant
+        // without sub-expressions: nothing to scan.
+        _ => {}
+    }
+}
+
+// ── FC-P1-E: Vec<T> index/slice element-type gates ──────────────────────────
+//
+// MIR `lower_vec_index` (sites :7265) and `lower_vec_slice` (site :7384)
+// already reject unsupported element types via `MirDiagnosticKind::NotYetImplemented`,
+// but the diagnostic surfaces deep in MIR and codegen has historically been
+// liable to drop downstream expressions when a sub-expression fails to lower.
+// Fail-closed per slepp A222 ("compile-time diagnostic, not runtime surprise")
+// and A228 ("no silent no-op stubs"): catch the unsupported case at the HIR
+// boundary so the user sees a clean diagnostic before any lowering work runs.
+//
+// Walker shape mirrors `check_wasm_blocking_recv_gate` (above), with the
+// difference that we walk `Spanned<Expr>` instead of bare `Expr` because the
+// gate needs the object's span (to query the checker's `expr_types`
+// side-table) and the surrounding `Expr::Index` span (for the diagnostic
+// location).
+//
+// The gate is target-independent: the runtime ABI lacks
+// `hew_vec_get_T` / `hew_vec_slice_range_T` for the rejected element types
+// on every target.
+
+fn check_vec_index_element_type_gates(ctx: &mut LowerCtx, program: &Program) {
+    // Field-split borrow: `expr_types` is read-only; `diagnostics` is appended.
+    let expr_types = &ctx.expr_types;
+    let diagnostics = &mut ctx.diagnostics;
+    for (item, _span) in &program.items {
+        scan_item_for_vec_index_gate(item, expr_types, diagnostics);
+    }
+}
+
+fn scan_item_for_vec_index_gate(
+    item: &Item,
+    expr_types: &HashMap<SpanKey, Ty>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    match item {
+        Item::Function(fn_decl) => {
+            scan_block_for_vec_index_gate(&fn_decl.body, expr_types, diagnostics);
+        }
+        Item::Actor(actor_decl) => {
+            if let Some(init) = &actor_decl.init {
+                scan_block_for_vec_index_gate(&init.body, expr_types, diagnostics);
+            }
+            for recv_fn in &actor_decl.receive_fns {
+                scan_block_for_vec_index_gate(&recv_fn.body, expr_types, diagnostics);
+            }
+            for method in &actor_decl.methods {
+                scan_block_for_vec_index_gate(&method.body, expr_types, diagnostics);
+            }
+        }
+        Item::Impl(impl_decl) => {
+            for method in &impl_decl.methods {
+                scan_block_for_vec_index_gate(&method.body, expr_types, diagnostics);
+            }
+        }
+        Item::Machine(machine_decl) => {
+            // Machine walkers must cover all four user-expression positions:
+            // state entry, state exit, transition guard, transition body.
+            // Skipping any of state.entry / state.exit lets unsupported
+            // `Vec<T>` index/slice expressions slip past this gate (see
+            // `.tmp/orchestration/dispatch-invariants.md` →
+            // `machine-body-walker-coverage`).
+            for state in &machine_decl.states {
+                if let Some(entry) = &state.entry {
+                    scan_block_for_vec_index_gate(entry, expr_types, diagnostics);
+                }
+                if let Some(exit) = &state.exit {
+                    scan_block_for_vec_index_gate(exit, expr_types, diagnostics);
+                }
+            }
+            for transition in &machine_decl.transitions {
+                if let Some(guard) = &transition.guard {
+                    scan_expr_for_vec_index_gate(guard, expr_types, diagnostics);
+                }
+                scan_expr_for_vec_index_gate(&transition.body, expr_types, diagnostics);
+            }
+        }
+        // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc. do not
+        // carry user expression bodies that can contain `Expr::Index`.
+        _ => {}
+    }
+}
+
+fn scan_block_for_vec_index_gate(
+    block: &Block,
+    expr_types: &HashMap<SpanKey, Ty>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for (stmt, _) in &block.stmts {
+        scan_stmt_for_vec_index_gate(stmt, expr_types, diagnostics);
+    }
+    if let Some(trailing) = &block.trailing_expr {
+        scan_expr_for_vec_index_gate(trailing, expr_types, diagnostics);
+    }
+}
+
+#[allow(
+    clippy::match_same_arms,
+    reason = "explicit per-Stmt-variant arms mirror scan_stmt_for_blocking_recv for review symmetry"
+)]
+fn scan_stmt_for_vec_index_gate(
+    stmt: &Stmt,
+    expr_types: &HashMap<SpanKey, Ty>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    match stmt {
+        Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
+            scan_expr_for_vec_index_gate(v, expr_types, diagnostics);
+        }
+        Stmt::Assign { target, value, .. } => {
+            scan_expr_for_vec_index_gate(target, expr_types, diagnostics);
+            scan_expr_for_vec_index_gate(value, expr_types, diagnostics);
+        }
+        Stmt::Expression(e) => {
+            scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
+        }
+        Stmt::Return(Some(e)) => {
+            scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
+        }
+        Stmt::Defer(e) => {
+            scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
+        }
+        Stmt::Break { value: Some(v), .. } => {
+            scan_expr_for_vec_index_gate(v, expr_types, diagnostics);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+            scan_block_for_vec_index_gate(body, expr_types, diagnostics);
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            scan_expr_for_vec_index_gate(condition, expr_types, diagnostics);
+            scan_block_for_vec_index_gate(then_block, expr_types, diagnostics);
+            if let Some(eb) = else_block {
+                scan_else_block_for_vec_index_gate(eb, expr_types, diagnostics);
+            }
+        }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+            scan_block_for_vec_index_gate(body, expr_types, diagnostics);
+            if let Some(eb) = else_body {
+                scan_block_for_vec_index_gate(eb, expr_types, diagnostics);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            scan_expr_for_vec_index_gate(scrutinee, expr_types, diagnostics);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_vec_index_gate(g, expr_types, diagnostics);
+                }
+                scan_expr_for_vec_index_gate(&arm.body, expr_types, diagnostics);
+            }
+        }
+        Stmt::Loop { body, .. } => {
+            scan_block_for_vec_index_gate(body, expr_types, diagnostics);
+        }
+        Stmt::For { iterable, body, .. } => {
+            scan_expr_for_vec_index_gate(iterable, expr_types, diagnostics);
+            scan_block_for_vec_index_gate(body, expr_types, diagnostics);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            scan_expr_for_vec_index_gate(condition, expr_types, diagnostics);
+            scan_block_for_vec_index_gate(body, expr_types, diagnostics);
+        }
+        // Stmt::Break (no value), Stmt::Continue, Stmt::Return(None), and
+        // any other leaf statements carry no sub-expression to scan.
+        _ => {}
+    }
+}
+
+fn scan_else_block_for_vec_index_gate(
+    eb: &hew_parser::ast::ElseBlock,
+    expr_types: &HashMap<SpanKey, Ty>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    if let Some(stmt) = &eb.if_stmt {
+        scan_stmt_for_vec_index_gate(&stmt.0, expr_types, diagnostics);
+    }
+    if let Some(b) = &eb.block {
+        scan_block_for_vec_index_gate(b, expr_types, diagnostics);
+    }
+}
+
+/// Recursively walk a `Spanned<Expr>` tree, gating `Vec<T>` `Expr::Index`
+/// nodes whose element type `T` is not in the runtime ABI's supported set.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive Expr-variant walker mirrors scan_expr_for_blocking_recv above"
+)]
+fn scan_expr_for_vec_index_gate(
+    expr: &Spanned<Expr>,
+    expr_types: &HashMap<SpanKey, Ty>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    let (kind, span) = expr;
+    match kind {
+        Expr::Index { object, index } => {
+            check_vec_index_element_type(object, index, span, expr_types, diagnostics);
+            // Recurse into sub-expressions: an `xs[ys[i]]` form must gate
+            // `ys[i]` even if `xs[..]` is supported, and vice versa.
+            scan_expr_for_vec_index_gate(object, expr_types, diagnostics);
+            scan_expr_for_vec_index_gate(index, expr_types, diagnostics);
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            scan_expr_for_vec_index_gate(receiver, expr_types, diagnostics);
+            for arg in args {
+                scan_expr_for_vec_index_gate(arg.expr(), expr_types, diagnostics);
+            }
+        }
+        Expr::Call { function, args, .. } => {
+            scan_expr_for_vec_index_gate(function, expr_types, diagnostics);
+            for arg in args {
+                scan_expr_for_vec_index_gate(arg.expr(), expr_types, diagnostics);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            scan_expr_for_vec_index_gate(left, expr_types, diagnostics);
+            scan_expr_for_vec_index_gate(right, expr_types, diagnostics);
+        }
+        Expr::Unary { operand, .. } => {
+            scan_expr_for_vec_index_gate(operand, expr_types, diagnostics);
+        }
+        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+            for e in es {
+                scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            scan_expr_for_vec_index_gate(value, expr_types, diagnostics);
+            scan_expr_for_vec_index_gate(count, expr_types, diagnostics);
+        }
+        Expr::Block(b)
+        | Expr::Scope { body: b }
+        | Expr::ForkBlock { body: b }
+        | Expr::GenBlock { body: b } => {
+            scan_block_for_vec_index_gate(b, expr_types, diagnostics);
+        }
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+            ..
+        } => {
+            scan_expr_for_vec_index_gate(condition, expr_types, diagnostics);
+            scan_expr_for_vec_index_gate(then_block, expr_types, diagnostics);
+            if let Some(e) = else_block {
+                scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
+            }
+        }
+        Expr::IfLet {
+            expr: cond,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_vec_index_gate(cond, expr_types, diagnostics);
+            scan_block_for_vec_index_gate(body, expr_types, diagnostics);
+            if let Some(b) = else_body {
+                scan_block_for_vec_index_gate(b, expr_types, diagnostics);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            scan_expr_for_vec_index_gate(scrutinee, expr_types, diagnostics);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_for_vec_index_gate(g, expr_types, diagnostics);
+                }
+                scan_expr_for_vec_index_gate(&arm.body, expr_types, diagnostics);
+            }
+        }
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            scan_expr_for_vec_index_gate(body, expr_types, diagnostics);
+        }
+        Expr::Spawn { target, args } => {
+            scan_expr_for_vec_index_gate(target, expr_types, diagnostics);
+            for (_, v) in args {
+                scan_expr_for_vec_index_gate(v, expr_types, diagnostics);
+            }
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            scan_expr_for_vec_index_gate(duration, expr_types, diagnostics);
+            scan_block_for_vec_index_gate(body, expr_types, diagnostics);
+        }
+        Expr::ForkChild { expr: inner, .. } | Expr::Cast { expr: inner, .. } => {
+            scan_expr_for_vec_index_gate(inner, expr_types, diagnostics);
+        }
+        Expr::StructInit { fields, base, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_vec_index_gate(v, expr_types, diagnostics);
+            }
+            if let Some(b) = base {
+                scan_expr_for_vec_index_gate(b, expr_types, diagnostics);
+            }
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                scan_expr_for_vec_index_gate(k, expr_types, diagnostics);
+                scan_expr_for_vec_index_gate(v, expr_types, diagnostics);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let hew_parser::ast::StringPart::Expr(e) = part {
+                    scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
+                }
+            }
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                scan_expr_for_vec_index_gate(&arm.source, expr_types, diagnostics);
+                scan_expr_for_vec_index_gate(&arm.body, expr_types, diagnostics);
+            }
+            if let Some(t) = timeout {
+                scan_expr_for_vec_index_gate(&t.duration, expr_types, diagnostics);
+                scan_expr_for_vec_index_gate(&t.body, expr_types, diagnostics);
+            }
+        }
+        Expr::Timeout {
+            expr: inner,
+            duration,
+        } => {
+            scan_expr_for_vec_index_gate(inner, expr_types, diagnostics);
+            scan_expr_for_vec_index_gate(duration, expr_types, diagnostics);
+        }
+        Expr::UnsafeBlock(b) => scan_block_for_vec_index_gate(b, expr_types, diagnostics),
+        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
+            scan_expr_for_vec_index_gate(object, expr_types, diagnostics);
+        }
+        Expr::Is { lhs, rhs } => {
+            scan_expr_for_vec_index_gate(lhs, expr_types, diagnostics);
+            scan_expr_for_vec_index_gate(rhs, expr_types, diagnostics);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                scan_expr_for_vec_index_gate(s, expr_types, diagnostics);
+            }
+            if let Some(e) = end {
+                scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
+            }
+        }
+        Expr::Yield(Some(e)) => scan_expr_for_vec_index_gate(e, expr_types, diagnostics),
+        Expr::MachineEmit { fields, .. } => {
+            for (_, v) in fields {
+                scan_expr_for_vec_index_gate(v, expr_types, diagnostics);
+            }
+        }
+        // Leaf nodes (Identifier, literals, etc.) and any other Expr variant
+        // without sub-expressions: nothing to scan.
+        _ => {}
+    }
+}
+
+/// Render a `ResolvedTy` for the user-facing diagnostic. Keep the textual
+/// form compact (`bool`, `char`, `Vec<i32>`, `Foo`) so the diagnostic reads
+/// naturally; do not use `{:?}` because that leaks variant punctuation
+/// (`I32`, `Named { name: "Foo", args: [] }`, etc.).
+fn render_elem_ty(ty: &ResolvedTy) -> String {
+    match ty {
+        ResolvedTy::Bool => "bool".to_string(),
+        ResolvedTy::Char => "char".to_string(),
+        ResolvedTy::I8 => "i8".to_string(),
+        ResolvedTy::U8 => "u8".to_string(),
+        ResolvedTy::I16 => "i16".to_string(),
+        ResolvedTy::U16 => "u16".to_string(),
+        ResolvedTy::I32 => "i32".to_string(),
+        ResolvedTy::U32 => "u32".to_string(),
+        ResolvedTy::I64 => "i64".to_string(),
+        ResolvedTy::U64 => "u64".to_string(),
+        ResolvedTy::Isize => "isize".to_string(),
+        ResolvedTy::Usize => "usize".to_string(),
+        ResolvedTy::F32 => "f32".to_string(),
+        ResolvedTy::F64 => "f64".to_string(),
+        ResolvedTy::String => "String".to_string(),
+        ResolvedTy::Unit => "()".to_string(),
+        ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
+        ResolvedTy::Named { name, args, .. } => {
+            let arg_list = args
+                .iter()
+                .map(render_elem_ty)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{name}<{arg_list}>")
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+fn check_vec_index_element_type(
+    object: &Spanned<Expr>,
+    index: &Spanned<Expr>,
+    index_expr_span: &Span,
+    expr_types: &HashMap<SpanKey, Ty>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    // Look up the container type at the object's span. If absent, the
+    // checker already emitted an error for this expression (e.g. indexing
+    // into a non-Vec) — defer to that diagnostic and skip the gate.
+    let Some(container_ty) = expr_types.get(&SpanKey::from(&object.1)) else {
+        return;
+    };
+    let Ok(resolved) = ResolvedTy::from_ty(container_ty) else {
+        // Boundary violation upstream; do not double-report.
+        return;
+    };
+    let elem_ty = match &resolved {
+        ResolvedTy::Named { name, args, .. } if name == "Vec" && !args.is_empty() => {
+            args[0].clone()
+        }
+        // Not a Vec<T>: this might be a user-defined type with an `at` method
+        // (the HIR lower handles that path) or an array literal (separate
+        // lowering). The gate only governs Vec<T> runtime ABI dispatch.
+        _ => return,
+    };
+
+    let is_range_slice = matches!(&index.0, Expr::Range { .. });
+
+    // Allowlists track the runtime ABI dispatch arms in
+    // `hew-mir/src/lower.rs::lower_vec_index` (scalar) and
+    // `lower_vec_slice` (range). Keep these in sync with any new
+    // `hew_vec_get_T` / `hew_vec_slice_range_T` symbol added to the
+    // runtime.
+    let is_supported = if is_range_slice {
+        matches!(
+            elem_ty,
+            ResolvedTy::I32
+                | ResolvedTy::U32
+                | ResolvedTy::I64
+                | ResolvedTy::U64
+                | ResolvedTy::F64
+                | ResolvedTy::String
+                | ResolvedTy::Named { .. }
+        )
+    } else {
+        matches!(
+            elem_ty,
+            ResolvedTy::I32
+                | ResolvedTy::U32
+                | ResolvedTy::I64
+                | ResolvedTy::U64
+                | ResolvedTy::F64
+                | ResolvedTy::Named { .. }
+        )
+    };
+
+    if is_supported {
+        return;
+    }
+
+    let rendered = render_elem_ty(&elem_ty);
+    let (kind, note) = if is_range_slice {
+        (
+            HirDiagnosticKind::VecSliceElementTypeUnsupported {
+                element_ty: rendered.clone(),
+            },
+            format!(
+                "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
+                 Supported element types for Vec range-slicing are: \
+                 i32, u32, i64, u64, f64, String, and user-defined types \
+                 (records, enums, Duplex, etc.). \
+                 Vec<bool> and Vec<char> will be added in a future \
+                 width-normalisation slice."
+            ),
+        )
+    } else {
+        (
+            HirDiagnosticKind::VecIndexElementTypeUnsupported {
+                element_ty: rendered.clone(),
+            },
+            if matches!(elem_ty, ResolvedTy::String) {
+                format!(
+                    "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
+                     Supported element types for Vec scalar indexing are: \
+                     i32, u32, i64, u64, f64, and user-defined types \
+                     (records, enums, Duplex, etc.). \
+                     Vec<String> requires a strdup-aware getter and will be \
+                     added in a follow-on slice; as a workaround, use a \
+                     range-slice to extract a single-element Vec: \
+                     `let single = strings[i..i+1];`"
+                )
+            } else {
+                format!(
+                    "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
+                     Supported element types for Vec scalar indexing are: \
+                     i32, u32, i64, u64, f64, and user-defined types \
+                     (records, enums, Duplex, etc.). \
+                     Vec<bool> and Vec<char> will be added in a future \
+                     width-normalisation slice."
+                )
+            },
+        )
+    };
+    diagnostics.push(HirDiagnostic::new(kind, index_expr_span.clone(), note));
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -13739,6 +15722,7 @@ mod tests {
                     == vec![ResolvedTy::Named {
                         name: "Option".to_string(),
                         args: vec![ResolvedTy::I64],
+                        builtin: None,
                     }]
         });
 
@@ -13793,7 +15777,8 @@ mod tests {
         });
 
         let mut sites: Vec<(String, SiteId)> = Vec::new();
-        collect_call_sites_in_expr(&emit_expr, &mut sites);
+        let mut trait_sites: Vec<TraitMethodStaticSite> = Vec::new();
+        collect_call_sites_in_expr(&emit_expr, &mut sites, &mut trait_sites);
 
         assert!(
             sites.iter().any(|(name, _)| name == "call_some_fn"),

@@ -55,9 +55,9 @@ use hew_hir::{mangle, HirRestartPolicy, HirSupervisorStrategy};
 use hew_mir::{
     validate_context_markers, ActorLayout, CheckedMirFunction, CmpPred, CooperateKind,
     CooperateSite, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
-    FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, MachineLayout,
-    MachineVariantLayout, Place, RawMirFunction, RecordLayout, RegexLiteral, SupervisorChildLayout,
-    SupervisorLayout, Terminator, TrapKind,
+    FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline, MachineLayout,
+    MachineVariantLayout, Place, RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind,
+    SupervisorChildLayout, SupervisorLayout, Terminator, TrapKind,
 };
 use hew_types::{NumericWidth, ResolvedTy};
 
@@ -117,6 +117,8 @@ pub enum CodegenError {
     FailClosed(String),
     /// `Module::verify()` rejected the emitted module.
     LlvmVerify(String),
+    /// LLVM target lookup / target-machine setup failed for a concrete triple.
+    TargetSetup { triple: String, reason: String },
     /// `wasm-ld` / `rust-lld` invocation failed.
     Link(String),
     /// File I/O error.
@@ -136,14 +138,36 @@ impl std::fmt::Display for CodegenError {
             Self::Unsupported(s) => write!(f, "unsupported construct: {s}"),
             Self::FailClosed(s) => write!(f, "fail-closed: {s}"),
             Self::LlvmVerify(s) => write!(f, "llvm verify rejected module: {s}"),
+            Self::TargetSetup { triple, reason } => {
+                write!(f, "target setup for `{triple}` failed: {reason}")
+            }
             Self::Link(s) => write!(f, "link: {s}"),
             Self::Io(e) => write!(f, "io: {e}"),
-            Self::WasmUnsupportedSubstrate { symbol } => write!(
-                f,
-                "WASM target does not support the duplex concurrency substrate \
-                 (symbol: {symbol}; WASM-TODO(#1451)); omit the WASM target to \
-                 produce a native binary instead"
-            ),
+            Self::WasmUnsupportedSubstrate { symbol } => {
+                // Map the offending symbol prefix to a user-facing construct label
+                // and tracking-issue note. Defence in depth — typecheck rejects
+                // most cases earlier (see `hew-types/src/check/expressions.rs`),
+                // but this codegen-level diagnostic must still be specific.
+                let (construct, tracking) = if symbol.starts_with("hew_duplex_") {
+                    ("the `Duplex` channel substrate", "WASM-TODO(#1451)")
+                } else if symbol.starts_with("hew_supervisor_") {
+                    ("the supervisor restart machinery", "WASM-TODO(#1475)")
+                } else if symbol.starts_with("hew_task_scope_") {
+                    (
+                        "the `scope {}` structured-concurrency substrate",
+                        "WASM-TODO(#1451)",
+                    )
+                } else if symbol == "hew_tcp_stream_from_conn" {
+                    ("the TCP transport substrate", "WASM-TODO(#1451)")
+                } else {
+                    ("a native-only runtime substrate", "WASM-TODO(#1451)")
+                };
+                write!(
+                    f,
+                    "WASM target does not support {construct} (symbol: {symbol}; \
+                     {tracking}); omit the WASM target to produce a native binary instead"
+                )
+            }
         }
     }
 }
@@ -254,6 +278,55 @@ pub fn emit_module(
     Ok(artefacts)
 }
 
+/// In-process codegen-front verifier: build and LLVM-verify the module for
+/// `pipeline` without writing any artefact to disk, linking, or running any
+/// external process.
+///
+/// Useful for `hew check` and similar tooling that needs to surface
+/// deterministic codegen-front failures (unsupported constructs, LLVM IR
+/// invariant violations, target-machine failures) without the side-effects
+/// of full emission.
+///
+/// # Contract
+///
+/// - Acquires the same `llvm_codegen_lock` used by object emission so
+///   concurrent calls are safe.
+/// - Selects the same host-native triple as native object emission and runs
+///   target-specific pre-link substrate scans before lowering.
+/// - Target initialisation and host-triple machine construction failures
+///   surface as [`CodegenError::TargetSetup`], never as panics or silent
+///   fallbacks.
+/// - `Module::verify()` runs inside [`build_module_for_target`]; a
+///   rejection surfaces as [`CodegenError::LlvmVerify`].
+/// - No files are created. No linker or external process is invoked.
+///
+/// # Errors
+///
+/// Returns `Err(CodegenError)` if any function declares an unsupported
+/// construct, a codegen invariant is violated, target initialisation fails, a
+/// target-specific pre-link scan rejects the MIR, or `Module::verify()` rejects
+/// the emitted IR.
+pub fn validate_codegen_front(pipeline: &IrPipeline) -> CodegenResult<()> {
+    validate_codegen_front_with_name(pipeline, "__hew_codegen_front_verify__")
+}
+
+/// Compatibility name kept for early callers of the Stage 4 verifier API.
+pub fn verify_pipeline(pipeline: &IrPipeline) -> CodegenResult<()> {
+    validate_codegen_front(pipeline)
+}
+
+fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) -> CodegenResult<()> {
+    let _guard = llvm_codegen_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let triple = native_emission_triple();
+    validate_target_substrate(pipeline, &triple)?;
+    let machine = target_machine_for_triple(&triple)?;
+    let ctx = Context::create();
+    build_module_for_target(&ctx, pipeline, module_name, Some(&machine))?;
+    Ok(())
+}
+
 /// Return the first WASM-excluded substrate symbol found in `pipeline`'s
 /// instruction stream, or `None` if none is present.
 ///
@@ -271,6 +344,19 @@ pub fn emit_module(
 ///   Note: calls from the Hew stdlib `extern "C"` block in `std/net/net.hew`
 ///   bypass this scan (they produce direct LLVM calls, not `CallRuntimeAbi`
 ///   instructions); the wasm32 runtime stub is the safety net for those.
+/// - `hew_task_scope_*` — the structured-concurrency `scope {}` substrate
+///   (`hew-runtime/src/task_scope.rs`) is gated `cfg(not(target_arch = "wasm32"))`
+///   at `hew-runtime/src/lib.rs:466`. The native impl depends on OS-thread-backed
+///   join semantics that wasm32 lacks. This codegen-level scan is defence in
+///   depth — the type checker rejects `Expr::Scope { .. }` on WASM targets at
+///   `hew-types/src/check/expressions.rs` via `WasmUnsupportedFeature::
+///   StructuredConcurrency`; this scan catches any path that bypasses the
+///   type-checker gate (e.g. direct MIR construction in tests). The
+///   alternative — letting the program reach `wasm-ld` — produces a confusing
+///   linker error. W2.006 (HewScope removal) lane added this gate; the
+///   task-scope-specific tracking sub-task lives under the WASM parity
+///   umbrella issue #1451.
+///   WASM-TODO(#1451): task-scope WASM parity sub-task.
 ///
 /// This scan detects them in the MIR before the `wasm-ld` step so the caller
 /// can return `CodegenError::WasmUnsupportedSubstrate` instead of a confusing
@@ -303,8 +389,19 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                         //   wasm32; the runtime stub returns null but codegen surfaces
                         //   a structured diagnostic instead of a silent null.
                         //   WASM-TODO(#1451): TCP transport gap.
+                        // hew_task_scope_* — structured-concurrency substrate
+                        //   (`hew-runtime/src/task_scope.rs`) is native-only via
+                        //   `hew-runtime/src/lib.rs:466`. Defence in depth: the
+                        //   type checker rejects `scope {}` on WASM targets at
+                        //   `hew-types/src/check/expressions.rs` via
+                        //   `WasmUnsupportedFeature::StructuredConcurrency`. This
+                        //   scan catches any direct-MIR path that bypasses the
+                        //   type-checker gate. W2.006.
+                        //   WASM-TODO(#1451): task-scope sub-task under the
+                        //   WASM parity umbrella issue.
                         (sym.starts_with("hew_duplex_")
                             || sym.starts_with("hew_supervisor_")
+                            || sym.starts_with("hew_task_scope_")
                             || sym == "hew_tcp_stream_from_conn")
                             .then(|| sym.to_string())
                     }
@@ -348,6 +445,15 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
         }
     }
     None
+}
+
+fn validate_target_substrate(pipeline: &IrPipeline, triple: &str) -> CodegenResult<()> {
+    if triple.starts_with("wasm32") {
+        if let Some(symbol) = uses_wasm_excluded_symbol(pipeline) {
+            return Err(CodegenError::WasmUnsupportedSubstrate { symbol });
+        }
+    }
+    Ok(())
 }
 
 fn emit_object_in_process(
@@ -425,8 +531,10 @@ fn native_emission_triple() -> String {
 fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
     initialise_llvm_targets();
     let target_triple = TargetTriple::create(triple);
-    let target = Target::from_triple(&target_triple)
-        .map_err(|e| CodegenError::Llvm(format!("from_triple({triple}): {e:?}")))?;
+    let target = Target::from_triple(&target_triple).map_err(|e| CodegenError::TargetSetup {
+        triple: triple.to_string(),
+        reason: format!("from_triple: {e:?}"),
+    })?;
     target
         .create_target_machine(
             &target_triple,
@@ -436,7 +544,10 @@ fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
             RelocMode::PIC,
             CodeModel::Default,
         )
-        .ok_or_else(|| CodegenError::Llvm(format!("create_target_machine for {triple}")))
+        .ok_or_else(|| CodegenError::TargetSetup {
+            triple: triple.to_string(),
+            reason: "create_target_machine returned None".to_string(),
+        })
 }
 
 fn initialise_llvm_targets() {
@@ -500,6 +611,9 @@ struct FnCtx<'a, 'ctx> {
     /// resolve a machine-typed local's slot to its outer LLVM struct,
     /// per-variant inner structs, and tag integer width.
     machine_layouts: &'a MachineLayoutMap<'ctx>,
+    /// Module-wide enum layout descriptors. Used by the heap-owning
+    /// composite return boundary check to inspect variant field types.
+    enum_layouts: &'a [EnumLayout],
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -639,6 +753,9 @@ fn intern_runtime_decl<'ctx>(
         // The caller must free with `hew_reply_channel_free` after
         // `hew_reply_wait` returns (or after cancel on the loser path).
         "hew_reply_channel_new" => ptr_ty.fn_type(&[], false),
+        // hew_string_equals(a: *const c_char, b: *const c_char) -> i32
+        // (`hew-runtime/src/string.rs`). Returns 1 when equal, 0 otherwise.
+        "hew_string_equals" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
         // (`hew-runtime/src/reply_channel.rs:296`). Blocks until a reply
         // is deposited; returns the malloc'd reply pointer (caller frees
@@ -718,6 +835,17 @@ fn intern_runtime_decl<'ctx>(
         // Drop call site; the runtime's AtomicBool double-close guard
         // makes re-entry safe.
         "hew_duplex_close" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_duplex_close_half(half: *mut c_void, direction: i32) -> i32
+        // (`hew-runtime/src/duplex.rs:1496`). Closes one direction of a
+        // Duplex's dual queue selected by `direction`
+        // (HewDuplexDirection::Send=0, Recv=1; pinned i32 ABI per
+        // `hew-runtime/src/duplex.rs:765`). The runtime's AtomicBool
+        // double-close guard makes re-entry safe across all three Drop
+        // contexts (sync return / async cancel / actor shutdown).
+        // The MIR Place variant (`SendHalf` vs `RecvHalf`) carries the
+        // direction; codegen materialises the discriminant at the
+        // `lower_drop` call site (see direction special-case there).
+        "hew_duplex_close_half" => i32_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false),
         // hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32
         // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
         // as hew_duplex_close — one ptr arg, i32 result discarded.
@@ -759,13 +887,6 @@ fn intern_runtime_decl<'ctx>(
         | "hew_vec_slice_range_str" => {
             ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
         }
-        // ── scope{}/spawn/await task ABI (Phase 2, inventory rows 2/3/4) ──────
-        //
-        // hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32
-        // (`hew-runtime/src/scope.rs:169`). Adds an actor to the scope's
-        // actor list; returns 0 on success, -1 if full. i32 return is a
-        // runtime-internal signal — MIR producers discard it (dest: None).
-        "hew_scope_spawn" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         "hew_rc_new" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
         // hew_supervisor_new(strategy: c_int, max_restarts: c_int, window_secs: c_int)
         //                    -> *mut HewSupervisor
@@ -782,6 +903,31 @@ fn intern_runtime_decl<'ctx>(
         // Returns 0 on success or -1 on null/OOM; the bootstrap currently
         // discards the result — restart/diagnostic wiring lands in a follow-on.
         "hew_supervisor_add_child_spec" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_set_child_state_clone(sup: *mut HewSupervisor,
+        //                                      child_index: c_int,
+        //                                      state_clone_fn: HewStateCloneFn) -> void
+        // (`hew-runtime/src/supervisor.rs:3807-3829`). Registers the
+        // codegen-synthesised `__hew_state_clone_<Actor>` against a child
+        // slot so the supervisor restart consumer can deep-clone the
+        // pristine `init_state` template before each restart spawn.
+        // W2.002 Stage 2 emits this immediately after the matching
+        // `hew_supervisor_add_child_spec` call.
+        "hew_supervisor_set_child_state_clone" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_set_child_state_drop(sup: *mut HewSupervisor,
+        //                                     child_index: c_int,
+        //                                     state_drop_fn: unsafe extern "C" fn(*mut c_void))
+        //                                     -> void
+        // (`hew-runtime/src/supervisor.rs:3722-3760`). Paired sibling of
+        // `hew_supervisor_set_child_state_clone`; emitted alongside it.
+        // Without the drop registration, the runtime's `libc::free`
+        // fallback for `state_drop_fn=None` would bytewise-free
+        // owned-heap wrappers — leaking deep contents (and aliasing
+        // them into a use-after-free once the clone path is wired).
+        "hew_supervisor_set_child_state_drop" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
         // hew_supervisor_start(sup: *mut HewSupervisor) -> c_int
         // (`hew-runtime/src/supervisor.rs:1726`). Marks the supervisor running
         // and spawns its self-actor. Returns 0 on success. The bootstrap
@@ -904,6 +1050,33 @@ fn intern_runtime_decl<'ctx>(
         // terminate trampoline on the actor so the runtime calls it at normal
         // actor teardown. Called once at spawn time, after hew_actor_spawn.
         "hew_actor_set_terminate" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_actor_set_state_clone(actor: *mut HewActor,
+        //                           state_clone_fn: HewStateCloneFn) -> void
+        // (`hew-runtime/src/actor.rs:3131-3141`). Registers the
+        // codegen-synthesised `__hew_state_clone_<Actor>` C-ABI fn on a
+        // freshly spawned actor handle. The slot is consumed by the
+        // supervisor restart path (`hew-runtime/src/supervisor.rs:1199-
+        // 1294` `hew_actor_spawn_opts_adopt`) to deep-clone the pristine
+        // `init_state` before each restart spawn. W2.002 Stage 2 emits
+        // this at the post-merge of `emit_spawn_actor`. The runtime
+        // null-tolerates via `cabi_guard!(actor.is_null())` so an OOM
+        // spawn returning null is harmless even without an extra codegen
+        // null guard at the call site.
+        "hew_actor_set_state_clone" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_actor_set_state_drop(actor: *mut HewActor,
+        //                          state_drop_fn: unsafe extern "C" fn(*mut c_void)) -> void
+        // (`hew-runtime/src/actor.rs:3097-3108`). Paired sibling of
+        // `hew_actor_set_state_clone`; emitted alongside it so the
+        // runtime invokes the codegen-synthesised `__hew_state_drop_
+        // <Actor>` body at actor shutdown instead of bytewise
+        // `libc::free` of the wrapper (which would leak any owned-
+        // heap state fields). Paired-emission is load-bearing: clone
+        // without drop leaks; drop without clone aliases into UAF.
+        "hew_actor_set_state_drop" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // ── Regex literal substrate (codegen-emitted, not user-callable) ──────
@@ -1067,6 +1240,7 @@ fn predeclare_stdlib_catalog<'ctx>(
                 let symbol_entry =
                     declare_catalog_ffi(ctx, llvm_mod, entry, symbol, record_layouts)?;
                 fn_symbols.insert(entry.name.to_string(), symbol_entry);
+                fn_symbols.insert(symbol.to_string(), symbol_entry);
             }
             BuiltinLinkage::PrintIntercept {
                 runtime_symbol,
@@ -1677,7 +1851,7 @@ fn machine_layout_for_local<'a, 'ctx>(
         ))
     })?;
     let (name, args) = match ty {
-        ResolvedTy::Named { name, args } => (name, args),
+        ResolvedTy::Named { name, args, .. } => (name, args),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "Place::MachineTag/MachineVariant references local {local} whose type \
@@ -1730,6 +1904,79 @@ fn short_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
+/// Returns `true` if the given `ResolvedTy` (or any type reachable through
+/// its generic arguments or enum variant field types) contains a heap-owning
+/// type such as `string` or `Bytes`.
+///
+/// Used by the composite-return fail-closed boundary: returning an aggregate
+/// value whose payload owns heap memory requires tag-aware drop to prevent
+/// double-free or leak. Until that infrastructure lands, codegen rejects
+/// such returns at compile time.
+///
+/// ## Coverage
+///
+/// Two independent paths may trigger a heap-owning result:
+///
+/// 1. **Type arguments** — `Option<string>`, `Result<i64, string>`. Caught by
+///    the `args` walk first; returns early.
+/// 2. **Non-param variant fields** — a generic enum whose type args are all
+///    bitcopy but a separate variant carries a concrete `string` field, e.g.
+///    `Envelope<i64>` where `enum Envelope<T> { Data(T), Message(string) }`.
+///    Caught by inspecting the monomorphised `EnumLayout` regardless of
+///    whether `args` is empty.
+///
+/// Layout lookup uses the same mangling scheme as `register_enum_layouts`:
+/// - Non-generic (args empty): bare name or `short_name` fallback.
+/// - Generic (args non-empty): `mangle(short_name, args)` → e.g. `Envelope$$i64`.
+fn ty_contains_heap_owning(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
+    match ty {
+        ResolvedTy::String | ResolvedTy::Bytes => true,
+        ResolvedTy::Named { name, args, .. } => {
+            // 1. Check type arguments first (fast path: Option<string>, etc.)
+            if args
+                .iter()
+                .any(|arg| ty_contains_heap_owning(arg, enum_layouts))
+            {
+                return true;
+            }
+            // 2. Inspect the enum layout's variant field types directly.
+            //    This covers non-param heap-owning fields in generic enums
+            //    (e.g. `Envelope<i64>` where `Message(string)` is unrelated
+            //    to the type parameter `T`).
+            //    Layout names follow the monomorphisation scheme registered
+            //    by `register_enum_layouts`:
+            //    - args empty:     bare name or short_name match
+            //    - args non-empty: mangle(short_name, args) → "Envelope$$i64"
+            let short = short_name(name);
+            let found = if args.is_empty() {
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == *name || short_name(&el.name) == short)
+            } else {
+                let mangled = mangle(short, args);
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == mangled || el.name == *name)
+            };
+            if let Some(layout) = found {
+                return layout.variants.iter().any(|v| {
+                    v.field_tys
+                        .iter()
+                        .any(|ft| ty_contains_heap_owning(ft, enum_layouts))
+                });
+            }
+            false
+        }
+        ResolvedTy::Tuple(elems) => elems
+            .iter()
+            .any(|e| ty_contains_heap_owning(e, enum_layouts)),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            ty_contains_heap_owning(inner, enum_layouts)
+        }
+        _ => false,
+    }
+}
+
 /// Resolve any `ResolvedTy` to its LLVM `BasicTypeEnum`, consulting the
 /// record-layout map first for named user records. This is the codegen-side
 /// entry point for type lowering — it replaces direct calls to
@@ -1753,7 +2000,7 @@ fn resolve_ty<'ctx>(
     ty: &ResolvedTy,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
-    if let ResolvedTy::Named { name, args } = ty {
+    if let ResolvedTy::Named { name, args, .. } = ty {
         // Generic-enum instantiations are keyed by mangled name (e.g.
         // `"Option$$i64"`) in the record-layout map — the same key produced
         // by `register_enum_layouts`. When type args are present, mangle
@@ -1904,17 +2151,15 @@ fn primitive_to_llvm<'ctx>(
             // LESSONS: exhaustive-traversal-and-lowering.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
-        ResolvedTy::Named { name, .. } if name == "HewScope" => {
-            // Phase 2 scope handle. A `HewScope` local holds a `*mut HewScope`
-            // opaque pointer — returned by `hew_scope_create` and consumed by
-            // `hew_scope_free`. The MIR producer for `scope {}` (inventory row
-            // 2) allocates a `ResolvedTy::Named { name: "HewScope", .. }` local
-            // and references it via `Place::DuplexHandle(N)`. Codegen emits an
-            // opaque `ptr` alloca, same as other runtime handle types.
-            // LESSONS: exhaustive-traversal-and-lowering.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
         ResolvedTy::Named { name, .. } if name == "HewTaskScope" => {
+            // Canonical scope handle (W2.006). A `HewTaskScope` local holds
+            // a `*mut HewTaskScope` opaque pointer — returned by
+            // `hew_task_scope_new` and consumed by `hew_task_scope_destroy`.
+            // The MIR producer for `scope {}` (`hew-mir/src/lower.rs:7577`)
+            // allocates a `ResolvedTy::Named { name: "HewTaskScope", .. }`
+            // local and references it via `Place::DuplexHandle(N)`. Codegen
+            // emits an opaque `ptr` alloca, same as other runtime handles.
+            // LESSONS: exhaustive-traversal-and-lowering.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
         ResolvedTy::Named { name, .. } if name == "RemotePid" => {
@@ -2282,7 +2527,11 @@ fn emit_spawn_task_direct(
     callee_symbol: &str,
 ) -> CodegenResult<()> {
     let parent_ctx = fn_ctx.execution_context.ok_or_else(|| {
-        CodegenError::FailClosed("SpawnTaskDirect spawn site requires an execution context".into())
+        CodegenError::FailClosed(format!(
+            "SpawnTaskDirect spawn site for `{callee_symbol}` requires a caller-side \
+             ctx-bearing execution context; MIR lowering should reject Default-callconv \
+             enclosing functions before codegen"
+        ))
     })?;
     let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskDirect task")?;
     let wrapper = get_or_create_task_wrapper(fn_ctx, callee_symbol)?;
@@ -2516,6 +2765,139 @@ fn emit_wasm_actor_metadata_registration<'ctx>(
     Ok(())
 }
 
+// ─── W2.002 Stage 2: state_clone / state_drop registration helpers ──────────
+//
+// Stage 2 emits CALLS to per-actor `__hew_state_clone_<Actor>` /
+// `__hew_state_drop_<Actor>` C-ABI fns. Stage 3 of this lane (deferred)
+// synthesises the function BODIES. To keep Stage 2 link-correct on its
+// own, the helpers below `get_function`-or-declare-extern the per-actor
+// symbol; if Stage 3 does not land the linker fails with a clear
+// "undefined symbol __hew_state_{clone,drop}_<Actor>" error. NOT a
+// silent no-op (dispatch invariant #3; A249).
+//
+// The synthesised fn signatures (matching `HewStateCloneFn` /
+// `state_drop_fn` slots on `HewActor` — see `hew-runtime/src/actor.rs:690`
+// for `HewStateCloneFn` and `:760-781` for the actor field doc; the
+// drop slot is `unsafe extern "C" fn(*mut c_void)`):
+//   clone:  unsafe extern "C-unwind" fn(*const c_void) -> *mut c_void
+//   drop:   unsafe extern "C" fn(*mut c_void)
+// At the LLVM IR level both pointer values reduce to opaque `ptr` once
+// emitted; the fn-pointer arg of the setter is `ptr` in opaque-pointer
+// mode regardless. We declare the extern with the concrete signature so
+// the linker checks shape parity against the Stage 3 definition.
+fn lookup_or_declare_state_clone_fn<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
+) -> PointerValue<'ctx> {
+    let f = llvm_mod.get_function(symbol).unwrap_or_else(|| {
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
+        llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External))
+    });
+    f.as_global_value().as_pointer_value()
+}
+
+fn lookup_or_declare_state_drop_fn<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
+) -> PointerValue<'ctx> {
+    let f = llvm_mod.get_function(symbol).unwrap_or_else(|| {
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+        llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External))
+    });
+    f.as_global_value().as_pointer_value()
+}
+
+/// Resolve the paired `(state_clone, state_drop)` symbols off an
+/// `ActorLayout`, fail-closing on the half-populated case (which would
+/// be a Stage 1 invariant violation — `state_clone_fn_symbol` and
+/// `state_drop_fn_symbol` are populated together or not at all per
+/// `hew-mir/src/model.rs:328-350`).
+///
+/// Returns `Ok(None)` when both symbols are absent (Stage 1 declined
+/// to classify the actor — e.g. trivial-state actors before Stage 3
+/// lands, or actors with classification errors). Returns
+/// `Ok(Some((clone_sym, drop_sym)))` when both are present.
+fn resolve_state_clone_drop_symbols<'a>(
+    actor_name: &str,
+    actor_layout: &'a ActorLayout,
+) -> CodegenResult<Option<(&'a str, &'a str)>> {
+    match (
+        actor_layout.state_clone_fn_symbol.as_deref(),
+        actor_layout.state_drop_fn_symbol.as_deref(),
+    ) {
+        (None, None) => Ok(None),
+        (Some(clone_sym), Some(drop_sym)) => Ok(Some((clone_sym, drop_sym))),
+        (clone, drop) => Err(CodegenError::FailClosed(format!(
+            "actor `{actor_name}` has half-populated state clone/drop symbols \
+             (clone={clone:?}, drop={drop:?}) — Stage 1 invariant requires \
+             paired Some/None (see `hew-mir/src/model.rs:328-350`)"
+        ))),
+    }
+}
+
+/// Direct-spawn emission for `hew_actor_set_state_drop` +
+/// `hew_actor_set_state_clone` (W2.002 Stage 2).
+///
+/// Emitted at the post-merge of `emit_spawn_actor`'s opts/plain spawn
+/// branches, AFTER `spawned` is bound and BEFORE
+/// `emit_actor_spawn_lifecycle`. Drop is registered before clone so the
+/// smaller risk window (clone-failure mid-setup) leaves the actor with
+/// a working drop already wired.
+///
+/// No-op when the actor's `ActorLayout` did not get state-clone
+/// classification (paired None on the symbol fields). The runtime's
+/// `state_clone_fn = NULL` path blocks supervisor restart per
+/// `hew-runtime/src/actor.rs:766` as a safe default.
+fn emit_actor_state_clone_drop_registration<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+    spawned: PointerValue<'ctx>,
+    actor_layout: &ActorLayout,
+) -> CodegenResult<()> {
+    let Some((clone_sym, drop_sym)) = resolve_state_clone_drop_symbols(actor_name, actor_layout)?
+    else {
+        return Ok(());
+    };
+    let clone_fn_ptr = lookup_or_declare_state_clone_fn(fn_ctx.ctx, fn_ctx.llvm_mod, clone_sym);
+    let drop_fn_ptr = lookup_or_declare_state_drop_fn(fn_ctx.ctx, fn_ctx.llvm_mod, drop_sym);
+
+    let set_drop = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_set_state_drop",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            set_drop,
+            &[spawned.into(), drop_fn_ptr.into()],
+            "hew_actor_set_state_drop_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_actor_set_state_drop call: {e:?}")))?;
+
+    let set_clone = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_set_state_clone",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            set_clone,
+            &[spawned.into(), clone_fn_ptr.into()],
+            "hew_actor_set_state_clone_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_actor_set_state_clone call: {e:?}")))?;
+
+    Ok(())
+}
+
 fn emit_spawn_actor(
     fn_ctx: &FnCtx<'_, '_>,
     actor_name: &str,
@@ -2673,6 +3055,24 @@ fn emit_spawn_actor(
             .into_pointer_value()
     };
 
+    // W2.002 Stage 2: register state_clone + state_drop on the freshly
+    // spawned actor before lifecycle hooks (init / on_start / terminate)
+    // run. The setters consume `spawned` as a pointer arg; the runtime
+    // null-tolerates a null `spawned` from OOM via `cabi_guard!` so no
+    // extra null check is needed at the call site. See
+    // `emit_actor_state_clone_drop_registration` for the no-op fallback
+    // path (paired-absent symbols on the ActorLayout).
+    let actor_layout = fn_ctx
+        .actor_layouts
+        .iter()
+        .find(|l| l.name == actor_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "spawn `{actor_name}` has no ActorLayout for state clone/drop registration"
+            ))
+        })?;
+    emit_actor_state_clone_drop_registration(fn_ctx, actor_name, spawned, actor_layout)?;
+
     emit_actor_spawn_lifecycle(fn_ctx, actor_name, spawned, init_args)?;
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
@@ -2783,6 +3183,7 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     layout: &SupervisorLayout,
     fn_symbols: &FnSymbolMap<'ctx>,
+    actor_layouts: &[ActorLayout],
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&layout.bootstrap_symbol).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -2876,6 +3277,20 @@ fn emit_supervisor_bootstrap_body<'ctx>(
         &mut runtime_decls,
         "hew_supervisor_add_child_spec",
     )?;
+    // W2.002 Stage 2: per-child state_clone + state_drop setters. Interned
+    // once outside the loop so all children share the same FunctionValue.
+    let set_child_state_drop = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_set_child_state_drop",
+    )?;
+    let set_child_state_clone = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_set_child_state_clone",
+    )?;
     for (idx, child) in layout.children.iter().enumerate() {
         emit_supervisor_child_spec_and_register(
             ctx,
@@ -2884,9 +3299,12 @@ fn emit_supervisor_bootstrap_body<'ctx>(
             &child_spec_ty,
             sup,
             add_child_spec,
+            set_child_state_drop,
+            set_child_state_clone,
             idx,
             child,
             &layout.name,
+            actor_layouts,
         )?;
     }
 
@@ -2959,9 +3377,12 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     child_spec_ty: &StructType<'ctx>,
     sup: PointerValue<'ctx>,
     add_child_spec: FunctionValue<'ctx>,
+    set_child_state_drop: FunctionValue<'ctx>,
+    set_child_state_clone: FunctionValue<'ctx>,
     idx: usize,
     child: &SupervisorChildLayout,
     sup_name: &str,
+    actor_layouts: &[ActorLayout],
 ) -> CodegenResult<()> {
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
@@ -3050,7 +3471,1360 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             &format!("hew_supervisor_add_child_spec_call_{idx}"),
         )
         .map_err(|e| CodegenError::Llvm(format!("hew_supervisor_add_child_spec call: {e:?}")))?;
+
+    // ── W2.002 Stage 2: register state_drop + state_clone fn pointers
+    // against this child slot. Mirrors `__hew_actor_dispatch_<actor>`
+    // resolution above: `child.actor_name` → per-actor synthesised symbol
+    // (Stage 3 of this lane defines bodies; Stage 2 declares externs so
+    // a missing Stage 3 fails clearly at link time, not silently).
+    //
+    // The matching `ActorLayout` carries the symbol pair on
+    // `state_clone_fn_symbol` / `state_drop_fn_symbol` (paired by Stage 1
+    // — see `hew-mir/src/model.rs:328-350`). Absent symbols on the layout
+    // mean Stage 1 declined classification for that actor; in that case
+    // the runtime fall-through (`state_clone_fn=NULL` blocks restart per
+    // `hew-runtime/src/actor.rs:766`) is the safe default and no setter
+    // calls are emitted.
+    let child_actor_layout = actor_layouts
+        .iter()
+        .find(|l| l.name == child.actor_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "supervisor `{sup_name}` child `{}` references actor `{}` which has no \
+                 ActorLayout for state clone/drop registration",
+                child.name, child.actor_name
+            ))
+        })?;
+    if let Some((clone_sym, drop_sym)) =
+        resolve_state_clone_drop_symbols(&child.actor_name, child_actor_layout)?
+    {
+        let clone_fn_ptr = lookup_or_declare_state_clone_fn(ctx, llvm_mod, clone_sym);
+        let drop_fn_ptr = lookup_or_declare_state_drop_fn(ctx, llvm_mod, drop_sym);
+        let child_idx_const = i32_ty.const_int(idx as u64, true);
+        builder
+            .build_call(
+                set_child_state_drop,
+                &[sup.into(), child_idx_const.into(), drop_fn_ptr.into()],
+                &format!("hew_supervisor_set_child_state_drop_call_{idx}"),
+            )
+            .map_err(|e| {
+                CodegenError::Llvm(format!("hew_supervisor_set_child_state_drop call: {e:?}"))
+            })?;
+        builder
+            .build_call(
+                set_child_state_clone,
+                &[sup.into(), child_idx_const.into(), clone_fn_ptr.into()],
+                &format!("hew_supervisor_set_child_state_clone_call_{idx}"),
+            )
+            .map_err(|e| {
+                CodegenError::Llvm(format!("hew_supervisor_set_child_state_clone call: {e:?}"))
+            })?;
+    }
     Ok(())
+}
+
+// ─── W2.002 Stage 3: per-actor state_clone / state_drop BODY synthesis ──────
+//
+// Stage 2 emits CALLS to `__hew_state_clone_<Actor>` /
+// `__hew_state_drop_<Actor>` and registers them with the runtime via
+// `hew_actor_set_state_{clone,drop}` (direct spawn) and
+// `hew_supervisor_set_child_state_{clone,drop}` (supervisor child).
+// Stage 3 (this section) synthesises the LLVM function BODIES.
+//
+// Signatures (mandated by W2.001 ABI in `hew-runtime/src/actor.rs:690,758-781`):
+//
+//   __hew_state_clone_<Actor>(*const c_void) -> *mut c_void
+//       declared `extern "C-unwind"` in Rust; LLVM IR is opaque-pointer
+//       and the unwind table is irrelevant at the IR level (clone fns
+//       have no `.unwind` operand here — they call into runtime helpers
+//       that are themselves abort-on-OOM via `cabi_guard!` / `libc::abort`).
+//
+//   __hew_state_drop_<Actor>(*mut c_void)
+//       declared `extern "C"` in Rust; void return.
+//
+// Companion record helpers (CODEGEN-INTERNAL — not user-reachable, not in
+// W4.003's `scripts/jit-symbol-classification.toml`):
+//
+//   __hew_record_clone_inplace_<Record>(*const c_void, *mut c_void) -> i32
+//       0 on success; non-zero on partial-clone failure (with own rollback).
+//       Operates in place on caller-allocated `dst`. Caller must have
+//       memcpy'd `dst <- src` first so BitCopy fields are correct and
+//       owned-heap fields hold byte-aliased pointers (which this helper
+//       overwrites with deep clones; on failure, only successfully-cloned
+//       fields at `dst` are dropped — the byte-aliased starting pointers
+//       are NEVER dropped because they alias `src` which the caller owns).
+//
+//   __hew_record_drop_inplace_<Record>(*mut c_void)
+//       Drops owned-heap fields in reverse declaration order. Does NOT
+//       free the wrapper (records are embedded in their parent struct).
+//
+// Drop safety (CLAUDE.md custom #1, plan §6 Stage 3 table):
+//
+// - **Sync return**: reverse-order LIFO rollback on per-field clone
+//   failure. `src` is NEVER touched (it's the caller's wrapper; we only
+//   read from it). Only `dst` fields that were successfully cloned are
+//   dropped; byte-aliased pointers at higher field indices were never
+//   stored to, so the rollback drop list contains only the proven-owned
+//   `dst.<f_j>` set. Wrapper freed via `free(dst)` at the end of rollback.
+//
+// - **Async cancel**: N/A by construction. Both synthesised fns are
+//   synchronous C-ABI; no `.await`, no futures, no yield points. The
+//   supervisor restart consumer at `hew-runtime/src/supervisor.rs:1199-1294`
+//   calls clone synchronously while holding the children lock.
+//
+// - **Actor shutdown**: the wrapper that the actor holds (from direct-spawn
+//   byte-copy or from `hew_actor_spawn_opts_adopt` of a clone result) is
+//   owned by the actor. On shutdown the runtime invokes the registered
+//   `state_drop_fn` — this lane synthesises that body. Single-fire
+//   protection via the runtime's `terminate_called` guard at
+//   `hew-runtime/src/actor.rs:786-791`; `state_drop_fn` is idempotent
+//   against null and is structurally callable from any of the three
+//   contexts (the runtime path uses sync-return only today).
+//
+// Fail-closed posture (CLAUDE.md custom #2, A249):
+// - Connection-bearing state actors: clone fn returns null immediately
+//   (defence-in-depth — Stage 2's supervisor-site codegen-gate is the
+//   primary surface, see plan §4.5 B). Drop is a no-op for the Connection
+//   field itself (the underlying fd is closed by actor teardown, not by
+//   `state_drop_fn`).
+// - Half-populated symbol pairs (clone Some / drop None or vice versa)
+//   are rejected up front as a Stage 1 invariant violation by
+//   `resolve_state_clone_drop_symbols` (defined in Stage 2's section).
+// - Unsupported field kind: not reachable here (Stage 1 fails-closed at
+//   classification time before any actor reaches Stage 3).
+
+/// Runtime helper function declarations used by the synthesised clone/drop
+/// bodies. Kept in a single place so any future helper-signature drift
+/// surfaces in one diff.
+fn get_or_declare_libc_malloc<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(fv) = llvm_mod.get_function("malloc") {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    llvm_mod.add_function(
+        "malloc",
+        ptr_ty.fn_type(&[i64_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+fn get_or_declare_libc_free<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(fv) = llvm_mod.get_function("free") {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        "free",
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+/// (sym, ret_ty, arg_ty) for the runtime per-field clone helpers. `ret_ty`
+/// is `Some(ptr)` for helpers that return a new heap pointer (caller
+/// stores into `dst.<f>` and rolls back on null), `None` for refcount-bump
+/// helpers like `hew_bytes_clone_ref` that mutate in place and return void.
+enum CloneHelper {
+    /// Allocating helper: `fn(*const) -> *mut`. Caller stores result over
+    /// the byte-aliased pointer at `dst.<f>` (the wholesale wrapper
+    /// memcpy in `__hew_state_clone_<Actor>` step 3 seeded it with
+    /// `src.<f>`; overwrite on success). Null return → rollback path.
+    Allocating { name: &'static str },
+    /// Refcount-bump helper: `fn(*mut) -> ()`. Operates on the pointer
+    /// already present at `dst.<f>` (byte-aliased to `src.<f>` from the
+    /// wholesale memcpy). The drop helper decrements; together they
+    /// implement a clone-by-refcount discipline. No store, no rollback
+    /// possible at this field index (the bump is infallible — `Bytes`
+    /// uses a relaxed atomic increment; OOM cannot occur).
+    RefcountBump { name: &'static str },
+}
+
+/// (sym) for the per-field drop helpers; always `fn(*mut) -> ()`.
+struct DropHelper {
+    name: &'static str,
+}
+
+fn get_or_declare_clone_helper<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    helper: &CloneHelper,
+) -> FunctionValue<'ctx> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    match helper {
+        CloneHelper::Allocating { name } => {
+            if let Some(fv) = llvm_mod.get_function(name) {
+                return fv;
+            }
+            llvm_mod.add_function(
+                name,
+                ptr_ty.fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        }
+        CloneHelper::RefcountBump { name } => {
+            if let Some(fv) = llvm_mod.get_function(name) {
+                return fv;
+            }
+            llvm_mod.add_function(
+                name,
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        }
+    }
+}
+
+fn get_or_declare_drop_helper<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    helper: &DropHelper,
+) -> FunctionValue<'ctx> {
+    if let Some(fv) = llvm_mod.get_function(helper.name) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        helper.name,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+/// Map a `StateFieldCloneKind` to the runtime CLONE-side helper.
+///
+/// Returns:
+/// - `Ok(Some(helper))` — a per-field helper to call after the wholesale
+///   memcpy.
+/// - `Ok(None)` — BitCopy; the wholesale memcpy is sufficient and there
+///   is no per-field work.
+/// - `Err(_)` — Connection (fail-closed at the actor-clone level — the
+///   actor body returns null immediately rather than entering the
+///   per-field loop) OR an unsupported composite (HashMap/HashSet of
+///   owned-heap elements where the runtime helper does not deep-clone
+///   the element bytes itself).
+///
+/// Caller (`emit_field_clone_step`) handles UserRecord separately
+/// because it calls a per-record synthesised helper rather than a runtime
+/// extern.
+fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<CloneHelper>> {
+    match kind {
+        StateFieldCloneKind::BitCopy { .. } => Ok(None),
+        StateFieldCloneKind::String => Ok(Some(CloneHelper::Allocating {
+            name: "hew_string_clone",
+        })),
+        StateFieldCloneKind::Bytes => Ok(Some(CloneHelper::RefcountBump {
+            name: "hew_bytes_clone_ref",
+        })),
+        StateFieldCloneKind::Vec { .. } => Ok(Some(CloneHelper::Allocating {
+            name: "hew_vec_clone",
+        })),
+        StateFieldCloneKind::HashMap { .. } => Ok(Some(CloneHelper::Allocating {
+            name: "hew_hashmap_clone_impl",
+        })),
+        StateFieldCloneKind::HashSet { .. } => Ok(Some(CloneHelper::Allocating {
+            name: "hew_hashset_clone",
+        })),
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => Err(CodegenError::FailClosed(
+            "Connection field reached per-field clone helper; the actor-level \
+             body must intercept this arm and return null up front per plan §4.5 B"
+                .into(),
+        )),
+        StateFieldCloneKind::UserRecord { .. } => Err(CodegenError::FailClosed(
+            "UserRecord arm requires per-record synthesised helper, not a \
+             runtime extern — caller must dispatch separately"
+                .into(),
+        )),
+    }
+}
+
+/// Drop-side companion to `clone_helper_for_kind`. Same arm semantics.
+fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<DropHelper>> {
+    match kind {
+        StateFieldCloneKind::BitCopy { .. } => Ok(None),
+        StateFieldCloneKind::String => Ok(Some(DropHelper {
+            name: "hew_string_drop",
+        })),
+        StateFieldCloneKind::Bytes => Ok(Some(DropHelper {
+            name: "hew_bytes_drop",
+        })),
+        StateFieldCloneKind::Vec { .. } => Ok(Some(DropHelper {
+            name: "hew_vec_free",
+        })),
+        StateFieldCloneKind::HashMap { .. } => Ok(Some(DropHelper {
+            name: "hew_hashmap_free_impl",
+        })),
+        StateFieldCloneKind::HashSet { .. } => Ok(Some(DropHelper {
+            name: "hew_hashset_free",
+        })),
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => {
+            // Connection drop is a no-op at the state level — the underlying
+            // fd is closed by the runtime's actor-teardown path (after
+            // `terminate_fn` runs), not by `state_drop_fn`. See plan §4.5 B
+            // + `hew-runtime/src/actor.rs:766` C1 fix block.
+            Ok(None)
+        }
+        StateFieldCloneKind::UserRecord { .. } => Err(CodegenError::FailClosed(
+            "UserRecord arm requires per-record synthesised drop helper, not a \
+             runtime extern — caller must dispatch separately"
+                .into(),
+        )),
+    }
+}
+
+/// Lookup-or-declare the synthesised per-record in-place clone helper. The
+/// per-record helper signature is `fn(*const, *mut) -> i32` (0 = success,
+/// non-zero = partial-clone rollback complete). Declaring here lets a
+/// classified actor body call into a nested record helper that is
+/// synthesised later in the same module pass.
+fn get_or_declare_record_clone_inplace<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    record_name: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_record_clone_inplace_{record_name}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    llvm_mod.add_function(
+        &sym,
+        i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Lookup-or-declare the synthesised per-record in-place drop helper.
+/// Signature: `fn(*mut) -> ()`. Does NOT free the wrapper — records are
+/// embedded in their parent struct.
+fn get_or_declare_record_drop_inplace<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    record_name: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_record_drop_inplace_{record_name}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &sym,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Compute the transitive set of user records reachable through any
+/// classified actor's `UserRecord` arms. Each entry is paired with its
+/// per-field classification (re-derived from `pipeline_records` so the
+/// synthesis loop has the same kind data the actor classifier saw).
+///
+/// Returns the records in topological-ish order (leaves before
+/// references) so per-record helpers declare before being referenced.
+/// The actual call graph here is a DAG because the type checker rejects
+/// self-referential records (per `hew-mir/src/state_clone.rs` doc on
+/// `ClassificationError::RecordCycle`); the visited-set in
+/// `classify_actor_state_fields` keeps a defensive guard against
+/// classifier bugs.
+fn collect_reachable_record_classifications(
+    actor_layouts: &[ActorLayout],
+    pipeline_records: &[RecordLayout],
+) -> CodegenResult<Vec<(String, Vec<StateFieldCloneKind>)>> {
+    let mut queue: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Seed from every actor's classification.
+    for actor in actor_layouts {
+        if let Some(kinds) = actor.state_field_clone_kinds.as_ref() {
+            push_user_record_names(kinds, &mut queue, &mut seen);
+        }
+    }
+
+    let mut result: Vec<(String, Vec<StateFieldCloneKind>)> = Vec::new();
+    let mut head = 0usize;
+    while head < queue.len() {
+        let name = queue[head].clone();
+        head += 1;
+        let record = pipeline_records
+            .iter()
+            .find(|r| r.name == name)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "state_clone synthesis: record `{name}` referenced via UserRecord arm \
+                 has no entry in pipeline.record_layouts — Stage 1 classifier should \
+                 have rejected this with MissingRecordLayout"
+                ))
+            })?;
+        let kinds = hew_mir::classify_actor_state_fields(&record.field_tys, pipeline_records)
+            .map_err(|e| {
+                CodegenError::FailClosed(format!(
+                    "state_clone synthesis: re-classification of record `{name}` failed: {e}; \
+                 the Stage 1 classifier should have caught this before reaching codegen"
+                ))
+            })?;
+        push_user_record_names(&kinds, &mut queue, &mut seen);
+        result.push((name, kinds));
+    }
+    Ok(result)
+}
+
+fn push_user_record_names(
+    kinds: &[StateFieldCloneKind],
+    queue: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    for k in kinds {
+        collect_record_names_in_kind(k, queue, seen);
+    }
+}
+
+fn collect_record_names_in_kind(
+    kind: &StateFieldCloneKind,
+    queue: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match kind {
+        StateFieldCloneKind::UserRecord { name } => {
+            if seen.insert(name.clone()) {
+                queue.push(name.clone());
+            }
+        }
+        StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
+            collect_record_names_in_kind(elem, queue, seen);
+        }
+        StateFieldCloneKind::HashMap { key, val } => {
+            collect_record_names_in_kind(key, queue, seen);
+            collect_record_names_in_kind(val, queue, seen);
+        }
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::String
+        | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::IoHandle { .. } => {}
+    }
+}
+
+/// Compute the ABI byte size of an actor's or record's LLVM struct type.
+/// Falls back to the host data layout when no target machine is bound —
+/// matches `build_tagged_union_layout`'s policy.
+fn struct_abi_size(ty: StructType<'_>, target_data: Option<&TargetData>) -> u64 {
+    let host_td;
+    let td = if let Some(td) = target_data {
+        td
+    } else {
+        host_td = host_target_data();
+        &host_td
+    };
+    td.get_abi_size(&ty)
+}
+
+/// Synthesise per-actor `__hew_state_clone_<Actor>` / `__hew_state_drop_<Actor>`
+/// AND per-record `__hew_record_{clone_inplace,drop_inplace}_<Record>`
+/// bodies for every classified actor in `actor_layouts`. Called from
+/// `build_module_for_target` BEFORE supervisor bootstrap emission so the
+/// `get_function`-or-declare-extern lookup at Stage 2's spawn/supervisor
+/// sites resolves to a real `define` rather than the linker-failure
+/// extern stub.
+///
+/// No-op for actors whose `state_clone_fn_symbol` is `None` — Stage 1
+/// declined classification (failure surfaced as a `MirDiagnostic`).
+/// Stage 2 codegen skips the runtime registration calls for those actors;
+/// the runtime falls back to `state_clone_fn=NULL`-blocks-restart per
+/// `hew-runtime/src/actor.rs:766`.
+fn emit_state_clone_drop_synthesis<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    actor_layouts: &[ActorLayout],
+    pipeline_records: &[RecordLayout],
+    record_struct_map: &RecordLayoutMap<'ctx>,
+    target_data: Option<&TargetData>,
+) -> CodegenResult<()> {
+    // Per-record helpers must exist before the per-actor body that calls
+    // them is emitted. Collect-then-emit two passes.
+    let record_classifications =
+        collect_reachable_record_classifications(actor_layouts, pipeline_records)?;
+    for (record_name, kinds) in &record_classifications {
+        let record_struct = record_struct_map.get(record_name).copied().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "state_clone synthesis: record `{record_name}` has no LLVM StructType in \
+                 record_struct_map — register_record_layouts must run before synthesis"
+            ))
+        })?;
+        emit_record_clone_inplace_body(ctx, llvm_mod, record_name, record_struct, kinds)?;
+        emit_record_drop_inplace_body(ctx, llvm_mod, record_name, record_struct, kinds)?;
+    }
+    for actor in actor_layouts {
+        let (clone_sym, drop_sym, kinds) = match (
+            actor.state_clone_fn_symbol.as_deref(),
+            actor.state_drop_fn_symbol.as_deref(),
+            actor.state_field_clone_kinds.as_ref(),
+        ) {
+            (Some(c), Some(d), Some(k)) => (c, d, k),
+            (None, None, None) => continue,
+            (clone, drop, kinds) => {
+                return Err(CodegenError::FailClosed(format!(
+                    "actor `{}` has partial state-clone classification \
+                     (clone={clone:?}, drop={drop:?}, kinds_present={}); Stage 1 \
+                     invariant requires the three to be Some/Some/Some or all None",
+                    actor.name,
+                    kinds.is_some()
+                )));
+            }
+        };
+        // The state struct may be absent from record_struct_map when the
+        // actor has zero state fields — `lower_hir_module` only pushes a
+        // `RecordLayout` for the actor name when `state_fields` is non-
+        // empty. Zero-state actors still need clone/drop bodies (Stage 2
+        // emits the setters unconditionally; the body is a trivial
+        // malloc/free pair).
+        let state_struct = record_struct_map.get(&actor.name).copied();
+        emit_actor_state_clone_body(
+            ctx,
+            llvm_mod,
+            &actor.name,
+            clone_sym,
+            state_struct,
+            kinds,
+            target_data,
+        )?;
+        emit_actor_state_drop_body(
+            ctx,
+            llvm_mod,
+            &actor.name,
+            drop_sym,
+            state_struct,
+            kinds,
+            target_data,
+        )?;
+    }
+    Ok(())
+}
+
+/// Emit `__hew_state_clone_<Actor>` body. See module-level comment block
+/// above for signature + drop-safety contract.
+///
+/// IR shape (illustrative, for a 2-field actor `{ i64; *mut HewString }`):
+///
+/// ```text
+/// define ptr @__hew_state_clone_Counter(ptr %src) {
+/// entry:
+///   %src_null = icmp eq ptr %src, null
+///   br i1 %src_null, label %ret_null, label %alloc
+/// alloc:
+///   %dst = call ptr @malloc(i64 SIZE)
+///   %dst_null = icmp eq ptr %dst, null
+///   br i1 %dst_null, label %ret_null, label %memcpy_wholesale
+/// memcpy_wholesale:
+///   call void @llvm.memcpy.p0.p0.i64(ptr %dst, ptr %src, i64 SIZE, i1 false)
+///   br label %field_1_clone     ; first NON-BitCopy field (skip BitCopy: field 0)
+/// field_1_clone:
+///   %src_f1_ptr = getelementptr S, ptr %src, i32 0, i32 1
+///   %src_f1 = load ptr, ptr %src_f1_ptr
+///   %f1_clone = call ptr @hew_string_clone(ptr %src_f1)
+///   %f1_null = icmp eq ptr %f1_clone, null
+///   br i1 %f1_null, label %rollback_before_f1, label %field_1_store
+/// field_1_store:
+///   %dst_f1_ptr = getelementptr S, ptr %dst, i32 0, i32 1
+///   store ptr %f1_clone, ptr %dst_f1_ptr
+///   br label %success
+/// success:
+///   ret ptr %dst
+/// rollback_before_f1:
+///   ; no successfully-cloned fields yet — just free the wrapper
+///   call void @free(ptr %dst)
+///   br label %ret_null
+/// ret_null:
+///   ret ptr null
+/// }
+/// ```
+///
+/// For Connection-bearing actors (any field is `IoHandle{Connection}`),
+/// the body is short-circuited to `ret ptr null` — see plan §4.5 B.
+fn emit_actor_state_clone_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    actor_name: &str,
+    clone_sym: &str,
+    state_struct: Option<StructType<'ctx>>,
+    kinds: &[StateFieldCloneKind],
+    target_data: Option<&TargetData>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+
+    // The Stage 2 lookup may have already declared this symbol as an
+    // extern; we must reuse the existing FunctionValue and add a body
+    // to it (LLVM forbids two declarations of the same symbol).
+    let f = llvm_mod.get_function(clone_sym).unwrap_or_else(|| {
+        llvm_mod.add_function(
+            clone_sym,
+            ptr_ty.fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::External),
+        )
+    });
+    if f.count_basic_blocks() > 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "state_clone synthesis: `{clone_sym}` already has a body — duplicate \
+             synthesis for actor `{actor_name}` is a substrate invariant violation"
+        )));
+    }
+
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(f, "entry");
+    let ret_null_bb = ctx.append_basic_block(f, "ret_null");
+    builder.position_at_end(entry_bb);
+    let src = f
+        .get_nth_param(0)
+        .expect("clone has 1 param")
+        .into_pointer_value();
+
+    // ── Connection fail-closed short-circuit (plan §4.5 B) ────────────
+    if has_connection_field(kinds) {
+        // Defence-in-depth: Stage 2's supervisor codegen-time gate is
+        // the primary fail-closed surface. The synthesised body here is
+        // only reachable from the direct-spawn path (where Connection
+        // byte-copy is move-semantic and the runtime never invokes the
+        // clone fn) or as a runtime fallback if a future caller bypasses
+        // the codegen gate. Returning null up front blocks the restart
+        // per `hew-runtime/src/actor.rs:766` C1 fix block.
+        builder
+            .build_return(Some(&ptr_ty.const_null()))
+            .map_err(|e| CodegenError::Llvm(format!("connection clone null ret: {e:?}")))?;
+        // Drop the unused ret_null_bb to keep the function well-formed.
+        unsafe { ret_null_bb.delete().expect("delete empty bb") };
+        return Ok(());
+    }
+
+    // Position ret_null block once — multiple incoming edges converge here.
+    let alloc_bb = ctx.append_basic_block(f, "alloc");
+    let src_null = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            builder
+                .build_ptr_to_int(src, i64_ty, "src_as_int")
+                .map_err(|e| CodegenError::Llvm(format!("clone src ptr_to_int: {e:?}")))?,
+            i64_ty.const_zero(),
+            "src_is_null",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("clone src null cmp: {e:?}")))?;
+    builder
+        .build_conditional_branch(src_null, ret_null_bb, alloc_bb)
+        .map_err(|e| CodegenError::Llvm(format!("clone src null branch: {e:?}")))?;
+
+    builder.position_at_end(alloc_bb);
+    let size_bytes = state_struct
+        .map(|st| struct_abi_size(st, target_data))
+        .unwrap_or(0);
+    let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
+    let dst = builder
+        .build_call(
+            malloc_fn,
+            &[i64_ty.const_int(size_bytes, false).into()],
+            "state_wrapper",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("clone malloc: {e:?}")))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("malloc returned void".into()))?
+        .into_pointer_value();
+    let dst_null = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            builder
+                .build_ptr_to_int(dst, i64_ty, "dst_as_int")
+                .map_err(|e| CodegenError::Llvm(format!("clone dst ptr_to_int: {e:?}")))?,
+            i64_ty.const_zero(),
+            "dst_is_null",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("clone dst null cmp: {e:?}")))?;
+    let memcpy_bb = ctx.append_basic_block(f, "memcpy_wholesale");
+    builder
+        .build_conditional_branch(dst_null, ret_null_bb, memcpy_bb)
+        .map_err(|e| CodegenError::Llvm(format!("clone dst null branch: {e:?}")))?;
+
+    builder.position_at_end(memcpy_bb);
+    // Wholesale memcpy: seeds BitCopy fields with correct values and
+    // owned-heap fields with byte-aliased pointers that the per-field
+    // loop overwrites. For zero-sized state, size_bytes=0 makes this a
+    // no-op (LLVM lowers it away).
+    if size_bytes > 0 {
+        builder
+            .build_memcpy(dst, 1, src, 1, i64_ty.const_int(size_bytes, false))
+            .map_err(|e| CodegenError::Llvm(format!("clone wholesale memcpy: {e:?}")))?;
+    }
+
+    // ── Per-field clone with reverse-order rollback chain ─────────────
+    //
+    // Layout: emit each non-BitCopy field in declaration order. Each
+    // field-store BB falls through to the next field's clone BB; on
+    // success (last field stored), branch to %success. On null return
+    // from any clone helper, branch to the rollback BB matching that
+    // field index. Each rollback BB drops successfully-cloned fields
+    // 0..k-1 in REVERSE order, then frees the wrapper and branches to
+    // ret_null. This LIFO discipline matches the per-field-alloc-fail
+    // expectation in plan §6 Stage 3 + reviewer P0 #3.
+    let st_ty = state_struct; // captured for GEPs below
+    let success_bb = ctx.append_basic_block(f, "success");
+
+    // Collect per-field metadata: (idx, kind, owns) for non-trivial fields.
+    // BitCopy fields are skipped — the wholesale memcpy is sufficient.
+    let mut field_steps: Vec<(u32, &StateFieldCloneKind)> = Vec::new();
+    for (idx, kind) in kinds.iter().enumerate() {
+        if !matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
+            field_steps.push((idx as u32, kind));
+        }
+    }
+
+    if field_steps.is_empty() {
+        // Trivial actor: wholesale memcpy IS the clone. Branch to
+        // success directly.
+        builder
+            .build_unconditional_branch(success_bb)
+            .map_err(|e| CodegenError::Llvm(format!("clone trivial branch: {e:?}")))?;
+    } else {
+        // Pre-create one rollback BB per field step (index k => drop
+        // fields 0..k-1 in reverse). The k=0 BB just frees the wrapper.
+        let rollback_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("rollback_before_step_{k}")))
+            .collect();
+        let store_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("field_step_{k}_store")))
+            .collect();
+        let clone_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("field_step_{k}_clone")))
+            .collect();
+        // Branch from memcpy into the first clone BB.
+        builder
+            .build_unconditional_branch(clone_bbs[0])
+            .map_err(|e| CodegenError::Llvm(format!("clone first-step branch: {e:?}")))?;
+
+        for (step_idx, &(field_idx, kind)) in field_steps.iter().enumerate() {
+            builder.position_at_end(clone_bbs[step_idx]);
+            let next_bb = if step_idx + 1 < field_steps.len() {
+                clone_bbs[step_idx + 1]
+            } else {
+                success_bb
+            };
+            emit_field_clone_step(
+                ctx,
+                llvm_mod,
+                &builder,
+                st_ty,
+                src,
+                dst,
+                field_idx,
+                kind,
+                store_bbs[step_idx],
+                rollback_bbs[step_idx],
+                next_bb,
+            )?;
+        }
+
+        // Rollback BBs: drop already-cloned fields in reverse, free wrapper.
+        for (step_idx, rollback_bb) in rollback_bbs.iter().enumerate() {
+            builder.position_at_end(*rollback_bb);
+            // Drop fields field_steps[0..step_idx] in REVERSE.
+            for back_idx in (0..step_idx).rev() {
+                let (drop_field_idx, drop_kind) = field_steps[back_idx];
+                emit_field_drop_step(
+                    ctx,
+                    llvm_mod,
+                    &builder,
+                    st_ty,
+                    dst,
+                    drop_field_idx,
+                    drop_kind,
+                )?;
+            }
+            let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
+            builder
+                .build_call(free_fn, &[dst.into()], "rollback_free_wrapper")
+                .map_err(|e| CodegenError::Llvm(format!("clone rollback free: {e:?}")))?;
+            builder
+                .build_unconditional_branch(ret_null_bb)
+                .map_err(|e| CodegenError::Llvm(format!("clone rollback branch: {e:?}")))?;
+        }
+    }
+
+    builder.position_at_end(success_bb);
+    builder
+        .build_return(Some(&dst))
+        .map_err(|e| CodegenError::Llvm(format!("clone success ret: {e:?}")))?;
+
+    builder.position_at_end(ret_null_bb);
+    builder
+        .build_return(Some(&ptr_ty.const_null()))
+        .map_err(|e| CodegenError::Llvm(format!("clone null ret: {e:?}")))?;
+
+    Ok(())
+}
+
+/// Emit one field's clone step. Reads `src.<field_idx>`, calls the helper,
+/// branches to `store_bb` on success (stores into `dst.<field_idx>` then
+/// falls through to `next_bb`) or to `rollback_bb` on helper-returned null.
+/// For UserRecord arms, calls the in-place record helper which writes
+/// directly into `dst.<field_idx>` and returns i32 (0 = success).
+/// For Bytes (refcount-bump), there is no failure path — the call is
+/// unconditional and falls through to `store_bb` (which is a fall-through
+/// label here, no actual store, then to `next_bb`).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "per-field clone-step lowering needs all five LLVM inputs (ctx, mod, \
+              builder, src ptr, dst ptr) plus three target BBs (store, rollback, \
+              next) plus the kind classification — splitting into a struct adds \
+              indirection without simplifying any caller, all of which already \
+              hold these values locally"
+)]
+fn emit_field_clone_step<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    st_ty: Option<StructType<'ctx>>,
+    src: PointerValue<'ctx>,
+    dst: PointerValue<'ctx>,
+    field_idx: u32,
+    kind: &StateFieldCloneKind,
+    store_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    rollback_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    next_bb: inkwell::basic_block::BasicBlock<'ctx>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let st_ty = st_ty.ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "field_clone_step at field {field_idx}: state struct type missing — \
+             zero-state actors should have no field steps"
+        ))
+    })?;
+
+    match kind {
+        StateFieldCloneKind::UserRecord { name } => {
+            // In-place clone: helper writes into dst.<field_idx> directly.
+            // Result is i32; non-zero -> rollback (helper has already
+            // rolled back its own partial state per plan §6 Stage 3).
+            let helper = get_or_declare_record_clone_inplace(ctx, llvm_mod, name);
+            let src_field = builder
+                .build_struct_gep(st_ty, src, field_idx, &format!("src_f{field_idx}_ptr"))
+                .map_err(|e| CodegenError::Llvm(format!("clone src gep f{field_idx}: {e:?}")))?;
+            let dst_field = builder
+                .build_struct_gep(st_ty, dst, field_idx, &format!("dst_f{field_idx}_ptr"))
+                .map_err(|e| CodegenError::Llvm(format!("clone dst gep f{field_idx}: {e:?}")))?;
+            let call_site = builder
+                .build_call(
+                    helper,
+                    &[src_field.into(), dst_field.into()],
+                    &format!("record_clone_inplace_f{field_idx}"),
+                )
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("clone record helper call f{field_idx}: {e:?}"))
+                })?;
+            let rc = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "record clone helper returned void at f{field_idx}"
+                    ))
+                })?
+                .into_int_value();
+            let failed = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    rc,
+                    i32_ty.const_zero(),
+                    &format!("record_clone_failed_f{field_idx}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("record clone cmp f{field_idx}: {e:?}")))?;
+            // No separate store_bb work for UserRecord — the helper
+            // already wrote into dst. The "store_bb" here is just the
+            // path to next_bb. Wire it as the success edge.
+            builder
+                .build_conditional_branch(failed, rollback_bb, store_bb)
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("record clone branch f{field_idx}: {e:?}"))
+                })?;
+            builder.position_at_end(store_bb);
+            builder.build_unconditional_branch(next_bb).map_err(|e| {
+                CodegenError::Llvm(format!("record clone next branch f{field_idx}: {e:?}"))
+            })?;
+            return Ok(());
+        }
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => {
+            // Should have been intercepted by has_connection_field at the
+            // actor-body level. Defensive fail-closed.
+            return Err(CodegenError::FailClosed(format!(
+                "field_clone_step reached Connection arm at f{field_idx}; actor \
+                 body must short-circuit to null up front per plan §4.5 B"
+            )));
+        }
+        _ => {}
+    }
+
+    let helper = clone_helper_for_kind(kind)?.ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "field_clone_step at f{field_idx}: BitCopy field should not have a \
+             clone step entry — caller should filter BitCopy out before reaching here"
+        ))
+    })?;
+
+    let src_field_ptr = builder
+        .build_struct_gep(st_ty, src, field_idx, &format!("src_f{field_idx}_ptr"))
+        .map_err(|e| CodegenError::Llvm(format!("clone src gep f{field_idx}: {e:?}")))?;
+    let src_field_val = builder
+        .build_load(ptr_ty, src_field_ptr, &format!("src_f{field_idx}"))
+        .map_err(|e| CodegenError::Llvm(format!("clone src load f{field_idx}: {e:?}")))?
+        .into_pointer_value();
+
+    let helper_fn = get_or_declare_clone_helper(ctx, llvm_mod, &helper);
+    match helper {
+        CloneHelper::RefcountBump { name: _ } => {
+            // Bytes refcount-bump on dst.<f> — the value at dst.<f> is
+            // byte-aliased to src.<f> after the wholesale memcpy; bumping
+            // through dst.<f> is equivalent to bumping through src.<f>.
+            // Pass the already-loaded src value (same pointer either way).
+            builder
+                .build_call(
+                    helper_fn,
+                    &[src_field_val.into()],
+                    &format!("bytes_clone_ref_f{field_idx}"),
+                )
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("bytes refcount bump f{field_idx}: {e:?}"))
+                })?;
+            // No failure path — refcount bump is infallible.
+            builder.build_unconditional_branch(store_bb).map_err(|e| {
+                CodegenError::Llvm(format!("bytes clone fallthrough f{field_idx}: {e:?}"))
+            })?;
+            builder.position_at_end(store_bb);
+            builder.build_unconditional_branch(next_bb).map_err(|e| {
+                CodegenError::Llvm(format!("bytes clone next branch f{field_idx}: {e:?}"))
+            })?;
+        }
+        CloneHelper::Allocating { name: _ } => {
+            let call_site = builder
+                .build_call(
+                    helper_fn,
+                    &[src_field_val.into()],
+                    &format!("clone_helper_f{field_idx}"),
+                )
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("clone helper call f{field_idx}: {e:?}"))
+                })?;
+            let cloned = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "allocating clone helper returned void at f{field_idx}"
+                    ))
+                })?
+                .into_pointer_value();
+            let i64_ty = ctx.i64_type();
+            let cloned_null = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    builder
+                        .build_ptr_to_int(cloned, i64_ty, &format!("cloned_f{field_idx}_int"))
+                        .map_err(|e| {
+                            CodegenError::Llvm(format!("clone ptr_to_int f{field_idx}: {e:?}"))
+                        })?,
+                    i64_ty.const_zero(),
+                    &format!("cloned_f{field_idx}_null"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("clone null cmp f{field_idx}: {e:?}")))?;
+            builder
+                .build_conditional_branch(cloned_null, rollback_bb, store_bb)
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("clone null branch f{field_idx}: {e:?}"))
+                })?;
+            builder.position_at_end(store_bb);
+            let dst_field_ptr = builder
+                .build_struct_gep(st_ty, dst, field_idx, &format!("dst_f{field_idx}_ptr"))
+                .map_err(|e| CodegenError::Llvm(format!("clone dst gep f{field_idx}: {e:?}")))?;
+            builder
+                .build_store(dst_field_ptr, cloned)
+                .map_err(|e| CodegenError::Llvm(format!("clone dst store f{field_idx}: {e:?}")))?;
+            builder.build_unconditional_branch(next_bb).map_err(|e| {
+                CodegenError::Llvm(format!("clone next branch f{field_idx}: {e:?}"))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Emit one field's drop step (used by both per-actor and per-record drop
+/// bodies, AND by per-actor clone's rollback chain). Reads
+/// `state.<field_idx>` and invokes the matching runtime drop helper or
+/// the synthesised in-place record-drop helper. BitCopy / Connection
+/// fields are no-ops (caller filters them out, but this helper is
+/// defensive).
+fn emit_field_drop_step<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    st_ty: Option<StructType<'ctx>>,
+    state: PointerValue<'ctx>,
+    field_idx: u32,
+    kind: &StateFieldCloneKind,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let st_ty = st_ty.ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "field_drop_step at field {field_idx}: state struct type missing"
+        ))
+    })?;
+    match kind {
+        StateFieldCloneKind::BitCopy { .. } => Ok(()),
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => Ok(()),
+        StateFieldCloneKind::UserRecord { name } => {
+            let helper = get_or_declare_record_drop_inplace(ctx, llvm_mod, name);
+            let field_ptr = builder
+                .build_struct_gep(st_ty, state, field_idx, &format!("drop_f{field_idx}_ptr"))
+                .map_err(|e| CodegenError::Llvm(format!("drop record gep f{field_idx}: {e:?}")))?;
+            builder
+                .build_call(
+                    helper,
+                    &[field_ptr.into()],
+                    &format!("drop_record_f{field_idx}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("drop record call f{field_idx}: {e:?}")))?;
+            Ok(())
+        }
+        _ => {
+            let helper = drop_helper_for_kind(kind)?.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "field_drop_step at f{field_idx}: kind missing drop helper"
+                ))
+            })?;
+            let helper_fn = get_or_declare_drop_helper(ctx, llvm_mod, &helper);
+            let field_ptr = builder
+                .build_struct_gep(st_ty, state, field_idx, &format!("drop_f{field_idx}_ptr"))
+                .map_err(|e| CodegenError::Llvm(format!("drop gep f{field_idx}: {e:?}")))?;
+            let val = builder
+                .build_load(ptr_ty, field_ptr, &format!("drop_f{field_idx}"))
+                .map_err(|e| CodegenError::Llvm(format!("drop load f{field_idx}: {e:?}")))?
+                .into_pointer_value();
+            builder
+                .build_call(
+                    helper_fn,
+                    &[val.into()],
+                    &format!("drop_helper_f{field_idx}"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("drop helper call f{field_idx}: {e:?}")))?;
+            Ok(())
+        }
+    }
+}
+
+/// Emit `__hew_state_drop_<Actor>` body. Reverse-order drops every non-
+/// BitCopy field, then `free(state)`. Null-tolerant entry guard.
+/// Idempotent against double-call (the wrapper free races are guarded
+/// by the runtime's `terminate_called` single-fire bit at
+/// `hew-runtime/src/actor.rs:786-791`).
+fn emit_actor_state_drop_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    actor_name: &str,
+    drop_sym: &str,
+    state_struct: Option<StructType<'ctx>>,
+    kinds: &[StateFieldCloneKind],
+    _target_data: Option<&TargetData>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+
+    let f = llvm_mod.get_function(drop_sym).unwrap_or_else(|| {
+        llvm_mod.add_function(
+            drop_sym,
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::External),
+        )
+    });
+    if f.count_basic_blocks() > 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "state_drop synthesis: `{drop_sym}` already has a body — duplicate \
+             synthesis for actor `{actor_name}` is a substrate invariant violation"
+        )));
+    }
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(f, "entry");
+    let do_drop_bb = ctx.append_basic_block(f, "do_drop");
+    let done_bb = ctx.append_basic_block(f, "done");
+
+    builder.position_at_end(entry_bb);
+    let state = f
+        .get_nth_param(0)
+        .expect("drop has 1 param")
+        .into_pointer_value();
+    let is_null = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            builder
+                .build_ptr_to_int(state, i64_ty, "state_int")
+                .map_err(|e| CodegenError::Llvm(format!("drop ptr_to_int: {e:?}")))?,
+            i64_ty.const_zero(),
+            "state_is_null",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("drop null cmp: {e:?}")))?;
+    builder
+        .build_conditional_branch(is_null, done_bb, do_drop_bb)
+        .map_err(|e| CodegenError::Llvm(format!("drop null branch: {e:?}")))?;
+
+    builder.position_at_end(do_drop_bb);
+    // Reverse-order LIFO drop of non-BitCopy fields.
+    for (idx, kind) in kinds.iter().enumerate().rev() {
+        if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
+            continue;
+        }
+        // Connection arm is no-op at drop (see plan §4.5 B + actor.rs:766).
+        if matches!(
+            kind,
+            StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Connection
+            }
+        ) {
+            continue;
+        }
+        emit_field_drop_step(
+            ctx,
+            llvm_mod,
+            &builder,
+            state_struct,
+            state,
+            idx as u32,
+            kind,
+        )?;
+    }
+    let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
+    builder
+        .build_call(free_fn, &[state.into()], "free_wrapper")
+        .map_err(|e| CodegenError::Llvm(format!("drop free wrapper: {e:?}")))?;
+    builder
+        .build_unconditional_branch(done_bb)
+        .map_err(|e| CodegenError::Llvm(format!("drop done branch: {e:?}")))?;
+
+    builder.position_at_end(done_bb);
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("drop ret: {e:?}")))?;
+    Ok(())
+}
+
+/// Emit `__hew_record_clone_inplace_<Record>(*const, *mut) -> i32` body.
+/// Same per-field rollback semantics as the actor clone body, but:
+/// - No wrapper allocation; caller passes already-allocated `dst`.
+/// - Caller must have memcpy'd `dst <- src` first (the actor-clone body
+///   does this as part of its wholesale memcpy at step 3; if a future
+///   caller invokes this helper without the memcpy precondition, BitCopy
+///   fields will be wrong but no UB occurs).
+/// - Returns 0 on success, 1 on partial-clone rollback.
+fn emit_record_clone_inplace_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    record_name: &str,
+    record_struct: StructType<'ctx>,
+    kinds: &[StateFieldCloneKind],
+) -> CodegenResult<()> {
+    let f = get_or_declare_record_clone_inplace(ctx, llvm_mod, record_name);
+    if f.count_basic_blocks() > 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "record clone synthesis: `__hew_record_clone_inplace_{record_name}` \
+             already has a body — duplicate synthesis is a substrate invariant violation"
+        )));
+    }
+    let i32_ty = ctx.i32_type();
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(f, "entry");
+    let success_bb = ctx.append_basic_block(f, "success");
+    let fail_bb = ctx.append_basic_block(f, "fail");
+
+    builder.position_at_end(entry_bb);
+    let src = f
+        .get_nth_param(0)
+        .expect("record clone src")
+        .into_pointer_value();
+    let dst = f
+        .get_nth_param(1)
+        .expect("record clone dst")
+        .into_pointer_value();
+
+    // Same per-field step pattern as the actor body.
+    let mut field_steps: Vec<(u32, &StateFieldCloneKind)> = Vec::new();
+    for (idx, kind) in kinds.iter().enumerate() {
+        if !matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
+            field_steps.push((idx as u32, kind));
+        }
+    }
+    if field_steps.is_empty() {
+        builder
+            .build_unconditional_branch(success_bb)
+            .map_err(|e| CodegenError::Llvm(format!("record clone trivial: {e:?}")))?;
+    } else {
+        let rollback_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("rb_step_{k}")))
+            .collect();
+        let store_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("step_{k}_store")))
+            .collect();
+        let clone_bbs: Vec<_> = (0..field_steps.len())
+            .map(|k| ctx.append_basic_block(f, &format!("step_{k}_clone")))
+            .collect();
+        builder
+            .build_unconditional_branch(clone_bbs[0])
+            .map_err(|e| CodegenError::Llvm(format!("record clone first branch: {e:?}")))?;
+        for (step_idx, &(field_idx, kind)) in field_steps.iter().enumerate() {
+            builder.position_at_end(clone_bbs[step_idx]);
+            let next_bb = if step_idx + 1 < field_steps.len() {
+                clone_bbs[step_idx + 1]
+            } else {
+                success_bb
+            };
+            emit_field_clone_step(
+                ctx,
+                llvm_mod,
+                &builder,
+                Some(record_struct),
+                src,
+                dst,
+                field_idx,
+                kind,
+                store_bbs[step_idx],
+                rollback_bbs[step_idx],
+                next_bb,
+            )?;
+        }
+        for (step_idx, rollback_bb) in rollback_bbs.iter().enumerate() {
+            builder.position_at_end(*rollback_bb);
+            for back_idx in (0..step_idx).rev() {
+                let (drop_field_idx, drop_kind) = field_steps[back_idx];
+                emit_field_drop_step(
+                    ctx,
+                    llvm_mod,
+                    &builder,
+                    Some(record_struct),
+                    dst,
+                    drop_field_idx,
+                    drop_kind,
+                )?;
+            }
+            // No wrapper free here — record is embedded.
+            builder
+                .build_unconditional_branch(fail_bb)
+                .map_err(|e| CodegenError::Llvm(format!("record clone rb branch: {e:?}")))?;
+        }
+    }
+    builder.position_at_end(success_bb);
+    builder
+        .build_return(Some(&i32_ty.const_zero()))
+        .map_err(|e| CodegenError::Llvm(format!("record clone success ret: {e:?}")))?;
+    builder.position_at_end(fail_bb);
+    builder
+        .build_return(Some(&i32_ty.const_int(1, false)))
+        .map_err(|e| CodegenError::Llvm(format!("record clone fail ret: {e:?}")))?;
+    Ok(())
+}
+
+/// Emit `__hew_record_drop_inplace_<Record>(*mut)` body. Reverse-order
+/// drops non-BitCopy fields. Does NOT free the wrapper (records are
+/// embedded in their parent struct).
+fn emit_record_drop_inplace_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    record_name: &str,
+    record_struct: StructType<'ctx>,
+    kinds: &[StateFieldCloneKind],
+) -> CodegenResult<()> {
+    let f = get_or_declare_record_drop_inplace(ctx, llvm_mod, record_name);
+    if f.count_basic_blocks() > 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "record drop synthesis: `__hew_record_drop_inplace_{record_name}` \
+             already has a body — duplicate synthesis is a substrate invariant violation"
+        )));
+    }
+    let i64_ty = ctx.i64_type();
+    let builder = ctx.create_builder();
+    let entry_bb = ctx.append_basic_block(f, "entry");
+    let do_drop_bb = ctx.append_basic_block(f, "do_drop");
+    let done_bb = ctx.append_basic_block(f, "done");
+
+    builder.position_at_end(entry_bb);
+    let state = f
+        .get_nth_param(0)
+        .expect("record drop param")
+        .into_pointer_value();
+    let is_null = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            builder
+                .build_ptr_to_int(state, i64_ty, "rec_int")
+                .map_err(|e| CodegenError::Llvm(format!("record drop ptr_to_int: {e:?}")))?,
+            i64_ty.const_zero(),
+            "rec_is_null",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("record drop null cmp: {e:?}")))?;
+    builder
+        .build_conditional_branch(is_null, done_bb, do_drop_bb)
+        .map_err(|e| CodegenError::Llvm(format!("record drop null branch: {e:?}")))?;
+
+    builder.position_at_end(do_drop_bb);
+    for (idx, kind) in kinds.iter().enumerate().rev() {
+        if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
+            continue;
+        }
+        if matches!(
+            kind,
+            StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Connection
+            }
+        ) {
+            continue;
+        }
+        emit_field_drop_step(
+            ctx,
+            llvm_mod,
+            &builder,
+            Some(record_struct),
+            state,
+            idx as u32,
+            kind,
+        )?;
+    }
+    builder
+        .build_unconditional_branch(done_bb)
+        .map_err(|e| CodegenError::Llvm(format!("record drop done branch: {e:?}")))?;
+
+    builder.position_at_end(done_bb);
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("record drop ret: {e:?}")))?;
+    Ok(())
+}
+
+/// True if any field in `kinds` is `IoHandle { Connection }`. Drives the
+/// actor-clone short-circuit (return null up front).
+fn has_connection_field(kinds: &[StateFieldCloneKind]) -> bool {
+    kinds.iter().any(|k| {
+        matches!(
+            k,
+            StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Connection
+            }
+        )
+    })
 }
 
 fn emit_actor_spawn_lifecycle<'ctx>(
@@ -3555,14 +5329,14 @@ fn lower_instruction(
         Instr::EnterContext | Instr::ExitContext => {
             if fn_ctx.execution_context.is_none() {
                 return Err(CodegenError::FailClosed(
-                    "context boundary marker requires an actor-handler execution context".into(),
+                    "context boundary marker requires a ctx-bearing execution context".into(),
                 ));
             }
         }
         Instr::CheckCancellation => {
             if fn_ctx.execution_context.is_none() {
                 return Err(CodegenError::FailClosed(
-                    "CheckCancellation requires an actor-handler execution context".into(),
+                    "CheckCancellation requires a ctx-bearing execution context".into(),
                 ));
             }
             emit_cooperate_check(fn_ctx, block_id, drop_plans)?;
@@ -3814,6 +5588,78 @@ fn lower_instruction(
                 .build_store(dest_ptr, result)
                 .map_err(|e| CodegenError::Llvm(format!("bitwise store: {e:?}")))?;
         }
+        Instr::BoolNot { dest, operand } => {
+            let (operand_ptr, operand_ty) = place_pointer(fn_ctx, *operand)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let bool_int = match operand_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "BoolNot operand is not an int".into(),
+                    ))
+                }
+            };
+            let dest_int = match dest_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "BoolNot dest is not an int".into(),
+                    ))
+                }
+            };
+            let operand_v = fn_ctx
+                .builder
+                .build_load(bool_int, operand_ptr, "boolnot_operand")
+                .map_err(|e| CodegenError::Llvm(format!("bool not operand load: {e:?}")))?
+                .into_int_value();
+            let bit = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    operand_v,
+                    bool_int.const_zero(),
+                    "boolnot",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("bool not compare: {e:?}")))?;
+            let widened = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(bit, dest_int, "boolnot_widen")
+                .map_err(|e| CodegenError::Llvm(format!("bool not widen: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .map_err(|e| CodegenError::Llvm(format!("bool not store: {e:?}")))?;
+        }
+        Instr::IntBitNot { dest, operand } => {
+            let (operand_ptr, operand_ty) = place_pointer(fn_ctx, *operand)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let int_ty = match operand_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntBitNot operand is not an integer".into(),
+                    ));
+                }
+            };
+            if dest_ty != operand_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntBitNot operand and dest must share the same integer type".into(),
+                ));
+            }
+            let operand_v = fn_ctx
+                .builder
+                .build_load(int_ty, operand_ptr, "bitnot_operand")
+                .map_err(|e| CodegenError::Llvm(format!("bitnot operand load: {e:?}")))?
+                .into_int_value();
+            let result = fn_ctx
+                .builder
+                .build_not(operand_v, "bitnot")
+                .map_err(|e| CodegenError::Llvm(format!("bitnot: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("bitnot store: {e:?}")))?;
+        }
         Instr::IntArithChecked {
             op,
             signed,
@@ -3933,6 +5779,98 @@ fn lower_instruction(
                 .builder
                 .build_store(flag_ptr, of_widened)
                 .map_err(|e| CodegenError::Llvm(format!("checked flag store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::IntNegChecked {
+            signed,
+            dest,
+            operand,
+            overflow_flag,
+        } => {
+            let (operand_ptr, operand_ty) = place_pointer(fn_ctx, *operand)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let (flag_ptr, flag_ty) = place_pointer(fn_ctx, *overflow_flag)?;
+            let int_ty = match operand_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntNegChecked operand is not an integer".into(),
+                    ));
+                }
+            };
+            if dest_ty != operand_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntNegChecked operand and dest must share the same integer type".into(),
+                ));
+            }
+            let flag_int = match flag_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntNegChecked overflow_flag is not an integer".into(),
+                    ));
+                }
+            };
+            let intrinsic_name = match signed {
+                IntSignedness::Signed => "llvm.ssub.with.overflow",
+                IntSignedness::Unsigned => "llvm.usub.with.overflow",
+            };
+            let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+                CodegenError::Llvm(format!(
+                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
+                ))
+            })?;
+            let intrinsic_fn = intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[int_ty.into()])
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {int_ty:?}"
+                    ))
+                })?;
+            let operand_v = fn_ctx
+                .builder
+                .build_load(int_ty, operand_ptr, "ineg_operand")
+                .map_err(|e| CodegenError::Llvm(format!("ineg operand load: {e:?}")))?
+                .into_int_value();
+            let call_site = fn_ctx
+                .builder
+                .build_call(
+                    intrinsic_fn,
+                    &[int_ty.const_zero().into(), operand_v.into()],
+                    "neg_with_overflow",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("neg with-overflow call: {e:?}")))?;
+            let agg = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` returned void"
+                    ))
+                })?
+                .into_struct_value();
+            let result_v = fn_ctx
+                .builder
+                .build_extract_value(agg, 0, "neg_result")
+                .map_err(|e| CodegenError::Llvm(format!("neg extract result: {e:?}")))?
+                .into_int_value();
+            let of_bit = fn_ctx
+                .builder
+                .build_extract_value(agg, 1, "neg_overflow")
+                .map_err(|e| CodegenError::Llvm(format!("neg extract flag: {e:?}")))?
+                .into_int_value();
+            let of_widened = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(of_bit, flag_int, "neg_overflow_widen")
+                .map_err(|e| CodegenError::Llvm(format!("neg flag zext: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_v)
+                .map_err(|e| CodegenError::Llvm(format!("neg result store: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(flag_ptr, of_widened)
+                .map_err(|e| CodegenError::Llvm(format!("neg flag store: {e:?}")))?;
             let _ = ctx;
         }
         Instr::IntArithCheckedOption {
@@ -4149,6 +6087,78 @@ fn lower_instruction(
             let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
             let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            if matches!(lhs_ty, BasicTypeEnum::PointerType(_))
+                && rhs_ty == lhs_ty
+                && matches!(pred, CmpPred::Eq | CmpPred::NotEq)
+            {
+                let lhs_resolved_ty = place_resolved_ty(fn_ctx, *lhs)?;
+                let rhs_resolved_ty = place_resolved_ty(fn_ctx, *rhs)?;
+                if !matches!(
+                    (lhs_resolved_ty, rhs_resolved_ty),
+                    (ResolvedTy::String, ResolvedTy::String)
+                ) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "IntCmp pointer operands must be string-typed for content equality; \
+                         got lhs={lhs_resolved_ty:?}, rhs={rhs_resolved_ty:?}"
+                    )));
+                }
+                let dest_int = match dest_ty {
+                    BasicTypeEnum::IntType(t) => t,
+                    _ => {
+                        return Err(CodegenError::FailClosed(
+                            "IntCmp dest is not an integer".into(),
+                        ))
+                    }
+                };
+                let lhs_v = fn_ctx
+                    .builder
+                    .build_load(lhs_ty, lhs_ptr, "string_cmp_lhs")
+                    .map_err(|e| CodegenError::Llvm(format!("string cmp lhs load: {e:?}")))?
+                    .into_pointer_value();
+                let rhs_v = fn_ctx
+                    .builder
+                    .build_load(lhs_ty, rhs_ptr, "string_cmp_rhs")
+                    .map_err(|e| CodegenError::Llvm(format!("string cmp rhs load: {e:?}")))?
+                    .into_pointer_value();
+                let callee = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_string_equals",
+                )?;
+                let eq_i32 = fn_ctx
+                    .builder
+                    .build_call(callee, &[lhs_v.into(), rhs_v.into()], "hew_string_equals")
+                    .map_err(|e| CodegenError::Llvm(format!("hew_string_equals call: {e:?}")))?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_string_equals unexpectedly returned void".into(),
+                        )
+                    })?
+                    .into_int_value();
+                let zero = eq_i32.get_type().const_zero();
+                let predicate = if *pred == CmpPred::Eq {
+                    IntPredicate::NE
+                } else {
+                    IntPredicate::EQ
+                };
+                let bit = fn_ctx
+                    .builder
+                    .build_int_compare(predicate, eq_i32, zero, "string_cmp_bit")
+                    .map_err(|e| CodegenError::Llvm(format!("string cmp icmp: {e:?}")))?;
+                let widened = fn_ctx
+                    .builder
+                    .build_int_z_extend_or_bit_cast(bit, dest_int, "string_cmp_zext")
+                    .map_err(|e| CodegenError::Llvm(format!("string cmp zext: {e:?}")))?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, widened)
+                    .map_err(|e| CodegenError::Llvm(format!("string cmp store: {e:?}")))?;
+                let _ = ctx;
+                return Ok(());
+            }
             let lhs_int = match lhs_ty {
                 BasicTypeEnum::IntType(t) => t,
                 _ => {
@@ -4607,6 +6617,37 @@ fn lower_instruction(
                 .map_err(|e| CodegenError::Llvm(format!("farith store: {e:?}")))?;
             let _ = ctx;
         }
+        Instr::FloatNeg { dest, operand, .. } => {
+            let (operand_ptr, operand_ty) = place_pointer(fn_ctx, *operand)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let float_ty = match operand_ty {
+                BasicTypeEnum::FloatType(f) => f,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "FloatNeg operand is not a float type".into(),
+                    ));
+                }
+            };
+            if dest_ty != operand_ty {
+                return Err(CodegenError::FailClosed(
+                    "FloatNeg operand and dest must share the same float type".into(),
+                ));
+            }
+            let operand_v = fn_ctx
+                .builder
+                .build_load(float_ty, operand_ptr, "fneg_operand")
+                .map_err(|e| CodegenError::Llvm(format!("fneg operand load: {e:?}")))?
+                .into_float_value();
+            let result = fn_ctx
+                .builder
+                .build_float_sub(float_ty.const_float(-0.0), operand_v, "fneg")
+                .map_err(|e| CodegenError::Llvm(format!("fneg: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("fneg store: {e:?}")))?;
+            let _ = ctx;
+        }
         Instr::CharLit { value, dest } => {
             // `char` is i32: the Unicode scalar value U+0000..U+10FFFF.
             // Stored as `u32` in MIR; emit as an i32 constant (sign-extension
@@ -4981,15 +7022,31 @@ fn record_struct_for<'ctx>(
     ty: &ResolvedTy,
 ) -> CodegenResult<StructType<'ctx>> {
     match ty {
-        ResolvedTy::Named { name, .. } => {
-            fn_ctx.record_layouts.get(name).copied().ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "record codegen: type `{name}` reached RecordInit/RecordFieldLoad \
+        ResolvedTy::Named { name, args, .. } => {
+            let lookup_key: std::borrow::Cow<str> = if args.is_empty() {
+                std::borrow::Cow::Borrowed(name.as_str())
+            } else {
+                std::borrow::Cow::Owned(mangle(name, args))
+            };
+            fn_ctx
+                .record_layouts
+                .get(lookup_key.as_ref())
+                .copied()
+                .or_else(|| {
+                    (!args.is_empty())
+                        .then(|| mangle(short_name(name), args))
+                        .and_then(|short_key| {
+                            fn_ctx.record_layouts.get(short_key.as_str()).copied()
+                        })
+                })
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "record codegen: type `{lookup_key}` reached RecordInit/RecordFieldLoad \
                  but is not in the registered record-layout map; either the MIR \
                  producer emitted the instruction against a non-record type, or \
                  `IrPipeline.record_layouts` was not populated for this module"
-                ))
-            })
+                    ))
+                })
         }
         other => Err(CodegenError::FailClosed(format!(
             "record codegen: expected a Named record type, got {other:?}"
@@ -5341,7 +7398,7 @@ fn context_field_matches_dest<'ctx>(
 
 fn lower_context_field(fn_ctx: &FnCtx<'_, '_>, dest: Place, offset: usize) -> CodegenResult<()> {
     let ctx_ptr = fn_ctx.execution_context.ok_or_else(|| {
-        CodegenError::FailClosed("ContextField requires an actor-handler execution context".into())
+        CodegenError::FailClosed("ContextField requires a ctx-bearing execution context".into())
     })?;
     if !fn_ctx.execution_context_is_actor_handler
         && matches!(
@@ -6016,43 +8073,6 @@ fn lower_call_runtime_abi(
                 .builder
                 .build_store(dest_ptr, result_val)
                 .map_err(|e| CodegenError::Llvm(format!("{symbol} store: {e:?}")))?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        // ── scope{}/spawn/await task ABI (Phase 2, inventory rows 2/3/4) ──────
-        //
-        // hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32
-        // args[0]: scope ptr. args[1]: actor ptr (opaque c_void).
-        // Destination: None — the i32 return is a runtime-internal signal.
-        "hew_scope_spawn" => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_scope_spawn): expected 2 args \
-                     (scope, actor), got {}",
-                    args.len()
-                )));
-            }
-            let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_scope_spawn arg0")?;
-            let actor_ptr = load_duplex_handle(fn_ctx, args[1], "hew_scope_spawn arg1")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
-            fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[scope_ptr.into(), actor_ptr.into()],
-                    "hew_scope_spawn_call",
-                )
-                .map_err(|e| CodegenError::Llvm(format!("hew_scope_spawn call: {e:?}")))?;
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_scope_spawn i32 return is runtime-internal; \
-                     producer must not supply dest={d:?}"
-                )));
-            }
             let _ = (i32_ty, ptr_ty);
         }
         // hew_task_new() -> *mut HewTask
@@ -6771,18 +8791,28 @@ fn resolve_drop_fn_to_symbol(drop_fn: &str) -> Result<&'static str, CodegenError
         // An explicit table entry is required; string-mangling would produce
         // the wrong symbol.
         "LambdaActorHandle::close" => Ok("hew_lambda_actor_release"),
+        // Half-handle drops (slice-3 DropKind::DuplexHalfClose(Direction)).
+        // Both Send and Recv resolve to the same `hew_duplex_close_half`
+        // C-ABI symbol; the direction discriminant is materialised at the
+        // call site in `lower_drop` from the Place variant (SendHalf vs
+        // RecvHalf), not encoded in the symbol name. This closes the
+        // 6-cell drop gap surfaced by the W2.004 Stage-0 audit (rows #6/#7
+        // SendHalf/RecvHalf × {sync-return, async-cancel, actor-shutdown}).
+        "SendHalf::close" | "RecvHalf::close" => Ok("hew_duplex_close_half"),
         // Literal C-ABI symbol pass-through (backward compat for hand-built
         // test MIR that pre-dates elaborated-drop-plan consumption).
         "hew_duplex_close" => Ok("hew_duplex_close"),
         "hew_lambda_actor_release" => Ok("hew_lambda_actor_release"),
+        "hew_duplex_close_half" => Ok("hew_duplex_close_half"),
         // Remaining elaborator-produced names have no MIR producer today —
-        // SendHalf/RecvHalf place_pointer is fail-closed, Sink/Stream have
-        // no constructor surface. Fail closed here so any future producer
-        // that outpaces codegen surfaces immediately rather than leaking.
+        // Sink/Stream have no constructor surface. Fail closed here so any
+        // future producer that outpaces codegen surfaces immediately rather
+        // than leaking.
         other => Err(CodegenError::FailClosed(format!(
             "drop_fn={other:?}: no C-ABI runtime symbol wired for this \
              drop_fn string. Recognised names today: Duplex::close, \
-             LambdaActorHandle::close (and their hew_* C-ABI literals). \
+             LambdaActorHandle::close, SendHalf::close, RecvHalf::close \
+             (and their hew_* C-ABI literals). \
              Refusing to silently no-op a resource drop \
              (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
         ))),
@@ -6810,11 +8840,39 @@ fn lower_drop(fn_ctx: &FnCtx<'_, '_>, place: Place, drop_fn: &str) -> CodegenRes
         &mut fn_ctx.runtime_decls.borrow_mut(),
         symbol,
     )?;
-    let llvm_args: [BasicMetadataValueEnum; 1] = [handle.into()];
-    fn_ctx
-        .builder
-        .build_call(fv, &llvm_args, &format!("{symbol}_call"))
-        .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+    // Direction-aware call args. `hew_duplex_close_half` takes a second
+    // i32 direction discriminant (pinned by HewDuplexDirection ABI in
+    // `hew-runtime/src/duplex.rs:765`: Send=0, Recv=1) the runtime
+    // dispatches against. We materialise the discriminant from the Place
+    // variant here — never trust the drop_fn string alone for it, because
+    // both SendHalf::close and RecvHalf::close map to the same symbol.
+    // Any other symbol takes only the handle pointer.
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let call_result = if symbol == "hew_duplex_close_half" {
+        let direction = match place {
+            Place::SendHalf(_) => 0i64,
+            Place::RecvHalf(_) => 1i64,
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_duplex_close_half drop must address a SendHalf or RecvHalf \
+                     Place; got {other:?}. Direction discriminant cannot be \
+                     synthesised from the Place variant — refusing to silently \
+                     pick a direction (LESSONS: boundary-fail-closed)."
+                )));
+            }
+        };
+        let dir_val = i32_ty.const_int(direction as u64, false);
+        let llvm_args: [BasicMetadataValueEnum; 2] = [handle.into(), dir_val.into()];
+        fn_ctx
+            .builder
+            .build_call(fv, &llvm_args, &format!("{symbol}_call"))
+    } else {
+        let llvm_args: [BasicMetadataValueEnum; 1] = [handle.into()];
+        fn_ctx
+            .builder
+            .build_call(fv, &llvm_args, &format!("{symbol}_call"))
+    };
+    call_result.map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
     // Zero the alloca: structurally-reachable second drop must hit null
     // at the codegen layer. The runtime AtomicBool guard provides
     // defence-in-depth, but the codegen null-store is required per
@@ -7359,7 +9417,7 @@ fn emit_remote_pid_tell_call<'ctx>(
     // by the time we reach codegen.
     let pid_ty = place_resolved_ty(fn_ctx, *pid_arg)?;
     let actor_name = match pid_ty {
-        ResolvedTy::Named { name, args } if name == "RemotePid" => {
+        ResolvedTy::Named { name, args, .. } if name == "RemotePid" => {
             let inner = args.first().ok_or_else(|| {
                 CodegenError::FailClosed(
                     "hew_remote_pid_tell pid arg `RemotePid<T>` is missing its T type \
@@ -7772,6 +9830,294 @@ fn emit_node_lookup_call<'ctx>(
         .build_unconditional_branch(next_bb)
         .map_err(|e| CodegenError::Llvm(format!("lookup ok br next: {e:?}")))?;
 
+    Ok(())
+}
+
+// ============================================================================
+// Composite-return spine — Lane W2.004 Stage 1
+// ----------------------------------------------------------------------------
+//
+// Four substrate helpers that synthesize user-visible composite return values
+// (`Result<T, E>`, struct literals, enum-variant literals) into a destination
+// `Place`. Each helper resolves the destination's registered layout
+// (`EnumLayout` via `machine_layouts`, `RecordLayout` via `record_layouts`)
+// and stores the tag + per-field payload through the existing
+// `Place::MachineTag` / `Place::MachineVariant` / record-field projection
+// substrate — no new GEP plumbing.
+//
+// Precedents these helpers unify (per W2.004 Stage-0 audit §C):
+//   - `emit_remote_pid_tell_call` Ok-arm `llvm.rs:~7533-7551` — `emit_result_ok`
+//   - `emit_remote_pid_tell_call` Err-arm `llvm.rs:~7553-7641` — `emit_result_err`
+//   - `emit_node_lookup_call`     Ok-arm `llvm.rs:~7783-7819` — `emit_result_ok`
+//   - `emit_node_lookup_call`     Err-arm `llvm.rs:~7747-7781` — `emit_result_err`
+//   - `Instr::RecordInit` `lower_record_init` — `emit_struct_literal`
+//     (no in-scope refactor; helper is the substrate for future Cluster-2
+//     consumers per audit §C.3)
+//   - `emit_enum_variant_literal` — no precedent; new substrate for Stage 3
+//     MIR producers (W2.005).
+//
+// Helper signatures (push-back per A259 #3(b) vs the plan):
+//   - `emit_struct_literal` uses `&[(FieldOffset, Place)]` (the MIR
+//     primitive used by `Instr::RecordInit`) rather than the plan's
+//     `&[(FieldName, Place)]`. `FieldName` is not a type in the MIR model;
+//     name → offset resolution happens at MIR-producer time per the
+//     `RecordInit` docstring (`hew-mir/src/model.rs:1747`).
+//   - `emit_struct_literal` does not take `struct_name`: the registered
+//     record name is recovered from `place_resolved_ty(dest)`'s
+//     `ResolvedTy::Named { name, .. }`, identically to `lower_record_init`.
+//
+// Constraints (CLAUDE.md customs):
+//   - **#2 Fail-closed Codegen**: any missing layout / mismatched type /
+//     out-of-range projection surfaces `CodegenError::FailClosed` with a
+//     concrete diagnostic naming the offending Place + layout. No silent
+//     zero-init.
+//   - **#3 Type Inference Boundary**: helpers use `place_resolved_ty`; any
+//     unresolved `Ty::Var` is rejected by that function before reaching
+//     here.
+//   - **#1 Drop Safety**: composites written by these helpers participate
+//     in the same LIFO drop machinery as ordinary records/enums
+//     (`build_lifo_drops` walks `owned_locals`); no new drop scheduling is
+//     needed at the helper layer. Tag-aware payload-drop for heap-owning
+//     Result variants (`Result<string, string>`) is inherited scope of
+//     W2.005 per plan §9.2.
+//
+// LESSONS: boundary-fail-closed (P0), dedup-semantic-boundary (P2),
+// no-silent-no-op-stubs (P0).
+// ============================================================================
+
+/// Resolve a destination `Place` to the backing local id whose alloca
+/// holds the composite outer struct. The composite helpers below all
+/// project through `Place::MachineTag(local)` / `Place::MachineVariant
+/// { local, .. }` against this id.
+///
+/// Only `Place::Local(_)` is accepted today — the same constraint the
+/// existing bespoke `emit_remote_pid_tell_call` / `emit_node_lookup_call`
+/// precedents enforce (`llvm.rs:~7395, ~7700`). `Place::ReturnSlot`
+/// composites are constructed via a temporary local + a final `Move`,
+/// not directly — keeping the projection arithmetic uniform.
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn composite_dest_local(dest: Place, helper: &str) -> CodegenResult<u32> {
+    match dest {
+        Place::Local(id) => Ok(id),
+        other => Err(CodegenError::FailClosed(format!(
+            "{helper} dest must be Place::Local(_) (composites materialise into a \
+             named local's alloca, then move to the final slot); got {other:?}"
+        ))),
+    }
+}
+
+/// Store an integer discriminant at `Place::MachineTag(dest_local)`.
+/// The tag's LLVM integer type is recovered from the tagged-union layout
+/// via `place_pointer`. Fail-closed if the tag projection does not
+/// resolve to an integer type (a structural invariant of
+/// `build_tagged_union_layout`).
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn store_composite_tag(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest_local: u32,
+    tag_value: u64,
+    helper: &str,
+) -> CodegenResult<()> {
+    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::MachineTag(dest_local))?;
+    let tag_int_ty = match tag_ty {
+        BasicTypeEnum::IntType(t) => t,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{helper} dest local {dest_local} tag projection resolved to non-integer \
+                 type {other:?} — tagged-union outer struct field 0 must be iN per \
+                 build_tagged_union_layout"
+            )));
+        }
+    };
+    fn_ctx
+        .builder
+        .build_store(tag_ptr, tag_int_ty.const_int(tag_value, false))
+        .map_err(|e| CodegenError::Llvm(format!("{helper} store tag={tag_value}: {e:?}")))?;
+    Ok(())
+}
+
+/// Copy the full value at `src` into the variant-payload field at
+/// `Place::MachineVariant { local: dest_local, variant_idx, field_idx }`.
+/// Source and destination LLVM types must match exactly — composites are
+/// not implicitly coerced (matching `lower_record_init`'s shape check).
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn copy_into_variant_field(
+    fn_ctx: &FnCtx<'_, '_>,
+    src: Place,
+    dest_local: u32,
+    variant_idx: u32,
+    field_idx: u32,
+    helper: &str,
+) -> CodegenResult<()> {
+    let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+    let (dst_ptr, dst_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx,
+            field_idx,
+        },
+    )?;
+    if src_ty != dst_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper}: variant {variant_idx} field {field_idx} type mismatch: \
+             dest={dst_ty:?}, src={src_ty:?}. The MIR producer must allocate the \
+             source local with the same ResolvedTy as the variant-layout field."
+        )));
+    }
+    let src_val = fn_ctx
+        .builder
+        .build_load(
+            src_ty,
+            src_ptr,
+            &format!("{helper}_v{variant_idx}_f{field_idx}_src"),
+        )
+        .map_err(|e| {
+            CodegenError::Llvm(format!(
+                "{helper} variant {variant_idx} field {field_idx} load: {e:?}"
+            ))
+        })?;
+    fn_ctx.builder.build_store(dst_ptr, src_val).map_err(|e| {
+        CodegenError::Llvm(format!(
+            "{helper} variant {variant_idx} field {field_idx} store: {e:?}"
+        ))
+    })?;
+    Ok(())
+}
+
+/// Emit a `Result<T, E>::Ok(payload)` (or `Ok(())` when `payload = None`)
+/// into the tagged-union slot at `dest`.
+///
+/// `dest` must be a `Place::Local(N)` whose registered layout is the
+/// `Result` outer-struct (looked up by name through `machine_layouts`
+/// via the existing `MachineTag` / `MachineVariant` projections). The
+/// helper stores `tag = 0` (Ok arm) and copies `payload` (when present)
+/// into the Ok-variant's field 0 — matching both the Stage-0 audit
+/// precedents (`emit_remote_pid_tell_call` Ok-arm with `payload = None`,
+/// `emit_node_lookup_call` Ok-arm with `payload = Some(rc_local)`).
+///
+/// Multi-field Ok-variant payloads are not in current scope: the Result
+/// variant layout always has either zero fields (unit Ok) or a single
+/// field (the user-visible `T`, which may itself be a record/struct
+/// whose internal fields the caller has already populated before
+/// passing the source local here). This matches the audit's enumeration
+/// of every `Result<_, _>` shape registered at the base commit.
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn emit_result_ok(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    payload: Option<Place>,
+) -> CodegenResult<()> {
+    let dest_local = composite_dest_local(dest, "emit_result_ok")?;
+    store_composite_tag(fn_ctx, dest_local, 0, "emit_result_ok")?;
+    if let Some(src) = payload {
+        copy_into_variant_field(fn_ctx, src, dest_local, 0, 0, "emit_result_ok")?;
+    }
+    Ok(())
+}
+
+/// Emit a `Result<T, E>::Err(error_payload)` into the tagged-union slot
+/// at `dest`.
+///
+/// `dest` must be a `Place::Local(N)` whose registered layout is the
+/// `Result` outer-struct. The helper stores `tag = 1` (Err arm) and
+/// copies `error_payload` into the Err-variant's field 0 — matching the
+/// `emit_node_lookup_call` Err-arm precedent (`LookupError::NotFound`
+/// pre-populated into a zero-initialised source local). For Err
+/// payloads whose discriminant must be patched (e.g. `SendError::
+/// NodeRoutingNotWired`), the caller constructs the source local with
+/// the discriminant already set; this helper does not synthesise
+/// variant tags for the payload type.
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn emit_result_err(fn_ctx: &FnCtx<'_, '_>, dest: Place, error_payload: Place) -> CodegenResult<()> {
+    let dest_local = composite_dest_local(dest, "emit_result_err")?;
+    store_composite_tag(fn_ctx, dest_local, 1, "emit_result_err")?;
+    copy_into_variant_field(fn_ctx, error_payload, dest_local, 1, 0, "emit_result_err")?;
+    Ok(())
+}
+
+/// Emit a struct literal into a `Place::Local(N)` whose registered
+/// layout is a `RecordLayout`. Each `(offset, src)` pair copies the
+/// source field's loaded value into the destination's struct GEP at the
+/// matching field index.
+///
+/// This helper is the substrate face of the existing `lower_record_init`
+/// inlined codegen path (`llvm.rs:5052`); it intentionally mirrors that
+/// shape so Stage 2 (per the W2.004 plan) can refactor the inline path
+/// to call this helper. Until then, the helper's first consumer is the
+/// composite-return spine: Cluster-2 surfaces (`link()` / `monitor()`)
+/// build `MonitorRef { ref_id }` literals through this substrate.
+///
+/// `dest`'s resolved type must be `ResolvedTy::Named { name, .. }`
+/// keyed to a registered `RecordLayout`; the struct's field order is
+/// authoritative — `field_offset.0` indexes directly into the LLVM
+/// struct.
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn emit_struct_literal(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    fields: &[(FieldOffset, Place)],
+) -> CodegenResult<()> {
+    let dest_ty = place_resolved_ty(fn_ctx, dest)?.clone();
+    // Delegate to the established record-init path. Reusing
+    // `lower_record_init` guarantees byte-identical IR shape for any
+    // RecordLayout the helper consumes (the Stage 2 refactor target).
+    // `lower_record_init` already enforces:
+    //   - dest slot type matches the registered struct (fail-closed if
+    //     producer/codegen disagree),
+    //   - source slot type matches the field type at each offset,
+    //   - field offsets are in-bounds.
+    // No additional validation needed here — substrate-by-delegation.
+    lower_record_init(fn_ctx, &dest_ty, fields, dest)
+}
+
+/// Emit an arbitrary-variant enum literal into a `Place::Local(N)`
+/// whose registered layout is the named enum's tagged-union outer
+/// struct.
+///
+/// Stores `tag = variant_idx` and copies each `payload[i]` into the
+/// destination's `MachineVariant { variant_idx, field_idx: i }`. This
+/// helper has no in-tree precedent (per W2.004 Stage-0 audit §C.4) —
+/// existing enum-variant construction is open-coded at MIR-producer
+/// call-sites. The substrate is anchored here for the M2-stage
+/// consumers (Cluster-2 link/monitor surfaces, future `MonitorRef`-style
+/// composites with non-unit variants).
+///
+/// `payload.len()` must equal the variant's `field_tys.len()` from the
+/// registered `EnumLayout`; mismatched arities are caught downstream by
+/// `place_pointer`'s `MachineVariant` field-index bounds check
+/// (`llvm.rs:~2092`).
+#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+fn emit_enum_variant_literal(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    variant_idx: u32,
+    payload: &[Place],
+) -> CodegenResult<()> {
+    let dest_local = composite_dest_local(dest, "emit_enum_variant_literal")?;
+    store_composite_tag(
+        fn_ctx,
+        dest_local,
+        u64::from(variant_idx),
+        "emit_enum_variant_literal",
+    )?;
+    for (field_idx, src) in payload.iter().enumerate() {
+        let field_idx_u32 = u32::try_from(field_idx).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "emit_enum_variant_literal: payload length {} exceeds u32::MAX — \
+                 impossible variant arity",
+                payload.len()
+            ))
+        })?;
+        copy_into_variant_field(
+            fn_ctx,
+            *src,
+            dest_local,
+            variant_idx,
+            field_idx_u32,
+            "emit_enum_variant_literal",
+        )?;
+    }
     Ok(())
 }
 
@@ -9835,6 +12181,7 @@ fn lower_function<'ctx>(
     record_layouts: &RecordLayoutMap<'ctx>,
     actor_layouts: &[ActorLayout],
     machine_layouts: &MachineLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -9962,7 +12309,23 @@ fn lower_function<'ctx>(
         fn_symbols,
         actor_layouts,
         machine_layouts,
+        enum_layouts,
     };
+
+    // Fail-closed boundary: reject composite returns containing heap-owning
+    // payloads. Without tag-aware drop, returning e.g. Option<string> could
+    // leak or double-free the owned allocation. Bitcopy-only payloads (i64,
+    // f64, bool, etc.) are safe because they carry no ownership semantics.
+    if matches!(return_ty_llvm, BasicTypeEnum::StructType(_))
+        && ty_contains_heap_owning(&func.return_ty, fn_ctx.enum_layouts)
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "composite return of heap-owning payload `{}` requires tag-aware \
+             drop (not yet implemented); use bitcopy-only payloads (i64, f64, \
+             bool, ()) or restructure to avoid returning owned values directly",
+            func.return_ty,
+        )));
+    }
 
     // Extract drop_plans from the matched elaborated function, or use an
     // empty slice when no elaborated function is available (hand-built test
@@ -10414,6 +12777,22 @@ fn build_module_for_target<'ctx>(
             emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
         }
     }
+    // W2.002 Stage 3: synthesise `__hew_state_clone_<Actor>` /
+    // `__hew_state_drop_<Actor>` + companion `__hew_record_*_inplace_<R>`
+    // BODIES for every classified actor in `pipeline.actor_layouts`.
+    // Must run BEFORE supervisor bootstrap emission so the
+    // `get_function`-or-declare lookup at Stage 2's supervisor-child
+    // registration sites (and at every direct-spawn emission site)
+    // resolves to the synthesised `define`, not a Stage 2 extern-stub
+    // that would only surface at link time.
+    emit_state_clone_drop_synthesis(
+        ctx,
+        &llvm_mod,
+        &pipeline.actor_layouts,
+        &pipeline.record_layouts,
+        &record_layouts,
+        target_data.as_ref(),
+    )?;
     // Supervisor bootstraps replace the MIR-side synthesised body wholesale
     // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
     // `start` call sequence (S-D.3). The set of bootstrap symbols is
@@ -10425,7 +12804,7 @@ fn build_module_for_target<'ctx>(
         .map(|s| s.bootstrap_symbol.clone())
         .collect();
     for sup in &pipeline.supervisor_layouts {
-        emit_supervisor_bootstrap_body(ctx, &llvm_mod, sup, &fn_symbols)?;
+        emit_supervisor_bootstrap_body(ctx, &llvm_mod, sup, &fn_symbols, &pipeline.actor_layouts)?;
     }
     for func in &pipeline.raw_mir {
         if supervisor_bootstrap_symbols.contains(&func.name) {
@@ -10466,6 +12845,7 @@ fn build_module_for_target<'ctx>(
             &record_layouts,
             &pipeline.actor_layouts,
             &machine_layouts,
+            &pipeline.enum_layouts,
         )?;
     }
     // Emit regex module-init infrastructure if the module uses any regex literals.
@@ -10790,12 +13170,115 @@ mod tests {
         }
     }
 
+    fn pipeline_with_unsupported_float_return() -> IrPipeline {
+        let return_ty = ResolvedTy::F64;
+        let main = RawMirFunction {
+            name: "main".to_string(),
+            return_ty: return_ty.clone(),
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: Vec::new(),
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+        };
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![main],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+        }
+    }
+
+    fn unique_codegen_front_artifact_stem(test_name: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock must be after UNIX_EPOCH")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "hew-codegen-front-verifier-{test_name}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("test temp dir must be created");
+        dir.join("module")
+    }
+
+    fn assert_no_codegen_front_artifacts(stem: &std::path::Path) {
+        for path in [
+            stem.to_path_buf(),
+            stem.with_extension("ll"),
+            stem.with_extension("o"),
+            stem.with_extension("wasm.o"),
+            stem.with_extension("wasm"),
+        ] {
+            assert!(
+                !path.exists(),
+                "codegen-front verifier must not create artefact {}",
+                path.display()
+            );
+        }
+        let dir = stem.parent().expect("artifact stem must have a parent");
+        assert!(
+            std::fs::read_dir(dir)
+                .expect("test temp dir must be readable")
+                .next()
+                .is_none(),
+            "codegen-front verifier must leave temp dir empty: {}",
+            dir.display()
+        );
+    }
+
+    fn remove_codegen_front_temp_dir(stem: &std::path::Path) {
+        if let Some(dir) = stem.parent() {
+            std::fs::remove_dir_all(dir).expect("test temp dir must be removable");
+        }
+    }
+
     #[test]
     fn const_42_module_verifies() {
         let pipeline = empty_pipeline_with_const_42();
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "const42_test").expect("const-42 module must build");
         assert!(m.verify().is_ok(), "const-42 module must pass LLVM verify");
+    }
+
+    #[test]
+    fn codegen_front_verifier_success_creates_no_artifacts() {
+        let pipeline = empty_pipeline_with_const_42();
+        let stem = unique_codegen_front_artifact_stem("success");
+        let module_name = stem.to_string_lossy().into_owned();
+        validate_codegen_front_with_name(&pipeline, &module_name)
+            .expect("codegen-front verifier must accept const-42 pipeline");
+        assert_no_codegen_front_artifacts(&stem);
+        remove_codegen_front_temp_dir(&stem);
+    }
+
+    #[test]
+    fn codegen_front_verifier_unsupported_failure_creates_no_artifacts() {
+        let pipeline = pipeline_with_unsupported_float_return();
+        let stem = unique_codegen_front_artifact_stem("unsupported");
+        let module_name = stem.to_string_lossy().into_owned();
+        let err = validate_codegen_front_with_name(&pipeline, &module_name)
+            .expect_err("codegen-front verifier must reject unsupported float return");
+        assert!(
+            matches!(err, CodegenError::Unsupported(_)),
+            "unsupported float return must surface through verifier as Unsupported, got: {err:?}"
+        );
+        assert_no_codegen_front_artifacts(&stem);
+        remove_codegen_front_temp_dir(&stem);
     }
 
     #[test]
@@ -10974,39 +13457,99 @@ mod tests {
         );
     }
 
+    #[test]
+    fn string_intcmp_eq_uses_string_equals_for_string_operands() {
+        let ctx = Context::create();
+        let m = ctx.create_module("string_intcmp_eq");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "string_intcmp_eq_fn");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::String);
+        alloc_local(&mut fn_ctx, 2, ResolvedTy::I64);
+
+        lower_instruction(
+            &fn_ctx,
+            &Instr::StringLit {
+                bytes: b"left".to_vec(),
+                dest: Place::Local(0),
+            },
+            0,
+            &[],
+        )
+        .expect("left StringLit must lower");
+        lower_instruction(
+            &fn_ctx,
+            &Instr::StringLit {
+                bytes: b"right".to_vec(),
+                dest: Place::Local(1),
+            },
+            0,
+            &[],
+        )
+        .expect("right StringLit must lower");
+        lower_instruction(
+            &fn_ctx,
+            &Instr::IntCmp {
+                dest: Place::Local(2),
+                pred: CmpPred::Eq,
+                lhs: Place::Local(0),
+                rhs: Place::Local(1),
+            },
+            0,
+            &[],
+        )
+        .expect("string IntCmp Eq must lower through hew_string_equals");
+        finish_test_fn(&fn_ctx);
+
+        assert!(m.verify().is_ok(), "string IntCmp module must verify");
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("hew_string_equals"),
+            "string equality must call hew_string_equals; ir:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn non_string_pointer_intcmp_eq_fails_closed_without_string_equals() {
+        let ctx = Context::create();
+        let m = ctx.create_module("non_string_pointer_intcmp_eq");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "non_string_pointer_intcmp_eq_fn");
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: false,
+            pointee: Box::new(ResolvedTy::I64),
+        };
+        alloc_local(&mut fn_ctx, 0, ptr_ty.clone());
+        alloc_local(&mut fn_ctx, 1, ptr_ty);
+        alloc_local(&mut fn_ctx, 2, ResolvedTy::I64);
+
+        let err = lower_instruction(
+            &fn_ctx,
+            &Instr::IntCmp {
+                dest: Place::Local(2),
+                pred: CmpPred::Eq,
+                lhs: Place::Local(0),
+                rhs: Place::Local(1),
+            },
+            0,
+            &[],
+        )
+        .expect_err("non-string pointer IntCmp Eq must fail closed");
+        assert!(
+            matches!(err, CodegenError::FailClosed(ref msg) if msg.contains("must be string-typed")),
+            "non-string pointer IntCmp Eq must fail closed with a typed-boundary error, got: {err:?}"
+        );
+        let ir = m.print_to_string().to_string();
+        assert!(
+            !ir.contains("hew_string_equals"),
+            "non-string pointer equality must not declare or call hew_string_equals; ir:\n{ir}"
+        );
+    }
+
     // Float return is still unsupported — verify the fail-closed boundary.
     #[test]
     fn unsupported_float_return_fails_closed() {
-        let return_ty = ResolvedTy::F64;
-        let main = RawMirFunction {
-            name: "main".to_string(),
-            return_ty: return_ty.clone(),
-            call_conv: hew_mir::FunctionCallConv::Default,
-            params: vec![],
-            locals: Vec::new(),
-            blocks: vec![BasicBlock {
-                id: 0,
-                statements: Vec::new(),
-                instructions: Vec::new(),
-                terminator: Terminator::Return,
-            }],
-            decisions: Vec::new(),
-        };
-        let pipeline = IrPipeline {
-            thir: Vec::new(),
-            raw_mir: vec![main],
-            checked_mir: Vec::new(),
-            elaborated_mir: Vec::new(),
-            diagnostics: Vec::new(),
-            record_layouts: Vec::new(),
-            actor_layouts: Vec::new(),
-            supervisor_layouts: Vec::new(),
-            machine_layouts: Vec::new(),
-            enum_layouts: Vec::new(),
-            regex_literals: Vec::new(),
-            gen_state_layouts: vec![],
-            extern_decls: vec![],
-        };
+        let pipeline = pipeline_with_unsupported_float_return();
         let ctx = Context::create();
         let err =
             build_module(&ctx, &pipeline, "float_return").expect_err("F64 return must be rejected");
@@ -11296,6 +13839,7 @@ mod tests {
         ResolvedTy::Named {
             name: "Duplex".to_string(),
             args: Vec::new(),
+            builtin: None,
         }
     }
 
@@ -11912,6 +14456,7 @@ mod tests {
                 ResolvedTy::Named {
                     name: "Option".to_string(),
                     args: vec![ResolvedTy::I64],
+                    builtin: None,
                 },
                 // local_1: i64 — return value
                 ResolvedTy::I64,
@@ -12033,5 +14578,710 @@ mod tests {
             m.verify().is_ok(),
             "gen-body module with Yield must pass LLVM verify:\n{ir}"
         );
+    }
+
+    // ========================================================================
+    // W2.004 Stage 1 — composite-return helpers + DuplexHalfClose drop
+    // substrate
+    //
+    // The helpers are private to `llvm.rs` and have no in-tree consumers in
+    // Stage 1 (Stage 2 refactors `emit_remote_pid_tell_call` /
+    // `emit_node_lookup_call` to call them; Stage 3 wires MIR producers for
+    // SendHalf / RecvHalf place lowering). To exercise the helpers directly
+    // we synthesise a minimal LLVM `Context` + `Module` + `Builder` + an
+    // `FnCtx` with pre-registered `EnumLayout` / `RecordLayout` fixtures,
+    // then invoke each helper and assert on the printed LLVM IR.
+    //
+    // The drop-substrate tests are simpler — they exercise
+    // `resolve_drop_fn_to_symbol` (a pure string→symbol mapping) and
+    // `intern_runtime_decl` directly.
+    // ========================================================================
+
+    use hew_mir::{
+        EnumLayout as MirEnumLayout, MachineVariantLayout, RecordLayout as MirRecordLayout,
+    };
+
+    // ---- DuplexHalfClose drop substrate -------------------------------------
+
+    #[test]
+    fn drop_fn_send_half_close_resolves_to_hew_duplex_close_half() {
+        let sym = resolve_drop_fn_to_symbol("SendHalf::close")
+            .expect("SendHalf::close must resolve after W2.004 Stage 1");
+        assert_eq!(
+            sym, "hew_duplex_close_half",
+            "SendHalf::close must map to hew_duplex_close_half"
+        );
+    }
+
+    #[test]
+    fn drop_fn_recv_half_close_resolves_to_hew_duplex_close_half() {
+        let sym = resolve_drop_fn_to_symbol("RecvHalf::close")
+            .expect("RecvHalf::close must resolve after W2.004 Stage 1");
+        assert_eq!(
+            sym, "hew_duplex_close_half",
+            "RecvHalf::close must map to hew_duplex_close_half"
+        );
+    }
+
+    #[test]
+    fn drop_fn_literal_hew_duplex_close_half_pass_through() {
+        let sym = resolve_drop_fn_to_symbol("hew_duplex_close_half")
+            .expect("hew_duplex_close_half literal must pass through");
+        assert_eq!(sym, "hew_duplex_close_half");
+    }
+
+    #[test]
+    fn drop_fn_existing_duplex_close_still_resolves() {
+        // Regression: the existing Duplex::close mapping must not be
+        // disturbed by the half-close additions.
+        assert_eq!(
+            resolve_drop_fn_to_symbol("Duplex::close").unwrap(),
+            "hew_duplex_close"
+        );
+        assert_eq!(
+            resolve_drop_fn_to_symbol("LambdaActorHandle::close").unwrap(),
+            "hew_lambda_actor_release"
+        );
+    }
+
+    #[test]
+    fn drop_fn_unknown_string_still_fails_closed() {
+        let err = resolve_drop_fn_to_symbol("Mystery::close")
+            .expect_err("Unknown drop_fn strings must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("Mystery::close"),
+                    "diagnostic must name the offending drop_fn string; got: {msg}"
+                );
+                // Diagnostic must mention the newly-recognised SendHalf/RecvHalf
+                // names so the next implementer knows the table grew.
+                assert!(
+                    msg.contains("SendHalf::close") && msg.contains("RecvHalf::close"),
+                    "diagnostic must list SendHalf::close + RecvHalf::close as \
+                     recognised names; got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hew_duplex_close_half_runtime_decl_has_ptr_i32_signature() {
+        // The runtime symbol takes (ptr, i32) -> i32 — pinned by
+        // HewDuplexDirection ABI (`hew-runtime/src/duplex.rs:765`). If the
+        // signature drifts here, drop emission will misroute its second
+        // argument at LLVM verify time.
+        let ctx = Context::create();
+        let m = ctx.create_module("hew_duplex_close_half_decl_test");
+        let mut decls: RuntimeDeclMap = HashMap::new();
+        let fv = intern_runtime_decl(&ctx, &m, &mut decls, "hew_duplex_close_half")
+            .expect("intern_runtime_decl(hew_duplex_close_half) must succeed");
+        let fn_ty = fv.get_type();
+        assert_eq!(
+            fn_ty.count_param_types(),
+            2,
+            "hew_duplex_close_half ABI expects 2 args (handle, direction); got {}",
+            fn_ty.count_param_types()
+        );
+        let params = fn_ty.get_param_types();
+        assert!(
+            matches!(params[0], BasicMetadataTypeEnum::PointerType(_)),
+            "hew_duplex_close_half arg 0 must be ptr; got {:?}",
+            params[0]
+        );
+        match params[1] {
+            BasicMetadataTypeEnum::IntType(t) => assert_eq!(
+                t.get_bit_width(),
+                32,
+                "hew_duplex_close_half arg 1 must be i32; got i{}",
+                t.get_bit_width()
+            ),
+            other => panic!("hew_duplex_close_half arg 1 must be i32; got {other:?}"),
+        }
+        let ret = fn_ty
+            .get_return_type()
+            .expect("hew_duplex_close_half must return a value");
+        match ret {
+            BasicTypeEnum::IntType(t) => assert_eq!(
+                t.get_bit_width(),
+                32,
+                "hew_duplex_close_half return must be i32"
+            ),
+            other => panic!("hew_duplex_close_half return must be i32; got {other:?}"),
+        }
+    }
+
+    // ---- Composite-return helper test harness ------------------------------
+
+    /// Owned container holding everything the four composite-return helpers
+    /// need to run against a hand-built pipeline. Built on a per-test basis
+    /// because `FnCtx` borrows `record_layouts` / `machine_layouts` /
+    /// `fn_symbols` / `actor_layouts` — those have to outlive the helper
+    /// invocation.
+    struct CompositeHelperHarness<'ctx> {
+        record_layouts: RecordLayoutMap<'ctx>,
+        machine_layouts: MachineLayoutMap<'ctx>,
+        fn_symbols: FnSymbolMap<'ctx>,
+        actor_layouts: Vec<ActorLayout>,
+    }
+
+    /// Build a `Result<(), SendError>` `EnumLayout` matching the
+    /// `monomorphic_builtin_enums()` registration (Ok=unit, Err=SendError
+    /// 3-variant unit enum). The outer enum's tag distinguishes Ok=0/Err=1;
+    /// the SendError payload (a nested enum) is itself a 2-bit tag.
+    fn fixture_result_unit_send_error_layout() -> MirEnumLayout {
+        // We model the Err payload as a single-field variant whose field
+        // type is `ResolvedTy::Named { name: "SendError", .. }` — codegen
+        // resolves that name through `record_layouts` to the registered
+        // SendError outer struct.
+        MirEnumLayout {
+            name: "Result$$unit$$SendError".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Ok".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Err".to_string(),
+                    field_tys: vec![ResolvedTy::Named {
+                        name: "SendError".to_string(),
+                        args: vec![],
+                        builtin: None,
+                    }],
+                },
+            ],
+        }
+    }
+
+    fn fixture_send_error_layout() -> MirEnumLayout {
+        MirEnumLayout {
+            name: "SendError".to_string(),
+            tag_width: 2,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Full".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Closed".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "NodeRoutingNotWired".to_string(),
+                    field_tys: vec![],
+                },
+            ],
+        }
+    }
+
+    fn fixture_result_i64_lookuperror_layout() -> MirEnumLayout {
+        MirEnumLayout {
+            name: "Result$$i64$$LookupError".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Ok".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                },
+                MachineVariantLayout {
+                    name: "Err".to_string(),
+                    field_tys: vec![ResolvedTy::Named {
+                        name: "LookupError".to_string(),
+                        args: vec![],
+                        builtin: None,
+                    }],
+                },
+            ],
+        }
+    }
+
+    fn fixture_lookup_error_layout() -> MirEnumLayout {
+        MirEnumLayout {
+            name: "LookupError".to_string(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "NotFound".to_string(),
+                field_tys: vec![],
+            }],
+        }
+    }
+
+    fn fixture_monitor_ref_layout() -> MirRecordLayout {
+        MirRecordLayout {
+            name: "MonitorRef".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }
+    }
+
+    /// A tri-variant payload-carrying user enum for `emit_enum_variant_literal`:
+    ///   enum Sample { Empty, OneInt(i64), TwoInts(i64, i64) }
+    fn fixture_sample_enum_layout() -> MirEnumLayout {
+        MirEnumLayout {
+            name: "Sample".to_string(),
+            tag_width: 2,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Empty".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "OneInt".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                },
+                MachineVariantLayout {
+                    name: "TwoInts".to_string(),
+                    field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+                },
+            ],
+        }
+    }
+
+    /// Register the given enum + record layout fixtures into the harness's
+    /// codegen maps, returning the populated harness.
+    fn build_harness<'ctx>(
+        ctx: &'ctx Context,
+        record_fixtures: &[MirRecordLayout],
+        enum_fixtures: &[MirEnumLayout],
+    ) -> CompositeHelperHarness<'ctx> {
+        let mut record_layouts: RecordLayoutMap<'ctx> =
+            register_record_layouts(ctx, record_fixtures)
+                .expect("record-layout registration must succeed");
+        let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
+        register_enum_layouts(
+            ctx,
+            enum_fixtures,
+            &mut record_layouts,
+            &mut machine_layouts,
+            None,
+        )
+        .expect("enum-layout registration must succeed");
+        CompositeHelperHarness {
+            record_layouts,
+            machine_layouts,
+            fn_symbols: HashMap::new(),
+            actor_layouts: Vec::new(),
+        }
+    }
+
+    /// Build a minimal FnCtx for direct helper invocation. The caller is
+    /// responsible for inserting the dest + any source locals via
+    /// `alloc_local` BEFORE calling helpers (allocations are emitted at the
+    /// builder's current position — the test harness positions inside a
+    /// freshly-created LLVM fn body).
+    fn make_test_fn_ctx<'a, 'ctx>(
+        ctx: &'ctx Context,
+        llvm_mod: &'a LlvmModule<'ctx>,
+        harness: &'a CompositeHelperHarness<'ctx>,
+        fn_name: &str,
+    ) -> FnCtx<'a, 'ctx> {
+        let i32_ty = ctx.i32_type();
+        let fn_ty = i32_ty.fn_type(&[], false);
+        let llvm_fn = llvm_mod.add_function(fn_name, fn_ty, None);
+        let entry = ctx.append_basic_block(llvm_fn, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        // Trivial return slot — composites use named locals, not ReturnSlot.
+        let return_slot = builder
+            .build_alloca(i32_ty, "ret_slot")
+            .expect("ret slot alloca");
+        FnCtx {
+            ctx,
+            llvm_mod,
+            builder,
+            return_slot,
+            return_ty: i32_ty.into(),
+            return_resolved_ty: ResolvedTy::I32,
+            execution_context: None,
+            execution_context_is_actor_handler: false,
+            actor_state_ty: None,
+            locals: HashMap::new(),
+            local_tys: HashMap::new(),
+            blocks: HashMap::new(),
+            runtime_decls: RefCell::new(HashMap::new()),
+            record_layouts: &harness.record_layouts,
+            fn_symbols: &harness.fn_symbols,
+            actor_layouts: &harness.actor_layouts,
+            machine_layouts: &harness.machine_layouts,
+            enum_layouts: &[],
+        }
+    }
+
+    /// Allocate a local of the given resolved type within the current
+    /// builder position. Inserts entries into `locals` and `local_tys`.
+    fn alloc_local(fn_ctx: &mut FnCtx<'_, '_>, id: u32, ty: ResolvedTy) {
+        let llvm_ty =
+            resolve_ty(fn_ctx.ctx, &ty, fn_ctx.record_layouts).expect("resolve_ty for fixture");
+        let slot = fn_ctx
+            .builder
+            .build_alloca(llvm_ty, &format!("local_{id}"))
+            .expect("alloca for fixture local");
+        fn_ctx.locals.insert(id, (slot, llvm_ty));
+        fn_ctx.local_tys.insert(id, ty);
+    }
+
+    /// Finish the synthetic test fn with a `ret i32 0` so LLVM verify is
+    /// happy.
+    fn finish_test_fn(fn_ctx: &FnCtx<'_, '_>) {
+        let zero = fn_ctx.ctx.i32_type().const_zero();
+        fn_ctx.builder.build_return(Some(&zero)).expect("ret 0");
+    }
+
+    // ---- emit_result_ok ----------------------------------------------------
+
+    #[test]
+    fn emit_result_ok_unit_payload_stores_tag_zero_only() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_result_ok_unit_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Result$$unit$$SendError".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        );
+        emit_result_ok(&fn_ctx, Place::Local(0), None)
+            .expect("emit_result_ok(None) must succeed for Result<(), SendError>");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify after emit_result_ok:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        // Tag-store of 0 + GEP for machine_tag_ptr must be present.
+        // (Tag width is i8 — `tag_int_type_for_variant_count` always
+        // rounds up to a byte for ≤256-variant unions.)
+        assert!(
+            ir.contains("machine_tag_ptr") && ir.contains("store i8 0"),
+            "expected tag GEP + store i8 0 for Result Ok tag; got IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn emit_result_ok_scalar_payload_stores_tag_and_copies_value() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_result_ok_scalar_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_lookup_error_layout(),
+                fixture_result_i64_lookuperror_layout(),
+            ],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Result$$i64$$LookupError".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        );
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        emit_result_ok(&fn_ctx, Place::Local(0), Some(Place::Local(1)))
+            .expect("emit_result_ok(Some(i64 local)) must succeed");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("emit_result_ok_v0_f0_src"),
+            "expected scalar payload load with helper-named label; got IR:\n{ir}"
+        );
+        assert!(
+            ir.contains("machine_payload_ptr"),
+            "expected machine_payload_ptr GEP for variant-0 field-0 store; got IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn emit_result_ok_rejects_non_local_dest() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_result_ok_reject_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        let err = emit_result_ok(&fn_ctx, Place::ReturnSlot, None)
+            .expect_err("dest must be Place::Local(_); ReturnSlot is rejected");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(msg.contains("emit_result_ok"));
+                assert!(msg.contains("ReturnSlot"));
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    // ---- emit_result_err ---------------------------------------------------
+
+    #[test]
+    fn emit_result_err_copies_err_payload_into_variant_one() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_result_err_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Result$$unit$$SendError".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        );
+        alloc_local(
+            &mut fn_ctx,
+            1,
+            ResolvedTy::Named {
+                name: "SendError".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        );
+        emit_result_err(&fn_ctx, Place::Local(0), Place::Local(1))
+            .expect("emit_result_err must succeed for Result<(), SendError>");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        // Tag-store of 1 (Err) — tag width is i8 per
+        // `tag_int_type_for_variant_count`.
+        assert!(
+            ir.contains("store i8 1"),
+            "expected store i8 1 for Err tag on Result; got IR:\n{ir}"
+        );
+        assert!(
+            ir.contains("emit_result_err_v1_f0_src"),
+            "expected variant-1 field-0 source-load label; got IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn emit_result_err_rejects_type_mismatched_payload() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_result_err_mismatch_test");
+        let harness = build_harness(
+            &ctx,
+            &[],
+            &[
+                fixture_send_error_layout(),
+                fixture_result_unit_send_error_layout(),
+            ],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Result$$unit$$SendError".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        );
+        // WRONG payload type: i64 where the variant expects SendError.
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        let err = emit_result_err(&fn_ctx, Place::Local(0), Place::Local(1))
+            .expect_err("mismatched payload type must fail closed, not silently mis-store");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("emit_result_err") && msg.contains("type mismatch"),
+                    "diagnostic must name the helper and the mismatch; got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    // ---- emit_struct_literal -----------------------------------------------
+
+    #[test]
+    fn emit_struct_literal_monitor_ref_writes_ref_id_field() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_struct_literal_test");
+        let harness = build_harness(&ctx, &[fixture_monitor_ref_layout()], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "MonitorRef".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        );
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        emit_struct_literal(
+            &fn_ctx,
+            Place::Local(0),
+            &[(FieldOffset(0), Place::Local(1))],
+        )
+        .expect("emit_struct_literal MonitorRef{ref_id:i64} must succeed");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        // The delegated `lower_record_init` path uses field_{idx}_init_ptr /
+        // field_{idx}_init_src labels — assert the substrate-delegation is live.
+        assert!(
+            ir.contains("field_0_init_ptr") && ir.contains("field_0_init_src"),
+            "expected lower_record_init field-0 init labels (substrate delegation); \
+             got IR:\n{ir}"
+        );
+    }
+
+    // ---- emit_enum_variant_literal -----------------------------------------
+
+    #[test]
+    fn emit_enum_variant_literal_unit_variant_writes_tag_only() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_enum_unit_test");
+        let harness = build_harness(&ctx, &[], &[fixture_sample_enum_layout()]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Sample".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        );
+        emit_enum_variant_literal(&fn_ctx, Place::Local(0), 0, &[])
+            .expect("Sample::Empty (unit variant, idx 0) must succeed");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        // Sample has 3 variants → i8 tag (per tag_int_type_for_variant_count).
+        // Tag value 0 must be stored.
+        assert!(
+            ir.contains("machine_tag_ptr") && ir.contains("store i8 0"),
+            "expected i8 tag store of 0 for Sample::Empty; got IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn emit_enum_variant_literal_two_field_variant_copies_all_fields() {
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_enum_two_field_test");
+        let harness = build_harness(&ctx, &[], &[fixture_sample_enum_layout()]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Sample".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        );
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        alloc_local(&mut fn_ctx, 2, ResolvedTy::I64);
+        emit_enum_variant_literal(
+            &fn_ctx,
+            Place::Local(0),
+            2,
+            &[Place::Local(1), Place::Local(2)],
+        )
+        .expect("Sample::TwoInts(i64, i64) must succeed");
+        finish_test_fn(&fn_ctx);
+        assert!(
+            m.verify().is_ok(),
+            "module must verify:\n{}",
+            m.print_to_string().to_string()
+        );
+        let ir = m.print_to_string().to_string();
+        // Tag store: variant_idx 2 in a 2-bit field = -2 (signed) — LLVM
+        // prints constants in the smallest representation. We're robust to
+        // signed/unsigned: just assert the field GEPs for both payload
+        // fields fire.
+        assert!(
+            ir.contains("emit_enum_variant_literal_v2_f0_src")
+                && ir.contains("emit_enum_variant_literal_v2_f1_src"),
+            "expected per-field source-load labels for both TwoInts fields; \
+             got IR:\n{ir}"
+        );
+        assert!(
+            ir.contains("machine_payload_ptr"),
+            "expected machine_payload_ptr GEP for variant 2 payload; got IR:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn emit_enum_variant_literal_rejects_field_count_mismatch() {
+        // OneInt (variant 1) expects exactly 1 payload field. Passing 2
+        // must fail closed at `place_pointer`'s field-index bounds check.
+        let ctx = Context::create();
+        let m = ctx.create_module("emit_enum_arity_test");
+        let harness = build_harness(&ctx, &[], &[fixture_sample_enum_layout()]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(
+            &mut fn_ctx,
+            0,
+            ResolvedTy::Named {
+                name: "Sample".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        );
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        alloc_local(&mut fn_ctx, 2, ResolvedTy::I64);
+        let err = emit_enum_variant_literal(
+            &fn_ctx,
+            Place::Local(0),
+            1, // OneInt — only 1 field
+            &[Place::Local(1), Place::Local(2)],
+        )
+        .expect_err("passing 2 payload places to a 1-field variant must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("field_idx") || msg.contains("out of range"),
+                    "diagnostic must indicate out-of-range field index; got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
     }
 }

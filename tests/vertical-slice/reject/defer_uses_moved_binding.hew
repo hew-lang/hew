@@ -1,0 +1,15 @@
+// Defer body that references a binding consumed before scope exit must
+// be rejected by the move-checker (Q205-B fail-closed boundary).
+//
+// `s` is moved by the explicit `return s;`. The defer body lexically
+// references `s` and runs after the binding is consumed — the dataflow
+// lattice (`Consumed` state) must produce a `UseAfterConsume` diagnostic.
+//
+// The fixture pins the fail-closed boundary: defer never observes a
+// moved binding silently.
+fn use_str(s: string) -> string { s }
+fn main() -> string {
+    let s = "hello";
+    defer { use_str(s); };
+    return s;
+}

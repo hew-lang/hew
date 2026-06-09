@@ -71,6 +71,7 @@ fn canonical_string_bare_named() {
     let ty = ResolvedTy::Named {
         name: "Point".into(),
         args: vec![],
+        builtin: None,
     };
     assert_eq!(ty.canonical_string(), "Point");
 }
@@ -80,6 +81,7 @@ fn canonical_string_generic_named() {
     let ty = ResolvedTy::Named {
         name: "Pair".into(),
         args: vec![ResolvedTy::I64, ResolvedTy::String],
+        builtin: None,
     };
     assert_eq!(ty.canonical_string(), "Pair<i64,string>");
 }
@@ -89,10 +91,12 @@ fn canonical_string_nested_generic() {
     let inner = ResolvedTy::Named {
         name: "Option".into(),
         args: vec![ResolvedTy::String],
+        builtin: None,
     };
     let outer = ResolvedTy::Named {
         name: "Vec".into(),
         args: vec![inner],
+        builtin: None,
     };
     assert_eq!(outer.canonical_string(), "Vec<Option<string>>");
 }
@@ -191,6 +195,7 @@ fn canonical_string_is_deterministic() {
     let ty = ResolvedTy::Named {
         name: "Pair".into(),
         args: vec![ResolvedTy::I64, ResolvedTy::String],
+        builtin: None,
     };
     assert_eq!(ty.canonical_string(), ty.canonical_string());
 }
@@ -230,6 +235,7 @@ fn is_native_wire_false_for_non_native_types() {
         ResolvedTy::Named {
             name: "Point".into(),
             args: vec![],
+            builtin: None,
         },
         ResolvedTy::Function {
             params: vec![],
@@ -264,6 +270,7 @@ fn strict_generic_args_accepts_matching_arity() {
         Ok(ResolvedTy::Named {
             name: "Pair".into(),
             args: vec![ResolvedTy::I64, ResolvedTy::String],
+            builtin: None,
         })
     );
 }

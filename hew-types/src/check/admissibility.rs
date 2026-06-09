@@ -1621,6 +1621,7 @@ mod tests {
                 is_pure: false,
                 accepts_kwargs: false,
                 doc_comment: None,
+                extern_symbol: None,
             },
         )]);
         let mut type_defs = HashMap::new(); // "T" is not a user-defined type

@@ -36,6 +36,7 @@ fn send_status_pipeline() -> IrPipeline {
     let actor_ty = ResolvedTy::Named {
         name: "Actor".to_string(),
         args: vec![],
+        builtin: None,
     };
     let raw_blocks = vec![
         BasicBlock {

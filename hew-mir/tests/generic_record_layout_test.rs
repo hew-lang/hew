@@ -83,7 +83,7 @@ fn struct_init_carries_concrete_type_args_and_emits_mangled_layout() {
     let tys = record_init_tys(&pl, "main");
     assert_eq!(tys.len(), 1, "expected exactly one RecordInit in `main`");
     match &tys[0] {
-        ResolvedTy::Named { name, args } => {
+        ResolvedTy::Named { name, args, .. } => {
             assert_eq!(name, "Box");
             assert_eq!(args, &vec![ResolvedTy::I64]);
         }
@@ -184,13 +184,14 @@ fn generic_record_returned_from_fn_does_not_mismatch() {
     let tys = record_init_tys(&pl, "wrap");
     assert_eq!(tys.len(), 1);
     match &tys[0] {
-        ResolvedTy::Named { name, args } => {
+        ResolvedTy::Named { name, args, .. } => {
             assert_eq!(name, "Box");
             assert_eq!(args.len(), 1);
             match &args[0] {
                 ResolvedTy::Named {
                     name: inner,
                     args: inner_args,
+                    ..
                 } => {
                     assert_eq!(inner, "Vec");
                     assert_eq!(inner_args, &vec![ResolvedTy::I64]);
@@ -209,6 +210,7 @@ fn generic_record_returned_from_fn_does_not_mismatch() {
         &[ResolvedTy::Named {
             name: "Vec".to_string(),
             args: vec![ResolvedTy::I64],
+            builtin: None,
         }],
     );
     let names = layout_names(&pl);
@@ -258,7 +260,7 @@ fn two_distinct_instantiations_emit_two_layouts() {
     let mut seen_i64 = false;
     let mut seen_bool = false;
     for ty in &tys {
-        if let ResolvedTy::Named { name, args } = ty {
+        if let ResolvedTy::Named { name, args, .. } = ty {
             assert_eq!(name, "Box");
             assert_eq!(args.len(), 1);
             match args[0] {

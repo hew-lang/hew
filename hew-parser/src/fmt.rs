@@ -861,6 +861,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_extern_fn(&mut self, f: &ExternFnDecl) {
+        self.format_attributes(&f.attributes);
         self.write_indent();
         self.write("fn ");
         self.write(&f.name);
@@ -2439,7 +2440,14 @@ impl<'a> Formatter<'a> {
                 args,
                 ..
             } => {
+                let needs_callee_parens = matches!(function.0, Expr::Lambda { .. });
+                if needs_callee_parens {
+                    self.write("(");
+                }
                 self.format_expr(&function.0);
+                if needs_callee_parens {
+                    self.write(")");
+                }
                 if let Some(type_args) = type_args {
                     self.write("<");
                     self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
@@ -3673,6 +3681,32 @@ type Wrapper<T> {
 
 fn main() {
     let w = Wrapper { value: \"hello\" };
+}
+";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn extern_symbol_attribute_round_trips_in_extern_block() {
+        // `#[extern_symbol("…")]` on an `extern "C"` fn
+        // must survive a parse/format round-trip. The string contains `{T}`
+        // which is non-identifier-shaped, so the formatter re-quotes it.
+        let src = "\
+extern \"C\" {
+    #[extern_symbol(\"hew_vec_push_{T}\")]
+    fn hew_vec_push(v: ptr, x: ptr);
+}
+";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn extern_symbol_attribute_round_trips_on_impl_method() {
+        let src = "\
+impl<T> Vec<T> {
+    #[extern_symbol(\"hew_vec_push_{T}\")]
+    fn push(self, x: T) {
+    }
 }
 ";
         assert_eq!(roundtrip(src), src);

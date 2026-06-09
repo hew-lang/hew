@@ -1,0 +1,8 @@
+// Verify LIFO ordering: last defer registered runs first.
+// If LIFO is correct, exit(1) runs first (last registered), and
+// the process exits with 1.
+fn main() -> i64 {
+    defer exit(2);
+    defer exit(1);
+    0
+}

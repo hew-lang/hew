@@ -59,6 +59,10 @@ pub fn dump_hir(module: &HirModule) -> String {
                         HirStmtKind::Return(None) => {
                             writeln!(out, "  return unit").expect("write to string");
                         }
+                        HirStmtKind::Defer { body, .. } => {
+                            writeln!(out, "  defer").expect("write to string");
+                            dump_expr(&mut out, body, 4);
+                        }
                     }
                 }
                 if let Some(tail) = &func.body.tail {
@@ -287,6 +291,10 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
             HirStmtKind::Return(None) => {
                 writeln!(out, "{pad}return unit").expect("write to string");
             }
+            HirStmtKind::Defer { body, .. } => {
+                writeln!(out, "{pad}defer").expect("write to string");
+                dump_expr(out, body, indent + 2);
+            }
         }
     }
     if let Some(tail) = &block.tail {
@@ -435,6 +443,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     HirStmtKind::Return(None) => {
                         writeln!(out, "{pad}    return unit").expect("write to string");
                     }
+                    HirStmtKind::Defer { body, .. } => {
+                        writeln!(out, "{pad}    defer").expect("write to string");
+                        dump_expr(out, body, indent + 6);
+                    }
                 }
             }
         }
@@ -481,6 +493,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     HirStmtKind::Return(None) => {
                         writeln!(out, "{pad}    return unit").expect("write to string");
                     }
+                    HirStmtKind::Defer { body, .. } => {
+                        writeln!(out, "{pad}    defer").expect("write to string");
+                        dump_expr(out, body, indent + 6);
+                    }
                 }
             }
         }
@@ -514,6 +530,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     }
                     HirStmtKind::Return(None) => {
                         writeln!(out, "{pad}    return unit").expect("write to string");
+                    }
+                    HirStmtKind::Defer { body, .. } => {
+                        writeln!(out, "{pad}    defer").expect("write to string");
+                        dump_expr(out, body, indent + 6);
                     }
                 }
             }
@@ -691,6 +711,27 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
+        HirExprKind::CallTraitMethodStatic {
+            receiver,
+            receiver_type_param,
+            declaring_trait,
+            method_name,
+            args,
+            ret_ty,
+            ..
+        } => {
+            writeln!(
+                out,
+                "{pad}  call-static-trait {declaring_trait}::{method_name} \
+                 [receiver_param={receiver_type_param}] -> {}",
+                ret_ty.user_facing()
+            )
+            .expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            for arg in args {
+                dump_expr(out, arg, indent + 4);
+            }
+        }
         HirExprKind::NumericMethod {
             receiver,
             arg,
@@ -825,6 +866,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
+        }
+        HirExprKind::Unary { op, operand, .. } => {
+            writeln!(out, "{pad}  unary {op:?}").expect("write to string");
+            dump_expr(out, operand, indent + 4);
         }
         HirExprKind::WhileLet {
             scrutinee,

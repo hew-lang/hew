@@ -36,6 +36,7 @@ fn pipeline_with_task_abi_call(
     let mut locals = vec![ResolvedTy::Named {
         name: "HewTask".to_string(),
         args: vec![],
+        builtin: None,
     }];
     locals.extend(extra_locals);
 
@@ -141,7 +142,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
             RawMirFunction {
                 name: "long_op".to_string(),
                 return_ty: ResolvedTy::Unit,
-                call_conv: FunctionCallConv::ActorHandler,
+                call_conv: FunctionCallConv::TaskEntry,
                 params: vec![],
                 locals: vec![ResolvedTy::Unit],
                 blocks: vec![long_op_block.clone()],
@@ -258,6 +259,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
     let env_ty = ResolvedTy::Named {
         name: "__hew_closure_env_main_0".to_string(),
         args: vec![],
+        builtin: None,
     };
     let env_ptr_ty = ResolvedTy::Pointer {
         is_mutable: false,
@@ -446,28 +448,131 @@ fn task_abi_emission_task_free_declare() {
     );
 }
 
-/// `hew_scope_spawn` must produce a `declare i32 @hew_scope_spawn(ptr, ptr)`
-/// and emit a void call (dest: None — the i32 return is discarded).
+/// Canonical `scope {}` spawn lowering emits `hew_task_new` immediately
+/// followed by `hew_task_scope_spawn` (W2.006). This pins the ABI shape:
+/// scope spawn requires a pre-constructed `HewTask` pointer, not a raw
+/// actor pointer. The MIR producer at `hew-mir/src/lower.rs:7695-7697`
+/// and `:7758-7760` is the upstream invariant; this test verifies the
+/// codegen surface preserves both declarations in the emitted IR with
+/// `@hew_task_new` declared before `@hew_task_scope_spawn`. Legacy
+/// `@hew_scope_spawn` is removed and must not appear.
 #[test]
-fn task_abi_emission_scope_spawn_declare() {
-    let pipeline = pipeline_with_task_abi_call(
-        "hew_scope_spawn",
-        vec![Place::DuplexHandle(0), Place::DuplexHandle(0)],
-        None,
-        vec![],
-    );
-    let tmp = std::env::temp_dir().join("hew-task-abi-scope-spawn");
+fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
+    // Build a pipeline with TWO CallRuntimeAbi instructions in sequence,
+    // mirroring lower_spawned_fn_task: hew_task_new(dest=task) then
+    // hew_task_scope_spawn(scope, task).
+    let raw_blocks = vec![BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::CallRuntimeAbi(
+                RuntimeCall::new("hew_task_new", vec![], Some(Place::DuplexHandle(0)))
+                    .expect("hew_task_new must be on allowlist"),
+            ),
+            Instr::CallRuntimeAbi(
+                RuntimeCall::new(
+                    "hew_task_scope_spawn",
+                    vec![Place::DuplexHandle(0), Place::DuplexHandle(0)],
+                    None,
+                )
+                .expect("hew_task_scope_spawn must be on allowlist"),
+            ),
+        ],
+        terminator: Terminator::Return,
+    }];
+    let locals = vec![ResolvedTy::Named {
+        name: "HewTask".to_string(),
+        args: vec![],
+        builtin: None,
+    }];
+    let pipeline = IrPipeline {
+        thir: vec![],
+        raw_mir: vec![RawMirFunction {
+            name: "probe".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: locals.clone(),
+            blocks: raw_blocks.clone(),
+            decisions: vec![],
+        }],
+        checked_mir: vec![CheckedMirFunction {
+            name: "probe".to_string(),
+            return_ty: ResolvedTy::Unit,
+            blocks: raw_blocks,
+            decisions: vec![],
+            checks: vec![],
+            cooperate_sites: vec![],
+        }],
+        elaborated_mir: vec![ElaboratedMirFunction {
+            name: "probe".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![ElabBlock {
+                id: 0,
+                kind: BlockKind::Normal,
+                drops: vec![],
+                successor: None,
+            }],
+            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            coroutine: None,
+            lambda_captures: vec![],
+        }],
+        diagnostics: vec![],
+        record_layouts: vec![],
+        actor_layouts: vec![],
+        supervisor_layouts: vec![],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
+    };
+
+    let tmp = std::env::temp_dir().join("hew-task-abi-task-scope-spawn-paired");
     let options = EmitOptions {
         module_name: "probe",
         out_dir: &tmp,
         native: false,
         wasm: false,
     };
-    emit_module(&pipeline, &options).expect("hew_scope_spawn emission should succeed");
+    emit_module(&pipeline, &options)
+        .expect("hew_task_new + hew_task_scope_spawn emission should succeed");
     let ir = read_ll(&tmp);
+
+    // BOTH declarations must appear.
     assert!(
-        ir.contains("@hew_scope_spawn"),
-        "emitted IR must declare @hew_scope_spawn; got:\n{ir}",
+        ir.contains("@hew_task_new"),
+        "emitted IR must declare @hew_task_new; got:\n{ir}",
+    );
+    assert!(
+        ir.contains("@hew_task_scope_spawn"),
+        "emitted IR must declare @hew_task_scope_spawn; got:\n{ir}",
+    );
+
+    // The call to hew_task_new must precede the call to hew_task_scope_spawn —
+    // ABI invariant (§4 of the W2.006 plan): scope spawn requires a
+    // pre-constructed task pointer. We assert this on the order of the
+    // *call* instructions (not the declarations, which may be re-ordered
+    // by LLVM module pretty-printing).
+    let task_new_call_pos = ir
+        .find("call ptr @hew_task_new")
+        .expect("emitted IR must contain `call ptr @hew_task_new`");
+    let task_scope_spawn_call_pos = ir
+        .find("call void @hew_task_scope_spawn")
+        .expect("emitted IR must contain `call void @hew_task_scope_spawn`");
+    assert!(
+        task_new_call_pos < task_scope_spawn_call_pos,
+        "hew_task_new call must precede hew_task_scope_spawn call \
+         (ABI shape invariant: scope spawn requires a pre-constructed task ptr); \
+         got task_new at {task_new_call_pos}, task_scope_spawn at {task_scope_spawn_call_pos}\nIR:\n{ir}"
+    );
+
+    // Legacy ABI must be fully removed.
+    assert!(
+        !ir.contains("@hew_scope_spawn"),
+        "legacy @hew_scope_spawn must NOT appear in emitted IR (W2.006); got:\n{ir}",
     );
 }
 

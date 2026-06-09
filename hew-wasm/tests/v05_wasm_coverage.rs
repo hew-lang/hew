@@ -66,36 +66,49 @@ const FIXTURES: &[(&str, &str)] = &[
 /// Fixtures that are expected to produce error-severity diagnostics when
 /// analyzed as a single source file.  These are excluded from zero-error loop
 /// assertions; each has a dedicated test documenting the known gap.
+///
+/// W4.023 Stage 0 alignment: classification for each fixture is noted inline.
+/// See the LSP fixture classification matrix in `hew-lsp/src/server/mod.rs`
+/// (the "W4.023 Stage 0" comment block) for the authoritative table.
 const ANALYSIS_ERROR_FIXTURES: &[&str] = &[
-    // `async fn` / `await` are not valid Hew syntax; the parser rejects them.
-    // The corresponding LSP test is #[ignore = "LSP gap: async/await"].
+    // known-rejected: `async fn` / `await` are not valid Hew syntax; the parser
+    // rejects them.  The corresponding fail-closed LSP test is
+    // `v05_async_await_is_rejected_with_parse_errors`.
     "v05_async_await",
-    // `obj[key]` on a type that does not implement Indexable — type error by
-    // design, exercising error-recovery in the index-expression checker.
+    // accepted (intentional type error): `obj[key]` on a type that does not
+    // implement Indexable — type error by design, exercising error-recovery in
+    // the index-expression checker.
     "v05_index_trait",
-    // `machine Boxed<T>` declares only one state (`Idle`); the type checker
-    // requires at least two states per machine.  The fixture exercises generic
-    // machine syntax, not exhaustive state coverage.
+    // accepted (intentional type error): `machine Boxed<T>` declares only one
+    // state (`Idle`); the type checker requires at least two states per machine.
+    // The fixture exercises generic machine syntax, not exhaustive state coverage.
     "v05_machine_generics",
-    // `machine Turnstile` handles `Coin` only on `Locked` and `Push` only on
-    // `Unlocked` — the type checker requires exhaustive event handling across
-    // all states.  The fixture exercises machine method syntax, not coverage.
+    // accepted (intentional type error): `machine Turnstile` handles `Coin` only
+    // on `Locked` and `Push` only on `Unlocked` — the type checker requires
+    // exhaustive event handling across all states.  The fixture exercises machine
+    // method syntax, not coverage.
     "v05_machine_methods",
-    // `machine Traffic` handles only two of the four declared events per state.
-    // The fixture exercises state entry/exit hooks, not exhaustive coverage.
+    // accepted (intentional type error): `machine Traffic` handles only two of
+    // the four declared events per state.  The fixture exercises state entry/exit
+    // hooks, not exhaustive coverage.
     "v05_machine_states",
-    // `type Pair(i32, i32)` — tuple-record syntax is not yet supported by the
-    // parser.  The corresponding LSP test is #[ignore = "LSP gap: tuple record literals"].
+    // pending-upstream-substrate W3.006: `type Pair(i32, i32)` — tuple-record
+    // syntax is not yet supported by the parser.  The corresponding LSP test is
+    // kept ignored pending W3.006 tuple substrate landing.
     "v05_record_tuple_literal",
-    // `select { StreamNext ... }` arms use unimplemented syntax; the parser
-    // cannot handle them.  LSP test is #[ignore = "LSP gap: select arm kinds"].
+    // pending-upstream-substrate (unassigned): `select { StreamNext ... }` arms
+    // use unimplemented syntax; the parser cannot handle them.  The corresponding
+    // LSP test is kept ignored pending a dedicated select-arm-kinds lane.
     "v05_select_arms",
-    // `spawn |msg: i32| { ... }` — lambda actor spawn syntax is not yet
-    // supported.  LSP test is #[ignore = "LSP gap: spawn lambda actor"].
+    // pending-upstream-substrate (unassigned): `spawn |msg: i32| { ... }` —
+    // lambda actor spawn syntax is not yet supported.  The corresponding LSP test
+    // is kept ignored pending a dedicated lambda-spawn lane.
     "v05_spawn_lambda_actor",
-    // `Channel<i32>` / `Stream<i32>` / `Sink<i32>` — runtime lowering is
-    // currently implemented only for `string` and `bytes`; generic channels
-    // produce type errors.  The fixture exercises channel syntax, not lowering.
+    // accepted (known type error): `Channel<i32>` / `Stream<i32>` / `Sink<i32>`
+    // — generic channel lowering is currently implemented only for `string` and
+    // `bytes`; other element types produce type errors.  The fixture exercises
+    // channel syntax, not full lowering.  Stage 4 should add fail-closed
+    // type-error assertions for generic channel params.
     "v05_std_channels",
 ];
 

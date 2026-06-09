@@ -1,0 +1,12 @@
+// Verify that defer in a nested block scope runs at block exit,
+// not at function exit. The inner defer calls exit(10); if it ran
+// at function exit instead of block exit, the outer code wouldn't
+// execute.
+fn id(x: i64) -> i64 { x }
+fn main() -> i64 {
+    let a = {
+        defer id(99);
+        5
+    };
+    a + 2
+}

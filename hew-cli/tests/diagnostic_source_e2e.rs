@@ -282,11 +282,12 @@ fn non_root_unreachable_code_warning_rendered_with_dep_filename() {
 /// Mixed case: `dep.hew` produces a warning; `main.hew` is otherwise clean.
 ///
 /// Invariants:
-/// - `hew check` exits **successfully** (warnings are not fatal)
+/// - `hew check` preserves the dependency warning before any later deep-gate failure
 /// - The warning is attributed to `dep.hew`, not `main.hew`
-/// - No error lines mention `main.hew` as the source of a diagnostic
+/// - Stage 2 may then reject in HIR/MIR; that later error must not rewrite the
+///   warning location.
 #[test]
-fn mixed_dep_warning_main_clean_exits_success_warning_attributed_to_dep() {
+fn mixed_dep_warning_remains_attributed_to_dep_before_deep_gate_failure() {
     let fixture = write_fixture(&[
         // main.hew calls dep_value() which is clean.
         (
@@ -308,10 +309,9 @@ fn mixed_dep_warning_main_clean_exits_success_warning_attributed_to_dep() {
         .output()
         .expect("hew binary must run");
 
-    // Warnings must not cause a non-zero exit.
     assert!(
-        output.status.success(),
-        "hew check must exit zero (dep warning only, main is clean); got stderr:\n{}",
+        !output.status.success(),
+        "Stage 2 check should fail later in HIR/MIR for this imported-call fixture; got stderr:\n{}",
         strip_ansi(&String::from_utf8_lossy(&output.stderr))
     );
 
@@ -323,12 +323,91 @@ fn mixed_dep_warning_main_clean_exits_success_warning_attributed_to_dep() {
         "warning must be attributed to dep.hew; got:\n{stderr}"
     );
 
-    // No diagnostic must blame main.hew as the source of the warning.
-    let main_hew_diag_line = stderr.lines().any(|line| {
-        line.contains("main.hew:") && (line.contains("warning") || line.contains("error:"))
-    });
+    // No warning diagnostic must be attributed to main.hew.
+    let main_hew_warning_line = stderr
+        .lines()
+        .any(|line| line.contains("main.hew:") && line.contains("warning"));
     assert!(
-        !main_hew_diag_line,
-        "no warning/error line should point at main.hew; got:\n{stderr}"
+        !main_hew_warning_line,
+        "warning line should not point at main.hew; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("E_HIR") || stderr.contains("E_MIR"),
+        "fixture should reach a Stage 2 deep gate after rendering the warning; got:\n{stderr}"
+    );
+}
+
+// ── HIR diagnostic source-routing tests ──────────────────────────────────────
+
+#[test]
+fn root_hir_diagnostic_rendered_with_source_context() {
+    let fixture = write_fixture(&[("main.hew", "const ANSWER: i64 = 42;\nfn main() {}\n")]);
+    let main_path = fixture.path().join("main.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["compile", main_path.to_str().unwrap()])
+        .current_dir(fixture.path())
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "hew compile must fail on unsupported HIR item"
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("main.hew:1:1: error: E_NOT_YET_IMPLEMENTED"),
+        "root HIR diagnostic must include file:line:col; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("const ANSWER: i64 = 42;"),
+        "root HIR diagnostic must render source excerpt; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("span:"),
+        "HIR diagnostic output must not contain raw debug spans; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn imported_hir_diagnostic_rendered_with_imported_source_context() {
+    let fixture = write_fixture(&[
+        ("main.hew", "import \"dep.hew\";\nfn main() -> i64 { 0 }\n"),
+        (
+            "dep.hew",
+            "const ANSWER: i64 = 42;\npub fn entry() -> i64 { ANSWER }\n",
+        ),
+    ]);
+    let main_path = fixture.path().join("main.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["compile", main_path.to_str().unwrap()])
+        .current_dir(fixture.path())
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "hew compile must fail on imported-body HIR diagnostic"
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("dep.hew:2:25: error: E_HIR"),
+        "imported HIR diagnostic must name dep.hew; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.lines().any(|line| line.contains("main.hew:")
+            && (line.contains("error:") || line.contains("warning:"))),
+        "imported HIR diagnostic must not fall back to main.hew; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("pub fn entry() -> i64 { ANSWER }"),
+        "imported HIR diagnostic must render dep.hew excerpt; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("span:"),
+        "HIR diagnostic output must not contain raw debug spans; got:\n{stderr}"
     );
 }

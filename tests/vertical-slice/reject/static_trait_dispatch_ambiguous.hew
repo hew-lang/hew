@@ -1,0 +1,28 @@
+// Reject fixture: Static trait dispatch — ambiguous method from distinct traits
+// Two unrelated traits each declare `run` — calling it on T: Engine + Athlete is ambiguous.
+// Expected: type error ambiguous trait method
+trait Engine {
+    fn run(val: Self) -> i64;
+}
+
+trait Athlete {
+    fn run(val: Self) -> i64;
+}
+
+type Robot { id: i64; }
+
+impl Engine for Robot {
+    fn run(r: Robot) -> i64 { 1 }
+}
+
+impl Athlete for Robot {
+    fn run(r: Robot) -> i64 { 2 }
+}
+
+fn go<T: Engine + Athlete>(item: T) -> i64 {
+    item.run()
+}
+
+fn main() -> i64 {
+    go(Robot { id: 1 })
+}

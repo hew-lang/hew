@@ -5999,6 +5999,106 @@ machine Traffic {
     }
 
     // ── Hew v0.5 syntax coverage fixtures ────────────────────────────────
+    //
+    // W4.023 Stage 0 — baseline inventory and ownership classification
+    //
+    // Every `hew-lsp/tests/fixtures/v05_*.hew` fixture is classified below.
+    // Classification taxonomy (four classes):
+    //
+    //   accepted                      — parser admits the construct at the
+    //                                   syntax level; existing LSP editor
+    //                                   tests (symbols/hover/goto) pass.
+    //                                   Some rows carry intentional type
+    //                                   errors by design (error-recovery
+    //                                   fixtures, non-exhaustive machine
+    //                                   coverage) or substrate-limited type
+    //                                   parameters; these are noted per row.
+    //                                   Full hover/goto/symbols/completion/
+    //                                   semantic-token coverage is the target
+    //                                   for later assertion expansion.
+    //
+    //   known-rejected                — compiler intentionally rejects this
+    //                                   construct in v0.5.  LSP publishes
+    //                                   diagnostics only; no hover/completion
+    //                                   claims implying acceptance.
+    //
+    //   cross-module-single-source-limited — multi-file fixture.  Native LSP
+    //                                   tests it with a multi-document workspace.
+    //                                   Single-source WASM API cannot resolve
+    //                                   cross-file imports; tested separately
+    //                                   in `v05_cross_module_machine_ctor_lsp_coverage`.
+    //
+    //   pending-upstream-substrate    — intended v0.5 behavior; compiler/parser
+    //                                   substrate not yet implemented.  Rows in
+    //                                   this class name the specific blocking
+    //                                   W3 lane.  Once that lane lands, reclassify
+    //                                   to `accepted` and add targeted assertions.
+    //
+    // ─── Fixture classification matrix ───────────────────────────────────
+    //
+    //  Fixture                            | Class                          | Notes / blocking lane
+    //  ─────────────────────────────────────────────────────────────────────────────────────────────
+    //  v05_associated_type_projection     | accepted                       | trait + assoc type + impl; LSP test passes
+    //  v05_async_await                    | known-rejected                 | `async fn` / `await` are not valid Hew syntax; parser rejects them; permanently out of v0.5 scope (see ignored test below)
+    //  v05_attributes                     | accepted                       | actor attributes (#[max_heap]); LSP test passes
+    //  v05_closures                       | accepted                       | closure syntax |x| { … }; LSP test passes
+    //  v05_cross_module_machine_defs      | accepted                       | machine defs module; used as dep in cross-module native test
+    //  v05_cross_module_machine_main      | cross-module-single-source-limited | single-source WASM API cannot resolve cross-file imports; native test uses multi-doc workspace
+    //  v05_display_fstring                | accepted                       | Display impl + f-string formatting; LSP test passes
+    //  v05_extern_unsafe                  | accepted                       | `extern "C"` block; LSP + resolver tests pass
+    //  v05_generators                     | accepted                       | generator functions; LSP test passes
+    //  v05_impl_where_clause              | accepted                       | impl<T> … where T: Display; LSP test passes
+    //  v05_index_trait                    | accepted                       | Indexable trait; type errors intentional (fixture exercises error-recovery); LSP test passes
+    //  v05_is_operator                    | accepted                       | `is` operator + targeted surface tests (resolver, semantic-token, completion) pass
+    //  v05_link_monitor                   | accepted                       | actor link/monitor; LSP test passes
+    //  v05_machine_generics               | accepted                       | generic machine `machine Boxed<T>`; one-state semantic error is intentional fixture design; LSP test passes
+    //  v05_machine_methods                | accepted                       | machine methods; non-exhaustive event coverage intentional; LSP test passes
+    //  v05_machine_states                 | accepted                       | machine state/entry/exit hooks; non-exhaustive coverage intentional; LSP test passes
+    //  v05_machine_substrate              | accepted                       | `Lifecycle<T: Resource>` machine; LSP + completion tests pass
+    //  v05_match_enum_variant             | accepted                       | enum variant pattern matching; LSP test passes
+    //  v05_record_decl                    | accepted                       | record type declarations; LSP + completion tests pass
+    //  v05_record_literals                | accepted                       | struct literal syntax; LSP test passes
+    //  v05_record_tuple_literal           | pending-upstream-substrate     | `type Pair(i32, i32)` tuple-record syntax; parser cannot parse positional-field types; blocking lane: W3.006 (slice-2 substrate, Stage-0.2-tuple-ready)
+    //  v05_regex_literal                  | accepted                       | `re"…"` regex literal; LSP + hover tests pass
+    //  v05_result_option_ctors            | accepted                       | Result/Option enum ctors; LSP test passes
+    //  v05_scope_fork                     | accepted                       | `scope { fork { … } }` syntax; LSP test passes
+    //  v05_select_arms                    | pending-upstream-substrate     | StreamNext/TaskAwait/AfterTimer/ActorAsk select arm kinds; parser cannot handle them; blocking lane: unassigned (no W3 lane in current PLANNING-MAP; file follow-on lane before Stage 4)
+    //  v05_spawn_lambda_actor             | pending-upstream-substrate     | `spawn |msg: T| { … }` lambda-actor spawn syntax; parser/analysis do not support inline lambda spawn; blocking lane: unassigned (no W3 lane in current PLANNING-MAP; file follow-on lane before Stage 4)
+    //  v05_std_channels                   | accepted (syntax/smoke tier)   | parser admits Channel<T>/Stream<T>/Sink<T>; LSP probe test passes; generic channel type errors are a substrate limitation (lowering implemented only for string/bytes), not intentional fixture design; future work should add fail-closed type-error assertions for the generic params
+    //  v05_string_methods                 | accepted                       | string method completions; LSP + full L2 surface tests pass
+    //  v05_trait_bounds                   | accepted                       | trait bounds + impl; LSP test passes
+    //  v05_unsafe_block                   | accepted                       | unsafe block; LSP test passes
+    //  v05_while_let                      | accepted                       | `while let Some(v) = expr` syntax; LSP + hover tests pass
+    //
+    // ─── Ignored-test classification ─────────────────────────────────────
+    //
+    //  Test name                               | Decision        | Rationale
+    //  ──────────────────────────────────────────────────────────────────────────────────────────────
+    //  v05_record_tuple_literal_lsp_coverage   | remain-ignored  | Compiler-substrate dependency W3.006; do not unignore until W3.006 tuple substrate lands.
+    //  v05_select_arms_lsp_coverage            | remain-ignored  | Compiler-substrate dependency (unassigned select-arm-kinds lane); do not unignore until parser admits these arm kinds.
+    //  v05_spawn_lambda_actor_lsp_coverage     | remain-ignored  | Compiler-substrate dependency (unassigned lambda-spawn lane); do not unignore until parser/analysis support lambda-actor spawn.
+    //  v05_async_await_lsp_coverage            | become-fail-closed-diagnostic | `async fn`/`await` permanently not in Hew syntax; test should assert parse-error diagnostics rather than remaining an indefinitely-ignored smoke check.  See v05_async_await_is_rejected_with_parse_errors below.
+    //
+    // ─── ResolvedTy::user_facing() verification ──────────────────────────
+    //
+    //  Pre-verified at plan-revision time: `ResolvedTy::user_facing()` is
+    //  present at `hew-types/src/resolved_ty.rs:448` and returns
+    //  `UserFacingResolvedTy<'_>` (impl Display).  Stage 2 "Canonical
+    //  primitive names" Matrix A row must assert observable hover/completion
+    //  strings produced by that method, not the internal API name.
+    //
+    // ─── Fixture count notes ─────────────────────────────────────────────
+    //
+    //  Total v05_*.hew fixtures: 31
+    //    accepted:                          26 (all have passing native LSP tests;
+    //                                          v05_std_channels accepted at
+    //                                          syntax/smoke tier — see row note)
+    //    cross-module-single-source-limited: 1 (v05_cross_module_machine_main)
+    //    known-rejected:                     1 (v05_async_await)
+    //    pending-upstream-substrate:         3 (v05_record_tuple_literal, v05_select_arms,
+    //                                           v05_spawn_lambda_actor)
+    //  WASM fixture table covers 30 (all except v05_cross_module_machine_main, tested separately).
+    //  Hard count guards: FIXTURES.len()==30, ANALYSIS_ERROR_FIXTURES.len()==9 in v05_wasm_coverage.rs.
 
     fn v05_fixture_path(name: &str) -> String {
         format!("file:///v05/{name}.hew")
@@ -6013,20 +6113,19 @@ machine Traffic {
         }
     }
 
-    fn assert_v05_lsp_fixture(
-        fixture_name: &str,
-        source: &str,
-        probe_name: &str,
-        expected_symbols: &[&str],
-    ) {
-        let uri = Url::parse(&v05_fixture_path(fixture_name)).unwrap();
+    /// Check the `documentSymbols` LSP surface for a v0.5 fixture.
+    ///
+    /// Parses `source`, builds the document-symbol tree, and asserts that every
+    /// name in `expected` appears somewhere in the flattened tree.
+    ///
+    /// Failure messages identify: surface, fixture name, and the missing symbol.
+    fn assert_v05_document_symbols(fixture_name: &str, source: &str, expected: &[&str]) {
         let doc = make_typed_doc(source);
         assert!(
             doc.parse_result.errors.is_empty(),
-            "parse errors in {fixture_name}: {:?}",
+            "surface=documentSymbols fixture={fixture_name}: parse errors prevent symbol analysis: {:?}",
             doc.parse_result.errors
         );
-
         let analysis_symbols =
             hew_analysis::symbols::build_document_symbols(&doc.source, &doc.parse_result);
         let document_symbols: Vec<DocumentSymbol> = analysis_symbols
@@ -6035,29 +6134,28 @@ machine Traffic {
             .collect();
         let mut symbol_names = Vec::new();
         flatten_symbol_names(&document_symbols, &mut symbol_names);
-        for expected in expected_symbols {
+        for expected_name in expected {
             assert!(
-                symbol_names.contains(expected),
-                "documentSymbol for {fixture_name} missing {expected}; got {symbol_names:?}"
+                symbol_names.contains(expected_name),
+                "surface=documentSymbols fixture={fixture_name}: missing symbol {expected_name:?}; got {symbol_names:?}"
             );
         }
+    }
 
-        let probe_offset = source
-            .rfind(probe_name)
-            .unwrap_or_else(|| panic!("{fixture_name} missing probe {probe_name}"));
-        let hover = hew_analysis::hover::hover(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            probe_offset,
-        )
-        .unwrap_or_else(|| panic!("hover missing for {probe_name} in {fixture_name}"));
-        assert!(
-            hover.contents.contains(probe_name),
-            "hover for {probe_name} in {fixture_name} should mention probe, got: {}",
-            hover.contents
-        );
-
+    /// Check the `gotoDefinition` LSP surface for a v0.5 fixture probe.
+    ///
+    /// Uses the last occurrence of `probe_name` in `source` as the request
+    /// offset.  Asserts that either the resolver or the AST-walk fallback
+    /// returns a definition location.
+    ///
+    /// Failure messages identify: surface, fixture name, probe name, and byte
+    /// offset.
+    fn assert_v05_goto_definition(fixture_name: &str, source: &str, probe_name: &str) {
+        let uri = Url::parse(&v05_fixture_path(fixture_name)).unwrap();
+        let doc = make_typed_doc(source);
+        let probe_offset = source.rfind(probe_name).unwrap_or_else(|| {
+            panic!("surface=gotoDefinition fixture={fixture_name}: missing probe {probe_name:?}")
+        });
         let resolver_has_definition = hew_analysis::resolver::resolve_symbol_at_raw(
             &doc.source,
             &doc.parse_result,
@@ -6075,17 +6173,130 @@ machine Traffic {
                     probe_name,
                 )
                 .is_some(),
-            "goto definition missing for {probe_name} in {fixture_name}"
+            "surface=gotoDefinition fixture={fixture_name} probe={probe_name:?} \
+             offset={probe_offset}: no definition found via resolver or AST walk"
         );
+    }
 
+    /// Check the `findReferences` LSP surface for a v0.5 fixture probe.
+    ///
+    /// Uses the last occurrence of `probe_name` in `source` as the request
+    /// offset.  Asserts that the reference list has at least `min_count`
+    /// entries (typically 2: definition site + one use site).
+    ///
+    /// Failure messages identify: surface, fixture name, probe name, byte
+    /// offset, and the actual reference list.
+    fn assert_v05_find_references(
+        fixture_name: &str,
+        source: &str,
+        probe_name: &str,
+        min_count: usize,
+    ) {
+        let uri = Url::parse(&v05_fixture_path(fixture_name)).unwrap();
+        let doc = make_typed_doc(source);
+        let probe_offset = source.rfind(probe_name).unwrap_or_else(|| {
+            panic!("surface=findReferences fixture={fixture_name}: missing probe {probe_name:?}")
+        });
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(uri.clone(), doc);
         let doc_ref = documents.get(&uri).unwrap();
         let refs = build_reference_locations(&uri, &doc_ref, probe_offset, true, &documents);
         assert!(
-            refs.len() >= 2,
-            "findReferences for {probe_name} in {fixture_name} should include definition and use, got {refs:?}"
+            refs.len() >= min_count,
+            "surface=findReferences fixture={fixture_name} probe={probe_name:?} \
+             offset={probe_offset}: expected >={min_count} refs, got {refs:?}"
         );
+    }
+
+    /// Check the `semanticTokens` LSP surface for a v0.5 fixture at a specific
+    /// byte offset.
+    ///
+    /// Finds the semantic token whose `start` equals `offset` and asserts that
+    /// its `token_type` matches `expected_type`.  Use `hew_analysis::token_types`
+    /// constants for the expected type.
+    ///
+    /// Failure messages identify: surface, fixture name, offset, expected type,
+    /// and the actual type returned.
+    fn assert_v05_semantic_token_at(
+        fixture_name: &str,
+        source: &str,
+        offset: usize,
+        expected_type: u32,
+    ) {
+        let tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
+        let token = tokens
+            .iter()
+            .find(|t| t.start == offset)
+            .unwrap_or_else(|| {
+                panic!(
+                    "surface=semanticTokens fixture={fixture_name} offset={offset}: \
+                 no token at that offset; token starts: {:?}",
+                    tokens.iter().map(|t| t.start).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            token.token_type, expected_type,
+            "surface=semanticTokens fixture={fixture_name} offset={offset}: \
+             expected token_type={expected_type}, got token_type={}",
+            token.token_type
+        );
+    }
+
+    /// Smoke-test all four LSP surfaces (documentSymbols, hover, gotoDefinition,
+    /// findReferences) for a v0.5 fixture in a single call.
+    ///
+    /// This is the thin orchestration wrapper used by the majority of v0.5
+    /// fixture tests.  For targeted precision assertions use the individual
+    /// surface helpers above.
+    ///
+    /// Delegates to:
+    /// - [`assert_v05_document_symbols`] for the symbol-table surface
+    /// - inline hover check (probe name must appear in hover text; does not
+    ///   require zero type errors so fixtures with intentional type errors are
+    ///   accepted at this tier)
+    /// - [`assert_v05_goto_definition`] for the definition-jump surface
+    /// - [`assert_v05_find_references`] for the reference-list surface
+    fn assert_v05_lsp_fixture(
+        fixture_name: &str,
+        source: &str,
+        probe_name: &str,
+        expected_symbols: &[&str],
+    ) {
+        // documentSymbols surface (also validates parse-level correctness)
+        assert_v05_document_symbols(fixture_name, source, expected_symbols);
+
+        // hover surface — probe name must appear in hover text at its call-site
+        // offset.  No hard-type-error guard here so that fixtures with intentional
+        // type errors (machine lifecycle variants, index-trait error recovery, …)
+        // still pass this smoke check.
+        let doc = make_typed_doc(source);
+        let probe_offset = source
+            .rfind(probe_name)
+            .unwrap_or_else(|| panic!("fixture={fixture_name}: missing probe {probe_name:?}"));
+        let hover = hew_analysis::hover::hover(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            probe_offset,
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "surface=hover fixture={fixture_name} probe={probe_name:?} \
+                 offset={probe_offset}: hover returned None"
+            )
+        });
+        assert!(
+            hover.contents.contains(probe_name),
+            "surface=hover fixture={fixture_name} probe={probe_name:?} \
+             offset={probe_offset}: hover should mention probe name, got: {}",
+            hover.contents
+        );
+
+        // gotoDefinition surface
+        assert_v05_goto_definition(fixture_name, source, probe_name);
+
+        // findReferences surface — expect definition site + at least one use site
+        assert_v05_find_references(fixture_name, source, probe_name, 2);
     }
 
     fn assert_no_hard_type_errors(fixture_name: &str, doc: &DocumentState) {
@@ -6124,7 +6335,8 @@ machine Traffic {
         for expected in expected_labels {
             assert!(
                 labels.contains(expected),
-                "completion for {fixture_name} missing {expected}; got {labels:?}"
+                "surface=completion fixture={fixture_name} offset={offset}: \
+                 missing label {expected:?}; got {labels:?}"
             );
         }
     }
@@ -6138,10 +6350,13 @@ machine Traffic {
             doc.type_output.as_ref(),
             offset,
         )
-        .unwrap_or_else(|| panic!("hover missing in {fixture_name} at offset {offset}"));
+        .unwrap_or_else(|| {
+            panic!("surface=hover fixture={fixture_name} offset={offset}: hover returned None")
+        });
         assert!(
             hover.contents.contains(expected),
-            "hover for {fixture_name} should contain {expected:?}, got: {}",
+            "surface=hover fixture={fixture_name} offset={offset}: \
+             expected {expected:?} in hover, got: {}",
             hover.contents
         );
     }
@@ -6255,8 +6470,11 @@ machine Traffic {
         );
     }
 
+    // W4.023 Stage 0: pending-upstream-substrate — W3.006 (slice-2 tuple substrate)
+    // Do not unignore until W3.006 tuple support lands and the parser accepts
+    // positional-field type declarations (`type Pair(i32, i32)`).
     #[test]
-    #[ignore = "LSP gap: tuple record literals — parser/analysis handlers need tuple record support"]
+    #[ignore = "pending-upstream-substrate W3.006: tuple-record type syntax not yet parsed"]
     fn v05_record_tuple_literal_lsp_coverage() {
         assert_v05_lsp_fixture(
             "v05_record_tuple_literal",
@@ -6323,15 +6541,11 @@ machine Traffic {
             "`is` RHS definition should point at Payload type declaration, got {def:?}"
         );
 
-        let semantic_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
-        let payload_token = semantic_tokens
-            .iter()
-            .find(|token| token.start == rhs_offset)
-            .expect("Payload RHS should produce a semantic token");
-        assert_eq!(
-            payload_token.token_type,
+        assert_v05_semantic_token_at(
+            "v05_is_operator",
+            source,
+            rhs_offset,
             hew_analysis::token_types::TYPE,
-            "`is` RHS Payload should be classified as a type token"
         );
 
         let completion_offset = rhs_offset;
@@ -6632,8 +6846,11 @@ machine Traffic {
         );
     }
 
+    // W4.023 Stage 0: pending-upstream-substrate — unassigned select-arm-kinds lane
+    // Do not unignore until a dedicated lane lands parser support for StreamNext,
+    // TaskAwait, AfterTimer, and ActorAsk select arm syntax.
     #[test]
-    #[ignore = "LSP gap: select arm kinds — parser/analysis handlers need StreamNext, TaskAwait, AfterTimer, and ActorAsk support"]
+    #[ignore = "pending-upstream-substrate unassigned: select arm kinds (StreamNext/TaskAwait/AfterTimer/ActorAsk) not yet parsed"]
     fn v05_select_arms_lsp_coverage() {
         assert_v05_lsp_fixture(
             "v05_select_arms",
@@ -6668,8 +6885,11 @@ machine Traffic {
         );
     }
 
+    // W4.023 Stage 0: pending-upstream-substrate — unassigned lambda-actor-spawn lane
+    // Do not unignore until a dedicated lane lands parser/analysis support for
+    // inline lambda-actor spawn syntax (`spawn |msg: T| { … }`).
     #[test]
-    #[ignore = "LSP gap: spawn lambda actor — parser/analysis handlers need lambda actor spawn support"]
+    #[ignore = "pending-upstream-substrate unassigned: lambda-actor spawn syntax (`spawn |…| { … }`) not yet supported"]
     fn v05_spawn_lambda_actor_lsp_coverage() {
         assert_v05_lsp_fixture(
             "v05_spawn_lambda_actor",
@@ -6716,8 +6936,27 @@ machine Traffic {
         );
     }
 
+    // W4.023 Stage 0: known-rejected — `async fn`/`await` are not valid Hew syntax.
+    // The parser permanently rejects these keywords; they are out of v0.5 scope.
+    // This fail-closed test asserts parser errors rather than leaving the test
+    // as an indefinitely-ignored smoke check.
     #[test]
-    #[ignore = "LSP gap: async/await — parser/analysis handlers need async function and await expression support"]
+    fn v05_async_await_is_rejected_with_parse_errors() {
+        let source = include_str!("../../tests/fixtures/v05_async_await.hew");
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            !parse_result.errors.is_empty(),
+            "v05_async_await.hew must produce parse errors: \
+             `async fn` / `await` are not valid Hew syntax and the parser must reject them"
+        );
+    }
+
+    // The original smoke-test placeholder is kept ignored (not removed) so that
+    // when a future designer evaluates async/await adoption, the test body and
+    // expected symbols are still visible as documentation of the intended surface.
+    // W4.023 Stage 0: known-rejected (permanently — see above fail-closed test)
+    #[test]
+    #[ignore = "known-rejected: `async fn`/`await` are not valid Hew v0.5 syntax; see v05_async_await_is_rejected_with_parse_errors for the fail-closed assertion"]
     fn v05_async_await_lsp_coverage() {
         assert_v05_lsp_fixture(
             "v05_async_await",
@@ -6790,5 +7029,199 @@ machine Traffic {
             "display_probe",
             &["Point", "display_probe", "display_fstring"],
         );
+    }
+
+    // ── W4.023 Stage 2 — targeted accepted-surface assertions ────────────────
+    //
+    // Each test below extends beyond the Stage 0/1 smoke tier.  They pin a
+    // specific LSP surface on an accepted fixture using Stage 1 helpers.
+    // Organisation mirrors the Stage 2 scope:
+    //
+    //   Group A — Composite returns: record field-access hover
+    //   Group B — Records / wires:   field-declaration hover
+    //   Group C — Static trait dispatch: goto-definition + find-references
+    //   Group D — Match enum:        pattern-binding hover
+    //   Group E — Machines:          precision document-symbol assertions
+    //   Group F — Canonical primitives: integer-literal hover
+
+    // ── Group A: Composite returns — record field-access hover ───────────────
+
+    /// `value.count` field access in `record_decl_probe` must surface
+    /// `count: i64` via the field-access hover path.
+    #[test]
+    fn v05_record_decl_composite_return_field_access_hover_pins_type() {
+        let source = include_str!("../../tests/fixtures/v05_record_decl.hew");
+        let offset = source
+            .find("value.count")
+            .expect("value.count field access")
+            + "value.".len();
+        assert_v05_hover_contains("v05_record_decl", source, offset, "count: i64");
+    }
+
+    /// `p.x` field access inside the `Display` impl body must surface
+    /// `x: i64` via the field-access hover path.
+    ///
+    /// Note: the only occurrence of `p.x` in the fixture is inside the
+    /// f-string interpolation `f"Point({p.x})"`.  The field-access hover
+    /// path does not currently route through f-string contents — the
+    /// surrounding string expression type wins at that offset.  The
+    /// assertion below therefore uses the field-*declaration* hover path
+    /// on `type Point { x: i64; }`, which IS a `TypeDecl` and is handled
+    /// by `hover_field_declaration_at_offset`.
+    #[test]
+    fn v05_display_fstring_type_decl_field_declaration_hover_pins_type() {
+        let source = include_str!("../../tests/fixtures/v05_display_fstring.hew");
+        // offset of `x` inside the `type Point { x: i64; }` declaration
+        let offset = source.find("x: i64").expect("x: i64 field declaration");
+        assert_v05_hover_contains("v05_display_fstring", source, offset, "x: i64");
+    }
+
+    /// `label.text` field access inside the `Describable` impl body must
+    /// surface `text: string` via the field-access hover path.
+    #[test]
+    fn v05_trait_bounds_impl_field_access_hover_pins_type() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        let offset = source.find("label.text").expect("label.text field access") + "label.".len();
+        assert_v05_hover_contains("v05_trait_bounds", source, offset, "text: string");
+    }
+
+    // ── Group B: Records / wires — field-declaration hover ───────────────────
+
+    /// Hovering on the field name tokens inside a `record` type declaration
+    /// must surface the declared field type via `hover_field_declaration_at_offset`.
+    ///
+    /// Substrate-owned: `record AutoRecord { … }` is parsed as `Item::Record`
+    /// (a separate AST node), not as `Item::TypeDecl`.
+    /// `hover_field_declaration_at_offset` only iterates `Item::TypeDecl` items
+    /// and therefore returns `None` for `record`-keyword field names.
+    /// When that substrate gap is closed, this test should unignore and pass
+    /// without code changes here.
+    #[test]
+    #[ignore = "substrate-owned: record keyword produces Item::Record; hover_field_declaration_at_offset only handles Item::TypeDecl"]
+    fn v05_record_decl_field_declaration_hover_pins_types() {
+        let source = include_str!("../../tests/fixtures/v05_record_decl.hew");
+        // `count` in `count: i64,` → `count: i64`
+        let count_offset = source.find("count: i64").expect("count field decl");
+        assert_v05_hover_contains("v05_record_decl", source, count_offset, "count: i64");
+        // `name` in `name: string,` → `name: string`
+        let name_offset = source.find("name: string").expect("name field decl");
+        assert_v05_hover_contains("v05_record_decl", source, name_offset, "name: string");
+    }
+
+    /// `type Point { x: i32; y: i32; }` produces an `Item::TypeDecl`; hovering
+    /// on the field names must surface the field types via
+    /// `hover_field_declaration_at_offset`.
+    #[test]
+    fn v05_record_literals_type_decl_field_declaration_hover_pins_types() {
+        let source = include_str!("../../tests/fixtures/v05_record_literals.hew");
+        // `x` in `x: i32;` field declaration
+        let x_offset = source.find("x: i32").expect("x: i32 field decl");
+        assert_v05_hover_contains("v05_record_literals", source, x_offset, "x: i32");
+        // `y` in `y: i32;` field declaration
+        let y_offset = source.find("y: i32").expect("y: i32 field decl");
+        assert_v05_hover_contains("v05_record_literals", source, y_offset, "y: i32");
+    }
+
+    // ── Group C: Static trait dispatch — goto-definition + find-references ───
+
+    /// The last occurrence of `describe` in the fixture is the `item.describe()`
+    /// call site.  Both the resolver and the AST-walk fallback must be able to
+    /// locate the trait or impl definition.
+    #[test]
+    fn v05_trait_bounds_static_dispatch_method_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        assert_v05_goto_definition("v05_trait_bounds", source, "describe");
+    }
+
+    /// `Describable` must appear in at least one reference location as found by
+    /// `build_reference_locations` from the last occurrence (the `<T: Describable>`
+    /// bound).  The reference engine currently returns only the trait declaration
+    /// site; it does not yet trace the impl header or type-bound usages as
+    /// cross-references.  This assertion pins the observable substrate behaviour
+    /// (declaration found) and will tighten naturally when the reference engine
+    /// gains full trait-name tracking.
+    #[test]
+    fn v05_trait_bounds_trait_name_find_references_includes_declaration() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        // Substrate note: the reference engine finds the declaration site only.
+        // The impl-header and type-bound usages are not yet tracked.
+        assert_v05_find_references("v05_trait_bounds", source, "Describable", 1);
+    }
+
+    /// The last occurrence of `show` in the fixture is the `holder.show()` call
+    /// site.  Both the resolver and the AST-walk fallback must locate the impl
+    /// method definition.
+    #[test]
+    fn v05_impl_where_clause_method_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_impl_where_clause.hew");
+        assert_v05_goto_definition("v05_impl_where_clause", source, "show");
+    }
+
+    // ── Group D: Match enum — pattern-binding hover ───────────────────────────
+
+    /// `r` in `Shape::Circle(r)` is a constructor-pattern binding.
+    /// `hover_pattern_binding` must resolve its type from the `Circle(i64)`
+    /// variant definition and surface `r: i64`.
+    #[test]
+    fn v05_match_enum_variant_pattern_binding_hover_pins_payload_type() {
+        let source = include_str!("../../tests/fixtures/v05_match_enum_variant.hew");
+        // Position inside the constructor pattern, not the arm body.
+        let offset = source
+            .find("Shape::Circle(r)")
+            .expect("Circle pattern in match arm")
+            + "Shape::Circle(".len();
+        assert_v05_hover_contains("v05_match_enum_variant", source, offset, "r: i64");
+    }
+
+    // ── Group E: Machines — precision document-symbol assertions ─────────────
+
+    /// The smoke test for `v05_machine_states` only checks Start / Stop / Idle /
+    /// Running.  Stage 2 pins the full event list, including the two events that
+    /// the smoke tier omits: `Started` and `Stopped`.
+    ///
+    /// Note: non-exhaustive transition coverage is intentional in this fixture;
+    /// `assert_v05_document_symbols` does not require zero type errors.
+    #[test]
+    fn v05_machine_states_document_symbols_include_all_events() {
+        let source = include_str!("../../tests/fixtures/v05_machine_states.hew");
+        assert_v05_document_symbols(
+            "v05_machine_states",
+            source,
+            &[
+                "Traffic", "Start", "Stop", "Started", "Stopped", "Idle", "Running",
+            ],
+        );
+    }
+
+    /// Pin the complete machine-level symbol tree for `Turnstile`.  The smoke
+    /// test only checks symbols that appear in `expected_symbols`; Stage 2 pins
+    /// every event and state name.
+    ///
+    /// Note: non-exhaustive event coverage is intentional in this fixture.
+    #[test]
+    fn v05_machine_methods_document_symbols_include_machine_and_all_events() {
+        let source = include_str!("../../tests/fixtures/v05_machine_methods.hew");
+        assert_v05_document_symbols(
+            "v05_machine_methods",
+            source,
+            &["Turnstile", "Coin", "Push", "Locked", "Unlocked"],
+        );
+    }
+
+    // ── Group F: Canonical primitives — integer-literal hover ────────────────
+
+    /// An untyped integer literal (`7` in `AutoRecord { count: 7, … }`) must
+    /// materialise to `i64` — the default integer width — when hovered.
+    /// This exercises `ResolvedTy::materialize_literal_defaults` through the
+    /// `hover_type_display` → `ResolvedTy::user_facing()` chain.
+    #[test]
+    fn v05_record_decl_integer_literal_hover_materializes_to_i64() {
+        let source = include_str!("../../tests/fixtures/v05_record_decl.hew");
+        // Offset of the `7` literal inside `AutoRecord { count: 7, name: "ok" }`.
+        let offset = source
+            .find("count: 7")
+            .expect("count: 7 literal in record constructor")
+            + "count: ".len();
+        assert_v05_hover_contains("v05_record_decl", source, offset, "i64");
     }
 }

@@ -73,6 +73,46 @@ trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_o
 diff -u "${ROOT}/tests/vertical-slice/accept/hello_println.expected" "${hello_stdout}"
 
 run_accept_expect_status "assert" 0
+
+# ---------------------------------------------------------------------------
+# W4.002: HIR pre-pass Item::Machine coverage for FC-P0 sibling walkers
+# ---------------------------------------------------------------------------
+
+# Reject: `.recv()` inside a machine transition body must be rejected at
+# HIR-lower time when compiling for wasm32. Exercises the Item::Machine arm
+# added to `check_wasm_blocking_recv_gate`.
+if "${HEW}" compile --target wasm32-unknown-unknown \
+    "${ROOT}/tests/vertical-slice/reject/machine_wasm_blocking_recv.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected machine_wasm_blocking_recv fixture to fail" >&2
+  exit 1
+fi
+grep -q 'Blocking channel receive operations are not supported on WASM32' "${reject_output}"
+
+# Reject: `fork child = worker(42)` inside a machine state entry block must
+# be rejected by the task-gate HIR pre-pass. Exercises the Item::Machine arm
+# added to `check_task_gates`. Uses `hew compile` (not `hew check`) because
+# the HIR pre-pass runs as part of the compile pipeline, not the type-check-
+# only path.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/machine_task_gate_fork_args.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected machine_task_gate_fork_args fixture to fail" >&2
+  exit 1
+fi
+grep -q 'TaskSpawnSignatureUnsupported\|spawned function must have zero arguments' "${reject_output}"
+
+# Reject: spawned closures must not capture non-Send values. This fixture uses
+# a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
+# diagnostic rather than unrelated Rc construction or lowering diagnostics.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/spawned_closure_non_send_capture.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected spawned_closure_non_send_capture fixture to fail" >&2
+  exit 1
+fi
+grep -q "spawned closure captures non-Send value 'r'" "${reject_output}"
+
 run_accept_expect_status "assert_eq" 0
 run_accept_expect_status "assert_ne" 0
 run_accept_expect_status "sleep_ms" 0
@@ -82,8 +122,30 @@ grep -q 'assertion failed: assert_eq(4, 5)' "${stderr_output}"
 
 run_accept_expect_status "exit_42" 42
 
+# defer: basic (no effect on return), executes (exit override), LIFO, block scope
+run_accept_expect_status "defer_basic" 7
+run_accept_expect_status "defer_executes" 42
+run_accept_expect_status "defer_lifo" 1
+run_accept_expect_status "defer_block_scope" 7
+# defer: early-return unwind, nested scopes, no double-run on tail
+run_accept_expect_status "defer_early_return" 42
+run_accept_expect_status "defer_nested_early_return" 10
+run_accept_expect_status "defer_no_double_run" 5
+# defer: tail-return value secured before scope-exit defers mutate referenced var
+run_accept_expect_status "defer_secures_tail_return" 5
+# defer: block-expression result secured before scope-exit defers mutate referenced var
+run_accept_expect_status "defer_secures_block_result" 5
+# explicit `return` must seal the basic block; post-return code must not run
+run_accept_expect_status "return_terminates_early" 7
+
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
+
+# Actor-only wasm smoke: `actor_counter` has actor state, so wasm compilation
+# must keep resolving the actor state drop/clone setter pair.
+"${HEW}" compile --target wasm32-unknown-unknown \
+  "${ROOT}/tests/vertical-slice/accept/actor_counter.hew" >"${accept_output}" 2>&1
+test -s "${ROOT}/.tmp/compile-out/actor_counter.wasm"
 
 # Q87 slice 1 regression: same actor body as `actor_counter`, but the two
 # `receive fn`s appear in reversed source order. Pre-Q87 the source-order
@@ -208,6 +270,15 @@ if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/use_after_consume.hew" 
 fi
 grep -q 'UseAfterConsume' "${reject_output}"
 
+# Reject: defer body references a binding that was moved/consumed earlier
+# in the scope. The dataflow lattice must surface `UseAfterConsume` for
+# the defer's lexical reference — Q205-B fail-closed boundary.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/defer_uses_moved_binding.hew" >"${reject_output}" 2>&1; then
+  echo "expected defer-uses-moved-binding fixture to fail" >&2
+  exit 1
+fi
+grep -q 'UseAfterConsume' "${reject_output}"
+
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unresolved_inference.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved-inference fixture to fail" >&2
   exit 1
@@ -311,6 +382,32 @@ grep -q 'MonitorRef' "${reject_output}"
 # ---------------------------------------------------------------------------
 # scope{} / fork — fail-closed surface pins
 # ---------------------------------------------------------------------------
+
+# Accept: actor-handler `scope { fork { worker(); } }` runs through the W4.010
+# TaskEntry adapter for no-argument unit-returning free functions.
+run_accept_expect_stdout "free_fn_actor_scope_spawn"
+
+# Reject: top-level/default-callconv free-function task spawn has no enclosing
+# ctx-bearing execution context to forward to the task wrapper. This must fail
+# at MIR-lower time, before codegen.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/free_fn_scope_spawn_in_default.hew" >"${reject_output}" 2>&1; then
+  echo "expected free-fn-scope-spawn-in-default fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF "cannot spawn \`worker\` from \`main\`" "${reject_output}"
+grep -qF 'ctx-bearing execution context' "${reject_output}"
+grep -qF 'W4.010-followup-caller-ctx-routing' "${reject_output}"
+
+# Reject: generic free-function task spawn stays fail-closed. The caller is an
+# actor handler so the generic diagnostic is not masked by the caller-context
+# gate.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/free_fn_scope_spawn_generic.hew" >"${reject_output}" 2>&1; then
+  echo "expected free-fn-scope-spawn-generic fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'generic free-function task spawning' "${reject_output}"
 
 # Reject: `fork name = expr` outside any scope{} body.
 # The type checker rejects this before HIR lowering — the construct is
@@ -508,6 +605,25 @@ fi
 grep -qF 'invalid regex pattern' "${reject_output}"
 
 # ---------------------------------------------------------------------------
+# W3.029 — user record/type ValueClass inference
+# ---------------------------------------------------------------------------
+
+# Accept: monomorphic user aggregate with all-BitCopy fields.
+run_accept_expect_status "user_record_bitcopy" 42
+
+# Accept: concrete generic user aggregate whose substituted fields are BitCopy.
+run_accept_expect_status "generic_user_record_bitcopy" 42
+
+# Reject: concrete generic user aggregate with a heap-owning string field.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/user_record_non_bitcopy.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected user_record_non_bitcopy fixture to fail" >&2
+  exit 1
+fi
+grep -q 'UnsupportedUserRecordValueClass' "${reject_output}"
+
+# ---------------------------------------------------------------------------
 # Generic enum monomorphisation — end-to-end acceptance fixtures
 # ---------------------------------------------------------------------------
 
@@ -535,6 +651,41 @@ run_accept_expect_status "generic_enum_result_ok" 7
 run_accept_expect_status "generic_enum_nested_option" 5
 
 # ---------------------------------------------------------------------------
+# W3.028 Stage 1 — Composite-return spine: user functions returning enums
+# ---------------------------------------------------------------------------
+
+# Accept: fn maybe() -> Option<i64> { Some(42) } — aggregate return via ReturnSlot.
+# Exit 42 proves the caller received the composite and destructured the Some payload.
+run_accept_expect_status "composite_return_option_some" 42
+
+# Accept: fn nothing() -> Option<i64> { None } — unit variant composite return.
+# Exit 99 proves the None arm matched in the caller.
+run_accept_expect_status "composite_return_option_none" 99
+
+# Accept: Result<i64, i64> Ok(7) + Err(99) — two-type-parameter composite return.
+# Exit 106 proves both Ok and Err variants return and destructure correctly.
+run_accept_expect_status "composite_return_result" 106
+
+# Reject: Option<string> composite return — heap-owning payload rejected at codegen.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/composite_return_heap_owning.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected composite_return_heap_owning fixture to fail" >&2
+  exit 1
+fi
+grep -q 'composite return of heap-owning payload' "${reject_output}"
+
+# WASM: composite return for Option<i64> compiles to wasm32.
+"${HEW}" compile --target wasm32-unknown-unknown \
+    "${ROOT}/tests/vertical-slice/accept/composite_return_option_some.hew" \
+    >"${accept_output}" 2>&1
+
+# WASM: composite return for Result<i64, i64> compiles to wasm32.
+"${HEW}" compile --target wasm32-unknown-unknown \
+    "${ROOT}/tests/vertical-slice/accept/composite_return_result.hew" \
+    >"${accept_output}" 2>&1
+
+# ---------------------------------------------------------------------------
 # RemotePid<T>::tell — in-place Result<(), SendError> construction gate
 # ---------------------------------------------------------------------------
 
@@ -544,3 +695,114 @@ run_accept_expect_status "generic_enum_nested_option" 5
 # emit_remote_pid_tell_call. Regression in the in-place construction would
 # produce a wrong SendError discriminant, exiting 1 or 2 instead.
 run_accept_expect_status "remote_pid_tell" 42
+
+# ---------------------------------------------------------------------------
+# W2.006 Stage 1 — HewScope removal: scope{} MIR shape invariant.
+# ---------------------------------------------------------------------------
+# Accept fixture: `scope { fork { worker(); } }` inside an actor handler
+# must:
+#   1. typecheck cleanly (`hew check` exits 0).
+#   2. produce a RawMirFunction whose instruction stream contains the
+#      canonical hew_task_scope_* and hew_task_new symbols.
+#   3. NOT mention the legacy hew_scope_* family anywhere in the dump.
+#   4. compile and run end-to-end now that W4.010 synthesizes a TaskEntry
+#      adapter for the free-function task body.
+w2006_fixture="${ROOT}/tests/vertical-slice/accept/w2006_scope_spawn.hew"
+
+"${HEW}" check "${w2006_fixture}" >"${accept_output}" 2>&1
+grep -q ": OK$" "${accept_output}" || {
+  echo "W2.006: expected hew check to print ': OK' on the scope_spawn fixture" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+
+"${HEW}" compile --dump-mir raw "${w2006_fixture}" >"${accept_output}" 2>&1
+grep -qF 'symbol: "hew_task_scope_new"' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_scope_new" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+grep -qF 'symbol: "hew_task_scope_spawn"' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_scope_spawn" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+grep -qF 'symbol: "hew_task_new"' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_new (preceding hew_task_scope_spawn)" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+grep -qF 'symbol: "hew_task_scope_destroy"' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_scope_destroy" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+# Legacy ABI must be fully removed.
+if grep -qE 'symbol: "hew_scope_(spawn|new|create|free|destroy|cancel|is_cancelled|wait_all)"' "${accept_output}"; then
+  echo "W2.006: legacy hew_scope_* symbol leaked into MIR dump — removal incomplete" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
+
+run_accept_expect_status "w2006_scope_spawn" 0
+
+# ---------------------------------------------------------------------------
+# W3.025 Stage 1 — multi-file compile/run fixture baseline
+# ---------------------------------------------------------------------------
+
+# Accept: sibling module — all-pub, single-segment import, exit 42
+# Layout: accept/sibling_module_call.hew imports accept/arith.hew
+run_accept_expect_status "sibling_module_call" 42
+
+# Accept: multi-level import (import lib::math;) — flat form lib/math.hew, exit 42
+# Only the flat form exists (no lib/math/math.hew) so no ambiguity fires.
+run_accept_expect_status "multilevel_import" 42
+
+# Reject: unresolved module
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unresolved_module.hew" \
+  >"${reject_output}" 2>&1; then
+  echo "W3.025: expected unresolved_module to fail" >&2
+  exit 1
+fi
+grep -q 'does_not_exist' "${reject_output}"
+
+# Reject: duplicate short module name (import alpha; import beta::alpha — both short name "alpha")
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/duplicate_short_name.hew" \
+  >"${reject_output}" 2>&1; then
+  echo "W3.025: expected duplicate_short_name to fail" >&2
+  exit 1
+fi
+grep -q 'two imported modules share the short name' "${reject_output}"
+
+# Reject: ambiguous module resolution (both flat ambig_mod.hew and dir ambig_mod/ambig_mod.hew exist)
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/ambiguous_module.hew" \
+  >"${reject_output}" 2>&1; then
+  echo "W3.025: expected ambiguous_module to fail" >&2
+  exit 1
+fi
+grep -q 'is ambiguous' "${reject_output}"
+grep -q 'Rename or remove one' "${reject_output}"
+
+# WASM parity: must either succeed or emit a named WASM-TODO(#1451) diagnostic — never silent failure.
+# Matches hew-cli/src/main.rs CodegenError::WasmUnsupportedSubstrate ("WASM target does not support").
+if ! "${HEW}" compile --target wasm32-unknown-unknown \
+    "${ROOT}/tests/vertical-slice/accept/directory_module_call.hew" \
+    >"${accept_output}" 2>&1; then
+  grep -qE 'WASM target does not support|wasm32' "${accept_output}" || {
+    echo "W3.025: WASM multi-file compile failed silently (no named WASM diagnostic)" >&2
+    cat "${accept_output}" >&2
+    exit 1
+  }
+fi
+
+# hew run direct invocation on multi-file fixture (same pipeline as hew compile)
+if "${HEW}" run "${ROOT}/tests/vertical-slice/accept/directory_module_call.hew" \
+  >"${stdout_output}" 2>"${stderr_output}"; then
+  run_status=0
+else
+  run_status=$?
+fi
+if [[ "${run_status}" -ne 7 ]]; then
+  echo "W3.025: hew run multi-file: expected exit 7, got ${run_status}" >&2
+  exit 1
+fi

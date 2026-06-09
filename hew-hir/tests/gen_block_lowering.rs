@@ -47,7 +47,7 @@ fn binding_initializer<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a 
 }
 
 fn assert_generator_type(ty: &ResolvedTy, yield_ty: &ResolvedTy, return_ty: &ResolvedTy) {
-    let ResolvedTy::Named { name, args } = ty else {
+    let ResolvedTy::Named { name, args, .. } = ty else {
         panic!("expected Generator<Yield, Return>, got {ty:?}");
     };
     assert_eq!(name, "Generator");

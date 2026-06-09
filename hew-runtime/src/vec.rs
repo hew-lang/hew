@@ -26,7 +26,7 @@
 )]
 
 // Re-export types from hew-cabi so `crate::vec::HewVec` etc. continue to work.
-pub use hew_cabi::vec::{ElemKind, HewVec};
+pub use hew_cabi::vec::{ElemKind, HewTypeLayout, HewTypeOwnershipKind, HewVec};
 
 use core::ffi::{c_char, c_void};
 use core::ptr;
@@ -58,6 +58,7 @@ unsafe fn write_stderr(msg: &[u8]) {
 unsafe fn ensure_cap(v: *mut HewVec, needed: usize) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
+        abort_if_layout_aware(v);
         let vec = &mut *v;
         if vec.cap >= needed {
             return;
@@ -131,6 +132,53 @@ pub unsafe extern "C" fn hew_vec_abort_pop_empty() -> ! {
     unsafe { abort_pop_empty() }
 }
 
+/// Abort when a non-null layout descriptor reaches an operation whose
+/// layout-driven ownership semantics are intentionally not implemented yet.
+unsafe fn abort_layout_aware_operation() -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        let msg = b"PANIC: Vec layout-aware operation is not implemented\n\0";
+        write_stderr(&msg[..msg.len() - 1]);
+        libc::abort();
+    }
+}
+
+/// Fail closed for Stage 1 layout-aware Vec operations.
+///
+/// # Safety
+///
+/// `v` must point to a valid, non-null `HewVec`.
+unsafe fn abort_if_layout_aware(v: *const HewVec) {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        if !(*v).layout.is_null() {
+            abort_layout_aware_operation();
+        }
+    }
+}
+
+/// Validate the static descriptor fields required to allocate a layout-aware Vec.
+///
+/// # Safety
+///
+/// `layout` must point to a valid `HewTypeLayout`.
+unsafe fn validate_type_layout(layout: *const HewTypeLayout) {
+    // SAFETY: caller guarantees `layout` is valid.
+    unsafe {
+        let descriptor = &*layout;
+        if descriptor.size == 0 {
+            let msg = b"PANIC: HewTypeLayout size must be non-zero\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+        if descriptor.align == 0 || !descriptor.align.is_power_of_two() {
+            let msg = b"PANIC: HewTypeLayout align must be a non-zero power of two\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------
@@ -153,6 +201,7 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewV
         (*v).cap = 0;
         (*v).elem_size = elem_size as usize;
         (*v).elem_kind = ElemKind::Plain;
+        (*v).layout = ptr::null();
         v
     }
 }
@@ -271,6 +320,37 @@ pub unsafe extern "C" fn hew_vec_from_u8_data(data: *const u8, len: u32) -> *mut
     // SAFETY: v is valid.
     unsafe { (*v).len = len as usize };
     v
+}
+
+/// Create a new `HewVec` backed by a runtime type layout descriptor.
+///
+/// Stage 1 only records the descriptor and fails closed for layout-aware
+/// operations that need full clone/drop semantics.
+///
+/// # Safety
+///
+/// `layout` must be a valid, non-null pointer that outlives the returned vec.
+/// The returned pointer must eventually be freed with [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -> *mut HewVec {
+    cabi_guard!(layout.is_null(), ptr::null_mut());
+    // SAFETY: null was rejected above.
+    unsafe {
+        validate_type_layout(layout);
+        let descriptor = &*layout;
+        let elem_size = i64::try_from(descriptor.size).unwrap_or_else(|_| {
+            let msg = b"PANIC: HewTypeLayout size exceeds Hew ABI range\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        });
+        let v = hew_vec_new_with_elem_size(elem_size);
+        (*v).elem_kind = match descriptor.ownership_kind {
+            HewTypeOwnershipKind::String => ElemKind::String,
+            HewTypeOwnershipKind::Plain | HewTypeOwnershipKind::LayoutManaged => ElemKind::Plain,
+        };
+        (*v).layout = layout;
+        v
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -900,6 +980,9 @@ unsafe fn free_string_elements(v: *mut HewVec) {
 pub unsafe extern "C" fn hew_vec_clear(v: *mut HewVec) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
+        if !(*v).layout.is_null() && (*v).len != 0 {
+            abort_layout_aware_operation();
+        }
         if (*v).elem_kind == ElemKind::String {
             free_string_elements(v);
         }
@@ -920,6 +1003,9 @@ pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
     unsafe {
         if !v.is_null() {
             if !(*v).data.is_null() {
+                if !(*v).layout.is_null() && (*v).len != 0 {
+                    abort_layout_aware_operation();
+                }
                 if (*v).elem_kind == ElemKind::String {
                     free_string_elements(v);
                 }
@@ -1007,6 +1093,7 @@ pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let src = &*v;
+        abort_if_layout_aware(v);
         let new_v = hew_vec_new_with_elem_size(
             #[expect(clippy::cast_possible_wrap, reason = "elem_size is small, fits in i64")]
             {
@@ -1056,6 +1143,8 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
     cabi_guard!(dst.is_null() || src.is_null());
     // SAFETY: caller guarantees both pointers are valid HewVecs with matching elem_size.
     unsafe {
+        abort_if_layout_aware(dst);
+        abort_if_layout_aware(src);
         let src_len = (*src).len;
         if src_len == 0 {
             return;
@@ -1232,6 +1321,7 @@ pub unsafe extern "C" fn hew_vec_remove_at(v: *mut HewVec, index: i64) {
     // SAFETY: Caller guarantees `v` is a valid HewVec pointer. We bounds-check
     // `idx` before computing offsets and copying.
     unsafe {
+        abort_if_layout_aware(v);
         let len = (*v).len;
         assert!(
             idx < len,
@@ -1406,6 +1496,9 @@ pub unsafe extern "C" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
         if new_len >= vec.len {
             return;
         }
+        if !vec.layout.is_null() {
+            abort_layout_aware_operation();
+        }
         if vec.elem_kind == ElemKind::String {
             for i in new_len..vec.len {
                 let slot = vec.data.cast::<*mut c_char>().add(i);
@@ -1458,6 +1551,7 @@ pub unsafe extern "C" fn hew_vec_new_generic(elem_size: i64, elem_kind: i64) -> 
 pub unsafe extern "C" fn hew_vec_push_generic(v: *mut HewVec, data: *const core::ffi::c_void) {
     // SAFETY: caller guarantees `v` and `data` are valid.
     unsafe {
+        abort_if_layout_aware(v);
         let len = (*v).len;
         let Some(new_len) = len.checked_add(1) else {
             libc::abort();
@@ -1468,6 +1562,22 @@ pub unsafe extern "C" fn hew_vec_push_generic(v: *mut HewVec, data: *const core:
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
         (*v).len = new_len;
     }
+}
+
+/// Stage 1 fail-closed stub for layout-descriptor element pushes.
+///
+/// # Safety
+///
+/// This C-ABI entry point always aborts until layout-aware Vec ownership
+/// semantics are implemented.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_push_layout(
+    _v: *mut HewVec,
+    _data: *const core::ffi::c_void,
+    _layout: *const HewTypeLayout,
+) {
+    // SAFETY: the staged layout-aware operation must fail closed.
+    unsafe { abort_layout_aware_operation() }
 }
 
 /// Return a pointer to the element at `index`. Aborts if out of bounds.
@@ -1483,12 +1593,29 @@ pub unsafe extern "C" fn hew_vec_get_generic(
 ) -> *const core::ffi::c_void {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
+        abort_if_layout_aware(v);
         let index = index as usize;
         if index >= (*v).len {
             abort_oob(index, (*v).len);
         }
         (*v).data.add(index * (*v).elem_size).cast()
     }
+}
+
+/// Stage 1 fail-closed stub for layout-descriptor element reads.
+///
+/// # Safety
+///
+/// This C-ABI entry point always aborts until layout-aware Vec ownership
+/// semantics are implemented.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_get_layout(
+    _v: *const HewVec,
+    _index: i64,
+    _layout: *const HewTypeLayout,
+) -> *const core::ffi::c_void {
+    // SAFETY: the staged layout-aware operation must fail closed.
+    unsafe { abort_layout_aware_operation() }
 }
 
 /// Overwrite the element at `index` by copying `elem_size` bytes from `data`.
@@ -1506,6 +1633,7 @@ pub unsafe extern "C" fn hew_vec_set_generic(
 ) {
     // SAFETY: caller guarantees `v` and `data` are valid.
     unsafe {
+        abort_if_layout_aware(v);
         let index = index as usize;
         if index >= (*v).len {
             abort_oob(index, (*v).len);
@@ -1514,6 +1642,23 @@ pub unsafe extern "C" fn hew_vec_set_generic(
         let dst = (*v).data.add(index * elem_size);
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
     }
+}
+
+/// Stage 1 fail-closed stub for layout-descriptor element writes.
+///
+/// # Safety
+///
+/// This C-ABI entry point always aborts until layout-aware Vec ownership
+/// semantics are implemented.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_set_layout(
+    _v: *mut HewVec,
+    _index: i64,
+    _data: *const core::ffi::c_void,
+    _layout: *const HewTypeLayout,
+) {
+    // SAFETY: the staged layout-aware operation must fail closed.
+    unsafe { abort_layout_aware_operation() }
 }
 
 /// Pop the last element, copying it into `out`. Returns 1 on success, 0 if
@@ -1527,6 +1672,7 @@ pub unsafe extern "C" fn hew_vec_set_generic(
 pub unsafe extern "C" fn hew_vec_pop_generic(v: *mut HewVec, out: *mut core::ffi::c_void) -> i32 {
     // SAFETY: caller guarantees `v` and `out` are valid.
     unsafe {
+        abort_if_layout_aware(v);
         if (*v).len == 0 {
             return 0;
         }
@@ -1536,6 +1682,38 @@ pub unsafe extern "C" fn hew_vec_pop_generic(v: *mut HewVec, out: *mut core::ffi
         core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), elem_size);
         1
     }
+}
+
+/// Stage 1 fail-closed stub for layout-descriptor element pops.
+///
+/// # Safety
+///
+/// This C-ABI entry point always aborts until layout-aware Vec ownership
+/// semantics are implemented.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_pop_layout(
+    _v: *mut HewVec,
+    _out: *mut core::ffi::c_void,
+    _layout: *const HewTypeLayout,
+) -> i32 {
+    // SAFETY: the staged layout-aware operation must fail closed.
+    unsafe { abort_layout_aware_operation() }
+}
+
+/// Stage 1 fail-closed stub for layout-descriptor equality/contains.
+///
+/// # Safety
+///
+/// This C-ABI entry point always aborts until layout-aware Vec comparison
+/// semantics are implemented.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_contains_layout(
+    _v: *const HewVec,
+    _data: *const core::ffi::c_void,
+    _layout: *const HewTypeLayout,
+) -> i32 {
+    // SAFETY: the staged layout-aware operation must fail closed.
+    unsafe { abort_layout_aware_operation() }
 }
 
 // ---------------------------------------------------------------------------
@@ -1611,9 +1789,30 @@ mod tests {
         unsafe {
             let v = hew_vec_new();
             assert!(!v.is_null());
+            assert!((*v).layout.is_null());
             assert_eq!(hew_vec_len(v), 0);
             assert!(hew_vec_is_empty(v));
             hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn legacy_vec_constructors_keep_layout_null() {
+        // SAFETY: FFI calls use valid vec pointers returned by constructors.
+        unsafe {
+            let vecs = [
+                hew_vec_new(),
+                hew_vec_new_i64(),
+                hew_vec_new_f64(),
+                hew_vec_new_str(),
+                hew_vec_new_ptr(),
+                hew_vec_new_generic(i64::try_from(core::mem::size_of::<u64>()).unwrap(), 0),
+            ];
+            for v in vecs {
+                assert!(!v.is_null());
+                assert!((*v).layout.is_null());
+                hew_vec_free(v);
+            }
         }
     }
 
@@ -1801,6 +2000,79 @@ mod tests {
             core::ptr::copy_nonoverlapping(raw.cast::<u8>(), out.as_mut_ptr(), out.len());
             assert_eq!(out.as_slice(), expected);
             hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn test_vec_new_with_layout_records_descriptor() {
+        #[repr(C)]
+        struct Payload {
+            a: u64,
+            b: u64,
+        }
+
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Payload>(),
+            align: core::mem::align_of::<Payload>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+
+        // SAFETY: layout is valid and outlives the returned empty vec.
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            assert!(!v.is_null());
+            assert_eq!((*v).elem_size, core::mem::size_of::<Payload>());
+            assert_eq!((*v).elem_kind, ElemKind::Plain);
+            assert_eq!((*v).layout, &raw const layout);
+            assert_eq!(hew_vec_len(v), 0);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn test_vec_push_layout_stub_fails_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "vec::tests::_helper_vec_push_layout_stub_fails_closed",
+                "--include-ignored",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "layout-aware push must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("PANIC: Vec layout-aware operation is not implemented"),
+            "layout-aware push must report the staged fail-closed diagnostic"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[ignore = "helper for test_vec_push_layout_stub_fails_closed — must abort"]
+    fn _helper_vec_push_layout_stub_fails_closed() {
+        #[repr(C)]
+        struct Payload {
+            a: u64,
+            b: u64,
+        }
+
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Payload>(),
+            align: core::mem::align_of::<Payload>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+
+        // SAFETY: FFI calls use a valid descriptor and stack-allocated payload.
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let payload = Payload { a: 1, b: 2 };
+            hew_vec_push_layout(v, (&raw const payload).cast(), &raw const layout);
         }
     }
 

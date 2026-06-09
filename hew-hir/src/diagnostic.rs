@@ -3,14 +3,33 @@ use hew_types::ResolvedTy;
 
 use crate::ids::{BindingId, HirNodeId, ResolvedRef, SiteId};
 
+/// Which kind of imported item carried a body that failed to lower because
+/// of a missing same-module dependency. Used by
+/// [`HirDiagnosticKind::ImportedBodyMissingPrivateHelper`] so consumers can
+/// distinguish imported impl-method bodies from imported free-function
+/// bodies without splitting the diagnostic variant.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ImportedItemKind {
+    /// The body came from an imported `impl` block's method.
+    ImplMethod,
+    /// The body came from an imported `pub fn` free function.
+    FreeFn,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HirDiagnostic {
     pub kind: HirDiagnosticKind,
     pub span: Span,
     pub note: String,
+    /// Dotted source module that owns this diagnostic's span.
+    ///
+    /// Matches `TypeError::source_module`: `None` means the root source file,
+    /// `Some("a.b")` means the non-root module with that dotted `ModuleId`.
+    pub source_module: Option<String>,
     /// Additional source locations referenced by this diagnostic.
     /// Each entry is `(span, label)` — e.g. the entry/exit block site for
-    /// effect-parity diagnostics.  Empty for most diagnostics.
+    /// effect-parity diagnostics. Empty for most diagnostics. Secondary
+    /// spans currently share the primary diagnostic's `source_module`.
     pub secondary_spans: Vec<(Span, String)>,
 }
 
@@ -21,8 +40,16 @@ impl HirDiagnostic {
             kind,
             span,
             note: note.into(),
+            source_module: None,
             secondary_spans: Vec::new(),
         }
+    }
+
+    /// Attach a source-module attribution and return `self` (builder pattern).
+    #[must_use]
+    pub fn with_source_module(mut self, source_module: Option<String>) -> Self {
+        self.source_module = source_module;
+        self
     }
 
     /// Attach secondary spans and return `self` (builder pattern).
@@ -330,20 +357,46 @@ pub enum HirDiagnosticKind {
         /// The intrinsic key that was not found in the catalog.
         intrinsic_key: String,
     },
-    /// An imported `impl` block's method body calls a private helper function
-    /// defined in the same module as the impl. Private functions are not
-    /// exported across module boundaries, so the body cannot be lowered.
-    /// The dependency chain must be resolved (e.g. by making the helper `pub`,
-    /// moving the logic inline, or restructuring the module) before cross-module
-    /// dispatch on this method will work.
+    /// An imported item body (either an `impl` block's method body or a
+    /// `pub fn` free-function body) calls a private helper function defined
+    /// in the same module as the item. Private functions are not exported
+    /// across module boundaries, so the body cannot be lowered. The
+    /// dependency chain must be resolved (e.g. by making the helper `pub`,
+    /// moving the logic inline, or restructuring the module) before
+    /// cross-module dispatch on this item will work.
     ///
     /// Emitted instead of a bare `UnresolvedSymbol` so the diagnostic
     /// identifies the root cause at the module boundary.
-    ImportedImplBodyMissingPrivateHelper {
-        /// Short name of the module that owns the impl block (e.g. `"shapes"`).
+    ImportedBodyMissingPrivateHelper {
+        /// Short name of the module that owns the item (e.g. `"shapes"`).
         module: String,
-        /// Name of the private function that the method body calls.
+        /// Name of the private function that the body calls.
         helper_fn: String,
+        /// Which kind of imported item carried the body that referenced the
+        /// missing helper. Lets diagnostic consumers tell impl-method gaps
+        /// apart from free-function gaps without restoring a separate kind.
+        item_kind: ImportedItemKind,
+    },
+    /// An imported `pub fn` free-function body calls another `pub fn` from
+    /// the same imported module by its bare (unqualified) identifier. The
+    /// bare name does not resolve in the importer scope — only the
+    /// `module.callee` mangled spelling does — so the body cannot be
+    /// lowered as-written. The author should rewrite the call as
+    /// `module.callee(..)` (the `suggested_qualified` form) or wait for the
+    /// full imported-body dependency closure (Stage 2 of W4.018) to land.
+    ///
+    /// Emitted instead of a bare `UnresolvedSymbol` so the diagnostic
+    /// identifies the root cause at the module boundary and points at the
+    /// repair form.
+    ImportedFreeFnBodyUnresolvedBareCall {
+        /// Short name of the module that owns the free-function body
+        /// (e.g. `"path"`).
+        module: String,
+        /// The bare callee identifier that failed to resolve (e.g. `"basename"`).
+        callee: String,
+        /// The mangled qualified spelling the author should rewrite to
+        /// (e.g. `"path.basename"`).
+        suggested_qualified: String,
     },
     /// Target architecture does not support coroutines (actors/tasks). The
     /// program uses a coroutine-dependent construct (actor decl, task spawn,
@@ -478,6 +531,17 @@ pub enum HirDiagnosticKind {
         /// Source-form operator (e.g. `".."`, `"..="`).
         op: String,
     },
+    /// A unary operator reached HIR with checker-authoritative types that the
+    /// MIR/codegen substrate does not support. This is a fail-closed boundary
+    /// diagnostic rather than a fallback to `Unit` or a downstream panic.
+    UnaryOperatorUnsupportedInMir {
+        /// Source-form operator (`"!"`, `"-"`, or `"~"`).
+        op: String,
+        /// Checker-resolved operand type.
+        operand_ty: String,
+        /// Checker-resolved result type.
+        result_ty: String,
+    },
     /// Division (`/`) or modulo (`%`) on a platform-sized signed integer
     /// (`isize`). The `signed-MIN / -1` trap guard requires emitting the
     /// MIN constant for the target's pointer width, which the current MIR
@@ -535,5 +599,43 @@ pub enum HirDiagnosticKind {
         callee: String,
         /// Rendered callee type for the diagnostic message.
         callee_ty: String,
+    },
+    /// Supervisor spawn with init args is not supported. `spawn AppSupervisor(...)`
+    /// reaches MIR lowering (`hew-mir/src/lower.rs:8852`) as a `NotYetImplemented`
+    /// runtime-style diagnostic; raise it to a HIR fatal gate per slepp A222 so
+    /// the failure surfaces at compile time with a clear cause. The checker
+    /// already rejects supervisor declarations that take init params; this gate
+    /// is defense-in-depth catching any future surface that could reach MIR
+    /// before the checker guard does. Supervisors take their child specs
+    /// declaratively — spawn-time init args have no defined semantics.
+    SupervisorSpawnArgsUnsupported {
+        /// Supervisor identifier as written at the spawn site.
+        supervisor_name: String,
+    },
+    /// `Vec<T>` scalar index (`xs[i]`) with an element type that the runtime
+    /// ABI does not (yet) implement a `hew_vec_get_T` for. Fail-closed per
+    /// slepp A222 / A228: surface the unsupported case at compile time
+    /// instead of letting MIR emit `NotYetImplemented` and codegen drop the
+    /// expression. Supported scalar element types are `i32`, `u32`, `i64`,
+    /// `u64`, `f64`, and any user-defined `Named` type (records, enums,
+    /// `Duplex`, `LambdaActorHandle`, etc., dispatched via
+    /// `hew_vec_get_ptr`). `Vec<String>` is intentionally excluded from
+    /// scalar indexing because there is no `hew_vec_get_str` strdup-aware
+    /// getter — the range-slice path covers the `String` case.
+    VecIndexElementTypeUnsupported {
+        /// User-facing rendering of the unsupported element type
+        /// (e.g. `"bool"`, `"char"`, `"String"`, `"f32"`).
+        element_ty: String,
+    },
+    /// `Vec<T>` range-slice (`xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`,
+    /// `xs[a..=b]`) with an element type that the runtime ABI does not
+    /// (yet) implement a `hew_vec_slice_range_T` for. Fail-closed per
+    /// slepp A222 / A228. Supported range-slice element types are `i32`,
+    /// `u32`, `i64`, `u64`, `f64`, `String`, and any user-defined `Named`
+    /// type (dispatched via `hew_vec_slice_range_ptr`).
+    VecSliceElementTypeUnsupported {
+        /// User-facing rendering of the unsupported element type
+        /// (e.g. `"bool"`, `"char"`, `"f32"`).
+        element_ty: String,
     },
 }

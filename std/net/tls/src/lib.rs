@@ -105,6 +105,7 @@ fn empty_hew_vec() -> HewVec {
         cap: 0,
         elem_size: 1,
         elem_kind: hew_cabi::vec::ElemKind::Plain,
+        layout: std::ptr::null(),
     }
 }
 
@@ -120,6 +121,7 @@ fn build_hew_vec(bytes: &[u8]) -> Option<HewVec> {
         cap: len.max(1),
         elem_size: 1,
         elem_kind: hew_cabi::vec::ElemKind::Plain,
+        layout: std::ptr::null(),
     })
 }
 

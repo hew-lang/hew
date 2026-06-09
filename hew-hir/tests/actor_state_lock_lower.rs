@@ -74,6 +74,9 @@ fn dump_includes_state_guard_fact() {
 
 #[test]
 fn missing_guard_fact_fails_closed() {
+    // W4.015: behavior pin — synthetic TCO omits the checker-owned actor
+    // guard fact so HIR lowering must emit ActorStateGuardMissing (duplicate
+    // coverage retained in actor_hir.rs).
     let parsed = hew_parser::parse(
         r"
         actor Counter {

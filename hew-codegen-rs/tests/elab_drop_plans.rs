@@ -27,6 +27,7 @@ fn duplex_ty() -> ResolvedTy {
     ResolvedTy::Named {
         name: "Duplex".to_string(),
         args: vec![],
+        builtin: None,
     }
 }
 

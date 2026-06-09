@@ -875,6 +875,25 @@ pub enum MethodCallRewrite {
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
     DeferToLowering,
+    /// Static trait dispatch: the method was resolved from the bounds on a
+    /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
+    /// resolves the concrete callee at monomorphization time.
+    StaticTraitDispatch {
+        /// The type-parameter name on the enclosing function that carries the bound
+        /// (e.g. "T" in `fn foo<T: Show>(x: T)`). Used by MIR to look up the
+        /// concrete type from the monomorphization substitution map.
+        receiver_type_param: String,
+        /// The bound on the type parameter through which the method was reached
+        /// (e.g. "B" in `T: B` where `trait B: A`). Used for error messages and
+        /// for impl lookup when bound != declaring.
+        bound_trait: String,
+        /// The trait that directly declares the method in its `trait_defs` entry.
+        /// If method is inherited, `declaring_trait` != `bound_trait`.
+        /// Used as the canonical identity for impl resolution.
+        declaring_trait: String,
+        /// Method identity within the trait.
+        method_name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1281,6 +1300,25 @@ pub struct FnSig {
     pub is_pure: bool,
     pub accepts_kwargs: bool,
     pub doc_comment: Option<String>,
+    /// Structured `#[extern_symbol("…")]` attribute attached to the
+    /// declaration that produced this signature, if any.
+    ///
+    /// Populated by the registration pass at FnSig-ingest time from
+    /// the `attributes` slot on [`hew_parser::ast::ExternFnDecl`] /
+    /// [`hew_parser::ast::FnDecl`] when the parser recorded an
+    /// `extern_symbol` attribute. The Stage-1 attachment validation
+    /// already rejects the attribute at invalid positions (free fn,
+    /// actor, trait fn, type-decl method), so reaching this field
+    /// means the declaration is a valid attachment site (`extern "C"`
+    /// fn or `impl` method).
+    ///
+    /// Stage 2 (this field) records the parsed template — Stage 3
+    /// expands it at each reachable monomorphization and emits a
+    /// `MethodCallRewrite::RewriteToFunction { c_symbol, .. }`,
+    /// replacing the `crate::stdlib::resolve_vec_method` path.
+    ///
+    /// `None` for every signature that does not carry the attribute.
+    pub extern_symbol: Option<crate::extern_symbol::ExternSymbolSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -1301,6 +1339,7 @@ impl Default for FnSig {
             is_pure: false,
             accepts_kwargs: false,
             doc_comment: None,
+            extern_symbol: None,
         }
     }
 }
@@ -1613,6 +1652,12 @@ pub struct Checker {
     pub(super) unsupported_slice_spans: HashSet<SpanKey>,
     /// Inside a machine transition body, the (`machine_name`, `source_state_name`, `event_name`) tuple.
     pub(super) current_machine_transition: Option<(String, String, String)>,
+    /// Inside a machine state `entry` or `exit` lifecycle block, the
+    /// (`machine_name`, `state_name`) pair.  Enables payload-state field
+    /// access (`state.seq`) without granting transition-event privileges
+    /// (no event-enum matching, no `event.field` binding).  Checked after
+    /// `current_machine_transition` in the field-access resolver.
+    pub(super) current_machine_lifecycle: Option<(String, String)>,
     /// Compile-time known numeric literal values used by later coercion sites.
     pub(super) const_values: HashMap<String, ConstValue>,
     /// Inferred type arguments for generic function calls that omit explicit
@@ -1798,6 +1843,7 @@ impl Checker {
             wasm_reject_spans: HashSet::new(),
             unsupported_slice_spans: HashSet::new(),
             current_machine_transition: None,
+            current_machine_lifecycle: None,
             const_values: HashMap::new(),
             call_type_args: HashMap::new(),
             record_init_type_args: HashMap::new(),

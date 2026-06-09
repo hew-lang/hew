@@ -27,7 +27,7 @@
 
 use hew_hir::{lower_program, lower_program_with_mono_cap, HirDiagnosticKind, ResolutionCtx};
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::{Checker, ResolvedTy};
+use hew_types::{BuiltinType, Checker, ResolvedTy};
 
 fn typecheck_and_lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -295,6 +295,7 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
     let expected_arg = ResolvedTy::Named {
         name: "Vec".into(),
         args: vec![ResolvedTy::I64],
+        builtin: Some(BuiltinType::Vec),
     };
     assert_eq!(layouts[0].key.type_args, vec![expected_arg.clone()]);
 

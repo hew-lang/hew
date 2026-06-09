@@ -270,77 +270,59 @@ impl Display for string {
 }
 
 // ---------------------------------------------------------------------------
-// String methods
+// Time canaries
 // ---------------------------------------------------------------------------
-impl string {
-    fn len(s: string) -> i64 {
+pub type Instant {
+    nanos: i64;
+}
+
+impl duration {
+    #[extern_symbol(hew_duration_nanos)]
+    fn nanos(d: duration) -> i64 {
         0
     }
-    fn is_empty(s: string) -> bool {
-        false
-    }
-    fn contains(s: string, needle: string) -> bool {
-        false
-    }
-    fn starts_with(s: string, prefix: string) -> bool {
-        false
-    }
-    fn ends_with(s: string, suffix: string) -> bool {
-        false
-    }
-    fn to_uppercase(s: string) -> string {
-        ""
-    }
-    fn to_upper(s: string) -> string {
-        ""
-    }
-    fn to_lowercase(s: string) -> string {
-        ""
-    }
-    fn to_lower(s: string) -> string {
-        ""
-    }
-    fn trim(s: string) -> string {
-        ""
-    }
-    fn is_digit(s: string) -> bool {
-        false
-    }
-    fn is_alpha(s: string) -> bool {
-        false
-    }
-    fn is_alphanumeric(s: string) -> bool {
-        false
-    }
-    fn clone(s: string) -> string {
-        ""
-    }
-    fn replace(s: string, from: string, to: string) -> string {
-        ""
-    }
-    fn split(s: string, sep: string) -> Vec<string> {
-        Vec::new()
-    }
-    fn lines(s: string) -> Vec<string> {
-        Vec::new()
-    }
-    fn find(s: string, needle: string) -> i64 {
+    #[extern_symbol(hew_duration_micros)]
+    fn micros(d: duration) -> i64 {
         0
     }
-    fn index_of(s: string, needle: string) -> i64 {
+    #[extern_symbol(hew_duration_millis)]
+    fn millis(d: duration) -> i64 {
         0
     }
-    fn slice(s: string, start: i64, end: i64) -> string {
-        ""
-    }
-    fn repeat(s: string, n: i64) -> string {
-        ""
-    }
-    fn char_at(s: string, idx: i64) -> i64 {
+    #[extern_symbol(hew_duration_secs)]
+    fn secs(d: duration) -> i64 {
         0
     }
-    fn chars(s: string) -> Vec<char> {
-        Vec::new()
+    #[extern_symbol(hew_duration_mins)]
+    fn mins(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_duration_hours)]
+    fn hours(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_duration_abs)]
+    fn abs(d: duration) -> duration {
+        d
+    }
+    #[extern_symbol(hew_duration_is_zero)]
+    fn is_zero(d: duration) -> bool {
+        false
+    }
+}
+
+impl Instant {
+    #[extern_symbol(hew_instant_now)]
+    fn now() -> Instant {
+        Instant { nanos: 0 }
+    }
+    #[extern_symbol(hew_instant_elapsed)]
+    fn elapsed(i: Instant) -> duration {
+        0ns
+    }
+    #[extern_symbol(hew_instant_duration_since)]
+    fn duration_since(i: Instant, earlier: Instant) -> duration {
+        0ns
     }
 }
 

@@ -1,0 +1,42 @@
+// Verify defer fires EXACTLY ONCE on normal tail exit.
+//
+// A counter `n` starts at 0. The defer body bumps `n` by 1. The tail
+// expression returns `n` from BEFORE the defer mutation (Q205-B: the
+// tail value is secured before the scope's defers run).
+//
+// If the defer ran zero times, `n` stays at 0 — but that conflicts
+// with the function-end semantic of "all scope defers fire before
+// scope is destroyed", which is exercised by `defer_executes`.
+//
+// If the defer double-ran, `n` would be 2 at the end of `compute` —
+// but compute returns `n` (the secured tail value), and the secure
+// happens at the start of scope-exit, so the returned value reflects
+// pre-defer state regardless of single vs. double run.
+//
+// To turn defer-execution count into an OBSERVABLE exit code we
+// pull the post-defer value back via a second function that reads
+// the var AFTER scope-exit cleanup ran. Because Hew does not yet
+// expose a way to read a local across scope boundaries, we instead
+// use a chained two-call pattern: `bump` runs ONE defer mutating
+// its parameter mirror and returns the post-defer counter via
+// `n + 1` in the defer. We then assert that returning N defers
+// equals exactly N — single execution only.
+//
+// Concretely: `compute` returns 5. If the defer ran twice the body
+// of `compute` would observe the second mutation in the secured
+// tail Move via the (broken) "defer-before-secure" ordering — but
+// with the fixed ordering the secured tail value is 5 regardless.
+// We therefore embed the counter check INSIDE the defer body: the
+// defer body itself asserts the counter is exactly 1 at the time
+// the defer runs, which would fail (assertion abort) if it ran
+// a second time with counter==2.
+fn main() -> i64 {
+    var n = 0;
+    defer {
+        n = n + 1;
+        // If defer ran a second time, this would observe n==2 and
+        // assert_eq(n, 1) would abort with exit 134.
+        assert_eq(n, 1);
+    };
+    5
+}

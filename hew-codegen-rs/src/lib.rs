@@ -18,10 +18,15 @@
 //! ## Public surface
 //!
 //! - [`emit_module`] — emit native + wasm artefacts for an `IrPipeline`.
+//! - [`validate_codegen_front`] — in-process build + LLVM-verify without any
+//!   artefact emission.
+//! - [`verify_pipeline`] — compatibility alias for [`validate_codegen_front`].
 //! - [`EmitOptions`] — output configuration.
 //! - [`EmitArtefacts`] — paths of emitted files.
 //! - [`CodegenError`] — failure variants for diagnostic mapping.
 
 pub mod llvm;
 
-pub use llvm::{emit_module, CodegenError, EmitArtefacts, EmitOptions};
+pub use llvm::{
+    emit_module, validate_codegen_front, verify_pipeline, CodegenError, EmitArtefacts, EmitOptions,
+};

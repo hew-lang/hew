@@ -3813,6 +3813,33 @@ impl Checker {
                             similar,
                         );
                         Ty::Error
+                    } else if let Some((ref mn, ref state_name)) =
+                        self.current_machine_lifecycle.clone()
+                    {
+                        // Inside a state entry/exit lifecycle block: resolve
+                        // `state.<field>` for payload states.  `event` is NOT
+                        // bound (that binding belongs to transition scope only),
+                        // so event-enum field access is correctly unreachable here.
+                        if td.kind == TypeDefKind::Machine && *mn == *name {
+                            if let Some(VariantDef::Struct(variant_fields)) =
+                                td.variants.get(state_name.as_str()).cloned()
+                            {
+                                if let Some((_, field_ty)) =
+                                    variant_fields.iter().find(|(fname, _)| fname == field)
+                                {
+                                    return field_ty.clone();
+                                }
+                            }
+                        }
+                        let similar =
+                            crate::error::find_similar(field, td.fields.keys().map(String::as_str));
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!("no field `{field}` on type `{name}`"),
+                            similar,
+                        );
+                        Ty::Error
                     } else {
                         let similar =
                             crate::error::find_similar(field, td.fields.keys().map(String::as_str));

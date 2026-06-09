@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Place, Terminator};
-use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
+use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
 
 /// Lower a Hew source program to MIR, asserting no parse or HIR diagnostics.
 fn lower_module_from_source(source: &str) -> hew_mir::IrPipeline {
@@ -151,13 +151,11 @@ fn supervisor_three_children_with_wired_to_dep_emits_topo_ordered_spawn_sequence
     assert_eq!(bootstrap.call_conv, FunctionCallConv::Default);
     assert_eq!(
         bootstrap.return_ty,
-        hew_types::ResolvedTy::Named {
-            name: "LocalPid".to_string(),
-            args: vec![hew_types::ResolvedTy::Named {
-                name: "App".to_string(),
-                args: vec![],
-            }],
-        },
+        ResolvedTy::named_builtin(
+            "LocalPid",
+            BuiltinType::LocalPid,
+            vec![ResolvedTy::named_user("App", vec![])]
+        ),
         "bootstrap returns LocalPid<App> so spawn-site callers receive a typed handle"
     );
     assert!(
@@ -310,13 +308,11 @@ fn spawn_supervisor_routes_to_bootstrap_call_with_local_pid_return() {
     let dest_ty = &main_fn.locals[local_idx as usize];
     assert_eq!(
         *dest_ty,
-        ResolvedTy::Named {
-            name: "LocalPid".to_string(),
-            args: vec![ResolvedTy::Named {
-                name: "App".to_string(),
-                args: vec![],
-            }],
-        },
+        ResolvedTy::named_builtin(
+            "LocalPid",
+            BuiltinType::LocalPid,
+            vec![ResolvedTy::named_user("App", vec![])]
+        ),
         "bootstrap call destination must have type LocalPid<App>"
     );
 

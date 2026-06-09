@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hew_parser::ast::{BinaryOp, OverflowPolicy, Span};
+use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
 use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy, VariantMatch};
 use hew_types::{NumericMethodFamily, NumericMethodOp, NumericSignedness, NumericWidth};
 
@@ -12,6 +12,10 @@ use crate::{IntentKind, ValueClass};
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
     pub items: Vec<HirItem>,
+    /// Source-module attribution for non-root top-level HIR items, keyed by
+    /// item id. Diagnostics emitted while verifying one of these items inherit
+    /// the same dotted module key used by `HirDiagnostic::source_module`.
+    pub diagnostic_source_modules: HashMap<ItemId, String>,
     /// Per-named-type classification table populated during HIR lowering from
     /// each `Item::TypeDecl` carrying a user marker and from compiler-known
     /// substrate registrations.
@@ -186,6 +190,11 @@ pub struct HirImplBlock {
     /// `HirItem::Function` entries (`<self_type_name>::<method>`). Order
     /// matches `impl_decl.methods`.
     pub method_symbols: Vec<String>,
+    /// Surface method names (e.g. `"show"`), parallel to `method_symbols`
+    /// in length and order. Carried as structured metadata so static-dispatch
+    /// resolution can look up `(declaring_trait, self_type_name, method_name)
+    /// → method_symbol` without reverse-parsing the flattened symbol.
+    pub method_names: Vec<String>,
     pub span: hew_parser::ast::Span,
 }
 
@@ -691,6 +700,19 @@ pub enum HirStmtKind {
     },
     Expr(HirExpr),
     Return(Option<HirExpr>),
+    /// `defer <body>` — register `body` for execution at the exit of the
+    /// enclosing lexical scope. Q205-B semantics: bindings are resolved by
+    /// lexical reference at execution time (mutable vars observe their final
+    /// value); moved/consumed bindings are a compile-time error.
+    ///
+    /// `scope_id` identifies the HIR scope that owns this defer — the
+    /// scope whose exit triggers execution. MIR lowering collects all
+    /// defers per scope and materialises them in LIFO order at every
+    /// exit from that scope.
+    Defer {
+        body: Box<HirExpr>,
+        scope_id: ScopeId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -736,6 +758,17 @@ pub enum HirExprKind {
         op: BinaryOp,
         left: Box<HirExpr>,
         right: Box<HirExpr>,
+    },
+    /// Checker-authoritative unary expression (`!`, `-`, `~`).
+    ///
+    /// Produced only when both operand and result spans have resolved entries in
+    /// `TypeCheckOutput::expr_types`. The parent [`HirExpr::ty`] carries the
+    /// result type; `operand_ty` records the checker-owned operand type so MIR
+    /// can select the unary instruction without re-deriving from syntax.
+    Unary {
+        op: UnaryOp,
+        operand: Box<HirExpr>,
+        operand_ty: ResolvedTy,
     },
     Call {
         callee: Box<HirExpr>,
@@ -1009,6 +1042,28 @@ pub enum HirExprKind {
         trait_name: String,
         method_name: String,
         slot: u32,
+        args: Vec<HirExpr>,
+        ret_ty: ResolvedTy,
+    },
+    /// Static trait dispatch: the method was resolved at type-check time from
+    /// trait bounds on a generic type parameter. Unlike `CallDynMethod` (vtable
+    /// dispatch), this resolves to a direct call after monomorphization — the
+    /// concrete impl function is determined from the substituted receiver type.
+    ///
+    /// Produced from `MethodCallRewrite::StaticTraitDispatch`. MIR lowering
+    /// substitutes `receiver_type_param` via the monomorphization map, looks up
+    /// the impl method via `(concrete_receiver_ty, declaring_trait, method_name)`,
+    /// and emits an ordinary `Terminator::Call`.
+    CallTraitMethodStatic {
+        receiver: Box<HirExpr>,
+        /// Type-parameter name that carries the bound (e.g. "T").
+        receiver_type_param: String,
+        /// The bound trait through which the method was reached.
+        bound_trait: String,
+        /// The trait that directly declares the method (canonical identity for impl lookup).
+        declaring_trait: String,
+        /// Method name within the declaring trait.
+        method_name: String,
         args: Vec<HirExpr>,
         ret_ty: ResolvedTy,
     },

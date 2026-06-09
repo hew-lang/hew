@@ -4,6 +4,7 @@
 
 pub mod builtin_type_classes;
 pub mod diagnostic;
+pub mod dispatch;
 pub mod dump;
 pub mod ids;
 pub mod intent;
@@ -14,7 +15,7 @@ pub mod stdlib_catalog;
 pub mod value_class;
 pub mod verify;
 
-pub use diagnostic::{HirDiagnostic, HirDiagnosticKind};
+pub use diagnostic::{HirDiagnostic, HirDiagnosticKind, ImportedItemKind};
 pub use dump::dump_hir;
 pub use ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 pub use intent::IntentKind;
@@ -38,10 +39,10 @@ pub use node::{
     HirSupervisorStrategy, HirTypeDecl, HirVariant, HirVariantKind,
 };
 pub use value_class::{
-    contains_named_type, lookup_type_marker, named_type_names, ResourceMarker, TypeClassTable,
-    ValueClass,
+    contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,
+    named_type_names, NamedTypeComponent, ResourceMarker, TypeClassTable, ValueClass,
 };
-pub use verify::verify_hir;
+pub use verify::{collect_site_spans, verify_hir, HirSiteSource};
 
 /// Convert a dotted module-qualified name to a native-object-safe symbol.
 ///

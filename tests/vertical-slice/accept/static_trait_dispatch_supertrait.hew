@@ -1,0 +1,29 @@
+// Accept fixture: Static trait dispatch — supertrait method via sub bound
+// Method declared in Base, accessed through T: Extended (where Extended: Base).
+trait Base {
+    fn name(val: Self) -> string;
+}
+
+trait Extended: Base {
+    fn extra(val: Self) -> i64;
+}
+
+type Widget { label: string; }
+
+impl Base for Widget {
+    fn name(w: Widget) -> string { w.label }
+}
+
+impl Extended for Widget {
+    fn extra(w: Widget) -> i64 { 42 }
+}
+
+fn get_name<T: Extended>(item: T) -> string {
+    item.name()
+}
+
+fn main() -> i64 {
+    let w = Widget { label: "ok" };
+    let n = get_name(w);
+    if n == "ok" { 0 } else { 1 }
+}

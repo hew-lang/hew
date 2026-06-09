@@ -8,6 +8,30 @@
 use core::ffi::{c_char, c_void};
 use core::mem;
 
+/// Descriptor-level ownership discipline for runtime-managed aggregate values.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HewTypeOwnershipKind {
+    /// Elements can be copied and dropped as raw bytes.
+    Plain = 0,
+    /// Elements are C string pointers with `strdup`/`free` ownership.
+    String = 1,
+    /// Elements require layout-driven clone/drop semantics not implemented yet.
+    LayoutManaged = 2,
+}
+
+/// Runtime-visible layout descriptor for a Hew value type.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HewTypeLayout {
+    /// Size of one value in bytes.
+    pub size: usize,
+    /// Required alignment in bytes.
+    pub align: usize,
+    /// Ownership discipline used by layout-aware collection operations.
+    pub ownership_kind: HewTypeOwnershipKind,
+}
+
 /// Discriminator for element ownership semantics.
 ///
 /// Used by clone/truncate/free/clear to decide whether elements need
@@ -36,6 +60,8 @@ pub struct HewVec {
     pub elem_size: usize,
     /// Element ownership semantics.
     pub elem_kind: ElemKind,
+    /// Optional runtime type layout descriptor. Null preserves the legacy ABI path.
+    pub layout: *const HewTypeLayout,
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +77,7 @@ extern "C" {
     pub fn hew_vec_new_ptr() -> *mut HewVec;
     pub fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewVec;
     pub fn hew_vec_new_generic(elem_size: i64, elem_kind: i64) -> *mut HewVec;
+    pub fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -> *mut HewVec;
 
     // Push
     pub fn hew_vec_push_i32(v: *mut HewVec, val: i32);
@@ -59,6 +86,7 @@ extern "C" {
     pub fn hew_vec_push_str(v: *mut HewVec, val: *const c_char);
     pub fn hew_vec_push_ptr(v: *mut HewVec, val: *mut c_void);
     pub fn hew_vec_push_generic(v: *mut HewVec, data: *const c_void);
+    pub fn hew_vec_push_layout(v: *mut HewVec, data: *const c_void, layout: *const HewTypeLayout);
 
     // Get
     #[cfg(not(test))]
@@ -68,6 +96,11 @@ extern "C" {
     pub fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char;
     pub fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void;
     pub fn hew_vec_get_generic(v: *const HewVec, index: i64) -> *const c_void;
+    pub fn hew_vec_get_layout(
+        v: *const HewVec,
+        index: i64,
+        layout: *const HewTypeLayout,
+    ) -> *const c_void;
 
     // Set
     pub fn hew_vec_set_i32(v: *mut HewVec, index: i64, val: i32);
@@ -75,6 +108,12 @@ extern "C" {
     pub fn hew_vec_set_f64(v: *mut HewVec, index: i64, val: f64);
     pub fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const c_char);
     pub fn hew_vec_set_generic(v: *mut HewVec, index: i64, data: *const c_void);
+    pub fn hew_vec_set_layout(
+        v: *mut HewVec,
+        index: i64,
+        data: *const c_void,
+        layout: *const HewTypeLayout,
+    );
 
     // Pop
     pub fn hew_vec_pop_i32(v: *mut HewVec) -> i32;
@@ -82,6 +121,11 @@ extern "C" {
     pub fn hew_vec_pop_f64(v: *mut HewVec) -> f64;
     pub fn hew_vec_pop_str(v: *mut HewVec) -> *const c_char;
     pub fn hew_vec_pop_generic(v: *mut HewVec, out: *mut c_void) -> i32;
+    pub fn hew_vec_pop_layout(
+        v: *mut HewVec,
+        out: *mut c_void,
+        layout: *const HewTypeLayout,
+    ) -> i32;
 
     // Queries
     #[cfg(not(test))]
@@ -105,6 +149,11 @@ extern "C" {
     pub fn hew_vec_contains_i64(v: *const HewVec, val: i64) -> i32;
     pub fn hew_vec_contains_f64(v: *const HewVec, val: f64) -> i32;
     pub fn hew_vec_contains_str(v: *const HewVec, val: *const c_char) -> i32;
+    pub fn hew_vec_contains_layout(
+        v: *const HewVec,
+        data: *const c_void,
+        layout: *const HewTypeLayout,
+    ) -> i32;
 
     // Remove
     pub fn hew_vec_remove_i32(v: *mut HewVec, val: i32);
@@ -253,20 +302,44 @@ mod tests {
         assert_ne!(ElemKind::Plain, ElemKind::String);
     }
 
+    // ── HewTypeLayout ABI scaffold ───────────────────────────────────────
+
+    #[test]
+    fn ownership_kind_discriminants_are_stable() {
+        assert_eq!(HewTypeOwnershipKind::Plain as u8, 0);
+        assert_eq!(HewTypeOwnershipKind::String as u8, 1);
+        assert_eq!(HewTypeOwnershipKind::LayoutManaged as u8, 2);
+    }
+
+    #[test]
+    fn ownership_kind_size_is_one_byte() {
+        assert_eq!(std::mem::size_of::<HewTypeOwnershipKind>(), 1);
+    }
+
+    #[test]
+    fn type_layout_fields_are_stable() {
+        let layout = HewTypeLayout {
+            size: 24,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+        assert_eq!(layout.size, 24);
+        assert_eq!(layout.align, 8);
+        assert_eq!(layout.ownership_kind, HewTypeOwnershipKind::LayoutManaged);
+    }
+
     // ── HewVec layout (must match the C struct) ─────────────────────────
 
     #[test]
     fn hewvec_is_repr_c() {
         // Verify the struct size is the sum of its fields with C alignment.
-        // On 64-bit: 3 pointers/usizes (8 each) + 1 usize + 1 u8 + padding.
+        // On 64-bit: data pointer, len/cap/elem_size, elem_kind, layout pointer.
         let size = std::mem::size_of::<HewVec>();
         let align = std::mem::align_of::<HewVec>();
         // Must be pointer-aligned for C interop.
         assert_eq!(align, std::mem::align_of::<*mut u8>());
-        // 4 usizes (data, len, cap, elem_size) + 1 u8 (elem_kind) + padding
-        // = 4*8 + 1 + 7 padding = 40 bytes on 64-bit.
         assert!(
-            size > 4 * std::mem::size_of::<usize>(),
+            size > 5 * std::mem::size_of::<usize>(),
             "HewVec too small: {size}"
         );
     }
@@ -281,12 +354,14 @@ mod tests {
             cap: 100,
             elem_size: 8,
             elem_kind: ElemKind::String,
+            layout: std::ptr::null(),
         };
         assert_eq!(v.data as usize, 0xAAAA);
         assert_eq!(v.len, 42);
         assert_eq!(v.cap, 100);
         assert_eq!(v.elem_size, 8);
         assert_eq!(v.elem_kind, ElemKind::String);
+        assert!(v.layout.is_null());
     }
 
     #[test]
@@ -297,12 +372,14 @@ mod tests {
             cap: 0,
             elem_size: 4,
             elem_kind: ElemKind::Plain,
+            layout: std::ptr::null(),
         };
         let debug = format!("{v:?}");
         // Verify Debug output includes key field names.
         assert!(debug.contains("HewVec"), "Debug should include type name");
         assert!(debug.contains("len: 0"), "Debug should include len");
         assert!(debug.contains("Plain"), "Debug should include elem_kind");
+        assert!(debug.contains("layout"), "Debug should include layout");
     }
 
     #[test]
@@ -314,10 +391,12 @@ mod tests {
             cap: 0,
             elem_size: 0,
             elem_kind: ElemKind::Plain,
+            layout: std::ptr::null(),
         };
         assert!(v.data.is_null());
         assert_eq!(v.len, 0);
         assert_eq!(v.cap, 0);
+        assert!(v.layout.is_null());
     }
 
     #[test]
@@ -343,6 +422,7 @@ mod tests {
             cap: 0,
             elem_size: mem::size_of::<i64>(),
             elem_kind: ElemKind::Plain,
+            layout: std::ptr::null(),
         };
         let vec_ptr = &raw mut vec;
         // SAFETY: this test intentionally exercises the invalid-shape panic path.

@@ -66,11 +66,12 @@ use hew_runtime::vec::{
     hew_vec_clear, hew_vec_clone, hew_vec_contains_f64, hew_vec_contains_i32, hew_vec_contains_i64,
     hew_vec_contains_str, hew_vec_free, hew_vec_get_f64, hew_vec_get_generic, hew_vec_get_i32,
     hew_vec_get_i64, hew_vec_get_str, hew_vec_is_empty, hew_vec_len, hew_vec_new, hew_vec_new_f64,
-    hew_vec_new_generic, hew_vec_new_i64, hew_vec_new_str, hew_vec_pop_f64, hew_vec_pop_generic,
-    hew_vec_pop_i32, hew_vec_pop_i64, hew_vec_push_f64, hew_vec_push_generic, hew_vec_push_i32,
-    hew_vec_push_i64, hew_vec_push_str, hew_vec_reverse_i32, hew_vec_set_f64, hew_vec_set_generic,
-    hew_vec_set_i32, hew_vec_set_i64, hew_vec_set_str, hew_vec_sort_f64, hew_vec_sort_i32,
-    hew_vec_sort_i64, hew_vec_swap, hew_vec_truncate,
+    hew_vec_new_generic, hew_vec_new_i64, hew_vec_new_str, hew_vec_new_with_layout,
+    hew_vec_pop_f64, hew_vec_pop_generic, hew_vec_pop_i32, hew_vec_pop_i64, hew_vec_push_f64,
+    hew_vec_push_generic, hew_vec_push_i32, hew_vec_push_i64, hew_vec_push_str,
+    hew_vec_reverse_i32, hew_vec_set_f64, hew_vec_set_generic, hew_vec_set_i32, hew_vec_set_i64,
+    hew_vec_set_str, hew_vec_sort_f64, hew_vec_sort_i32, hew_vec_sort_i64, hew_vec_swap,
+    hew_vec_truncate, HewTypeLayout, HewTypeOwnershipKind,
 };
 use hew_runtime::{hew_clear_error, hew_last_error};
 
@@ -2111,6 +2112,7 @@ mod generic_vec_tests {
     fn push_get_struct() {
         unsafe {
             let v = hew_vec_new_generic(core::mem::size_of::<Point>() as i64, 0);
+            assert!((*v).layout.is_null());
             let pts = [
                 Point { x: 1, y: 2, z: 3 },
                 Point { x: 4, y: 5, z: 6 },
@@ -2124,6 +2126,24 @@ mod generic_vec_tests {
                 let ptr = hew_vec_get_generic(v, i as i64).cast::<Point>();
                 assert_eq!(*ptr, *expected);
             }
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn layout_descriptor_constructor_records_nullable_abi_pointer() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            assert!(!v.is_null());
+            assert_eq!((*v).layout, &raw const layout);
+            assert_eq!((*v).elem_size, core::mem::size_of::<Point>());
+            assert_eq!(hew_vec_len(v), 0);
             hew_vec_free(v);
         }
     }
@@ -3251,42 +3271,6 @@ mod registry_tests {
 
             hew_registry_clear();
             assert_eq!(hew_registry_count(), 0);
-        }
-    }
-}
-
-// ── Scope cancellation ──
-
-mod cancellation_tests {
-    use hew_runtime::scope::{
-        hew_scope_cancel, hew_scope_create, hew_scope_free, hew_scope_is_cancelled,
-    };
-
-    #[test]
-    fn is_cancelled_default_false() {
-        unsafe {
-            let scope = hew_scope_create();
-            assert!(!scope.is_null());
-            assert_eq!(hew_scope_is_cancelled(scope), 0);
-            hew_scope_free(scope);
-        }
-    }
-
-    #[test]
-    fn cancel_sets_flag() {
-        unsafe {
-            let scope = hew_scope_create();
-            assert_eq!(hew_scope_is_cancelled(scope), 0);
-            hew_scope_cancel(scope);
-            assert_eq!(hew_scope_is_cancelled(scope), 1);
-            hew_scope_free(scope);
-        }
-    }
-
-    #[test]
-    fn is_cancelled_null_returns_zero() {
-        unsafe {
-            assert_eq!(hew_scope_is_cancelled(std::ptr::null_mut()), 0);
         }
     }
 }

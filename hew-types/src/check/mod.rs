@@ -7,8 +7,8 @@ use crate::traits::MarkerTrait;
 use crate::ty::{Ty, TypeVar};
 use crate::unify::unify;
 use hew_parser::ast::{
-    ActorDecl, ActorInit, AttributeArg, BinaryOp, Block, CallArg, ChildSpec, ConstDecl, Expr,
-    ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item,
+    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec, ConstDecl,
+    Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item,
     LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl,
     RecordDecl, RecordKind, RestartPolicy, Span, Spanned, Stmt, StringPart, SupervisorDecl,
     SupervisorStrategy, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,

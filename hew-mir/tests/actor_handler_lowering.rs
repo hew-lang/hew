@@ -7,11 +7,12 @@ use hew_hir::{
     ResolvedRef, ScopeId, ValueClass,
 };
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Terminator};
-use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, ResolvedTy};
+use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, BuiltinType, ResolvedTy};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
         items,
+        diagnostic_source_modules: HashMap::default(),
         type_classes: HashMap::default(),
         monomorphisations: vec![],
         call_site_type_args: HashMap::default(),
@@ -69,13 +70,11 @@ fn literal_expr(ids: &mut IdGen, literal: HirLiteral, ty: ResolvedTy) -> HirExpr
 }
 
 fn local_pid_of(actor_name: &str) -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "LocalPid".to_string(),
-        args: vec![ResolvedTy::Named {
-            name: actor_name.to_string(),
-            args: vec![],
-        }],
-    }
+    ResolvedTy::named_builtin(
+        "LocalPid",
+        BuiltinType::LocalPid,
+        vec![ResolvedTy::named_user(actor_name, vec![])],
+    )
 }
 
 fn self_field_expr(ids: &mut IdGen, actor_name: &str, field: &str) -> HirExpr {
@@ -85,6 +84,7 @@ fn self_field_expr(ids: &mut IdGen, actor_name: &str, field: &str) -> HirExpr {
         ty: ResolvedTy::Named {
             name: actor_name.to_string(),
             args: vec![],
+            builtin: None,
         },
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,

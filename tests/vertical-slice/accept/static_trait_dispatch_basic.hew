@@ -1,0 +1,22 @@
+// Accept fixture: Static trait dispatch — basic T: Trait method call
+// A generic function bounded by a trait calls a method from that trait,
+// dispatching to the concrete impl at monomorphization time.
+trait Show {
+    fn show(val: Self) -> string;
+}
+
+type Color { r: i64; g: i64; b: i64; }
+
+impl Show for Color {
+    fn show(c: Color) -> string { "Color" }
+}
+
+fn display<T: Show>(item: T) -> string {
+    item.show()
+}
+
+fn main() -> i64 {
+    let c = Color { r: 255, g: 0, b: 0 };
+    let s = display(c);
+    if s == "Color" { 0 } else { 1 }
+}

@@ -1,0 +1,7 @@
+// Early return with defer: the deferred expression runs even when
+// the function returns early. exit(42) in the defer overrides the
+// normal return value of 0.
+fn main() -> i64 {
+    defer exit(42);
+    return 0;
+}

@@ -1,0 +1,17 @@
+// Block-expression result is secured BEFORE the block's defers run.
+// Q205-B: a defer registered inside a nested block fires at block exit;
+// it must not be able to corrupt the block's observable value.
+//
+// Without the fix the outer `let r = { ... }` Moved the block's tail
+// Place (a reference to `x`) AFTER the defer mutated `x` — so `r`
+// would observe 99 and main would exit 99.
+// With the fix the block's tail is Moved into a fresh local BEFORE
+// the defer runs, so `r` carries the pre-defer value (5).
+fn main() -> i64 {
+    var x = 5;
+    let r = {
+        defer { x = 99; };
+        x
+    };
+    r
+}

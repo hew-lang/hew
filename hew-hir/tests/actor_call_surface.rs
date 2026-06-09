@@ -62,6 +62,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(left, out);
             visit_expr(right, out);
         }
+        HirExprKind::Unary { operand, .. } => visit_expr(operand, out),
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             visit_expr(receiver, out);
             visit_expr(arg, out);
@@ -165,7 +166,8 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
-        | HirExprKind::Unsupported(_) => {}
+        | HirExprKind::Unsupported(_)
+        | HirExprKind::CallTraitMethodStatic { .. } => {}
     }
 }
 
@@ -180,6 +182,7 @@ fn visit_block<'a>(block: &'a hew_hir::HirBlock, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(value, out);
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => visit_expr(body, out),
         }
     }
     if let Some(tail) = &block.tail {

@@ -10,6 +10,7 @@ pub mod gen_state;
 pub mod lower;
 pub mod model;
 pub mod runtime_symbols;
+pub mod state_clone;
 
 pub use lower::{bracket_actor_handler_blocks, lower_hir_module};
 
@@ -34,3 +35,7 @@ pub use model::{
     SupervisorChildLayout, SupervisorLayout, Terminator, ThirFunction, TrapKind,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
+pub use state_clone::{
+    classify_actor_state_fields, classify_state_field, mangle_actor_state_clone_fn,
+    mangle_actor_state_drop_fn, ClassificationError, IoHandleKind, StateFieldCloneKind,
+};

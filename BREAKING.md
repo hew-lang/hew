@@ -62,3 +62,22 @@ The freeze rules above apply to **compiler internals only**. Public language
 semantics, standard-library APIs, and wire-protocol surfaces follow their
 normal deprecation and stability policy. See `CHANGELOG.md` for user-visible
 changes.
+
+---
+
+## Removed in v0.5
+
+### `HewScope` runtime substrate + `hew_scope_*` C ABI
+
+- **Removed:** the `hew-runtime::scope` module (`HewScope`, `hew_scope_new`,
+  `hew_scope_create`, `hew_scope_destroy`, `hew_scope_free`, `hew_scope_spawn`,
+  `hew_scope_cancel`, `hew_scope_is_cancelled`, `hew_scope_wait_all`).
+- **Removed:** `hew-runtime-testkit::TestScope` (RAII wrapper around the
+  legacy ABI).
+- **Replacement:** `HewTaskScope` (`hew_task_scope_*`) is the canonical
+  structured-concurrency substrate; `scope { … }` source syntax is preserved
+  unchanged and now lowers exclusively to `hew_task_scope_*`.
+- **Behaviour change (looser):** the legacy `MAX_ACTORS=64` ceiling
+  (`HEW_SCOPE_MAX_ACTORS`) is gone; `HewTaskScope` is unbounded.
+- **Rationale:** A244 substrate-first / A250 one-canonical-name.
+  No compat shim per the pre-1.0 policy.

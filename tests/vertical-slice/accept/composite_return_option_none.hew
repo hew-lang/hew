@@ -1,0 +1,19 @@
+// Accept: user function returning Option<i64> with None (unit variant).
+// Exercises Move of tag-only struct to ReturnSlot.
+// Exit 99 proves the None arm matched in the caller.
+enum Option<T> {
+    Some(T);
+    None;
+}
+
+fn nothing() -> Option<i64> {
+    Option::None
+}
+
+fn main() -> i64 {
+    let r = nothing();
+    match r {
+        Option::Some(v) => v,
+        Option::None => 99,
+    }
+}

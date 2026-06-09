@@ -5,22 +5,13 @@
 //! `HewSupervisor.children[]`, pool children index into `pool_slots[]`. The
 //! two spaces are disjoint (both start at 0).
 
-use hew_hir::{lower_program, HirItem, HirSupervisorChild, HirSupervisorDecl, ResolutionCtx};
-use hew_types::TypeCheckOutput;
+use hew_hir::{HirItem, HirSupervisorChild, HirSupervisorDecl};
+
+#[path = "support/mod.rs"]
+mod support;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    )
+    support::checker_pipeline::lower_through_checker(source)
 }
 
 fn find_supervisor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirSupervisorDecl {

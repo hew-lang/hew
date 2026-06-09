@@ -1,0 +1,25 @@
+// Accept fixture: Static trait dispatch — generic-over-generic impl
+// `impl<U> Show for Wrapper<U>` is a generic impl whose method MUST carry
+// the impl-level type param `U` into its lowered HirFn::type_params so
+// monomorphization can specialize `Wrapper::show` per concrete `U`.
+// Prior to W3.022 Stage 3 this dropped `U` and dispatched to an
+// unsubstituted bare symbol.
+trait Show {
+    fn show(val: Self) -> string;
+}
+
+type Wrapper<U> { inner: U; }
+
+impl<U> Show for Wrapper<U> {
+    fn show(w: Wrapper<U>) -> string { "wrapped" }
+}
+
+fn display<T: Show>(item: T) -> string {
+    item.show()
+}
+
+fn main() -> i64 {
+    let w = Wrapper<i64> { inner: 7 };
+    let s = display(w);
+    if s == "wrapped" { 0 } else { 1 }
+}

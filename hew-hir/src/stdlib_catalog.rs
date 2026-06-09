@@ -85,6 +85,21 @@ pub enum BuiltinLinkage {
     },
 }
 
+impl BuiltinLinkage {
+    #[must_use]
+    pub const fn runtime_symbol(self) -> Option<&'static str> {
+        match self {
+            Self::RuntimeFfiShim { symbol }
+            | Self::ToStringShim { symbol }
+            | Self::StringCloneShim { symbol } => Some(symbol),
+            Self::PrintIntercept { .. }
+            | Self::CompilerIntrinsic { .. }
+            | Self::CalleeNameDispatchOnly
+            | Self::NodeRegisterByPid { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinTy {
     I32,
@@ -119,7 +134,9 @@ impl BuiltinTy {
                 args: vec![ResolvedTy::Named {
                     name: "T".to_string(),
                     args: vec![],
+                    builtin: None,
                 }],
+                builtin: Some(hew_types::BuiltinType::Vec),
             },
         }
     }
@@ -146,6 +163,10 @@ const BOOL: &[BuiltinTy] = &[BuiltinTy::Bool];
 const CHAR: &[BuiltinTy] = &[BuiltinTy::Char];
 const STRING: &[BuiltinTy] = &[BuiltinTy::String];
 const VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny];
+const VEC_ANY_I32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I32];
+const VEC_ANY_I64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64];
+const VEC_ANY_I64_I32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::I32];
+const VEC_ANY_VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::VecAny];
 const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
 const BOOL_BOOL: &[BuiltinTy] = &[BuiltinTy::Bool, BuiltinTy::Bool];
@@ -537,6 +558,90 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::VecAny,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_string_chars",
+        },
+    ),
+    // Class A: declarative bytes receiver bridge. The current native bytes ABI
+    // is Vec<i32>-backed, so these direct rows expose the checked-in runtime
+    // entry points that `std/io.hew` names with `#[extern_symbol]`.
+    direct(
+        "hew_vec_push_i32",
+        BuiltinClass::ClassA,
+        VEC_ANY_I32,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_i32",
+        },
+    ),
+    direct(
+        "hew_vec_pop_i32",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::I32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_i32",
+        },
+    ),
+    direct(
+        "hew_vec_get_i32",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_i32",
+        },
+    ),
+    direct(
+        "hew_vec_set_i32",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_I32,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_i32",
+        },
+    ),
+    direct(
+        "hew_vec_is_empty",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_is_empty",
+        },
+    ),
+    direct(
+        "hew_vec_clear",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_clear",
+        },
+    ),
+    direct(
+        "hew_vec_contains_i32",
+        BuiltinClass::ClassA,
+        VEC_ANY_I32,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_contains_i32",
+        },
+    ),
+    direct(
+        "hew_bytes_to_string",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_bytes_to_string",
+        },
+    ),
+    direct(
+        "hew_vec_append",
+        BuiltinClass::ClassA,
+        VEC_ANY_VEC_ANY,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_append",
         },
     ),
     // Class B: math module intrinsics.

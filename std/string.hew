@@ -657,6 +657,102 @@ pub fn join(parts: Vec<string>, sep: string) -> string {
     result
 }
 
+// ── Declarative receiver FFI ─────────────────────────────────────────
+impl string {
+    #[extern_symbol(hew_string_length)]
+    fn len(s: string) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_string_is_empty)]
+    fn is_empty(s: string) -> bool {
+        false
+    }
+    #[extern_symbol(hew_string_contains)]
+    fn contains(s: string, needle: string) -> bool {
+        false
+    }
+    #[extern_symbol(hew_string_starts_with)]
+    fn starts_with(s: string, prefix: string) -> bool {
+        false
+    }
+    #[extern_symbol(hew_string_ends_with)]
+    fn ends_with(s: string, suffix: string) -> bool {
+        false
+    }
+    #[extern_symbol(hew_string_to_uppercase)]
+    fn to_uppercase(s: string) -> string {
+        ""
+    }
+    #[extern_symbol(hew_string_to_uppercase)]
+    fn to_upper(s: string) -> string {
+        ""
+    }
+    #[extern_symbol(hew_string_to_lowercase)]
+    fn to_lowercase(s: string) -> string {
+        ""
+    }
+    #[extern_symbol(hew_string_to_lowercase)]
+    fn to_lower(s: string) -> string {
+        ""
+    }
+    #[extern_symbol(hew_string_trim)]
+    fn trim(s: string) -> string {
+        ""
+    }
+    #[extern_symbol(hew_string_is_digit)]
+    fn is_digit(s: string) -> bool {
+        false
+    }
+    #[extern_symbol(hew_string_is_alpha)]
+    fn is_alpha(s: string) -> bool {
+        false
+    }
+    #[extern_symbol(hew_string_is_alphanumeric)]
+    fn is_alphanumeric(s: string) -> bool {
+        false
+    }
+    #[extern_symbol(hew_string_clone)]
+    fn clone(s: string) -> string {
+        ""
+    }
+    #[extern_symbol(hew_string_replace)]
+    fn replace(s: string, from: string, to: string) -> string {
+        ""
+    }
+    #[extern_symbol(hew_string_split)]
+    fn split(s: string, sep: string) -> Vec<string> {
+        Vec::new()
+    }
+    #[extern_symbol(hew_string_lines)]
+    fn lines(s: string) -> Vec<string> {
+        Vec::new()
+    }
+    #[extern_symbol(hew_string_find)]
+    fn find(s: string, needle: string) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_string_index_of_start)]
+    fn index_of(s: string, needle: string) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_string_slice)]
+    fn slice(s: string, start: i64, end: i64) -> string {
+        ""
+    }
+    #[extern_symbol(hew_string_repeat)]
+    fn repeat(s: string, n: i64) -> string {
+        ""
+    }
+    #[extern_symbol(hew_string_char_at)]
+    fn char_at(s: string, idx: i64) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_string_chars)]
+    fn chars(s: string) -> Vec<char> {
+        Vec::new()
+    }
+}
+
 // ── Trait: ToString ──────────────────────────────────────────────────
 /// Trait for types that can be converted to a string representation.
 ///

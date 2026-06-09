@@ -15,6 +15,7 @@ fn stream_ty(item: ResolvedTy) -> ResolvedTy {
     ResolvedTy::Named {
         name: "Stream".to_string(),
         args: vec![item],
+        builtin: None,
     }
 }
 

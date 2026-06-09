@@ -1,0 +1,19 @@
+// Reject fixture: free_fn_scope_spawn_in_default - top-level/default-callconv
+// functions cannot fork a free function because there is no caller execution
+// context to pass to the task wrapper.
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - E_NOT_YET_IMPLEMENTED
+//   - "cannot spawn `worker` from `main`"
+//   - "ctx-bearing execution context"
+//   - "W4.010-followup-caller-ctx-routing"
+
+fn worker() {}
+
+fn main() -> i64 {
+    scope {
+        fork { worker(); }
+    };
+    0
+}

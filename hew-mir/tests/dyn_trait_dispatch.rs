@@ -321,6 +321,7 @@ fn walk_for_structural_coercion(expr: &hew_hir::HirExpr, found: &mut bool) {
             ResolvedTy::Named {
                 name: "Widget".to_string(),
                 args: vec![],
+                builtin: None,
             }
         );
         assert_eq!(
@@ -343,6 +344,7 @@ fn walk_for_structural_coercion(expr: &hew_hir::HirExpr, found: &mut bool) {
                 walk_for_structural_coercion(arg, found);
             }
         }
+        HirExprKind::Unary { operand, .. } => walk_for_structural_coercion(operand, found),
         _ => {}
     }
 }

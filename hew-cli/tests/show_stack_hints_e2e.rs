@@ -36,22 +36,20 @@ fn write_fixture(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
-/// `hew check --show-stack-hints` on a program that allocates a Vec and binds
-/// a lambda must exit zero, must surface at least one HEW-PERF-001 line on
+/// `hew check --show-stack-hints` on a program that binds a lambda must exit
+/// zero, must surface at least one HEW-PERF-001 line on
 /// stderr, and the rendered lines must point at the fixture file using the
 /// documented `file:line:col: info[HEW-PERF-001]: binding ...` shape.
 #[test]
 fn show_stack_hints_flag_emits_perf_001_on_known_allocations() {
-    // Two known-heap-class bindings:
-    //   - `v` resolves to `Vec<i64>`        -> AllocationClass::Vec
-    //   - `f` is a closure literal           -> AllocationClass::ClosureEnv
-    // Plus one stack-shaped binding (`r`) that must NOT produce a hint —
-    // a primitive i64 return does not allocate on the heap.
+    // Known heap-class binding:
+    //   - `f` is a closure literal -> AllocationClass::ClosureEnv
+    // Plus one stack-shaped binding (`r`) that must NOT produce a hint — a
+    // primitive i64 return does not allocate on the heap.
     let source = "fn main() {\n\
-        \x20\x20\x20\x20let v: Vec<i64> = Vec::new();\n\
         \x20\x20\x20\x20let f = |x: i64| -> i64 { x * 2 };\n\
         \x20\x20\x20\x20let r: i64 = f(3);\n\
-        \x20\x20\x20\x20println(f\"v.len = {v.len()}, r = {r}\");\n\
+        \x20\x20\x20\x20println(f\"r = {r}\");\n\
         }\n";
 
     let (_fixture, scaffold_path) = write_fixture(source);

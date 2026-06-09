@@ -254,7 +254,7 @@ def test_override_with_sentinel_emits_stderr_warning() -> None:
     assert "PREFLIGHT_TEST_COMMANDS" in result.stderr, result.stderr
     assert "test-only" in result.stderr, result.stderr
     assert "==> Hew CI preflight dispatcher" in result.stdout, result.stdout
-    assert "  - printf '%s' OVERRIDE_OK >/dev/null  (budget: 180s)" in result.stdout, (
+    assert "  - printf '%s' OVERRIDE_OK >/dev/null  (budget: 600s)" in result.stdout, (
         result.stdout
     )
 
@@ -310,11 +310,11 @@ def test_profile_json_records_elapsed_for_each_command() -> None:
 
 
 def test_scripts_config_budget_annotation() -> None:
-    """scripts-config lane (narrow) shows 180s budget in dry-run."""
+    """scripts-config lane uses the conservative fallback budget in dry-run."""
     result = run_dispatcher("Makefile")
     assert result.returncode == 0, result.stderr
-    assert "(budget: 180s)" in result.stdout, (
-        f"Expected '(budget: 180s)' for scripts-config lane.\nstdout:\n{result.stdout}"
+    assert "(budget: 600s)" in result.stdout, (
+        f"Expected '(budget: 600s)' for scripts-config lane.\nstdout:\n{result.stdout}"
     )
 
 
@@ -386,6 +386,23 @@ def test_zero_timeout_fails_closed() -> None:
     )
 
 
+def test_compiler_pipeline_rs_change_includes_vertical_slice_oracle() -> None:
+    """Pure compiler-pipeline Rust changes run the end-to-end vertical-slice oracle."""
+    result = run_dispatcher("hew-mir/src/lower.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
+    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "make test-vertical-slice" in result.stdout, result.stdout
+
+
+def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
+    """Docs-only changes remain a no-op and do not run the compiler oracle."""
+    result = run_dispatcher("docs/README.md")
+    assert result.returncode == 0, result.stderr
+    assert "docs-only" in result.stdout, result.stdout
+    assert "make test-vertical-slice" not in result.stdout, result.stdout
+
+
 _TESTS = [
     test_makefile_routes_to_scripts_config_profile,
     test_scripts_path_routes_to_scripts_config_profile,
@@ -413,6 +430,8 @@ _TESTS = [
     test_runtime_net_lane_budget_annotation,
     test_runtime_net_lane_rebuilds_libhew,
     test_zero_timeout_fails_closed,
+    test_compiler_pipeline_rs_change_includes_vertical_slice_oracle,
+    test_docs_only_change_does_not_include_vertical_slice_oracle,
 ]
 
 if __name__ == "__main__":

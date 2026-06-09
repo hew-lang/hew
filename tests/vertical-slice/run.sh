@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+resolve_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    command -v timeout
+  elif command -v gtimeout >/dev/null 2>&1; then
+    command -v gtimeout
+  else
+    echo "error: GNU timeout is required (install GNU coreutils: timeout/gtimeout)" >&2
+    exit 127
+  fi
+}
+
+TIMEOUT="$(resolve_timeout)"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HEW="${ROOT}/target/debug/hew"
 
@@ -31,7 +44,7 @@ run_accept_expect_status() {
   # `timeout` then fail the exit-code assertion below rather than blocking.
   # shellcheck disable=SC2016  # $1/$2/$3 are positional args to the inner
   # `bash -c`, expanded there — the single quotes are deliberate.
-  if timeout --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+  if "${TIMEOUT}" --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
     status=0
   else
     status=$?
@@ -62,7 +75,7 @@ run_check_run_expect_stdout() {
   local fixture="$1"
   "${HEW}" check "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1
   local status=0
-  if timeout --kill-after=5s 30s "${HEW}" run \
+  if "${TIMEOUT}" --kill-after=5s 30s "${HEW}" run \
       "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" \
       >"${stdout_output}" 2>"${stderr_output}"; then
     status=0
@@ -173,7 +186,7 @@ grep -qF 'parser-only in this build' "${reject_output}"
 # command is documentary: the fixture is wired in so a future stage
 # wraps it into a real accept run once MIR lowering catches up.
 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/iter_lazy_wrappers.hew" \
-    >"${accept_output}" 2>&1 || true
+    >"${accept_output}" 2>&1
 
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
@@ -1030,10 +1043,10 @@ run_accept_expect_status "vec_new_turbofish_method" 7
 
 # Accept: HashMap::<K, V>::new() turbofish syntax.  `hew check` is enough here:
 # the regression is the checker rejecting type args before constructor lowering.
-gtimeout 30 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/hashmap_new_turbofish_type.hew"
+"${TIMEOUT}" 30 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/hashmap_new_turbofish_type.hew"
 
 # Accept: HashSet::<T>::new() turbofish syntax.
-gtimeout 30 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/hashset_new_turbofish_type.hew"
+"${TIMEOUT}" 30 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/hashset_new_turbofish_type.hew"
 
 # ---------------------------------------------------------------------------
 # W3 collections-sugar S2: string codepoint index + slice (locked Q-CS1).
@@ -1066,11 +1079,15 @@ run_accept_expect_status "vec_i64_basic" 10
 # `VecIter<T>` for both Vec<i32> and Vec<i64> (the two stdlib catalog
 # instantiations). HIR-level dispatch wiring for user trait method calls is
 # owned by Stage 4 (for-loop desugar) — this slice intentionally stops at
-# typecheck. Assert there is no "no method `into_iter`" or "no method `next`"
-# diagnostic in the checker output.
-gtimeout 30 "${HEW}" check \
+# typecheck. VecIter record MIR lowering is still NYI, so pin that diagnostic
+# positively rather than swallowing the check exit code.
+if "${TIMEOUT}" 30 "${HEW}" check \
     "${ROOT}/tests/vertical-slice/accept/vec_into_iter_typeck.hew" \
-    >"${accept_output}" 2>&1 || true
+    >"${accept_output}" 2>&1; then
+  echo "W3 Stage 3: expected VecIter MIR lowering to remain diagnostic until implemented" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
 if grep -q "no method \`into_iter\`" "${accept_output}"; then
   echo "W3 Stage 3: Vec<T>::into_iter must resolve through IntoIterator impl" >&2
   cat "${accept_output}" >&2
@@ -1081,6 +1098,8 @@ if grep -q "no field\|undefined type \`VecIter\`" "${accept_output}"; then
   cat "${accept_output}" >&2
   exit 1
 fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${accept_output}"
+grep -q 'VecIter' "${accept_output}"
 
 # Reject (S1): Vec::<i64, i32>::new() turbofish arity mismatch — Vec takes exactly
 # 1 type argument; supplying 2 must produce a clear diagnostic.
@@ -1093,7 +1112,7 @@ fi
 grep -q 'takes 1 type argument but 2 were supplied' "${reject_output}"
 
 # Reject: HashMap takes key and value type arguments.
-if gtimeout 30 "${HEW}" check \
+if "${TIMEOUT}" 30 "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/hashmap_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected hashmap_new_turbofish_arity_mismatch to fail" >&2
@@ -1102,7 +1121,7 @@ fi
 grep -q 'takes 2 type arguments but 1 was supplied' "${reject_output}"
 
 # Reject: HashSet takes one element type argument.
-if gtimeout 30 "${HEW}" check \
+if "${TIMEOUT}" 30 "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/hashset_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected hashset_new_turbofish_arity_mismatch to fail" >&2
@@ -1383,7 +1402,7 @@ fi
 # hew_hashmap_*_layout / hew_hashset_*_layout.
 (
   apply_optional_virtual_memory_limit
-  timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashmap_run_pass.hew"
+  "${TIMEOUT}" --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashmap_run_pass.hew"
 )
 
 # W4.045: HashSet<i64> / HashSet<string> actor-state drop run-pass. Regression
@@ -1394,7 +1413,7 @@ fi
 # `hew_hashset_free_layout`. Post-fix it prints `ok` and exits 0.
 (
   apply_optional_virtual_memory_limit
-  out="$(timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashset_actor_drop_run_pass.hew")"
+  out="$("${TIMEOUT}" --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashset_actor_drop_run_pass.hew")"
   if [[ "${out}" != "ok" ]]; then
     echo "W4.045: hashset actor drop run-pass: expected 'ok', got '${out}'" >&2
     exit 1
@@ -1412,7 +1431,7 @@ fi
 # fail-closed substrate gate (native-only layout family; tracked #1820).
 (
   apply_optional_virtual_memory_limit
-  out="$(timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/collection_actor_drop_run_pass.hew")"
+  out="$("${TIMEOUT}" --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/collection_actor_drop_run_pass.hew")"
   if [[ "${out}" != "ok" ]]; then
     echo "W5.001: collection actor drop run-pass: expected 'ok', got '${out}'" >&2
     exit 1
@@ -1429,7 +1448,7 @@ fi
 # native-only collection substrate gate (tracked #1820).
 (
   apply_optional_virtual_memory_limit
-  out="$(timeout --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/vec_string_actor_drop_run_pass.hew")"
+  out="$("${TIMEOUT}" --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/vec_string_actor_drop_run_pass.hew")"
   if [[ "${out}" != "ok" ]]; then
     echo "W5.002: vec<string> actor drop run-pass: expected 'ok', got '${out}'" >&2
     exit 1
@@ -1530,7 +1549,7 @@ grep -q 'E_OPAQUE_TYPE_SHAPE' "${reject_output}"
 compile_accept "await_ask_deadline_timeout"
 timeout_bin="${ROOT}/.tmp/compile-out/await_ask_deadline_timeout"
 deadline_status=0
-if timeout --kill-after=5s 30s env HEW_WORKERS=1 "${timeout_bin}" \
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${timeout_bin}" \
     >"${stdout_output}" 2>"${stderr_output}"; then
   deadline_status=0
 else
@@ -1548,7 +1567,7 @@ fi
 compile_accept "await_ask_deadline_ok"
 ok_bin="${ROOT}/.tmp/compile-out/await_ask_deadline_ok"
 ok_status=0
-if timeout --kill-after=5s 30s env HEW_WORKERS=1 "${ok_bin}" \
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${ok_bin}" \
     >"${stdout_output}" 2>"${stderr_output}"; then
   ok_status=0
 else
@@ -1566,7 +1585,7 @@ fi
 compile_accept "await_read_deadline_deferred"
 read_timeout_bin="${ROOT}/.tmp/compile-out/await_read_deadline_deferred"
 read_deadline_status=0
-if timeout --kill-after=5s 30s env HEW_WORKERS=1 "${read_timeout_bin}" \
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${read_timeout_bin}" \
     >"${stdout_output}" 2>"${stderr_output}"; then
   read_deadline_status=0
 else
@@ -1583,7 +1602,7 @@ fi
 compile_accept "await_read_deadline_ok"
 read_ok_bin="${ROOT}/.tmp/compile-out/await_read_deadline_ok"
 read_ok_status=0
-if timeout --kill-after=5s 30s env HEW_WORKERS=1 "${read_ok_bin}" \
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${read_ok_bin}" \
     >"${stdout_output}" 2>"${stderr_output}"; then
   read_ok_status=0
 else

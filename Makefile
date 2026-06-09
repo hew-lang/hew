@@ -41,6 +41,7 @@
 #   make test-types        — type-checker + parser + lexer crate tests (narrow)
 #   make test-cli          — CLI crate tests (narrow)
 #   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
+#   make test-vertical-slice — end-to-end Hew compiler oracle
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
 #   make test-hew          — run Hew test files (std/ *_test.hew)
@@ -55,7 +56,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
@@ -463,6 +464,12 @@ test-compiler-pipeline: stdlib wasm-runtime
 		-p hew-codegen-rs \
 		-p hew-cli \
 		-p adze-cli
+
+# End-to-end Hew compiler oracle: real .hew fixtures through check/compile/run.
+# Build libhew first and verify freshness so native fixture links do not test
+# against stale runtime/stdlib archives on a fresh checkout or CI runner.
+test-vertical-slice: hew runtime stdlib check-libhew-fresh
+	bash tests/vertical-slice/run.sh
 
 test-runtime-net:
 	cargo nextest run --profile ci --no-fail-fast \

@@ -543,14 +543,12 @@ case "$LANE" in
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-compiler-pipeline"
-        if (( has_vertical_slice == 1 )); then
-            add_command "bash tests/vertical-slice/run.sh"
-        fi
+        add_command "make test-vertical-slice"
         ;;
     vertical-slice)
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "bash tests/vertical-slice/run.sh"
+        add_command "make test-vertical-slice"
         ;;
     observe)
         add_command "cargo fmt --all -- --check"

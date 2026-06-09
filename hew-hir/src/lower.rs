@@ -2162,7 +2162,7 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Actor(actor) => {
-                // P0.1: Fail-closed gate: actors require coroutine support
+                // P0.1: Fail-closed gate: actors require the actor runtime ABI
                 if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
                     ctx.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::TargetCoroutineUnsupported {
@@ -2171,7 +2171,7 @@ pub fn lower_program_with_mono_cap(
                         },
                         span.clone(),
                         format!(
-                            "actor '{}' requires coroutine support (x86_64/aarch64 only)",
+                            "actor '{}' requires the actor runtime ABI (x86_64/aarch64 only)",
                             actor.name
                         ),
                     ));
@@ -2182,7 +2182,7 @@ pub fn lower_program_with_mono_cap(
                 items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
             }
             Item::Supervisor(decl) => {
-                // P0.2: Fail-closed gate: supervisors require coroutine support
+                // P0.2: Fail-closed gate: supervisors require the actor runtime ABI
                 if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
                     ctx.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::TargetCoroutineUnsupported {
@@ -2191,7 +2191,7 @@ pub fn lower_program_with_mono_cap(
                         },
                         span.clone(),
                         format!(
-                            "supervisor '{}' requires coroutine support (x86_64/aarch64 only)",
+                            "supervisor '{}' requires the actor runtime ABI (x86_64/aarch64 only)",
                             decl.name
                         ),
                     ));
@@ -17408,8 +17408,10 @@ fn describe_select_source_shape(expr: &Expr) -> String {
 /// of allowing runtime panics at `hew-runtime/src/coro.rs:391/:492` (P0.1/P0.2)
 /// or `hew-runtime/src/lib.rs:378/:391` (P0.3/P0.4).
 fn check_target_gates(ctx: &mut LowerCtx, program: &Program) {
-    // P0.1 + P0.2: Coroutine target gate
-    // If target is NOT in {x86_64, aarch64}, reject any actor/task/coroutine.
+    // P0.1 + P0.2: Actor runtime ABI gate.
+    // If target is NOT in {x86_64, aarch64}, reject actors/supervisors.
+    // Suspension itself uses target-agnostic LLVM llvm.coro.*; the gap is the
+    // actor runtime ABI (scheduler, mailbox, supervisor restart machinery).
     if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
         check_coroutine_gate(ctx, program);
     }
@@ -17424,7 +17426,7 @@ fn check_target_gates(ctx: &mut LowerCtx, program: &Program) {
     // essential.
 }
 
-/// Check for actor/task/coroutine usage on unsupported targets.
+/// Check for actor/supervisor usage on targets without the actor runtime ABI.
 fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
     let target_name = match ctx.target_arch {
         TargetArch::Wasm32 => "wasm32",
@@ -17444,8 +17446,8 @@ fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
                     span.clone(),
                     format!(
                         "actor `{}` cannot be compiled for target `{}`: \
-                         coroutine support (coro_switch/coro_init) is only \
-                         implemented for x86_64 and aarch64",
+                         the actor runtime ABI (scheduler, mailbox) is only \
+                         available on x86_64 and aarch64",
                         actor_decl.name, target_name
                     ),
                 ));
@@ -17460,8 +17462,8 @@ fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
                     span.clone(),
                     format!(
                         "supervisor `{}` cannot be compiled for target `{}`: \
-                         supervisors spawn actors, which require coroutine support \
-                         (only available on x86_64 and aarch64)",
+                         supervisors require the actor runtime ABI and supervisor \
+                         restart machinery, only available on x86_64 and aarch64",
                         supervisor_decl.name, target_name
                     ),
                 ));

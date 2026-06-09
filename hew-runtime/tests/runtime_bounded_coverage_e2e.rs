@@ -124,7 +124,7 @@ unsafe extern "C-unwind" fn gated_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     let mut state = DISPATCH_GATE.state.lock().unwrap();
     state.started += 1;
     let target = state.started;
@@ -133,6 +133,7 @@ unsafe extern "C-unwind" fn gated_dispatch(
     while state.released < target {
         state = DISPATCH_GATE.cond.wait(state).unwrap();
     }
+    std::ptr::null_mut()
 }
 
 fn cstr(s: &str) -> CString {

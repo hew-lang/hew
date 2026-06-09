@@ -47,7 +47,7 @@ use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetMachine;
-use inkwell::types::{AsTypeRef, IntType};
+use inkwell::types::AsTypeRef;
 use inkwell::values::{AsValueRef, FunctionValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
 
@@ -130,12 +130,17 @@ pub unsafe fn emit_coro_intrinsic_token(
     }
 }
 
-/// Declare (or fetch) the `hew_cont_frame_alloc(size) -> ptr` runtime symbol at
-/// the target-correct `size_t` width.
+/// Declare (or fetch) the `hew_cont_frame_alloc(size: u64) -> ptr` runtime symbol.
+///
+/// `hew_cont_frame_alloc` takes `u64` (not `size_t`) on every target — including
+/// wasm32 — matching `hew_alloc`. The LLVM declaration therefore always uses
+/// `i64`, never `i32`, regardless of the target pointer or size width. Using
+/// `runtime_size_ty` (i32 on wasm32) would produce an `(i32)->ptr` import that
+/// the wasm-ld/instantiation validator rejects against the runtime's `(i64)->ptr`
+/// export (exact-signature matching). See `hew-runtime/src/cont.rs:134`.
 fn declare_frame_alloc<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
-    size_ty: IntType<'ctx>,
 ) -> FunctionValue<'ctx> {
     if let Some(f) = llvm_mod.get_function(CONT_FRAME_ALLOC) {
         return f;
@@ -143,7 +148,7 @@ fn declare_frame_alloc<'ctx>(
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     llvm_mod.add_function(
         CONT_FRAME_ALLOC,
-        ptr_ty.fn_type(&[size_ty.into()], false),
+        ptr_ty.fn_type(&[ctx.i64_type().into()], false),
         Some(Linkage::External),
     )
 }
@@ -200,15 +205,25 @@ impl<'a, 'ctx> CoroContext<'a, 'ctx> {
     ) -> CodegenResult<()> {
         let suspend = coro_intrinsic(self.llvm_mod, "llvm.coro.suspend")?;
         let i1_ty = self.ctx.bool_type();
-        // `coro.suspend(token none, i1 is_final)`. The first arg is the `none`
-        // token; inkwell cannot construct a token const, so we issue this via
-        // the raw path too, passing an LLVM `none` token constant.
+        // Emit `%save = coro.save(handle)` immediately before `coro.suspend` and
+        // thread its token in. This is the canonical switched-resume shape LLVM
+        // documents (`%save = coro.save(%hdl); coro.suspend(token %save, …)`):
+        // CoroSplit uses the `coro.save` token to mark where the suspend's
+        // resume index is stored in the frame. A `coro.suspend(token none, …)`
+        // (no save) is NOT recognised by LLVM 22's CoroSplit as a real suspend
+        // point — the function is left un-split and the intrinsics reach the
+        // backend un-lowered. `coro.save` returns a `token`, so it routes
+        // through the raw path like `coro.id`.
+        let coro_save = coro_intrinsic(self.llvm_mod, "llvm.coro.save")?;
+        let save_token = unsafe {
+            let mut args: [LLVMValueRef; 1] = [self.handle.as_value_ref()];
+            let name = std::ffi::CString::new(format!("{label}.save")).unwrap();
+            emit_coro_intrinsic_token(self.builder.as_mut_ptr(), coro_save, &mut args, &name)
+        };
+        // `coro.suspend(token %save, i1 is_final)`.
         let s = unsafe {
-            let c = self.ctx.raw();
-            let token_ty = inkwell::llvm_sys::core::LLVMTokenTypeInContext(c);
-            let none = inkwell::llvm_sys::core::LLVMConstNull(token_ty);
             let mut args: [LLVMValueRef; 2] = [
-                none,
+                save_token,
                 i1_ty.const_int(u64::from(is_final), false).as_value_ref(),
             ];
             let name = std::ffi::CString::new(format!("{label}.s")).unwrap();
@@ -263,7 +278,6 @@ pub fn emit_coro_prologue<'a, 'ctx>(
     llvm_mod: &'a LlvmModule<'ctx>,
     builder: &'a inkwell::builder::Builder<'ctx>,
     function: FunctionValue<'ctx>,
-    size_ty: IntType<'ctx>,
 ) -> CodegenResult<CoroContext<'a, 'ctx>> {
     // Mark the function as a presplit coroutine so CoroSplit processes it.
     // MUST be an enum attribute (unquoted in text IR): CoroSplit checks
@@ -321,6 +335,8 @@ pub fn emit_coro_prologue<'a, 'ctx>(
     // dyn.alloc: size = coro.size.i64(); mem = hew_cont_frame_alloc(size).
     // `coro.size` is overloaded on its result type — resolve the base name with
     // the i64 type arg so get_declaration mangles it to `llvm.coro.size.i64`.
+    // `hew_cont_frame_alloc` takes `u64` on all targets (NOT `size_t`), so the
+    // i64 result flows straight through — no truncation for wasm32.
     builder.position_at_end(dyn_alloc);
     let coro_size = coro_intrinsic_typed(llvm_mod, "llvm.coro.size", &[ctx.i64_type().into()])?;
     let size_i64 = builder
@@ -330,17 +346,9 @@ pub fn emit_coro_prologue<'a, 'ctx>(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("coro.size returned no value".into()))?
         .into_int_value();
-    // Reconcile coro.size's i64 to the target-correct frame-alloc width.
-    let size_arg = if size_ty == ctx.i64_type() {
-        size_i64
-    } else {
-        builder
-            .build_int_truncate(size_i64, size_ty, "coro.size.trunc")
-            .llvm_ctx("coro.size truncate")?
-    };
-    let frame_alloc = declare_frame_alloc(ctx, llvm_mod, size_ty);
+    let frame_alloc = declare_frame_alloc(ctx, llvm_mod);
     let mem = builder
-        .build_call(frame_alloc, &[size_arg.into()], "coro.frame")
+        .build_call(frame_alloc, &[size_i64.into()], "coro.frame")
         .llvm_ctx("hew_cont_frame_alloc call")?
         .try_as_basic_value()
         .basic()
@@ -477,7 +485,17 @@ pub fn module_has_coroutines(llvm_mod: &LlvmModule<'_>) -> bool {
 /// pipeline), so they are run explicitly here.
 pub fn run_coro_passes(llvm_mod: &LlvmModule<'_>, machine: &TargetMachine) -> CodegenResult<()> {
     let options = inkwell::passes::PassBuilderOptions::create();
+    // `coro-split` is a CGSCC pass: under the new pass manager it MUST be
+    // wrapped in the `cgscc(...)` adaptor or it runs at module scope as a
+    // no-op — the `presplitcoroutine` body then reaches the backend un-split
+    // and the coro intrinsics fail to select. `coro-early` (function scope) and
+    // `coro-cleanup` (function scope) run as plain pipeline entries; only the
+    // split pass needs the explicit CGSCC nesting.
     llvm_mod
-        .run_passes("coro-early,coro-split,coro-cleanup", machine, options)
+        .run_passes(
+            "coro-early,cgscc(coro-split),coro-cleanup",
+            machine,
+            options,
+        )
         .map_err(|e| CodegenError::Llvm(format!("coro pass pipeline failed: {e}")))
 }

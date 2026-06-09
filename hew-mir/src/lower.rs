@@ -9707,11 +9707,15 @@ impl Builder {
                         )
                     }
                     Terminator::Trap { .. } => true,
+                    // `Suspend` never appears in a generator body (gen bodies
+                    // use `Yield`); a body-end drop across it is conservatively
+                    // unsound here, like the other body-exiting terminators.
                     Terminator::Return
                     | Terminator::Yield { .. }
                     | Terminator::Send { .. }
                     | Terminator::Ask { .. }
                     | Terminator::RemoteAsk { .. }
+                    | Terminator::Suspend { .. }
                     | Terminator::Select { .. } => false,
                 }
             }
@@ -16610,7 +16614,8 @@ fn exit_block_id(exit: &ExitPath) -> u32 {
         | ExitPath::Yield { block, .. }
         | ExitPath::Send { block, .. }
         | ExitPath::Ask { block, .. }
-        | ExitPath::Select { block, .. } => block,
+        | ExitPath::Select { block, .. }
+        | ExitPath::Suspend { block, .. } => block,
     }
 }
 
@@ -16629,6 +16634,7 @@ fn exit_kind_label(exit: &ExitPath) -> &'static str {
         ExitPath::Send { .. } => "Send",
         ExitPath::Ask { .. } => "Ask",
         ExitPath::Select { .. } => "Select",
+        ExitPath::Suspend { .. } => "Suspend",
     }
 }
 
@@ -17143,6 +17149,14 @@ fn validate_cross_block_split_consume(
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
             | Terminator::Select { next, .. } => emit(*next),
+            // Suspend's default edge exits the function; resume + cleanup are
+            // the in-CFG successor edges.
+            Terminator::Suspend {
+                resume, cleanup, ..
+            } => {
+                emit(*resume);
+                emit(*cleanup);
+            }
         }
     }
 
@@ -17162,6 +17176,11 @@ fn validate_cross_block_split_consume(
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
             | Terminator::Select { next, .. } => vec![*next],
+            // Suspend's default edge exits the function; resume + cleanup are
+            // the in-CFG successors.
+            Terminator::Suspend {
+                resume, cleanup, ..
+            } => vec![*resume, *cleanup],
         }
     };
 
@@ -17735,6 +17754,10 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // `dest` is the handle slot the generator is written into (a write);
         // `body_fn` is a static symbol, not a Place — no source operands.
         Terminator::MakeGenerator { .. } => Vec::new(),
+        // `Suspend` has no source operands: the value channel is the explicit
+        // coro frame out-pointer (spike-pinned null promise), not a `Place`, so
+        // the suspend point reads nothing across the block edge.
+        Terminator::Suspend { .. } => Vec::new(),
         Terminator::Send { actor, value, .. } => vec![*actor, *value],
         // `reply_dest` is the slot the reply is written into — a write, not
         // a source.
@@ -17947,10 +17970,13 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
 fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
     match term {
         // A `Call`'s args are borrows (same posture as `Instr::Call*`).
+        // `Suspend` carries no operand (value channel is the frame out-pointer),
+        // so it never escapes `local`.
         Terminator::Call { .. }
         | Terminator::Goto { .. }
         | Terminator::Branch { .. }
         | Terminator::Trap { .. }
+        | Terminator::Suspend { .. }
         | Terminator::MakeGenerator { .. } => false,
         // A bare `Return` moves the function's ReturnSlot (already written by an
         // earlier `Move`, caught by the instr scan); `Return` itself carries no
@@ -21146,6 +21172,23 @@ fn enumerate_exits(
                 ExitPath::Select {
                     block: block_id,
                     next: *next,
+                },
+                DropPlan::default(),
+            ),
+            // Stackless suspend (R326/R327). The suspend point preserves all
+            // live state in the coro frame across the suspend, so it fires NO
+            // scope-exit drops here — the frame's owned values are dropped
+            // exactly once by the `cleanup` outline on `coro.destroy` (the
+            // single-teardown owner, the `cleanup` edge), never at the suspend
+            // site. Function-wide DropPlan is intentionally empty, mirroring
+            // `ExitPath::Yield`/`Goto`.
+            Terminator::Suspend {
+                resume, cleanup, ..
+            } => (
+                ExitPath::Suspend {
+                    block: block_id,
+                    resume: *resume,
+                    cleanup: *cleanup,
                 },
                 DropPlan::default(),
             ),

@@ -44,8 +44,9 @@ unsafe extern "C-unwind" fn counting_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+    std::ptr::null_mut()
 }
 
 fn cstr(s: &str) -> CString {

@@ -92,11 +92,12 @@ unsafe extern "C-unwind" fn taxonomy_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     if msg_type == MSG_CRASH {
         unsafe { hew_trap_with_code(HEW_TRAP_DIVIDE_BY_ZERO) };
     }
     // MSG_OK: return normally.
+    std::ptr::null_mut()
 }
 
 unsafe fn wait_for_crash_log_growth(initial: i32, timeout: Duration) -> bool {

@@ -107,9 +107,10 @@ unsafe extern "C-unwind" fn counting_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
     DISPATCH_SIGNAL.record_dispatch();
+    std::ptr::null_mut()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -212,8 +213,9 @@ unsafe extern "C-unwind" fn monitor_dispatch(
     data: *mut c_void,
     data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn noop_dispatch(
@@ -223,7 +225,8 @@ unsafe extern "C-unwind" fn noop_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
+    std::ptr::null_mut()
 }
 
 fn wait_for_circuit_state(
@@ -463,12 +466,14 @@ fn link_delivers_exit_on_crash() {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // SYS_MSG_EXIT = 103
         if msg_type == 103 {
             LINK_EXIT_RECEIVED.fetch_add(1, Ordering::SeqCst);
             LINK_EXIT_SIGNAL.record_dispatch();
         }
+
+        std::ptr::null_mut()
     }
 
     let _guard = TEST_LOCK
@@ -556,11 +561,13 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // SYS_MSG_EXIT = 103.
         if msg_type == 103 {
             LINK_EXIT_RECEIVED.fetch_add(1, Ordering::SeqCst);
         }
+
+        std::ptr::null_mut()
     }
 
     let _guard = TEST_LOCK

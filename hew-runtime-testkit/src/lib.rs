@@ -96,6 +96,8 @@ pub use hew_runtime::stream::HewStream;
 pub use hew_runtime::supervisor::HewSupervisor;
 
 /// `extern "C-unwind"` dispatch callback signature. Re-exported for callers.
+/// Mirrors `HewDispatchFn` (D-A.2): returns the dispatch suspend outcome as a
+/// nullable continuation handle (`null` = run-to-completion).
 pub type DispatchFn = unsafe extern "C-unwind" fn(
     *mut HewExecutionContext,
     *mut c_void,
@@ -104,7 +106,7 @@ pub type DispatchFn = unsafe extern "C-unwind" fn(
     usize,
     // P5-RX sub-stage 1: borrow_mode receipt discriminant (HewDispatchFn).
     i32,
-);
+) -> *mut c_void;
 
 /// Initialise the runtime scheduler exactly once across all tests in the
 /// process.

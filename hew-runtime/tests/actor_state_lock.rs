@@ -66,7 +66,8 @@ unsafe extern "C-unwind" fn noop_dispatch(
     _data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
+    std::ptr::null_mut()
 }
 
 #[test]
@@ -165,10 +166,10 @@ unsafe extern "C-unwind" fn locked_counter_dispatch(
     data: *mut c_void,
     size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     if ctx.is_null() || unsafe { (*ctx).lock_seat.is_null() } {
         COUNTER_ERRORS.fetch_add(1, Ordering::Relaxed);
-        return;
+        return std::ptr::null_mut();
     }
     if size == std::mem::size_of::<i32>() && !data.is_null() {
         let n = unsafe { *data.cast::<i32>() };
@@ -176,6 +177,7 @@ unsafe extern "C-unwind" fn locked_counter_dispatch(
         unsafe { *counter += n };
     }
     COUNTER_SIGNAL.record();
+    std::ptr::null_mut()
 }
 
 #[test]
@@ -234,7 +236,7 @@ unsafe extern "C-unwind" fn panic_then_count_dispatch(
     _data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     assert_ne!(
         msg_type, 1,
         "intentional actor-state-lock panic release test"
@@ -242,6 +244,7 @@ unsafe extern "C-unwind" fn panic_then_count_dispatch(
     let counter = state.cast::<i32>();
     unsafe { *counter += 1 };
     PANIC_RELEASE_SIGNAL.record();
+    std::ptr::null_mut()
 }
 
 #[test]
@@ -273,8 +276,9 @@ unsafe extern "C-unwind" fn null_lock_must_not_enter_dispatch(
     _data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     NULL_LOCK_SIGNAL.record();
+    std::ptr::null_mut()
 }
 
 #[test]

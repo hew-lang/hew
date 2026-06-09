@@ -19,7 +19,8 @@ unsafe extern "C-unwind" fn noop_dispatch(
     _data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
+    std::ptr::null_mut()
 }
 
 fn spawn_with_cycle_flag(cycle_capable: i32) -> *mut hew_runtime::actor::HewActor {

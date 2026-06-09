@@ -433,8 +433,6 @@ pub mod stdio;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod bridge;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod coro;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod crash;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deque;

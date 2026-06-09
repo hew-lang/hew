@@ -1698,7 +1698,25 @@ unsafe fn apply_restart(
 }
 
 /// Supervisor dispatch function (handles system messages).
+/// The supervisor's `HewDispatchFn` trampoline. D-A.2: the dispatch ABI returns
+/// a nullable suspend handle; the supervisor is an internal copy-mode actor that
+/// never suspends, so it always returns `null` (run-to-completion). The dispatch
+/// logic lives in `supervisor_dispatch_impl` (which keeps the early-`return`
+/// control flow); this thin wrapper threads the run-to-completion null handle.
 unsafe extern "C-unwind" fn supervisor_dispatch(
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    state: *mut c_void,
+    msg_type: i32,
+    data: *mut c_void,
+    data_size: usize,
+    borrow_mode: i32,
+) -> *mut c_void {
+    // SAFETY: forwards the caller's invariants unchanged to the impl.
+    unsafe { supervisor_dispatch_impl(ctx, state, msg_type, data, data_size, borrow_mode) };
+    std::ptr::null_mut()
+}
+
+unsafe fn supervisor_dispatch_impl(
     ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
     msg_type: i32,
@@ -2128,7 +2146,8 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     unsafe fn make_supervisor_with_child() -> (*mut HewSupervisor, *mut HewActor, *mut HewActor) {

@@ -756,10 +756,11 @@ fn try_steal_from_peers(
 /// # Safety
 ///
 /// `actor` is owned by the calling activation frame (the Running CAS is held),
-/// `cont` is the live, suspended continuation handle the dispatch produced.
-/// `lock_ctx`, if non-null, is the dispatch execution context whose per-actor
-/// state lock must be released on this suspend edge.
-#[cfg(test)]
+/// `cont` is the live, suspended continuation handle the dispatch produced. The
+/// caller MUST have released the per-actor state lock before this call (the
+/// dispatch loop's `hew_actor_state_lock_release_for_context` on the dispatch
+/// return edge) so a suspended actor does not hold its lock against senders
+/// (FG2 / R2 P0).
 unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut c_void) -> bool {
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
@@ -1272,6 +1273,14 @@ fn activate_actor(actor: *mut HewActor) {
 
                     // SAFETY: `dispatch`, `ctx`, and `a.state` are valid;
                     // message fields come from a well-formed `HewMsgNode`.
+                    //
+                    // D-A.2 (R326/R327): the trampoline returns the dispatch
+                    // suspend outcome as a nullable continuation handle — `null`
+                    // for a run-to-completion handler (every handler today; the
+                    // suspend substrate is dormant), or the `coro.begin` handle
+                    // when a handler suspended. The handle is captured here; the
+                    // production park edge (commit 4) consumes a non-null handle
+                    // to park the activation.
                     let dispatch_result = catch_unwind(AssertUnwindSafe(|| unsafe {
                         dispatch(
                             &raw mut execution_context,
@@ -1288,7 +1297,7 @@ fn activate_actor(actor: *mut HewActor) {
                             // pointer as `dispatch_data`) lands with guard
                             // removal in a later sub-stage.
                             0,
-                        );
+                        )
                     }));
 
                     // SAFETY: `execution_context.lock_seat` was initialized from the
@@ -1322,9 +1331,17 @@ fn activate_actor(actor: *mut HewActor) {
                         break;
                     }
 
-                    if dispatch_result.is_err() {
+                    // D-A.2: the suspend handle the trampoline returned. `null`
+                    // on the run-to-completion path (every handler today — no
+                    // source construct produces a `coro.suspend` while the
+                    // substrate is dormant); a non-null handle is parked on the
+                    // suspend edge below.
+                    let suspend_handle: *mut c_void = if let Ok(handle) = &dispatch_result {
+                        *handle
+                    } else {
                         set_last_error("actor dispatch panicked");
-                    }
+                        std::ptr::null_mut()
+                    };
 
                     let reply_consumed =
                         current_reply_channel_consumed_on(&raw mut execution_context);
@@ -1363,6 +1380,35 @@ fn activate_actor(actor: *mut HewActor) {
                     // SAFETY: `msg` was returned by `hew_mailbox_try_recv` and is
                     // now exclusively owned by this worker.
                     unsafe { hew_msg_node_free(msg) };
+
+                    // SUSPEND EDGE (D-A.2 / R326/R327): the handler suspended at a
+                    // non-final `coro.suspend` and handed back its `coro.begin`
+                    // frame handle. Park it against the executor and break out of
+                    // the message loop WITHOUT re-enqueuing — the worker is freed
+                    // to run other actors; a wake (`enqueue_resume`) later
+                    // re-enqueues this actor and the resume re-entry drives the
+                    // parked continuation. The per-actor lock was already released
+                    // on the dispatch-return edge above (FG2). `park_suspended_activation`
+                    // publishes `Parked` + stores the handle + CAS `Running → Suspended`
+                    // and drains a lost wake (FG3). Dormant today: no handler
+                    // returns a non-null handle (no source produces a suspend).
+                    if !suspend_handle.is_null() {
+                        // SAFETY: `actor` is owned by this frame (Running CAS held);
+                        // `suspend_handle` is the live, suspended continuation the
+                        // dispatch produced; the lock is released.
+                        let parked = unsafe { park_suspended_activation(actor, suspend_handle) };
+                        if parked {
+                            // Parked: the actor is now `Suspended` (or was
+                            // re-enqueued by a lost-wake drain). Do not requeue
+                            // or settle here — the resume re-entry owns the rest
+                            // of this activation's lifecycle.
+                            return;
+                        }
+                        // Park refused (actor concurrently stopped/crashed): the
+                        // handle was destroyed once inside the park guard. Fall
+                        // through to the standard settle so the terminal state is
+                        // honoured.
+                    }
 
                     // Apply injected delay after dispatch (testing only).
                     if delay_ms > 0 {
@@ -2358,7 +2404,8 @@ mod tests {
         _data: *mut std::ffi::c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -2441,6 +2488,81 @@ mod tests {
         // SAFETY: mailbox was created in this test and is not used afterwards.
         unsafe { mailbox::hew_mailbox_free(mailbox) };
         crate::tracing::hew_trace_reset();
+    }
+
+    /// A dispatch handler that returns a non-null `coro.begin`-shaped handle:
+    /// the D-A.2 suspend outcome. Allocates a scratch coroutine frame (leaked as
+    /// a raw pointer — the executor's `destroy_parked` reclaims it) and hands its
+    /// handle back, modelling a handler that suspended at a non-final
+    /// `coro.suspend`. Completes on the 1st resume.
+    unsafe extern "C-unwind" fn suspend_once_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut std::ffi::c_void,
+        _msg_type: i32,
+        _data: *mut std::ffi::c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
+        Box::into_raw(frame).cast::<c_void>()
+    }
+
+    /// PRODUCTION SUSPEND EDGE (D-A.2, commit 4): a handler that returns a
+    /// non-null handle from the dispatch trampoline drives the dispatch loop to
+    /// PARK the activation — CAS `Running → Suspended`, store the handle, break
+    /// the message loop without re-enqueue (the worker is freed). This proves the
+    /// trampoline-return → `park_suspended_activation` wiring, not just the
+    /// executor edge in isolation.
+    #[test]
+    fn dispatch_returning_handle_parks_the_activation() {
+        let _sched = NoWorkerSchedulerForTest::install();
+        // SAFETY: fresh mailbox with a single message to drive one dispatch.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox is live; null payload of size 0 is valid.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(suspend_once_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        activate_actor(actor_ptr);
+
+        // The handler suspended: the dispatch loop parked the returned handle.
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "a handler that returns a non-null handle parks the activation as Suspended"
+        );
+        assert!(
+            !actor.suspended_cont.load(Ordering::Acquire).is_null(),
+            "the returned handle is parked in the resume slot"
+        );
+        assert_eq!(
+            actor.cont_tag.load(Ordering::Acquire),
+            crate::internal::types::ContTag::Parked as i32,
+            "the parked cont tag is Parked"
+        );
+
+        // Teardown: destroy the parked scratch frame exactly once (the abandoned
+        // path the C1 free wiring formalises in the next layer) + free mailbox.
+        // SAFETY: the parked handle is live and not yet destroyed.
+        assert!(unsafe { crate::coro_exec::destroy_parked(&actor) }.is_ok());
+        // SAFETY: single-threaded test; mailbox unused afterwards.
+        unsafe {
+            let msg = hew_mailbox_try_recv(mailbox.cast::<HewMailbox>());
+            if !msg.is_null() {
+                hew_msg_node_free(msg);
+            }
+            mailbox::hew_mailbox_free(mailbox);
+        }
     }
 
     #[test]

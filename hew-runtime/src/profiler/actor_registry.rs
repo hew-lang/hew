@@ -345,7 +345,8 @@ mod tests {
         _p: *mut std::ffi::c_void,
         _n: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn fake_dispatch_b(
@@ -355,7 +356,8 @@ mod tests {
         _p: *mut std::ffi::c_void,
         _n: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -393,7 +395,8 @@ mod tests {
         _p: *mut std::ffi::c_void,
         _n: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn fake_dispatch_d(
@@ -403,7 +406,8 @@ mod tests {
         _p: *mut std::ffi::c_void,
         _n: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -452,7 +456,8 @@ mod tests {
         _p: *mut std::ffi::c_void,
         _n: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     /// Regression test for the `hew_sched_shutdown` ordering bug:
@@ -618,7 +623,8 @@ mod tests {
         _p: *mut std::ffi::c_void,
         _n: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     /// Registering a handler name and looking it up by raw ptr returns the stored value.
@@ -691,7 +697,8 @@ mod tests {
         _p: *mut std::ffi::c_void,
         _n: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     /// `lookup_dispatch_for_actor_id` returns the dispatch pointer while an actor is live.

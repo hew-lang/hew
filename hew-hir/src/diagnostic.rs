@@ -499,12 +499,15 @@ pub enum HirDiagnosticKind {
         /// (e.g. `"path.basename"`).
         suggested_qualified: String,
     },
-    /// Target architecture does not support coroutines (actors/tasks). The
-    /// program uses a coroutine-dependent construct (actor decl, task spawn,
-    /// fork, async block, await) but the target arch is not in the set
-    /// `{x86_64, aarch64}` where `coro_switch`/`coro_init` are implemented.
-    /// Fail-closed per slepp A222: compile-time diagnostic instead of
-    /// runtime panic at `hew-runtime/src/coro.rs:391` or `:492`.
+    /// Target architecture does not support actors/supervisors. The program
+    /// uses a coroutine-dependent construct (actor decl, supervisor decl) but
+    /// the target arch is not in the set `{x86_64, aarch64}` that has the full
+    /// actor runtime ABI (scheduler, mailbox, supervisor restart machinery).
+    /// Suspension itself is target-agnostic LLVM `llvm.coro.*`; the gap is the
+    /// surrounding actor runtime substrate (`hew_actor_*`, `hew_supervisor_*`,
+    /// `hew_mailbox_*`) which is not yet ported to wasm32 or other targets.
+    /// Fail-closed per slepp A222: compile-time diagnostic instead of a
+    /// linker error or silent runtime failure.
     TargetCoroutineUnsupported {
         /// Target architecture name (e.g. `"riscv64"`).
         target_arch: String,

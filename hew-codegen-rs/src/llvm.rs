@@ -748,6 +748,31 @@ fn initialise_llvm_targets() {
 // Per-function lowering state
 // ---------------------------------------------------------------------------
 
+/// Per-coroutine codegen state for a function whose MIR carries a
+/// `Terminator::Suspend` (R326/R327, W6.007). Holds the `coro.begin` handle and
+/// the opaque `coro.id` token (both produced by [`crate::coro::emit_coro_prologue`]),
+/// plus the shared cleanup / suspend-return block ids the `Terminator::Suspend`
+/// switch routes to. All fields are `Copy`/owned values — no builder borrow — so
+/// the state lives on [`FnCtx`] without entangling its owned builder lifetime;
+/// the `Suspend` terminator arm reconstructs a [`crate::coro::CoroContext`] on
+/// demand to call `emit_suspend`.
+#[derive(Clone, Copy)]
+struct CoroState<'ctx> {
+    /// The `coro.begin` handle — the `HewCont` frame pointer.
+    handle: PointerValue<'ctx>,
+    /// The opaque `coro.id` token, needed by `coro.suspend` / `coro.free` /
+    /// `coro.end`.
+    id_token: inkwell::llvm_sys::prelude::LLVMValueRef,
+    /// The shared block reached on case `1` of every suspend switch (a
+    /// `hew_cont_destroy` tearing the frame down): runs `coro.free` →
+    /// `hew_cont_frame_free` then `coro.end` and returns the handle.
+    cleanup_block: inkwell::basic_block::BasicBlock<'ctx>,
+    /// The shared block reached on the DEFAULT edge of every suspend switch
+    /// (control returns to the executor — the suspend edge that frees the
+    /// worker): returns the handle without tearing down the frame.
+    suspend_return_block: inkwell::basic_block::BasicBlock<'ctx>,
+}
+
 struct FnCtx<'a, 'ctx> {
     ctx: &'ctx Context,
     llvm_mod: &'a LlvmModule<'ctx>,
@@ -919,6 +944,13 @@ struct FnCtx<'a, 'ctx> {
     /// each escape sink (field store / return / re-send) and at every
     /// elaborated drop to decide whether the `borrow_mode` gate applies.
     borrow_tainted: HashSet<u32>,
+    /// Per-coroutine emission state, `Some` ONLY for a function whose MIR
+    /// carries a `Terminator::Suspend` (R326/R327). The `Suspend` terminator arm
+    /// reads this to place each `coro.suspend` + its 3-way switch; the
+    /// suspend-return / cleanup epilogue blocks are emitted from it after the
+    /// body. `None` for every ordinary (non-suspending) function, which lowers
+    /// exactly as before — non-coroutine functions pay nothing.
+    coro: Option<CoroState<'ctx>>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -18385,7 +18417,8 @@ fn emit_elab_drops(
             | ExitPath::Yield { block, .. }
             | ExitPath::Send { block, .. }
             | ExitPath::Ask { block, .. }
-            | ExitPath::Select { block, .. } => *block,
+            | ExitPath::Select { block, .. }
+            | ExitPath::Suspend { block, .. } => *block,
         };
         exit_block == block_id
     });
@@ -22163,6 +22196,65 @@ fn lower_terminator<'ctx>(
         Terminator::Select { arms, .. } => {
             emit_select_terminator(fn_ctx, arms)?;
         }
+        Terminator::Suspend {
+            resume,
+            cleanup,
+            is_final,
+        } => {
+            // Stackless suspend point (R326/R327). Emit `coro.suspend` + the
+            // 3-way switch. The function's coro prologue (emitted in
+            // `lower_function` when the MIR carries this terminator) must have
+            // populated `fn_ctx.coro`; a `Suspend` without it is a producer that
+            // ran ahead of the prologue — fail closed rather than emit a dangling
+            // suspend (boundary-fail-closed; the R2 silent-no-op guard).
+            let coro = fn_ctx.coro.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "Terminator::Suspend reached codegen but the function carries \
+                     no coro prologue state — lower_function must detect the \
+                     suspend carrier and emit the prologue before the body"
+                        .into(),
+                )
+            })?;
+            let resume_bb = *fn_ctx.blocks.get(resume).ok_or_else(|| {
+                CodegenError::FailClosed(format!("suspend resume target bb{resume} not found"))
+            })?;
+            // Validate the MIR `cleanup` target exists (carrier well-formedness)
+            // even though the case-1 destroy edge routes to the single-teardown
+            // epilogue below. The MIR `cleanup` block is the drop-elaboration
+            // block (frame-owned-value drops); it is lowered as a normal block
+            // and is the seam the source-driven suspend (NEW-3) routes its
+            // pre-teardown drops through. The single teardown OWNER — the only
+            // place that emits `coro.free`+`coro.end` — is the codegen
+            // `coro.cleanup_block` epilogue (single-owner discipline,
+            // `cont.rs`); routing case-1 straight there keeps exactly one
+            // teardown edge per frame.
+            if !fn_ctx.blocks.contains_key(cleanup) {
+                return Err(CodegenError::FailClosed(format!(
+                    "suspend cleanup target bb{cleanup} not found"
+                )));
+            }
+            let cc = crate::coro::CoroContext {
+                ctx: fn_ctx.ctx,
+                llvm_mod: fn_ctx.llvm_mod,
+                builder: &fn_ctx.builder,
+                function: fn_ctx
+                    .builder
+                    .get_insert_block()
+                    .and_then(|bb| bb.get_parent())
+                    .ok_or_else(|| {
+                        CodegenError::Llvm("suspend block has no parent function".into())
+                    })?,
+                handle: coro.handle,
+                id_token: coro.id_token,
+            };
+            cc.emit_suspend(
+                resume_bb,
+                coro.cleanup_block,
+                coro.suspend_return_block,
+                *is_final,
+                "coro",
+            )?;
+        }
     }
     Ok(())
 }
@@ -23964,10 +24056,72 @@ fn lower_function<'ctx>(
         CodegenError::FailClosed(format!("function `{}` has zero blocks", func.name))
     })?;
 
+    // Stackless suspend lowering (R326/R327, W6.007). A function whose MIR
+    // carries a `Terminator::Suspend` is lowered as a `presplitcoroutine`: the
+    // coro prologue (`coro.id`/`coro.alloc`/`coro.begin`) wraps the whole body,
+    // each `Suspend` terminator emits `coro.suspend` + its 3-way switch, and a
+    // shared suspend-return / cleanup epilogue closes the frame. Detected from
+    // the carrier the codegen boundary ACTUALLY reads (the block terminator),
+    // not the `ElaboratedMirFunction.coroutine` descriptor the `RawMirFunction`
+    // path never consults (R2 / the Lane-B silent-no-op failure class).
+    let has_suspend = func
+        .blocks
+        .iter()
+        .any(|b| matches!(b.terminator, Terminator::Suspend { .. }));
+
+    // The coroutine prologue (when present) must own the function ENTRY block so
+    // `coro.id` is the first instruction. Emit it before the alloca prologue.
+    let coro_state: Option<CoroState> = if has_suspend {
+        // A coroutine ramp returns the `coro.begin` frame handle (a pointer) to
+        // the executor — not a Hew value. The substrate has no source producer
+        // yet (only the synthetic fixture carries `Suspend`), so require the
+        // `ptr` return ABI and fail closed otherwise rather than silently
+        // emitting a handle into a mismatched return slot.
+        if !matches!(return_ty_llvm, BasicTypeEnum::PointerType(_)) {
+            return Err(CodegenError::FailClosed(format!(
+                "function `{}` carries Terminator::Suspend but its return type \
+                 is {return_ty_llvm:?}; a coroutine ramp must return the coro \
+                 handle (ptr). The source-driven suspend ABI lands with the \
+                 readiness waker (NEW-3); the substrate fixture must declare a \
+                 `ptr` return",
+                func.name
+            )));
+        }
+        // `hew_cont_frame_alloc` takes `u64` (not `size_t`) on all targets —
+        // the prologue always passes the i64 `coro.size` value directly.
+        let cc = crate::coro::emit_coro_prologue(ctx, llvm_mod, &builder, llvm_fn)?;
+        // Shared epilogue blocks every suspend switch routes to: the default
+        // edge (return to executor) and the cleanup edge (coro.destroy).
+        let suspend_return_block = ctx.append_basic_block(llvm_fn, "coro.suspend.return");
+        let cleanup_block = ctx.append_basic_block(llvm_fn, "coro.cleanup");
+        Some(CoroState {
+            handle: cc.handle,
+            id_token: cc.id_token,
+            cleanup_block,
+            suspend_return_block,
+        })
+    } else {
+        None
+    };
+
     // Keep the LLVM entry block predecessor-free even when MIR loops target
     // bb0. The prologue holds allocas, parameter stores, and the function-entry
     // cooperate call, then branches into the first MIR block.
-    let prologue_bb = ctx.append_basic_block(llvm_fn, "entry");
+    //
+    // For an ordinary (non-suspend) function this alloca block IS the entry
+    // block, so it keeps the historical `entry` label — non-suspend IR stays
+    // byte-identical to baseline (the substrate's dormancy invariant). Only a
+    // coroutine renames it to `alloca.prologue`: there `coro.id`/`coro.begin`
+    // must own the real `entry` block, and this alloca block is appended after
+    // `coro.begin` and reached from it.
+    let prologue_bb = ctx.append_basic_block(
+        llvm_fn,
+        if has_suspend {
+            "alloca.prologue"
+        } else {
+            "entry"
+        },
+    );
 
     // Build every MIR block up front so terminators can name forward targets.
     let mut blocks = HashMap::new();
@@ -23977,6 +24131,14 @@ fn lower_function<'ctx>(
     }
 
     let entry_bb = *blocks.get(&entry_block.id).expect("entry block in map");
+    // For a coroutine, `coro.begin` (where the builder is positioned) branches
+    // into the alloca prologue. For an ordinary function the alloca prologue IS
+    // the entry block; position the builder there directly.
+    if coro_state.is_some() {
+        builder
+            .build_unconditional_branch(prologue_bb)
+            .llvm_ctx("coro.begin -> alloca.prologue branch")?;
+    }
     builder.position_at_end(prologue_bb);
 
     let return_slot = builder
@@ -24237,6 +24399,7 @@ fn lower_function<'ctx>(
         const_globals,
         borrow_mode,
         borrow_tainted,
+        coro: coro_state,
     };
 
     // Fail-closed boundary: reject composite returns whose heap-owning payload
@@ -24390,6 +24553,50 @@ fn lower_function<'ctx>(
         // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
         emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
         lower_terminator(&fn_ctx, fn_symbols, &block.terminator)?;
+    }
+
+    // Coroutine epilogue (R326/R327). Fill the two shared blocks every
+    // `coro.suspend` switch routes to:
+    //   - suspend_return: the DEFAULT switch edge (control returns to the
+    //     executor — the suspend that frees the worker). Return the handle
+    //     WITHOUT tearing down the frame; the executor parks it and resumes
+    //     later.
+    //   - cleanup: the case-1 switch edge (a `coro.destroy` is abandoning the
+    //     frame). Run `coro.free` → `hew_cont_frame_free` + `coro.end`, the
+    //     single teardown owner, then return the handle.
+    // CoroSplit reads these to build the `.resume`/`.destroy`/`.cleanup`
+    // outlines; the runtime's `hew_cont_*` verbs drive the resulting frame.
+    if let Some(coro) = fn_ctx.coro {
+        // Reconstruct the CoroContext (a bundle of borrows + the handle/token)
+        // to reuse the canonical `emit_coro_frame_free` epilogue helper.
+        let cc = crate::coro::CoroContext {
+            ctx,
+            llvm_mod,
+            builder: &fn_ctx.builder,
+            function: llvm_fn,
+            handle: coro.handle,
+            id_token: coro.id_token,
+        };
+        // suspend_return: ret ptr <handle> — hand the frame to the executor.
+        fn_ctx.builder.position_at_end(coro.suspend_return_block);
+        fn_ctx
+            .builder
+            .build_return(Some(&coro.handle))
+            .llvm_ctx("coro suspend-return ret handle")?;
+
+        // cleanup: free the frame + coro.end, then ret. The frame-free helper
+        // wants a `free` block (the dyn-free arm) and an `end` block; allocate
+        // them and route cleanup -> free-check.
+        let coro_free_block = ctx.append_basic_block(llvm_fn, "coro.dyn.free");
+        let coro_end_block = ctx.append_basic_block(llvm_fn, "coro.end");
+        fn_ctx.builder.position_at_end(coro.cleanup_block);
+        crate::coro::emit_coro_frame_free(&cc, coro_free_block, coro_end_block)?;
+        // `emit_coro_frame_free` leaves the builder at the end of `end` after
+        // `coro.end`; return the handle to complete the ramp.
+        fn_ctx
+            .builder
+            .build_return(Some(&coro.handle))
+            .llvm_ctx("coro cleanup ret handle")?;
     }
 
     Ok(())
@@ -24547,7 +24754,16 @@ fn emit_actor_dispatch_trampoline<'ctx>(
     // runtime ABI width. See `runtime_size_ty`.
     let size_ty = runtime_size_ty(ctx, llvm_mod);
     let dispatch_name = format!("__hew_actor_dispatch_{}", layout.name);
-    let fn_ty = ctx.void_type().fn_type(
+    // D-A.2 (R326/R327): the trampoline returns the dispatch suspend outcome as
+    // a nullable continuation handle (`ptr`). Run-to-completion handlers — every
+    // handler today, since no source construct produces a `coro.suspend` yet —
+    // return `null`. A suspending handler (NEW-3) returns its `coro.begin`
+    // handle, which the scheduler parks. Surfacing the handle through the return
+    // value (vs. a `HewActor` field) keeps the offset-mirror untouched; codegen
+    // registers this trampoline as an opaque `ptr`, so widening the return type
+    // does not change the spawn-registration ABI. Matches `HewDispatchFn`
+    // (hew-runtime/src/internal/types.rs).
+    let fn_ty = ptr_ty.fn_type(
         &[
             ptr_ty.into(),
             ptr_ty.into(),
@@ -24800,9 +25016,13 @@ fn emit_actor_dispatch_trampoline<'ctx>(
         .llvm_ctx("actor dispatch unreachable")?;
 
     builder.position_at_end(after_bb);
+    // D-A.2: run-to-completion handlers return a null suspend handle (no source
+    // construct produces a `coro.suspend` yet — the substrate is dormant). A
+    // suspending handler (NEW-3) will instead surface its `coro.begin` handle
+    // here; the scheduler parks a non-null return.
     builder
-        .build_return(None)
-        .llvm_ctx("actor dispatch return")?;
+        .build_return(Some(&ptr_ty.const_null()))
+        .llvm_ctx("actor dispatch return null suspend handle")?;
     Ok(())
 }
 
@@ -30882,6 +31102,9 @@ mod tests {
             // borrow path; carry the inert defaults.
             borrow_mode: None,
             borrow_tainted: HashSet::new(),
+            // Composite-helper unit tests never lower a `Terminator::Suspend`;
+            // no coroutine prologue state.
+            coro: None,
         }
     }
 
@@ -32832,6 +33055,307 @@ mod tests {
         assert!(
             !ir.contains("hew_shutdown_wait"),
             "non-actor main must NOT emit hew_shutdown_wait:\n{ir}"
+        );
+    }
+
+    // ── Stackless suspend substrate (R326/R327, W6.007) ──────────────────────
+    //
+    // SYNTHETIC validation: a function whose MIR carries a `Terminator::Suspend`
+    // lowers as a `presplitcoroutine` carrying `llvm.coro.*`, CoroSplit produces
+    // the ramp + resume/destroy outlines, and the module verifies — on native
+    // AND wasm32. No source construct produces a `Suspend` in production (the
+    // substrate is dormant); this test-only MIR builder is the producer.
+
+    /// Build an `IrPipeline` with a single coroutine function `__hew_coro_probe`
+    /// returning the `coro.begin` handle (`ptr`). bb0 places a final
+    /// `coro.suspend`; the resume edge lands in bb1 which returns. The cleanup
+    /// edge routes (in codegen) to the single-teardown epilogue.
+    fn pipeline_with_coro_probe() -> IrPipeline {
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let probe = RawMirFunction {
+            name: "__hew_coro_probe".to_string(),
+            return_ty: ptr_ty.clone(),
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ptr_ty],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    // A NON-final suspend: the executor resumes the continuation
+                    // at bb1. This gives CoroSplit a genuine resume point to
+                    // outline (a coroutine with only a final suspend has no
+                    // resumable state). The destroy edge routes to the codegen
+                    // single-teardown epilogue.
+                    terminator: Terminator::Suspend {
+                        resume: 1,
+                        cleanup: 2,
+                        is_final: false,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    // The final suspend: after the body runs off its end the
+                    // coroutine reaches `coro.done`; the executor reclaims it.
+                    terminator: Terminator::Suspend {
+                        resume: 2,
+                        cleanup: 2,
+                        is_final: true,
+                    },
+                },
+                BasicBlock {
+                    id: 2,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+        };
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![probe],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            user_consts: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+            actor_send_aliasing: std::collections::HashMap::new(),
+            polymorphic_mir: Vec::new(),
+        }
+    }
+
+    /// A function carrying `Terminator::Suspend` lowers to a `presplitcoroutine`
+    /// with the coro intrinsics, `module_has_coroutines` reports true, and the
+    /// pre-split module verifies — the codegen boundary actually READS the
+    /// suspend carrier (the R2 silent-no-op guard).
+    #[test]
+    fn suspend_carrier_lowers_to_presplit_coroutine() {
+        let ctx = Context::create();
+        let pipeline = pipeline_with_coro_probe();
+        let module =
+            build_module(&ctx, &pipeline, "coro_probe_test").expect("coroutine module must build");
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("presplitcoroutine"),
+            "suspend-carrying fn must carry the presplitcoroutine marker:\n{ir}"
+        );
+        assert!(
+            ir.contains("@llvm.coro.id") && ir.contains("@llvm.coro.suspend"),
+            "must emit coro.id + coro.suspend:\n{ir}"
+        );
+        assert!(
+            ir.contains(crate::coro::CONT_FRAME_ALLOC),
+            "frame allocation must route through hew_cont_frame_alloc:\n{ir}"
+        );
+        assert!(
+            crate::coro::module_has_coroutines(&module),
+            "module_has_coroutines must detect the presplitcoroutine marker"
+        );
+        module
+            .verify()
+            .unwrap_or_else(|e| panic!("pre-split coroutine module failed verify: {e}"));
+    }
+
+    /// Running the coro pass pipeline (`coro-early,coro-split,coro-cleanup`)
+    /// splits the `presplitcoroutine` into its ramp + outlines and the module
+    /// stays verifiable — proving the emitted intrinsics are well-formed enough
+    /// for CoroSplit. Exercised on native AND wasm32 (parity).
+    fn assert_coro_splits_clean_for_triple(triple: &str) {
+        let ctx = Context::create();
+        let pipeline = pipeline_with_coro_probe();
+        let machine = target_machine_for_triple(triple)
+            .unwrap_or_else(|e| panic!("target machine for {triple}: {e:?}"));
+        let module = build_module_for_target(&ctx, &pipeline, "coro_split_test", Some(&machine))
+            .unwrap_or_else(|e| panic!("coroutine module must build for {triple}: {e:?}"));
+        assert!(
+            crate::coro::module_has_coroutines(&module),
+            "{triple}: module must carry a coroutine before split"
+        );
+        // Keep the ramp externally visible so the (caller-less synthetic) probe
+        // is a call-graph ROOT and CoroSplit's CGSCC walk processes it. A real
+        // coroutine is referenced by its dispatch trampoline, so this mirrors
+        // production reachability; CoroSplit skips an `internal` function with no
+        // callers (it is dead, so its SCC is never split).
+        module
+            .get_function("__hew_coro_probe")
+            .expect("probe function must exist")
+            .set_linkage(Linkage::External);
+
+        crate::coro::run_coro_passes(&module, &machine)
+            .unwrap_or_else(|e| panic!("{triple}: coro pass pipeline failed: {e:?}"));
+
+        // CoroSplit consumed the presplitcoroutine marker (the coroutine was
+        // actually processed, not silently skipped — the bug `cgscc(coro-split)`
+        // + `coro.save` fixes).
+        assert!(
+            !crate::coro::module_has_coroutines(&module),
+            "{triple}: CoroSplit must consume the presplitcoroutine marker"
+        );
+        // The ramp split into its resume / destroy / cleanup outlines — the
+        // switched-resume skeleton the runtime's `hew_cont_resume` /
+        // `hew_cont_destroy` verbs drive through the frame's fn-ptr slots.
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("@__hew_coro_probe.resume"),
+            "{triple}: CoroSplit must produce a .resume outline:\n{ir}"
+        );
+        assert!(
+            ir.contains("@__hew_coro_probe.destroy"),
+            "{triple}: CoroSplit must produce a .destroy outline:\n{ir}"
+        );
+        module
+            .verify()
+            .unwrap_or_else(|e| panic!("{triple}: post-split coroutine module failed verify: {e}"));
+    }
+
+    #[test]
+    fn suspend_coroutine_splits_clean_native() {
+        assert_coro_splits_clean_for_triple(&native_emission_triple());
+    }
+
+    #[test]
+    fn suspend_coroutine_splits_clean_wasm32() {
+        assert_coro_splits_clean_for_triple("wasm32-wasi");
+    }
+
+    /// A non-suspending function must NOT regress to a coroutine: no
+    /// `presplitcoroutine`, no coro intrinsics. Guards the R7 risk (a too-broad
+    /// "does this suspend?" predicate making ordinary functions coroutines).
+    #[test]
+    fn non_suspending_function_is_not_a_coroutine() {
+        let ctx = Context::create();
+        let pipeline = minimal_pipeline_with_unit_main(false);
+        let module = build_module(&ctx, &pipeline, "non_coro_test")
+            .expect("non-coroutine module must build");
+        let ir = module.print_to_string().to_string();
+        assert!(
+            !ir.contains("presplitcoroutine"),
+            "a non-suspending fn must NOT become a coroutine:\n{ir}"
+        );
+        assert!(
+            !ir.contains("@llvm.coro."),
+            "a non-suspending fn must emit no coro intrinsics:\n{ir}"
+        );
+        assert!(
+            !crate::coro::module_has_coroutines(&module),
+            "module_has_coroutines must be false for a non-suspending module"
+        );
+    }
+
+    /// A function carrying `Terminator::Suspend` but declaring a non-ptr return
+    /// type MUST be rejected with `CodegenError::FailClosed`. A coroutine ramp
+    /// must return the coro frame handle (ptr); any other return type would
+    /// silently write the handle into a mismatched slot.
+    ///
+    /// This test BITES: if the `if !matches!(return_ty_llvm, BasicTypeEnum::PointerType(_))`
+    /// guard at `lower_function` were removed, `build_module` would attempt to
+    /// emit an i64-returning coroutine prologue, which is either an LLVM verify
+    /// error or silent undefined behaviour — not a diagnostic.
+    #[test]
+    fn non_ptr_return_coro_fn_is_fail_closed() {
+        // Build a pipeline with a single function that:
+        //   - returns i64 (not ptr)
+        //   - carries a Terminator::Suspend
+        // This is the exact shape the fail-closed guard was designed to catch.
+        let fn_with_non_ptr_return_and_suspend = RawMirFunction {
+            name: "bad_coro".to_string(),
+            return_ty: ResolvedTy::I64, // NOT a ptr — the guard's bite condition
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    terminator: Terminator::Suspend {
+                        resume: 1,
+                        cleanup: 2,
+                        is_final: false,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    terminator: Terminator::Return,
+                },
+                BasicBlock {
+                    id: 2,
+                    statements: Vec::new(),
+                    instructions: vec![],
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![fn_with_non_ptr_return_and_suspend],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
+            record_layouts: Vec::new(),
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            user_consts: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+            actor_send_aliasing: std::collections::HashMap::new(),
+            polymorphic_mir: Vec::new(),
+        };
+
+        let ctx = Context::create();
+        let result = build_module(&ctx, &pipeline, "non_ptr_coro_test");
+
+        assert!(
+            result.is_err(),
+            "Suspend-carrying fn with non-ptr return must fail; got Ok"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, CodegenError::FailClosed(_)),
+            "expected FailClosed, got: {err:?}"
+        );
+        // Verify the error message names the function and explains the constraint.
+        let msg = match &err {
+            CodegenError::FailClosed(m) => m.as_str(),
+            _ => unreachable!(),
+        };
+        assert!(
+            msg.contains("bad_coro"),
+            "FailClosed message must name the offending function; got: {msg}"
+        );
+        assert!(
+            msg.contains("ptr"),
+            "FailClosed message must mention ptr return requirement; got: {msg}"
         );
     }
 }

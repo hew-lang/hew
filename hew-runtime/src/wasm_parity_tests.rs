@@ -804,8 +804,9 @@ unsafe extern "C-unwind" fn native_dispatch_context_probe(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     push_dispatch_context_snapshot(ctx, crate::scheduler::hew_actor_cooperate());
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn wasm_dispatch_context_probe(
@@ -815,8 +816,9 @@ unsafe extern "C-unwind" fn wasm_dispatch_context_probe(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     push_dispatch_context_snapshot(ctx, crate::scheduler_wasm::hew_actor_cooperate());
+    std::ptr::null_mut()
 }
 
 fn wait_for_actor_idle(actor: &HewActor) {
@@ -899,7 +901,7 @@ unsafe extern "C-unwind" fn request_wasm_stop_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     // SAFETY: scheduler_wasm installs a non-null canonical context before
     // entering dispatch.
     unsafe {
@@ -910,6 +912,7 @@ unsafe extern "C-unwind" fn request_wasm_stop_dispatch(
                 .store(HewActorState::Stopping as i32, Ordering::Release);
         }
     }
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn close_wasm_mailbox_then_cooperate_dispatch(
@@ -919,7 +922,7 @@ unsafe extern "C-unwind" fn close_wasm_mailbox_then_cooperate_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     // SAFETY: scheduler_wasm installs a non-null canonical context before
     // entering dispatch.
     unsafe {
@@ -932,6 +935,7 @@ unsafe extern "C-unwind" fn close_wasm_mailbox_then_cooperate_dispatch(
         crate::mailbox_wasm::hew_mailbox_close(mailbox);
     }
     push_dispatch_context_snapshot(ctx, crate::scheduler_wasm::hew_actor_cooperate());
+    std::ptr::null_mut()
 }
 
 unsafe extern "C" fn mark_terminate_state(state: *mut c_void) {
@@ -1469,7 +1473,7 @@ unsafe extern "C-unwind" fn stamp_then_panic_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     // SAFETY: scheduler installs a non-null canonical context before dispatch.
     unsafe {
         let actor = (*ctx).actor;
@@ -1481,7 +1485,8 @@ unsafe extern "C-unwind" fn stamp_then_panic_dispatch(
         }
     }
     // Simulate the panic that `arena_wasm::hew_arena_malloc` raises on cap
-    // exhaustion under wasm32.
+    // exhaustion under wasm32. The panic diverges, so no run-to-completion
+    // null return follows.
     panic!("simulated HEW_TRAP_HEAP_EXCEEDED panic");
 }
 
@@ -1492,12 +1497,13 @@ unsafe extern "C-unwind" fn hew_trap_with_code_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     if crate::trap_code::stamp_current_actor_error_code(
         crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
     ) {
         panic!("simulated wasm hew_trap_with_code panic");
     }
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn hew_panic_wasm_actor_dispatch(
@@ -1507,11 +1513,12 @@ unsafe extern "C-unwind" fn hew_panic_wasm_actor_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     assert!(
         !crate::actor::stamp_wasm_actor_panic(),
         "simulated wasm hew_panic actor unwind"
     );
+    std::ptr::null_mut()
 }
 
 #[test]

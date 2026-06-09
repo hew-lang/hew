@@ -157,7 +157,7 @@ unsafe extern "C-unwind" fn capped_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     match msg_type {
         MSG_NORMAL => {
             DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
@@ -176,6 +176,7 @@ unsafe extern "C-unwind" fn capped_dispatch(
         }
         _ => {}
     }
+    std::ptr::null_mut()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -1805,6 +1805,12 @@ impl BasicBlock {
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
             | Terminator::Select { next, .. } => vec![*next],
+            // The default suspend-return edge exits the function (returns to the
+            // executor, like a `Return`); only the resume + cleanup arms are
+            // in-CFG successors.
+            Terminator::Suspend {
+                resume, cleanup, ..
+            } => vec![*resume, *cleanup],
         }
     }
 }
@@ -2007,6 +2013,42 @@ pub enum Terminator {
     /// block reached after the winning arm body completes — the join
     /// edge that converges the per-arm bodies.
     Select { arms: Vec<SelectArm>, next: u32 },
+    /// Stackless suspend point (R326/R327, W6.007). The carrier for a
+    /// `coro.suspend` in a switched-resume LLVM coroutine: any function whose
+    /// CFG contains this terminator is lowered by codegen as a
+    /// `presplitcoroutine` (the coro prologue wraps the whole body, this
+    /// terminator emits `llvm.coro.suspend` + its 3-way switch). It is the
+    /// SUBSTRATE carrier the codegen boundary actually reads — distinct from the
+    /// `ElaboratedMirFunction.coroutine` descriptor, which the
+    /// `RawMirFunction`/`lower_function` codegen path does NOT consume (keying
+    /// emission off that field would be a silent no-op — the Lane-B/R2 failure
+    /// class). The codegen `lower_terminator` arm maps this directly to the
+    /// `coro.rs` `emit_suspend` helper.
+    ///
+    /// On `coro.suspend` the switch routes control three ways: default returns
+    /// to the caller/executor (the suspend edge — the worker is freed), case `0`
+    /// (`resume`) continues the body where a `hew_cont_resume` advanced it, and
+    /// case `1` (`cleanup`) tears the frame down where a `hew_cont_destroy` is
+    /// abandoning it. `is_final` marks the terminal suspend (`coro.suspend(i1
+    /// true)`), after which `coro.done` becomes true and the executor reclaims
+    /// the frame.
+    ///
+    /// NO source construct constructs this terminator in production yet — the
+    /// suspend SOURCE flip (`await`/blocking-`recv`/`scope`-join) lands paired
+    /// with the readiness waker in a later slice (NEW-3). A test-only MIR builder
+    /// constructs one for the synthetic substrate validation, so the suspend
+    /// edge is production-capable but dormant (nothing can hang).
+    Suspend {
+        /// Block reached on case `0` of the coro switch — the body continues
+        /// here when the executor resumed the continuation.
+        resume: u32,
+        /// Block reached on case `1` of the coro switch — the frame's cleanup /
+        /// teardown when the continuation is abandoned (`coro.destroy`).
+        cleanup: u32,
+        /// `true` marks the terminal suspend (`coro.suspend(i1 true)`): after it
+        /// `coro.done` is true and the executor reclaims the frame.
+        is_final: bool,
+    },
 }
 
 /// One arm of a sealed `select{}` terminator. Declared-only — the v0.5
@@ -3725,6 +3767,18 @@ pub enum ExitPath {
         block: u32,
         next: u32,
     },
+    /// Stackless suspend exit. Mirrors `Terminator::Suspend`; declared so the
+    /// elaboration pass is exhaustive. The suspend point itself fires NO
+    /// scope-exit drops — the live state is preserved in the coro frame across
+    /// the suspend, and the frame's owned values are dropped by the single
+    /// `cleanup` outline on `coro.destroy` (the `cleanup` edge), not at the
+    /// suspend site. No source construct produces a `Terminator::Suspend` in
+    /// production yet (the substrate is dormant; see that terminator's docs).
+    Suspend {
+        block: u32,
+        resume: u32,
+        cleanup: u32,
+    },
 }
 
 /// Ordered drop sequence for a single exit. Drops fire in
@@ -4364,5 +4418,60 @@ mod heap_owning_tests {
         }];
         let user_value = ResolvedTy::named_user("Value", vec![]);
         assert!(!ty_contains_unclonable_opaque(&user_value, &records, &[]));
+    }
+}
+
+#[cfg(test)]
+mod suspend_terminator_tests {
+    //! The MIR `Terminator::Suspend` carrier — the substrate suspend point
+    //! (R326/R327, W6.007). These tests pin the CFG-edge + operand contract the
+    //! codegen boundary and the dataflow passes rely on, so a future edit cannot
+    //! silently regress the carrier's semantics (the Lane-B/R2 silent-no-op
+    //! failure class).
+
+    use super::*;
+
+    fn suspend_block(id: u32, resume: u32, cleanup: u32, is_final: bool) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Suspend {
+                resume,
+                cleanup,
+                is_final,
+            },
+        }
+    }
+
+    /// The suspend point's in-CFG successors are exactly its resume + cleanup
+    /// arms; the default suspend-return edge exits the function (returns to the
+    /// executor) and is NOT a CFG successor, mirroring `Return`.
+    #[test]
+    fn suspend_successors_are_resume_and_cleanup_only() {
+        let block = suspend_block(0, 1, 2, false);
+        assert_eq!(block.successors(), vec![1, 2]);
+    }
+
+    /// A final suspend has the same successor shape (the `is_final` flag changes
+    /// the emitted `coro.suspend(i1 true)`, not the CFG edges).
+    #[test]
+    fn final_suspend_keeps_resume_and_cleanup_successors() {
+        let block = suspend_block(3, 4, 5, true);
+        assert_eq!(block.successors(), vec![4, 5]);
+    }
+
+    /// The suspend point reads no `Place` operands — the value channel is the
+    /// explicit coro frame out-pointer (the spike-pinned null-promise
+    /// constraint), not a `Place`. A drop/escape pass that mis-classified a
+    /// suspend as carrying an operand would over- or under-drop frame state.
+    #[test]
+    fn suspend_reads_no_source_places() {
+        let term = Terminator::Suspend {
+            resume: 1,
+            cleanup: 2,
+            is_final: false,
+        };
+        assert!(crate::lower::terminator_source_places(&term).is_empty());
     }
 }

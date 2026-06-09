@@ -1318,6 +1318,25 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
         return;
     }
 
+    // C1 abandonment teardown (D-C1, R326/R327): a never-woken `Suspended` actor
+    // freed at shutdown still owns a live coroutine frame in `suspended_cont`
+    // (e.g. a `scope` whose child awaits, or an actor awaiting a reply that
+    // never arrives before shutdown). Destroy it exactly once BEFORE reclaiming
+    // the box, or the frame + any frame-owned heap values leak. `destroy_parked`
+    // wins the single `… → Destroyed` CAS (FG1), runs the `cleanup` outline
+    // (coro.free → hew_cont_frame_free), and nulls the slot in the same critical
+    // section (FG4); it refuses if a resume is in flight or it was already
+    // destroyed, so this is the safe single-teardown owner on the free path.
+    // Dormant today (no actor reaches `Suspended` while the source surface stays
+    // thread-parked), but it makes the live suspend edge non-leaking. NOTE: the
+    // single-task cancellation FLOW (unregister-readiness + resume-with-cancel)
+    // is a separate concern; this is only the single-destroy plumbing.
+    if crate::coro_exec::has_live_parked_cont(a) {
+        // SAFETY: `a` is the actor being freed; the caller guarantees exclusive
+        // access (no concurrent dispatch), so no resume can race this teardown.
+        let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+    }
+
     // Run codegen-generated state-drop on the live state so types
     // implementing `impl Drop` (Vec, String, HashMap, IO handles) release
     // their resources before the underlying allocation goes away.
@@ -1453,6 +1472,18 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
 ) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    // C1 abandonment teardown (D-C1) — parity with the native
+    // `free_actor_resources_with_options`. A never-woken `Suspended` actor freed
+    // at shutdown owns a live coroutine frame; destroy it exactly once before
+    // reclaiming the box or the frame leaks. WASM is single-threaded so no
+    // resume can race, but the source shape mirrors native so both free paths
+    // read as one invariant (`raii-native-wasm-parity`).
+    if crate::coro_exec::has_live_parked_cont(a) {
+        // SAFETY: `a` is the actor being freed; single-threaded, no concurrent
+        // dispatch can race this teardown.
+        let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+    }
 
     // Run codegen-generated state-drop on the live state so types
     // implementing `impl Drop` release their resources before the
@@ -2855,25 +2886,43 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
     // callback exactly once for `Stopped` (== the old `Idle` behaviour) and skips
     // it for `Crashed`.
     //
-    // SHIM (NEW-6 abandonment/cancellation flow):
-    // WHY: A `Suspended` actor (cont_tag `Parked`) holds a live continuation frame
-    //      in `suspended_cont`. The quiescence wait below spins through `Suspended`
-    //      because `actor_free_state_is_quiescent` rightly excludes it — safety
-    //      holds (no UAF, no double-free; the CAS guards in `coro_exec` serialise
-    //      any concurrent resume/destroy). However, if the actor's readiness source
-    //      is never delivered (the actor is abandoned mid-await), the spin reaches
-    //      the 2 s deadline, returns `-2`, and the continuation frame AND the actor
-    //      box both LEAK. The leak is bounded and fail-safe but is observable in
-    //      long-running processes that cancel actors mid-await.
-    // WHEN: Remove this note and implement the wiring once NEW-6 lands the actor
-    //       cancellation/abandonment flow.
-    // WHAT: When NEW-6 lands, the free path must: (a) check
-    //       `crate::coro_exec::has_live_parked_cont(a)`, and (b) when true, call
-    //       `crate::coro_exec::destroy_parked(a)` to tear down the frame exactly
-    //       once BEFORE untracking and freeing the actor box. The CAS inside
-    //       `destroy_parked` serialises against any concurrent resume that might
-    //       be waking the actor at the same instant (FG1/FG2), so the wiring is
-    //       safe to add unconditionally here once the cancellation signal exists.
+    // C1 abandonment teardown (D-C1, R326/R327): a `Suspended` actor (cont_tag
+    // `Parked`) holds a live continuation frame in `suspended_cont`. `Suspended`
+    // is non-quiescent (`actor_free_state_is_quiescent` excludes it), so without
+    // this the quiescence wait below would spin to the 2 s deadline, return `-2`,
+    // and LEAK the frame + the actor box for any actor abandoned mid-suspend
+    // (a `scope` whose child awaits, an actor awaiting a never-arriving reply at
+    // shutdown). Destroy the parked frame exactly once HERE, before the
+    // quiescence wait: `destroy_parked` wins the single `… → Destroyed` CAS
+    // (FG1), runs the `cleanup` outline, and nulls the slot (FG4); the CAS
+    // serialises against any concurrent resume waking the actor at the same
+    // instant (FG2). After the destroy the slot is `Empty`, so the actor can
+    // reach a quiescent terminal state through the normal path below.
+    //
+    // This is the single-DESTROY plumbing only. The single-task cancellation
+    // FLOW (unregister-readiness + resume-with-cancellation + the two-phase
+    // park lost-wake-vs-cancel race) is NEW-6; this teardown is the minimum that
+    // makes the live suspend edge non-leaking. Dormant today (no actor reaches
+    // `Suspended` while the source surface stays thread-parked).
+    if crate::coro_exec::has_live_parked_cont(a) {
+        // SAFETY: `a` is the actor being freed; `destroy_parked`'s CAS guards
+        // serialise against any concurrent resume (FG1/FG2).
+        let destroyed = unsafe { crate::coro_exec::destroy_parked(a) };
+        // The parked frame is gone; latch the abandoned actor out of the
+        // non-quiescent `Suspended` window into `Stopped` so the quiescence wait
+        // below passes instead of spinning to the deadline. Only this teardown
+        // owns the slot (it won the `… → Destroyed` CAS), so the state CAS is
+        // race-free against a resume (which would have refused the destroy).
+        if destroyed.is_ok() {
+            let _ = a.actor_state.compare_exchange(
+                HewActorState::Suspended as i32,
+                HewActorState::Stopped as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let state = loop {
         // Step 1: wait until the actor first looks quiescent (bounded).
@@ -5158,7 +5207,8 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn count_send_by_id_dispatch(
@@ -5168,8 +5218,10 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         SEND_BY_ID_DISPATCH_COUNT.fetch_add(1, Ordering::AcqRel);
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn count_ask_send_by_id_dispatch(
@@ -5179,11 +5231,11 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         ASK_SEND_BY_ID_DISPATCH_COUNT.fetch_add(1, Ordering::AcqRel);
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
-            return;
+            return std::ptr::null_mut();
         }
         let mut value: i32 = 7;
         // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
@@ -5195,6 +5247,8 @@ mod tests {
                 std::mem::size_of::<i32>(),
             );
         }
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn drain_busy_loop_dispatch(
@@ -5204,12 +5258,14 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         DRAIN_BUSY_LOOP_STARTED.store(true, Ordering::Release);
         while !DRAIN_BUSY_LOOP_RELEASE.load(Ordering::Acquire) {
             std::hint::spin_loop();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn drain_trap_on_stop_dispatch(
@@ -5219,11 +5275,11 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         if msg_type == -1 {
             // SAFETY: this runs on the actor's own dispatch thread while its context is installed.
             unsafe { hew_actor_trap(hew_actor_self(), 77) };
-            return;
+            return std::ptr::null_mut();
         }
         DRAIN_TRAP_ON_STOP_STARTED.store(true, Ordering::Release);
         // Hold in Running until the test sets the release flag. This prevents
@@ -5235,6 +5291,8 @@ mod tests {
             std::hint::spin_loop();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+
+        std::ptr::null_mut()
     }
 
     fn wait_for_condition(
@@ -5284,10 +5342,12 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let ch = crate::scheduler::hew_get_reply_channel().cast::<reply_channel::HewReplyChannel>();
         LAST_NATIVE_ASK_REPLY_CHANNEL.store(ch, Ordering::Release);
         hew_actor_self_stop();
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn native_reply_once_dispatch(
@@ -5297,10 +5357,10 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
-            return;
+            return std::ptr::null_mut();
         }
         let mut value: i32 = 21;
         // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
@@ -5312,6 +5372,8 @@ mod tests {
                 std::mem::size_of::<i32>(),
             );
         }
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn native_late_reply_dispatch(
@@ -5321,11 +5383,11 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
-            return;
+            return std::ptr::null_mut();
         }
         let mut value: i32 = 99;
         // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
@@ -5337,6 +5399,8 @@ mod tests {
                 std::mem::size_of::<i32>(),
             );
         }
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn native_reply_then_trap_dispatch(
@@ -5346,10 +5410,10 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
-            return;
+            return std::ptr::null_mut();
         }
         let mut value: i32 = 123;
         // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
@@ -5362,6 +5426,8 @@ mod tests {
             );
         }
         hew_panic();
+
+        std::ptr::null_mut()
     }
 
     fn make_stop_test_actor(initial_state: HewActorState) -> (*mut HewActor, *mut HewMailbox) {
@@ -6370,7 +6436,7 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // The handler self-stops (transitions Running → Stopping) and then
         // panics.  Crash recovery must dominate the pending self-stop:
         // publish `Crashed` (not `Stopped`) and run the full
@@ -6385,6 +6451,8 @@ mod tests {
         // permanently in `Stopping`.
         hew_actor_self_stop();
         hew_panic();
+
+        std::ptr::null_mut()
     }
 
     /// Regression: self-stop followed by a panic in the same dispatch must
@@ -7881,6 +7949,69 @@ mod tests {
         );
     }
 
+    /// C1 leak probe (D-C1): freeing a never-woken `Suspended` actor destroys
+    /// its parked continuation exactly once on the free path — the frame-owned
+    /// heap value (`heap_guard`) does NOT leak. The scratch frame's destroy
+    /// outline frees `heap_guard` and bumps `destroyed`; asserting `destroyed ==
+    /// 1` proves the C1 teardown ran, and the freed `heap_guard` is what
+    /// `MallocScribble` / `leaks --atExit` accounts for in the exec probe.
+    ///
+    /// Bite-proof: WITHOUT the free-path destroy the `destroyed` counter would
+    /// stay 0 (and `heap_guard` would leak) — so this assertion fails closed if
+    /// the C1 wiring regresses. `scratch_destroy` frees only `heap_guard`, not
+    /// the frame struct, so the test reclaims the frame box afterward (no test
+    /// leak).
+    #[test]
+    fn free_path_destroys_parked_continuation_c1() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: spawn a real actor (null state / size 0 is documented legal).
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // Park a scratch continuation, as a never-woken suspended dispatch
+        // would: publish Parked + store the handle, then mark the actor
+        // Suspended. The scratch frame owns a real heap_guard allocation the
+        // destroy outline must free.
+        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(4));
+        let handle = Box::into_raw(frame).cast::<c_void>();
+        // SAFETY: actor is live and owned by this test thread.
+        unsafe {
+            let a = &*actor;
+            assert!(crate::coro_exec::begin_park(a).is_ok());
+            crate::coro_exec::finish_park(a, handle);
+            a.actor_state
+                .store(HewActorState::Suspended as i32, Ordering::Release);
+            assert!(
+                crate::coro_exec::has_live_parked_cont(a),
+                "the actor now owns a live parked continuation"
+            );
+        }
+
+        // Free the actor WITHOUT ever waking the continuation. The C1 free-path
+        // teardown must destroy the parked frame exactly once before reclaiming
+        // the box (which frees heap_guard via the scratch destroy outline).
+        // SAFETY: actor is valid and not being dispatched.
+        let rc = unsafe { hew_actor_free(actor) };
+        assert_eq!(rc, 0);
+
+        // Reclaim the scratch frame struct (scratch_destroy freed only its
+        // heap_guard, not the frame) and assert the destroy outline ran exactly
+        // once on the free path.
+        // SAFETY: `handle` is the scratch frame `Box::into_raw`'d above; its
+        // struct memory is still valid (scratch_destroy frees only heap_guard).
+        let frame =
+            unsafe { Box::from_raw(handle.cast::<crate::coro_exec::test_support::ScratchFrame>()) };
+        assert_eq!(
+            frame.destroyed.load(Ordering::Acquire),
+            1,
+            "C1: the parked continuation is destroyed exactly once on the free path"
+        );
+        assert!(
+            frame.heap_guard.load(Ordering::Acquire).is_null(),
+            "the frame-owned heap value was freed by the destroy outline (no leak)"
+        );
+    }
+
     #[test]
     fn hew_actor_free_for_restart_skips_state_drop_on_stopped_sibling() {
         // Supervisor restart paths (ONE_FOR_ALL / REST_FOR_ONE) free
@@ -8508,8 +8639,10 @@ mod wasm_tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         hew_actor_self_stop();
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn reply_once_dispatch(
@@ -8519,7 +8652,7 @@ mod wasm_tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let ch = crate::scheduler_wasm::hew_get_reply_channel();
         let mut value: i32 = 21;
         unsafe {
@@ -8529,6 +8662,8 @@ mod wasm_tests {
                 size_of::<i32>(),
             );
         }
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn late_reply_dispatch(
@@ -8538,7 +8673,7 @@ mod wasm_tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let ch = crate::scheduler_wasm::hew_get_reply_channel();
         let mut value: i32 = 99;
@@ -8549,6 +8684,8 @@ mod wasm_tests {
                 size_of::<i32>(),
             );
         }
+
+        std::ptr::null_mut()
     }
 
     /// Dispatch that replies with a null payload and then self-stops in the
@@ -8561,7 +8698,7 @@ mod wasm_tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let ch = crate::scheduler_wasm::hew_get_reply_channel();
         if !ch.is_null() {
             // SAFETY: ch is the scheduler-installed reply channel; depositing
@@ -8572,6 +8709,8 @@ mod wasm_tests {
         }
         // Self-stop AFTER the explicit null reply — must NOT set orphaned.
         hew_actor_self_stop();
+
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -8812,7 +8951,8 @@ mod wasm_tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     /// `hew_actor_ask` on a bounded WASM mailbox that is at capacity returns

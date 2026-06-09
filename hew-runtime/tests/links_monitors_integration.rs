@@ -159,8 +159,9 @@ unsafe extern "C-unwind" fn test_dispatch(
     _data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     // Simple test dispatch - does nothing
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn monitor_dispatch(
@@ -170,8 +171,9 @@ unsafe extern "C-unwind" fn monitor_dispatch(
     data: *mut c_void,
     data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn exit_dispatch(
@@ -181,8 +183,9 @@ unsafe extern "C-unwind" fn exit_dispatch(
     data: *mut c_void,
     data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     EXIT_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
+    std::ptr::null_mut()
 }
 
 #[test]

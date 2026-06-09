@@ -1,0 +1,10 @@
+# TSAN suppressions for hew-runtime sanitizer runs.
+#
+# Rust libtest copies CompletedTest events through its internal result channel.
+# With Rust nightly ThreadSanitizer this reports as a race in
+# core::profiling::compiler_copy, outside hew-runtime — a test-harness false
+# positive, not a runtime data race. Suppress it so real hew-runtime races
+# surface (paired with TSAN_OPTIONS=halt_on_error=0 in the `tsan` make target).
+race:core::profiling
+race:CompletedTest
+called_from_lib:libtest

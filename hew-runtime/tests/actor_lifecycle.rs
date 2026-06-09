@@ -85,7 +85,8 @@ unsafe extern "C-unwind" fn noop_dispatch(
     _data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
+    std::ptr::null_mut()
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -104,10 +105,11 @@ unsafe extern "C-unwind" fn send_recv_dispatch(
     _data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     let mut count = SEND_RECV_SIGNAL.count.lock().unwrap();
     *count += 1;
     SEND_RECV_SIGNAL.cond.notify_all();
+    std::ptr::null_mut()
 }
 
 /// Send a single message to an actor and confirm the dispatch function runs.
@@ -190,10 +192,12 @@ fn actor_full_lifecycle_spawn_send_close_free() {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let mut count = LIFECYCLE_SIGNAL.count.lock().unwrap();
         *count += 1;
         LIFECYCLE_SIGNAL.cond.notify_all();
+
+        std::ptr::null_mut()
     }
 
     let _guard = LIFECYCLE_LOCK.lock().unwrap();
@@ -318,9 +322,9 @@ unsafe extern "C-unwind" fn echo_double_dispatch(
     data: *mut c_void,
     data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     if data.is_null() || data_size < size_of::<i32>() {
-        return;
+        return std::ptr::null_mut();
     }
 
     unsafe {
@@ -330,13 +334,14 @@ unsafe extern "C-unwind" fn echo_double_dispatch(
         // Get reply channel from scheduler thread-local.
         let ch = hew_runtime::scheduler::hew_get_reply_channel();
         if ch.is_null() {
-            return;
+            return std::ptr::null_mut();
         }
 
         // Reply with payload * 2.
         let mut doubled = payload * 2;
         let _ = reply_channel::hew_reply(ch.cast(), (&raw mut doubled).cast(), size_of::<i32>());
     }
+    std::ptr::null_mut()
 }
 
 /// Ask an actor to double a value and verify the reply.
@@ -489,7 +494,7 @@ unsafe extern "C-unwind" fn slow_dispatch(
     data: *mut c_void,
     data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     std::thread::sleep(Duration::from_millis(500));
 
     // SAFETY: Read the reply channel from the scheduler thread-local and
@@ -502,6 +507,7 @@ unsafe extern "C-unwind" fn slow_dispatch(
             let _ = reply_channel::hew_reply(ch.cast(), (&raw mut result).cast(), size_of::<i32>());
         }
     }
+    std::ptr::null_mut()
 }
 
 /// Ask with a short timeout against a slow actor — should return null
@@ -578,7 +584,7 @@ unsafe extern "C-unwind" fn order_dispatch(
     data: *mut c_void,
     data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     let payload = if !data.is_null() && data_size >= size_of::<i32>() {
         unsafe { *(data.cast::<i32>()) }
     } else {
@@ -589,6 +595,7 @@ unsafe extern "C-unwind" fn order_dispatch(
     let mut count = ORDER_LOG.count.lock().unwrap();
     *count += 1;
     ORDER_LOG.cond.notify_all();
+    std::ptr::null_mut()
 }
 
 /// Send N messages with sequential payloads and verify the actor receives
@@ -644,7 +651,7 @@ unsafe extern "C-unwind" fn state_observing_dispatch(
     _data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     // Read the current actor's state during dispatch.
     let me = hew_runtime::actor::hew_actor_self();
     if !me.is_null() {
@@ -655,6 +662,7 @@ unsafe extern "C-unwind" fn state_observing_dispatch(
     let mut count = STATE_SIGNAL.count.lock().unwrap();
     *count += 1;
     STATE_SIGNAL.cond.notify_all();
+    std::ptr::null_mut()
 }
 
 /// During dispatch, the actor should be in the Running state.

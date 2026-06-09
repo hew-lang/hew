@@ -96,6 +96,33 @@ fn which(tool: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// macOS system frameworks the native link must pass explicitly. `libhew_runtime.a`
+/// transitively pulls in `rustls-platform-verifier` / `security-framework` /
+/// `system-configuration` (the runtime's TLS surface), whose symbols
+/// (`_Sec*`, `_CF*`, `_SC*`, `_Authorization*`) live in CoreFoundation,
+/// Security, and SystemConfiguration. A bare `clang obj runtime` link does not
+/// read the crates' `cargo:rustc-link-lib=framework=…` directives (those only
+/// reach a `cargo`-driven link), so the frameworks are named here. Empty on
+/// non-macOS. (Mirrors the production native link's reliance on the macOS SDK
+/// + frameworks; this test links the archive directly without cargo.)
+fn native_link_frameworks() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            "-framework",
+            "CoreFoundation",
+            "-framework",
+            "Security",
+            "-framework",
+            "SystemConfiguration",
+        ]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        &[]
+    }
+}
+
 fn wasmtime() -> Option<PathBuf> {
     which("wasmtime").or_else(|| {
         let home = std::env::var_os("HOME")?;
@@ -175,14 +202,7 @@ fn ensure_wasm_runtime() -> Option<PathBuf> {
 /// holding a Hew-owned heap value across every suspend. Mirrors the W6.006 spike
 /// `gen.ll`, but the prologue / suspend / frame-free are emitted by the
 /// production `hew_codegen_rs::coro` API rather than hand-written `.ll`.
-///
-/// `coro_size_ty` is the frame-alloc size type passed to `emit_coro_prologue`:
-/// always `i64` because `hew_cont_frame_alloc` takes `u64` on all targets.
-fn emit_gen_counter<'ctx>(
-    ctx: &'ctx Context,
-    llvm_mod: &LlvmModule<'ctx>,
-    coro_size_ty: inkwell::types::IntType<'ctx>,
-) {
+fn emit_gen_counter<'ctx>(ctx: &'ctx Context, llvm_mod: &LlvmModule<'ctx>) {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
     let builder = ctx.create_builder();
@@ -209,9 +229,9 @@ fn emit_gen_counter<'ctx>(
     let start = func.get_nth_param(1).unwrap().into_int_value();
     let count = func.get_nth_param(2).unwrap().into_int_value();
 
-    // coro.id(null promise)/alloc/begin. coro_size_ty is always i64 (u64 ABI).
-    let cc: CoroContext<'_, '_> = emit_coro_prologue(ctx, llvm_mod, &builder, func, coro_size_ty)
-        .expect("emit coro prologue");
+    // coro.id(null promise)/alloc/begin.
+    let cc: CoroContext<'_, '_> =
+        emit_coro_prologue(ctx, llvm_mod, &builder, func).expect("emit coro prologue");
     // After the prologue the builder sits at the end of `coro.begin`; capture it
     // as the i=0 incoming edge for the loop-carried phi.
     let begin_block = builder.get_insert_block().expect("builder in coro.begin");
@@ -457,10 +477,7 @@ fn build_module<'ctx>(ctx: &'ctx Context, name: &str) -> LlvmModule<'ctx> {
         b.build_return(None).unwrap();
     }
 
-    // `hew_cont_frame_alloc` always takes u64 — pass i64_ty to emit_gen_counter
-    // so the coro frame alloc size parameter is always 64-bit (matching the
-    // runtime declaration on all targets, including wasm32).
-    emit_gen_counter(ctx, &llvm_mod, i64_ty);
+    emit_gen_counter(ctx, &llvm_mod);
 
     // Runtime HewCont ABI the driver calls.
     let cont_resume = get_or_add(
@@ -714,6 +731,7 @@ fn coro_substrate_round_trips_value_native() {
     let status = Command::new(&clang)
         .arg(&obj)
         .arg(&runtime)
+        .args(native_link_frameworks())
         .args(["-o", bin.to_str().unwrap()])
         .status()
         .expect("link native coro binary");
@@ -754,6 +772,7 @@ fn coro_substrate_leak_clean_native() {
     let status = Command::new(&clang)
         .arg(&obj)
         .arg(&runtime)
+        .args(native_link_frameworks())
         .args(["-o", bin.to_str().unwrap()])
         .status()
         .expect("link native coro binary");
@@ -887,6 +906,7 @@ fn debug_emit_and_check_native() {
     let status = Command::new(&clang)
         .arg(&obj)
         .arg(&runtime)
+        .args(native_link_frameworks())
         .args(["-o", bin.to_str().unwrap()])
         .stderr(std::process::Stdio::inherit())
         .status()

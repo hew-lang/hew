@@ -49,10 +49,10 @@ unsafe extern "C-unwind" fn capture_dispatch(
     data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     if msg_type == ON_CLOSE_TYPE.load(Ordering::Acquire) {
         CLOSE_SEEN.store(true, Ordering::Release);
-        return;
+        return std::ptr::null_mut();
     }
     if msg_type == ON_DATA_TYPE.load(Ordering::Acquire) && !data.is_null() {
         // The payload buffer holds a BytesTriple by value (the dispatch ABI
@@ -71,6 +71,7 @@ unsafe extern "C-unwind" fn capture_dispatch(
         // path drops the bytes arg when on_data returns).
         unsafe { hew_runtime::bytes::hew_bytes_drop(triple.ptr) };
     }
+    std::ptr::null_mut()
 }
 
 fn spawn_capture_actor() -> *mut hew_runtime::actor::HewActor {
@@ -433,9 +434,9 @@ unsafe extern "C-unwind" fn echo_dispatch(
     data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     if msg_type != ECHO_ON_DATA.load(Ordering::Acquire) || data.is_null() {
-        return;
+        return std::ptr::null_mut();
     }
     let triple = unsafe { ptr::read(data.cast::<BytesTriple>()) };
     if !triple.ptr.is_null() && triple.len > 0 {
@@ -445,6 +446,7 @@ unsafe extern "C-unwind" fn echo_dispatch(
         unsafe { hew_runtime::transport::hew_tcp_write(conn, std::ptr::addr_of!(triple)) };
     }
     unsafe { hew_runtime::bytes::hew_bytes_drop(triple.ptr) };
+    std::ptr::null_mut()
 }
 
 fn scenario_echo_round_trips_through_actor() {

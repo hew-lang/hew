@@ -1550,7 +1550,7 @@ mod tests {
         data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // SAFETY: test actor state is a POD snapshot allocated by `hew_actor_spawn`.
         let state = unsafe { &*(state.cast::<TestActorState>()) };
         match msg_type {
@@ -1583,6 +1583,8 @@ mod tests {
             }
             _ => {}
         }
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn websocket_cancel_owner_dispatch(
@@ -1592,9 +1594,9 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         if msg_type != TEST_STOP_TYPE {
-            return;
+            return std::ptr::null_mut();
         }
 
         // SAFETY: test actor state is a POD snapshot allocated by `hew_actor_spawn`.
@@ -1606,6 +1608,8 @@ mod tests {
             unsafe { hew_ws_server_close(state.server as *mut HewWsServer) };
         }
         actor::hew_actor_self_stop();
+
+        std::ptr::null_mut()
     }
 
     struct RuntimeGuard;

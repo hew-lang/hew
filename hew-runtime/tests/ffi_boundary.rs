@@ -757,10 +757,11 @@ unsafe extern "C-unwind" fn test_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     let mut count = DISPATCH_SIGNAL.0.lock().unwrap();
     *count += 1;
     DISPATCH_SIGNAL.1.notify_all();
+    std::ptr::null_mut()
 }
 
 #[test]
@@ -870,10 +871,12 @@ fn actor_send_multiple_messages() {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let mut count = MULTI_SIGNAL.0.lock().unwrap();
         *count += 1;
         MULTI_SIGNAL.1.notify_all();
+
+        std::ptr::null_mut()
     }
 
     ensure_scheduler();
@@ -930,13 +933,15 @@ fn actor_dispatch_receives_correct_data() {
         data: *mut c_void,
         data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         if !data.is_null() && data_size >= size_of::<i32>() {
             let val = unsafe { *(data.cast::<i32>()) };
             let mut received = DATA_SIGNAL.0.lock().unwrap();
             *received = val;
             DATA_SIGNAL.1.notify_all();
         }
+
+        std::ptr::null_mut()
     }
 
     ensure_scheduler();
@@ -3523,7 +3528,8 @@ mod rest_for_one_tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     static SCHED_INIT: std::sync::Once = std::sync::Once::new();
@@ -3669,7 +3675,8 @@ mod supervisor_escalation_tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn counting_dispatch(
@@ -3679,10 +3686,12 @@ mod supervisor_escalation_tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let mut count = NESTED_DISPATCH_COUNT.0.lock().unwrap();
         *count += 1;
         NESTED_DISPATCH_COUNT.1.notify_all();
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn sibling_dispatch(
@@ -3692,10 +3701,12 @@ mod supervisor_escalation_tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let mut count = SIBLING_DISPATCH_COUNT.0.lock().unwrap();
         *count += 1;
         SIBLING_DISPATCH_COUNT.1.notify_all();
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C" fn nested_child_supervisor_init() -> *mut HewSupervisor {
@@ -4086,7 +4097,8 @@ mod circuit_breaker_tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -4165,7 +4177,8 @@ mod dynamic_supervision_tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     #[test]

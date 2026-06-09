@@ -134,9 +134,13 @@ fn terminator_reads(term: &Terminator) -> Vec<Place> {
         // a Place, and it writes `dest`. It never appears inside a gen-body (only
         // in the enclosing function), so it is read-free here, like the other
         // no-operand terminators.
+        // `Suspend` reads no places: the value channel is the explicit coro
+        // frame out-pointer, not a `Place` (spike constraint — the promise is
+        // null), so the suspend point itself depends on no live operand.
         Terminator::Return
         | Terminator::Trap { .. }
         | Terminator::Goto { .. }
+        | Terminator::Suspend { .. }
         | Terminator::MakeGenerator { .. } => Vec::new(),
         Terminator::Branch { cond, .. } => vec![*cond],
         Terminator::Call { args, .. } => args.clone(),

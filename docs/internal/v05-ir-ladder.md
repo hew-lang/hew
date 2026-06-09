@@ -119,6 +119,35 @@ is dominated by its definition, every site has a chosen value-model operation
 
 **Dump:** `hew dump-mir=raw`.
 
+#### Stackless suspend carrier (`Terminator::Suspend`) — live substrate, dormant producer
+
+`Terminator::Suspend { resume, cleanup, is_final }` is the carrier for a
+`coro.suspend` in a switched-resume LLVM coroutine (R326/R327, W6.007). It rides
+in the block terminator — the carrier the `RawMirFunction` → `lower_function`
+codegen path actually reads — NOT the `ElaboratedMirFunction.coroutine`
+descriptor (keying emission off that field, which the raw-MIR codegen path never
+consults, is a silent no-op). Codegen lowers any function whose CFG contains this
+terminator as a `presplitcoroutine`: the coro prologue (`coro.id`/`coro.alloc`/
+`coro.begin`) wraps the body, each `Suspend` emits `coro.suspend` + its 3-way
+switch (default = return-to-executor, `0` = resume, `1` = cleanup), and a shared
+epilogue runs `coro.free` → `hew_cont_frame_free` + `coro.end`. The runtime
+drives the resulting frame through the `HewCont` C ABI (`hew_cont_resume` /
+`hew_cont_done` / `hew_cont_destroy`), and the scheduler parks/resumes the
+continuation (the dispatch trampoline returns a nullable handle — D-A.2 — which
+`park_suspended_activation` parks; `enqueue_resume` wakes it; the free path
+destroys an abandoned frame exactly once — C1).
+
+**The substrate is production-capable but DORMANT: no source construct produces a
+`Terminator::Suspend` yet.** `await` / blocking `.recv()` / `scope`-join still
+thread-park on the condvar exactly as before, and the HIR / type-checker /
+codegen-scan gates (including the wasm `StructuredConcurrency` /
+`BlockingChannelRecv` exclusions in `docs/wasm-capability-matrix.md`) stay CLOSED
+— a relaxed gate with no readiness waker would be fail-OPEN. The source-to-suspend
+flip lands paired with the readiness waker (NEW-3): only then does a real `await`
+emit a `Terminator::Suspend`, the executor's park/resume cycle fire from a real
+program, and the gates relax per-construct. Until then the edge is validated
+synthetically (a test-only MIR builder + the `coro_emission_exec` round-trip).
+
 ---
 
 ### 2.5 Checked MIR (`hew-mir::checked`)

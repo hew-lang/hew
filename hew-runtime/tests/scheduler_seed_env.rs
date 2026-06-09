@@ -20,7 +20,7 @@ unsafe extern "C-unwind" fn record_dispatch(
     _data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     let actor_id = if ctx.is_null() {
         0
     } else {
@@ -29,6 +29,7 @@ unsafe extern "C-unwind" fn record_dispatch(
     let mut trace = TRACE.0.lock().unwrap();
     trace.push((actor_id, msg_type));
     TRACE.1.notify_all();
+    std::ptr::null_mut()
 }
 
 fn wait_for_trace_len(expected: usize) {

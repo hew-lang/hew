@@ -945,11 +945,6 @@ fn as_native_actor<'a>(actor: *mut HewActor) -> &'a crate::actor::HewActor {
 ///
 /// `actor` is owned by the calling activation (Running on this single thread);
 /// `cont` is the live, suspended continuation handle the dispatch produced.
-///
-/// Test-only until Slice 5 routes the production wasm suspend edge through it
-/// (the trampoline returns `ResumePoll`); mirrors the native
-/// `park_suspended_activation` `#[cfg(test)]` gating under D-A.1.
-#[cfg(test)]
 unsafe fn park_suspended_activation_wasm(actor: *mut HewActor, cont: *mut c_void) -> bool {
     let a = as_native_actor(actor);
     if !crate::coro_exec::begin_park(a).is_ok() {
@@ -1195,6 +1190,13 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         d
     };
 
+    // SUSPEND EDGE (D-A.2 / R326/R327): the `coro.begin` handle a handler hands
+    // back when it suspends at a non-final `coro.suspend`. Captured across the
+    // loop; a non-null handle is parked after the global restore (below).
+    // Dormant today — no source construct produces a suspend, so this stays
+    // null on every dispatch.
+    let mut suspend_handle: *mut c_void = std::ptr::null_mut();
+
     if !mailbox.is_null() {
         // Process up to `budget` messages.
         for _ in 0..budget {
@@ -1245,6 +1247,13 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
 
                 // SAFETY: `dispatch`, `ctx`, and `a.state` are valid; message
                 // fields come from a well-formed `HewMsgNode`.
+                //
+                // D-A.2 (R326/R327): the trampoline returns the dispatch suspend
+                // outcome as a nullable continuation handle — `null` for a
+                // run-to-completion handler (every handler today; the suspend
+                // substrate is dormant), or the `coro.begin` handle when a
+                // handler suspended. The handle is captured here; the production
+                // wasm park edge (commit 4) consumes a non-null handle.
                 let dispatch_result = catch_unwind(AssertUnwindSafe(|| unsafe {
                     dispatch(
                         &raw mut execution_context,
@@ -1257,8 +1266,15 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                         // routing on the WASM scheduler is deferred to the
                         // WASM send gate; this path stays copy-mode (0).
                         0,
-                    );
+                    )
                 }));
+                // D-A.2: the suspend handle the trampoline returned (null on the
+                // run-to-completion path — every handler today). A non-null
+                // handle is parked after the loop + global restore (below).
+                suspend_handle = dispatch_result
+                    .as_ref()
+                    .copied()
+                    .unwrap_or(std::ptr::null_mut());
 
                 // SAFETY: `execution_context.lock_seat` was initialized from the
                 // live actor immediately before the matching acquire.
@@ -1358,6 +1374,14 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 actor_sleep_deadline = pending;
             }
 
+            // Suspend edge: the handler suspended at a non-final `coro.suspend`.
+            // Break out of the message loop without draining further; the park
+            // (after the global restore) defers remaining messages until the
+            // continuation completes. Dormant today (always null).
+            if !suspend_handle.is_null() {
+                break;
+            }
+
             // Check for mid-dispatch stop.
             let mid_state = a.actor_state.load(Ordering::Relaxed);
             if mid_state == HewActorState::Stopping as i32
@@ -1438,6 +1462,25 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // Already terminal — nothing to do.
     if cur_state == HewActorState::Stopped as i32 || cur_state == HewActorState::Crashed as i32 {
         return;
+    }
+
+    // SUSPEND EDGE (D-A.2 / R326/R327, wasm cooperative half): the handler
+    // suspended at a non-final `coro.suspend` and handed back its `coro.begin`
+    // frame handle. Park it against the executor and return WITHOUT settling to
+    // Runnable/Idle — the wasm drain epilogue (`hew_sched_run`) drives resume of
+    // parked conts when a wake (`enqueue_resume`) re-enqueues the actor. The
+    // per-actor lock was released on the dispatch-return edge above. Done after
+    // the global/arena restore so the actor is in a clean state. Dormant today
+    // (no source construct produces a suspend, so `suspend_handle` is null).
+    if !suspend_handle.is_null() {
+        // SAFETY: `actor` is exclusively owned on this single thread; the lock
+        // is released; `suspend_handle` is the live suspended continuation.
+        let parked = unsafe { park_suspended_activation_wasm(actor, suspend_handle) };
+        if parked {
+            return;
+        }
+        // Park refused (actor concurrently stopped): the handle was destroyed
+        // once inside the park guard; fall through to the standard settle.
     }
 
     // Sleep park: if the dispatch called `sleep_ms`, park the actor until the
@@ -1795,7 +1838,7 @@ mod tests {
         data: *mut c_void,
         data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // SAFETY: tests initialize `state` to a valid AskDispatchState.
         let state = unsafe { &mut *state.cast::<AskDispatchState>() };
         state.channel = hew_get_reply_channel();
@@ -1816,6 +1859,8 @@ mod tests {
                 );
             }
         }
+
+        std::ptr::null_mut()
     }
 
     static NOISY_DISPATCHES: AtomicI32 = AtomicI32::new(0);
@@ -1829,8 +1874,10 @@ mod tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         NOISY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn reply_payload_dispatch(
@@ -1840,7 +1887,7 @@ mod tests {
         data: *mut c_void,
         data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         REPLY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
 
         let ch = hew_get_reply_channel();
@@ -1864,6 +1911,8 @@ mod tests {
                 std::mem::size_of::<i32>(),
             );
         }
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn reply_payload_observes_cancelled_dispatch(
@@ -1873,7 +1922,7 @@ mod tests {
         data: *mut c_void,
         data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         REPLY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
 
         let ch = hew_get_reply_channel();
@@ -1902,6 +1951,8 @@ mod tests {
                 std::mem::size_of::<i32>(),
             );
         }
+
+        std::ptr::null_mut()
     }
 
     fn reset_wasm_dispatch_counters() {
@@ -2654,9 +2705,11 @@ mod tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let id = crate::actor::hew_actor_current_id();
         DISPATCH_SAW_ACTOR_ID.store(id, std::sync::atomic::Ordering::Relaxed);
+
+        std::ptr::null_mut()
     }
 
     /// Bug #1 regression: `hew_actor_self` / `hew_actor_current_id` must return the
@@ -2712,7 +2765,7 @@ mod tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // Record current actor before triggering inner activation.
         OUTER_ID_BEFORE_INNER.store(
             crate::actor::hew_actor_current_id(),
@@ -2726,6 +2779,8 @@ mod tests {
             crate::actor::hew_actor_current_id(),
             std::sync::atomic::Ordering::Relaxed,
         );
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn inner_dispatch_noop(
@@ -2735,8 +2790,10 @@ mod tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // No-op: sufficient to exercise the nested activation path.
+
+        std::ptr::null_mut()
     }
 
     /// Bug #2 regression: when a WASM dispatch handler triggers nested
@@ -3258,7 +3315,7 @@ mod tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // SAFETY: `state` is a valid `HewActor` pointer set by the test.
         // The actor is in `Running` state during dispatch.
         let actor = state.cast::<HewActor>();
@@ -3269,6 +3326,8 @@ mod tests {
                 .actor_state
                 .store(HewActorState::Stopping as i32, Ordering::Relaxed);
         }
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn self_stopping_dispatch_via_api(
@@ -3278,9 +3337,11 @@ mod tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // SAFETY: tests pass the live actor pointer itself as `state`.
         unsafe { crate::actor::actor_self_stop_wasm_impl(state.cast::<crate::actor::HewActor>()) };
+
+        std::ptr::null_mut()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3670,11 +3731,13 @@ mod tests {
             _data: *mut c_void,
             _data_size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             // Record current arena (as usize) via the internal getter.
             let ptr = crate::arena::set_current_arena(ptr::null_mut()); // read-then-restore
             crate::arena::set_current_arena(ptr); // put it back
             ARENA_DURING_DISPATCH.store(ptr as usize, std::sync::atomic::Ordering::Relaxed);
+
+            std::ptr::null_mut()
         }
 
         let _guard = crate::runtime_test_guard();
@@ -3742,9 +3805,11 @@ mod tests {
             _data: *mut c_void,
             _data_size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             // SAFETY: arena is installed by the scheduler before dispatch.
             unsafe { crate::arena::hew_arena_malloc(64) };
+
+            std::ptr::null_mut()
         }
 
         let _guard = crate::runtime_test_guard();
@@ -3809,7 +3874,7 @@ mod tests {
             _data: *mut c_void,
             _data_size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             // SAFETY: state was set to a valid *mut HewActor pointer by the test.
             let inner: *mut HewActor = unsafe { *state.cast::<*mut HewActor>() };
             // SAFETY: inner is a valid live actor; sched_enqueue and hew_sched_run
@@ -3824,6 +3889,8 @@ mod tests {
             let current = crate::arena::set_current_arena(ptr::null_mut());
             crate::arena::set_current_arena(current); // restore
             OUTER_POST_DISPATCH.store(current as usize, std::sync::atomic::Ordering::Relaxed);
+
+            std::ptr::null_mut()
         }
 
         // We can't call `queue_wasm_message` (which uses a local static) from
@@ -4025,13 +4092,15 @@ mod tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // SAFETY: state was set to a valid *mut HewActor by the test.
         let a = unsafe { &*state.cast::<HewActor>() };
         if a.reductions.load(Ordering::Relaxed) != HEW_DEFAULT_REDUCTIONS {
             REDUCTIONS_WRONG_COUNT.fetch_add(1, Ordering::Relaxed);
         }
         NOISY_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+
+        std::ptr::null_mut()
     }
 
     /// Queue `count` messages directly into an actor's mailbox without calling
@@ -4356,11 +4425,13 @@ mod tests {
             _data: *mut c_void,
             _data_size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             // Peek at the current arena without permanently clearing it.
             let ptr = crate::arena::set_current_arena(ptr::null_mut());
             crate::arena::set_current_arena(ptr); // restore
             ARENA_SEEN.store(ptr as usize, std::sync::atomic::Ordering::Relaxed);
+
+            std::ptr::null_mut()
         }
 
         let _guard = crate::runtime_test_guard();
@@ -4987,13 +5058,15 @@ mod tests {
             _data: *mut c_void,
             _data_size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             DISPATCHED.fetch_add(1, Ordering::Relaxed);
             // Simulate sleep_ms(500): record a deadline 500 ms from now.
             // In simulated time: now=0, so deadline=500.
             // SAFETY: hew_now_ms is safe to call from within dispatch.
             let now = unsafe { hew_now_ms() };
             request_sleep(now + 500);
+
+            std::ptr::null_mut()
         }
 
         let _guard = crate::runtime_test_guard();
@@ -5222,7 +5295,7 @@ mod tests {
             _data: *mut c_void,
             _data_size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             CRASH_COUNT.fetch_add(1, Ordering::Relaxed);
             // Call request_sleep to write PENDING_SLEEP_DEADLINE_MS ...
             request_sleep(99_999);
@@ -5237,6 +5310,8 @@ mod tests {
                         .store(HewActorState::Crashed as i32, Ordering::Relaxed);
                 }
             }
+
+            std::ptr::null_mut()
         }
 
         static NORMAL_COUNT: AtomicI32 = AtomicI32::new(0);
@@ -5247,8 +5322,10 @@ mod tests {
             _data: *mut c_void,
             _data_size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             NORMAL_COUNT.fetch_add(1, Ordering::Relaxed);
+
+            std::ptr::null_mut()
         }
 
         let _guard = crate::runtime_test_guard();
@@ -5339,7 +5416,7 @@ mod tests {
             data: *mut c_void,
             data_size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             // SAFETY: the test payload is either null or a queued i32 message body.
             let should_panic = !data.is_null()
                 && data_size == std::mem::size_of::<i32>()
@@ -5352,6 +5429,8 @@ mod tests {
             // SAFETY: the test actor state is a valid `i32` for this actor lifetime.
             unsafe { *count += 1 };
             SUCCESS_COUNT.fetch_add(1, Ordering::Relaxed);
+
+            std::ptr::null_mut()
         }
 
         let _guard = crate::runtime_test_guard();
@@ -5472,8 +5551,10 @@ mod tests {
             _data: *mut c_void,
             _data_size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             DISPATCHED.fetch_add(1, Ordering::Relaxed);
+
+            std::ptr::null_mut()
         }
 
         let _guard = crate::runtime_test_guard();
@@ -5632,10 +5713,12 @@ mod tests {
             _data: *mut c_void,
             _data_size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             DRAIN_DISPATCHED.fetch_add(1, Ordering::Relaxed);
             // Far-future absolute deadline — hangs if not cleared on shutdown.
             request_sleep(u64::MAX / 2);
+
+            std::ptr::null_mut()
         }
 
         let _guard = crate::runtime_test_guard();
@@ -5713,7 +5796,7 @@ mod tests {
             _data: *mut c_void,
             _size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
             if msg_type == 1 {
                 let ch = hew_get_reply_channel();
                 // Extra retain: the message teardown path will release the
@@ -5763,6 +5846,8 @@ mod tests {
                     }
                 }
             }
+
+            std::ptr::null_mut()
         }
 
         let _guard = crate::runtime_test_guard();

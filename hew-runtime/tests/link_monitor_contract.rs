@@ -152,7 +152,8 @@ unsafe extern "C-unwind" fn noop_dispatch(
     _data: *mut c_void,
     _size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn exit_capture_dispatch(
@@ -162,8 +163,9 @@ unsafe extern "C-unwind" fn exit_capture_dispatch(
     data: *mut c_void,
     data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     EXIT_SIGNAL.record(msg_type, data, data_size);
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn down_capture_dispatch(
@@ -173,8 +175,9 @@ unsafe extern "C-unwind" fn down_capture_dispatch(
     data: *mut c_void,
     data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     DOWN_SIGNAL.record(msg_type, data, data_size);
+    std::ptr::null_mut()
 }
 
 // ── Contract tests ───────────────────────────────────────────────────────────

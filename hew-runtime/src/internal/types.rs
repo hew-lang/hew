@@ -24,6 +24,25 @@ use crate::execution_context::HewExecutionContext;
 /// envelope-mode dispatch guard still fails closed before any envelope node
 /// reaches dispatch, so the `borrow_mode == 1` arm is unreachable at runtime
 /// until the live send/guard-removal sub-stages land.
+/// Actor dispatch trampoline ABI (D-A.2, R326/R327, W6.007).
+///
+/// Returns the dispatch's **suspend outcome**, encoded as a nullable
+/// continuation handle:
+/// - `null` — the handler ran to completion (the run-to-completion path: it did
+///   NOT suspend). This is what EVERY handler returns today — no source
+///   construct produces a `coro.suspend` in production yet (the suspend
+///   substrate is dormant). The scheduler treats `null` exactly as the
+///   pre-D-A.2 void return.
+/// - non-null — the handler suspended at a non-final `coro.suspend`; the
+///   returned pointer is the `coro.begin` frame handle (`HewCont`). The
+///   scheduler parks it against the executor (release the per-actor lock, CAS
+///   `Running → Suspended`) and resumes it later via `hew_cont_resume`.
+///
+/// The handle surfaces through the RETURN VALUE rather than a `HewActor` field:
+/// the suspend edge stores it into the existing `suspended_cont` slot via
+/// `coro_exec::finish_park`, so no new actor field / offset-mirror change is
+/// needed (the dispatch fn pointer is registered as an opaque `ptr` in codegen,
+/// so widening the return type does not change the spawn-registration ABI).
 pub type HewDispatchFn = unsafe extern "C-unwind" fn(
     ctx: *mut HewExecutionContext,
     state: *mut std::ffi::c_void,
@@ -31,7 +50,7 @@ pub type HewDispatchFn = unsafe extern "C-unwind" fn(
     data: *mut std::ffi::c_void,
     data_size: usize,
     borrow_mode: i32,
-);
+) -> *mut std::ffi::c_void;
 
 /// Crash handler function signature for supervised actors.
 ///

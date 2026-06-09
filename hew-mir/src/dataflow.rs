@@ -321,6 +321,14 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
             | Terminator::Select { next, .. } => emit_edge(*next),
+            // Suspend's default edge exits the function (returns to the
+            // executor); resume + cleanup are the in-CFG successor edges.
+            Terminator::Suspend {
+                resume, cleanup, ..
+            } => {
+                emit_edge(*resume);
+                emit_edge(*cleanup);
+            }
         }
     }
     preds
@@ -342,6 +350,11 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         | Terminator::Ask { next, .. }
         | Terminator::RemoteAsk { next, .. }
         | Terminator::Select { next, .. } => vec![*next],
+        // Suspend's default edge exits the function; resume + cleanup are the
+        // in-CFG successors.
+        Terminator::Suspend {
+            resume, cleanup, ..
+        } => vec![*resume, *cleanup],
     }
 }
 

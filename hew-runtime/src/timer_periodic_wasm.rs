@@ -318,10 +318,12 @@ mod tests {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         // SAFETY: tests install an AtomicU32 state pointer for every TestActor.
         let counter = unsafe { &*(state.cast::<AtomicU32>()) };
         counter.fetch_add(1, Ordering::Relaxed);
+
+        std::ptr::null_mut()
     }
 
     struct TestActor {

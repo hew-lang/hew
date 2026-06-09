@@ -283,6 +283,18 @@ These gaps are explicitly deferred and tracked here:
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |
 | Structured concurrency scopes | Thread-free scope scheduler | `WASM-TODO: scope` |
 
+> **Stackless suspension substrate (R326/R327, W6.007).** The cooperative
+> yield/resume mechanism the `scope` and blocking-`recv` rows above need is now
+> BUILT — an LLVM `llvm.coro.*` switched-resume continuation driven by ONE
+> poll/resume executor, identical IR on native + wasm32 (see
+> `docs/internal/v05-ir-ladder.md` §2.4 "Stackless suspend carrier"). It is
+> **production-capable but dormant**: no source construct emits a suspend point
+> yet, so these gates stay CLOSED (a relaxed gate with no readiness waker is
+> fail-OPEN). The per-construct relaxation lands with the source-to-suspend flip
+> + readiness waker (NEW-3); on wasm32 the `hew_sched_run` drain then drives
+> resume of parked continuations cooperatively. Until then the gated behaviour
+> is unchanged.
+
 ---
 
 ## Playground capability contract

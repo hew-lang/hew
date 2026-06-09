@@ -92,7 +92,7 @@ unsafe extern "C-unwind" fn divide_by_zero_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     if msg_type == MSG_DIV_BY_ZERO {
         // Same C-ABI seam codegen emits for `Terminator::Trap { kind: DivideByZero }`.
         // Longjmps back to the scheduler's sigsetjmp frame; never returns.
@@ -100,6 +100,7 @@ unsafe extern "C-unwind" fn divide_by_zero_dispatch(
             hew_trap_with_code(HEW_TRAP_DIVIDE_BY_ZERO);
         }
     }
+    std::ptr::null_mut()
 }
 
 /// Wait for the global crash log to grow past `log_before`, then return the

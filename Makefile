@@ -570,8 +570,8 @@ ifeq ($(shell uname -sm),Darwin arm64)
 	@echo "tsan: skipped on darwin-arm64 (upstream Rust nightly TSan not supported on this target — see nightly-sanitizers.yml rust-runtime-tsan advisory lane)"
 else
 	CARGO_TARGET_DIR=$(RUNTIME_TSAN_TARGET_DIR) \
-	RUSTFLAGS="-Zsanitizer=thread -Cforce-frame-pointers=yes" \
-	TSAN_OPTIONS="halt_on_error=1" \
+	RUSTFLAGS="-Zsanitizer=thread -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
+	TSAN_OPTIONS="halt_on_error=0 suppressions=$(CURDIR)/hew-runtime/tsan.supp" \
 	cargo +nightly test \
 		--target $(SANITIZER_RUST_TARGET) \
 		-p hew-runtime \

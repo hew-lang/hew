@@ -128,9 +128,10 @@ unsafe extern "C-unwind" fn counting_dispatch(
     _data: *mut c_void,
     _data_size: usize,
     _borrow_mode: i32,
-) {
+) -> *mut c_void {
     DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
     DISPATCH_SIGNAL.record();
+    std::ptr::null_mut()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -169,7 +170,7 @@ fn overflow_trap_surfaces_as_actor_crash_not_process_abort() {
         _data: *mut c_void,
         _data_size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         match msg_type {
             MSG_NORMAL => {
                 DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
@@ -197,6 +198,8 @@ fn overflow_trap_surfaces_as_actor_crash_not_process_abort() {
             }
             _ => {}
         }
+
+        std::ptr::null_mut()
     }
 
     let _guard = TEST_LOCK

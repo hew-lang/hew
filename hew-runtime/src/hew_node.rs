@@ -3136,7 +3136,7 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         if msg_type == TWO_PROCESS_REGISTRY_MSG_TYPE {
             let mut delivered = TWO_PROCESS_REGISTRY_DELIVERY
                 .0
@@ -3145,6 +3145,8 @@ mod tests {
             *delivered = true;
             TWO_PROCESS_REGISTRY_DELIVERY.1.notify_all();
         }
+
+        std::ptr::null_mut()
     }
 
     fn run_registry_gossip_server_helper() {
@@ -3252,7 +3254,7 @@ mod tests {
             *mut c_void,
             usize,
             i32,
-        ),
+        ) -> *mut c_void,
         hold_after_observed: Duration,
     ) {
         crate::registry::hew_registry_clear();
@@ -3628,7 +3630,8 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -4568,12 +4571,14 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         #[expect(
             clippy::cast_sign_loss,
             reason = "msg_type is a non-negative tag in this test"
         )]
         SEND_PROBE_MSG_TYPE.store(msg_type as u32, Ordering::Release);
+
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -4682,12 +4687,14 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         #[expect(
             clippy::cast_sign_loss,
             reason = "msg_type is a non-negative tag in this test"
         )]
         SEND_PROBE_MSG_TYPE_QM.store(msg_type as u32, Ordering::Release);
+
+        std::ptr::null_mut()
     }
 
     /// Build a mutually-pinned `(MeshTls, MeshTls)` pair so two in-process
@@ -4877,9 +4884,9 @@ mod tests {
         data: *mut c_void,
         size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         if size < std::mem::size_of::<u32>() {
-            return;
+            return std::ptr::null_mut();
         }
         // SAFETY: data is valid for at least size_of::<u32>() bytes.
         let value = unsafe { *(data.cast::<u32>()) };
@@ -4887,7 +4894,7 @@ mod tests {
 
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
-            return;
+            return std::ptr::null_mut();
         }
         // SAFETY: ch is the current thread-local reply channel; reply_value is valid.
         unsafe {
@@ -4901,6 +4908,8 @@ mod tests {
         // the server helper (which tears down on observe) cannot drop the
         // connection before the reply flushes to the asking node.
         mark_two_process_ask_observed();
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn void_ask_probe_dispatch(
@@ -4910,15 +4919,17 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
-            return;
+            return std::ptr::null_mut();
         }
         // SAFETY: the reply channel comes from the scheduler and is valid for a void reply here.
         unsafe {
             let _ = crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0);
         }
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn orphaned_void_ask_dispatch(
@@ -4928,8 +4939,10 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         crate::actor::hew_actor_self_stop();
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C-unwind" fn blocked_ask_probe_dispatch(
@@ -4939,8 +4952,10 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
         mark_two_process_ask_observed();
+
+        std::ptr::null_mut()
     }
 
     #[test]

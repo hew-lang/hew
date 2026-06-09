@@ -1705,7 +1705,8 @@ mod tests {
             _data: *mut c_void,
             _size: usize,
             _borrow_mode: i32,
-        ) {
+        ) -> *mut c_void {
+            std::ptr::null_mut()
         }
         let opts = crate::actor::HewActorOpts {
             init_state: std::ptr::null_mut(),

@@ -422,7 +422,8 @@ mod tests {
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
-    ) {
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     fn create_test_actor(id: u64) -> HewActor {

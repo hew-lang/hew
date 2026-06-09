@@ -325,11 +325,12 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 | Example | `capabilities.wasi` | Reason |
 |---------|---------------------|--------|
 | `basics/*` (4 entries) | `runnable` | No WASM-limited features |
-| `concurrency/actor_pipeline` | `runnable` | Basic actors supported |
-| `concurrency/async_await` | `runnable` | Async/await supported |
-| `concurrency/counter_actor` | `runnable` | Basic actors supported |
+| `concurrency/actor_pipeline` | `unsupported` | Actor runtime ABI unavailable on WASI (#1821) |
+| `concurrency/async_await` | `unsupported` | Actor runtime ABI unavailable on WASI (#1821) |
+| `concurrency/counter_actor` | `unsupported` | Actor runtime ABI unavailable on WASI (#1821) |
 | `concurrency/supervisor` | `unsupported` | Uses `supervisor`/`supervisor_child` → Reject disposition |
-| `types/*` (3 entries) | `runnable` | No WASM-limited features |
+| `types/collections`, `types/pattern_matching`, `types/structural_bounds` | `runnable` | No WASM-limited features |
+| `types/wire_types` | `unsupported` | Wire enum lowering is not implemented on WASI (#1822) |
 
 The `WASI_CAPABILITY` table in `scripts/gen-playground-manifest.py` is the
 single source of truth for these per-entry values.  Entries absent from that

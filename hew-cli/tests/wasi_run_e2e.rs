@@ -42,14 +42,17 @@ fn run_wasi_example(source: &Path) -> Output {
 // together whenever the unsupported set changes intentionally.  The coverage
 // guard in curated_playground_examples_run_under_wasi relies on this to catch
 // misclassified manifest entries before they silently drop out of the runnable loop.
-const EXPECTED_WASI_UNSUPPORTED: &[&str] = &["concurrency/supervisor", "machines/traffic_light"];
+const EXPECTED_WASI_UNSUPPORTED: &[&str] = &[
+    "concurrency/actor_pipeline",
+    "concurrency/async_await",
+    "concurrency/counter_actor",
+    "concurrency/supervisor",
+    "machines/traffic_light",
+    "types/wire_types",
+];
 
-// Several concurrency/actor entries in the manifest are classified as
-// "runnable" on WASI but fail at compile time because actors require coroutine
-// support (x86_64/aarch64 only). types/wire_types also fails (wire enum not
-// yet implemented). The manifest capability classifications need updating
-// before this test can run without filtering.
-#[ignore = "manifest wasi-capability classifications need updating: actors require coroutine support, wire enum not yet implemented"]
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();

@@ -61,7 +61,7 @@
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",
-      "wasi": "runnable"
+      "wasi": "unsupported"
     }
   },
   {
@@ -74,7 +74,7 @@
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",
-      "wasi": "runnable"
+      "wasi": "unsupported"
     }
   },
   {
@@ -87,7 +87,7 @@
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",
-      "wasi": "runnable"
+      "wasi": "unsupported"
     }
   },
   {
@@ -152,7 +152,7 @@
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "unsupported_native_only",
-      "wasi": "runnable"
+      "wasi": "unsupported"
     }
   },
   {

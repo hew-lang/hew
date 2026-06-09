@@ -92,10 +92,17 @@ SANDBOX_CAPABILITY: dict[str, str] = {
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".
 WASI_CAPABILITY: dict[str, str] = {
+    # Actor examples currently require the native actor/coroutine runtime ABI;
+    # the WASI runtime gap is tracked by #1821.
+    "concurrency/actor_pipeline": "unsupported",
+    "concurrency/async_await": "unsupported",
+    "concurrency/counter_actor": "unsupported",
     "concurrency/supervisor": "unsupported",  # supervision trees → WASM-TODO
     # traffic_light now has fn main() but the machine runtime is not yet wired
     # into the WASI/LLVM path; remains unsupported in WASI until that lands.
     "machines/traffic_light": "unsupported",
+    # wire enum lowering for the WASI playground path is tracked by #1822.
+    "types/wire_types": "unsupported",
 }
 
 

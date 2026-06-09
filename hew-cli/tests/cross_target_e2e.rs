@@ -16,6 +16,9 @@ static DARWIN_CROSS_LIB_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 #[cfg(target_os = "linux")]
 static LINUX_CROSS_LIB_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const REQUIRED_CROSS_TARGET_RUNTIME_SYMBOL: &str = "hew_lambda_drain_all";
+
 fn workspace() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("cross-target-hew-")
@@ -109,6 +112,11 @@ fn require_darwin_cross_target_library() {
 #[cfg(target_os = "macos")]
 fn bootstrap_darwin_cross_target_library() -> Result<(), String> {
     let (target, _) = darwin_cross_target();
+    bootstrap_cross_target_library(target)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn cargo_target_dir_and_profile() -> Result<(PathBuf, &'static str), String> {
     let target_dir = hew_binary()
         .parent()
         .and_then(Path::parent)
@@ -127,15 +135,24 @@ fn bootstrap_darwin_cross_target_library() -> Result<(), String> {
         Some("release") => "release",
         _ => "debug",
     };
-    let built_archive = target_dir.join(target).join(profile).join("libhew.a");
 
-    if !built_archive.is_file() {
-        let output = Command::new("cargo")
-            .args(["build", "-q", "-p", "hew-lib", "--target", target])
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .current_dir(repo_root())
-            .output()
-            .map_err(|error| format!("failed to invoke cargo build for {target}: {error}"))?;
+    Ok((target_dir, profile))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn bootstrap_cross_target_library(target: &str) -> Result<(), String> {
+    let (target_dir, profile) = cargo_target_dir_and_profile()?;
+    let built_archive = target_dir.join(target).join(profile).join("libhew.a");
+    let stamp_path = target_dir.join(format!("hew-cli-cross-target-{target}-{profile}.stamp"));
+    let run_id =
+        std::env::var("NEXTEST_RUN_ID").unwrap_or_else(|_| format!("pid:{}", std::process::id()));
+
+    let archive_current = built_archive.is_file()
+        && std::fs::read_to_string(&stamp_path).is_ok_and(|stamp| stamp == run_id)
+        && archive_defines_symbol(&built_archive, REQUIRED_CROSS_TARGET_RUNTIME_SYMBOL)?;
+
+    if !archive_current {
+        let output = build_cross_target_hew_lib(target, &target_dir, profile)?;
         if !output.status.success() {
             return Err(format!(
                 "failed to build hew-lib for {target}\nstdout:\n{}\nstderr:\n{}",
@@ -152,9 +169,94 @@ fn bootstrap_darwin_cross_target_library() -> Result<(), String> {
         ));
     }
 
-    // No extra staging: `find_hew_lib` now probes `target/<triple>/<profile>/`
-    // directly for native cross-target archives.
+    if !archive_defines_symbol(&built_archive, REQUIRED_CROSS_TARGET_RUNTIME_SYMBOL)? {
+        return Err(format!(
+            "cross-target hew-lib archive {} does not define `{}` after rebuild",
+            built_archive.display(),
+            REQUIRED_CROSS_TARGET_RUNTIME_SYMBOL
+        ));
+    }
+
+    std::fs::write(&stamp_path, run_id).map_err(|error| {
+        format!(
+            "failed to write cross-target bootstrap stamp {}: {error}",
+            stamp_path.display()
+        )
+    })?;
+
     Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn build_cross_target_hew_lib(
+    target: &str,
+    target_dir: &Path,
+    profile: &str,
+) -> Result<std::process::Output, String> {
+    let mut command = Command::new("cargo");
+    command
+        .args(["build", "-q", "-p", "hew-lib", "--target", target])
+        .env("CARGO_TARGET_DIR", target_dir)
+        .current_dir(repo_root());
+    if profile == "release" {
+        command.arg("--release");
+    }
+
+    command
+        .output()
+        .map_err(|error| format!("failed to invoke cargo build for {target}: {error}"))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn archive_defines_symbol(archive: &Path, symbol: &str) -> Result<bool, String> {
+    if !archive.is_file() {
+        return Ok(false);
+    }
+
+    let output = Command::new("nm")
+        .arg("-g")
+        .arg(archive)
+        .output()
+        .map_err(|error| {
+            format!(
+                "failed to inspect cross-target archive {} with nm: {error}",
+                archive.display()
+            )
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let defines_symbol = stdout
+        .lines()
+        .any(|line| nm_line_defines_symbol(line, symbol));
+    if defines_symbol {
+        return Ok(true);
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "failed to inspect cross-target archive {} with nm; symbol `{}` not found in nm output\nstderr:\n{}",
+            archive.display(),
+            symbol,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(false)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn nm_line_defines_symbol(line: &str, symbol: &str) -> bool {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let Some(name) = fields.last() else {
+        return false;
+    };
+    let darwin_name = format!("_{symbol}");
+    if *name != symbol && *name != darwin_name {
+        return false;
+    }
+
+    let Some(kind) = fields.get(fields.len().saturating_sub(2)) else {
+        return false;
+    };
+    !matches!(*kind, "U" | "u")
 }
 
 #[test]
@@ -410,53 +512,11 @@ fn require_linux_cross_target_library(cross_triple: &str) {
 
 /// Build `hew-lib` for the cross-arch Linux target in its native Cargo target
 /// directory so `find_hew_lib` can probe `target/<triple>/<profile>/libhew.a`
-/// directly without extra staging.
+/// directly without extra staging. The shared bootstrap validates that the
+/// archive exports current codegen-emitted runtime ABI symbols before reuse.
 #[cfg(target_os = "linux")]
 fn bootstrap_linux_cross_target_library(target: &str) -> Result<(), String> {
-    let target_dir = hew_binary()
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| {
-            format!(
-                "hew binary path {} has no Cargo target dir",
-                hew_binary().display()
-            )
-        })?
-        .to_path_buf();
-    let profile = match hew_binary()
-        .parent()
-        .and_then(|dir| dir.file_name())
-        .and_then(|name| name.to_str())
-    {
-        Some("release") => "release",
-        _ => "debug",
-    };
-    let built_archive = target_dir.join(target).join(profile).join("libhew.a");
-
-    if !built_archive.is_file() {
-        let output = Command::new("cargo")
-            .args(["build", "-q", "-p", "hew-lib", "--target", target])
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .current_dir(repo_root())
-            .output()
-            .map_err(|error| format!("failed to invoke cargo build for {target}: {error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "failed to build hew-lib for {target}\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            ));
-        }
-    }
-
-    if !built_archive.is_file() {
-        return Err(format!(
-            "cross-target hew-lib build completed but {} was not created",
-            built_archive.display()
-        ));
-    }
-
-    Ok(())
+    bootstrap_cross_target_library(target)
 }
 
 /// Linux same-OS cross-arch native link proof (issue #254 Phase 3).

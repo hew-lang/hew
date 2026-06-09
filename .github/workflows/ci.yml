@@ -37,20 +37,39 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          # Required heavy checks may no-op for docs-only changes, but anything
+          # that can change test/gate behaviour must fail closed and run them.
           filters: |
             code:
               - '**/*.rs'
-              - 'scripts/**/*.py'
-              - 'scripts/**/*.toml'
+              - 'tests/**'
+              - 'scripts/**'
+              - '.config/nextest.toml'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
+              - 'Cargo.toml'
               - '**/Cargo.toml'
+              - 'Cargo.lock'
               - '**/Cargo.lock'
               - 'std/**'
               - 'examples/**'
+              - 'wasm-capability-manifest.toml'
+              - 'hew-sandbox-vm/**'
+              - 'hew-sandbox-wasm/**'
+              - 'hew-runtime-testkit/**'
+              - 'hew-testutil/**'
+              - 'tools/**'
+              - 'xtask/**'
               - 'Makefile'
-              - '.github/workflows/ci.yml'
-              - '.github/actions/setup-llvm/**'
+              - '.github/workflows/**'
+              - '.github/actions/**'
             playground:
               - 'hew-wasm/**'
+              - 'hew-analysis/**'
+              - 'hew-parser/**'
+              - 'hew-types/**'
+              - 'hew-lexer/**'
+              - 'hew-lsp/tests/fixtures/**'
               - 'examples/playground/**'
               - 'scripts/gen-playground-manifest.py'
               - 'Cargo.toml'
@@ -130,7 +149,8 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.
-  # It checks manifest drift and hew-wasm build breakage.
+  # Runs full hew-wasm suite (lib + fixture-coverage integration), checks
+  # manifest freshness, and builds the browser WASM artifact.
   # ─────────────────────────────────────────────────────────────────────────
   playground-wasm-build:
     name: Playground WASM build
@@ -162,9 +182,6 @@ jobs:
           tar -xzf "/tmp/${TARBALL}" -C /tmp
           echo "/tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
           /tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack --version
-
-      - name: Run hew-wasm library smoke tests
-        run: cargo test -p hew-wasm --lib
 
       - name: Check repo-local playground browser/tooling smoke
         run: make playground-check

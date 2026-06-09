@@ -221,10 +221,12 @@ fn v05_wasm_coverage_type_check_clean_fixtures() {
 
 // ── Known-error fixtures: dedicated tests documenting the gap ─────────────
 
-/// `async fn` / `await` are not valid Hew syntax.  The parser rejects them with
-/// an error diagnostic and recovers to a regular fn declaration.  Verify that
-/// the API returns well-formed JSON and that all diagnostics are parse-phase
-/// "no async fn" errors (not regressions in other areas).
+/// `async fn` / `await` are not valid Hew syntax.  The parser rejects the
+/// fixture with one or more error-severity, parse-phase diagnostics.  Mirrors
+/// the canonical contract established by
+/// `hew-lsp/.../mod.rs::v05_async_await_is_rejected_with_parse_errors`:
+/// the fixture must produce parse errors; the exact message text is not
+/// contractual (it is a parser-recovery implementation detail).
 #[test]
 fn v05_wasm_coverage_async_await_api_valid() {
     const FIXTURE: &str = "v05_async_await";
@@ -235,13 +237,20 @@ fn v05_wasm_coverage_async_await_api_valid() {
     let diags = parsed["diagnostics"]
         .as_array()
         .unwrap_or_else(|| panic!("fixture {FIXTURE}: missing diagnostics array"));
-    for diag in diags {
-        let msg = diag["message"].as_str().unwrap_or("");
-        assert!(
-            msg.contains("async"),
-            "fixture {FIXTURE}: unexpected diagnostic (expected async-related): {diag}"
-        );
-    }
+
+    // Require at least one error-severity, parse-phase diagnostic: the parser
+    // must reject `async fn` / `await` with an error.  Message text is
+    // intentionally not asserted — recovery wording is non-contractual.
+    let parse_errors: Vec<&serde_json::Value> = diags
+        .iter()
+        .filter(|d| d["severity"].as_str() == Some("error") && d["phase"].as_str() == Some("parse"))
+        .collect();
+    assert!(
+        !parse_errors.is_empty(),
+        "fixture {FIXTURE}: expected ≥1 parse-phase error diagnostic; \
+         got {} diagnostics: {diags:?}",
+        diags.len()
+    );
 }
 
 // ── Cross-module main fixture (single-source limitation) ──────────────────

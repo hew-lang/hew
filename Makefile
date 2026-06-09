@@ -29,7 +29,7 @@
 #   make sandbox-fixtures          — regenerate sandbox VM bytecode fixtures from main.hew
 #   make sandbox-fixtures-check    — verify sandbox VM bytecode fixtures are fresh
 #   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
-#   make playground-check          — manifest freshness + curated analysis smoke + build hew-wasm
+#   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
@@ -158,9 +158,11 @@ sandbox-parity: hew stdlib
 	cargo test -p hew-sandbox-wasm --test parity
 
 # Repo-local browser/tooling smoke:
-# manifest freshness + curated hew-wasm analysis smoke + analysis-only WASM build.
+# manifest freshness + full hew-wasm test suite (lib + integration) + analysis-only WASM build.
+# Running full `cargo test -p hew-wasm` subsumes the --lib curated-manifest smoke and compiles
+# and runs tests/v05_wasm_coverage.rs (the fixture-coverage integration suite).
 playground-check: playground-manifest-check
-	cargo test -p hew-wasm --lib curated_playground_manifest_smoke -- --exact
+	cargo test -p hew-wasm
 	$(MAKE) wasm
 
 # Focused curated playground WASI runtime preflight.

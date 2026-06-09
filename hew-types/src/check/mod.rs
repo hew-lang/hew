@@ -9,9 +9,9 @@ use crate::unify::unify;
 use hew_parser::ast::{
     ActorDecl, ActorInit, AttributeArg, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock,
     ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal,
-    MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart,
-    TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantKind, WhereClause, WireDecl, WireDeclKind,
+    MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, Span,
+    Spanned, Stmt, StringPart, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
 };
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::sync::OnceLock;
@@ -322,6 +322,7 @@ impl Checker {
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
             method_call_consumes_receiver: std::mem::take(&mut self.method_call_consumes_receiver),
             actor_send_aliasing: std::mem::take(&mut self.actor_send_aliasing),
+            actor_max_heap: std::mem::take(&mut self.actor_max_heap),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),

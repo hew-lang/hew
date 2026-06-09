@@ -25,6 +25,10 @@
 //! - [`hew_pid_is_local`] — Check if a PID refers to a local actor.
 //! - [`hew_pid_set_local_node`] — Set this node's ID for routing.
 //! - [`hew_pid_local_node`] — Get this node's ID.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicU16, Ordering};

@@ -49,6 +49,10 @@ pub enum ResolvedTy {
     U32,
     /// 64-bit unsigned integer
     U64,
+    /// Platform-sized signed integer: 32-bit on WASM32, 64-bit on native.
+    Isize,
+    /// Platform-sized unsigned integer: 32-bit on WASM32, 64-bit on native.
+    Usize,
     /// 32-bit floating point
     F32,
     /// 64-bit floating point
@@ -219,6 +223,8 @@ impl ResolvedTy {
             Ty::U16 => Ok(ResolvedTy::U16),
             Ty::U32 => Ok(ResolvedTy::U32),
             Ty::U64 => Ok(ResolvedTy::U64),
+            Ty::Isize => Ok(ResolvedTy::Isize),
+            Ty::Usize => Ok(ResolvedTy::Usize),
             Ty::F32 => Ok(ResolvedTy::F32),
             Ty::F64 => Ok(ResolvedTy::F64),
             Ty::Bool => Ok(ResolvedTy::Bool),
@@ -295,6 +301,8 @@ impl ResolvedTy {
             ResolvedTy::U16 => Ty::U16,
             ResolvedTy::U32 => Ty::U32,
             ResolvedTy::U64 => Ty::U64,
+            ResolvedTy::Isize => Ty::Isize,
+            ResolvedTy::Usize => Ty::Usize,
             ResolvedTy::F32 => Ty::F32,
             ResolvedTy::F64 => Ty::F64,
             ResolvedTy::Bool => Ty::Bool,

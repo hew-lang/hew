@@ -188,6 +188,27 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
             max: u64::MAX,
         }),
     },
+    // Platform-sized integers.  Wire bounds reflect the 64-bit native
+    // platform (wasm32 duplex is disabled at runtime, so no 32-bit wire
+    // path exists today — see hew-runtime/src/duplex.rs cfg guard).
+    PrimitiveDesc {
+        kind: PrimitiveWireKind::Isize,
+        aliases: aliases_for("isize"),
+        class: PrimitiveClass::SignedInt,
+        bounds: Some(IntegerBounds {
+            min: i64::MIN,
+            max: i64::MAX as u64,
+        }),
+    },
+    PrimitiveDesc {
+        kind: PrimitiveWireKind::Usize,
+        aliases: aliases_for("usize"),
+        class: PrimitiveClass::UnsignedInt,
+        bounds: Some(IntegerBounds {
+            min: 0,
+            max: u64::MAX,
+        }),
+    },
     PrimitiveDesc {
         kind: PrimitiveWireKind::Char,
         aliases: aliases_for("char"),
@@ -278,6 +299,8 @@ mod tests {
             PrimitiveWireKind::U16,
             PrimitiveWireKind::U32,
             PrimitiveWireKind::U64,
+            PrimitiveWireKind::Isize,
+            PrimitiveWireKind::Usize,
             PrimitiveWireKind::Char,
             PrimitiveWireKind::F32,
             PrimitiveWireKind::F64,

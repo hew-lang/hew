@@ -3,6 +3,10 @@
 //! Defines the [`HewActor`] struct layout for C ABI compatibility and the
 //! actor state machine constants. The full actor API (spawn, send, activate)
 //! will be implemented in a future iteration.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::lifetime::live_actors;
 use std::cell::Cell;
@@ -996,6 +1000,13 @@ pub struct HewActorOpts {
     pub coalesce_fallback: i32,
     /// Messages per activation (`0` = default).
     pub budget: i32,
+    /// Per-actor arena cap in bytes (`0` = unbounded, same as `hew_arena_new`).
+    ///
+    /// Non-zero values cause [`hew_actor_spawn_opts`] to call
+    /// `hew_arena_new_with_cap(arena_cap_bytes)` instead of `hew_arena_new()`.
+    /// Set from the `#[max_heap(N)]` actor attribute; callers that do not use
+    /// the attribute must supply `0`.
+    pub arena_cap_bytes: usize,
 }
 
 fn parse_overflow_policy(policy: i32) -> HewOverflowPolicy {
@@ -1061,6 +1072,9 @@ struct ActorSpawnConfig {
     mailbox: *mut c_void,
     budget: i32,
     coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
+    /// Arena cap in bytes. `0` = unbounded (calls `hew_arena_new`).
+    /// Non-zero calls `hew_arena_new_with_cap(cap_bytes)`.
+    cap_bytes: usize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1196,13 +1210,12 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     }
 
     let (actor_id, pid) = next_spawn_actor_identity();
-    let actor = build_spawned_actor(
-        config,
-        actor_id,
-        pid,
-        init_state,
-        crate::arena::hew_arena_new(),
-    );
+    let arena = if config.cap_bytes > 0 {
+        crate::arena::hew_arena_new_with_cap(config.cap_bytes)
+    } else {
+        crate::arena::hew_arena_new()
+    };
+    let actor = build_spawned_actor(config, actor_id, pid, init_state, arena);
     let raw = Box::into_raw(actor);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
     unsafe { finalize_spawned_actor(raw, actor_id) };
@@ -1229,7 +1242,11 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
 
     // Allocate the per-actor arena bump allocator.  Mirror the native path:
     // if allocation fails, free all resources already owned and return null.
-    let arena = crate::arena::hew_arena_new();
+    let arena = if config.cap_bytes > 0 {
+        crate::arena::hew_arena_new_with_cap(config.cap_bytes)
+    } else {
+        crate::arena::hew_arena_new()
+    };
     if arena.is_null() {
         // SAFETY: `init_state` was created above and ownership has not been transferred.
         unsafe { cleanup_failed_spawn(&config, init_state) };
@@ -1285,6 +1302,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
+            cap_bytes: 0,
         })
     }
 }
@@ -1342,6 +1360,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
             mailbox: mailbox.cast(),
             budget,
             coalesce_key_fn: opts.coalesce_key_fn,
+            cap_bytes: opts.arena_cap_bytes,
         })
     }
 }
@@ -1381,6 +1400,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
+            cap_bytes: 0,
         })
     }
 }
@@ -3254,6 +3274,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
             mailbox,
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
+            cap_bytes: 0,
         })
     }
 }
@@ -3288,6 +3309,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
             mailbox,
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
+            cap_bytes: 0,
         })
     }
 }
@@ -3346,6 +3368,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
             mailbox,
             budget,
             coalesce_key_fn: opts.coalesce_key_fn,
+            cap_bytes: opts.arena_cap_bytes,
         })
     }
 }
@@ -6380,6 +6403,111 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── arena_cap_bytes threading via hew_actor_spawn_opts ───────────────
+
+    /// `hew_actor_spawn_opts` with `arena_cap_bytes > 0` spawns an actor whose
+    /// arena enforces the cap: the first allocation over the cap returns null.
+    #[test]
+    fn max_heap_spawn_opts_threads_cap_to_arena() {
+        let _guard = crate::runtime_test_guard();
+
+        // Cap: exactly 128 bytes.
+        let opts = HewActorOpts {
+            init_state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox_capacity: 0,
+            overflow: 0,
+            coalesce_key_fn: None,
+            coalesce_fallback: 0,
+            budget: 0,
+            arena_cap_bytes: 128,
+        };
+
+        // SAFETY: opts is valid for the duration of the call.
+        let actor = unsafe { hew_actor_spawn_opts(&raw const opts) };
+        assert!(
+            !actor.is_null(),
+            "spawn with arena_cap_bytes=128 must succeed"
+        );
+
+        // Verify the arena cap was set: install the actor's arena, attempt to
+        // alloc 129 bytes (one over cap), and assert it returns null.
+        // SAFETY: actor is valid; arena pointer comes from the actor struct.
+        let arena = unsafe { (*actor).arena };
+        assert!(!arena.is_null(), "actor arena must be allocated");
+
+        // Install the arena as current so hew_arena_malloc routes through it.
+        // SAFETY: arena is a valid pointer from hew_arena_new_with_cap.
+        unsafe { crate::arena::hew_arena_set_current(arena) };
+
+        // Allocate up to the cap: 128 bytes in a single call.
+        // SAFETY: arena is installed and valid.
+        let p = unsafe { crate::arena::hew_arena_malloc(128) };
+        assert!(!p.is_null(), "128-byte alloc at cap must succeed");
+
+        // Now exceed the cap: one more byte should return null.
+        // SAFETY: arena is still installed.
+        let over = unsafe { crate::arena::hew_arena_malloc(1) };
+        assert!(
+            over.is_null(),
+            "alloc over arena cap must return null (HeapExceeded path)"
+        );
+
+        // Restore no-arena state before teardown.
+        // SAFETY: null restores no-arena state.
+        unsafe { crate::arena::hew_arena_set_current(ptr::null_mut()) };
+
+        // SAFETY: actor is valid and was spawned above.
+        let rc = unsafe { hew_actor_free(actor) };
+        assert_eq!(rc, 0, "hew_actor_free must succeed");
+    }
+
+    /// `hew_actor_spawn_opts` with `arena_cap_bytes = 0` spawns an actor with
+    /// an unbounded arena (same as legacy `hew_arena_new`).
+    #[test]
+    fn max_heap_spawn_opts_zero_cap_is_unbounded() {
+        let _guard = crate::runtime_test_guard();
+
+        let opts = HewActorOpts {
+            init_state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox_capacity: 0,
+            overflow: 0,
+            coalesce_key_fn: None,
+            coalesce_fallback: 0,
+            budget: 0,
+            arena_cap_bytes: 0,
+        };
+
+        // SAFETY: opts is valid for the duration of the call.
+        let actor = unsafe { hew_actor_spawn_opts(&raw const opts) };
+        assert!(
+            !actor.is_null(),
+            "spawn with arena_cap_bytes=0 must succeed"
+        );
+
+        // SAFETY: actor is valid; arena pointer comes from the actor struct.
+        let arena = unsafe { (*actor).arena };
+        assert!(!arena.is_null(), "actor arena must be allocated");
+
+        // Install the arena and alloc a large block — must succeed (unbounded).
+        // SAFETY: arena is a valid pointer from hew_arena_new.
+        unsafe { crate::arena::hew_arena_set_current(arena) };
+
+        // SAFETY: arena is installed.
+        let p = unsafe { crate::arena::hew_arena_malloc(65536) };
+        assert!(!p.is_null(), "64 KiB alloc in unbounded arena must succeed");
+
+        // SAFETY: null restores no-arena state.
+        unsafe { crate::arena::hew_arena_set_current(ptr::null_mut()) };
+
+        // SAFETY: actor is valid.
+        let rc = unsafe { hew_actor_free(actor) };
+        assert_eq!(rc, 0, "hew_actor_free must succeed");
     }
 }
 

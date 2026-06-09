@@ -310,7 +310,17 @@ impl TraceEvent {
     pub fn is_actionable(&self) -> bool {
         matches!(
             self.event_type.as_str(),
-            "send" | "spawn" | "crash" | "stop"
+            "send"
+                | "spawn"
+                | "crash"
+                | "stop"
+                | "duplex_created"
+                | "duplex_half_split"
+                | "duplex_closed"
+                | "sink_closed"
+                | "stream_closed"
+                | "lambda_spawned"
+                | "lambda_released"
         )
     }
 }
@@ -797,5 +807,74 @@ mod tests {
             .unwrap_err()
             .into();
         assert!(e.to_string().starts_with("parse failed:"), "{e}");
+    }
+
+    // ── TraceEvent channel lifecycle round-trip tests ─────────────────────
+
+    fn make_trace_event(event_type: &str) -> TraceEvent {
+        serde_json::from_str(&format!(
+            r#"{{"trace_id":"0000000000000000","span_id":1,"parent_span_id":0,"actor_id":12345678,"event_type":"{event_type}","msg_type":0,"timestamp_ns":9999}}"#
+        ))
+        .expect("TraceEvent JSON must deserialise")
+    }
+
+    /// Each new channel `event_type` string deserialises into a `TraceEvent`
+    /// with the `event_type` field populated (wire-contract-test-presence).
+    #[test]
+    fn channel_event_types_deserialise_with_populated_fields() {
+        let channel_types = [
+            "duplex_created",
+            "duplex_half_split",
+            "duplex_closed",
+            "sink_closed",
+            "stream_closed",
+            "lambda_spawned",
+            "lambda_released",
+        ];
+        for et in channel_types {
+            let ev = make_trace_event(et);
+            assert_eq!(ev.event_type, et, "event_type must round-trip for {et}");
+            assert_eq!(
+                ev.actor_id, 12_345_678,
+                "actor_id must be populated for {et}"
+            );
+            assert_eq!(
+                ev.timestamp_ns, 9999,
+                "timestamp_ns must be populated for {et}"
+            );
+        }
+    }
+
+    /// Channel lifecycle events are actionable (visible in the trace UI).
+    #[test]
+    fn channel_event_types_are_actionable() {
+        let actionable = [
+            "duplex_created",
+            "duplex_half_split",
+            "duplex_closed",
+            "sink_closed",
+            "stream_closed",
+            "lambda_spawned",
+            "lambda_released",
+        ];
+        for et in actionable {
+            let ev = make_trace_event(et);
+            assert!(
+                ev.is_actionable(),
+                "channel event '{et}' must be actionable"
+            );
+        }
+    }
+
+    /// Internal-only span types remain non-actionable.
+    #[test]
+    fn internal_span_types_are_not_actionable() {
+        for et in ["begin", "end", "io_accept", "io_recv", "unknown"] {
+            let ev = make_trace_event(et);
+            assert!(
+                !ev.is_actionable(),
+                "internal event '{et}' must not be actionable"
+            );
+        }
     }
 }

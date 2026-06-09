@@ -391,6 +391,21 @@ impl Checker {
                 ty: type_expr,
             } => self.synthesize_cast(inner, type_expr, span),
 
+            // Identity comparison: `lhs is rhs` (slice D-2).
+            //
+            // Allowed receivers per plan §D-D2: machines, actors/actor refs,
+            // heap-backed `Vec`/`HashMap`/`HashSet`/`bytes`, and user `type`
+            // declarations (`TypeDefKind::Struct`/`Enum`, both Rc-backed in
+            // the runtime). Rejected with `E_IS_VALUE_TYPE`: scalars, `String`,
+            // `record` types, tuples, ranges, fn/closures.
+            //
+            // Result is always `bool`. Cross-class mismatches (e.g.
+            // `ActorRef<T> is Vec<int>`) collapse into a single
+            // `TypeErrorKind::Mismatch` diagnostic that requires the operands
+            // share the same resolved type. Move/consumed-self semantics
+            // follow the existing use-after-move rule (plan §D-D4, Q-N3).
+            Expr::Is { lhs, rhs } => self.synthesize_is(lhs, rhs, span),
+
             _ => self.synthesize_concurrency(expr, span),
         };
 
@@ -742,13 +757,33 @@ impl Checker {
     pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
         if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
             let is_moved = binding.is_moved;
+            let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
             if is_moved {
-                self.report_error(
+                let mut err = TypeError::new(
                     TypeErrorKind::UseAfterMove,
-                    span,
+                    span.clone(),
                     format!("use of moved value `{name}`"),
                 );
+                if let Some(ref source_module) = self.current_module {
+                    err = err.with_source_module(source_module.clone());
+                }
+                if let Some(moved_span) = moved_at {
+                    err = err.with_note(moved_span, "value was consumed here");
+                }
+                // Substrate handles (Duplex, Sink, Stream, SendHalf, RecvHalf) are
+                // affine: each consuming method (`.close()`, `.send_half()`,
+                // `.recv_half()`, etc.) moves the handle exactly once. Subsequent
+                // uses are rejected here. Name the type so the user knows why.
+                if Self::ty_is_substrate_handle(&ty) {
+                    err = err.with_suggestion(format!(
+                        "`{}` is a substrate handle — consuming methods like `.close()`, \
+                         `.send_half()`, and `.recv_half()` move the handle; \
+                         use a single consuming call per binding",
+                        ty.user_facing()
+                    ));
+                }
+                self.errors.push(err);
             }
             // Track captures: variable from scope below the lambda boundary
             if let Some(capture_depth) = self.lambda_capture_depth {
@@ -861,31 +896,27 @@ impl Checker {
         match &obj_ty {
             Ty::Array(elem, _) | Ty::Slice(elem) => (**elem).clone(),
             Ty::Named { name, args } if name == "Vec" && !args.is_empty() => args[0].clone(),
-            // Custom type indexing: desugar obj[key] → obj.get(key)
             Ty::Named { name, args } => {
-                if let Some(sig) = self.lookup_named_method_sig(name, args, "get") {
-                    if let Some(param_ty) = sig.params.first() {
-                        self.check_against(&index.0, &index.1, param_ty);
-                    }
-                    sig.return_type
-                } else if self.lookup_type_def(name).is_some() {
-                    self.report_error(
+                // Bracket indexing via a named type's `.get()` method is no longer
+                // supported. Use the explicit method call instead.
+                if self.lookup_named_method_sig(name, args, "get").is_some() {
+                    self.report_error_with_suggestions(
                         TypeErrorKind::InvalidOperation,
                         span,
                         format!(
-                            "cannot index into `{}`: type has no `get` method",
+                            "cannot index into `{}` with `[]`; use `.get(k)` instead",
                             obj_ty.user_facing()
                         ),
+                        vec![format!("use `.get(k)` on `{}`", obj_ty.user_facing())],
                     );
-                    Ty::Error
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
                         format!("cannot index into `{}`", obj_ty.user_facing()),
                     );
-                    Ty::Error
                 }
+                Ty::Error
             }
             _ => {
                 self.report_error(
@@ -1112,7 +1143,7 @@ impl Checker {
                 self.check_block(block, None);
                 Ty::Unit
             }
-            Expr::Unsafe(block) => {
+            Expr::UnsafeBlock(block) => {
                 let prev = self.in_unsafe;
                 self.in_unsafe = true;
                 let ty = self.check_block(block, None);
@@ -1859,6 +1890,48 @@ impl Checker {
         let right_resolved = self.subst.resolve(&right_ty);
 
         match op {
+            // Wrapping arithmetic: integer-only. No string concat, no duration,
+            // no float. Both operands must be integer types of the same width.
+            BinaryOp::WrappingAdd | BinaryOp::WrappingSub | BinaryOp::WrappingMul => {
+                if left_resolved.is_integer() && right_resolved.is_integer() {
+                    if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                        common_ty
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &left.1,
+                            format!(
+                                "`{op}` requires compatible integer types; found `{}` and `{}`",
+                                left_resolved.user_facing(),
+                                right_resolved.user_facing()
+                            ),
+                        );
+                        Ty::Error
+                    }
+                } else if matches!(&left_resolved, Ty::Var(_)) && right_resolved.is_integer() {
+                    self.expect_type(&right_ty, &left_ty, &left.1);
+                    right_ty
+                } else if left_resolved.is_integer() && matches!(&right_resolved, Ty::Var(_))
+                    || matches!((&left_resolved, &right_resolved), (Ty::Var(_), Ty::Var(_)))
+                {
+                    // Either only the right is a type variable (constrain it to
+                    // the left's integer type) or both are type variables
+                    // (unify them and leave the result polymorphic).
+                    self.expect_type(&left_ty, &right_ty, &right.1);
+                    left_ty
+                } else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &left.1,
+                        format!(
+                            "`{op}` requires integer operands; found `{}` and `{}`",
+                            left_resolved.user_facing(),
+                            right_resolved.user_facing()
+                        ),
+                    );
+                    Ty::Error
+                }
+            }
             BinaryOp::Add
             | BinaryOp::Subtract
             | BinaryOp::Multiply
@@ -2839,7 +2912,7 @@ impl Checker {
             | Expr::Select { .. }
             | Expr::Join(_)
             | Expr::Timeout { .. }
-            | Expr::Unsafe(_)
+            | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Cooperate
             | Expr::This
@@ -2852,7 +2925,8 @@ impl Checker {
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
-            | Expr::MachineEmit { .. } => {}
+            | Expr::MachineEmit { .. }
+            | Expr::Is { .. } => {}
         }
     }
 
@@ -3826,5 +3900,147 @@ impl Checker {
             binding_name: binding_name.to_string(),
             alloc_class: class,
         });
+    }
+
+    /// Type-check `lhs is rhs` (identity comparison, slice D-2).
+    ///
+    /// See the doc comment on the `Expr::Is` arm in [`Self::synthesize_inner`]
+    /// for the allowance set, rejection rules, and cross-class behaviour.
+    ///
+    /// Always returns `Ty::Bool` (even after reporting errors); the operator
+    /// is total at the type level so downstream uses (`if (a is b) { ... }`)
+    /// don't double-poison.
+    fn synthesize_is(&mut self, lhs: &Spanned<Expr>, rhs: &Spanned<Expr>, span: &Span) -> Ty {
+        let lhs_ty = self.synthesize(&lhs.0, &lhs.1);
+        let rhs_ty = self.synthesize(&rhs.0, &rhs.1);
+        let lhs_resolved = self.subst.resolve(&lhs_ty);
+        let rhs_resolved = self.subst.resolve(&rhs_ty);
+
+        // Don't double-report when either side is already poisoned by an
+        // upstream diagnostic (`Ty::Error`) or still under inference
+        // (`Ty::Var`). The operator still produces `bool` so enclosing
+        // expressions see a stable type.
+        if matches!(lhs_resolved, Ty::Error | Ty::Var(_))
+            || matches!(rhs_resolved, Ty::Error | Ty::Var(_))
+        {
+            return Ty::Bool;
+        }
+
+        let lhs_ok = self.is_identity_capable(&lhs_resolved);
+        let rhs_ok = self.is_identity_capable(&rhs_resolved);
+
+        if !lhs_ok {
+            self.report_is_value_type(&lhs.1, &lhs_resolved);
+        }
+        if !rhs_ok {
+            self.report_is_value_type(&rhs.1, &rhs_resolved);
+        }
+
+        // Cross-class / cross-instantiation mismatch (e.g. `Vec<int> is Vec<String>`
+        // or `ActorRef<Foo> is Vec<int>`) — only reported when both sides are
+        // independently identity-capable; otherwise the value-type rejection
+        // above carries the diagnostic.
+        if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
+            self.report_error(
+                TypeErrorKind::Mismatch {
+                    expected: lhs_resolved.user_facing().to_string(),
+                    actual: rhs_resolved.user_facing().to_string(),
+                },
+                span,
+                format!(
+                    "`is` operands must have the same type; found `{}` and `{}`",
+                    lhs_resolved.user_facing(),
+                    rhs_resolved.user_facing()
+                ),
+            );
+        }
+
+        Ty::Bool
+    }
+
+    /// Report `E_IS_VALUE_TYPE` for a value-type operand of `is`.
+    fn report_is_value_type(&mut self, span: &Span, ty: &Ty) {
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "`is` requires an identity-bearing operand; `{}` is a value type \
+                 (E_IS_VALUE_TYPE) — use `==` for value comparison; `is` checks \
+                 identity for heap-backed types only",
+                ty.user_facing()
+            ),
+        );
+    }
+
+    /// Classify a resolved type as identity-bearing per plan §D-D2.
+    ///
+    /// Returns `true` when `is` is valid on values of this type:
+    ///
+    /// * Machines (`TypeDefKind::Machine`).
+    /// * Actors and actor handles: `TypeDefKind::Actor` named types,
+    ///   `ActorRef<T>`, and `Actor<T>`.
+    /// * Heap-backed collections: `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`.
+    /// * `bytes`.
+    /// * User `type Foo { ... }` declarations (`TypeDefKind::Struct` and
+    ///   `TypeDefKind::Enum`), which are Rc-backed in the runtime.
+    ///
+    /// Returns `false` for value types: scalars, `String`, `record` types,
+    /// tuples, arrays, slices, ranges, durations, functions, closures, and
+    /// trait objects. Caller is responsible for handling `Ty::Var` / `Ty::Error`
+    /// before invoking this predicate.
+    fn is_identity_capable(&self, ty: &Ty) -> bool {
+        match ty {
+            // Heap-backed builtin handles.
+            Ty::Bytes => true,
+
+            // Named types: actor handles, collection builtins, and any user
+            // `TypeDef` whose kind carries heap/reference identity.
+            Ty::Named { name, .. } => {
+                // Actor handles (`ActorRef<T>` / `Actor<T>`).
+                if ty.as_actor_handle().is_some() {
+                    return true;
+                }
+                // Heap-backed builtin collections — kept name-keyed since they
+                // have no `TypeDef` entry.
+                if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
+                    return true;
+                }
+                // User type declarations: machines, actors, and user
+                // `type Foo { ... }` (Struct/Enum, Rc-backed). `Record` is
+                // explicitly rejected as a value type.
+                if let Some(td) = self.type_defs.get(name) {
+                    return matches!(
+                        td.kind,
+                        TypeDefKind::Machine
+                            | TypeDefKind::Actor
+                            | TypeDefKind::Struct
+                            | TypeDefKind::Enum
+                    );
+                }
+                false
+            }
+
+            // Everything else is a value type for `is` purposes: scalars,
+            // `String`, tuples, arrays, slices, function/closure types,
+            // pointers, trait objects, durations, unit, never, tasks,
+            // type vars (handled by caller), and the error sentinel.
+            _ => false,
+        }
+    }
+
+    /// Return `true` if `ty` is a v0.5 substrate handle type (affine — consumed
+    /// by exactly one method call). These are `Duplex<S,R>`, `Sink<T>`,
+    /// `Stream<T>`, `SendHalf<S>`, and `RecvHalf<R>`.
+    ///
+    /// Used by [`synthesize_identifier`](Self::synthesize_identifier) to add a
+    /// targeted suggestion when a `UseAfterMove` fires on a substrate binding.
+    fn ty_is_substrate_handle(ty: &Ty) -> bool {
+        let Ty::Named { name, .. } = ty else {
+            return false;
+        };
+        matches!(
+            name.as_str(),
+            "Duplex" | "Sink" | "Stream" | "SendHalf" | "RecvHalf"
+        )
     }
 }

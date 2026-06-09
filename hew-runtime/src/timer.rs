@@ -6,6 +6,10 @@
 //! The [`HewTimerList`] struct is `#[repr(C)]` because generated code creates
 //! it on the stack.  Locking uses `libc::pthread_mutex_*` to match the C ABI
 //! layout.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::{c_int, c_void};
 use std::ptr;

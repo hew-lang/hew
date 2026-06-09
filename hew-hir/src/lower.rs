@@ -1,11 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hew_parser::ast::{
     BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal, MachineDecl, Pattern, Program,
     ResourceMarker, SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl,
     TypeExpr,
 };
-use hew_types::{MethodCallRewrite, ResolvedTy, SpanKey, TypeCheckOutput};
+use hew_types::{
+    AssignTargetKind, AssignTargetShape, LoweringFact, MethodCallRewrite, ResolvedTy, SpanKey, Ty,
+    TypeCheckOutput,
+};
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
@@ -145,6 +148,13 @@ struct LowerCtx {
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-inferred types for every expression, keyed by expression span.
+    /// Consulted at `Expr::Call` sites to determine the call-result type from
+    /// checker authority rather than re-deriving from the callee's HIR type.
+    /// This is the canonical source of truth for builtin callee result types
+    /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
+    /// `fn_registry` hit.
+    expr_types: HashMap<SpanKey, Ty>,
     /// Depth counter for nested `scope{}` bodies. When > 0, statement-expression
     /// calls are inferred as child-task spawns (TI-1); outside any scope body
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
@@ -166,6 +176,66 @@ struct LowerCtx {
     /// `mem::replace` so the outer self-binding doesn't leak into an inner
     /// lambda's classification.
     current_actor_self: Option<(BindingId, String)>,
+    /// Checker-resolved type arguments for generic function calls that lack
+    /// explicit type annotations.  Keyed by the call expression span.
+    ///
+    /// Passive pass-through: HIR does not yet lower generic monomorphization.
+    /// Future consumer: generic-call lowering in the MIR elaborator or E4
+    /// codegen once generic stdlib calls appear in v0.5 programs.
+    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    #[expect(
+        dead_code,
+        reason = "passive pass-through; future consumer is generic-call monomorphization in E4 codegen"
+    )]
+    call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Checker-authoritative ABI-selector facts for erased runtime types.
+    /// Currently covers `HashSet` element-type dispatch (`i64`/`u64`/`str`
+    /// → `Int64` or `String` ABI variant).
+    ///
+    /// Passive pass-through: `HashSet` ABI selection lives in MIR/codegen, not
+    /// in HIR lowering.  Future consumer: E4 codegen and slice 4.7 spine
+    /// widening when `HashSet` operations enter the Rust pipeline.
+    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    #[expect(
+        dead_code,
+        reason = "passive pass-through; future consumer is HashSet ABI selection in E4 codegen"
+    )]
+    lowering_facts: HashMap<SpanKey, LoweringFact>,
+    /// Checker-resolved assignment target classification keyed by the target
+    /// expression span.
+    ///
+    /// Passive pass-through: HIR does not yet lower `Stmt::Assign` (it falls
+    /// through to `unsupported`).  Future consumer: MIR/codegen compound-
+    /// assignment lowering and Machine Lane B actor-field writes.
+    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    #[expect(
+        dead_code,
+        reason = "passive pass-through; future consumer is Stmt::Assign lowering in MIR/codegen"
+    )]
+    assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
+    /// Checker-resolved assignment target type-shape metadata (signedness flag)
+    /// keyed by the target expression span.  Populated alongside
+    /// `assign_target_kinds` for every accepted assignment.
+    ///
+    /// Passive pass-through: same consumer timeline as `assign_target_kinds`.
+    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    #[expect(
+        dead_code,
+        reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
+    )]
+    assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
+    /// Actor type names that participate in reference cycles, computed by the
+    /// checker's cycle-detection pass.
+    ///
+    /// Passive pass-through: no production consumer exists anywhere yet.
+    /// Future consumer: Machine Lane B actor codegen (refcount-cycle-breaking
+    /// strategy selection).
+    /// (LESSONS: producer-bridge-before-codegen P1)
+    #[expect(
+        dead_code,
+        reason = "passive pass-through; future consumer is Machine Lane B actor cycle handling"
+    )]
+    cycle_capable_actors: HashSet<String>,
 }
 
 impl LowerCtx {
@@ -182,9 +252,15 @@ impl LowerCtx {
             type_classes,
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            expr_types: tc_output.expr_types.clone(),
             scope_depth: 0,
             statement_position: false,
             current_actor_self: None,
+            call_type_args: tc_output.call_type_args.clone(),
+            lowering_facts: tc_output.lowering_facts.clone(),
+            assign_target_kinds: tc_output.assign_target_kinds.clone(),
+            assign_target_shapes: tc_output.assign_target_shapes.clone(),
+            cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
         }
     }
 }
@@ -708,6 +784,12 @@ impl LowerCtx {
                 let temp_name = format!("__tuple_{}", self.ids.binding().0);
                 let temp_binding =
                     self.bind(temp_name.clone(), tuple_ty.clone(), false, span.clone());
+                // Capture the binding id before `temp_binding` is moved into
+                // the `HirStmt` below.  MIR lowering's `TupleIndex` arm needs
+                // `ResolvedRef::Binding(temp_id)` to look up the proxy Place in
+                // `binding_locals`; `Unresolved` would return `None` and break
+                // the `tuple_decomp` lookup for non-BitCopy element types.
+                let temp_id = temp_binding.id;
                 let temp_stmt = HirStmt {
                     node: self.ids.node(),
                     kind: HirStmtKind::Let(temp_binding, Some(tuple_val)),
@@ -739,6 +821,9 @@ impl LowerCtx {
                     };
 
                     // Build a TupleIndex expression: `__tuple_N.<idx>`.
+                    // Use `ResolvedRef::Binding(temp_id)` so MIR can resolve
+                    // the proxy local from `binding_locals` and recover the
+                    // per-element `Place` via `tuple_decomp`.
                     let temp_ref = HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
@@ -747,8 +832,7 @@ impl LowerCtx {
                         intent: IntentKind::Read,
                         kind: HirExprKind::BindingRef {
                             name: temp_name.clone(),
-                            // The temp was just bound so it is always resolved.
-                            resolved: ResolvedRef::Unresolved,
+                            resolved: ResolvedRef::Binding(temp_id),
                         },
                         span: span.clone(),
                     };
@@ -1001,9 +1085,39 @@ impl LowerCtx {
                     .iter()
                     .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
                     .collect();
-                // Determine the call result type from the callee's function type.
-                // If the callee is unresolved, the result type is an inference hole.
-                let result_ty = if let ResolvedTy::Function { ret, .. } = &callee.ty {
+                // Checker authority takes precedence: consult expr_types at the
+                // full call-expression span.  The checker records the call result
+                // type here — including for checker-registered builtins like
+                // `duplex_pair` that have no AST `fn` item and therefore no
+                // `fn_registry` hit.  (LESSONS: checker-authority P0)
+                let checker_key = SpanKey::from(&span);
+                let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                    match ResolvedTy::from_ty(&ty) {
+                        Ok(resolved) => resolved,
+                        Err(err) => {
+                            // Fail-closed: checker side-table is poisoned for
+                            // this call.  Emit a diagnostic; never silently
+                            // substitute Unit.  (LESSONS: checker-output-boundary P0)
+                            let callee_name = if let Expr::Identifier(name) = &function.0 {
+                                name.clone()
+                            } else {
+                                "<expr>".to_string()
+                            };
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: callee_name,
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "checker-authoritative call result type failed boundary conversion",
+                            ));
+                            ResolvedTy::Unit
+                        }
+                    }
+                } else if let ResolvedTy::Function { ret, .. } = &callee.ty {
+                    // No checker entry: fall through to the callee's HIR-inferred
+                    // function type (used for calls to functions that are in
+                    // fn_registry or locally resolved).
                     *ret.clone()
                 } else {
                     if matches!(
@@ -1229,6 +1343,15 @@ impl LowerCtx {
                 method,
                 args,
             } => self.lower_method_call(receiver, method, args, span.clone()),
+            Expr::UnsafeBlock(block) => {
+                // Unsafe clearance is a checker-only concept; the HIR represents the
+                // body as a plain block.  The `in_unsafe` flag pushed by the type
+                // checker is not carried into HIR or MIR — pointer and FFI safety
+                // obligations are enforced by the checker before lowering.
+                let hir_block = self.lower_block(block, &ResolvedTy::Unit);
+                let ty = hir_block.ty.clone();
+                (HirExprKind::Block(hir_block), ty)
+            }
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -1723,6 +1846,11 @@ impl LowerCtx {
                     "u16" => ResolvedTy::U16,
                     "u32" => ResolvedTy::U32,
                     "u64" => ResolvedTy::U64,
+                    // Platform-sized integers: distinct from fixed-width
+                    // int/uint. Codegen branches on target: 32-bit for
+                    // wasm32, 64-bit for native (B-D1 / Q42 ratification).
+                    "isize" => ResolvedTy::Isize,
+                    "usize" => ResolvedTy::Usize,
                     "f32" => ResolvedTy::F32,
                     "f64" | "float" => ResolvedTy::F64,
                     "bool" | "Bool" => ResolvedTy::Bool,
@@ -1799,6 +1927,10 @@ impl LowerCtx {
             BinaryOp::Add if left == &ResolvedTy::String || right == &ResolvedTy::String => {
                 ResolvedTy::String
             }
+            // Wrapping ops (WrappingAdd/WrappingSub/WrappingMul) fall through
+            // to the wildcard: they return the left operand's integer type,
+            // same as any other integer arithmetic op. The type checker has
+            // already enforced integer-only operands.
             _ => left.clone(),
         }
     }
@@ -2421,7 +2553,7 @@ fn describe_select_source_shape(expr: &Expr) -> String {
         Expr::Range { .. } => "range expression".into(),
         Expr::Cast { .. } => "cast expression".into(),
         Expr::Timeout { .. } => "timeout expression".into(),
-        Expr::Unsafe(_) => "unsafe block".into(),
+        Expr::UnsafeBlock(_) => "unsafe block".into(),
         Expr::Yield(_) => "yield expression".into(),
         Expr::This => "this".into(),
         _ => "expression".into(),

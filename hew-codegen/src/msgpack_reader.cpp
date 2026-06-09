@@ -402,6 +402,9 @@ static ast::ActorDecl parseActorDecl(const msgpack::object &obj) {
   const auto *doc_comment = mapGet(obj, "doc_comment");
   if (doc_comment && !isNil(*doc_comment))
     result.doc_comment = getString(*doc_comment);
+  const auto *max_heap_bytes = mapGet(obj, "max_heap_bytes");
+  if (max_heap_bytes && !isNil(*max_heap_bytes))
+    result.max_heap_bytes = getUint(*max_heap_bytes);
   return result;
 }
 
@@ -524,6 +527,44 @@ static ast::MachineDecl parseMachineDecl(const msgpack::object &obj) {
   const auto *has_default_ = mapGet(obj, "has_default");
   if (has_default_ && !isNil(*has_default_))
     result.has_default = getBool(*has_default_);
+  return result;
+}
+
+static ast::RecordField parseRecordField(const msgpack::object &obj) {
+  ast::RecordField result;
+  result.name = getString(mapReq(obj, "name"));
+  result.ty = parseSpanned<ast::TypeExpr>(mapReq(obj, "ty"), parseTypeExpr);
+  const auto *doc_comment = mapGet(obj, "doc_comment");
+  if (doc_comment && !isNil(*doc_comment))
+    result.doc_comment = getString(*doc_comment);
+  return result;
+}
+
+static ast::RecordKind parseRecordKind(const msgpack::object &obj) {
+  auto [name, payload] = getEnumVariant(obj);
+
+  if (name == "Named") return ast::RecordKind{ast::Named{parseVec<ast::RecordField>(*payload, parseRecordField)}};
+  if (name == "Tuple") return ast::RecordKind{ast::Tuple{parseVec<ast::Spanned<ast::TypeExpr>>(*payload, [](const msgpack::object &o) { return parseSpanned<ast::TypeExpr>(o, parseTypeExpr); })}};
+  fail("unknown RecordKind variant: " + name);
+}
+
+static ast::RecordDecl parseRecordDecl(const msgpack::object &obj) {
+  ast::RecordDecl result;
+  const auto *visibility_ = mapGet(obj, "visibility");
+  if (visibility_ && !isNil(*visibility_))
+    result.visibility = parseVisibility(*visibility_);
+  result.name = getString(mapReq(obj, "name"));
+  const auto *type_params = mapGet(obj, "type_params");
+  if (type_params && !isNil(*type_params))
+    result.type_params = parseVec<ast::TypeParam>(*type_params, parseTypeParam);
+  const auto *where_clause = mapGet(obj, "where_clause");
+  if (where_clause && !isNil(*where_clause))
+    result.where_clause = parseWhereClause(*where_clause);
+  result.kind = parseRecordKind(mapReq(obj, "kind"));
+  const auto *doc_comment = mapGet(obj, "doc_comment");
+  if (doc_comment && !isNil(*doc_comment))
+    result.doc_comment = getString(*doc_comment);
+  result.span = parseSpan(mapReq(obj, "span"));
   return result;
 }
 
@@ -744,6 +785,7 @@ static ast::Item parseItem(const msgpack::object &obj) {
   if (name == "Actor") return ast::Item{parseActorDecl(*payload)};
   if (name == "Supervisor") return ast::Item{parseSupervisorDecl(*payload)};
   if (name == "Machine") return ast::Item{parseMachineDecl(*payload)};
+  if (name == "Record") return ast::Item{parseRecordDecl(*payload)};
   fail("unknown Item variant: " + name);
 }
 
@@ -790,6 +832,9 @@ static ast::BinaryOp parseBinaryOp(const msgpack::object &obj) {
   if (s == "Shr") return ast::BinaryOp::Shr;
   if (s == "Range") return ast::BinaryOp::Range;
   if (s == "RangeInclusive") return ast::BinaryOp::RangeInclusive;
+  if (s == "WrappingAdd") return ast::BinaryOp::WrappingAdd;
+  if (s == "WrappingSub") return ast::BinaryOp::WrappingSub;
+  if (s == "WrappingMul") return ast::BinaryOp::WrappingMul;
   fail("unknown BinaryOp: " + s);
 }
 
@@ -1342,7 +1387,7 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         parseSpanned<ast::Expr>(mapReq(*payload, "duration"), parseExpr));
     return ast::Expr{std::move(e), {}};
   }
-  if (name == "Unsafe")
+  if (name == "UnsafeBlock")
     return ast::Expr{ast::ExprUnsafe{parseBlock(*payload)}, {}};
   if (name == "Yield") {
     ast::ExprYield e;
@@ -1415,6 +1460,14 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         ast::ExprByteArrayLiteral{parseVec<uint8_t>(
             *payload, [](const msgpack::object &o) { return static_cast<uint8_t>(getInt(o)); })},
         {}};
+  if (name == "Is") {
+    ast::ExprIs e;
+    e.lhs = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "lhs"), parseExpr));
+    e.rhs = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "rhs"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
   fail("unknown Expr variant: " + name);
 }
 

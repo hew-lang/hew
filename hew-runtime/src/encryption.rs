@@ -3,6 +3,10 @@
 //! Wraps an existing [`HewTransport`] to provide authenticated encryption
 //! using the Noise XX handshake pattern (`Noise_XX_25519_ChaChaPoly_BLAKE2s`).
 //! Per-connection `snow::TransportState` objects handle encrypt/decrypt.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::util::{MutexExt, RwLockExt};
 use std::collections::HashSet;

@@ -138,6 +138,9 @@ enum class BinaryOp {
   Shr,
   Range,
   RangeInclusive,
+  WrappingAdd,
+  WrappingSub,
+  WrappingMul,
 };
 
 enum class UnaryOp {
@@ -466,6 +469,10 @@ struct ExprMapEntry {
 struct ExprMapLiteral {
   std::vector<ExprMapEntry> entries;
 };
+struct ExprIs {
+  std::unique_ptr<Spanned<Expr>> lhs;
+  std::unique_ptr<Spanned<Expr>> rhs;
+};
 
 struct Expr {
   std::variant<ExprBinary, ExprUnary, ExprLiteral, ExprIdentifier, ExprTuple, ExprArray, ExprBlock,
@@ -474,7 +481,7 @@ struct Expr {
                ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate, ExprThis,
                ExprFieldAccess, ExprIndex, ExprCast, ExprPostfixTry, ExprRange, ExprAwait,
                ExprRegexLiteral, ExprArrayRepeat, ExprByteStringLiteral, ExprByteArrayLiteral,
-               ExprMapLiteral>
+               ExprMapLiteral, ExprIs>
       kind;
   Span span; // Copied from Spanned<Expr> wrapper for codegen convenience
 };
@@ -720,6 +727,40 @@ struct TypeAliasDecl {
   std::optional<std::string> doc_comment;
 };
 
+// ── Record declarations ───────────────────────────────────────────────────
+
+struct RecordField {
+  std::string name;
+  Spanned<TypeExpr> ty;
+  std::optional<std::string> doc_comment;
+};
+
+// Named variant payload for RecordKind.
+struct Named {
+  std::vector<RecordField> fields;
+};
+
+// Tuple variant payload for RecordKind (positional fields).
+struct Tuple {
+  std::vector<Spanned<TypeExpr>> elements;
+};
+
+// RecordKind — Named + Tuple. C++ subtree slated for M6 deletion; this
+// is the minimum change to keep the msgpack round-trip green until M6.
+struct RecordKind {
+  std::variant<Named, Tuple> kind;
+};
+
+struct RecordDecl {
+  Visibility visibility = Visibility::Private;
+  std::string name;
+  std::optional<std::vector<TypeParam>> type_params;
+  std::optional<WhereClause> where_clause;
+  RecordKind kind;
+  std::optional<std::string> doc_comment;
+  Span span;
+};
+
 // ── Traits ────────────────────────────────────────────────────────────────
 
 struct TraitMethod {
@@ -868,6 +909,9 @@ struct ActorDecl {
   std::optional<OverflowPolicy> overflow_policy;
   bool is_isolated = false;
   std::optional<std::string> doc_comment;
+  // `#[max_heap(N)]` annotation: bytes cap for the actor's arena.
+  // None = no annotation (unbounded). Populated by A2 codegen lowering.
+  std::optional<uint64_t> max_heap_bytes;
 };
 
 // ── Supervisor ────────────────────────────────────────────────────────────
@@ -949,7 +993,7 @@ struct FnDecl {
 
 struct Item {
   std::variant<ImportDecl, ConstDecl, TypeDecl, TypeAliasDecl, TraitDecl, ImplDecl, WireDecl,
-               FnDecl, ExternBlock, ActorDecl, SupervisorDecl, MachineDecl>
+               FnDecl, ExternBlock, ActorDecl, SupervisorDecl, MachineDecl, RecordDecl>
       kind;
 };
 

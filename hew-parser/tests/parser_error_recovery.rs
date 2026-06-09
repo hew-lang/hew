@@ -1,9 +1,8 @@
 use hew_parser::ast::{CallArg, Expr, Item, Stmt};
 
-/// `=~` was removed in v0.5: regex matching now goes through `Pattern.is_match`.
-/// The lexer no longer recognizes `=~` as a token, so the parser sees `=`
-/// followed by `~` and errors out. We don't assert on a specific error
-/// message — only that the input fails to parse cleanly.
+/// `=~` was removed in v0.5: regex matching now goes through `Pattern.is_match`
+/// or a match arm with a regex literal pattern.  The parser emits
+/// `E_REGEX_OP_REMOVED` with a hint pointing at the match-arm form.
 #[test]
 fn removed_regex_match_op_is_rejected() {
     let source = r#"fn main() { let x = "hi" =~ re"a"; }"#;
@@ -11,6 +10,14 @@ fn removed_regex_match_op_is_rejected() {
     assert!(
         !result.errors.is_empty(),
         "expected `=~` to be rejected, got clean parse"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_REGEX_OP_REMOVED")),
+        "expected E_REGEX_OP_REMOVED in errors, got: {:?}",
+        result.errors
     );
 }
 
@@ -22,6 +29,32 @@ fn removed_regex_not_match_op_is_rejected() {
     assert!(
         !result.errors.is_empty(),
         "expected `!~` to be rejected, got clean parse"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_REGEX_OP_REMOVED")),
+        "expected E_REGEX_OP_REMOVED in errors, got: {:?}",
+        result.errors
+    );
+}
+
+/// `fork { ... }` block syntax was removed in v0.5; use `scope { ... }` with
+/// `fork name = call(...);` bindings instead.  The parser emits a clear
+/// diagnostic pointing at the replacement form.
+#[test]
+fn fork_block_syntax_is_rejected() {
+    let source = r"fn main() { fork { let x = 1; } }";
+    let result = hew_parser::parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected `fork {{ ... }}` to be rejected, got clean parse"
+    );
+    assert!(
+        result.errors.iter().any(|e| e.message.contains("scope")),
+        "expected error message to mention `scope` as the replacement, got: {:?}",
+        result.errors
     );
 }
 

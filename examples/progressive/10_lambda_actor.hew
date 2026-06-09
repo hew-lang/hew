@@ -8,5 +8,5 @@ fn main() {
     counter.send(5);
     counter.send(10);
     counter.send(15);
-    await close(counter);
+    await counter.close();
 }

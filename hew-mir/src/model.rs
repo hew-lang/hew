@@ -1,6 +1,8 @@
 use hew_hir::{BindingId, IntentKind, SiteId, ValueClass};
 use hew_types::ResolvedTy;
 
+pub use crate::runtime_symbols::UnknownRuntimeSymbol;
+
 /// Distinguishes shared (read-only, may alias) from mutable (unique,
 /// no-alias) borrows for the aliasing check. The check itself is
 /// declared in `MirCheck::Aliasing` but the spine has no construction
@@ -56,6 +58,38 @@ pub struct BasicBlock {
     pub terminator: Terminator,
 }
 
+/// Failure class carried by `Terminator::Trap`. The discriminant lets
+/// diagnostics, tests, and runtime-trap handlers distinguish the five
+/// trap causes without re-walking the IR or re-inferring from context.
+///
+/// All five variants are declared here; producer bridges land in later
+/// slices:
+/// - `IntegerOverflow`     — wired by B-2 (overflow-trap lowering)
+/// - `IndexOutOfBounds`    — wired by C-2 (Vec/array OOB formalisation)
+/// - `DivideByZero`        — wired by B-5 (divide-by-zero trap)
+/// - `SignedMinDivNegOne`  — wired by B-5 (signed-MIN/-1 trap)
+/// - `ShiftOutOfRange`     — wired by B-5 (shift-range trap)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TrapKind {
+    /// Integer arithmetic overflow on `+`, `-`, or `*`. Fires on signed
+    /// and unsigned overflow when the default (non-wrapping) operators
+    /// are used. Producer: B-2.
+    IntegerOverflow,
+    /// Array or `Vec<T>` index out of bounds. Fires when `xs[i]` has
+    /// `i >= xs.len()` or `i < 0`. Producer: C-2.
+    IndexOutOfBounds,
+    /// Integer division by zero. Fires when the divisor of `/` or `%`
+    /// is zero. Producer: B-5.
+    DivideByZero,
+    /// Signed integer division of the minimum value by -1 (`i64::MIN /
+    /// -1`), which would overflow the result width. Producer: B-5.
+    SignedMinDivNegOne,
+    /// Shift count outside `[0, width)`. Fires when `<<` or `>>` has a
+    /// shift amount that is negative or ≥ the operand's bit-width.
+    /// Producer: B-5.
+    ShiftOutOfRange,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Terminator {
     /// Return whatever has been written into `Place::ReturnSlot`. The
@@ -78,9 +112,18 @@ pub enum Terminator {
         dest: Place,
         next: u32,
     },
-    /// Hard abort: emit a trap or `unreachable`. Used by future panic
-    /// lowering; Cluster 1 doesn't construct this.
-    Panic,
+    /// Hard abort: emit `llvm.trap` followed by `unreachable`. The
+    /// `kind` discriminant identifies the failure class so diagnostics,
+    /// tests, and future runtime-trap handlers can distinguish overflow
+    /// from OOB from divide-by-zero without re-walking the IR.
+    ///
+    /// Construction discipline: producers that wire arithmetic overflow
+    /// (sub-area B), OOB indexing (sub-area C), divide-by-zero, and
+    /// shift-range traps each emit this terminator with the appropriate
+    /// `TrapKind`. No producer exists yet for any variant — this slice
+    /// introduces the consumer-side primitive; the per-variant producer
+    /// bridges land in slices B-2, B-5, C-2, and C-3 respectively.
+    Trap { kind: TrapKind },
     /// Generator suspension: yield `value` to the resumer and continue
     /// at `next` on resume. The presence of this terminator in a
     /// function's CFG is what makes `MirCheck::GeneratorBorrowAcrossYield`
@@ -95,6 +138,37 @@ pub enum Terminator {
     Send {
         actor: Place,
         value: Place,
+        next: u32,
+    },
+    /// Actor ask: send `value` to `actor` on a caller-owned reply
+    /// channel and resume at `next` once the reply has been received.
+    /// The terminator carries two distinct Places by design:
+    ///
+    /// - `channel` — the `HewReplyChannel*` slot allocated by codegen.
+    ///   Used for the runtime ABI sequence
+    ///   `hew_reply_channel_new` → `hew_actor_ask_with_channel` →
+    ///   `hew_reply_wait` on the winning path, and
+    ///   `hew_reply_channel_cancel` → `hew_reply_channel_free` on
+    ///   loser-cleanup. Codegen-internal; not user-visible.
+    /// - `reply_dest` — the user-visible binding that receives the
+    ///   reply value. Populated from `hew_reply_wait`'s return on win.
+    ///
+    /// Declared variant. The v0.5 integer spine has no construction
+    /// surface today — HIR-to-MIR lowers `select{}` arms into
+    /// `Terminator::Select` with `SelectArmKind::ActorAsk`; per-arm
+    /// body-block construction (the seam that would terminate an arm
+    /// body with `Terminator::Ask`) is the `select-wait-dispatch`
+    /// cluster's responsibility. Non-select `actor.method()` lowering
+    /// is the `actor-method-call-lowering` cluster's responsibility.
+    /// The variant is declared here so the MIR shape is forward-
+    /// compatible with both clusters and so `MirCheck::ActorAskEscape`
+    /// has a construction site to look for when actor-call lowering
+    /// lands.
+    Ask {
+        actor: Place,
+        value: Place,
+        channel: Place,
+        reply_dest: Place,
         next: u32,
     },
     /// Sealed `select{}` construct. The terminator carries the per-arm
@@ -219,6 +293,74 @@ pub enum CmpPred {
     SignedLessEq,
     SignedGreater,
     SignedGreaterEq,
+    /// Unsigned ≥: reinterprets both operands as unsigned. Used by
+    /// shift-range checking to catch both negative shift counts (which
+    /// become large unsigned values) and counts ≥ bit-width in a single
+    /// compare. B-5 wires this; prior slices had no unsigned predicate.
+    UnsignedGreaterEq,
+}
+
+/// A validated runtime-ABI call payload carried by `Instr::CallRuntimeAbi`.
+///
+/// Construction is only possible via `RuntimeCall::new`, which enforces that
+/// `symbol` is in the `runtime_symbols::M2_RUNTIME_SYMBOLS` allowlist.
+/// Direct struct construction is impossible because the fields are private,
+/// so the allowlist check cannot be bypassed at any call site — including
+/// release builds (LESSONS P0 `boundary-fail-closed`).
+///
+/// Consumers (codegen, `instr_places`, MIR dump) access fields through the
+/// provided getter methods.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeCall {
+    /// Validated `hew_*` C-ABI symbol name.
+    symbol: String,
+    /// Argument places in C-ABI order.
+    args: Vec<Place>,
+    /// Destination place for the return value, or `None` if discarded.
+    dest: Option<Place>,
+}
+
+impl RuntimeCall {
+    /// Construct a validated runtime-ABI call.
+    ///
+    /// Returns `Err(UnknownRuntimeSymbol)` if `symbol` is not in the
+    /// M2 runtime-ABI allowlist — enforcing the allowlist boundary at
+    /// construction in all build profiles (LESSONS P0 `boundary-fail-closed`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnknownRuntimeSymbol`] when `symbol` is not recognised by
+    /// `runtime_symbols::is_known_runtime_symbol`.
+    pub fn new(
+        symbol: impl Into<String>,
+        args: Vec<Place>,
+        dest: Option<Place>,
+    ) -> Result<Self, UnknownRuntimeSymbol> {
+        let symbol = symbol.into();
+        if crate::runtime_symbols::is_known_runtime_symbol(&symbol) {
+            Ok(RuntimeCall { symbol, args, dest })
+        } else {
+            Err(UnknownRuntimeSymbol(symbol))
+        }
+    }
+
+    /// The validated C-ABI symbol name.
+    #[must_use]
+    pub fn symbol(&self) -> &str {
+        &self.symbol
+    }
+
+    /// Argument places in C-ABI order.
+    #[must_use]
+    pub fn args(&self) -> &[Place] {
+        &self.args
+    }
+
+    /// Destination place for the return value, or `None` if discarded.
+    #[must_use]
+    pub fn dest(&self) -> Option<Place> {
+        self.dest
+    }
 }
 
 /// Minimal machine-level instruction set for the spine subset (integer
@@ -228,16 +370,116 @@ pub enum CmpPred {
 /// Variants the emitter cannot lower (Drop on a live heap value, anything
 /// coroutine-shaped) emit a hard error rather than silently no-op; the
 /// per-variant rejection happens at lowering time, not here.
+/// Discriminator for the three integer arithmetic operators that B-2
+/// wires through the checked-overflow lowering. Carried by
+/// `Instr::IntArithChecked` so codegen can select the matching
+/// `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntArithOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+/// Signedness discriminator for `Instr::IntArithChecked`. Selects the
+/// signed-vs-unsigned LLVM with-overflow intrinsic family at codegen
+/// time. Producers read this off the operand's `ResolvedTy` (B-1
+/// canonicalised operands and the destination to the same width and
+/// signedness so a single field is sufficient).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntSignedness {
+    Signed,
+    Unsigned,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
     /// `dest = const <value>` as i64.
     ConstI64 { dest: Place, value: i64 },
-    /// `dest = lhs + rhs` on i64.
+    /// Two's-complement wrapping `dest = lhs + rhs`. No overflow check.
+    /// Producers: `&+` operator sugar (B-4); `.wrapping_add()` method
+    /// call (B-3, method body lowering). The default `+` operator uses
+    /// `Instr::IntArithChecked` (B-2) for trap-on-overflow semantics.
     IntAdd { dest: Place, lhs: Place, rhs: Place },
-    /// `dest = lhs - rhs` on i64.
+    /// Two's-complement wrapping `dest = lhs - rhs`. No overflow check.
+    /// Producers: `&-` operator sugar (B-4); `.wrapping_sub()` (B-3).
     IntSub { dest: Place, lhs: Place, rhs: Place },
-    /// `dest = lhs * rhs` on i64.
+    /// Two's-complement wrapping `dest = lhs * rhs`. No overflow check.
+    /// Producers: `&*` operator sugar (B-4); `.wrapping_mul()` (B-3).
     IntMul { dest: Place, lhs: Place, rhs: Place },
+    /// Integer division `dest = lhs / rhs` with no implicit trap guard.
+    /// Producers that need trap-on-zero and trap-on-signed-MIN/-1 MUST
+    /// emit the divisor checks and branch to a `Terminator::Trap` block
+    /// BEFORE emitting this instruction (B-5 does this). Direct emission
+    /// of `IntDiv` without that guard is a construct-discipline violation
+    /// mirroring `IntAdd`/`IntMul`; no runtime check is added here.
+    /// `signed` selects `sdiv` vs `udiv`. Unsigned division can never
+    /// produce signed-MIN/-1 overflow, but the divisor-zero check is
+    /// still required for both signednesses.
+    IntDiv {
+        signed: IntSignedness,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+    },
+    /// Integer remainder `dest = lhs % rhs` with no implicit trap guard.
+    /// Same guard discipline as `IntDiv`: divisor-zero and
+    /// signed-MIN/-1 checks must precede this instruction.
+    /// `signed` selects `srem` vs `urem`.
+    IntRem {
+        signed: IntSignedness,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+    },
+    /// Left shift `dest = lhs << rhs`. No signedness on the shift
+    /// itself (LLVM `shl`). Producers must check `(rhs as unsigned) >=
+    /// bit_width(dest)` before emitting this instruction and branch to
+    /// a `Terminator::Trap { kind: TrapKind::ShiftOutOfRange }` block
+    /// on the out-of-range path (B-5). No implicit guard here.
+    IntShl { dest: Place, lhs: Place, rhs: Place },
+    /// Right shift `dest = lhs >> rhs`. `signed` selects arithmetic
+    /// shift right (`ashr`) vs logical shift right (`lshr`). Same
+    /// out-of-range guard discipline as `IntShl`: check-and-trap MUST
+    /// precede this instruction.
+    IntShr {
+        signed: IntSignedness,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+    },
+    /// Checked integer arithmetic with trap-on-overflow. Lowers to
+    /// `call {iN, i1} @llvm.{s,u}{add,sub,mul}.with.overflow.iN(lhs, rhs)`
+    /// plus two `extractvalue`s: the iN result into `dest` and the i1
+    /// overflow flag into `overflow_flag`. The producing block is
+    /// terminated with `Terminator::Branch { cond: overflow_flag,
+    /// then_target: trap_bb, else_target: cont_bb }` where `trap_bb`
+    /// terminates with `Terminator::Trap { kind:
+    /// TrapKind::IntegerOverflow }` and `cont_bb` is the continuation.
+    ///
+    /// Construction discipline: `dest` and both operands MUST share
+    /// the same `ResolvedTy` integer width (B-1 mixed-width rejection)
+    /// and `signed` MUST agree with the operand type's signedness.
+    /// `overflow_flag` is a fresh local typed as `ResolvedTy::Bool`
+    /// (i8 in LLVM lowering) — codegen zero-extends the i1 flag into
+    /// the i8 slot.
+    ///
+    /// Why a single variant covering all three ops: codegen disambiguates
+    /// by `op` and `signed` to select one of six intrinsics
+    /// (`s{add,sub,mul}` × `u{add,sub,mul}`); a per-op variant would
+    /// duplicate the surrounding extract-and-branch shape three times.
+    /// LESSONS: `boundary-fail-closed` (P0 — default arithmetic is
+    /// the boundary; trap-on-overflow is fail-closed for accidental
+    /// overflow); `exhaustive-coverage` (every integer width × every op
+    /// × every signedness has an explicit lowering arm).
+    IntArithChecked {
+        op: IntArithOp,
+        signed: IntSignedness,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        overflow_flag: Place,
+    },
     /// `dest = (lhs <pred> rhs)` on integers. The result is written into
     /// `dest` as an integer truth value: `1` for true, `0` for false. The
     /// dest's local type controls the result width (today every cmp dest
@@ -253,6 +495,50 @@ pub enum Instr {
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
+    /// Call into a `hew_*` runtime-ABI entry by name. The carried
+    /// `symbol` names a `#[no_mangle] extern "C" fn` exported by
+    /// `hew-runtime/` (the M2 substrate set is listed in
+    /// `crate::runtime_symbols::M2_RUNTIME_SYMBOLS`). One variant
+    /// covers every Duplex / lambda-actor / half-handle runtime
+    /// call — codegen disambiguates by the `symbol` string at lower
+    /// time. Aligns with the runtime ABI shape: each symbol IS the
+    /// authoritative discriminator and the variant carries no
+    /// additional structural information beyond the argument
+    /// places and the optional destination.
+    ///
+    /// Construction discipline (LESSONS P0 `boundary-fail-closed`):
+    /// producers MUST validate `symbol` against
+    /// `crate::runtime_symbols::is_known_runtime_symbol` BEFORE
+    /// pushing this instruction. A typo or unrecognised symbol
+    /// surfaces as a `MirDiagnostic::CutoverUnsupported` at MIR
+    /// construction, never as a silent link-time failure.
+    ///
+    /// `dest = None` denotes a runtime call whose return type the
+    /// substrate models as `Result<(), _>` and which the producer
+    /// has decided not to bind into a Place (a discarded `.send()`
+    /// result, or a half-handle `.close()` that consumes the
+    /// receiver). `dest = Some(place)` writes the runtime call's
+    /// return value into `place`; codegen (slice 5) materialises
+    /// the `inkwell` call result into the local backing `place`.
+    ///
+    /// WHY (M2 slice 4.5c): the typecheck→HIR/MIR bridge that maps
+    /// `Duplex<S, R>::send(msg)` (a `MethodCallRewrite` side-table
+    /// entry produced by `hew-types` slice 4.5b) to this variant
+    /// does not yet reach the Rust MIR pipeline (`hew compile-v05`
+    /// never invokes the typechecker). The variant lands first so
+    /// slice 5 codegen can wire a real `inkwell::BuildCall` arm and
+    /// the producer-side bridge work in a follow-up slice does not
+    /// have to retrofit `Instr`. WHEN-OBSOLETE: producers in
+    /// `hew-mir/src/lower.rs` start emitting this variant once the
+    /// bridge lands. WHAT: a single producer arm in `lower_value`
+    /// that walks a Call whose callee resolves to a builtin /
+    /// rewritten symbol and pushes `Instr::CallRuntimeAbi`.
+    /// Call into a `hew_*` runtime-ABI entry by name. The payload is a
+    /// [`RuntimeCall`] whose constructor enforces the symbol allowlist at
+    /// construction in all build profiles — direct struct construction is
+    /// impossible because `RuntimeCall`'s fields are private
+    /// (LESSONS P0 `boundary-fail-closed`).
+    CallRuntimeAbi(RuntimeCall),
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
     /// `drop_fn = Some(name)` calls the `@resource` type's declared
     /// `close(consuming self)` method; `drop_fn = None` is a trivial drop
@@ -331,6 +617,13 @@ pub enum MirCheck {
     /// shape, but actor lowering that builds it isn't in the v0.5
     /// integer spine.
     ActorSendEscape { place: Place, send_site: SiteId },
+    /// A non-`Send` value escapes across an actor ask boundary as the
+    /// request payload. Symmetric to `ActorSendEscape`: that variant
+    /// checks the fire-and-forget send boundary, this one checks the
+    /// request side of an ask boundary. Declared variant;
+    /// `Terminator::Ask` exists as the boundary shape, but actor-call
+    /// lowering that constructs it isn't in the v0.5 integer spine.
+    ActorAskEscape { place: Place, ask_site: SiteId },
     /// Structural invariant on the lowering: every value-producing
     /// `SiteId` must have a `DecisionFact` with a concrete `Strategy`
     /// (not `UnknownBlocked`). Violation indicates a lowering bug, not
@@ -513,6 +806,20 @@ pub enum ExitPath {
     Send {
         block: u32,
         actor: String,
+        next: u32,
+    },
+    /// Actor-ask exit. Mirrors `Terminator::Ask`. The `channel` Place
+    /// is what the loser-cleanup sequence needs
+    /// (`hew_reply_channel_cancel` + `hew_reply_channel_free`); the
+    /// `reply_dest` Place is irrelevant in the exit path because the
+    /// reply value is only consumed inside the winner body. Declared
+    /// so the elaboration pass is exhaustive; the spine never
+    /// constructs `Terminator::Ask` today, so this exit is unreachable
+    /// in practice until the construction surface lands.
+    Ask {
+        block: u32,
+        actor: Place,
+        channel: Place,
         next: u32,
     },
     /// Sealed `select{}` exit. Mirrors `Terminator::Select`; declared

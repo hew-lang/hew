@@ -265,7 +265,7 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
     for block in blocks {
         let mut emit_edge = |target: u32| preds.entry(target).or_default().push(block.id);
         match &block.terminator {
-            Terminator::Return | Terminator::Panic => {}
+            Terminator::Return | Terminator::Trap { .. } => {}
             Terminator::Goto { target } => emit_edge(*target),
             Terminator::Branch {
                 then_target,
@@ -278,6 +278,7 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
             | Terminator::Send { next, .. }
+            | Terminator::Ask { next, .. }
             | Terminator::Select { next, .. } => emit_edge(*next),
         }
     }
@@ -286,7 +287,7 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
 
 fn successors(block: &BasicBlock) -> Vec<u32> {
     match &block.terminator {
-        Terminator::Return | Terminator::Panic => Vec::new(),
+        Terminator::Return | Terminator::Trap { .. } => Vec::new(),
         Terminator::Goto { target } => vec![*target],
         Terminator::Branch {
             then_target,
@@ -296,6 +297,7 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         Terminator::Call { next, .. }
         | Terminator::Yield { next, .. }
         | Terminator::Send { next, .. }
+        | Terminator::Ask { next, .. }
         | Terminator::Select { next, .. } => vec![*next],
     }
 }

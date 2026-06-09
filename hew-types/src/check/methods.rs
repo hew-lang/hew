@@ -2374,13 +2374,16 @@ impl Checker {
                     "to_i8" => Ty::I8,
                     "to_i16" => Ty::I16,
                     "to_i32" => Ty::I32,
-                    // to_isize maps to I64 (platform-dependent, default 64-bit)
-                    "to_i64" | "to_isize" => Ty::I64,
+                    "to_i64" => Ty::I64,
+                    // to_isize returns the platform-sized signed integer
+                    // (Ty::Isize), not fixed-64 Ty::I64. B-D1 / Q42.
+                    "to_isize" => Ty::Isize,
                     "to_u8" => Ty::U8,
                     "to_u16" => Ty::U16,
                     "to_u32" => Ty::U32,
-                    // to_usize maps to U64 (platform-dependent, default 64-bit)
-                    "to_u64" | "to_usize" => Ty::U64,
+                    "to_u64" => Ty::U64,
+                    // to_usize returns the platform-sized unsigned integer.
+                    "to_usize" => Ty::Usize,
                     "to_f32" => Ty::F32,
                     "to_f64" => Ty::F64,
                     _ => {
@@ -2393,6 +2396,57 @@ impl Checker {
                             span,
                             format!(
                                 "no conversion method `{method}` on `{}`",
+                                resolved.user_facing()
+                            ),
+                        );
+                        Ty::Error
+                    }
+                }
+            }
+            // Numeric opt-out arithmetic methods: .wrapping_*, .checked_*, .saturating_*
+            // for every integer width. Floats are excluded (is_integer() ≠ is_numeric()).
+            // Only add/sub/mul are in scope here; div/mod/shift are separate slices.
+            // Wrapping variants map to non-trapping MIR ops; checked variants return
+            // Option<W>; saturating variants clamp to MAX/MIN (codegen slice pending).
+            (resolved, method)
+                if resolved.is_integer()
+                    && (method.starts_with("wrapping_")
+                        || method.starts_with("checked_")
+                        || method.starts_with("saturating_")) =>
+            {
+                let is_wrapping = method.starts_with("wrapping_");
+                let is_checked = method.starts_with("checked_");
+                let op_name = if is_wrapping {
+                    &method["wrapping_".len()..]
+                } else if is_checked {
+                    &method["checked_".len()..]
+                } else {
+                    &method["saturating_".len()..]
+                };
+                match op_name {
+                    "add" | "sub" | "mul" => {
+                        self.check_arity(args, 1, &format!("`{method}`"), span);
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, resolved);
+                        }
+                        if is_checked {
+                            Ty::option(resolved.clone())
+                        } else {
+                            resolved.clone()
+                        }
+                    }
+                    _ => {
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "no method `{method}` on `{}`; only add, sub, mul are supported \
+                                 in this family",
                                 resolved.user_facing()
                             ),
                         );

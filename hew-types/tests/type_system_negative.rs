@@ -63,6 +63,8 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
         | Ty::U16
         | Ty::U32
         | Ty::U64
+        | Ty::Isize
+        | Ty::Usize
         | Ty::F32
         | Ty::F64
         | Ty::IntLiteral

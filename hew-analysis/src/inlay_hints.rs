@@ -363,7 +363,10 @@ fn collect_inlay_hints_from_expr(
         Expr::SpawnLambdaActor { body, .. } => {
             collect_inlay_hints_from_expr(source, &body.0, tc, hints);
         }
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } => {
+            collect_inlay_hints_from_block(source, block, tc, hints);
+        }
+        Expr::UnsafeBlock(block) => {
             collect_inlay_hints_from_block(source, block, tc, hints);
         }
         Expr::ForkChild { expr, .. } => {
@@ -493,6 +496,10 @@ fn collect_inlay_hints_from_expr(
                     collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
                 }
             }
+        }
+        Expr::Is { lhs, rhs } => {
+            collect_inlay_hints_from_expr(source, &lhs.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &rhs.0, tc, hints);
         }
         Expr::Literal(_)
         | Expr::Identifier(_)
@@ -648,6 +655,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),

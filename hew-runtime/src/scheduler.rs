@@ -13,6 +13,10 @@
 //!
 //! - [`sched_enqueue`] — submit an actor for scheduling.
 //! - [`sched_try_wake`] — wake a parked worker thread.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
@@ -1302,6 +1306,11 @@ mod tests {
         let _g = SCHED_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Also hold the tracing serialisation lock: this test calls
+        // hew_trace_reset/enable/drain and must not race with tracing-module
+        // tests that hold their own tracing lock.  Consistent lock order:
+        // SCHED_TEST_MUTEX first, then TRACING_TEST_LOCK.
+        let _tg = crate::tracing::tracing_test_guard();
         crate::tracing::hew_trace_reset();
         crate::tracing::hew_trace_enable(1);
 

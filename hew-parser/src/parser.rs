@@ -6,11 +6,11 @@ use crate::ast::{
     ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam,
     Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase,
     OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
-    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl,
-    WireFieldMeta, WireMetadata,
+    RecordDecl, RecordField, RecordKind, ResourceMarker, RestartPolicy, SelectArm, Span, Spanned,
+    Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
+    WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
@@ -67,6 +67,48 @@ fn parse_duration_literal(s: &str) -> Option<i64> {
             .and_then(|v| v.checked_mul(1_000_000_000))
     } else {
         None
+    }
+}
+
+/// Resolve a `#[max_heap(…)]` attribute's argument(s) to a byte count.
+///
+/// Accepted forms and their `args` representation after `parse_attributes`:
+/// - `#[max_heap(1024)]`  → `[Positional("1024")]`               → 1024 bytes
+/// - `#[max_heap(512 b)]` → `[Positional("512"), Positional("b")]`   → 512 bytes
+/// - `#[max_heap(2 kb)]`  → `[Positional("2"),   Positional("kb")]`  → 2048 bytes
+/// - `#[max_heap(1 mb)]`  → `[Positional("1"),   Positional("mb")]`  → 1 048 576 bytes
+///
+/// Returns `Ok(bytes)` on success, `Err(message)` on unsupported suffix or bad integer.
+fn resolve_max_heap_args(args: &[AttributeArg]) -> Result<u64, String> {
+    match args {
+        // Bare integer: `#[max_heap(1024)]`
+        [AttributeArg::Positional(n)] => n
+            .parse::<u64>()
+            .map_err(|_| format!("invalid integer in `#[max_heap]`: `{n}`")),
+        // Integer + unit suffix: `#[max_heap(2 kb)]`
+        [AttributeArg::Positional(n), AttributeArg::Positional(unit)] => {
+            let base: u64 = n
+                .parse::<u64>()
+                .map_err(|_| format!("invalid integer in `#[max_heap]`: `{n}`"))?;
+            match unit.as_str() {
+                "b" => Ok(base),
+                "kb" => base
+                    .checked_mul(1024)
+                    .ok_or_else(|| format!("`#[max_heap]` value overflows u64: {n} kb")),
+                "mb" => base
+                    .checked_mul(1024 * 1024)
+                    .ok_or_else(|| format!("`#[max_heap]` value overflows u64: {n} mb")),
+                other => Err(format!(
+                    "unsupported unit `{other}` in `#[max_heap]`; accepted suffixes: b, kb, mb \
+                     (gb and larger are not supported in v0.5)"
+                )),
+            }
+        }
+        _ => Err(
+            "`#[max_heap]` requires exactly one argument: a byte count optionally followed by \
+             a unit (b, kb, mb)"
+                .to_string(),
+        ),
     }
 }
 
@@ -1149,6 +1191,22 @@ impl<'src> Parser<'src> {
                         } else {
                             self.error(format!("invalid duration literal: {s}"));
                         }
+                    } else if let Some(Token::Integer(n)) = self.peek() {
+                        // Bare integer positional, e.g. `#[max_heap(1024)]`.
+                        let n_str = n.to_string();
+                        self.advance();
+                        args.push(AttributeArg::Positional(n_str));
+                        // Consume an immediately following identifier as a unit suffix
+                        // (no comma required), e.g. `#[max_heap(1 kb)]`.  Only ident
+                        // tokens are valid unit suffixes; anything else is left for the
+                        // outer loop's comma-or-break check.
+                        if self.peek().is_some_and(|tok| {
+                            Self::is_ident_token(tok)
+                                && !matches!(tok, Token::RightParen | Token::Comma)
+                        }) {
+                            let unit = self.expect_ident().unwrap_or_default();
+                            args.push(AttributeArg::Positional(unit));
+                        }
                     } else {
                         break;
                     }
@@ -1271,6 +1329,17 @@ impl<'src> Parser<'src> {
         // Pre-compute attribute span before attrs is moved into the item.
         let attr_start = attrs.first().map(|a| a.span.start);
 
+        // Extract `#[max_heap]` before dispatch so we can set it on the actor
+        // and reject it on any non-actor item.  We pull both the result and the
+        // diagnostic span out as owned values so `attrs` can be moved freely
+        // into the match arms below.
+        let (max_heap_result, max_heap_attr_span): (Option<Result<u64, String>>, Option<Span>) =
+            if let Some(a) = attrs.iter().find(|a| a.name == "max_heap") {
+                (Some(resolve_max_heap_args(&a.args)), Some(a.span.clone()))
+            } else {
+                (None, None)
+            };
+
         let item = match self.peek() {
             Some(Token::Import) => {
                 self.advance();
@@ -1305,6 +1374,11 @@ impl<'src> Parser<'src> {
                         let mut t = self.parse_struct_or_enum(vis, &attrs)?;
                         t.doc_comment = doc_comment;
                         Item::TypeDecl(t)
+                    }
+                    Some(Token::Record) => {
+                        let mut r = self.parse_record_decl(vis)?;
+                        r.doc_comment = doc_comment;
+                        Item::Record(r)
                     }
                     Some(Token::Type) => {
                         if self.is_type_alias_lookahead() {
@@ -1391,6 +1465,11 @@ impl<'src> Parser<'src> {
                 t.doc_comment = doc_comment;
                 Item::TypeDecl(t)
             }
+            Some(Token::Record) => {
+                let mut r = self.parse_record_decl(Visibility::Private)?;
+                r.doc_comment = doc_comment;
+                Item::Record(r)
+            }
             Some(Token::Type) => {
                 if self.is_type_alias_lookahead() {
                     Item::TypeAlias(self.parse_type_alias(Visibility::Private, doc_comment)?)
@@ -1452,7 +1531,7 @@ impl<'src> Parser<'src> {
                 // Detect common keywords from other languages
                 if let Some(Token::Identifier(id)) = self.peek() {
                     match *id {
-                        "struct" | "record" => {
+                        "struct" => {
                             self.error_with_hint(
                                 format!("unexpected '{id}'"),
                                 "Hew uses 'type' to declare structs: type Name { ... }",
@@ -1488,6 +1567,30 @@ impl<'src> Parser<'src> {
                 ));
                 return None;
             }
+        };
+
+        // Wire `#[max_heap]` into the actor, or emit a diagnostic if it appears
+        // on a non-actor item.
+        let item = match (item, max_heap_result) {
+            (Item::Actor(mut actor), Some(Ok(bytes))) => {
+                actor.max_heap_bytes = Some(bytes);
+                Item::Actor(actor)
+            }
+            (Item::Actor(actor), Some(Err(msg))) => {
+                let span = max_heap_attr_span.unwrap_or(start..start);
+                self.error_at(msg, span);
+                Item::Actor(actor)
+            }
+            (Item::Actor(actor), None) => Item::Actor(actor),
+            (other_item, Some(_)) => {
+                let span = max_heap_attr_span.unwrap_or(start..start);
+                self.error_at(
+                    "#[max_heap] is only allowed on actor declarations".to_string(),
+                    span,
+                );
+                other_item
+            }
+            (other_item, None) => other_item,
         };
 
         let end = self.peek_span().start;
@@ -1687,6 +1790,116 @@ impl<'src> Parser<'src> {
             resource_marker,
             consuming_methods,
         })
+    }
+
+    /// Parse a `record` declaration in either named-field or tuple-positional form.
+    ///
+    /// Named form:  `record Name<T>? where...? { field: Type, ... }`
+    /// Tuple form:  `record Name<T>? (Type, ...) ;`
+    ///
+    /// The `record` keyword must already be consumed before this is called.
+    /// Both forms reject empty field lists.
+    fn parse_record_decl(&mut self, visibility: Visibility) -> Option<RecordDecl> {
+        let start = self.peek_span().start;
+
+        // Consume `record`
+        self.advance();
+
+        let name = self.expect_ident()?;
+        let type_params = self.parse_opt_type_params()?;
+        let where_clause = self.parse_opt_where_clause()?;
+
+        if self.eat(&Token::LeftParen) {
+            // Tuple-positional form: `record Name(T1, T2, ...) ;`
+            let mut field_types: Vec<Spanned<TypeExpr>> = Vec::new();
+
+            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                let ty = self.parse_type()?;
+                field_types.push(ty);
+
+                if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+
+            if field_types.is_empty() {
+                self.error("tuple record must have at least one positional field".to_string());
+                return None;
+            }
+
+            let end = self.peek_span().start;
+            self.expect(&Token::RightParen)?;
+            self.expect(&Token::Semicolon)?;
+
+            Some(RecordDecl {
+                visibility,
+                name,
+                type_params,
+                where_clause,
+                kind: RecordKind::Tuple(field_types),
+                doc_comment: None,
+                span: start..end,
+            })
+        } else {
+            // Named-field form: `record Name { field: Type, ... }`
+            self.expect(&Token::LeftBrace)?;
+
+            let mut fields: Vec<RecordField> = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                let field_start = self.peek_span().start;
+
+                // Field name
+                let field_name = if let Some(Token::Identifier(_)) = self.peek() {
+                    self.expect_ident()?
+                } else {
+                    let found = match self.peek() {
+                        Some(tok) => format!("{tok}"),
+                        None => "end of file".to_string(),
+                    };
+                    self.error(format!("expected field name, found {found}"));
+                    return None;
+                };
+
+                self.expect(&Token::Colon)?;
+
+                let ty = self.parse_type()?;
+                let field_end = self.peek_span().start;
+
+                fields.push(RecordField {
+                    name: field_name,
+                    ty,
+                    doc_comment: None,
+                    span: field_start..field_end,
+                });
+
+                // Comma or end of body
+                if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+
+            if fields.is_empty() {
+                self.error("record body must contain at least one field".to_string());
+                return None;
+            }
+
+            let end = self.peek_span().start;
+            self.expect(&Token::RightBrace)?;
+
+            Some(RecordDecl {
+                visibility,
+                name,
+                type_params,
+                where_clause,
+                kind: RecordKind::Named(fields),
+                doc_comment: None,
+                span: start..end,
+            })
+        }
     }
 
     /// Extract `ResourceMarker` from a pre-parsed attribute slice.
@@ -2308,6 +2521,7 @@ impl<'src> Parser<'src> {
             overflow_policy,
             is_isolated: false,
             doc_comment: None,
+            max_heap_bytes: None, // set by parse_item from outer #[max_heap] attr
         })
     }
 
@@ -3709,7 +3923,7 @@ impl<'src> Parser<'src> {
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
                 | Expr::Scope { .. }
-                | Expr::Unsafe(_)
+                | Expr::UnsafeBlock(_)
                 | Expr::Select { .. }
         )
     }
@@ -4326,6 +4540,60 @@ impl<'src> Parser<'src> {
                 self.restore_pos(saved);
             }
 
+            // Detect removed `=~` and `!~` regex operators.  The lexer never
+            // produced `EqTilde`/`BangTilde` tokens, so the character sequences
+            // tokenise as adjacent `=`+`~` or `!`+`~`.  Neither `=` nor `!` has
+            // infix binding power, so the loop would break and leave a confusing
+            // "expected `;`" error — check here before the infix break.
+            {
+                let next = self.peek();
+                let is_eq_tilde = next == Some(&Token::Equal)
+                    && self.peek_at(self.pos + 1) == Some(&Token::Tilde)
+                    && {
+                        let eq_end = self.peek_span().end;
+                        self.tokens
+                            .get(self.pos + 1)
+                            .is_some_and(|(_, s)| s.start == eq_end)
+                    };
+                let is_bang_tilde = next == Some(&Token::Bang)
+                    && self.peek_at(self.pos + 1) == Some(&Token::Tilde)
+                    && {
+                        let bang_end = self.peek_span().end;
+                        self.tokens
+                            .get(self.pos + 1)
+                            .is_some_and(|(_, s)| s.start == bang_end)
+                    };
+                if is_eq_tilde || is_bang_tilde {
+                    let op_str = if is_eq_tilde { "=~" } else { "!~" };
+                    let op_start = self.peek_span().start;
+                    self.advance(); // consume `=` or `!`
+                    let op_end = self.peek_span().end;
+                    self.advance(); // consume `~`
+                    let op_span = op_start..op_end;
+                    self.error_at_with_hint(
+                        format!(
+                            "E_REGEX_OP_REMOVED: the `{op_str}` regex operator has been removed; \
+                             use a match arm or `Pattern.is_match()` instead (HEW-SPEC-2026 §5)"
+                        ),
+                        op_span.clone(),
+                        format!(
+                            "replace `expr {op_str} pattern` with `match expr {{ re\"...\" => true, _ => false }}`"
+                        ),
+                    );
+                    while !matches!(
+                        self.peek(),
+                        Some(&Token::Semicolon | &Token::RightBrace) | None
+                    ) {
+                        self.advance();
+                    }
+                    if self.peek() == Some(&Token::Semicolon) {
+                        self.advance();
+                    }
+                    lhs = (Expr::Tuple(vec![]), op_span);
+                    break;
+                }
+            }
+
             // Then try infix
             let Some((lbp, rbp)) = self.peek().and_then(infix_bp) else {
                 break;
@@ -4377,6 +4645,22 @@ impl<'src> Parser<'src> {
                         break;
                     }
                 }
+            }
+
+            // `is` is a keyword token (not a symbol), handled as a special infix form.
+            if self.peek() == Some(&Token::Is) {
+                self.advance(); // consume `is`
+                let rhs = self.parse_expr_bp(rbp)?;
+                let end = rhs.1.end;
+                let lhs_start = lhs.1.start;
+                lhs = (
+                    Expr::Is {
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                    lhs_start..end,
+                );
+                continue;
             }
 
             let (op_tok, _) = self.advance()?;
@@ -5037,7 +5321,14 @@ impl<'src> Parser<'src> {
             }
             Token::Unsafe => {
                 self.advance();
-                Expr::Unsafe(self.parse_block()?)
+                if self.peek() != Some(&Token::LeftBrace) {
+                    self.error(
+                        "expected `{` after `unsafe`; `unsafe` must be followed by a block"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                Expr::UnsafeBlock(Box::new(self.parse_block()?))
             }
             Token::Select => {
                 self.advance();
@@ -5598,8 +5889,8 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
         Token::PipePipe => Some((5, 6)),
         // Logical AND
         Token::AmpAmp => Some((7, 8)),
-        // Equality
-        Token::EqualEqual | Token::NotEqual => Some((9, 10)),
+        // Equality and identity
+        Token::EqualEqual | Token::NotEqual | Token::Is => Some((9, 10)),
         // Relational
         Token::Less | Token::LessEqual | Token::Greater | Token::GreaterEqual => Some((11, 12)),
         // Bitwise OR
@@ -5610,10 +5901,10 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
         Token::Ampersand => Some((17, 18)),
         // Shift
         Token::LessLess | Token::GreaterGreater => Some((19, 20)),
-        // Additive
-        Token::Plus | Token::Minus => Some((21, 22)),
-        // Multiplicative
-        Token::Star | Token::Slash | Token::Percent => Some((23, 24)),
+        // Additive: plain `+`/`-` and wrapping `&+`/`&-` share precedence 21.
+        Token::Plus | Token::Minus | Token::AmpPlus | Token::AmpMinus => Some((21, 22)),
+        // Multiplicative: plain `*`/`/`/`%` and wrapping `&*` share precedence 23.
+        Token::Star | Token::Slash | Token::Percent | Token::AmpStar => Some((23, 24)),
         _ => None,
     }
 }
@@ -5647,6 +5938,9 @@ fn token_to_binop(token: &Token) -> Option<BinaryOp> {
         Token::GreaterGreater => Some(BinaryOp::Shr),
         Token::DotDot => Some(BinaryOp::Range),
         Token::DotDotEqual => Some(BinaryOp::RangeInclusive),
+        Token::AmpPlus => Some(BinaryOp::WrappingAdd),
+        Token::AmpMinus => Some(BinaryOp::WrappingSub),
+        Token::AmpStar => Some(BinaryOp::WrappingMul),
         _ => None,
     }
 }
@@ -7736,5 +8030,309 @@ wire type Msg {
             "deprecated attr triggered unknown-marker diagnostic: {:?}",
             result.errors
         );
+    }
+    // ── #[max_heap] attribute tests ──────────────────────────────────────────
+
+    #[test]
+    fn max_heap_attribute_bare_integer_bytes() {
+        let source = "#[max_heap(1024)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(1024));
+    }
+
+    #[test]
+    fn max_heap_attribute_kb_suffix() {
+        let source = "#[max_heap(2 kb)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(2 * 1024));
+    }
+
+    #[test]
+    fn max_heap_attribute_mb_suffix() {
+        let source = "#[max_heap(1 mb)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(1024 * 1024));
+    }
+
+    #[test]
+    fn max_heap_attribute_b_suffix() {
+        let source = "#[max_heap(512 b)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(512));
+    }
+
+    #[test]
+    fn max_heap_attribute_zero_accepted_as_unbounded() {
+        // cap=0 means unbounded (same as the legacy default); accepted explicitly.
+        let source = "#[max_heap(0)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(0));
+    }
+
+    #[test]
+    fn max_heap_attribute_gb_suffix_rejected() {
+        let source = "#[max_heap(1 gb)] actor Demo {}";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error for unsupported `gb` suffix"
+        );
+        assert!(
+            result.errors.iter().any(|e| e.message.contains("gb")),
+            "expected error mentioning `gb`, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn max_heap_attribute_on_fn_rejected() {
+        let source = "#[max_heap(1024)] fn foo() {}";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error: #[max_heap] only allowed on actor declarations"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("max_heap") && e.message.contains("actor")),
+            "expected error mentioning max_heap and actor, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn max_heap_attribute_on_type_rejected() {
+        let source = "#[max_heap(1 kb)] type Bar { x: i32; }";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error: #[max_heap] only allowed on actor declarations"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("max_heap") && e.message.contains("actor")),
+            "expected error mentioning max_heap and actor, got: {:?}",
+            result.errors
+        );
+    }
+    // ── is operator tests ──────────────────────────────────────────────
+
+    /// Helper: extract the trailing expression from the first statement of the
+    /// first function in the parse result.
+    fn first_fn_trailing(source: &str) -> Expr {
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        f.body
+            .trailing_expr
+            .as_ref()
+            .expect("expected trailing expr")
+            .0
+            .clone()
+    }
+
+    #[test]
+    fn is_operator_simple_identifiers() {
+        let expr = first_fn_trailing("fn f() { x is y }");
+        assert!(
+            matches!(expr, Expr::Is { .. }),
+            "expected Expr::Is, got {expr:?}"
+        );
+        if let Expr::Is { lhs, rhs } = expr {
+            assert!(matches!(lhs.0, Expr::Identifier(ref s) if s == "x"));
+            assert!(matches!(rhs.0, Expr::Identifier(ref s) if s == "y"));
+        }
+    }
+
+    #[test]
+    fn is_operator_named_type_rhs() {
+        // Parser admits any expression on the rhs; checker rejects scalars (D-2).
+        let expr = first_fn_trailing("fn f() { value is Point }");
+        assert!(matches!(expr, Expr::Is { .. }));
+    }
+
+    #[test]
+    fn is_operator_scalar_rhs_parses_ok() {
+        // `x is int` — parser admits; checker rejects (slice D-2 / D-3 scope).
+        let result = parse("fn f() { let x = value is int; }");
+        assert!(
+            result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn is_operator_tuple_rhs_parses_ok() {
+        // `x is (a, b)` — parser admits a tuple on the rhs; checker will reject later.
+        let result = parse("fn f() { let x = value is (a, b); }");
+        assert!(
+            result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn is_operator_chained_left_assoc() {
+        // `a is b is c` parses as `(a is b) is c` (left-assoc at equality BP).
+        let expr = first_fn_trailing("fn f() { a is b is c }");
+        // Outer must be Is; its lhs must also be Is.
+        let Expr::Is { lhs, .. } = expr else {
+            panic!("expected outer Expr::Is");
+        };
+        assert!(
+            matches!(lhs.0, Expr::Is { .. }),
+            "expected inner lhs to be Expr::Is (left-assoc), got {:?}",
+            lhs.0
+        );
+    }
+
+    #[test]
+    fn is_operator_equality_precedence_binds_tighter_than_logical_and() {
+        // `a is b && c is d` should parse as `(a is b) && (c is d)`
+        let expr = first_fn_trailing("fn f() { a is b && c is d }");
+        let Expr::Binary { left, op, right } = expr else {
+            panic!("expected Binary at top level");
+        };
+        assert_eq!(op, BinaryOp::And);
+        assert!(matches!(left.0, Expr::Is { .. }), "left should be Is");
+        assert!(matches!(right.0, Expr::Is { .. }), "right should be Is");
+    }
+
+    #[test]
+    fn is_operator_equality_precedence_with_eq() {
+        // `a is b == true` should parse as `(a is b) == true` (same precedence, left-to-right)
+        let expr = first_fn_trailing("fn f() { a is b == true }");
+        let Expr::Binary { left, op, right } = expr else {
+            panic!("expected Binary at top level");
+        };
+        assert_eq!(op, BinaryOp::Equal);
+        assert!(matches!(left.0, Expr::Is { .. }));
+        assert!(matches!(right.0, Expr::Literal(Literal::Bool(true))));
+    }
+
+    #[test]
+    fn is_keyword_reserved_not_identifier() {
+        // `is` must not parse as an identifier (it's a reserved keyword).
+        use hew_lexer::{lex, Token};
+        let toks: Vec<Token<'_>> = lex("is").into_iter().map(|(t, _)| t).collect();
+        assert_eq!(toks, vec![Token::Is]);
+        assert_ne!(toks[0], Token::Identifier("is"));
+    }
+    // ---------------------------------------------------------------------------
+    // Wrapping operator parsing
+    // ---------------------------------------------------------------------------
+
+    fn first_fn_expr(source: &str) -> Expr {
+        let r = parse(source);
+        assert!(r.errors.is_empty(), "parse errors: {:?}", r.errors);
+        let Item::Function(f) = &r.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        // FnDecl.body is a Block struct directly (not wrapped in Spanned<Expr>).
+        let body = &f.body;
+        if let Some(e) = &body.trailing_expr {
+            e.0.clone()
+        } else {
+            panic!("expected trailing expression in function body");
+        }
+    }
+
+    #[test]
+    fn wrapping_binary_ops_parse_correctly() {
+        // `a &+ b` should parse as Binary { op: WrappingAdd, .. }
+        let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &+ b }");
+        let Expr::Binary { op, .. } = expr else {
+            panic!("expected Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingAdd);
+
+        let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &- b }");
+        let Expr::Binary { op, .. } = expr else {
+            panic!("expected Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingSub);
+
+        let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &* b }");
+        let Expr::Binary { op, .. } = expr else {
+            panic!("expected Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingMul);
+    }
+
+    #[test]
+    fn wrapping_add_precedence_matches_plain_add() {
+        // `a &+ b * c` should parse as `a &+ (b * c)` — `*` binds tighter.
+        let expr = first_fn_expr("fn f(a: i64, b: i64, c: i64) -> i64 { a &+ b * c }");
+        let Expr::Binary { op, right, .. } = expr else {
+            panic!("expected outer Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingAdd, "outer op must be &+");
+        // The right sub-expression must be `b * c` (plain multiply).
+        let Expr::Binary { op: inner_op, .. } = right.0 else {
+            panic!("expected inner Binary");
+        };
+        assert_eq!(inner_op, BinaryOp::Multiply, "inner op must be *");
+    }
+
+    #[test]
+    fn wrapping_mul_precedence_matches_plain_mul() {
+        // `a + b &* c` should parse as `a + (b &* c)` — `&*` binds tighter than `+`.
+        let expr = first_fn_expr("fn f(a: i64, b: i64, c: i64) -> i64 { a + b &* c }");
+        let Expr::Binary { op, right, .. } = expr else {
+            panic!("expected outer Binary");
+        };
+        assert_eq!(op, BinaryOp::Add, "outer op must be +");
+        let Expr::Binary { op: inner_op, .. } = right.0 else {
+            panic!("expected inner Binary");
+        };
+        assert_eq!(inner_op, BinaryOp::WrappingMul, "inner op must be &*");
+    }
+
+    #[test]
+    fn wrapping_ops_parse_with_no_errors() {
+        for src in &[
+            "fn f(a: i64, b: i64) -> i64 { a &+ b }",
+            "fn f(a: i64, b: i64) -> i64 { a &- b }",
+            "fn f(a: i64, b: i64) -> i64 { a &* b }",
+        ] {
+            let r = parse(src);
+            assert!(
+                r.errors.is_empty(),
+                "parse errors for `{src}`: {:?}",
+                r.errors
+            );
+        }
     }
 } // mod tests

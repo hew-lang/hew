@@ -21,8 +21,9 @@ pub mod type_descriptor;
 pub mod unify;
 
 pub use check::{
-    builtin_function_names, ActorSendAliasing, ActorSendCopyReason, Checker,
-    MethodCallReceiverKind, MethodCallRewrite, SpanKey, TypeCheckOutput, VariantDef,
+    builtin_function_names, ActorSendAliasing, ActorSendCopyReason, AssignTargetKind,
+    AssignTargetShape, Checker, MethodCallReceiverKind, MethodCallRewrite, SpanKey,
+    TypeCheckOutput, VariantDef,
 };
 pub use error::TypeError;
 pub use lowering_facts::{

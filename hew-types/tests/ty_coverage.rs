@@ -225,7 +225,8 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("i64"), Some(Ty::I64));
     assert_eq!(Ty::from_name("int"), Some(Ty::I64));
     assert_eq!(Ty::from_name("Int"), Some(Ty::I64));
-    assert_eq!(Ty::from_name("isize"), Some(Ty::I64));
+    // isize is now a distinct platform-sized type (not an alias for i64)
+    assert_eq!(Ty::from_name("isize"), Some(Ty::Isize));
 
     // Unsigned integers
     assert_eq!(Ty::from_name("u8"), Some(Ty::U8));
@@ -234,7 +235,8 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("u32"), Some(Ty::U32));
     assert_eq!(Ty::from_name("u64"), Some(Ty::U64));
     assert_eq!(Ty::from_name("uint"), Some(Ty::U64));
-    assert_eq!(Ty::from_name("usize"), Some(Ty::U64));
+    // usize is now a distinct platform-sized type (not an alias for u64)
+    assert_eq!(Ty::from_name("usize"), Some(Ty::Usize));
 
     // Floats
     assert_eq!(Ty::from_name("f32"), Some(Ty::F32));
@@ -271,6 +273,8 @@ fn canonical_lowering_name_normalizes_internal_spellings() {
     let cases = [
         (Ty::I64, Some("i64")),
         (Ty::U64, Some("u64")),
+        (Ty::Isize, Some("isize")),
+        (Ty::Usize, Some("usize")),
         (Ty::F64, Some("f64")),
         (Ty::Bool, Some("bool")),
         (Ty::Char, Some("char")),
@@ -301,6 +305,8 @@ fn canonical_lowering_name_round_trips_through_from_name() {
         Ty::U16,
         Ty::U32,
         Ty::U64,
+        Ty::Isize,
+        Ty::Usize,
         Ty::F32,
         Ty::F64,
         Ty::Bool,

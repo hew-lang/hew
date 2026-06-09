@@ -22,6 +22,16 @@ pub type MonitorRef {
     ref_id: int;
 }
 
+/// Error returned by `link(handle)`.
+///
+/// `AlreadyLinked` is an idempotent non-fatal condition — callers may
+/// treat it as `Ok(())`.  `TargetDead` is returned when the target actor
+/// has already exited; the caller's exit handler will fire immediately.
+pub enum LinkError {
+    AlreadyLinked;
+    TargetDead;
+}
+
 impl Closable for MonitorRef {
     fn close(monitor_ref: MonitorRef) -> Result<(), CloseError> {
         unsafe {
@@ -119,6 +129,8 @@ impl Checker {
             | Ty::U16
             | Ty::U32
             | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
             | Ty::F32
             | Ty::F64
             | Ty::IntLiteral
@@ -257,18 +269,22 @@ impl Checker {
         self.register_builtin_fn("panic", vec![Ty::String], Ty::Never);
 
         // Actor link/monitor (Erlang-style fault propagation)
+        // `link` is idempotent on already-linked actors; `AlreadyLinked` and
+        // `TargetDead` are the error discriminants (declared in std/link_monitor.hew,
+        // B3 slice). `monitor` returns the handle the caller uses to stop watching.
         let link_t = TypeVar::fresh();
-        self.register_builtin_fn("link", vec![Ty::actor_ref(Ty::Var(link_t))], Ty::Unit);
+        self.register_builtin_fn(
+            "link",
+            vec![Ty::actor_ref(Ty::Var(link_t))],
+            Ty::result(Ty::Unit, Ty::link_error()),
+        );
         let unlink_t = TypeVar::fresh();
         self.register_builtin_fn("unlink", vec![Ty::actor_ref(Ty::Var(unlink_t))], Ty::Unit);
         let monitor_t = TypeVar::fresh();
         self.register_builtin_fn(
             "monitor",
             vec![Ty::actor_ref(Ty::Var(monitor_t))],
-            Ty::Named {
-                name: "MonitorRef".to_string(),
-                args: vec![],
-            },
+            Ty::monitor_ref(),
         );
 
         // Supervisor child access
@@ -873,6 +889,13 @@ impl Checker {
                     self.register_machine_decl(md);
                     self.local_type_defs.insert(md.name.clone());
                 }
+                Item::Record(rd) => {
+                    if !self.register_type_namespace_name(&rd.name, span) {
+                        continue;
+                    }
+                    self.register_record_decl(rd);
+                    self.local_type_defs.insert(rd.name.clone());
+                }
                 Item::Import(_)
                 | Item::Const(_)
                 | Item::Impl(_)
@@ -1178,6 +1201,112 @@ impl Checker {
         if all_fields_encodable {
             self.register_encode_methods(&td.name);
         }
+    }
+
+    /// Register a `record` declaration into the type table.
+    ///
+    /// Named-field form: populates `type_defs.fields` so that
+    /// `check_struct_init` and `check_field_access` resolve field types by
+    /// name.
+    ///
+    /// Tuple-positional form: registers a constructor `fn_sig` so that
+    /// `R(1, 2)` resolves as a function call returning `Ty::Named { name: R
+    /// }`.  The `fields` map is left empty — this deliberately prevents
+    /// `.0`/`.1` index-style access (A-D2: positional destructuring only).
+    ///
+    /// In both cases `type_defs` receives a `TypeDef` with
+    /// `kind = TypeDefKind::Record` so the field-write rejection in
+    /// `statements.rs` can identify record types.
+    pub(super) fn register_record_decl(&mut self, rd: &RecordDecl) {
+        let type_param_names: Vec<String> = rd.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+        let type_param_bounds =
+            self.collect_type_param_bounds(rd.type_params.as_ref(), rd.where_clause.as_ref());
+
+        // Build the return type for constructors: `R` or `R<T1, T2, …>`
+        let enum_return_args: Vec<Ty> = type_param_names
+            .iter()
+            .map(|name| Ty::Named {
+                name: name.clone(),
+                args: vec![],
+            })
+            .collect();
+        let return_type = Ty::Named {
+            name: rd.name.clone(),
+            args: enum_return_args,
+        };
+
+        let mut fields: HashMap<String, Ty> = HashMap::new();
+        let mut hole_vars = Vec::new();
+        // Positional field types for tuple records, collected for marker
+        // derivation (A-4). Named-record fields come from `type_def.fields`.
+        let mut tuple_field_types: Vec<Ty> = Vec::new();
+
+        match &rd.kind {
+            RecordKind::Named(record_fields) => {
+                for rf in record_fields {
+                    let field_ty = self.resolve_registered_annotation_ty(&rf.ty, &mut hole_vars);
+                    fields.insert(rf.name.clone(), field_ty);
+                }
+            }
+            RecordKind::Tuple(positional_types) => {
+                // Resolve each positional field type for the constructor signature.
+                let param_tys: Vec<Ty> = positional_types
+                    .iter()
+                    .map(|te| self.resolve_registered_annotation_ty(te, &mut hole_vars))
+                    .collect();
+
+                // Capture positional types for marker registration before moving
+                // param_tys into fn_sigs. The `fields` map intentionally stays
+                // empty — `.0`/`.1` access is not permitted on tuple records (A-D2).
+                tuple_field_types.clone_from(&param_tys);
+
+                // Register a constructor function so `R(1, 2)` resolves via
+                // `check_call`.  The `fields` map intentionally stays empty —
+                // `.0`/`.1` access is not permitted on tuple records (A-D2).
+                self.fn_sigs.insert(
+                    rd.name.clone(),
+                    FnSig {
+                        type_params: type_param_names.clone(),
+                        type_param_bounds: type_param_bounds.clone(),
+                        params: param_tys,
+                        return_type: return_type.clone(),
+                        ..FnSig::default()
+                    },
+                );
+            }
+        }
+
+        let type_def = TypeDef {
+            kind: TypeDefKind::Record,
+            name: rd.name.clone(),
+            type_params: type_param_names.clone(),
+            fields,
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: rd.doc_comment.clone(),
+            is_indirect: false,
+        };
+
+        // Register all field types for marker derivation (Eq/Hash/Send/Frozen/
+        // Clone/Copy). Named-field records use type_def.fields; tuple records
+        // use the positional types captured above (type_def.fields is empty for
+        // tuple records by design — A-D2).
+        let field_types: Vec<Ty> = if tuple_field_types.is_empty() {
+            type_def.fields.values().cloned().collect()
+        } else {
+            tuple_field_types
+        };
+        self.registry.register_type(rd.name.clone(), field_types);
+        // Mark this as a record type so implements_marker applies the correct
+        // value-type semantics (Resource always false; all other markers field-driven).
+        self.registry.register_record_type(rd.name.clone());
+        self.register_rcfree_members_for_type(&rd.name, &type_def);
+
+        self.type_defs.insert(rd.name.clone(), type_def);
+        self.record_type_def_inference_holes(&rd.name, hole_vars);
+        self.handle_bearing_dirty = true;
     }
 
     /// Register codec methods for a wire type.
@@ -2275,7 +2404,12 @@ impl Checker {
             | Item::TypeAlias(_)
             | Item::Wire(_)
             | Item::Supervisor(_)
-            | Item::Machine(_) => {}
+            | Item::Machine(_)
+            | Item::Record(_) => {
+                // Records have no method body items in v0.5; method registration
+                // is a no-op here.  TODO(A-4): if records gain methods, register
+                // them via a `register_record_methods` pass here.
+            }
         }
     }
 

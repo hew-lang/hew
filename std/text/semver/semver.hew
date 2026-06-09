@@ -98,8 +98,8 @@ impl VersionMethods for Version {
 // ── Module-level functions ────────────────────────────────────────────
 /// Parse a semantic version string.
 ///
-/// Panics if the string is not a valid semantic version.
-pub fn parse(s: String) -> Version {
+/// Returns `Err(String)` if the string is not a valid semantic version.
+pub fn try_parse(s: String) -> Result<Version, String> {
     // Split off build metadata (+...)
     var main_part = s;
     var build = "";
@@ -119,20 +119,34 @@ pub fn parse(s: String) -> Version {
     // Split major.minor.patch
     let first_dot = version_part.find(".");
     if first_dot < 0 {
-        panic(f"semver: invalid version string: {s}");
+        return Err(f"semver: invalid version string: {s}");
     }
     let major_str = version_part.slice(0, first_dot);
     let rest = version_part.slice(first_dot + 1, version_part.len());
     let second_dot = rest.find(".");
     if second_dot < 0 {
-        panic(f"semver: invalid version string: {s}");
+        return Err(f"semver: invalid version string: {s}");
     }
     let minor_str = rest.slice(0, second_dot);
     let patch_str = rest.slice(second_dot + 1, rest.len());
     let major = string.to_int(major_str) as i32;
     let minor = string.to_int(minor_str) as i32;
     let patch = string.to_int(patch_str) as i32;
-    Version { pre_release: pre, build_meta: build, maj: major, min: minor, pat: patch }
+    Ok(Version { pre_release: pre, build_meta: build, maj: major, min: minor, pat: patch })
+}
+
+/// Parse a semantic version string.
+///
+/// Panics if the string is not a valid semantic version.
+/// Use `try_parse` for a structured `Result<Version, String>` failure surface.
+pub fn parse(s: String) -> Version {
+    match try_parse(s) {
+        Ok(v) => v,
+        Err(err) => {
+            panic(err);
+            Version { pre_release: "", build_meta: "", maj: 0, min: 0, pat: 0 }
+        },
+    }
 }
 
 /// Format a `Version` as its canonical string representation.

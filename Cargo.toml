@@ -41,6 +41,7 @@ members = [
   "hew-lsp",
   "hew-parser",
   "hew-runtime",
+  "hew-runtime-testkit",
   "hew-types",
   "hew-observe",
   "hew-wasm",

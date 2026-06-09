@@ -31,6 +31,10 @@
 //! - [`hew_connmgr_set_outbound_capacity`] — Legacy API (returns error).
 //! - [`hew_connmgr_count`] — Number of active connections.
 //! - [`hew_connmgr_broadcast`] — Send to all connections.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::{c_char, c_int, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};

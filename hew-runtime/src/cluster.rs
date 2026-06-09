@@ -40,6 +40,10 @@
 //! - [`hew_cluster_set_membership_callback`] — Register event callback with user data.
 //! - [`hew_cluster_notify_connection_lost`] — Notify SWIM when a connection drops.
 //! - [`hew_cluster_notify_connection_established`] — Notify SWIM when a connection is restored.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};

@@ -6,5 +6,5 @@ fn main() {
     worker.send(5);
     worker.send(10);
     worker.send(15);
-    await close(worker);
+    await worker.close();
 }

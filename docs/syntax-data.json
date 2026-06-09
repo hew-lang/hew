@@ -29,6 +29,7 @@
       "super",
       "extern",
       "where",
+      "record",
       "type",
       "indirect",
       "enum",
@@ -54,7 +55,13 @@
       "cooperate",
       "this"
     ],
-    "wire": ["wire", "reserved", "optional", "deprecated", "default"],
+    "wire": [
+      "wire",
+      "reserved",
+      "optional",
+      "deprecated",
+      "default"
+    ],
     "supervisor_config": [
       "child",
       "restart",
@@ -67,10 +74,32 @@
       "one_for_all",
       "rest_for_one"
     ],
-    "logical": ["true", "false"],
-    "machine": ["machine", "state", "event", "on", "when", "entry", "exit", "emit"],
-    "other": ["dyn", "unsafe", "pure"],
-    "reserved_unused": ["try", "catch", "race", "foreign"]
+    "logical": [
+      "true",
+      "false"
+    ],
+    "machine": [
+      "machine",
+      "state",
+      "event",
+      "on",
+      "when",
+      "entry",
+      "exit",
+      "emit"
+    ],
+    "other": [
+      "dyn",
+      "unsafe",
+      "pure",
+      "is"
+    ],
+    "reserved_unused": [
+      "try",
+      "catch",
+      "race",
+      "foreign"
+    ]
   },
   "all_keywords": [
     "let",
@@ -115,6 +144,7 @@
     "await",
     "receive",
     "init",
+    "record",
     "type",
     "this",
     "dyn",
@@ -150,7 +180,8 @@
     "when",
     "entry",
     "exit",
-    "emit"
+    "emit",
+    "is"
   ],
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
@@ -171,10 +202,34 @@
     "fail": "Overflow policy: fail actor"
   },
   "operators": {
-    "arithmetic": ["+", "-", "*", "/", "%"],
-    "comparison": ["==", "!=", "<", "<=", ">", ">="],
-    "logical": ["&&", "||", "!"],
-    "bitwise": ["&", "|", "^", "~", "<<", ">>"],
+    "arithmetic": [
+      "+",
+      "-",
+      "*",
+      "/",
+      "%"
+    ],
+    "comparison": [
+      "==",
+      "!=",
+      "<",
+      "<=",
+      ">",
+      ">="
+    ],
+    "logical": [
+      "&&",
+      "||",
+      "!"
+    ],
+    "bitwise": [
+      "&",
+      "|",
+      "^",
+      "~",
+      "<<",
+      ">>"
+    ],
     "assignment": [
       "=",
       "+=",
@@ -188,9 +243,22 @@
       "<<=",
       ">>="
     ],
-    "arrow": ["->", "=>", "<-"],
-    "range": ["..", "..="],
-    "other": ["?", "@", ".", "::", "#["]
+    "arrow": [
+      "->",
+      "=>",
+      "<-"
+    ],
+    "range": [
+      "..",
+      "..="
+    ],
+    "other": [
+      "?",
+      "@",
+      ".",
+      "::",
+      "#["
+    ]
   },
   "types": {
     "integer": [
@@ -205,7 +273,10 @@
       "isize",
       "usize"
     ],
-    "float": ["f32", "f64"],
+    "float": [
+      "f32",
+      "f64"
+    ],
     "primitive": [
       "bool",
       "char",
@@ -215,8 +286,19 @@
       "never",
       "duration"
     ],
-    "collections": ["HashMap", "HashSet", "Vec"],
-    "option_result": ["Option", "Result", "Ok", "Err", "Some", "None"],
+    "collections": [
+      "HashMap",
+      "HashSet",
+      "Vec"
+    ],
+    "option_result": [
+      "Option",
+      "Result",
+      "Ok",
+      "Err",
+      "Some",
+      "None"
+    ],
     "concurrency": [
       "ActorRef",
       "Stream",
@@ -226,10 +308,24 @@
       "Generator",
       "AsyncGenerator"
     ],
-    "marker_traits": ["Send", "Frozen", "Copy", "Arc", "Rc", "Weak"],
-    "other": ["Range"]
+    "marker_traits": [
+      "Send",
+      "Frozen",
+      "Copy",
+      "Arc",
+      "Rc",
+      "Weak"
+    ],
+    "other": [
+      "Range"
+    ]
   },
-  "string_prefixes": ["f", "r", "re", "b"],
+  "string_prefixes": [
+    "f",
+    "r",
+    "re",
+    "b"
+  ],
   "comment_styles": {
     "line": "//",
     "doc": "///",
@@ -238,6 +334,13 @@
     "block_end": "*/"
   },
   "literal_suffixes": {
-    "duration": ["ns", "us", "ms", "s", "m", "h"]
+    "duration": [
+      "ns",
+      "us",
+      "ms",
+      "s",
+      "m",
+      "h"
+    ]
   }
 }

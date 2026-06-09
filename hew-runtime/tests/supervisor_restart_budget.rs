@@ -6,10 +6,16 @@
 //! previously called `restart_with_budget_and_strategy` directly — now
 //! they post `SYS_MSG_DELAYED_RESTART` to the supervisor's mailbox so
 //! all budget mutations happen on the single-threaded actor dispatch.
+//!
+//! The supervisor handle is owned by `TestSupervisor` so its Drop runs
+//! the canonical stop teardown. The supervisor's FFI surface (add child
+//! spec, `wait_restart`, etc.) still uses raw `extern "C"` calls because
+//! those are inherently bound to `HewChildSpec` and the runtime-owned
+//! child actor pointers.
 
-#![expect(
+#![allow(
     clippy::undocumented_unsafe_blocks,
-    reason = "Integration test — safety invariants documented per-test"
+    reason = "Integration test — supervisor child-management FFI is inherently raw; SAFETY notes on unsafe blocks where load-bearing"
 )]
 
 use std::ffi::{c_void, CString};
@@ -18,17 +24,10 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use hew_runtime::actor::hew_actor_send;
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_is_running, hew_supervisor_new,
-    hew_supervisor_set_restart_notify, hew_supervisor_start, hew_supervisor_stop,
-    hew_supervisor_wait_restart, HewChildSpec,
+    hew_supervisor_add_child_spec, hew_supervisor_set_restart_notify, hew_supervisor_wait_restart,
+    HewChildSpec,
 };
-
-static SCHED_INIT: std::sync::Once = std::sync::Once::new();
-fn ensure_scheduler() {
-    SCHED_INIT.call_once(|| {
-        hew_runtime::scheduler::hew_sched_init();
-    });
-}
+use hew_runtime_testkit::{ensure_scheduler, TestSupervisor};
 
 /// Global lock — tests share mutable global state (fault injection table,
 /// dispatch counters, crash log).
@@ -59,6 +58,9 @@ const OVERFLOW_DROP_NEW: i32 = 1;
 
 /// Poll until the supervisor's child at `index` is non-null, returning
 /// the child pointer and its actor ID.
+///
+/// # Safety
+/// Caller guarantees `sup` is a live supervisor pointer.
 unsafe fn wait_for_child(
     sup: *mut hew_runtime::supervisor::HewSupervisor,
     index: i32,
@@ -66,8 +68,10 @@ unsafe fn wait_for_child(
 ) -> (*mut hew_runtime::actor::HewActor, u64) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     loop {
+        // SAFETY: sup is live per fn contract.
         let child = unsafe { hew_runtime::supervisor::hew_supervisor_get_child(sup, index) };
         if !child.is_null() {
+            // SAFETY: child is a runtime-owned actor pointer; reading id is safe.
             return (child, unsafe { (*child).id });
         }
         assert!(
@@ -79,7 +83,11 @@ unsafe fn wait_for_child(
 }
 
 /// Crash a child actor and wait for the crash to be detected.
+///
+/// # Safety
+/// Caller guarantees `child` is a live actor pointer.
 unsafe fn crash_child(child: *mut hew_runtime::actor::HewActor) {
+    // SAFETY: child is live; reading id and sending a message are safe.
     let id = unsafe { (*child).id };
     hew_fault_inject_crash(id, 1);
     unsafe { hew_actor_send(child, 1, std::ptr::null_mut(), 0) };
@@ -98,12 +106,11 @@ fn concurrent_crashes_decrement_budget_correctly() {
     hew_deterministic_reset();
     DISPATCH_COUNT.store(0, Ordering::SeqCst);
 
+    // Budget of 10, window of 60s.
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 10, 60);
+    // SAFETY: sup wraps a live supervisor; the FFI calls below take its raw ptr.
     unsafe {
-        // Budget of 10, window of 60s — large enough that 3 crashes won't
-        // exhaust it, but small enough to detect double-counting.
-        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 10, 60);
-        assert!(!sup.is_null());
-        hew_supervisor_set_restart_notify(sup);
+        hew_supervisor_set_restart_notify(sup.as_ptr());
 
         // Add 3 children.
         let names: Vec<CString> = (0..3).map(|i| cstr(&format!("worker-{i}"))).collect();
@@ -118,14 +125,17 @@ fn concurrent_crashes_decrement_budget_correctly() {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
             };
-            assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
+            assert_eq!(
+                hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+                0
+            );
         }
-        assert_eq!(hew_supervisor_start(sup), 0);
+        assert_eq!(sup.start(), 0);
 
         // Wait for all 3 children to be spawned.
         let mut children = Vec::new();
         for i in 0..3 {
-            let (child, _id) = wait_for_child(sup, i, 2000);
+            let (child, _id) = wait_for_child(sup.as_ptr(), i, 2000);
             children.push(child);
         }
 
@@ -135,28 +145,26 @@ fn concurrent_crashes_decrement_budget_correctly() {
         }
 
         // Wait for 3 restart cycles.
-        let count = hew_supervisor_wait_restart(sup, 3, 5000);
+        let count = hew_supervisor_wait_restart(sup.as_ptr(), 3, 5000);
         assert!(
             count >= 3,
             "expected at least 3 restart cycles, got {count}"
         );
 
         // Supervisor should still be running — budget was 10, only 3 used.
-        assert_eq!(
-            hew_supervisor_is_running(sup),
-            1,
+        assert!(
+            sup.is_running(),
             "supervisor should still be running after 3 restarts within budget of 10"
         );
 
         // All 3 children should be respawned.
         for i in 0..3 {
-            let (child, _) = wait_for_child(sup, i, 2000);
+            let (child, _) = wait_for_child(sup.as_ptr(), i, 2000);
             assert!(!child.is_null(), "child[{i}] should have been restarted");
         }
-
-        hew_deterministic_reset();
-        hew_supervisor_stop(sup);
     }
+    hew_deterministic_reset();
+    // TestSupervisor::Drop calls hew_supervisor_stop.
 }
 
 /// Exceeding the restart budget causes the supervisor to stop.
@@ -169,11 +177,11 @@ fn budget_exhaustion_stops_supervisor() {
     hew_deterministic_reset();
     DISPATCH_COUNT.store(0, Ordering::SeqCst);
 
+    // Budget of 2 restarts in 60 seconds.
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 2, 60);
+    // SAFETY: live supervisor used for child-management FFI.
     unsafe {
-        // Budget of 2 restarts in 60 seconds.
-        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 2, 60);
-        assert!(!sup.is_null());
-        hew_supervisor_set_restart_notify(sup);
+        hew_supervisor_set_restart_notify(sup.as_ptr());
 
         let name = cstr("doomed");
         let mut state: i32 = 0;
@@ -186,17 +194,20 @@ fn budget_exhaustion_stops_supervisor() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
         };
-        assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
-        assert_eq!(hew_supervisor_start(sup), 0);
+        assert_eq!(
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+            0
+        );
+        assert_eq!(sup.start(), 0);
 
         // Crash the child 3 times — the third crash should exhaust the
         // budget (2 restarts) and stop the supervisor.
         for round in 0..3 {
-            let (child, _) = wait_for_child(sup, 0, 2000);
+            let (child, _) = wait_for_child(sup.as_ptr(), 0, 2000);
             crash_child(child);
 
             // Wait for this restart cycle to complete.
-            let count = hew_supervisor_wait_restart(sup, round + 1, 5000);
+            let count = hew_supervisor_wait_restart(sup.as_ptr(), round + 1, 5000);
             assert!(
                 count > round,
                 "restart cycle {round} not completed (count={count})"
@@ -207,7 +218,7 @@ fn budget_exhaustion_stops_supervisor() {
                 // Poll briefly for the supervisor to stop.
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
                 loop {
-                    if hew_supervisor_is_running(sup) == 0 {
+                    if !sup.is_running() {
                         break;
                     }
                     assert!(
@@ -219,15 +230,12 @@ fn budget_exhaustion_stops_supervisor() {
             }
         }
 
-        assert_eq!(
-            hew_supervisor_is_running(sup),
-            0,
+        assert!(
+            !sup.is_running(),
             "supervisor must be stopped after exhausting restart budget"
         );
-
-        hew_deterministic_reset();
-        hew_supervisor_stop(sup);
     }
+    hew_deterministic_reset();
 }
 
 /// Delayed restarts (via timer thread → mailbox) are actually processed:
@@ -246,11 +254,11 @@ fn delayed_restart_processed_via_mailbox() {
     hew_deterministic_reset();
     DISPATCH_COUNT.store(0, Ordering::SeqCst);
 
+    // Large budget so we don't exhaust it.
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 20, 60);
+    // SAFETY: live supervisor used for child-management FFI.
     unsafe {
-        // Large budget so we don't exhaust it.
-        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 20, 60);
-        assert!(!sup.is_null());
-        hew_supervisor_set_restart_notify(sup);
+        hew_supervisor_set_restart_notify(sup.as_ptr());
 
         let name = cstr("delayed-worker");
         let mut state: i32 = 0;
@@ -263,43 +271,40 @@ fn delayed_restart_processed_via_mailbox() {
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
         };
-        assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
-        assert_eq!(hew_supervisor_start(sup), 0);
+        assert_eq!(
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+            0
+        );
+        assert_eq!(sup.start(), 0);
 
         // First crash — sets the initial restart delay (100ms) but
         // restarts immediately.
-        let (child1, _) = wait_for_child(sup, 0, 2000);
+        let (child1, _) = wait_for_child(sup.as_ptr(), 0, 2000);
         crash_child(child1);
-        let count = hew_supervisor_wait_restart(sup, 1, 5000);
+        let count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5000);
         assert!(count >= 1, "first restart should complete");
 
         // Second crash — backoff is applied, timer thread is spawned.
         // The restart goes through the SYS_MSG_DELAYED_RESTART path.
-        let (child2, _) = wait_for_child(sup, 0, 2000);
+        let (child2, _) = wait_for_child(sup.as_ptr(), 0, 2000);
         crash_child(child2);
 
         // Allow generous timeout for the delayed restart (backoff delay
         // is 200ms, but give plenty of room for CI).
-        let count = hew_supervisor_wait_restart(sup, 2, 5000);
+        let count = hew_supervisor_wait_restart(sup.as_ptr(), 2, 5000);
         assert!(
             count >= 2,
             "delayed restart should complete (count={count})"
         );
 
         // Child should be alive again.
-        let (child3, _) = wait_for_child(sup, 0, 2000);
+        let (child3, _) = wait_for_child(sup.as_ptr(), 0, 2000);
         assert!(!child3.is_null(), "child should be restarted after delay");
 
         // Supervisor should still be running.
-        assert_eq!(
-            hew_supervisor_is_running(sup),
-            1,
-            "supervisor should still be running"
-        );
-
-        hew_deterministic_reset();
-        hew_supervisor_stop(sup);
+        assert!(sup.is_running(), "supervisor should still be running");
     }
+    hew_deterministic_reset();
 }
 
 /// Multiple children crashing with restart backoff: all delayed restarts
@@ -313,11 +318,11 @@ fn multiple_delayed_restarts_budget_consistent() {
     hew_deterministic_reset();
     DISPATCH_COUNT.store(0, Ordering::SeqCst);
 
+    // Budget of 20 in 60s — enough for all restarts.
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 20, 60);
+    // SAFETY: live supervisor used for child-management FFI.
     unsafe {
-        // Budget of 20 in 60s — enough for all restarts.
-        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 20, 60);
-        assert!(!sup.is_null());
-        hew_supervisor_set_restart_notify(sup);
+        hew_supervisor_set_restart_notify(sup.as_ptr());
 
         // Spawn 3 children.
         let names: Vec<CString> = (0..3).map(|i| cstr(&format!("multi-{i}"))).collect();
@@ -332,24 +337,27 @@ fn multiple_delayed_restarts_budget_consistent() {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
             };
-            assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
+            assert_eq!(
+                hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+                0
+            );
         }
-        assert_eq!(hew_supervisor_start(sup), 0);
+        assert_eq!(sup.start(), 0);
 
-        // Round 1: crash all 3 — immediate restarts (sets restart_delay_ms).
+        // Round 1: crash all 3 — immediate restarts.
         for i in 0..3 {
-            let (child, _) = wait_for_child(sup, i, 2000);
+            let (child, _) = wait_for_child(sup.as_ptr(), i, 2000);
             crash_child(child);
         }
-        let count = hew_supervisor_wait_restart(sup, 3, 5000);
+        let count = hew_supervisor_wait_restart(sup.as_ptr(), 3, 5000);
         assert!(count >= 3, "round 1: expected 3 restarts, got {count}");
 
         // Round 2: crash all 3 again — each enters the delayed restart path.
         for i in 0..3 {
-            let (child, _) = wait_for_child(sup, i, 2000);
+            let (child, _) = wait_for_child(sup.as_ptr(), i, 2000);
             crash_child(child);
         }
-        let count = hew_supervisor_wait_restart(sup, 6, 10_000);
+        let count = hew_supervisor_wait_restart(sup.as_ptr(), 6, 10_000);
         assert!(
             count >= 6,
             "round 2: expected 6 total restarts, got {count}"
@@ -357,18 +365,15 @@ fn multiple_delayed_restarts_budget_consistent() {
 
         // All children should be alive.
         for i in 0..3 {
-            let (child, _) = wait_for_child(sup, i, 2000);
+            let (child, _) = wait_for_child(sup.as_ptr(), i, 2000);
             assert!(!child.is_null(), "child[{i}] should be alive after round 2");
         }
 
-        // Supervisor should still be running — 6 restarts within budget of 20.
-        assert_eq!(
-            hew_supervisor_is_running(sup),
-            1,
+        // Supervisor should still be running.
+        assert!(
+            sup.is_running(),
             "supervisor should still be running after 6 restarts"
         );
-
-        hew_deterministic_reset();
-        hew_supervisor_stop(sup);
     }
+    hew_deterministic_reset();
 }

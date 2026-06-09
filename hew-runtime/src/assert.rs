@@ -2,6 +2,10 @@
 //!
 //! Assertion functions exposed with C ABI for use by compiled Hew test programs.
 //! On failure, each function prints a diagnostic to stderr and aborts.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::os::raw::c_char;
 

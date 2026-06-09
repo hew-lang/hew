@@ -5,7 +5,10 @@
 //!
 //! Type definitions (`ElemKind`, `HewVec`) are re-exported from `hew-cabi`.
 //! This module provides the actual implementations of all `hew_vec_*` functions.
-
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 // The `data` field is `*mut u8` (matching C `void*`) but always allocated via
 // `realloc` which guarantees max alignment.  Casts to typed pointers are safe.
 #![expect(

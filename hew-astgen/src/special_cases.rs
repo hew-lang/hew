@@ -644,7 +644,7 @@ const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("Select", VariantDisposition::Parsed),
     ("Join", VariantDisposition::Parsed),
     ("Timeout", VariantDisposition::Parsed),
-    ("Unsafe", VariantDisposition::Parsed),
+    ("UnsafeBlock", VariantDisposition::Parsed),
     ("Yield", VariantDisposition::Parsed),
     ("Cooperate", VariantDisposition::Parsed),
     ("This", VariantDisposition::Parsed),
@@ -657,6 +657,7 @@ const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("RegexLiteral", VariantDisposition::Parsed),
     ("ByteStringLiteral", VariantDisposition::Parsed),
     ("ByteArrayLiteral", VariantDisposition::Parsed),
+    ("Is", VariantDisposition::Parsed),
 ];
 
 #[cfg(test)]
@@ -936,7 +937,7 @@ fn expr_async_dispatcher() -> &'static str {
         parseSpanned<ast::Expr>(mapReq(*payload, "duration"), parseExpr));
     return ast::Expr{std::move(e), {}};
   }
-  if (name == "Unsafe")
+  if (name == "UnsafeBlock")
     return ast::Expr{ast::ExprUnsafe{parseBlock(*payload)}, {}};
   if (name == "Yield") {
     ast::ExprYield e;
@@ -1013,6 +1014,14 @@ fn expr_projection_dispatcher() -> &'static str {
         ast::ExprByteArrayLiteral{parseVec<uint8_t>(
             *payload, [](const msgpack::object &o) { return static_cast<uint8_t>(getInt(o)); })},
         {}};
+  if (name == "Is") {
+    ast::ExprIs e;
+    e.lhs = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "lhs"), parseExpr));
+    e.rhs = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "rhs"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
 "#
 }
 

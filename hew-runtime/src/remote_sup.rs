@@ -3,6 +3,10 @@
 //! This is scaffolding for remote restart orchestration. It currently monitors
 //! remote PIDs, watches SWIM membership for remote node death, and invokes a
 //! callback when monitored actors are considered dead.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::util::{CondvarExt, MutexExt};
 use std::collections::HashMap;

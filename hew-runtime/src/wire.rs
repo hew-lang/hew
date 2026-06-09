@@ -3,6 +3,10 @@
 //! Implements varint (unsigned LEB128), zigzag encoding, TLV field encoding,
 //! an HBF header, and actor-message envelopes. All types use `#[repr(C)]` to
 //! match the C runtime layout exactly.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::{c_char, c_int, c_void};
 

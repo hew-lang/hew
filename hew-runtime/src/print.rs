@@ -3,6 +3,10 @@
 //! Compiled Hew programs call a generic C ABI print entrypoint with a type tag
 //! plus payload bits. The runtime dispatches to the correct `libc::printf`
 //! format while preserving Hew's `print`/`println` behavior.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::os::raw::c_char;
 

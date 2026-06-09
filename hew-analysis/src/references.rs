@@ -101,6 +101,7 @@ pub fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {
             Item::Wire(w) => Some(w.name.as_str()),
             Item::TypeAlias(ta) => Some(ta.name.as_str()),
             Item::Machine(m) => Some(m.name.as_str()),
+            Item::Record(r) => Some(r.name.as_str()),
             Item::Import(_) | Item::ExternBlock(_) | Item::Impl(_) => None,
         };
         if item_name == Some(name) {
@@ -673,7 +674,12 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&transition.body.0, counts);
             }
         }
-        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
+        // Record fields contain only type annotations; no expression idents to count.
+        Item::Record(_)
+        | Item::Import(_)
+        | Item::ExternBlock(_)
+        | Item::Wire(_)
+        | Item::TypeAlias(_) => {}
     }
 }
 
@@ -792,7 +798,10 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&val.0, counts);
             }
         }
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } => {
+            count_idents_in_block(block, counts);
+        }
+        Expr::UnsafeBlock(block) => {
             count_idents_in_block(block, counts);
         }
         Expr::ForkChild { expr, .. } => count_idents_in_expr(&expr.0, counts),

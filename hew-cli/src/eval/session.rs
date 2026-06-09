@@ -394,6 +394,7 @@ fn summarize_item(item: &Item) -> String {
         Item::Actor(decl) => format!("actor {}", decl.name),
         Item::Supervisor(decl) => format!("supervisor {}", decl.name),
         Item::Machine(decl) => format!("machine {}", decl.name),
+        Item::Record(decl) => format!("record {}", decl.name),
     }
 }
 

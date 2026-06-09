@@ -233,36 +233,54 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
     };
     let artefacts = match hew_codegen_rs::emit_module(&pipeline, &options) {
         Ok(a) => a,
+        Err(hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+            // WASM-TODO(#1451): hew_duplex_* symbols are excluded from wasm32
+            // builds via `hew-runtime/src/duplex.rs:54`. Surface a structured
+            // diagnostic so the user knows to pass `--no-wasm` instead of
+            // seeing a raw `wasm-ld: undefined symbol` linker error.
+            eprintln!(
+                "error: WASM target does not support the duplex concurrency \
+                 substrate (symbol: {symbol}; WASM-TODO(#1451))\n\
+                 hint: pass `--no-wasm` to skip WASM emission and produce a \
+                 native binary only"
+            );
+            std::process::exit(1);
+        }
         Err(e) => {
             eprintln!("E_CUTOVER_UNSUPPORTED: {e}");
             std::process::exit(1);
         }
     };
 
-    // Link the native object into an executable using the system C
-    // compiler. Using cc keeps the link command portable across macOS and
-    // Linux and inherits whichever SDK the host has installed.
+    // Link the native object into an executable using the shared
+    // `link::link_executable` path. This resolves `libhew.a` (the
+    // combined runtime + stdlib staticlib built by `make stdlib` / `cargo
+    // build -p hew-lib`) via `find_hew_lib`, applies the per-platform
+    // link plan (dead-strip, strip, system libs including `-lpthread
+    // -ldl -lm -lrt` on Linux, CoreFoundation + Security on macOS), and
+    // routes through lld when available. The same path is exercised by
+    // `hew build`, so compile-v05 binaries now have the same linker
+    // behaviour as release builds.
     if let Some(obj) = &artefacts.native_obj_path {
         let bin_path = emit_dir.join(module_name);
-        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
-        let status = std::process::Command::new(&cc)
-            .arg(obj)
-            .arg("-o")
-            .arg(&bin_path)
-            .status();
-        match status {
-            Ok(s) if s.success() => {
-                println!("native: {}", bin_path.display());
-            }
-            Ok(s) => {
-                eprintln!("Error: `{cc}` link failed with status {s}");
-                std::process::exit(1);
-            }
-            Err(e) => {
-                eprintln!("Error: cannot invoke `{cc}`: {e}");
-                std::process::exit(1);
-            }
+        // compile-v05 always targets the host — no cross-compilation yet.
+        let target = target::TargetSpec::from_requested(None).unwrap_or_else(|e| {
+            eprintln!("Error: cannot determine host target: {e}");
+            std::process::exit(1);
+        });
+        let obj_str = obj.to_str().unwrap_or_else(|| {
+            eprintln!("Error: object path is not valid UTF-8");
+            std::process::exit(1);
+        });
+        let bin_str = bin_path.to_str().unwrap_or_else(|| {
+            eprintln!("Error: output path is not valid UTF-8");
+            std::process::exit(1);
+        });
+        if let Err(e) = link::link_executable(obj_str, bin_str, &target, &[], false) {
+            eprintln!("{e}");
+            std::process::exit(1);
         }
+        println!("native: {}", bin_path.display());
     }
     if let Some(wasm) = &artefacts.wasm_path {
         println!("wasm:   {}", wasm.display());

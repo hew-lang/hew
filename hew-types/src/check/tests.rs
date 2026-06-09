@@ -915,6 +915,7 @@ fn test_receive_gen_fn_returns_stream() {
         overflow_policy: None,
         is_isolated: false,
         doc_comment: None,
+        max_heap_bytes: None,
     };
     let program = Program {
         module_graph: None,
@@ -1730,6 +1731,7 @@ fn typecheck_actor_receive_fn_registered() {
         overflow_policy: None,
         is_isolated: false,
         doc_comment: None,
+        max_heap_bytes: None,
     };
     let program = Program {
         module_graph: None,
@@ -1739,6 +1741,77 @@ fn typecheck_actor_receive_fn_registered() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
     assert!(output.fn_sigs.contains_key("Greeter::greet"));
+}
+
+/// `#[max_heap(N)]` on an actor → `actor_max_heap` side-table entry for that actor.
+#[test]
+fn max_heap_attribute_populates_side_table() {
+    let source = "#[max_heap(4096)] actor Cache { receive fn get() {} }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected type errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.actor_max_heap.get("Cache"),
+        Some(&4096u64),
+        "actor_max_heap must record the parsed cap for Cache"
+    );
+}
+
+/// Actor without `#[max_heap]` must not appear in the side-table.
+#[test]
+fn max_heap_absent_actor_not_in_side_table() {
+    let source = "actor Plain { receive fn tick() {} }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected type errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output.actor_max_heap.contains_key("Plain"),
+        "actor without #[max_heap] must not appear in actor_max_heap"
+    );
+}
+
+/// `#[max_heap(2 mb)]` — suffix conversion done by the parser, checker sees bytes.
+#[test]
+fn max_heap_mb_suffix_populates_side_table_as_bytes() {
+    let source = "#[max_heap(2 mb)] actor Big { receive fn work() {} }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected type errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.actor_max_heap.get("Big"),
+        Some(&(2u64 * 1024 * 1024)),
+        "2 mb must be recorded as 2_097_152 bytes"
+    );
 }
 
 #[test]
@@ -9550,7 +9623,9 @@ fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
 }
 
 #[test]
-fn custom_index_uses_named_method_get_for_type_def() {
+fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
+    // m[k] on a named type that has a `.get()` method is no longer accepted;
+    // the checker must emit a diagnostic pointing at `.get(k)`.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
     let mut methods = HashMap::new();
@@ -9585,16 +9660,26 @@ fn custom_index_uses_named_method_get_for_type_def() {
     };
 
     let ty = checker.synthesize(&expr, &(0..6));
-    assert_eq!(ty, Ty::String);
+    assert_eq!(
+        ty,
+        Ty::Error,
+        "bracket-index on named type must produce Ty::Error"
+    );
     assert!(
-        checker.errors.is_empty(),
-        "expected type-def get lookup to succeed, got: {:?}",
-        checker.errors
+        !checker.errors.is_empty(),
+        "expected a diagnostic for bracket-index on named type with .get()"
+    );
+    let msg = &checker.errors[0].message;
+    assert!(
+        msg.contains(".get(k)"),
+        "diagnostic should point at .get(k), got: {msg}"
     );
 }
 
 #[test]
-fn custom_index_uses_named_method_get_for_fn_sig_fallback() {
+fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
+    // Same as above but the `get` method is registered via fn_sigs rather than
+    // inline on the type_def (the fn_sig-fallback path in lookup_named_method_sig).
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.type_defs.insert(
         "Wrapper".to_string(),
@@ -9627,11 +9712,78 @@ fn custom_index_uses_named_method_get_for_fn_sig_fallback() {
     };
 
     let ty = checker.synthesize(&expr, &(0..9));
-    assert_eq!(ty, Ty::String);
+    assert_eq!(
+        ty,
+        Ty::Error,
+        "bracket-index on named type must produce Ty::Error"
+    );
     assert!(
-        checker.errors.is_empty(),
-        "expected fn_sigs get fallback to succeed, got: {:?}",
-        checker.errors
+        !checker.errors.is_empty(),
+        "expected a diagnostic for bracket-index on named type with .get() via fn_sigs"
+    );
+    let msg = &checker.errors[0].message;
+    assert!(
+        msg.contains(".get(k)"),
+        "diagnostic should point at .get(k), got: {msg}"
+    );
+}
+
+#[test]
+fn hashmap_bracket_index_is_a_compile_error() {
+    // m[k] on HashMap<String, int> must be a compile error since the
+    // named-type .get() fallback is removed. The explicit m.get(k) is the
+    // correct form (returns Option<int>).
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+    // Register HashMap with a String-keyed .get() method (as the stdlib defines it).
+    // Return type is Option<V>, represented as the Named form.
+    let option_v = Ty::Named {
+        name: "Option".to_string(),
+        args: vec![Ty::Named {
+            name: "V".to_string(),
+            args: vec![],
+        }],
+    };
+    let mut methods = HashMap::new();
+    methods.insert(
+        "get".to_string(),
+        FnSig {
+            param_names: vec!["key".to_string()],
+            params: vec![Ty::String],
+            return_type: option_v,
+            ..FnSig::default()
+        },
+    );
+    checker.type_defs.insert(
+        "HashMap".to_string(),
+        make_test_type_def("HashMap", vec!["K".to_string(), "V".to_string()], methods),
+    );
+    checker.env.define(
+        "m".to_string(),
+        Ty::Named {
+            name: "HashMap".to_string(),
+            args: vec![Ty::String, Ty::I64],
+        },
+        false,
+    );
+
+    // Use an i64 index so the only diagnostic comes from the named-type guard,
+    // not from a type mismatch on the index expression itself.
+    let expr = Expr::Index {
+        object: Box::new((Expr::Identifier("m".to_string()), 0..1)),
+        index: Box::new(make_int_literal(0, 2..3)),
+    };
+
+    let ty = checker.synthesize(&expr, &(0..8));
+    assert_eq!(ty, Ty::Error, "m[k] on HashMap must produce Ty::Error");
+    assert!(
+        !checker.errors.is_empty(),
+        "m[k] on HashMap<String, int> must produce a diagnostic"
+    );
+    let msg = &checker.errors[0].message;
+    assert!(
+        msg.contains(".get(k)"),
+        "diagnostic should point at .get(k), got: {msg}"
     );
 }
 
@@ -11704,7 +11856,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         body: Block {
             stmts: vec![],
             trailing_expr: Some(Box::new((
-                Expr::Unsafe(Block {
+                Expr::UnsafeBlock(Box::new(Block {
                     stmts: vec![],
                     trailing_expr: Some(Box::new((
                         Expr::Call {
@@ -11718,7 +11870,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
                         },
                         0..14,
                     ))),
-                }),
+                })),
                 0..14,
             ))),
         },
@@ -15124,5 +15276,559 @@ mod task_type_surface_rules {
             "clean scope {{ fork x = call(); await x; }} must not emit TaskNotNameable; got: {:#?}",
             output.errors
         );
+    }
+
+    // ── in_unsafe scope flag sentinel ────────────────────────────────────────
+    //
+    // These tests verify that the `in_unsafe` flag is correctly set to `true`
+    // inside an `unsafe { }` block and `false` outside one.  The observable
+    // behaviour is the existing `require_unsafe` gate on extern fn calls:
+    // inside unsafe => no error; outside unsafe => error.
+    //
+    // There are no unsafe *operations* yet (T1-B-* and T1-C-* add them), but
+    // extern fn calls already use `in_unsafe` via `require_unsafe`, making them
+    // a natural fail-closed probe.
+
+    #[test]
+    fn in_unsafe_flag_true_inside_unsafe_block_no_error() {
+        // An extern fn call inside `unsafe { }` must not produce an error:
+        // the `in_unsafe` flag is `true` during the block body.
+        let output = check_source(
+            r#"
+            extern "C" { fn raw_op() -> int; }
+            fn caller() -> int {
+                unsafe { raw_op() }
+            }
+            "#,
+        );
+        let unsafe_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| e.message.contains("unsafe"))
+            .collect();
+        assert!(
+            unsafe_errors.is_empty(),
+            "extern fn call inside unsafe block must not emit unsafe errors; got: {unsafe_errors:#?}"
+        );
+    }
+
+    #[test]
+    fn in_unsafe_flag_false_outside_unsafe_block_emits_error() {
+        // An extern fn call outside `unsafe { }` must produce an error:
+        // the `in_unsafe` flag is `false` in the surrounding function body.
+        let output = check_source(
+            r#"
+            extern "C" { fn raw_op() -> int; }
+            fn caller() -> int {
+                raw_op()
+            }
+            "#,
+        );
+        let has_unsafe_error = output.errors.iter().any(|e| e.message.contains("unsafe"));
+        let errors = &output.errors;
+        assert!(
+            has_unsafe_error,
+            "extern fn call outside unsafe block must emit an unsafe-required error; got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn in_unsafe_flag_restored_after_unsafe_block_exits() {
+        // After the unsafe block closes, `in_unsafe` reverts to `false`.
+        // A second extern fn call after the block, outside any unsafe context,
+        // must still produce an error.
+        let output = check_source(
+            r#"
+            extern "C" { fn raw_op() -> int; }
+            fn caller() -> int {
+                unsafe { raw_op() };
+                raw_op()
+            }
+            "#,
+        );
+        let has_unsafe_error = output.errors.iter().any(|e| e.message.contains("unsafe"));
+        let errors = &output.errors;
+        assert!(
+            has_unsafe_error,
+            "extern fn call after unsafe block closes must emit an unsafe-required error; got: {errors:#?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// record admission (A-3)
+// ---------------------------------------------------------------------------
+
+mod record_admission {
+    use super::*;
+
+    #[test]
+    fn construction_ok_named_record() {
+        // Named-field construction with all required fields and correct types
+        // must produce no errors.
+        let output = check_source(
+            r"
+            record Point { x: int, y: int }
+            fn main() {
+                let p = Point { x: 1, y: 2 };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "valid record construction must not produce errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn construction_missing_field_rejected() {
+        // Omitting a required field must produce a missing-field error.
+        let output = check_source(
+            r"
+            record Point { x: int, y: int }
+            fn main() {
+                let p = Point { x: 1 };
+            }
+            ",
+        );
+        let has_missing = output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("missing field") && e.message.contains('y'));
+        assert!(
+            has_missing,
+            "omitting a required field must emit a missing-field error; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn construction_extra_field_rejected() {
+        // Providing a field that does not exist in the record must produce an
+        // undefined-field error.
+        let output = check_source(
+            r"
+            record Point { x: int, y: int }
+            fn main() {
+                let p = Point { x: 1, y: 2, z: 3 };
+            }
+            ",
+        );
+        let has_extra = output
+            .errors
+            .iter()
+            .any(|e| e.message.contains('z') && e.message.contains("Point"));
+        assert!(
+            has_extra,
+            "extra field must emit an undefined-field error; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn construction_wrong_type_rejected() {
+        // A field initialised with the wrong type must produce a type-mismatch
+        // error.
+        let output = check_source(
+            r#"
+            record Point { x: int, y: int }
+            fn main() {
+                let p = Point { x: "hello", y: 2 };
+            }
+            "#,
+        );
+        let has_mismatch = output.errors.iter().any(|e| {
+            e.message.contains("String")
+                || e.message.contains("type mismatch")
+                || e.message.contains("expected")
+        });
+        assert!(
+            has_mismatch,
+            "wrong-typed field must emit a type error; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn field_read_ok() {
+        // Field access on a valid record must resolve the field type and
+        // produce no errors.
+        let output = check_source(
+            r"
+            record Point { x: int, y: int }
+            fn main() {
+                let p = Point { x: 10, y: 20 };
+                let n: int = p.x;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "valid field read must produce no errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn field_write_rejected() {
+        // Assigning to a record field must be rejected unconditionally (A-D3).
+        let output = check_source(
+            r"
+            record Point { x: int, y: int }
+            fn main() {
+                var p: Point = Point { x: 1, y: 2 };
+                p.x = 5;
+            }
+            ",
+        );
+        let has_rejection = output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("record") || e.message.contains("immutable"));
+        assert!(
+            has_rejection,
+            "field assignment on a record must be rejected; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tuple_record_construction_ok() {
+        // Tuple-positional construction `UserId(42)` must resolve to the
+        // declared record type without errors.
+        let output = check_source(
+            r"
+            record UserId(int);
+            fn make() -> UserId {
+                UserId(42)
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "valid tuple-record construction must produce no errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tuple_record_dot_zero_access_rejected() {
+        // `.0` index-style access on a tuple record must be rejected (A-D2).
+        // Fields map is empty; `check_field_access` will report an undefined-field
+        // error for the synthesised field name `"0"`.
+        let output = check_source(
+            r"
+            record UserId(int);
+            fn get_inner(id: UserId) -> int {
+                id.0
+            }
+            ",
+        );
+        let has_error = !output.errors.is_empty();
+        assert!(
+            has_error,
+            "`.0` access on a tuple record must produce an error; got: {:#?}",
+            output.errors
+        );
+    }
+}
+
+/// Tests for numeric opt-out arithmetic: `.wrapping_*`, `.checked_*`, `.saturating_*`
+/// on every integer width. Slice B-3 of the primitives surface plan.
+#[cfg(test)]
+mod methods {
+    use super::*;
+
+    mod integer_checked_wrapping_saturating {
+        use super::*;
+
+        // --- wrapping_* accepts same-width argument and returns same type ---
+
+        #[test]
+        fn wrapping_add_i32_ok() {
+            let output = check_source(r"fn f(a: i32, b: i32) -> i32 { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(i32, i32) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_sub_i64_ok() {
+            let output = check_source(r"fn f(a: i64, b: i64) -> i64 { a.wrapping_sub(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_sub(i64, i64) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_mul_u8_ok() {
+            let output = check_source(r"fn f(a: u8, b: u8) -> u8 { a.wrapping_mul(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_mul(u8, u8) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_add_u64_ok() {
+            let output = check_source(r"fn f(a: u64, b: u64) -> u64 { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(u64, u64) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_add_isize_ok() {
+            let output = check_source(r"fn f(a: isize, b: isize) -> isize { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(isize, isize) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_sub_usize_ok() {
+            let output = check_source(r"fn f(a: usize, b: usize) -> usize { a.wrapping_sub(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_sub(usize, usize) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_mul_i16_ok() {
+            let output = check_source(r"fn f(a: i16, b: i16) -> i16 { a.wrapping_mul(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_mul(i16, i16) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_add_u16_ok() {
+            let output = check_source(r"fn f(a: u16, b: u16) -> u16 { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(u16, u16) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_add_i8_ok() {
+            let output = check_source(r"fn f(a: i8, b: i8) -> i8 { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(i8, i8) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_add_u32_ok() {
+            let output = check_source(r"fn f(a: u32, b: u32) -> u32 { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(u32, u32) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        // --- checked_* returns Option<W> ---
+
+        #[test]
+        fn checked_add_i32_returns_option() {
+            let output = check_source(
+                r"
+                fn f(a: i32, b: i32) -> Option<i32> {
+                    a.checked_add(b)
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "checked_add returns Option<i32>: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn checked_sub_u64_returns_option() {
+            let output = check_source(
+                r"
+                fn f(a: u64, b: u64) -> Option<u64> {
+                    a.checked_sub(b)
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "checked_sub returns Option<u64>: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn checked_mul_i64_returns_option() {
+            let output = check_source(
+                r"
+                fn f(a: i64, b: i64) -> Option<i64> {
+                    a.checked_mul(b)
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "checked_mul returns Option<i64>: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn checked_add_usize_returns_option() {
+            let output = check_source(
+                r"
+                fn f(a: usize, b: usize) -> Option<usize> {
+                    a.checked_add(b)
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "checked_add(usize) returns Option<usize>: {:#?}",
+                output.errors
+            );
+        }
+
+        // --- saturating_* ---
+
+        #[test]
+        fn saturating_add_i32_ok() {
+            let output = check_source(r"fn f(a: i32, b: i32) -> i32 { a.saturating_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "saturating_add(i32) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn saturating_sub_u8_ok() {
+            let output = check_source(r"fn f(a: u8, b: u8) -> u8 { a.saturating_sub(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "saturating_sub(u8) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn saturating_mul_i64_ok() {
+            let output = check_source(r"fn f(a: i64, b: i64) -> i64 { a.saturating_mul(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "saturating_mul(i64) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        // --- Negative: mixed-width argument rejected ---
+
+        #[test]
+        fn wrapping_add_mixed_width_rejected() {
+            let output = check_source(r"fn f(a: i32, b: i64) -> i32 { a.wrapping_add(b) }");
+            assert!(
+                !output.errors.is_empty(),
+                "wrapping_add(i32, i64) must be a type error"
+            );
+        }
+
+        #[test]
+        fn checked_add_mixed_width_rejected() {
+            let output = check_source(
+                r"
+                fn f(a: u8, b: i32) -> Option<u8> {
+                    a.checked_add(b)
+                }
+                ",
+            );
+            assert!(
+                !output.errors.is_empty(),
+                "checked_add(u8, i32) must be a type error"
+            );
+        }
+
+        // --- Negative: float receiver rejected ---
+
+        #[test]
+        fn wrapping_add_float_receiver_rejected() {
+            let output = check_source(r"fn f(a: f32, b: f32) { a.wrapping_add(b); }");
+            assert!(
+                !output.errors.is_empty(),
+                "wrapping_add on f32 must be an error"
+            );
+        }
+
+        #[test]
+        fn saturating_add_f64_receiver_rejected() {
+            let output = check_source(r"fn f(a: f64, b: f64) { a.saturating_add(b); }");
+            assert!(
+                !output.errors.is_empty(),
+                "saturating_add on f64 must be an error"
+            );
+        }
+
+        // --- Negative: unknown op in family rejected ---
+
+        #[test]
+        fn wrapping_div_rejected() {
+            let output = check_source(r"fn f(a: i32, b: i32) { a.wrapping_div(b); }");
+            assert!(
+                !output.errors.is_empty(),
+                "wrapping_div must be rejected (div is out of B-3 scope)"
+            );
+        }
+
+        #[test]
+        fn saturating_neg_rejected() {
+            let output = check_source(r"fn f(a: i32) { a.saturating_neg(); }");
+            assert!(
+                !output.errors.is_empty(),
+                "saturating_neg must be rejected (not in scope)"
+            );
+        }
+
+        // --- Negative: zero args rejected ---
+
+        #[test]
+        fn wrapping_add_no_arg_rejected() {
+            let output = check_source(r"fn f(a: i32) { a.wrapping_add(); }");
+            assert!(
+                !output.errors.is_empty(),
+                "wrapping_add() with no argument must be an arity error"
+            );
+        }
+
+        // --- Negative: checked_add result cannot be used as bare W ---
+
+        #[test]
+        fn checked_add_result_is_not_bare_i32() {
+            let output = check_source(r"fn f(a: i32, b: i32) -> i32 { a.checked_add(b) }");
+            assert!(
+                !output.errors.is_empty(),
+                "checked_add returns Option<i32>, not i32 — must be a type error"
+            );
+        }
     }
 }

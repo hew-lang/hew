@@ -204,6 +204,8 @@ pub enum Token<'src> {
     Receive,
     #[token("init")]
     Init,
+    #[token("record")]
+    Record,
     #[token("type")]
     Type,
     #[token("this")]
@@ -276,6 +278,8 @@ pub enum Token<'src> {
     Exit,
     #[token("emit")]
     Emit,
+    #[token("is")]
+    Is,
 
     // ── Multi-char operators (must precede single-char) ───────────────
     #[token("==")]
@@ -316,6 +320,19 @@ pub enum Token<'src> {
     DoubleColon,
     #[token("#[")]
     HashBracket,
+
+    // ── Wrapping arithmetic operators ─────────────────────────────────
+    // These are SINGLE tokens, not `&` followed by `+`/`-`/`*`.
+    // Logos uses maximal munch: `&+` with no whitespace between the
+    // characters lexes as `AmpPlus` (wrapping add), while `& +` (with
+    // whitespace) lexes as two tokens `Ampersand` + `Plus`. This is the
+    // disambiguation rule: spacing determines operator identity.
+    #[token("&+")]
+    AmpPlus,
+    #[token("&-")]
+    AmpMinus,
+    #[token("&*")]
+    AmpStar,
 
     // ── Compound assignment ───────────────────────────────────────────
     #[token("+=")]
@@ -499,6 +516,10 @@ impl std::fmt::Display for Token<'_> {
 
             Token::LessLess => f.write_str("`<<`"),
             Token::GreaterGreater => f.write_str("`>>`"),
+            // Wrapping arithmetic operators
+            Token::AmpPlus => f.write_str("`&+`"),
+            Token::AmpMinus => f.write_str("`&-`"),
+            Token::AmpStar => f.write_str("`&*`"),
             // Compound assignment
             Token::PlusEqual => f.write_str("`+=`"),
             Token::MinusEqual => f.write_str("`-=`"),
@@ -610,6 +631,7 @@ define_keywords! {
     Await      => "await",
     Receive    => "receive",
     Init       => "init",
+    Record     => "record",
     Type       => "type",
     This       => "this",
     Dyn        => "dyn",
@@ -646,6 +668,7 @@ define_keywords! {
     Entry      => "entry",
     Exit       => "exit",
     Emit       => "emit",
+    Is         => "is",
 }
 
 impl Token<'_> {
@@ -765,12 +788,12 @@ mod tests {
                    one_for_one one_for_all rest_for_one scope fork spawn async await receive \
                    init type this dyn move try true false reserved optional deprecated \
                    default unsafe extern foreign in select race join from after gen yield \
-                   where cooperate catch defer";
+                   where cooperate catch defer is";
         let toks = tokens(src);
-        assert_eq!(toks.len(), 67);
+        assert_eq!(toks.len(), 68);
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
-        assert_eq!(toks[66], Token::Defer);
+        assert_eq!(toks[67], Token::Is);
     }
 
     #[test]
@@ -1082,6 +1105,59 @@ mod tests {
         }
         // Spot-check: starts with a line comment (skipped), then `fn`
         assert_eq!(toks[0].0, Token::Fn);
+    }
+
+    #[test]
+    fn wrapping_ops_single_token() {
+        // `&+`, `&-`, `&*` with no whitespace each lex as a single wrapping-op
+        // token, NOT as `Ampersand` followed by `Plus`/`Minus`/`Star`.
+        assert_eq!(tokens("&+"), vec![Token::AmpPlus]);
+        assert_eq!(tokens("&-"), vec![Token::AmpMinus]);
+        assert_eq!(tokens("&*"), vec![Token::AmpStar]);
+    }
+
+    #[test]
+    fn wrapping_ops_spaced_are_two_tokens() {
+        // `& +` (with whitespace) is `Ampersand` + `Plus` — NOT a wrapping op.
+        // This is the disambiguation rule: spacing determines operator identity.
+        assert_eq!(tokens("& +"), vec![Token::Ampersand, Token::Plus]);
+        assert_eq!(tokens("& -"), vec![Token::Ampersand, Token::Minus]);
+        assert_eq!(tokens("& *"), vec![Token::Ampersand, Token::Star]);
+    }
+
+    #[test]
+    fn wrapping_ops_in_expression_context() {
+        // Verify that `a &+ b` lexes correctly in a typical use position.
+        assert_eq!(
+            tokens("a &+ b"),
+            vec![
+                Token::Identifier("a"),
+                Token::AmpPlus,
+                Token::Identifier("b"),
+            ]
+        );
+        assert_eq!(
+            tokens("x &- 1"),
+            vec![Token::Identifier("x"), Token::AmpMinus, Token::Integer("1"),]
+        );
+        assert_eq!(
+            tokens("m &* n"),
+            vec![
+                Token::Identifier("m"),
+                Token::AmpStar,
+                Token::Identifier("n"),
+            ]
+        );
+    }
+
+    #[test]
+    fn unsafe_keyword_recognised() {
+        // `unsafe` must lex to Token::Unsafe, not an identifier.
+        assert_eq!(tokens("unsafe"), vec![Token::Unsafe]);
+        // Verify keyword_str round-trip.
+        assert_eq!(Token::Unsafe.keyword_str(), Some("unsafe"));
+        // Identifiers that start with "unsafe" must not be mistaken for the keyword.
+        assert_eq!(tokens("unsafe_ptr"), vec![Token::Identifier("unsafe_ptr")]);
     }
 
     #[test]

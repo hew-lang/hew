@@ -103,7 +103,9 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::When
         | Token::Entry
         | Token::Exit
-        | Token::Emit => KW,
+        | Token::Emit
+        | Token::Record
+        | Token::Is => KW,
 
         // ── Constants (strategy values + booleans) ────────────────────
         Token::Permanent
@@ -172,7 +174,10 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::LessLessEqual
         | Token::GreaterGreaterEqual
         | Token::At
-        | Token::Dot => OP,
+        | Token::Dot
+        | Token::AmpPlus
+        | Token::AmpMinus
+        | Token::AmpStar => OP,
 
         // ── Delimiters, punctuation, errors ──────────────────────────
         Token::LeftParen

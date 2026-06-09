@@ -212,10 +212,10 @@ pub fn last_str(v: Vec<String>) -> Option<String> {
 }
 
 // ── min / max ─────────────────────────────────────────────────────────────
-/// Return the smallest element in a `Vec<i32>`. Panics if empty.
-pub fn min_i32(v: Vec<i32>) -> i32 { // INTERNAL-ABI: typed for 32-bit integer vector storage
+/// Return `Some` of the smallest element in a `Vec<i32>`, or `None` if empty.
+pub fn min_i32(v: Vec<i32>) -> Option<int> { // INTERNAL-ABI: typed for 32-bit integer vector storage
     if v.len() == 0 {
-        panic("vec::min_i32: called on empty vector");
+        return None;
     }
     var m = v.get(0);
     var i = 1;
@@ -227,13 +227,13 @@ pub fn min_i32(v: Vec<i32>) -> i32 { // INTERNAL-ABI: typed for 32-bit integer v
         }
         i = i + 1;
     }
-    m
+    Some(m)
 }
 
-/// Return the smallest element in a `Vec<i64>`. Panics if empty.
-pub fn min_i64(v: Vec<i64>) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
+/// Return `Some` of the smallest element in a `Vec<i64>`, or `None` if empty.
+pub fn min_i64(v: Vec<i64>) -> Option<int> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
     if v.len() == 0 {
-        panic("vec::min_i64: called on empty vector");
+        return None;
     }
     var m = v.get(0);
     var i = 1;
@@ -245,14 +245,14 @@ pub fn min_i64(v: Vec<i64>) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i6
         }
         i = i + 1;
     }
-    m
+    Some(m)
 }
 
-/// Return the smallest element in `v`. Panics if `v` is empty.
+/// Return `Some` of the smallest element in `v`, or `None` if `v` is empty.
 /// NaN propagates: if any element is NaN the result is unspecified.
-pub fn min_f64(v: Vec<f64>) -> f64 {
+pub fn min_f64(v: Vec<f64>) -> Option<f64> {
     if v.len() == 0 {
-        panic("vec::min_f64: called on empty vector");
+        return None;
     }
     var m = v.get(0);
     var i = 1;
@@ -264,13 +264,13 @@ pub fn min_f64(v: Vec<f64>) -> f64 {
         }
         i = i + 1;
     }
-    m
+    Some(m)
 }
 
-/// Return the largest element in a `Vec<i32>`. Panics if empty.
-pub fn max_i32(v: Vec<i32>) -> i32 { // INTERNAL-ABI: typed for 32-bit integer vector storage
+/// Return `Some` of the largest element in a `Vec<i32>`, or `None` if empty.
+pub fn max_i32(v: Vec<i32>) -> Option<int> { // INTERNAL-ABI: typed for 32-bit integer vector storage
     if v.len() == 0 {
-        panic("vec::max_i32: called on empty vector");
+        return None;
     }
     var m = v.get(0);
     var i = 1;
@@ -282,13 +282,13 @@ pub fn max_i32(v: Vec<i32>) -> i32 { // INTERNAL-ABI: typed for 32-bit integer v
         }
         i = i + 1;
     }
-    m
+    Some(m)
 }
 
-/// Return the largest element in a `Vec<i64>`. Panics if empty.
-pub fn max_i64(v: Vec<i64>) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
+/// Return `Some` of the largest element in a `Vec<i64>`, or `None` if empty.
+pub fn max_i64(v: Vec<i64>) -> Option<int> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
     if v.len() == 0 {
-        panic("vec::max_i64: called on empty vector");
+        return None;
     }
     var m = v.get(0);
     var i = 1;
@@ -300,14 +300,14 @@ pub fn max_i64(v: Vec<i64>) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i6
         }
         i = i + 1;
     }
-    m
+    Some(m)
 }
 
-/// Return the largest element in `v`. Panics if `v` is empty.
+/// Return `Some` of the largest element in `v`, or `None` if `v` is empty.
 /// NaN propagates: if any element is NaN the result is unspecified.
-pub fn max_f64(v: Vec<f64>) -> f64 {
+pub fn max_f64(v: Vec<f64>) -> Option<f64> {
     if v.len() == 0 {
-        panic("vec::max_f64: called on empty vector");
+        return None;
     }
     var m = v.get(0);
     var i = 1;
@@ -319,5 +319,5 @@ pub fn max_f64(v: Vec<f64>) -> f64 {
         }
         i = i + 1;
     }
-    m
+    Some(m)
 }

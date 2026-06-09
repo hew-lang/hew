@@ -3,6 +3,10 @@
 //! In Erlang-style actor systems, monitors are unidirectional: when actor A
 //! monitors actor B, if B dies, A receives a DOWN message but does NOT crash.
 //! This module implements the monitor table and death notification logic.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::HashMap;
 use std::ffi::c_void;

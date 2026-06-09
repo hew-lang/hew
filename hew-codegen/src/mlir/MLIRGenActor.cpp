@@ -188,6 +188,7 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl,
   actorInfo.numUserFields = numUserFields;
   actorInfo.initParamNames = std::move(initParamNames);
   actorInfo.mailboxCapacity = decl.mailbox_capacity;
+  actorInfo.maxHeapBytes = decl.max_heap_bytes;
 
   if (decl.overflow_policy) {
     const auto &op = *decl.overflow_policy;
@@ -1312,11 +1313,16 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
     coalesceFallbackAttr = builder.getI32IntegerAttr(fallback);
   }
 
+  mlir::IntegerAttr arenaCapAttr;
+  if (actorInfo.maxHeapBytes.has_value()) {
+    arenaCapAttr = builder.getI64IntegerAttr(static_cast<int64_t>(*actorInfo.maxHeapBytes));
+  }
+
   auto spawnOp = hew::ActorSpawnOp::create(
       builder, location, hew::TypedActorRefType::get(&context, builder.getStringAttr(actorName)),
       builder.getStringAttr(actorName), mlir::SymbolRefAttr::get(&context, dispatchName),
       mlir::TypeAttr::get(actorInfo.stateType), initArgVals, mailboxCapAttr, overflowPolicyAttr,
-      coalesceKeyFnAttr, coalesceFallbackAttr);
+      coalesceKeyFnAttr, coalesceFallbackAttr, arenaCapAttr);
 
   auto result = spawnOp.getResult();
 
@@ -1632,7 +1638,8 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
       /*mailbox_capacity=*/mlir::IntegerAttr{},
       /*overflow_policy=*/mlir::IntegerAttr{},
       /*coalesce_key_fn=*/mlir::FlatSymbolRefAttr{},
-      /*coalesce_fallback=*/mlir::IntegerAttr{});
+      /*coalesce_fallback=*/mlir::IntegerAttr{},
+      /*arena_cap_bytes=*/mlir::IntegerAttr{});
 
   // Ownership transfer for captured variables.  The lambda actor's state-drop
   // function (emitted above) owns each captured value and will drop it on

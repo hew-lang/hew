@@ -182,6 +182,8 @@ fn kind_discriminant(k: &PrimitiveWireKind) -> u8 {
         PrimitiveWireKind::U16 => 6,
         PrimitiveWireKind::U32 => 7,
         PrimitiveWireKind::U64 => 8,
+        PrimitiveWireKind::Isize => 17,
+        PrimitiveWireKind::Usize => 18,
         PrimitiveWireKind::F32 => 9,
         PrimitiveWireKind::F64 => 10,
         PrimitiveWireKind::String => 11,

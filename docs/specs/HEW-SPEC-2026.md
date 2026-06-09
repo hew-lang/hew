@@ -4334,23 +4334,41 @@ When the grammar files and this specification disagree, the parser implementatio
 
 | Type                      | Size          | Description             |
 | ------------------------- | ------------- | ----------------------- |
-| `i8`, `i16`, `i32`, `i64` | 1/2/4/8 bytes | Signed integers         |
-| `u8`, `u16`, `u32`, `u64` | 1/2/4/8 bytes | Unsigned integers       |
-| `isize`, `usize`          | platform      | Pointer-sized integers  |
+| `i8`, `i16`, `i32`, `i64` | 1/2/4/8 bytes | Signed integers (fixed-width) |
+| `u8`, `u16`, `u32`, `u64` | 1/2/4/8 bytes | Unsigned integers (fixed-width) |
+| `isize`                   | platform      | Platform-sized signed integer: 32-bit on WASM32, 64-bit on native. **Distinct from `i64`/`int`.** |
+| `usize`                   | platform      | Platform-sized unsigned integer: 32-bit on WASM32, 64-bit on native. **Distinct from `u64`/`uint`.** |
 | `f32`, `f64`              | 4/8 bytes     | IEEE 754 floating point |
 | `bool`                    | 1 byte        | Boolean (true/false)    |
 | `char`                    | 4 bytes       | Unicode scalar value    |
 
-**Type aliases:**
+**Type aliases** (compile-time synonyms only — the aliased type is what the checker sees):
 
-| Alias   | Resolves to | Description                   |
-| ------- | ----------- | ----------------------------- |
-| `int`   | `i64`       | Default integer type          |
-| `uint`  | `u64`       | Default unsigned integer type |
-| `byte`  | `u8`        | Single byte                   |
-| `float` | `f64`       | Default floating-point type   |
+| Alias   | Resolves to | Description                                    |
+| ------- | ----------- | ---------------------------------------------- |
+| `int`   | `i64`       | Default integer type (fixed 64-bit)            |
+| `uint`  | `u64`       | Default unsigned integer type (fixed 64-bit)   |
+| `byte`  | `u8`        | Single byte                                    |
+| `float` | `f64`       | Default floating-point type                    |
 
 Integer literals default to `int` (`i64`). Float literals default to `float` (`f64`).
+
+**Mixed-width arithmetic requires an explicit cast.** The type checker rejects expressions
+that mix distinct integer widths without a cast. Example:
+
+```hew
+let x: i32 = 1;
+let y: i64 = x + 1;        // ERROR: i32 vs i64 width mismatch; use x.to_i64() + 1
+let z: i64 = x.to_i64() + 1;  // OK
+```
+
+`isize` and `usize` are also distinct from each other and from any fixed-width type:
+
+```hew
+let n: usize = v.len();
+let i: i32 = n.to_i32();   // explicit conversion required
+let j: i64 = n.to_i64();   // explicit conversion required
+```
 
 All numeric types support explicit conversion methods:
 
@@ -4362,13 +4380,11 @@ let f: f64 = x.to_f64();      // 42.0
 // Float → integer (truncates toward zero)
 let pi: f64 = 3.14;
 let n: i32 = pi.to_i32();     // 3
-
-// usize ↔ i32
-let len: usize = v.len();
-let i: i32 = len.to_i32();
 ```
 
-These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.to_i32()`, `.to_i64()`, `.to_u8()`, `.to_u16()`, `.to_u32()`, `.to_u64()`, `.to_f32()`, `.to_f64()`, `.to_usize()`, `.to_isize()`.
+These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.to_i32()`, `.to_i64()`, `.to_u8()`, `.to_u16()`, `.to_u32()`, `.to_u64()`, `.to_f32()`, `.to_f64()`, `.to_isize()`, `.to_usize()`.
+
+`.to_isize()` returns `isize` (platform-sized signed). `.to_usize()` returns `usize` (platform-sized unsigned).
 
 ### 12.2 Operator Precedence (highest to lowest)
 

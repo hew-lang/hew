@@ -110,6 +110,16 @@ pub struct TypeCheckOutput {
     /// unit. Codegen consumes the map fail-closed and propagates the
     /// reason out to `--explain-cow`.
     pub actor_send_aliasing: HashMap<SpanKey, ActorSendAliasing>,
+    /// Per-actor arena cap in bytes, populated from `#[max_heap(N)]` annotations.
+    ///
+    /// Keyed by actor type name. Only actors that carry a `#[max_heap]` attribute
+    /// appear in this map; actors without the annotation are absent (unbounded
+    /// arena, runtime cap = 0). `Some(0)` is permitted and means "explicit zero",
+    /// which the runtime treats as unbounded (same as `hew_arena_new`).
+    ///
+    /// Codegen reads this map to decide whether to call `hew_arena_new_with_cap`
+    /// or `hew_arena_new` when spawning an actor.
+    pub actor_max_heap: HashMap<String, u64>,
 }
 
 impl Default for TypeCheckOutput {
@@ -136,6 +146,7 @@ impl Default for TypeCheckOutput {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         }
     }
 }
@@ -634,6 +645,12 @@ pub enum TypeDefKind {
     Enum,
     Actor,
     Machine,
+    /// Immutable value-type record declared with the `record` keyword.
+    ///
+    /// Named-field form: `record Point { x: int, y: int }`.
+    /// Tuple form: `record UserId(int)` — constructor registered as `fn_sig`;
+    /// fields map is empty (no `.0`/`.1` access; positional destructuring only).
+    Record,
 }
 
 #[derive(Debug, Clone)]
@@ -730,6 +747,10 @@ pub struct Checker {
     /// `enforce_actor_boundary_send` and moved out at the end of
     /// `check_program`.
     pub(super) actor_send_aliasing: HashMap<SpanKey, ActorSendAliasing>,
+    /// Per-actor arena cap in bytes, from `#[max_heap(N)]` annotations.
+    /// Mirrors [`TypeCheckOutput::actor_max_heap`]; populated in
+    /// `check_actor` and moved out at the end of `check_program`.
+    pub(super) actor_max_heap: HashMap<String, u64>,
     /// Qualified method names (e.g. `"Closable::close"`) whose dispatch should
     /// mark the receiver moved and propagate `consumes_receiver` into the
     /// per-call-site side table. Empty in PR 1 (issue #1295); PR 2 populates
@@ -939,6 +960,7 @@ impl Checker {
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),

@@ -255,6 +255,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
             let name = i.path.join("::");
             symbol_with_spans(&name, SymbolKind::Module, item_span, item_span)
         }
+        Item::Record(r) => named_symbol(source, &r.name, SymbolKind::Type, item_span),
     }
 }
 

@@ -4,6 +4,10 @@
 //!
 //! On native targets, uses 256 `RwLock` shards to reduce lock contention.
 //! On WASM (single-threaded), uses a plain `HashMap` — no locking needed.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 // ── Native (multi-threaded) implementation ──────────────────────────────────
 

@@ -41,6 +41,10 @@
 //! Every `alloc` call rounds the cursor up with the standard power-of-two mask:
 //! `(cursor + align - 1) & !(align - 1)`.  **`align` must be a power of two**
 //! — a `debug_assert!` guards this in debug builds.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::cell::Cell;
@@ -93,6 +97,16 @@ pub struct ActorArena {
     cursor: usize,
     initial_chunk_size: usize,
     max_chunk_size: usize,
+    /// Byte cap for this arena. `0` means unbounded (legacy behaviour).
+    ///
+    /// When non-zero, `alloc` returns null once total allocated bytes would
+    /// exceed this value. `used` is reset to zero by `reset()` so per-dispatch
+    /// accounting restarts each cycle. Enforced at allocation time (Hew has no
+    /// GC — alloc-time is the natural enforcement point, per `boundary-fail-closed`).
+    pub cap: usize,
+    /// Bytes allocated since the last `reset()`. Incremented on each successful
+    /// alloc when `cap > 0`. Reset to zero by `reset()`. Ignored when `cap == 0`.
+    used: usize,
 }
 
 impl ActorArena {
@@ -112,7 +126,23 @@ impl ActorArena {
             cursor: 0,
             initial_chunk_size,
             max_chunk_size,
+            cap: 0,
+            used: 0,
         })
+    }
+
+    /// Create a new actor arena with a per-dispatch byte cap.
+    ///
+    /// `cap_bytes` is the maximum number of bytes the arena will serve in a
+    /// single dispatch cycle (i.e. between a `reset` call and the next
+    /// `reset`). Once the cap would be exceeded `alloc` returns null.
+    ///
+    /// Passing `cap_bytes = 0` is equivalent to calling `new()` (unbounded).
+    #[must_use]
+    pub fn new_with_cap(cap_bytes: usize) -> Option<Self> {
+        let mut arena = Self::new()?;
+        arena.cap = cap_bytes;
+        Some(arena)
     }
 
     /// Allocate `size` bytes with `align`-byte alignment.
@@ -138,6 +168,18 @@ impl ActorArena {
 
         if size == 0 {
             return ptr::null_mut();
+        }
+
+        // Cap enforcement (0 = unbounded).
+        if self.cap > 0 {
+            match self.used.checked_add(size) {
+                Some(new_used) if new_used <= self.cap => {
+                    self.used = new_used;
+                }
+                _ => {
+                    return ptr::null_mut();
+                }
+            }
         }
 
         // ── Try current chunk ───────────────────────────────────────────
@@ -227,9 +269,12 @@ impl ActorArena {
     /// chunk.  All previously mapped chunks are **retained** so subsequent
     /// activations can reuse already-allocated backing memory.  Any pointers
     /// into the arena that were live before this call are invalidated.
+    ///
+    /// `used` is reset to zero so that cap accounting restarts for the next cycle.
     pub fn reset(&mut self) {
         self.current_chunk = 0;
         self.cursor = 0;
+        self.used = 0;
     }
 
     /// Free all chunks and destroy the arena.
@@ -283,6 +328,14 @@ fn get_current_arena() -> *mut ActorArena {
 
 /// Allocate memory from the current arena, falling back to `libc::malloc`.
 ///
+/// When an arena with a non-zero cap is active and this allocation would
+/// exceed that cap, returns null. On native targets this also triggers a
+/// `HeapExceeded` actor crash via the longjmp/supervisor seam. On WASM the
+/// null propagates to the caller; the `catch_unwind` path handles any
+/// subsequent trap (`native-wasm-parity` LESSON: WASM longjmp is absent,
+/// so HeapExceeded-tagged crash is deferred to a follow-on lane that extends
+/// the WASM actor panic path).
+///
 /// # Safety
 ///
 /// The returned pointer must eventually be passed to `hew_arena_free` (while
@@ -297,9 +350,26 @@ pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
     } else {
         // SAFETY: arena_ptr is a valid pointer set by hew_arena_set_current.
         let arena = unsafe { &mut *arena_ptr };
-        arena
+        let ptr = arena
             .alloc(size, std::mem::align_of::<*mut c_void>())
-            .cast::<c_void>()
+            .cast::<c_void>();
+
+        // On non-WASM targets, cap exhaustion triggers a HeapExceeded crash
+        // via the longjmp seam so the supervisor sees a named exit reason.
+        // On WASM the null propagates to the caller (no longjmp available).
+        #[cfg(not(target_arch = "wasm32"))]
+        if ptr.is_null() && arena.cap > 0 {
+            // SAFETY: must be called from an actor dispatch context on a
+            // worker thread. The longjmp unwinds to the sigsetjmp frame in
+            // the scheduler without returning here.
+            unsafe {
+                crate::signal::try_direct_longjmp_with_code(
+                    crate::supervisor::HEW_TRAP_HEAP_EXCEEDED,
+                );
+            }
+        }
+
+        ptr
     }
 }
 
@@ -323,6 +393,19 @@ pub unsafe extern "C" fn hew_arena_free(ptr: *mut c_void) {
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub extern "C" fn hew_arena_new() -> *mut ActorArena {
     match ActorArena::new() {
+        Some(arena) => Box::into_raw(Box::new(arena)),
+        None => ptr::null_mut(),
+    }
+}
+
+/// Create a new arena with a per-dispatch byte cap.
+///
+/// `cap_bytes = 0` is unbounded (equivalent to `hew_arena_new`).
+/// Returns null if memory allocation for the initial chunk fails.
+#[must_use]
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub extern "C" fn hew_arena_new_with_cap(cap_bytes: usize) -> *mut ActorArena {
+    match ActorArena::new_with_cap(cap_bytes) {
         Some(arena) => Box::into_raw(Box::new(arena)),
         None => ptr::null_mut(),
     }
@@ -627,6 +710,96 @@ mod tests {
         );
 
         // SAFETY: arena is valid, not installed.
+        unsafe { hew_arena_free_all(arena) };
+    }
+
+    // ── Cap enforcement tests ──────────────────────────────────────────────
+
+    /// cap=0 means unbounded: allocations succeed as before.
+    #[test]
+    fn arena_cap_zero_is_unbounded() {
+        let mut arena = ActorArena::new_with_cap(0).expect("arena creation must succeed");
+        for _ in 0..100 {
+            let p = arena.alloc(1024, 1);
+            assert!(!p.is_null(), "unbounded arena must not return null");
+        }
+    }
+
+    /// Allocations below the cap succeed; the first one that would exceed it returns null.
+    #[test]
+    fn arena_cap_alloc_under_cap_succeeds() {
+        let cap = 512_usize;
+        let mut arena = ActorArena::new_with_cap(cap).expect("arena creation must succeed");
+
+        let p1 = arena.alloc(256, 1);
+        assert!(!p1.is_null(), "first alloc under cap must succeed");
+
+        let p2 = arena.alloc(256, 1);
+        assert!(!p2.is_null(), "second alloc exactly at cap must succeed");
+    }
+
+    /// An allocation that would push total bytes over cap returns null (fail-closed).
+    #[test]
+    fn arena_cap_alloc_over_cap_returns_null() {
+        let cap = 512_usize;
+        let mut arena = ActorArena::new_with_cap(cap).expect("arena creation must succeed");
+
+        let p1 = arena.alloc(512, 1);
+        assert!(!p1.is_null(), "alloc exactly at cap must succeed");
+
+        let p2 = arena.alloc(1, 1);
+        assert!(p2.is_null(), "alloc that exceeds cap must return null");
+    }
+
+    /// After `reset()`, used resets to zero and allocations up to cap succeed again.
+    #[test]
+    fn arena_cap_reset_clears_used() {
+        let cap = 256_usize;
+        let mut arena = ActorArena::new_with_cap(cap).expect("arena creation must succeed");
+
+        let p1 = arena.alloc(256, 1);
+        assert!(!p1.is_null());
+        let p2 = arena.alloc(1, 1);
+        assert!(p2.is_null());
+
+        arena.reset();
+        let p3 = arena.alloc(256, 1);
+        assert!(!p3.is_null(), "alloc after reset must succeed up to cap");
+        let p4 = arena.alloc(1, 1);
+        assert!(
+            p4.is_null(),
+            "alloc after reset must still fail when over cap"
+        );
+    }
+
+    /// `hew_arena_new_with_cap` is the C ABI constructor; verify it enforces the cap.
+    #[test]
+    fn hew_arena_new_with_cap_c_api() {
+        let cap = 128_usize;
+        let arena = hew_arena_new_with_cap(cap);
+        assert!(!arena.is_null(), "hew_arena_new_with_cap must succeed");
+
+        // SAFETY: arena is a valid pointer from hew_arena_new_with_cap.
+        unsafe { hew_arena_set_current(arena) };
+
+        // Under cap.
+        // SAFETY: arena is installed; malloc routes through it.
+        let p1 = unsafe { hew_arena_malloc(64) };
+        assert!(!p1.is_null(), "malloc under cap must succeed");
+
+        // SAFETY: arena is installed; second malloc routes through it.
+        let p2 = unsafe { hew_arena_malloc(64) };
+        assert!(!p2.is_null(), "malloc exactly at cap must succeed");
+
+        // Over cap.
+        // SAFETY: arena is installed; malloc must return null when cap exhausted.
+        let p3 = unsafe { hew_arena_malloc(1) };
+        assert!(p3.is_null(), "malloc over cap must return null");
+
+        // SAFETY: null is always safe.
+        unsafe { hew_arena_set_current(ptr::null_mut()) };
+
+        // SAFETY: arena is valid and not installed.
         unsafe { hew_arena_free_all(arena) };
     }
 }

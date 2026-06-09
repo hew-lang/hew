@@ -418,7 +418,8 @@ def Hew_ActorSpawnOp : Hew_Op<"actor_spawn"> {
     OptionalAttr<I64Attr>:$mailbox_capacity,
     OptionalAttr<I32Attr>:$overflow_policy,
     OptionalAttr<FlatSymbolRefAttr>:$coalesce_key_fn,
-    OptionalAttr<I32Attr>:$coalesce_fallback
+    OptionalAttr<I32Attr>:$coalesce_fallback,
+    OptionalAttr<I64Attr>:$arena_cap_bytes
   );
   let results = (outs AnyType:$result);
 

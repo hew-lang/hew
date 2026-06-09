@@ -520,6 +520,32 @@ impl Checker {
                     self.assign_target_kinds
                         .insert(SpanKey::from(&target.1), kind);
                 }
+
+                // Reject field-write on record types.  Records are immutable
+                // value types (A-D3): field assignment `r.x = v` is always
+                // rejected even through `var`.  Use functional update syntax
+                // `R { x: v, ..r }` (A-5) instead.
+                if let Expr::FieldAccess { object, field } = &target.0 {
+                    let obj_ty = self.synthesize(&object.0, &object.1);
+                    let resolved = self.subst.resolve(&obj_ty);
+                    if let Ty::Named { name, .. } = &resolved {
+                        if self
+                            .lookup_type_def(name)
+                            .is_some_and(|td| td.kind == TypeDefKind::Record)
+                        {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "cannot assign to field `{field}` of record `{name}`; \
+                                     records are immutable value types — use functional update \
+                                     syntax `{name} {{ {field}: <value>, ..old }}` instead"
+                                ),
+                            );
+                        }
+                    }
+                }
+
                 let target_ty = self.synthesize(&target.0, &target.1);
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the MLIR

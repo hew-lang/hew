@@ -673,6 +673,7 @@ pub unsafe extern "C" fn hew_duplex_pair(
         ptr::write(out_a, a_ptr);
         ptr::write(out_b, b_ptr);
     }
+    crate::tracing::record_channel_event(a_ptr as u64, crate::tracing::SPAN_DUPLEX_CREATED);
     SendError::Ok as i32
 }
 
@@ -680,6 +681,11 @@ pub unsafe extern "C" fn hew_duplex_pair(
 /// `SendError` discriminant as `i32` (0 = Ok, 1 = Closed, ...).
 ///
 /// Blocks if the queue is full and at least one receiver remains.
+///
+/// Returns `SendError::DoubleClose` (4) if the handle has already been
+/// closed (defence-in-depth: the Rust move-checker enforces this at the
+/// type level; the flag guard catches sequential close-then-send from
+/// native FFI callers without move-checker enforcement).
 ///
 /// # Safety
 ///
@@ -694,6 +700,19 @@ pub unsafe extern "C" fn hew_duplex_send(
     if d.is_null() {
         crate::set_last_error("hew_duplex_send: null handle".to_string());
         return SendError::Closed as i32;
+    }
+    // Released-flag guard: load with Acquire to synchronise with the
+    // AcqRel store in hew_duplex_close. Catches sequential close-then-send
+    // from native FFI callers. A concurrent close-during-send is still a
+    // caller contract violation — this guard does not serialise them.
+    // SAFETY: `released` is the first field of #[repr(C)] HewDuplexHandle;
+    // addr_of! projects without materialising &mut *d (which would alias a
+    // concurrent close caller's exclusive borrow). The outer wrapper is
+    // never freed (intentional leak), so the pointer remains valid.
+    let released = unsafe { &*ptr::addr_of!((*d).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_duplex_send: handle already released".to_string());
+        return SendError::DoubleClose as i32;
     }
     // SAFETY:
     // - Provenance: `msg` is caller-owned; we copy into an owned Vec, so
@@ -737,6 +756,8 @@ pub unsafe extern "C" fn hew_duplex_send(
 /// Non-blocking variant of [`hew_duplex_send`]. Returns
 /// `SendError::Full` if the queue is at capacity.
 ///
+/// Returns `SendError::DoubleClose` (4) if the handle has already been closed.
+///
 /// # Safety
 ///
 /// Same as `hew_duplex_send`.
@@ -749,6 +770,13 @@ pub unsafe extern "C" fn hew_duplex_try_send(
     if d.is_null() {
         crate::set_last_error("hew_duplex_try_send: null handle".to_string());
         return SendError::Closed as i32;
+    }
+    // Released-flag guard: see hew_duplex_send for rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*d).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_duplex_try_send: handle already released".to_string());
+        return SendError::DoubleClose as i32;
     }
     let payload = if len == 0 {
         Vec::new()
@@ -776,6 +804,9 @@ pub unsafe extern "C" fn hew_duplex_try_send(
 /// length. On closed-or-error, `*out_ptr` is null, `*out_len` is 0,
 /// and the return value carries the error discriminant.
 ///
+/// Returns `RecvError::Closed` (1) if the handle has already been closed,
+/// with `*out_ptr = null` and `*out_len = 0`.
+///
 /// # Safety
 ///
 /// `d`, `out_ptr`, and `out_len` must all be valid pointers.
@@ -787,6 +818,19 @@ pub unsafe extern "C" fn hew_duplex_recv(
 ) -> i32 {
     if d.is_null() || out_ptr.is_null() || out_len.is_null() {
         crate::set_last_error("hew_duplex_recv: null pointer argument".to_string());
+        return RecvError::Closed as i32;
+    }
+    // Released-flag guard: see hew_duplex_send for rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*d).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_duplex_recv: handle already released".to_string());
+        // SAFETY: out_ptr / out_len are non-null (checked above); write the
+        // no-payload shape so the caller does not observe uninitialised output.
+        unsafe {
+            ptr::write(out_ptr, ptr::null_mut());
+            ptr::write(out_len, 0usize);
+        }
         return RecvError::Closed as i32;
     }
     // SAFETY: see hew_duplex_send dereference axis-by-axis; identical
@@ -838,6 +882,9 @@ pub unsafe extern "C" fn hew_duplex_recv(
 /// Non-blocking variant of [`hew_duplex_recv`]. Returns
 /// `RecvError::Empty` if no message is waiting.
 ///
+/// Returns `RecvError::Closed` (1) if the handle has already been closed,
+/// with `*out_ptr = null` and `*out_len = 0`.
+///
 /// # Safety
 ///
 /// Same as `hew_duplex_recv`.
@@ -849,6 +896,18 @@ pub unsafe extern "C" fn hew_duplex_try_recv(
 ) -> i32 {
     if d.is_null() || out_ptr.is_null() || out_len.is_null() {
         crate::set_last_error("hew_duplex_try_recv: null pointer argument".to_string());
+        return RecvError::Closed as i32;
+    }
+    // Released-flag guard: see hew_duplex_send for rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*d).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_duplex_try_recv: handle already released".to_string());
+        // SAFETY: out_ptr / out_len are non-null (checked above).
+        unsafe {
+            ptr::write(out_ptr, ptr::null_mut());
+            ptr::write(out_len, 0usize);
+        }
         return RecvError::Closed as i32;
     }
     // SAFETY: see hew_duplex_recv — identical six-axis profile for
@@ -971,6 +1030,7 @@ pub unsafe extern "C" fn hew_duplex_close(d: *mut HewDuplexHandle) -> i32 {
     // SAFETY: see the drop-phase block immediately above — this thread
     // owns the wrapper exclusively against all close/release callers.
     unsafe { ManuallyDrop::drop(&mut h.inner) };
+    crate::tracing::record_channel_event(d as u64, crate::tracing::SPAN_DUPLEX_CLOSED);
     SendError::Ok as i32
 }
 
@@ -1011,7 +1071,9 @@ pub unsafe extern "C" fn hew_duplex_send_half(d: *mut HewDuplexHandle) -> *mut H
     // wrapper exclusively against all close/release callers.
     let duplex = unsafe { ManuallyDrop::take(&mut h.inner) };
     let send_half = duplex.into_send_half();
-    Box::into_raw(Box::new(HewSendHalfHandle::new(send_half)))
+    let result = Box::into_raw(Box::new(HewSendHalfHandle::new(send_half)));
+    crate::tracing::record_channel_event(d as u64, crate::tracing::SPAN_DUPLEX_HALF_SPLIT);
+    result
 }
 
 /// Convert a unified Duplex into a `HewRecvHalfHandle` (recv-only alias).
@@ -1044,10 +1106,14 @@ pub unsafe extern "C" fn hew_duplex_recv_half(d: *mut HewDuplexHandle) -> *mut H
     // wrapper exclusively against all close/release callers.
     let duplex = unsafe { ManuallyDrop::take(&mut h.inner) };
     let recv_half = duplex.into_recv_half();
-    Box::into_raw(Box::new(HewRecvHalfHandle::new(recv_half)))
+    let result = Box::into_raw(Box::new(HewRecvHalfHandle::new(recv_half)));
+    crate::tracing::record_channel_event(d as u64, crate::tracing::SPAN_DUPLEX_HALF_SPLIT);
+    result
 }
 
 /// Send a payload on a `HewSendHalfHandle`.
+///
+/// Returns `SendError::DoubleClose` (4) if the handle has already been closed.
 ///
 /// # Safety
 ///
@@ -1063,6 +1129,13 @@ pub unsafe extern "C" fn hew_send_half_send(
     if half.is_null() {
         crate::set_last_error("hew_send_half_send: null handle".to_string());
         return SendError::Closed as i32;
+    }
+    // Released-flag guard: see hew_duplex_send for rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*half).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_send_half_send: handle already released".to_string());
+        return SendError::DoubleClose as i32;
     }
     let payload = if len == 0 {
         Vec::new()
@@ -1083,6 +1156,8 @@ pub unsafe extern "C" fn hew_send_half_send(
 /// the send queue is at capacity; returns `SendError::Closed` if the channel
 /// is closed. Does not block waiting for space.
 ///
+/// Returns `SendError::DoubleClose` (4) if the handle has already been closed.
+///
 /// # Safety
 ///
 /// Same as `hew_send_half_send`.
@@ -1095,6 +1170,13 @@ pub unsafe extern "C" fn hew_send_half_try_send(
     if half.is_null() {
         crate::set_last_error("hew_send_half_try_send: null handle".to_string());
         return SendError::Closed as i32;
+    }
+    // Released-flag guard: see hew_duplex_send for rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*half).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_send_half_try_send: handle already released".to_string());
+        return SendError::DoubleClose as i32;
     }
     let payload = if len == 0 {
         Vec::new()
@@ -1113,6 +1195,9 @@ pub unsafe extern "C" fn hew_send_half_try_send(
 
 /// Receive a payload from a `HewRecvHalfHandle`.
 ///
+/// Returns `RecvError::Closed` (1) if the handle has already been closed,
+/// with `*out_ptr = null` and `*out_len = 0`.
+///
 /// # Safety
 ///
 /// `half`, `out_ptr`, and `out_len` must all be valid pointers; the
@@ -1126,6 +1211,18 @@ pub unsafe extern "C" fn hew_recv_half_recv(
 ) -> i32 {
     if half.is_null() || out_ptr.is_null() || out_len.is_null() {
         crate::set_last_error("hew_recv_half_recv: null pointer argument".to_string());
+        return RecvError::Closed as i32;
+    }
+    // Released-flag guard: see hew_duplex_send for rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*half).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_recv_half_recv: handle already released".to_string());
+        // SAFETY: out_ptr / out_len are non-null (checked above).
+        unsafe {
+            ptr::write(out_ptr, ptr::null_mut());
+            ptr::write(out_len, 0usize);
+        }
         return RecvError::Closed as i32;
     }
     // SAFETY: see hew_duplex_recv — symmetric profile.
@@ -1159,6 +1256,9 @@ pub unsafe extern "C" fn hew_recv_half_recv(
 /// `RecvError::Empty` if no message is waiting; returns `RecvError::Closed`
 /// if the channel is closed.
 ///
+/// Returns `RecvError::Closed` (1) if the handle has already been closed,
+/// with `*out_ptr = null` and `*out_len = 0`.
+///
 /// # Safety
 ///
 /// Same as `hew_recv_half_recv`.
@@ -1170,6 +1270,18 @@ pub unsafe extern "C" fn hew_recv_half_try_recv(
 ) -> i32 {
     if half.is_null() || out_ptr.is_null() || out_len.is_null() {
         crate::set_last_error("hew_recv_half_try_recv: null pointer argument".to_string());
+        return RecvError::Closed as i32;
+    }
+    // Released-flag guard: see hew_duplex_send for rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*half).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_recv_half_try_recv: handle already released".to_string());
+        // SAFETY: out_ptr / out_len are non-null (checked above).
+        unsafe {
+            ptr::write(out_ptr, ptr::null_mut());
+            ptr::write(out_len, 0usize);
+        }
         return RecvError::Closed as i32;
     }
     // SAFETY: see hew_recv_half_recv — identical six-axis profile for the
@@ -1295,6 +1407,8 @@ pub unsafe extern "C" fn hew_duplex_close_half(half: *mut c_void, direction: i32
 
 /// Refcount-bump clone of a unified Duplex handle.
 ///
+/// Returns null if the handle has already been closed.
+///
 /// # Safety
 ///
 /// `d` must be a valid, open `HewDuplexHandle` (not yet closed).
@@ -1302,6 +1416,15 @@ pub unsafe extern "C" fn hew_duplex_close_half(half: *mut c_void, direction: i32
 pub unsafe extern "C" fn hew_duplex_clone(d: *mut HewDuplexHandle) -> *mut HewDuplexHandle {
     if d.is_null() {
         crate::set_last_error("hew_duplex_clone: null handle".to_string());
+        return ptr::null_mut();
+    }
+    // Released-flag guard: cloning a closed handle would bump the Arc
+    // refcount on a ManuallyDrop-dropped inner — UB. Consult the flag before
+    // dereferencing inner. See hew_duplex_send for addr_of! rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*d).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_duplex_clone: handle already released".to_string());
         return ptr::null_mut();
     }
     // SAFETY:
@@ -1313,9 +1436,8 @@ pub unsafe extern "C" fn hew_duplex_clone(d: *mut HewDuplexHandle) -> *mut HewDu
     // - Aliasing concurrency: HewDuplex::clone_handle uses atomic refcount
     //   bumps (Arc) — safe from multiple threads simultaneously.
     // - Bounds: single non-null aligned pointer dereference.
-    // - Failure mode: calling clone on a closed handle is caller UB (the
-    //   inner ManuallyDrop is in an invalid state after close); not
-    //   detectable here without reading the released flag.
+    // - Failure mode: released flag guards against cloning a closed handle
+    //   (the inner ManuallyDrop is in an invalid state after close).
     let cloned = unsafe { (*d).inner.clone_handle() };
     Box::into_raw(Box::new(HewDuplexHandle::new(cloned)))
 }
@@ -1996,5 +2118,158 @@ mod tests {
                 assert_eq!(hew_duplex_close(b), SendError::Ok as i32);
             }
         }
+    }
+
+    // ── Released-flag guard tests ──────────────────────────────────────────
+    //
+    // After hew_duplex_close / hew_duplex_close_half, every non-close entry
+    // must return a typed error rather than dereferencing the freed inner
+    // allocation. These tests prove the flag is consulted before the inner
+    // borrow — the positive path (open handle → normal operation) is
+    // exercised extensively in the round-trip tests above.
+
+    #[test]
+    fn cabi_send_after_close_returns_double_close() {
+        let mut a: *mut HewDuplexHandle = ptr::null_mut();
+        let mut b: *mut HewDuplexHandle = ptr::null_mut();
+        // SAFETY: stack slots valid; positive capacities.
+        unsafe { hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b)) };
+        // SAFETY: handle came from hew_duplex_pair; first close returns Ok.
+        assert_eq!(unsafe { hew_duplex_close(a) }, SendError::Ok as i32);
+        // Send on the closed handle — must not SIGSEGV; must return DoubleClose.
+        let msg = b"post-close";
+        // SAFETY: `a` wrapper allocation persists (intentional leak); the
+        // released flag is readable; inner is NOT dereferenced.
+        let rc = unsafe { hew_duplex_send(a, msg.as_ptr(), msg.len()) };
+        assert_eq!(
+            rc,
+            SendError::DoubleClose as i32,
+            "send after close must be DoubleClose"
+        );
+        // SAFETY: b is still live.
+        unsafe { hew_duplex_close(b) };
+    }
+
+    #[test]
+    fn cabi_recv_after_close_returns_double_close() {
+        let mut a: *mut HewDuplexHandle = ptr::null_mut();
+        let mut b: *mut HewDuplexHandle = ptr::null_mut();
+        // SAFETY: stack slots valid; positive capacities.
+        unsafe { hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b)) };
+        // Close `a`; then verify that recv on the closed `a` wrapper returns
+        // Closed (released-flag path) with null out-params, not a SIGSEGV.
+        // SAFETY: handle from hew_duplex_pair; wrapper persists after close.
+        unsafe { hew_duplex_close(a) };
+        let mut p: *mut u8 = ptr::null_mut();
+        let mut n: usize = 0;
+        // SAFETY: `a` wrapper persists; released flag is readable; inner NOT touched.
+        let rc =
+            unsafe { hew_duplex_recv(a, std::ptr::addr_of_mut!(p), std::ptr::addr_of_mut!(n)) };
+        assert_eq!(
+            rc,
+            RecvError::Closed as i32,
+            "recv on closed handle must return Closed"
+        );
+        assert!(p.is_null(), "out_ptr must be null on released-handle error");
+        assert_eq!(n, 0, "out_len must be 0 on released-handle error");
+        // SAFETY: b is still valid.
+        unsafe { hew_duplex_close(b) };
+    }
+
+    #[test]
+    fn cabi_try_send_after_close_returns_double_close() {
+        let mut a: *mut HewDuplexHandle = ptr::null_mut();
+        let mut b: *mut HewDuplexHandle = ptr::null_mut();
+        // SAFETY: stack slots valid; positive capacities.
+        unsafe { hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b)) };
+        // SAFETY: handles from hew_duplex_pair.
+        unsafe { hew_duplex_close(a) };
+        let msg = b"x";
+        // SAFETY: `a` wrapper persists; released flag is readable.
+        let rc = unsafe { hew_duplex_try_send(a, msg.as_ptr(), msg.len()) };
+        assert_eq!(
+            rc,
+            SendError::DoubleClose as i32,
+            "try_send after close must be DoubleClose"
+        );
+        // SAFETY: b is still valid.
+        unsafe { hew_duplex_close(b) };
+    }
+
+    #[test]
+    fn cabi_try_recv_after_close_returns_double_close() {
+        let mut a: *mut HewDuplexHandle = ptr::null_mut();
+        let mut b: *mut HewDuplexHandle = ptr::null_mut();
+        // SAFETY: stack slots valid; positive capacities.
+        unsafe { hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b)) };
+        // SAFETY: handles from hew_duplex_pair.
+        unsafe { hew_duplex_close(a) };
+        let mut p: *mut u8 = ptr::null_mut();
+        let mut n: usize = 0;
+        // SAFETY: `a` wrapper persists; released flag is readable.
+        let rc =
+            unsafe { hew_duplex_try_recv(a, std::ptr::addr_of_mut!(p), std::ptr::addr_of_mut!(n)) };
+        assert_eq!(
+            rc,
+            RecvError::Closed as i32,
+            "try_recv after close must return Closed"
+        );
+        assert!(p.is_null());
+        assert_eq!(n, 0);
+        // SAFETY: b is still valid.
+        unsafe { hew_duplex_close(b) };
+    }
+
+    #[test]
+    fn cabi_send_half_send_after_close_returns_double_close() {
+        let mut a: *mut HewDuplexHandle = ptr::null_mut();
+        let mut b: *mut HewDuplexHandle = ptr::null_mut();
+        // SAFETY: stack slots valid; positive capacities.
+        unsafe { hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b)) };
+        // SAFETY: handles from hew_duplex_pair.
+        let a_send = unsafe { hew_duplex_send_half(a) };
+        assert!(!a_send.is_null());
+        // Close the send half.
+        // SAFETY: a_send came from hew_duplex_send_half.
+        unsafe { hew_duplex_close_half(a_send.cast(), HewDuplexDirection::Send as i32) };
+        let msg = b"late";
+        // SAFETY: wrapper persists; released flag is readable; inner NOT touched.
+        let rc = unsafe { hew_send_half_send(a_send, msg.as_ptr(), msg.len()) };
+        assert_eq!(
+            rc,
+            SendError::DoubleClose as i32,
+            "send on closed half must be DoubleClose"
+        );
+        // SAFETY: b is still valid.
+        unsafe { hew_duplex_close(b) };
+    }
+
+    #[test]
+    fn cabi_recv_half_recv_after_close_returns_double_close() {
+        let mut a: *mut HewDuplexHandle = ptr::null_mut();
+        let mut b: *mut HewDuplexHandle = ptr::null_mut();
+        // SAFETY: stack slots valid; positive capacities.
+        unsafe { hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b)) };
+        // SAFETY: handles from hew_duplex_pair.
+        let b_recv = unsafe { hew_duplex_recv_half(b) };
+        assert!(!b_recv.is_null());
+        // Close the recv half.
+        // SAFETY: b_recv came from hew_duplex_recv_half.
+        unsafe { hew_duplex_close_half(b_recv.cast(), HewDuplexDirection::Recv as i32) };
+        let mut p: *mut u8 = ptr::null_mut();
+        let mut n: usize = 0;
+        // SAFETY: wrapper persists; released flag is readable; inner NOT touched.
+        let rc = unsafe {
+            hew_recv_half_recv(b_recv, std::ptr::addr_of_mut!(p), std::ptr::addr_of_mut!(n))
+        };
+        assert_eq!(
+            rc,
+            RecvError::Closed as i32,
+            "recv on closed half must return Closed"
+        );
+        assert!(p.is_null());
+        assert_eq!(n, 0);
+        // SAFETY: a is still valid.
+        unsafe { hew_duplex_close(a) };
     }
 }

@@ -7,11 +7,11 @@ use crate::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
     CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
     ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl, MatchArm,
-    NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
-    RestartPolicy, SelectArm, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
-    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
-    WhereClause, WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
+    NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl,
+    RecordKind, RestartPolicy, SelectArm, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
+    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
+    VariantKind, Visibility, WhereClause, WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -305,6 +305,7 @@ impl<'a> Formatter<'a> {
             Item::Actor(decl) => self.format_actor(decl, span_end),
             Item::Supervisor(decl) => self.format_supervisor(decl),
             Item::Machine(decl) => self.format_machine(decl, span_end),
+            Item::Record(decl) => self.format_record(decl),
         }
     }
 
@@ -358,6 +359,46 @@ impl<'a> Formatter<'a> {
         self.write(" = ");
         self.format_type_expr(&decl.ty.0);
         self.write(";\n");
+    }
+
+    fn format_record(&mut self, decl: &RecordDecl) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
+        self.write_indent();
+        self.write_visibility(decl.visibility);
+        self.write("record ");
+        self.write(&decl.name);
+        self.format_opt_type_params(decl.type_params.as_ref());
+        self.format_opt_where_clause(decl.where_clause.as_ref());
+        match &decl.kind {
+            RecordKind::Named(fields) => {
+                self.write(" {\n");
+                self.indent += 1;
+                for (i, field) in fields.iter().enumerate() {
+                    self.write_outer_doc(field.doc_comment.as_ref());
+                    self.write_indent();
+                    self.write(&field.name);
+                    self.write(": ");
+                    self.format_type_expr(&field.ty.0);
+                    if i + 1 < fields.len() {
+                        self.write(",");
+                    }
+                    self.write("\n");
+                }
+                self.indent -= 1;
+                self.write_indent();
+                self.write("}\n");
+            }
+            RecordKind::Tuple(field_types) => {
+                self.write("(");
+                for (i, (ty, _)) in field_types.iter().enumerate() {
+                    self.format_type_expr(ty);
+                    if i + 1 < field_types.len() {
+                        self.write(", ");
+                    }
+                }
+                self.write(");\n");
+            }
+        }
     }
 
     fn format_type_decl(&mut self, decl: &TypeDecl, _span_end: usize) {
@@ -830,8 +871,13 @@ impl<'a> Formatter<'a> {
         self.write(";\n");
     }
 
+    #[expect(clippy::too_many_lines, reason = "actor formatting has many sections")]
     fn format_actor(&mut self, decl: &ActorDecl, span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
+        if let Some(bytes) = decl.max_heap_bytes {
+            self.write_indent();
+            self.write(&format!("#[max_heap({bytes})]\n"));
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("actor ");
@@ -2110,7 +2156,7 @@ impl<'a> Formatter<'a> {
                 self.write(" | after ");
                 self.format_expr(&duration.0);
             }
-            Expr::Unsafe(block) => {
+            Expr::UnsafeBlock(block) => {
                 self.write("unsafe ");
                 self.format_block(block, self.source.len());
             }
@@ -2192,6 +2238,13 @@ impl<'a> Formatter<'a> {
                     f.format_expr(&value.0);
                 });
                 self.write("}");
+            }
+            Expr::Is { lhs, rhs } => {
+                // Precedence 9 — same as `==`/`!=`; no parens needed around operands
+                // at lower precedence, but we do need them for nested `is`.
+                self.format_expr_prec(&lhs.0, 9, false);
+                self.write(" is ");
+                self.format_expr_prec(&rhs.0, 9, true);
             }
             Expr::MachineEmit { event_name, fields } => {
                 self.write("emit ");
@@ -2385,6 +2438,9 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
         BinaryOp::Shr => ">>",
         BinaryOp::Range => "..",
         BinaryOp::RangeInclusive => "..=",
+        BinaryOp::WrappingAdd => "&+",
+        BinaryOp::WrappingSub => "&-",
+        BinaryOp::WrappingMul => "&*",
     }
 }
 
@@ -2401,8 +2457,10 @@ fn binop_precedence(op: BinaryOp) -> u8 {
         BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 15,
         BinaryOp::Range | BinaryOp::RangeInclusive => 17,
         BinaryOp::Shl | BinaryOp::Shr => 19,
-        BinaryOp::Add | BinaryOp::Subtract => 21,
-        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo => 23,
+        // Wrapping add/sub at same precedence as plain add/sub
+        BinaryOp::Add | BinaryOp::Subtract | BinaryOp::WrappingAdd | BinaryOp::WrappingSub => 21,
+        // Wrapping mul at same precedence as plain mul
+        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::WrappingMul => 23,
     }
 }
 

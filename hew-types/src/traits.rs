@@ -151,6 +151,12 @@ pub struct TraitRegistry {
     handle_types: HashSet<String>,
     /// Drop types from loaded modules (e.g. "http.Request").
     drop_types: HashSet<String>,
+    /// Record types declared with the `record` keyword.
+    ///
+    /// Records are value types: marker derivation is entirely field-driven, and
+    /// the `Resource` marker is always false regardless of field types (a record
+    /// wrapping a resource field is not itself an OS/runtime resource).
+    records: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +176,14 @@ impl TraitRegistry {
     /// Register a type definition with its field types.
     pub fn register_type(&mut self, name: String, field_types: Vec<Ty>) {
         self.type_fields.insert(name, field_types);
+    }
+
+    /// Register a `record` declaration so the marker-derivation path knows to
+    /// suppress `Resource` and apply field-driven derivation exhaustively.
+    ///
+    /// Must be called in addition to `register_type` for every `record` decl.
+    pub fn register_record_type(&mut self, name: String) {
+        self.records.insert(name);
     }
 
     /// Register the structural members that participate in `RcFree`.
@@ -337,6 +351,7 @@ impl TraitRegistry {
         match ty {
             // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug.
             // NOT Resource: primitives own no OS/runtime resource and need no drop close.
+            // Isize/Usize are platform-sized integers: same marker set as fixed-width ints.
             Ty::I8
             | Ty::I16
             | Ty::I32
@@ -346,6 +361,8 @@ impl TraitRegistry {
             | Ty::U16
             | Ty::U32
             | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
             | Ty::Bool
             | Ty::Char
             | Ty::Duration
@@ -497,6 +514,41 @@ impl TraitRegistry {
                 // Supports Clone (inc ref-count) and Drop (dec ref-count); NOT Copy or Frozen.
                 if name == "Rc" {
                     return matches!(marker, MarkerTrait::Clone | MarkerTrait::Drop);
+                }
+                // Record types: value types declared with `record`. Markers are
+                // derived entirely from field types with two exceptions:
+                //   - `Resource` is always false: a record wrapping a resource field
+                //     is NOT itself an OS/runtime resource (no drop-close contract).
+                //   - `RcFree` is handled at the top of `implements_marker` before
+                //     this arm is reached.
+                // LESSON exhaustive-coverage: every MarkerTrait arm is explicit.
+                if self.records.contains(name) {
+                    let field_derives = |m: MarkerTrait| {
+                        self.type_fields.get(name).is_some_and(|fields| {
+                            fields.iter().all(|f| self.implements_marker(f, m))
+                        })
+                    };
+                    return match marker {
+                        // Records are not OS/runtime resources.
+                        MarkerTrait::Resource => false,
+                        // All structural markers derive from field types.
+                        MarkerTrait::Send => field_derives(MarkerTrait::Send),
+                        MarkerTrait::Sync => field_derives(MarkerTrait::Sync),
+                        MarkerTrait::Frozen => field_derives(MarkerTrait::Frozen),
+                        MarkerTrait::Copy => field_derives(MarkerTrait::Copy),
+                        MarkerTrait::Clone => field_derives(MarkerTrait::Clone),
+                        MarkerTrait::Eq => field_derives(MarkerTrait::Eq),
+                        MarkerTrait::Ord => field_derives(MarkerTrait::Ord),
+                        MarkerTrait::Hash => field_derives(MarkerTrait::Hash),
+                        MarkerTrait::Display => field_derives(MarkerTrait::Display),
+                        MarkerTrait::Debug => field_derives(MarkerTrait::Debug),
+                        MarkerTrait::Drop => field_derives(MarkerTrait::Drop),
+                        MarkerTrait::Decode => field_derives(MarkerTrait::Decode),
+                        MarkerTrait::Encode => field_derives(MarkerTrait::Encode),
+                        // RcFree is resolved at the top of implements_marker before
+                        // reaching this arm; the field-driven path is correct here too.
+                        MarkerTrait::RcFree => field_derives(MarkerTrait::RcFree),
+                    };
                 }
                 // Check if all fields implement the trait
                 if let Some(fields) = self.type_fields.get(name) {

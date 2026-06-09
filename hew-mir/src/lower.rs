@@ -10,10 +10,82 @@ use hew_types::ResolvedTy;
 use crate::dataflow;
 use crate::model::{
     BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropKind, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, LambdaCapture,
-    MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy,
-    Terminator, ThirFunction,
+    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IntArithOp, IntSignedness,
+    IrPipeline, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    RawMirFunction, Strategy, Terminator, ThirFunction, TrapKind,
 };
+
+/// Classify a resolved integer type as signed or unsigned. Returns
+/// `None` for non-integer types — callers that demand an integer
+/// signedness (the B-2 overflow-trap lowering) fail closed when this
+/// returns `None`. Platform-sized `Isize` / `Usize` are canonicalised
+/// to their pointer-width LLVM type by codegen; here we only need the
+/// signedness discriminator so the intrinsic family selection is
+/// correct regardless of pointer width.
+fn integer_signedness(ty: &ResolvedTy) -> Option<IntSignedness> {
+    match ty {
+        ResolvedTy::I8
+        | ResolvedTy::I16
+        | ResolvedTy::I32
+        | ResolvedTy::I64
+        | ResolvedTy::Isize => Some(IntSignedness::Signed),
+        ResolvedTy::U8
+        | ResolvedTy::U16
+        | ResolvedTy::U32
+        | ResolvedTy::U64
+        | ResolvedTy::Usize => Some(IntSignedness::Unsigned),
+        _ => None,
+    }
+}
+
+/// Return the statically known bit-width for a concrete integer type.
+///
+/// `Isize` / `Usize` are platform-sized (32-bit on WASM32, 64-bit on
+/// native) — their width is NOT knowable at MIR construction time.
+/// Returns `None` for platform-sized types and all non-integer types.
+/// Callers that require a static width (shift-range check, signed-MIN
+/// constant emission) must fail-closed (`CutoverUnsupported`) when this
+/// returns `None`.
+///
+/// WHY-ISIZE-NONE: the shift-range bound `(count as unsigned) >= W`
+/// requires `W` to be a compile-time constant in the generated
+/// `Instr::ConstI64`. On `isize`/`usize` the correct constant is
+/// target-dependent (32 vs 64); emitting the wrong constant would
+/// silently admit out-of-range shifts on one target. Fail-closed is
+/// the right answer for the v0.5 integer spine.
+/// WHEN-OBSOLETE: when MIR carries target-info (pointer-width in
+/// `IrPipeline` or a `TargetSpec` passed to the builder), re-wire to
+/// emit the correct per-target constant and remove this `None` arm.
+fn integer_bit_width(ty: &ResolvedTy) -> Option<i64> {
+    match ty {
+        ResolvedTy::I8 | ResolvedTy::U8 => Some(8),
+        ResolvedTy::I16 | ResolvedTy::U16 => Some(16),
+        ResolvedTy::I32 | ResolvedTy::U32 => Some(32),
+        ResolvedTy::I64 | ResolvedTy::U64 => Some(64),
+        // Isize / Usize are platform-sized (see doc comment) and all
+        // other types are non-integer — both arms return None.
+        _ => None,
+    }
+}
+
+/// Return the signed minimum value for a concrete signed integer type
+/// as an `i64`. Used to emit the `lhs == iN::MIN` constant in the
+/// signed-MIN/-1 trap check for `/` and `%`.
+///
+/// Returns `None` for unsigned types, `Isize` (platform-sized), and
+/// all non-integer types. Callers must fail-closed when this returns
+/// `None`.
+fn signed_min_value(ty: &ResolvedTy) -> Option<i64> {
+    match ty {
+        ResolvedTy::I8 => Some(i64::from(i8::MIN)),
+        ResolvedTy::I16 => Some(i64::from(i16::MIN)),
+        ResolvedTy::I32 => Some(i64::from(i32::MIN)),
+        ResolvedTy::I64 => Some(i64::MIN),
+        // Isize: platform-sized, not knowable at MIR time.
+        // Unsigned types: no MIN check needed.
+        _ => None,
+    }
+}
 
 /// Run Checked MIR's legality passes over a function's statement
 /// stream. Two real passes ship today (use-after-consume,
@@ -378,6 +450,26 @@ struct Builder {
     /// alignment to that same handle so a Weak self-capture's slot
     /// resolves correctly.
     pending_lambda_actor_handle: Option<Place>,
+    /// Tuple decomposition map for runtime-call results that produce multiple
+    /// output Places (e.g. `hew_duplex_pair` → two `DuplexHandle` slots).
+    ///
+    /// Key: the `u32` local index of the "tuple proxy" `Place::Local(N)` that
+    /// `lower_runtime_call` returns for a multi-output call.  Value: the
+    /// ordered slice of output Places in source-declaration order (e.g.
+    /// `[DuplexHandle(N0), DuplexHandle(N1)]` for `duplex_pair`).
+    ///
+    /// `TupleIndex` lowering looks this map up when the tuple sub-expression
+    /// resolves to a proxy local: index `i` into the value vec to obtain the
+    /// concrete output Place without emitting additional instructions.
+    ///
+    /// SHIM(E2→E3): only `hew_duplex_pair` populates this map today.
+    /// WHY: MIR has no multi-return instruction; a proxy local threads the
+    ///   output Places through the existing single-`Place` `BindingRef` lookup.
+    /// WHEN obsolete: when a dedicated MIR multi-return or projection surface
+    ///   lands and `TupleIndex` lowering is rewritten to use it directly.
+    /// WHAT: replace with `Place::Projection { base, index }` variant or a
+    ///   `Terminator::Call`-style multi-dest encoding.
+    tuple_decomp: HashMap<u32, Vec<Place>>,
 }
 
 impl Builder {
@@ -559,9 +651,36 @@ impl Builder {
                     // no Move instruction is required (the handle is
                     // the value).
                 } else if let Some(src) = value_place {
-                    let slot = self.alloc_local(binding.ty.clone());
-                    self.instructions.push(Instr::Move { dest: slot, src });
-                    self.binding_locals.insert(binding.id, slot);
+                    // Handle-typed places (DuplexHandle, SendHalf, RecvHalf,
+                    // LambdaActorHandle) ARE the binding's backend slot —
+                    // they carry ownership-discipline semantics through the
+                    // Place kind itself.  Emitting a `Move { dest:
+                    // Local(M), src: DuplexHandle(N) }` would store the
+                    // handle in a generic Local, losing the kind information
+                    // that `drop_kind_for` and `validate_cross_block_*` rely
+                    // on (`drop_kind_for(Local(_)) → DropKind::Resource`).
+                    // Register the handle Place directly in `binding_locals`
+                    // without allocating a second local or emitting a Move.
+                    match src {
+                        Place::DuplexHandle(_)
+                        | Place::SendHalf(_)
+                        | Place::RecvHalf(_)
+                        | Place::LambdaActorHandle(_) => {
+                            self.binding_locals.insert(binding.id, src);
+                        }
+                        Place::Local(n) if self.tuple_decomp.contains_key(&n) => {
+                            // Tuple-proxy: store the proxy directly so TupleIndex can recover
+                            // element Places via tuple_decomp[n] — the existing Local-Move arm
+                            // would allocate a fresh slot and lose the index that tuple_decomp
+                            // is keyed by, leaving owned_locals entries without binding_locals.
+                            self.binding_locals.insert(binding.id, src);
+                        }
+                        Place::Local(_) | Place::ReturnSlot => {
+                            let slot = self.alloc_local(binding.ty.clone());
+                            self.instructions.push(Instr::Move { dest: slot, src });
+                            self.binding_locals.insert(binding.id, slot);
+                        }
+                    }
                 }
             }
             HirStmtKind::Let(_, None) => {}
@@ -655,12 +774,43 @@ impl Builder {
                 }
             }
             HirExprKind::Call { callee, args } => {
-                // Cluster 1 does not lower Call to backend instructions yet
-                // (Terminator::Call is wired but the spine subset accepts
-                // only literal/binary/return). Walk the children so any
-                // Unsupported inside an argument still surfaces, then
-                // fail closed so the emitter never sees a return slot with
-                // no producer (LESSONS `boundary-fail-closed`).
+                // SHIM(E2→checker): runtime-symbol detection uses the callee
+                // name string rather than a checker-resolved `ResolvedRef::Builtin`.
+                // WHY: the typecheck→HIR bridge (E1) emits `BindingRef { name:
+                //   c_symbol, resolved: ResolvedRef::Unresolved }` for every
+                //   runtime-symbol callee because the Rust MIR pipeline does not
+                //   thread `TypeCheckOutput.method_call_rewrites` resolver IDs
+                //   into HIR's `ResolvedRef`.  The name is the only available
+                //   discriminator at MIR time.
+                // WHEN obsolete: when HIR emits `ResolvedRef::Builtin { c_symbol }`
+                //   for runtime-symbol callees and MIR can match on the resolved
+                //   variant instead of the name string.
+                // WHAT: replace with `matches!(callee.resolved, ResolvedRef::Builtin { .. })`
+                //   and remove the `is_known_runtime_symbol` name check.
+                let callee_name = match &callee.kind {
+                    HirExprKind::BindingRef { name, .. } => Some(name.as_str()),
+                    _ => None,
+                };
+                if let Some(name) = callee_name {
+                    // Direct `hew_*` C-ABI name (from method-call rewrites).
+                    if crate::runtime_symbols::is_known_runtime_symbol(name) {
+                        return self.lower_runtime_call(name, args, expr.site);
+                    }
+                    // User-facing builtin name (e.g. `duplex_pair`) that maps
+                    // to a C-ABI symbol. HIR emits the source name because
+                    // checker-registered builtins do not appear in the AST
+                    // function-item registry (see `runtime_symbols::user_name_to_c_symbol`
+                    // for the shim rationale).
+                    if let Some(c_sym) = crate::runtime_symbols::user_name_to_c_symbol(name) {
+                        return self.lower_runtime_call(c_sym, args, expr.site);
+                    }
+                }
+                // Non-runtime calls: Cluster 1 does not lower these to backend
+                // instructions yet (Terminator::Call is wired but the spine subset
+                // accepts only literal/binary/return). Walk the children so any
+                // Unsupported inside an argument still surfaces, then fail closed so
+                // the emitter never sees a return slot with no producer
+                // (LESSONS `boundary-fail-closed`).
                 let _ = self.lower_value(callee);
                 for arg in args {
                     let _ = self.lower_value(arg);
@@ -670,8 +820,8 @@ impl Builder {
                         construct: "function call".to_string(),
                         site: expr.site,
                     },
-                    note: "call expressions are not yet lowered to the backend \
-                           instruction stream in the Cluster 1 spine subset"
+                    note: "non-runtime call expressions are not yet lowered to the \
+                           backend instruction stream in the Cluster 1 spine subset"
                         .to_string(),
                 });
                 None
@@ -855,18 +1005,30 @@ impl Builder {
                 Some(self.lower_spawn_lambda_actor(expr))
             }
             HirExprKind::TupleIndex { tuple, index } => {
-                // Walk the inner tuple expression so nested Unsupported nodes
-                // still surface via the checker stream (fail-closed / boundary-fail-closed).
-                // Full TupleIndex lowering (emitting a Place projection) is wired
-                // in the MIR producer slice (E2) once Place::DuplexHandle arrives.
-                let _ = self.lower_value(tuple);
+                // Walk the inner tuple expression.  If the tuple sub-expression
+                // resolves to a proxy local from a multi-output runtime call
+                // (e.g. `hew_duplex_pair` populates `self.tuple_decomp`), return
+                // the indexed DuplexHandle Place directly without emitting any
+                // additional instructions.  This is the complement of the
+                // `lower_runtime_call` path that stores the output Places into
+                // `tuple_decomp`.  Any `TupleIndex` on a tuple whose producer
+                // did NOT populate `tuple_decomp` falls through to fail-closed.
+                let inner_place = self.lower_value(tuple);
+                if let Some(Place::Local(local_idx)) = inner_place {
+                    if let Some(parts) = self.tuple_decomp.get(&local_idx) {
+                        if *index < parts.len() {
+                            return Some(parts[*index]);
+                        }
+                    }
+                }
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::CutoverUnsupported {
                         construct: format!("tuple-index .{index}"),
                         site: expr.site,
                     },
-                    note: "TupleIndex MIR lowering is not yet implemented; \
-                           wired in the E2 MIR-producer slice alongside Place::DuplexHandle"
+                    note: "TupleIndex MIR lowering is only implemented for runtime-call \
+                           outputs registered in the tuple_decomp table; general tuple \
+                           projection is not yet supported"
                         .to_string(),
                 });
                 None
@@ -980,19 +1142,53 @@ impl Builder {
             });
             return Some(dest);
         }
-        let instr = match op {
-            BinaryOp::Add => Instr::IntAdd { dest, lhs, rhs },
-            BinaryOp::Subtract => Instr::IntSub { dest, lhs, rhs },
-            BinaryOp::Multiply => Instr::IntMul { dest, lhs, rhs },
-            // The spine subset still rejects Divide / Modulo / logical
-            // / shift / range / send / regex / bitwise binops. Previously
-            // this arm silently popped the dest local and returned
-            // `None`, letting the parent expression succeed with a
-            // missing producer (quiet fail-soft — caller's `decide`
-            // ran, `MirDiagnostic` did not). Fail closed now: drop the
-            // dest local, emit a `CutoverUnsupported` so the CLI
-            // rejection surface sees the offending construct, and
-            // return `None`. LESSONS `boundary-fail-closed`.
+        // B-4 wrapping arithmetic: `&+` / `&-` / `&*` lower to plain
+        // two's-complement `IntAdd` / `IntSub` / `IntMul` — no overflow
+        // flag, no CFG split, no Trap block. These are the first source-
+        // level producers of `Instr::IntAdd/IntSub/IntMul`; previously
+        // those variants were reachable only from hand-built fixtures.
+        // LESSONS `boundary-fail-closed` (P0): the user has explicitly
+        // opted into modular arithmetic by writing `&+`; no trap is the
+        // correct behaviour here.
+        let wrapping_instr = match op {
+            BinaryOp::WrappingAdd => Some(Instr::IntAdd { dest, lhs, rhs }),
+            BinaryOp::WrappingSub => Some(Instr::IntSub { dest, lhs, rhs }),
+            BinaryOp::WrappingMul => Some(Instr::IntMul { dest, lhs, rhs }),
+            _ => None,
+        };
+        if let Some(instr) = wrapping_instr {
+            self.instructions.push(instr);
+            return Some(dest);
+        }
+
+        // B-5 divide / modulo / shift lowering.
+        //
+        // These operators are handled here with early returns so they
+        // don't fall through to the B-2 overflow-trap `IntArithChecked`
+        // path below (which is only for `+`/`-`/`*`).
+        match op {
+            BinaryOp::Divide | BinaryOp::Modulo => {
+                return self.lower_div_rem(op, dest, lhs, rhs, ty, site);
+            }
+            BinaryOp::Shl | BinaryOp::Shr => {
+                return self.lower_shift(op, dest, lhs, rhs, ty, site);
+            }
+            _ => {}
+        }
+
+        let arith_op = match op {
+            BinaryOp::Add => IntArithOp::Add,
+            BinaryOp::Subtract => IntArithOp::Sub,
+            BinaryOp::Multiply => IntArithOp::Mul,
+            // The spine subset still rejects logical / range / send /
+            // regex / bitwise binops. Previously this arm silently
+            // popped the dest local and returned `None`, letting the
+            // parent expression succeed with a missing producer (quiet
+            // fail-soft — caller's `decide` ran, `MirDiagnostic` did
+            // not). Fail closed now: drop the dest local, emit a
+            // `CutoverUnsupported` so the CLI rejection surface sees
+            // the offending construct, and return `None`.
+            // LESSONS `boundary-fail-closed`.
             _ => {
                 self.locals.pop();
                 self.diagnostics.push(MirDiagnostic {
@@ -1007,7 +1203,357 @@ impl Builder {
                 return None;
             }
         };
-        self.instructions.push(instr);
+        // B-2 overflow-trap lowering. The default `+` / `-` / `*` on
+        // integer types lowers to the checked LLVM intrinsic family
+        // (`llvm.{s,u}{add,sub,mul}.with.overflow.iN`) with a hard
+        // `Terminator::Trap { kind: TrapKind::IntegerOverflow }` on
+        // the overflow path and a continuation block on the success
+        // path. The MIR-level CFG split — current block ends with a
+        // `Branch` on the overflow flag, with a trap block and a
+        // continuation block as successors — is what makes the trap
+        // visible to drop elaboration, the cross-block dataflow pass,
+        // and every other MIR consumer (instead of being a codegen-
+        // only emission). LESSONS `boundary-fail-closed` (P0 —
+        // default arithmetic IS the boundary; trap-on-overflow is
+        // fail-closed for accidental overflow).
+        let Some(signed) = integer_signedness(ty) else {
+            // Non-integer reaching `+` / `-` / `*` would be a B-1
+            // mixed-width or non-integer violation upstream. Fail
+            // closed rather than emit unchecked arithmetic.
+            self.locals.pop();
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("binary operator `{op}` on non-integer type"),
+                    site,
+                },
+                note: "B-2 overflow-trap lowering requires an integer-typed result \
+                       (i8/i16/i32/i64/u8/u16/u32/u64/isize/usize); float arithmetic \
+                       does not use the checked intrinsics and is not yet wired here"
+                    .to_string(),
+            });
+            return None;
+        };
+        // Allocate the overflow-flag local as a bool. Codegen widens
+        // the i1 returned by `extractvalue` to the i8 backing slot.
+        let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntArithChecked {
+            op: arith_op,
+            signed,
+            dest,
+            lhs,
+            rhs,
+            overflow_flag,
+        });
+        // Seal the current block with a Branch on the overflow flag.
+        // Then-target is the trap block; else-target is the
+        // continuation block that subsequent lowering writes into.
+        let trap_bb = self.alloc_block();
+        let cont_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: overflow_flag,
+            then_target: trap_bb,
+            else_target: cont_bb,
+        });
+        // Trap block: a single Terminator::Trap with no instructions.
+        self.start_block(trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::IntegerOverflow,
+        });
+        // Continuation block: the cursor lands here so the parent
+        // expression's caller can keep emitting into the success path.
+        self.start_block(cont_bb);
+        Some(dest)
+    }
+
+    /// Lower integer `/` and `%` with divide-by-zero and (for signed
+    /// types) signed-MIN/-1 trap guards.
+    ///
+    /// CFG shape:
+    ///
+    /// ```text
+    /// entry_bb (current)
+    ///   IntCmp { pred: Eq, dest: zero_flag, lhs: rhs, rhs: const_0 }
+    ///   Branch { cond: zero_flag, then: dbz_trap_bb, else: after_zero_bb }
+    ///
+    /// dbz_trap_bb
+    ///   Trap { kind: DivideByZero }
+    ///
+    /// after_zero_bb  [signed only]
+    ///   IntCmp { pred: Eq, dest: min_flag, lhs: lhs, rhs: const_MIN }
+    ///   Branch { cond: min_flag, then: min_check_bb, else: div_bb }
+    ///
+    /// min_check_bb   [signed only]
+    ///   IntCmp { pred: Eq, dest: negone_flag, lhs: rhs, rhs: const_NEG1 }
+    ///   Branch { cond: negone_flag, then: smno_trap_bb, else: div_bb }
+    ///
+    /// smno_trap_bb   [signed only]
+    ///   Trap { kind: SignedMinDivNegOne }
+    ///
+    /// div_bb
+    ///   IntDiv / IntRem { dest, lhs, rhs }
+    ///   [cursor stays here for subsequent lowering]
+    /// ```
+    ///
+    /// For unsigned types the after-zero block is `div_bb` directly.
+    ///
+    /// `dest` must already be allocated by the caller (`lower_binary`
+    /// allocates it before dispatching here).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all arguments are structurally required: the builder state \
+                  (&mut self), the opcode discriminator (op), the pre-allocated \
+                  destination place (dest), both operand places (lhs, rhs), the \
+                  result type (ty) for constant-emission width, and the site id \
+                  for diagnostics. There is no natural grouping that reduces this."
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the function implements a single coherent CFG-emission \
+                  pattern (zero-check → MIN/-1 check → div/rem) that must \
+                  stay in one place for readability; extracting sub-steps \
+                  would require passing more builder state around."
+    )]
+    fn lower_div_rem(
+        &mut self,
+        op: BinaryOp,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let Some(signed) = integer_signedness(ty) else {
+            // Non-integer reaching `/` or `%` — B-1 violation upstream.
+            self.locals.pop();
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("binary operator `{op}` on non-integer type"),
+                    site,
+                },
+                note: "B-5 div/rem trap lowering requires an integer-typed result".to_string(),
+            });
+            return None;
+        };
+
+        // ── divide-by-zero check ────────────────────────────────────
+        let zero_const = self.alloc_local(ty.clone());
+        self.instructions.push(Instr::ConstI64 {
+            dest: zero_const,
+            value: 0,
+        });
+        let zero_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: zero_flag,
+            pred: CmpPred::Eq,
+            lhs: rhs,
+            rhs: zero_const,
+        });
+        let dbz_trap_bb = self.alloc_block();
+        let after_zero_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: zero_flag,
+            then_target: dbz_trap_bb,
+            else_target: after_zero_bb,
+        });
+
+        self.start_block(dbz_trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::DivideByZero,
+        });
+
+        self.start_block(after_zero_bb);
+
+        // ── signed-MIN / -1 check (signed types only) ───────────────
+        if signed == IntSignedness::Signed {
+            let Some(min_val) = signed_min_value(ty) else {
+                // isize: platform-sized, MIN not knowable at MIR time.
+                // Fail closed rather than emit an incorrect guard.
+                self.locals.pop();
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("binary operator `{op}` on `isize`"),
+                        site,
+                    },
+                    note: "B-5 signed-MIN/-1 trap for `isize` requires target-width \
+                           information not available at MIR construction time. \
+                           WHEN-OBSOLETE: when IrPipeline carries a TargetSpec, \
+                           re-wire to emit the correct per-target MIN constant."
+                        .to_string(),
+                });
+                return None;
+            };
+            let min_const = self.alloc_local(ty.clone());
+            self.instructions.push(Instr::ConstI64 {
+                dest: min_const,
+                value: min_val,
+            });
+            let min_flag = self.alloc_local(ResolvedTy::Bool);
+            self.instructions.push(Instr::IntCmp {
+                dest: min_flag,
+                pred: CmpPred::Eq,
+                lhs,
+                rhs: min_const,
+            });
+            let min_check_bb = self.alloc_block();
+            let div_bb = self.alloc_block();
+            self.finish_current_block(Terminator::Branch {
+                cond: min_flag,
+                then_target: min_check_bb,
+                else_target: div_bb,
+            });
+
+            // min_check_bb: check whether rhs == -1
+            self.start_block(min_check_bb);
+            let negone_const = self.alloc_local(ty.clone());
+            self.instructions.push(Instr::ConstI64 {
+                dest: negone_const,
+                value: -1,
+            });
+            let negone_flag = self.alloc_local(ResolvedTy::Bool);
+            self.instructions.push(Instr::IntCmp {
+                dest: negone_flag,
+                pred: CmpPred::Eq,
+                lhs: rhs,
+                rhs: negone_const,
+            });
+            let smno_trap_bb = self.alloc_block();
+            self.finish_current_block(Terminator::Branch {
+                cond: negone_flag,
+                then_target: smno_trap_bb,
+                else_target: div_bb,
+            });
+
+            self.start_block(smno_trap_bb);
+            self.finish_current_block(Terminator::Trap {
+                kind: TrapKind::SignedMinDivNegOne,
+            });
+
+            self.start_block(div_bb);
+        }
+
+        // ── div / rem instruction on the safe path ──────────────────
+        match op {
+            BinaryOp::Divide => self.instructions.push(Instr::IntDiv {
+                signed,
+                dest,
+                lhs,
+                rhs,
+            }),
+            BinaryOp::Modulo => self.instructions.push(Instr::IntRem {
+                signed,
+                dest,
+                lhs,
+                rhs,
+            }),
+            _ => unreachable!("lower_div_rem called only for Divide / Modulo"),
+        }
+        Some(dest)
+    }
+
+    /// Lower `<<` and `>>` with a shift-out-of-range trap guard.
+    ///
+    /// The range check uses an unsigned ≥ compare on the shift count:
+    ///   `(count as unsigned) >= bit_width(T)`
+    /// This single compare catches both negative counts (which become
+    /// large unsigned values after reinterpretation) and counts ≥ the
+    /// type's width.
+    ///
+    /// `isize`/`usize` are rejected with `CutoverUnsupported` because
+    /// the bit-width is not statically known at MIR time (see
+    /// `integer_bit_width` for the documented why / when-obsolete).
+    ///
+    /// CFG shape:
+    /// ```text
+    /// entry_bb (current)
+    ///   ConstI64 { dest: width_const, value: bit_width }
+    ///   IntCmp { pred: UnsignedGreaterEq, dest: oor_flag,
+    ///            lhs: rhs (shift count), rhs: width_const }
+    ///   Branch { cond: oor_flag, then: sor_trap_bb, else: shift_bb }
+    ///
+    /// sor_trap_bb
+    ///   Trap { kind: ShiftOutOfRange }
+    ///
+    /// shift_bb
+    ///   IntShl / IntShr { dest, lhs, rhs }
+    ///   [cursor stays here]
+    /// ```
+    fn lower_shift(
+        &mut self,
+        op: BinaryOp,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let Some(signed) = integer_signedness(ty) else {
+            self.locals.pop();
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("binary operator `{op}` on non-integer type"),
+                    site,
+                },
+                note: "B-5 shift trap lowering requires an integer-typed operand".to_string(),
+            });
+            return None;
+        };
+
+        let Some(width) = integer_bit_width(ty) else {
+            // isize / usize: width not knowable at MIR time.
+            self.locals.pop();
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("binary operator `{op}` on `isize`/`usize`"),
+                    site,
+                },
+                note: "B-5 shift-range trap for `isize`/`usize` requires target-width \
+                       information not available at MIR construction time. \
+                       WHEN-OBSOLETE: when IrPipeline carries a TargetSpec, \
+                       re-wire to emit the correct per-target width constant."
+                    .to_string(),
+            });
+            return None;
+        };
+
+        // ── out-of-range check: (count as unsigned) >= width ────────
+        let width_const = self.alloc_local(ty.clone());
+        self.instructions.push(Instr::ConstI64 {
+            dest: width_const,
+            value: width,
+        });
+        let oor_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: oor_flag,
+            pred: CmpPred::UnsignedGreaterEq,
+            lhs: rhs, // shift count
+            rhs: width_const,
+        });
+        let sor_trap_bb = self.alloc_block();
+        let shift_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: oor_flag,
+            then_target: sor_trap_bb,
+            else_target: shift_bb,
+        });
+
+        self.start_block(sor_trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::ShiftOutOfRange,
+        });
+
+        self.start_block(shift_bb);
+
+        // ── shift instruction on the safe path ──────────────────────
+        match op {
+            BinaryOp::Shl => self.instructions.push(Instr::IntShl { dest, lhs, rhs }),
+            BinaryOp::Shr => self.instructions.push(Instr::IntShr {
+                signed,
+                dest,
+                lhs,
+                rhs,
+            }),
+            _ => unreachable!("lower_shift called only for Shl / Shr"),
+        }
         Some(dest)
     }
 
@@ -1101,6 +1647,263 @@ impl Builder {
         // through the same Place that both arms wrote into).
         self.start_block(join_bb);
         Some(result_place)
+    }
+
+    /// Lower a recognised `hew_*` runtime-ABI call to
+    /// `Instr::CallRuntimeAbi`.
+    ///
+    /// Called from `lower_value`'s `HirExprKind::Call` arm when the
+    /// callee is a `BindingRef` whose name passes
+    /// `runtime_symbols::is_known_runtime_symbol`.  The HIR args have
+    /// already been validated by the HIR pipeline; this method lower
+    /// each arg via `lower_value`, then emits the appropriate
+    /// instruction sequence.
+    ///
+    /// # `hew_duplex_pair` encoding
+    ///
+    /// The runtime C-ABI takes `(s_cap, r_cap, *mut *mut HewDuplexHandle,
+    /// *mut *mut HewDuplexHandle)`.  The user surface is `duplex_pair(N)`
+    /// with one symmetric capacity arg.  E2 duplicates `args[0]` into
+    /// both cap slots and passes two fresh `Place::DuplexHandle(N0/N1)`
+    /// in the out-param positions (`args[2..=3]`).  Codegen (E4) takes
+    /// the address of each `DuplexHandle` local and passes it as the
+    /// actual pointer.  A "tuple proxy" `Place::Local(M)` is returned
+    /// so that subsequent `TupleIndex` projections can recover the
+    /// individual `DuplexHandle` Places via `self.tuple_decomp`.
+    ///
+    /// # `hew_duplex_send` encoding
+    ///
+    /// The runtime C-ABI takes `(*mut HewDuplexHandle, *const u8, usize)`.
+    /// For an integer payload `42`, this method emits a prefatory
+    /// `Instr::ConstI64 { value: 8 }` as the byte-length constant
+    /// before the `CallRuntimeAbi`.  The message value Place is passed
+    /// as-is; codegen (E4) stores it to a stack alloca and passes its
+    /// address as the `*const u8`.
+    ///
+    /// # SHIM(E4) convention
+    ///
+    // SHIM(E4): codegen interprets Place::DuplexHandle(N) per-symbol convention:
+    //   hew_duplex_send/recv/close: load the raw ptr from local-N's alloca, pass as *mut HewDuplexHandle.
+    //   hew_duplex_pair out-params (args[2], args[3]): take address of local-N's alloca, pass as *mut *mut HewDuplexHandle.
+    // The message-value Place::Local(N) in args[1] of hew_duplex_send is store-to-alloca + address-cast by E4.
+    // The length Place::Local(N) in args[2] of hew_duplex_send carries the ConstI64(8) emitted above.
+    // WHY: MIR names semantics; address materialisation is a codegen-target concern.
+    // WHEN obsolete: when E4's lower_instr arm is wired and tested for each of these conventions.
+    // WHAT: replace with direct LLVMBuildCall emission for each symbol group.
+    fn lower_runtime_call(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Construction-time contract: the symbol must be in the allowlist.
+        // This is the HIR-string-boundary gate: the caller dispatched this
+        // symbol from a `BindingRef` name, so we assert in all build profiles
+        // that it is known before we dispatch to a symbol-specific arm.
+        // `RuntimeCall::new` enforces the same invariant at the MIR data level;
+        // this assert defends the dispatch table (LESSONS `boundary-fail-closed`).
+        assert!(
+            crate::runtime_symbols::is_known_runtime_symbol(symbol),
+            "lower_runtime_call called with unrecognised symbol `{symbol}`; \
+             the call site must gate on is_known_runtime_symbol first"
+        );
+
+        match symbol {
+            "hew_duplex_pair" => self.lower_duplex_pair(hir_args, site),
+            "hew_duplex_send" => self.lower_duplex_send(hir_args, site),
+            _ => {
+                // Known-allowlisted symbol but no producer arm yet.  Fail closed
+                // so the pipeline rejects the program before codegen runs.
+                // Individual symbol producers land in follow-up slices (recv,
+                // half-handle split, close, lambda-actor lifecycle).
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("runtime call `{symbol}`"),
+                        site,
+                    },
+                    note: format!(
+                        "`{symbol}` is a recognised runtime symbol but has no \
+                         MIR producer arm yet; wired per-symbol in follow-up slices"
+                    ),
+                });
+                None
+            }
+        }
+    }
+
+    /// Emit `Instr::CallRuntimeAbi` for `hew_duplex_pair`.
+    ///
+    /// HIR shape (from E1 bridge): `Call { callee: BindingRef("hew_duplex_pair"),
+    /// args: [cap_expr] }` — one symmetric capacity arg.
+    ///
+    /// MIR emission:
+    ///   1. Lower `cap_expr` → `cap_place`.
+    ///   2. Allocate two fresh `DuplexHandle` locals (N0, N1).
+    ///   3. Emit `CallRuntimeAbi { args: [cap, cap, DuplexHandle(N0), DuplexHandle(N1)], dest: None }`.
+    ///   4. Allocate a "tuple proxy" `Place::Local(M)` to thread the two
+    ///      output Places through the existing `BindingRef` lookup.
+    ///   5. Register `tuple_decomp[M] = [DuplexHandle(N0), DuplexHandle(N1)]`.
+    ///   6. Return `Some(Local(M))`.
+    ///
+    /// `TupleIndex` lowering recovers the individual `DuplexHandle` Places from
+    /// `tuple_decomp`.  `owned_locals` registration for `a` and `b` happens
+    /// naturally in `stmt()` when `let a = __tuple_N.0` stores
+    /// `DuplexHandle(N0)` directly into `binding_locals` (see the handle-typed
+    /// branch in the `stmt` Let arm).
+    fn lower_duplex_pair(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // E1 registers duplex_pair<S, R>(int) — one symmetric capacity arg.
+        // If E1 ever expands to two args (s_cap, r_cap), skip the duplication.
+        let cap_place = if hir_args.len() == 1 {
+            self.lower_value(&hir_args[0])
+        } else if hir_args.len() >= 2 {
+            // Future: two-arg form — just lower both and use the first two.
+            self.lower_value(&hir_args[0])
+        } else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "hew_duplex_pair with zero args".to_string(),
+                    site,
+                },
+                note: "hew_duplex_pair requires at least one capacity argument".to_string(),
+            });
+            return None;
+        };
+        let Some(cap_place) = cap_place else {
+            // Capacity expression failed to lower (e.g. nested Unsupported).
+            // Diagnostic already recorded; propagate the failure.
+            return None;
+        };
+
+        // If E1 emits two args, lower the second capacity independently.
+        // For the one-arg case, duplicate the single capacity for both slots.
+        let r_cap_place = if hir_args.len() >= 2 {
+            self.lower_value(&hir_args[1]).unwrap_or(cap_place)
+        } else {
+            cap_place // symmetric capacity: s_cap == r_cap
+        };
+
+        // Allocate two DuplexHandle locals.  The local index is shared
+        // between `Place::Local(N)` (for type bookkeeping in `self.locals`)
+        // and `Place::DuplexHandle(N)` (for semantic kind tracking in the
+        // instruction and drop streams).
+        let local0 = self.alloc_local(ResolvedTy::Named {
+            name: "Duplex".to_string(),
+            args: vec![],
+        });
+        let Place::Local(n0) = local0 else {
+            unreachable!("alloc_local returns Place::Local");
+        };
+        let dh0 = Place::DuplexHandle(n0);
+
+        let local1 = self.alloc_local(ResolvedTy::Named {
+            name: "Duplex".to_string(),
+            args: vec![],
+        });
+        let Place::Local(n1) = local1 else {
+            unreachable!("alloc_local returns Place::Local");
+        };
+        let dh1 = Place::DuplexHandle(n1);
+
+        // Emit the runtime call.  The i32 return (error code) is discarded
+        // (`dest: None`); the two DuplexHandle out-params are in args[2..=3].
+        // Codegen (E4) interprets DuplexHandle places in args[2..=3] as
+        // "pass the address of this local's alloca as *mut *mut DuplexHandle".
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_duplex_pair",
+                vec![cap_place, r_cap_place, dh0, dh1],
+                None,
+            )
+            .expect("hew_duplex_pair is an allowlisted runtime symbol"),
+        ));
+
+        // Create a "tuple proxy" local so TupleIndex lowering can recover dh0/dh1.
+        // The proxy carries no runtime value; its index is the key into tuple_decomp.
+        // Using `ResolvedTy::Unit` for the proxy type so no spurious UnknownType
+        // diagnostic fires for it.
+        let proxy = self.alloc_local(ResolvedTy::Unit);
+        let Place::Local(proxy_idx) = proxy else {
+            unreachable!("alloc_local returns Place::Local");
+        };
+        self.tuple_decomp.insert(proxy_idx, vec![dh0, dh1]);
+
+        Some(proxy)
+    }
+
+    /// Emit `Instr::CallRuntimeAbi` for `hew_duplex_send`.
+    ///
+    /// HIR shape (from E1 bridge): `Call { callee: BindingRef("hew_duplex_send"),
+    /// args: [receiver_expr, msg_expr] }` — receiver prepended by E1.
+    ///
+    /// MIR emission:
+    ///   1. Lower `receiver_expr` → `recv_place` (expected `DuplexHandle(N)`).
+    ///   2. Lower `msg_expr` → `msg_place` (the integer value's `Local(K)`).
+    ///   3. Emit `ConstI64 { dest: len_place, value: 8 }` — the byte-length.
+    ///   4. Emit `CallRuntimeAbi { symbol: "hew_duplex_send",
+    ///         args: [recv_place, msg_place, len_place], dest: None }`.
+    ///   5. Return `None` — send discards its i32 result.
+    ///
+    /// The receiver is NOT consumed (non-move send semantics); `owned_locals`
+    /// for the receiver `DuplexHandle` must persist across multiple sends
+    /// (LESSONS `raii-null-after-move`).
+    fn lower_duplex_send(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        if hir_args.len() < 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "hew_duplex_send with fewer than 2 args".to_string(),
+                    site,
+                },
+                note: "hew_duplex_send requires receiver + message arguments".to_string(),
+            });
+            return None;
+        }
+        // args[0] = receiver (DuplexHandle — non-consuming borrow; no Move emitted).
+        let recv_place = self.lower_value(&hir_args[0]);
+        // args[1] = message value.
+        let msg_place = self.lower_value(&hir_args[1]);
+
+        let (Some(recv_place), Some(msg_place)) = (recv_place, msg_place) else {
+            // Argument lowering failed; diagnostic already recorded.
+            return None;
+        };
+
+        // Emit the byte-length constant.  The runtime ABI takes `*const u8 + usize`;
+        // E4 codegen stores `msg_place`'s value to a stack alloca and passes its
+        // address.  The length constant here encodes the fixed 8-byte integer size.
+        //
+        // SHIM(E4): the ConstI64(8) encodes the integer payload byte-length.
+        // WHY: MIR has no "sizeof" expression; the integer spine always uses 8-byte
+        //   i64 values, so the length is a compile-time constant for this skeleton.
+        // WHEN obsolete: when the type system can express the payload size directly,
+        //   or when hew_duplex_send uses a typed message rather than a byte slice.
+        // WHAT: replace with a proper sizeof/alignof expression or a typed ABI.
+        let len_place = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: len_place,
+            value: 8,
+        });
+
+        // Emit the runtime call.  `recv_place` is used as a borrow (not consumed);
+        // the receiver's `owned_locals` entry survives for subsequent sends and the
+        // scope-exit drop (LESSONS `raii-null-after-move`, `cleanup-all-exits`).
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_duplex_send",
+                vec![recv_place, msg_place, len_place],
+                None,
+            )
+            .expect("hew_duplex_send is an allowlisted runtime symbol"),
+        ));
+
+        None // send result (i32 error code) is discarded
     }
 
     /// Lower an `HirExprKind::SpawnLambdaActor` literal to a MIR
@@ -1314,7 +2117,8 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
         // and actor sends.
         MirCheck::Aliasing { .. }
         | MirCheck::GeneratorBorrowAcrossYield { .. }
-        | MirCheck::ActorSendEscape { .. } => None,
+        | MirCheck::ActorSendEscape { .. }
+        | MirCheck::ActorAskEscape { .. } => None,
     }
 }
 
@@ -1438,6 +2242,7 @@ fn exit_block_id(exit: &ExitPath) -> u32 {
         | ExitPath::Cancel { block }
         | ExitPath::Yield { block, .. }
         | ExitPath::Send { block, .. }
+        | ExitPath::Ask { block, .. }
         | ExitPath::Select { block, .. } => block,
     }
 }
@@ -1455,6 +2260,7 @@ fn exit_kind_label(exit: &ExitPath) -> &'static str {
         ExitPath::Cancel { .. } => "Cancel",
         ExitPath::Yield { .. } => "Yield",
         ExitPath::Send { .. } => "Send",
+        ExitPath::Ask { .. } => "Ask",
         ExitPath::Select { .. } => "Select",
     }
 }
@@ -1874,7 +2680,7 @@ fn validate_cross_block_split_consume(
     for block in blocks {
         let mut emit = |target: u32| preds.entry(target).or_default().push(block.id);
         match &block.terminator {
-            Terminator::Return | Terminator::Panic => {}
+            Terminator::Return | Terminator::Trap { .. } => {}
             Terminator::Goto { target } => emit(*target),
             Terminator::Branch {
                 then_target,
@@ -1887,13 +2693,14 @@ fn validate_cross_block_split_consume(
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
             | Terminator::Send { next, .. }
+            | Terminator::Ask { next, .. }
             | Terminator::Select { next, .. } => emit(*next),
         }
     }
 
     let successors = |block: &BasicBlock| -> Vec<u32> {
         match &block.terminator {
-            Terminator::Return | Terminator::Panic => Vec::new(),
+            Terminator::Return | Terminator::Trap { .. } => Vec::new(),
             Terminator::Goto { target } => vec![*target],
             Terminator::Branch {
                 then_target,
@@ -1903,6 +2710,7 @@ fn validate_cross_block_split_consume(
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
             | Terminator::Send { next, .. }
+            | Terminator::Ask { next, .. }
             | Terminator::Select { next, .. } => vec![*next],
         }
     };
@@ -2012,7 +2820,7 @@ fn validate_cross_block_split_consume(
         // Terminator is Panic (the elab structure has one cleanup
         // per Panic). For each, report any stale DuplexHandle drop.
         for raw_block in blocks {
-            if matches!(raw_block.terminator, Terminator::Panic) {
+            if matches!(raw_block.terminator, Terminator::Trap { .. }) {
                 report_drop(raw_block.id, &elab_block.drops, &mut findings);
             }
         }
@@ -2082,9 +2890,32 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }
+        | Instr::IntDiv { dest, lhs, rhs, .. }
+        | Instr::IntRem { dest, lhs, rhs, .. }
+        | Instr::IntShl { dest, lhs, rhs }
+        | Instr::IntShr { dest, lhs, rhs, .. }
         | Instr::IntCmp { dest, lhs, rhs, .. } => vec![*dest, *lhs, *rhs],
+        Instr::IntArithChecked {
+            dest,
+            lhs,
+            rhs,
+            overflow_flag,
+            ..
+        } => vec![*dest, *lhs, *rhs, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
         Instr::Drop { place, .. } => vec![*place],
+        Instr::CallRuntimeAbi(call) => {
+            // Every Place participating in the runtime call surfaces
+            // here so the cross-block split-state seed pass can
+            // observe handle moves through C-ABI boundaries. The
+            // `dest` (when present) is also a Place the dataflow
+            // needs to discover.
+            let mut places: Vec<Place> = call.args().to_vec();
+            if let Some(d) = call.dest() {
+                places.push(d);
+            }
+            places
+        }
     }
 }
 
@@ -2327,7 +3158,7 @@ fn enumerate_exits(
                 },
                 DropPlan::default(),
             ),
-            Terminator::Panic => {
+            Terminator::Trap { .. } => {
                 // Cleanup block: same LIFO drop plan as the normal exit
                 // at this scope depth; no successor (trap is terminal).
                 let cleanup_id = next_cleanup_id;
@@ -2364,6 +3195,30 @@ fn enumerate_exits(
                 ExitPath::Send {
                     block: block_id,
                     actor: String::new(),
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Ask {
+                actor,
+                value: _,
+                channel,
+                reply_dest: _,
+                next,
+            } => (
+                // Declared-only. Spine has no Ask construction surface;
+                // HIR-to-MIR lowers select arms into `Terminator::Select`,
+                // and non-select actor calls remain rejected as
+                // `CutoverUnsupported`. The `ExitPath::Ask` slot carries
+                // the `channel` Place because the loser-cleanup sequence
+                // (`hew_reply_channel_cancel` + `hew_reply_channel_free`)
+                // is what the cleanup CFG needs when the construction
+                // surface lands. Empty drop plan is a placeholder until
+                // the cleanup CFG wires per-arm loser-cleanup blocks.
+                ExitPath::Ask {
+                    block: block_id,
+                    actor: *actor,
+                    channel: *channel,
                     next: *next,
                 },
                 DropPlan::default(),

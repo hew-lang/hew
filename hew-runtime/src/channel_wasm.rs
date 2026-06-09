@@ -10,6 +10,10 @@
 //! Blocking `recv` / `recv_int` remain deferred because they still require the
 //! cooperative scheduler to yield and resume when the queue is empty but live
 //! senders remain.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::cell::RefCell;
 use std::collections::VecDeque;

@@ -73,6 +73,12 @@ pub enum Ty {
     U32,
     /// 64-bit unsigned integer
     U64,
+    /// Platform-sized signed integer: 32-bit on WASM32, 64-bit on native.
+    /// Distinct from `i64` / `int` (which are always fixed 64-bit).
+    Isize,
+    /// Platform-sized unsigned integer: 32-bit on WASM32, 64-bit on native.
+    /// Distinct from `u64` / `uint` (which are always fixed 64-bit).
+    Usize,
     /// 32-bit floating point
     F32,
     /// 64-bit floating point
@@ -255,11 +261,13 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("i8", &["i8"]),
     ("i16", &["i16"]),
     ("i32", &["i32"]),
-    ("i64", &["i64", "int", "Int", "isize"]),
+    ("i64", &["i64", "int", "Int"]),
     ("u8", &["u8", "byte"]),
     ("u16", &["u16"]),
     ("u32", &["u32"]),
-    ("u64", &["u64", "uint", "usize"]),
+    ("u64", &["u64", "uint"]),
+    ("isize", &["isize"]),
+    ("usize", &["usize"]),
     ("f32", &["f32"]),
     ("f64", &["f64", "float", "Float"]),
     ("bool", &["bool", "Bool"]),
@@ -334,6 +342,8 @@ impl Ty {
             "u16" => Ty::U16,
             "u32" => Ty::U32,
             "u64" => Ty::U64,
+            "isize" => Ty::Isize,
+            "usize" => Ty::Usize,
             "f32" => Ty::F32,
             "f64" => Ty::F64,
             "bool" => Ty::Bool,
@@ -373,6 +383,8 @@ impl Ty {
             Ty::U16 => "u16",
             Ty::U32 => "u32",
             Ty::U64 => "u64",
+            Ty::Isize => "isize",
+            Ty::Usize => "usize",
             Ty::F32 => "f32",
             Ty::F64 => "f64",
             Ty::Bool => "bool",
@@ -410,6 +422,8 @@ impl Ty {
             Ty::U16 => write!(f, "u16"),
             Ty::U32 => write!(f, "u32"),
             Ty::U64 => write!(f, "u64"),
+            Ty::Isize => write!(f, "isize"),
+            Ty::Usize => write!(f, "usize"),
             Ty::F32 => write!(f, "f32"),
             Ty::F64 => write!(f, "{f64_name}"),
             Ty::IntLiteral => write!(f, "<int literal>"),
@@ -739,6 +753,32 @@ impl Ty {
         }
     }
 
+    /// Construct `LinkError` — error type for `link(handle)` calls.
+    ///
+    /// The concrete enum (`AlreadyLinked`, `TargetDead`) is declared in
+    /// `std/link_monitor.hew` and wired in codegen slice B3. At the checker
+    /// layer this is a named-type marker, consistent with `SendError`/`RecvError`.
+    #[must_use]
+    pub fn link_error() -> Ty {
+        Ty::Named {
+            name: "LinkError".to_string(),
+            args: vec![],
+        }
+    }
+
+    /// Construct `MonitorRef` — handle returned by `monitor(handle)`.
+    ///
+    /// The struct is declared in `std/link_monitor.hew` and registered via
+    /// `register_builtin_monitor_ref_surface`. At the checker layer this is a
+    /// named-type marker, consistent with how `SendError`/`AskError` are encoded.
+    #[must_use]
+    pub fn monitor_ref() -> Ty {
+        Ty::Named {
+            name: "MonitorRef".to_string(),
+            args: vec![],
+        }
+    }
+
     /// Construct `CloseError` — error type for `Duplex::close` / half-close calls.
     ///
     /// Distinct from the process-resource `CloseError` registered by the
@@ -1005,6 +1045,8 @@ impl Ty {
                 | Ty::U16
                 | Ty::U32
                 | Ty::U64
+                | Ty::Isize
+                | Ty::Usize
                 | Ty::IntLiteral
         )
     }
@@ -1022,7 +1064,7 @@ impl Ty {
     /// Check if this is an unsigned integer type.
     #[must_use]
     pub fn is_unsigned(&self) -> bool {
-        matches!(self, Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64)
+        matches!(self, Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize)
     }
 
     /// Check if this is a floating-point type.

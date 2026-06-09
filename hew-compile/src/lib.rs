@@ -2342,6 +2342,7 @@ mod tests {
             call_type_args: std::collections::HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: std::collections::HashMap::new(),
+            actor_max_heap: std::collections::HashMap::new(),
         };
 
         let err = enrich_program_ast(

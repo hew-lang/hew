@@ -8,12 +8,14 @@
 pub mod dataflow;
 pub mod lower;
 pub mod model;
+pub mod runtime_symbols;
 
 pub use lower::lower_hir_module;
 pub use model::{
     BasicBlock, BlockKind, BorrowKind, CaptureKind, CheckedMirFunction, CmpPred, CoroutineSchema,
     DecisionFact, Direction, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction,
-    ExitPath, Instr, IrPipeline, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind, Strategy, Terminator,
-    ThirFunction,
+    ExitPath, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, RuntimeCall, SelectArm, SelectArmKind,
+    Strategy, Terminator, ThirFunction, TrapKind,
 };
+pub use runtime_symbols::UnknownRuntimeSymbol;

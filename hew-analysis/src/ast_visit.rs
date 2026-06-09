@@ -317,7 +317,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.visitor
                     .leave_body(body_info, Self::context(Some(body_info)));
             }
-            Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
+            Item::Record(_) // TODO(A-3): no walkable bodies until checker support lands
+            | Item::Import(_)
+            | Item::ExternBlock(_)
+            | Item::Wire(_)
+            | Item::TypeAlias(_) => {}
         }
     }
 
@@ -683,7 +687,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&value.0, &value.1, body);
                 }
             }
-            Expr::Block(block) | Expr::Unsafe(block) => {
+            Expr::Block(block) => {
+                self.walk_block(block, body);
+            }
+            Expr::UnsafeBlock(block) => {
                 self.walk_block(block, body);
             }
             Expr::If {
@@ -796,6 +803,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 if let Some(end) = end {
                     self.walk_expr(&end.0, &end.1, body);
                 }
+            }
+            Expr::Is { lhs, rhs } => {
+                self.walk_expr(&lhs.0, &lhs.1, body);
+                self.walk_expr(&rhs.0, &rhs.1, body);
             }
             Expr::Literal(_)
             | Expr::This

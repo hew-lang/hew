@@ -668,7 +668,10 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(value, tco, visitor, out);
                 }
             }
-            Expr::Block(block) | Expr::Unsafe(block) => {
+            Expr::Block(block) => {
+                collect_block(block, tco, visitor, out);
+            }
+            Expr::UnsafeBlock(block) => {
                 collect_block(block, tco, visitor, out);
             }
             Expr::If {
@@ -768,6 +771,10 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(end, tco, visitor, out);
                 }
             }
+            Expr::Is { lhs, rhs } => {
+                collect_expr(lhs, tco, visitor, out);
+                collect_expr(rhs, tco, visitor, out);
+            }
             Expr::Literal(_)
             | Expr::Identifier(_)
             | Expr::Cooperate
@@ -834,7 +841,12 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(&transition.body, tco, visitor, out);
                 }
             }
-            Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
+            // Record fields contain only type expressions; no expressions to collect in A-1.
+            Item::Record(_)
+            | Item::Import(_)
+            | Item::TypeAlias(_)
+            | Item::Wire(_)
+            | Item::ExternBlock(_) => {}
         }
     }
 
@@ -2088,6 +2100,7 @@ mod tests {
             )]),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2172,6 +2185,7 @@ mod tests {
             )]),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2375,6 +2389,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2460,6 +2475,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         };
 
         let entries = build_assign_target_kind_entries(&program, &tco);
@@ -2540,6 +2556,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         };
 
         let entries = build_lowering_fact_entries(&program, &tco);
@@ -2646,6 +2663,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2731,6 +2749,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
             stack_hints: Vec::new(),
         }
     }
@@ -2993,6 +3012,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3083,6 +3103,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3166,6 +3187,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);
@@ -3248,6 +3270,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);

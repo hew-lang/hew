@@ -3,6 +3,10 @@
 //! Implements event-driven supervision with three restart strategies
 //! (one-for-one, one-for-all, rest-for-one) and sliding-window restart
 //! tracking. Mirrors the C implementation in `hew-codegen/runtime/src/supervisor.c`.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use std::cell::Cell;
@@ -158,6 +162,59 @@ const STRATEGY_REST_FOR_ONE: c_int = 2;
 const RESTART_PERMANENT: c_int = 0;
 const RESTART_TRANSIENT: c_int = 1;
 const RESTART_TEMPORARY: c_int = 2;
+
+// ── Exit reasons ─────────────────────────────────────────────────────────
+//
+// Trap error codes used by `hew_actor_trap` to distinguish named exit kinds
+// from raw OS signal numbers. OS signal numbers are < 32 on all supported
+// platforms. Hew-specific codes start at 200 to leave room for POSIX signals
+// and any future OS-specific ranges.
+
+/// Error code stored in `actor.error_code` when an actor's arena cap is
+/// exhausted. Produced by `hew_arena_malloc` routing through the longjmp
+/// crash seam when `cap > 0` and an allocation would exceed it.
+///
+/// Distinct from any POSIX signal number (which are < 32 on all supported
+/// platforms). Code 200 is reserved for this purpose and must not be reused
+/// for any other exit kind.
+pub const HEW_TRAP_HEAP_EXCEEDED: i32 = 200;
+
+/// Named exit reason for a crashed actor.
+///
+/// Interprets the i32 `error_code` stored on a `HewActor` after a crash.
+/// The supervisor sees a raw `HewActorState::Crashed`; callers can call
+/// `ExitReason::from_error_code(hew_actor_get_error(actor))` to get a named
+/// reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitReason {
+    /// Actor's per-dispatch arena cap was exceeded (error code 200).
+    ///
+    /// The arena returned null from `hew_arena_malloc` because allocating the
+    /// requested bytes would push `used` above `cap`. The actor crashed via
+    /// the normal longjmp/supervisor seam with this code stored as its
+    /// `error_code`, so teardown (timers, links, monitors, arena) runs as
+    /// for any other crash (`cleanup-all-exits` LESSON).
+    HeapExceeded,
+    /// Actor crashed with a hardware signal (SIGSEGV, SIGBUS, SIGFPE, SIGILL)
+    /// or via `hew_panic()` / `hew_panic_msg()`. The raw signal number is
+    /// preserved.
+    Signal(i32),
+    /// Actor stopped normally (`error_code` == 0).
+    Normal,
+}
+
+impl ExitReason {
+    /// Convert a raw `error_code` from `hew_actor_get_error` into a named
+    /// `ExitReason`.
+    #[must_use]
+    pub fn from_error_code(code: i32) -> Self {
+        match code {
+            0 => ExitReason::Normal,
+            HEW_TRAP_HEAP_EXCEEDED => ExitReason::HeapExceeded,
+            sig => ExitReason::Signal(sig),
+        }
+    }
+}
 
 /// System message types for supervisor events.
 const SYS_MSG_CHILD_STOPPED: i32 = 100;
@@ -925,6 +982,14 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             coalesce_key_fn: None,
             coalesce_fallback: HewOverflowPolicy::DropOld as c_int,
             budget: 0,
+            // WHY: InternalChildSpec does not yet carry arena_cap_bytes; the
+            // supervisor restart path therefore spawns restarted actors with
+            // an unbounded arena even when the original had #[max_heap].
+            // WHEN: Obsolete once hew_supervisor_add_child_spec carries and
+            // threads the cap through InternalChildSpec.
+            // WHAT: Add arena_cap_bytes to InternalChildSpec + HewChildSpec
+            // and plumb it through hew_supervisor_add_child_spec.
+            arena_cap_bytes: 0,
         };
         (opts, spec.state_drop_fn)
     };

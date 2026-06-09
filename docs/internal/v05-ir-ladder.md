@@ -472,5 +472,21 @@ the Checked MIR and Elaborated MIR stages.
 
 ---
 
+## 7. Building the v0.5 spine
+
+`hew compile-v05` spawns `hew-emit-v05` as a sibling binary for the
+object-emission step (process isolation avoids a dual-LLVM-load assertion;
+see `hew-codegen-rs/src/llvm.rs`).  Both binaries must be built together:
+
+```
+make hew          # debug: builds hew + hew-emit-v05
+make release      # release: builds hew + hew-emit-v05 + adze + stdlib
+```
+
+Running `cargo build -p hew-cli` alone leaves `hew-emit-v05` absent and
+`compile-v05` will fail with `E_CUTOVER_UNSUPPORTED`.
+
+---
+
 *This document is an internal engineering reference.  The public-facing
 language specification is `docs/specs/HEW-SPEC.md`.*

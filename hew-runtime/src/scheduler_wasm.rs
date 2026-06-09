@@ -15,6 +15,10 @@
 //! # Internal API
 //!
 //! - [`sched_enqueue`] — submit an actor for scheduling.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::VecDeque;
 use std::ffi::{c_int, c_void};

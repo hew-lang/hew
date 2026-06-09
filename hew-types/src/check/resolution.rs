@@ -487,7 +487,10 @@ impl Checker {
                 // This arm is intentionally exhaustive so that any future `Item` variant
                 // added to the parser triggers a compile error here, forcing the author
                 // to decide whether hole-reporting is needed.
-                Item::Import(_) | Item::Const(_) | Item::Supervisor(_) => {}
+                // Record declarations carry no function-signature holes (only
+                // type-def inference holes, which `register_record_decl` records
+                // via `record_type_def_inference_holes`).  No action needed here.
+                Item::Import(_) | Item::Const(_) | Item::Supervisor(_) | Item::Record(_) => {}
             }
         }
 

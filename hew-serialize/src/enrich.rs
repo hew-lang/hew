@@ -258,6 +258,8 @@ fn ty_has_ownership_sensitive_bindings(
         | Ty::U16
         | Ty::U32
         | Ty::U64
+        | Ty::Isize
+        | Ty::Usize
         | Ty::F32
         | Ty::F64
         | Ty::IntLiteral
@@ -1010,7 +1012,10 @@ fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
                 v.visit_expr(&mut arm.body);
             }
         }
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } => {
+            v.visit_block(block);
+        }
+        Expr::UnsafeBlock(block) => {
             v.visit_block(block);
         }
         Expr::ForkChild { expr, .. } => v.visit_expr(expr),
@@ -1082,6 +1087,10 @@ fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
             if let Some(e) = end {
                 v.visit_expr(e);
             }
+        }
+        Expr::Is { lhs, rhs } => {
+            v.visit_expr(lhs);
+            v.visit_expr(rhs);
         }
         // Leaf nodes and family-specific variants (caller handles Call/MethodCall/Lambda/Cast)
         Expr::Literal(_)
@@ -1307,6 +1316,18 @@ fn normalize_item_types(item: &mut Item, registry: &hew_types::module_registry::
                 }
             }
         }
+        Item::Record(record_decl) => match &mut record_decl.kind {
+            hew_parser::ast::RecordKind::Named(fields) => {
+                for field in fields {
+                    normalize_type_expr(&mut field.ty.0, registry);
+                }
+            }
+            hew_parser::ast::RecordKind::Tuple(field_types) => {
+                for (ty, _) in field_types {
+                    normalize_type_expr(ty, registry);
+                }
+            }
+        },
         Item::Import(_) | Item::Wire(_) => {}
     }
 }
@@ -1564,7 +1585,12 @@ fn enrich_item_with_diagnostics(
                 }
             }
         }
-        Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
+        // Record fields carry only type annotations; no expressions to enrich in A-1.
+        Item::Record(_)
+        | Item::Import(_)
+        | Item::TypeAlias(_)
+        | Item::Wire(_)
+        | Item::ExternBlock(_) => {}
     }
     Ok(())
 }
@@ -3921,6 +3947,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
             method_call_rewrites: HashMap::new(),
@@ -5519,6 +5546,7 @@ mod tests {
                 overflow_policy: None,
                 is_isolated: false,
                 doc_comment: None,
+                max_heap_bytes: None,
             }),
             0..0,
         )];
@@ -6905,6 +6933,7 @@ mod tests {
                     overflow_policy: None,
                     is_isolated: false,
                     doc_comment: None,
+                    max_heap_bytes: None,
                 }),
                 0..0,
             )],

@@ -421,6 +421,19 @@ pub enum TypeErrorKind {
     /// cannot be named in user source. Bindings of this type are inferred from
     /// `fork name = expr` context only.
     TaskNotNameable,
+    /// An operation that requires an `unsafe { ... }` block was performed
+    /// outside of one.  The `operation` field names the specific unsafe
+    /// construct (e.g. `"raw pointer dereference"`, `"extern fn call"`).
+    ///
+    /// Envelope code: `E_M5_UNSAFE_BLOCK_REQUIRED`.
+    ///
+    /// No producer emits this variant yet; it is reserved for T1-B-* and
+    /// T1-C-* slices that introduce the concrete unsafe operations.
+    // TODO(T1-B-3/T1-C-2): wire producers once raw-pointer and FFI ops land.
+    UnsafeOperationRequiresBlock {
+        /// Short identifier for the unsafe operation, e.g. `"raw pointer dereference"`.
+        operation: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -466,6 +479,7 @@ impl TypeErrorKind {
             Self::OrPatternBindingMismatch => "OrPatternBindingMismatch",
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
             Self::TaskNotNameable => "TaskNotNameable",
+            Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
         }
     }
 }

@@ -80,6 +80,7 @@ pub enum Item {
     Actor(ActorDecl),
     Supervisor(SupervisorDecl),
     Machine(MachineDecl),
+    Record(RecordDecl),
 }
 
 // ── Expressions ──────────────────────────────────────────────────────
@@ -232,7 +233,7 @@ pub enum Expr {
         expr: Box<Spanned<Expr>>,
         duration: Box<Spanned<Expr>>,
     },
-    Unsafe(Block),
+    UnsafeBlock(Box<Block>),
     Yield(Option<Box<Spanned<Expr>>>),
     Cooperate,
     This,
@@ -263,6 +264,17 @@ pub enum Expr {
     ByteStringLiteral(Vec<u8>),
     /// Byte array literal, e.g. `bytes [0x48, 0x65]`.
     ByteArrayLiteral(Vec<u8>),
+
+    /// Identity comparison: `lhs is rhs`.
+    ///
+    /// Parsed at equality precedence (same as `==`/`!=`). The checker (slice D-2)
+    /// enforces that both operands carry identity (machines, actors, heap-backed
+    /// collections, user named types) and rejects scalars, `String`, and records.
+    /// Parser admits any expression on either side.
+    Is {
+        lhs: Box<Spanned<Expr>>,
+        rhs: Box<Spanned<Expr>>,
+    },
 
     /// `emit EventName { field: expr, ... }` — fire a machine event from a
     /// transition body, `entry`, or `exit` block. Legality (must appear inside
@@ -421,6 +433,16 @@ pub enum BinaryOp {
     Shr,
     Range,
     RangeInclusive,
+    /// Two's-complement wrapping add. Parser sugar for `&+`. Lowers to
+    /// `Instr::IntAdd` (plain add, no overflow trap). Integer operands only;
+    /// string concat and duration arithmetic are not allowed.
+    WrappingAdd,
+    /// Two's-complement wrapping subtract. Parser sugar for `&-`. Lowers to
+    /// `Instr::IntSub` (plain sub, no overflow trap).
+    WrappingSub,
+    /// Two's-complement wrapping multiply. Parser sugar for `&*`. Lowers to
+    /// `Instr::IntMul` (plain mul, no overflow trap).
+    WrappingMul,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -446,6 +468,9 @@ impl std::fmt::Display for BinaryOp {
             Self::Shr => write!(f, ">>"),
             Self::Range => write!(f, ".."),
             Self::RangeInclusive => write!(f, "..="),
+            Self::WrappingAdd => write!(f, "&+"),
+            Self::WrappingSub => write!(f, "&-"),
+            Self::WrappingMul => write!(f, "&*"),
         }
     }
 }
@@ -764,6 +789,47 @@ pub struct TypeAliasDecl {
     pub doc_comment: Option<String>,
 }
 
+/// A `record` named-field declaration.
+///
+/// Records are pure data carriers: they hold named, typed fields and support
+/// generic type parameters and where-clauses.  Methods, variants, and tuple
+/// forms are not permitted (those belong to `TypeDecl`).
+///
+/// Checker support (resolving `RecordDecl` into `Ty::Record`) is deferred to
+/// slice A-3; until then the checker emits an "unsupported" diagnostic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordDecl {
+    #[serde(default)]
+    pub visibility: Visibility,
+    pub name: String,
+    pub type_params: Option<Vec<TypeParam>>,
+    pub where_clause: Option<WhereClause>,
+    pub kind: RecordKind,
+    pub doc_comment: Option<String>,
+    pub span: Span,
+}
+
+/// The body of a `record` declaration.
+///
+/// - `Named` form: `record Point { x: int, y: int }` — at least one field required.
+/// - `Tuple` form: `record Pair(int, int);` — at least one positional field required;
+///   terminates with `;` like a type alias.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum RecordKind {
+    Named(Vec<RecordField>),
+    Tuple(Vec<Spanned<TypeExpr>>),
+}
+
+/// A single field in a named-form `record` body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordField {
+    pub name: String,
+    pub ty: Spanned<TypeExpr>,
+    pub doc_comment: Option<String>,
+    #[serde(skip)]
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TypeDeclKind {
     Struct,
@@ -1078,6 +1144,16 @@ pub struct ActorDecl {
     pub overflow_policy: Option<OverflowPolicy>,
     pub is_isolated: bool,
     pub doc_comment: Option<String>,
+    /// Maximum heap bytes this actor may allocate from its arena.
+    ///
+    /// `None` = no `#[max_heap]` annotation (unbounded, legacy default).
+    /// `Some(0)` = explicit zero, treated as unbounded by the runtime (same as
+    /// arena cap=0 in `hew_arena_new_with_cap`). `Some(N)` for N > 0 = hard cap.
+    ///
+    /// Parse-time byte conversion: bare integer = bytes; `N kb` = N × 1024;
+    /// `N mb` = N × 1024²; `N b` = N. `gb` and larger are rejected in v0.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_heap_bytes: Option<u64>,
 }
 
 /// Mailbox overflow policy.

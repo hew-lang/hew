@@ -6,11 +6,19 @@
 //!
 //! Every test uses condvar-based signalling instead of fixed sleeps so
 //! that behaviour is deterministic under CI load.
+//!
+//! Handle lifecycle (spawn/close/free, mailbox new/free, msg-node free)
+//! is funnelled through `hew_runtime_testkit::{TestActor, TestMailbox}`.
+//! The remaining `unsafe { … }` blocks are inherent to the C ABI: dispatch
+//! callbacks have `extern "C"` signatures, and reading `HewMsgNode` payload
+//! fields requires pointer dereference.
 
-// Many tests deliberately exercise raw FFI functions that are inherently unsafe.
+// Dispatch callbacks and the few remaining FFI calls (reply channel,
+// scheduler reply lookup) are inherently unsafe by C ABI contract — the
+// safety invariants are documented at each surviving site.
 #![expect(
     clippy::undocumented_unsafe_blocks,
-    reason = "FFI test harness — safety invariants are documented per-test"
+    reason = "FFI test harness — dispatch and msg-node accesses use the runtime's documented invariants"
 )]
 #![expect(
     clippy::cast_possible_truncation,
@@ -24,25 +32,8 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use hew_runtime::actor::{
-    hew_actor_close, hew_actor_free, hew_actor_send, hew_actor_spawn, hew_actor_stop,
-};
-use hew_runtime::internal::types::{HewActorState, HewError};
-use hew_runtime::mailbox::{
-    hew_mailbox_free, hew_mailbox_has_messages, hew_mailbox_len, hew_mailbox_new, hew_mailbox_send,
-    hew_mailbox_try_recv, hew_msg_node_free,
-};
 use hew_runtime::reply_channel;
-
-// ── Global scheduler init ───────────────────────────────────────────────
-
-static SCHED_INIT: std::sync::Once = std::sync::Once::new();
-
-fn ensure_scheduler() {
-    SCHED_INIT.call_once(|| {
-        hew_runtime::scheduler::hew_sched_init();
-    });
-}
+use hew_runtime_testkit::{ensure_scheduler, HewActorState, HewError, TestActor, TestMailbox};
 
 // ── Condvar-based dispatch signalling ───────────────────────────────────
 
@@ -87,24 +78,6 @@ impl DispatchLog {
     }
 }
 
-fn wait_for_actor_state(
-    actor: *mut hew_runtime::actor::HewActor,
-    expected: HewActorState,
-    timeout: Duration,
-) -> bool {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-        if state == expected as i32 {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
 unsafe extern "C" fn noop_dispatch(
     _state: *mut c_void,
     _msg_type: i32,
@@ -140,30 +113,17 @@ fn actor_send_triggers_dispatch() {
     ensure_scheduler();
     SEND_RECV_SIGNAL.reset();
 
-    unsafe {
-        let mut state: i32 = 0;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(send_recv_dispatch),
-        );
+    let mut state: i32 = 0;
+    let actor = TestActor::spawn_with_state(&mut state, send_recv_dispatch);
 
-        let val: i32 = 42;
-        hew_actor_send(
-            actor,
-            1,
-            (&raw const val).cast_mut().cast(),
-            size_of::<i32>(),
-        );
+    let mut val: i32 = 42;
+    actor.send(1, &mut val);
 
-        assert!(
-            SEND_RECV_SIGNAL.wait_for(1, Duration::from_secs(10)),
-            "dispatch must be invoked after send (count={})",
-            SEND_RECV_SIGNAL.current()
-        );
-
-        hew_actor_free(actor);
-    }
+    assert!(
+        SEND_RECV_SIGNAL.wait_for(1, Duration::from_secs(10)),
+        "dispatch must be invoked after send (count={})",
+        SEND_RECV_SIGNAL.current()
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -173,29 +133,22 @@ fn actor_send_triggers_dispatch() {
 /// Closing an idle actor transitions it directly to Stopped.
 #[test]
 fn actor_close_idle_transitions_to_stopped() {
-    unsafe {
-        let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-        assert!(!actor.is_null());
+    let actor = TestActor::spawn(noop_dispatch);
 
-        // Actor is idle (no messages enqueued).
-        let state_before = (*actor).actor_state.load(Ordering::Acquire);
-        assert_eq!(
-            state_before,
-            HewActorState::Idle as i32,
-            "precondition: actor must be idle"
-        );
+    // Actor is idle (no messages enqueued).
+    assert_eq!(
+        actor.state_raw(),
+        HewActorState::Idle as i32,
+        "precondition: actor must be idle"
+    );
 
-        hew_actor_close(actor);
+    actor.close();
 
-        let state_after = (*actor).actor_state.load(Ordering::Acquire);
-        assert_eq!(
-            state_after,
-            HewActorState::Stopped as i32,
-            "close on an idle actor should transition to Stopped"
-        );
-
-        hew_actor_free(actor);
-    }
+    assert_eq!(
+        actor.state_raw(),
+        HewActorState::Stopped as i32,
+        "close on an idle actor should transition to Stopped"
+    );
 }
 
 /// After closing an actor, sends should be rejected (mailbox closed).
@@ -207,28 +160,17 @@ fn actor_close_idle_transitions_to_stopped() {
 /// divergence note on that function.
 #[test]
 fn send_to_closed_actor_is_rejected() {
-    unsafe {
-        let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-        assert!(!actor.is_null());
+    let actor = TestActor::spawn(noop_dispatch);
+    actor.close();
 
-        hew_actor_close(actor);
-
-        // hew_actor_try_send → hew_mailbox_try_send → ErrClosed (-4).
-        let val: i32 = 7;
-        let rc = hew_runtime::actor::hew_actor_try_send(
-            actor,
-            1,
-            (&raw const val).cast_mut().cast(),
-            size_of::<i32>(),
-        );
-        assert_eq!(
-            rc,
-            HewError::ErrClosed as i32,
-            "hew_actor_try_send to a closed actor must return ErrClosed (got {rc})"
-        );
-
-        hew_actor_free(actor);
-    }
+    // hew_actor_try_send → hew_mailbox_try_send → ErrClosed (-4).
+    let mut val: i32 = 7;
+    let rc = actor.try_send(1, &mut val);
+    assert_eq!(
+        rc,
+        HewError::ErrClosed as i32,
+        "hew_actor_try_send to a closed actor must return ErrClosed (got {rc})"
+    );
 }
 
 /// Full lifecycle: spawn → send → close → free.
@@ -252,27 +194,20 @@ fn actor_full_lifecycle_spawn_send_close_free() {
     ensure_scheduler();
     LIFECYCLE_SIGNAL.reset();
 
-    unsafe {
-        let mut state: i32 = 0;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(lifecycle_dispatch),
-        );
-        assert!(!actor.is_null());
+    let mut state: i32 = 0;
+    let actor = TestActor::spawn_with_state(&mut state, lifecycle_dispatch);
 
-        // Send a message and wait for dispatch.
-        hew_actor_send(actor, 1, ptr::null_mut(), 0);
-        assert!(
-            LIFECYCLE_SIGNAL.wait_for(1, Duration::from_secs(10)),
-            "dispatch not invoked"
-        );
+    // Send a message and wait for dispatch.
+    actor.send_empty(1);
+    assert!(
+        LIFECYCLE_SIGNAL.wait_for(1, Duration::from_secs(10)),
+        "dispatch not invoked"
+    );
 
-        // Close and free.
-        hew_actor_close(actor);
-        let rc = hew_actor_free(actor);
-        assert!(rc == 0, "hew_actor_free should succeed (got {rc})");
-    }
+    // Close explicitly; Drop will free.
+    actor.close();
+    // TestActor::Drop runs hew_actor_free; success is implied if the test
+    // does not deadlock or abort.
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -282,100 +217,84 @@ fn actor_full_lifecycle_spawn_send_close_free() {
 /// Send multiple messages to a raw mailbox and verify FIFO dequeue order.
 #[test]
 fn mailbox_fifo_ordering() {
-    unsafe {
-        let mb = hew_mailbox_new();
-        assert!(!mb.is_null());
+    let mb = TestMailbox::new();
 
-        // Enqueue messages with distinct msg_type tags 0..5.
-        for i in 0..5i32 {
-            let mut val = i * 10;
-            hew_mailbox_send(mb, i, (&raw mut val).cast(), size_of::<i32>());
-        }
-
-        assert_eq!(hew_mailbox_len(mb), 5, "mailbox should have 5 messages");
-
-        // Dequeue and verify ordering.
-        for expected_type in 0..5i32 {
-            let node = hew_mailbox_try_recv(mb);
-            assert!(
-                !node.is_null(),
-                "expected message {expected_type} but mailbox was empty"
-            );
-            assert_eq!(
-                (*node).msg_type,
-                expected_type,
-                "messages must be dequeued in FIFO order"
-            );
-            let payload = *((*node).data.cast::<i32>());
-            assert_eq!(
-                payload,
-                expected_type * 10,
-                "payload must match the sent value"
-            );
-            hew_msg_node_free(node);
-        }
-
-        // Mailbox should be empty now.
-        assert_eq!(
-            hew_mailbox_has_messages(mb),
-            0,
-            "mailbox should be empty after draining"
-        );
-
-        hew_mailbox_free(mb);
+    // Enqueue messages with distinct msg_type tags 0..5.
+    for i in 0..5i32 {
+        let mut val = i * 10;
+        mb.send(i, &mut val);
     }
+
+    assert_eq!(mb.len(), 5, "mailbox should have 5 messages");
+
+    // Dequeue and verify ordering.
+    for expected_type in 0..5i32 {
+        let node = mb
+            .try_recv()
+            .unwrap_or_else(|| panic!("expected message {expected_type} but mailbox was empty"));
+        assert_eq!(
+            node.msg_type(),
+            expected_type,
+            "messages must be dequeued in FIFO order"
+        );
+        // SAFETY: payload was sent as `i32` of size 4; node.data is the
+        // runtime-allocated deep-copy of the original send.
+        let payload: i32 = unsafe { node.payload() };
+        assert_eq!(
+            payload,
+            expected_type * 10,
+            "payload must match the sent value"
+        );
+    }
+
+    // Mailbox should be empty now.
+    assert!(!mb.has_messages(), "mailbox should be empty after draining");
 }
 
 /// Interleave sends and receives to verify partial-drain FIFO behaviour.
 #[test]
 fn mailbox_interleaved_send_recv_preserves_order() {
-    unsafe {
-        let mb = hew_mailbox_new();
+    let mb = TestMailbox::new();
 
-        // Send two messages.
-        let mut v0: i32 = 100;
-        let mut v1: i32 = 200;
-        hew_mailbox_send(mb, 0, (&raw mut v0).cast(), size_of::<i32>());
-        hew_mailbox_send(mb, 1, (&raw mut v1).cast(), size_of::<i32>());
+    // Send two messages.
+    let mut v0: i32 = 100;
+    let mut v1: i32 = 200;
+    mb.send(0, &mut v0);
+    mb.send(1, &mut v1);
 
-        // Receive first — should be v0.
-        let node0 = hew_mailbox_try_recv(mb);
-        assert!(!node0.is_null());
-        assert_eq!((*node0).msg_type, 0);
-        assert_eq!(*((*node0).data.cast::<i32>()), 100);
-        hew_msg_node_free(node0);
+    // Receive first — should be v0.
+    let node0 = mb.try_recv().expect("first recv");
+    assert_eq!(node0.msg_type(), 0);
+    // SAFETY: payload is i32 by construction.
+    assert_eq!(unsafe { node0.payload::<i32>() }, 100);
+    drop(node0);
 
-        // Send another before receiving the second.
-        let mut v2: i32 = 300;
-        hew_mailbox_send(mb, 2, (&raw mut v2).cast(), size_of::<i32>());
+    // Send another before receiving the second.
+    let mut v2: i32 = 300;
+    mb.send(2, &mut v2);
 
-        // Receive second — should be v1 (FIFO).
-        let node1 = hew_mailbox_try_recv(mb);
-        assert!(!node1.is_null());
-        assert_eq!((*node1).msg_type, 1);
-        assert_eq!(*((*node1).data.cast::<i32>()), 200);
-        hew_msg_node_free(node1);
+    // Receive second — should be v1 (FIFO).
+    let node1 = mb.try_recv().expect("second recv");
+    assert_eq!(node1.msg_type(), 1);
+    // SAFETY: payload is i32 by construction.
+    assert_eq!(unsafe { node1.payload::<i32>() }, 200);
+    drop(node1);
 
-        // Receive third — should be v2.
-        let node2 = hew_mailbox_try_recv(mb);
-        assert!(!node2.is_null());
-        assert_eq!((*node2).msg_type, 2);
-        assert_eq!(*((*node2).data.cast::<i32>()), 300);
-        hew_msg_node_free(node2);
-
-        hew_mailbox_free(mb);
-    }
+    // Receive third — should be v2.
+    let node2 = mb.try_recv().expect("third recv");
+    assert_eq!(node2.msg_type(), 2);
+    // SAFETY: payload is i32 by construction.
+    assert_eq!(unsafe { node2.payload::<i32>() }, 300);
 }
 
 /// Verify that `try_recv` returns null on an empty mailbox.
 #[test]
 fn mailbox_try_recv_empty_returns_null() {
-    unsafe {
-        let mb = hew_mailbox_new();
-        let node = hew_mailbox_try_recv(mb);
-        assert!(node.is_null(), "try_recv on empty mailbox must return null");
-        hew_mailbox_free(mb);
-    }
+    let mb = TestMailbox::new();
+    assert!(
+        mb.try_recv().is_none(),
+        "try_recv on empty mailbox must return None"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -417,31 +336,19 @@ unsafe extern "C" fn echo_double_dispatch(
 fn actor_ask_reply_roundtrip() {
     ensure_scheduler();
 
-    unsafe {
-        let mut state: i32 = 0;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(echo_double_dispatch),
-        );
-        assert!(!actor.is_null());
+    let mut state: i32 = 0;
+    let actor = TestActor::spawn_with_state(&mut state, echo_double_dispatch);
 
-        let val: i32 = 21;
-        let reply = hew_runtime::actor::hew_actor_ask(
-            actor,
-            1,
-            (&raw const val).cast_mut().cast(),
-            size_of::<i32>(),
-        );
+    let mut val: i32 = 21;
+    let reply = actor.ask(1, &mut val);
 
-        assert!(!reply.is_null(), "ask should receive a non-null reply");
-        let result = *(reply.cast::<i32>());
-        assert_eq!(result, 42, "echo_double should return 21 * 2 = 42");
+    assert!(!reply.is_null(), "ask should receive a non-null reply");
+    // SAFETY: hew_actor_ask returns libc::malloc'd i32 payload from echo_double_dispatch.
+    let result: i32 = unsafe { *(reply.cast::<i32>()) };
+    assert_eq!(result, 42, "echo_double should return 21 * 2 = 42");
 
-        // Free the reply payload (it was malloc'd by hew_reply).
-        libc::free(reply);
-        hew_actor_free(actor);
-    }
+    // SAFETY: reply was malloc'd by the runtime; libc::free is the documented destructor.
+    unsafe { libc::free(reply) };
 }
 
 /// Ask with a timeout — the echo actor should reply well within the limit.
@@ -449,34 +356,22 @@ fn actor_ask_reply_roundtrip() {
 fn actor_ask_with_timeout_succeeds() {
     ensure_scheduler();
 
-    unsafe {
-        let mut state: i32 = 0;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(echo_double_dispatch),
-        );
-        assert!(!actor.is_null());
+    let mut state: i32 = 0;
+    let actor = TestActor::spawn_with_state(&mut state, echo_double_dispatch);
 
-        let val: i32 = 5;
-        let reply = hew_runtime::actor::hew_actor_ask_timeout(
-            actor,
-            1,
-            (&raw const val).cast_mut().cast(),
-            size_of::<i32>(),
-            5000, // 5 second timeout — generous
-        );
+    let mut val: i32 = 5;
+    let reply = actor.ask_timeout(1, &mut val, 5000); // 5s — generous
 
-        assert!(
-            !reply.is_null(),
-            "ask_timeout should succeed within 5 seconds"
-        );
-        let result = *(reply.cast::<i32>());
-        assert_eq!(result, 10, "echo_double should return 5 * 2 = 10");
+    assert!(
+        !reply.is_null(),
+        "ask_timeout should succeed within 5 seconds"
+    );
+    // SAFETY: payload is i32.
+    let result: i32 = unsafe { *(reply.cast::<i32>()) };
+    assert_eq!(result, 10, "echo_double should return 5 * 2 = 10");
 
-        libc::free(reply);
-        hew_actor_free(actor);
-    }
+    // SAFETY: reply was malloc'd by the runtime.
+    unsafe { libc::free(reply) };
 }
 
 /// Ask on a closed actor should return null (send failure).
@@ -484,17 +379,12 @@ fn actor_ask_with_timeout_succeeds() {
 fn actor_ask_closed_returns_null() {
     ensure_scheduler();
 
-    unsafe {
-        let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-        assert!(!actor.is_null());
+    let actor = TestActor::spawn(noop_dispatch);
+    actor.close();
 
-        hew_actor_close(actor);
-
-        let reply = hew_runtime::actor::hew_actor_ask(actor, 1, ptr::null_mut(), 0);
-        assert!(reply.is_null(), "ask on a closed actor should return null");
-
-        hew_actor_free(actor);
-    }
+    let mut val: i32 = 0;
+    let reply = actor.ask(1, &mut val);
+    assert!(reply.is_null(), "ask on a closed actor should return null");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -506,41 +396,24 @@ fn actor_ask_closed_returns_null() {
 fn ask_stopped_actor_returns_null() {
     ensure_scheduler();
 
-    // SAFETY: All FFI calls operate on a valid actor pointer returned by
-    // hew_actor_spawn. The actor is stopped before the ask, so the send
-    // inside hew_actor_ask should fail and return null.
-    unsafe {
-        let mut state: i32 = 0;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(echo_double_dispatch),
-        );
-        assert!(!actor.is_null());
+    let mut state: i32 = 0;
+    let actor = TestActor::spawn_with_state(&mut state, echo_double_dispatch);
 
-        // Stop the actor (closes mailbox + enqueues sys message).
-        hew_actor_stop(actor);
+    // Stop the actor (closes mailbox + enqueues sys message).
+    actor.stop();
 
-        assert!(
-            wait_for_actor_state(actor, HewActorState::Stopped, Duration::from_secs(5)),
-            "actor should reach Stopped before ask"
-        );
+    assert!(
+        actor.wait_for_state(HewActorState::Stopped, Duration::from_secs(5)),
+        "actor should reach Stopped before ask"
+    );
 
-        // Ask should fail immediately (mailbox is closed) and return null.
-        let val: i32 = 7;
-        let reply = hew_runtime::actor::hew_actor_ask(
-            actor,
-            1,
-            (&raw const val).cast_mut().cast(),
-            size_of::<i32>(),
-        );
-        assert!(
-            reply.is_null(),
-            "ask on a stopped actor must return null, not deadlock"
-        );
-
-        hew_actor_free(actor);
-    }
+    // Ask should fail immediately (mailbox is closed) and return null.
+    let mut val: i32 = 7;
+    let reply = actor.ask(1, &mut val);
+    assert!(
+        reply.is_null(),
+        "ask on a stopped actor must return null, not deadlock"
+    );
 }
 
 /// Send an ask via `hew_actor_ask_with_channel`, then stop the actor before
@@ -549,66 +422,50 @@ fn ask_stopped_actor_returns_null() {
 fn ask_freed_queued_messages_unblock_caller() {
     ensure_scheduler();
 
-    // SAFETY: We create a reply channel, send a message with it, then stop
-    // the actor. The runtime's orphan handling in hew_msg_node_free should
-    // signal the channel so hew_reply_wait_timeout does not block forever.
-    // All pointers come from the runtime's allocation functions.
-    unsafe {
-        let mut state: i32 = 0;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(echo_double_dispatch),
+    let mut state: i32 = 0;
+    let actor = TestActor::spawn_with_state(&mut state, echo_double_dispatch);
+
+    // Create a reply channel and send an ask (but don't wait yet).
+    let ch = hew_runtime::reply_channel::hew_reply_channel_new();
+    assert!(!ch.is_null());
+
+    let mut val: i32 = 99;
+    let send_rc = actor.ask_with_channel(1, &mut val, ch);
+
+    if send_rc == 0 {
+        // Message was enqueued — now stop the actor so it won't
+        // process the message. The queued node should be freed,
+        // which should signal the reply channel.
+        actor.stop();
+
+        // Wait on the reply channel with a short timeout. If orphan
+        // handling is broken, this will block for the full timeout.
+        let start = std::time::Instant::now();
+        // SAFETY: ch is a valid reply channel; hew_reply_wait_timeout is
+        // documented to return null and unblock on orphaned channels.
+        let reply = unsafe { hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 200) };
+        let elapsed = start.elapsed();
+
+        // The reply may be null (orphaned — actor stopped before
+        // dispatching) or non-null (actor dispatched before stopping).
+        // Both are correct; the test verifies that the caller is
+        // UNBLOCKED promptly, not that the reply is always null.
+        assert!(
+            elapsed.as_millis() < 200,
+            "reply channel should be unblocked promptly, took {}ms",
+            elapsed.as_millis()
         );
-        assert!(!actor.is_null());
-
-        // Create a reply channel and send an ask (but don't wait yet).
-        let ch = hew_runtime::reply_channel::hew_reply_channel_new();
-        assert!(!ch.is_null());
-
-        let val: i32 = 99;
-        let send_rc = hew_runtime::actor::hew_actor_ask_with_channel(
-            actor,
-            1,
-            (&raw const val).cast_mut().cast(),
-            size_of::<i32>(),
-            ch,
-        );
-
-        if send_rc == 0 {
-            // Message was enqueued — now stop the actor so it won't
-            // process the message. The queued node should be freed,
-            // which should signal the reply channel.
-            hew_actor_stop(actor);
-
-            // Wait on the reply channel with a short timeout. If orphan
-            // handling is broken, this will block for the full timeout.
-            let start = std::time::Instant::now();
-            let reply = hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 200);
-            let elapsed = start.elapsed();
-
-            // The reply may be null (orphaned — actor stopped before
-            // dispatching) or non-null (actor dispatched before stopping).
-            // Both are correct; the test verifies that the caller is
-            // UNBLOCKED promptly, not that the reply is always null.
-            assert!(
-                elapsed.as_millis() < 200,
-                "reply channel should be unblocked promptly, took {}ms",
-                elapsed.as_millis()
-            );
-            if !reply.is_null() {
-                // SAFETY: reply was malloc'd by hew_reply.
-                libc::free(reply);
-            }
+        if !reply.is_null() {
+            // SAFETY: reply was malloc'd by hew_reply.
+            unsafe { libc::free(reply) };
         }
-        // else: send failed — hew_actor_ask_with_channel retained then
-        // released its reference, so refs is back to 1 (our initial
-        // reference from hew_reply_channel_new).
-
-        // SAFETY: Release our reference to the reply channel.
-        hew_runtime::reply_channel::hew_reply_channel_free(ch);
-        hew_actor_free(actor);
     }
+    // else: send failed — hew_actor_ask_with_channel retained then
+    // released its reference, so refs is back to 1 (our initial
+    // reference from hew_reply_channel_new).
+
+    // SAFETY: Release our reference to the reply channel.
+    unsafe { hew_runtime::reply_channel::hew_reply_channel_free(ch) };
 }
 
 /// Dispatch function that sleeps for 500ms before replying.
@@ -643,37 +500,19 @@ unsafe extern "C" fn slow_dispatch(
 fn ask_timeout_returns_null() {
     ensure_scheduler();
 
-    // SAFETY: All FFI calls use valid pointers from spawn/ask. The slow
-    // dispatch sleeps for 500ms but we time out after 100ms, so the ask
-    // should return null. The actor is freed after — hew_actor_free
-    // waits for the actor to reach a terminal state (2s deadline).
-    unsafe {
-        let mut state: i32 = 0;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(slow_dispatch),
-        );
-        assert!(!actor.is_null());
+    let mut state: i32 = 0;
+    let actor = TestActor::spawn_with_state(&mut state, slow_dispatch);
 
-        let val: i32 = 42;
-        let reply = hew_runtime::actor::hew_actor_ask_timeout(
-            actor,
-            1,
-            (&raw const val).cast_mut().cast(),
-            size_of::<i32>(),
-            100, // 100ms timeout — well under the 500ms dispatch sleep
-        );
-        assert!(
-            reply.is_null(),
-            "ask_timeout should return null when the actor is too slow"
-        );
+    let mut val: i32 = 42;
+    let reply = actor.ask_timeout(1, &mut val, 100); // 100ms — well under 500ms sleep
+    assert!(
+        reply.is_null(),
+        "ask_timeout should return null when the actor is too slow"
+    );
 
-        // The slow dispatch is still running on a scheduler thread.
-        // hew_actor_close + hew_actor_free waits for the actor to finish.
-        hew_actor_close(actor);
-        hew_actor_free(actor);
-    }
+    // The slow dispatch is still running on a scheduler thread.
+    // Drop runs close + free; free waits for the actor to finish.
+    actor.close();
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -750,37 +589,29 @@ fn actor_dispatch_preserves_message_order() {
     ensure_scheduler();
     ORDER_LOG.reset();
 
-    unsafe {
-        let mut state: i32 = 0;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(order_dispatch),
-        );
+    let mut state: i32 = 0;
+    let actor = TestActor::spawn_with_state(&mut state, order_dispatch);
 
-        for i in 0..N {
-            let mut val = i;
-            hew_actor_send(actor, i, (&raw mut val).cast(), size_of::<i32>());
-        }
+    for i in 0..N {
+        let mut val = i;
+        actor.send(i, &mut val);
+    }
 
-        assert!(
-            ORDER_LOG.wait_for(N, Duration::from_secs(10)),
-            "not all messages dispatched"
-        );
+    assert!(
+        ORDER_LOG.wait_for(N, Duration::from_secs(10)),
+        "not all messages dispatched"
+    );
 
-        let entries = ORDER_LOG.entries.lock().unwrap();
-        assert_eq!(
-            entries.len(),
-            N as usize,
-            "should have received {N} messages"
-        );
+    let entries = ORDER_LOG.entries.lock().unwrap();
+    assert_eq!(
+        entries.len(),
+        N as usize,
+        "should have received {N} messages"
+    );
 
-        for (idx, &(msg_type, payload)) in entries.iter().enumerate() {
-            assert_eq!(msg_type, idx as i32, "msg_type mismatch at index {idx}");
-            assert_eq!(payload, idx as i32, "payload mismatch at index {idx}");
-        }
-
-        hew_actor_free(actor);
+    for (idx, &(msg_type, payload)) in entries.iter().enumerate() {
+        assert_eq!(msg_type, idx as i32, "msg_type mismatch at index {idx}");
+        assert_eq!(payload, idx as i32, "payload mismatch at index {idx}");
     }
 }
 
@@ -820,29 +651,21 @@ fn actor_is_running_during_dispatch() {
     STATE_SIGNAL.reset();
     OBSERVED_STATE.store(-1, Ordering::Release);
 
-    unsafe {
-        let mut state: i32 = 0;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(state_observing_dispatch),
-        );
+    let mut state: i32 = 0;
+    let actor = TestActor::spawn_with_state(&mut state, state_observing_dispatch);
 
-        hew_actor_send(actor, 1, ptr::null_mut(), 0);
-        assert!(
-            STATE_SIGNAL.wait_for(1, Duration::from_secs(10)),
-            "dispatch never ran"
-        );
+    actor.send_empty(1);
+    assert!(
+        STATE_SIGNAL.wait_for(1, Duration::from_secs(10)),
+        "dispatch never ran"
+    );
 
-        let observed = OBSERVED_STATE.load(Ordering::Acquire);
-        assert_eq!(
-            observed,
-            HewActorState::Running as i32,
-            "actor should be Running during dispatch (got {observed})"
-        );
-
-        hew_actor_free(actor);
-    }
+    let observed = OBSERVED_STATE.load(Ordering::Acquire);
+    assert_eq!(
+        observed,
+        HewActorState::Running as i32,
+        "actor should be Running during dispatch (got {observed})"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -853,27 +676,23 @@ fn actor_is_running_during_dispatch() {
 /// buffer after send does not affect the enqueued message.
 #[test]
 fn mailbox_deep_copy_isolates_sender_and_receiver() {
-    unsafe {
-        let mb = hew_mailbox_new();
-        let mut val: i32 = 42;
+    let mb = TestMailbox::new();
+    let mut val: i32 = 42;
 
-        hew_mailbox_send(mb, 0, (&raw mut val).cast(), size_of::<i32>());
+    mb.send(0, &mut val);
 
-        // Mutate the original after send.
-        val = 999;
+    // Mutate the original after send.
+    val = 999;
 
-        let node = hew_mailbox_try_recv(mb);
-        assert!(!node.is_null());
-        let received = *((*node).data.cast::<i32>());
-        assert_eq!(
-            received, 42,
-            "message should contain the value at send time, not the mutated value"
-        );
+    let node = mb.try_recv().expect("recv after send");
+    // SAFETY: payload is i32 by construction.
+    let received: i32 = unsafe { node.payload() };
+    assert_eq!(
+        received, 42,
+        "message should contain the value at send time, not the mutated value"
+    );
 
-        let _ = val; // suppress unused warning
-        hew_msg_node_free(node);
-        hew_mailbox_free(mb);
-    }
+    let _ = val; // suppress unused warning
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -883,36 +702,23 @@ fn mailbox_deep_copy_isolates_sender_and_receiver() {
 /// Verify that budget and priority setters/getters round-trip correctly.
 #[test]
 fn actor_budget_and_priority_roundtrip() {
-    unsafe {
-        let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-        assert!(!actor.is_null());
+    let actor = TestActor::spawn(noop_dispatch);
 
-        // Set custom budget.
-        hew_runtime::actor::hew_actor_set_budget(actor, 128);
-        assert_eq!(
-            hew_runtime::actor::hew_actor_get_budget(actor),
-            128,
-            "budget should round-trip"
-        );
+    // Set custom budget.
+    actor.set_budget(128);
+    assert_eq!(actor.budget(), 128, "budget should round-trip");
 
-        // Set priority.
-        hew_runtime::actor::hew_actor_set_priority(actor, 2); // low
-        assert_eq!(
-            hew_runtime::actor::hew_actor_get_priority(actor),
-            2,
-            "priority should round-trip"
-        );
+    // Set priority.
+    actor.set_priority(2); // low
+    assert_eq!(actor.priority(), 2, "priority should round-trip");
 
-        // Reset budget to default (pass 0).
-        hew_runtime::actor::hew_actor_set_budget(actor, 0);
-        assert_eq!(
-            hew_runtime::actor::hew_actor_get_budget(actor),
-            hew_runtime::actor::HEW_MSG_BUDGET as u32,
-            "budget of 0 should reset to default"
-        );
-
-        hew_actor_free(actor);
-    }
+    // Reset budget to default (pass 0).
+    actor.set_budget(0);
+    assert_eq!(
+        actor.budget(),
+        hew_runtime::actor::HEW_MSG_BUDGET as u32,
+        "budget of 0 should reset to default"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -922,31 +728,29 @@ fn actor_budget_and_priority_roundtrip() {
 /// `hew_actor_trap` sets the error code and transitions to Crashed.
 #[test]
 fn actor_trap_sets_error_and_crashes() {
-    unsafe {
-        let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-        assert!(!actor.is_null());
+    let actor = TestActor::spawn(noop_dispatch);
 
-        // No error initially.
-        assert_eq!(
-            hew_runtime::actor::hew_actor_get_error(actor),
-            0,
-            "new actor should have error code 0"
-        );
+    // No error initially.
+    assert_eq!(actor.error(), 0, "new actor should have error code 0");
 
-        // Trap with error code 42.
-        hew_runtime::actor::hew_actor_trap(actor, 42);
+    // Trap with error code 42.
+    actor.trap(42);
 
-        assert_eq!(
-            hew_runtime::actor::hew_actor_get_error(actor),
-            42,
-            "trap should set the error code"
-        );
-        assert_eq!(
-            (*actor).actor_state.load(Ordering::Acquire),
-            HewActorState::Crashed as i32,
-            "trap should transition actor to Crashed"
-        );
+    assert_eq!(actor.error(), 42, "trap should set the error code");
+    assert_eq!(
+        actor.state_raw(),
+        HewActorState::Crashed as i32,
+        "trap should transition actor to Crashed"
+    );
+}
 
-        hew_actor_free(actor);
-    }
+// Suppress unused-import warnings: `ptr` and `c_void` remain referenced by
+// dispatch fn signatures; HewError is used; ensure_scheduler is used; the
+// rest are funnelled through the testkit wrappers.
+#[allow(
+    dead_code,
+    reason = "ptr/c_void are used inside extern \"C\" dispatch fns"
+)]
+fn _unused_imports_keepalive() {
+    let _ = ptr::null::<c_void>();
 }

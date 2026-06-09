@@ -6,6 +6,10 @@
 //! Layout: `[HewRcInner header | data bytes...]`
 //! The returned pointer from `hew_rc_new` points to the **data region**
 //! (immediately after the header). All functions accept/return data pointers.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;

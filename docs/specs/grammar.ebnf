@@ -28,6 +28,7 @@ Item           = Attribute* Visibility? ( Import
                              | ConstDecl
                              | TypeDecl
                              | TypeAlias
+                             | RecordDecl
                              | TraitDecl
                              | ImplDecl
                              | WireDecl
@@ -42,6 +43,12 @@ Item           = Attribute* Visibility? ( Import
                              | MachineDecl ) ;
 
 TypeAlias      = "type" Ident "=" Type ";" ;
+
+RecordDecl      = "record" Ident TypeParams? WhereClause? RecordBody ;
+RecordBody      = RecordNamedBody | RecordTupleBody ;
+RecordNamedBody = "{" RecordFieldDecl { "," RecordFieldDecl } ","? "}" ;
+RecordFieldDecl = Ident ":" Type ;
+RecordTupleBody = "(" Type { "," Type } ","? ")" ";" ;
 
 Visibility     = "pub" ( "(" ( "package" | "super" ) ")" )? ;
 
@@ -204,7 +211,7 @@ TimeoutExpr    = RangeExpr ( "|" "after" Expr )? ;  (* Timeout: expr | after dur
 RangeExpr      = OrExpr ( (".." | "..=") OrExpr )? ;
 OrExpr         = AndExpr { "||" AndExpr } ;
 AndExpr        = EqExpr  { "&&" EqExpr } ;
-EqExpr         = RelExpr { ("==" | "!=") RelExpr } ;
+EqExpr         = RelExpr { ("==" | "!=" | "is") RelExpr } ;
 RelExpr        = BitOrExpr { ("<" | "<=" | ">" | ">=") BitOrExpr } ;
 BitOrExpr      = BitXorExpr { "|" BitXorExpr } ;
 BitXorExpr     = BitAndExpr { "^" BitAndExpr } ;

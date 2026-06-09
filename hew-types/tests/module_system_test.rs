@@ -669,6 +669,7 @@ fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
         overflow_policy: None,
         is_isolated: false,
         doc_comment: None,
+        max_heap_bytes: None,
     }
 }
 

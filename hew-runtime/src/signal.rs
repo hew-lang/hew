@@ -216,14 +216,28 @@ mod shared {
     /// The SIGSEGV signal number (11) is used as the canonical "intentional
     /// panic" marker across all platforms.
     pub(super) fn try_direct_longjmp_preamble(state: &mut RecoveryState) -> bool {
+        try_direct_longjmp_preamble_with_code(state, 11) // SIGSEGV
+    }
+
+    /// Like [`try_direct_longjmp_preamble`] but records a custom crash code
+    /// instead of the SIGSEGV default.
+    ///
+    /// Used by callers that need a named exit reason (e.g. `HeapExceeded`)
+    /// rather than the generic SIGSEGV-equivalent marker. The code is stored
+    /// in `crash_signal`, which `handle_crash_recovery_impl` forwards to
+    /// `hew_actor_trap` as the `error_code`, where it lands in the actor's
+    /// `error_code` field and is observable via `hew_actor_get_error`.
+    pub(super) fn try_direct_longjmp_preamble_with_code(
+        state: &mut RecoveryState,
+        code: i32,
+    ) -> bool {
         if !state.jmp_buf_valid.load(Ordering::Acquire) {
             return false;
         }
         if state.in_recovery.swap(true, Ordering::Acquire) {
             return false;
         }
-        // Record intentional panic as SIGSEGV equivalent.
-        state.crash_signal.store(11, Ordering::Release); // SIGSEGV
+        state.crash_signal.store(code, Ordering::Release);
         state.fault_addr = 0;
         state.jmp_buf_valid.store(false, Ordering::Release);
         true
@@ -661,6 +675,31 @@ mod platform {
             siglongjmp(&raw mut ctx.jmp_buf, 1);
         }
     }
+
+    /// Like [`try_direct_longjmp`] but records `code` as the crash reason
+    /// instead of the default SIGSEGV (11) marker.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from a dispatch context on the worker thread.
+    pub(crate) unsafe fn try_direct_longjmp_with_code(code: i32) {
+        // SAFETY: accesses the thread-local recovery context via pthread key;
+        // caller guarantees we are in a dispatch context on the correct thread.
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: ctx is non-null and exclusively owned by this thread.
+        let ctx = unsafe { &mut *ctx };
+        if !super::shared::try_direct_longjmp_preamble_with_code(&mut ctx.state, code) {
+            return;
+        }
+        // SAFETY: jmp_buf was set by sigsetjmp in activate_actor on this
+        // thread. The stack frame that called sigsetjmp is still live.
+        unsafe {
+            siglongjmp(&raw mut ctx.jmp_buf, 1);
+        }
+    }
 }
 
 // ── Windows implementation (Vectored Exception Handling) ────────────────
@@ -1036,6 +1075,30 @@ mod platform {
         // scheduler's recovery frame.
         unsafe { longjmp(&raw mut ctx.jmp_buf, 1) };
     }
+
+    /// Like [`try_direct_longjmp`] but records `code` as the crash reason
+    /// instead of the default SIGSEGV (11) marker.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from a dispatch context on the worker thread.
+    pub(crate) unsafe fn try_direct_longjmp_with_code(code: i32) {
+        // SAFETY: Retrieves the per-thread recovery context via TLS.
+        // May return null (handled below).
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: `ctx` is non-null (checked above) and exclusively owned by
+        // this thread.
+        let ctx = unsafe { &mut *ctx };
+        if !super::shared::try_direct_longjmp_preamble_with_code(&mut ctx.state, code) {
+            return;
+        }
+        // SAFETY: `jmp_buf` was set by `sigsetjmp` in `activate_actor` on the
+        // same thread. The longjmp unwinds back to the scheduler's recovery frame.
+        unsafe { longjmp(&raw mut ctx.jmp_buf, 1) };
+    }
 }
 
 // ── WASM stubs ──────────────────────────────────────────────────────────
@@ -1089,10 +1152,22 @@ mod platform {
     ///
     /// No-op on WASM.
     pub(crate) unsafe fn try_direct_longjmp() {}
+
+    /// No-op on WASM — no crash recovery; arena null propagates to caller.
+    ///
+    /// On WASM there is no signal-based longjmp seam. Cap-exhaustion nulls
+    /// propagate as a null pointer; the Hew runtime's WASM panic (`catch_unwind`)
+    /// path handles the resulting trap if the caller dereferences the null.
+    ///
+    /// # Safety
+    ///
+    /// No-op on WASM.
+    pub(crate) unsafe fn try_direct_longjmp_with_code(_code: i32) {}
 }
 
 // Re-export platform-specific implementations.
 pub(crate) use platform::{
     clear_dispatch_recovery, handle_crash_recovery, init_crash_handling, init_worker_recovery,
     mark_recovery_active, prepare_dispatch_recovery, sigsetjmp, try_direct_longjmp,
+    try_direct_longjmp_with_code,
 };

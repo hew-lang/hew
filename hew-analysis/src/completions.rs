@@ -319,6 +319,10 @@ fn try_spawn_completions(
 }
 
 /// Collect local variable names from function/actor bodies that are in scope at `offset`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per Item variant; not meaningfully splittable"
+)]
 fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> Vec<CompletionItem> {
     let mut locals = Vec::new();
 
@@ -417,7 +421,12 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     collect_locals_from_spanned_expr(&transition.body, offset, &mut locals);
                 }
             }
-            Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
+            // Record fields carry no expressions; no locals to collect.
+            Item::Record(_)
+            | Item::Import(_)
+            | Item::ExternBlock(_)
+            | Item::Wire(_)
+            | Item::TypeAlias(_) => {}
         }
     }
 
@@ -519,7 +528,10 @@ fn collect_locals_from_stmt(
 )]
 fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
     match expr {
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } => {
+            collect_locals_from_block(block, offset, locals);
+        }
+        Expr::UnsafeBlock(block) => {
             collect_locals_from_block(block, offset, locals);
         }
         Expr::ForkChild { expr, .. } => collect_locals_from_expr(&expr.0, offset, locals),
@@ -830,6 +842,7 @@ fn item_name_and_kind(item: &Item) -> Option<(String, CompletionKind)> {
         Item::Wire(w) => Some((w.name.clone(), CompletionKind::Type)),
         Item::TypeAlias(ta) => Some((ta.name.clone(), CompletionKind::Type)),
         Item::Machine(m) => Some((m.name.clone(), CompletionKind::Type)),
+        Item::Record(r) => Some((r.name.clone(), CompletionKind::Type)),
         Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
     }
 }

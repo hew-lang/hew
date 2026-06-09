@@ -13,12 +13,17 @@ impl Checker {
             Item::Impl(id) => self.check_impl(id, span),
             Item::Machine(md) => self.check_machine_exhaustiveness(md, span),
             Item::Trait(td) => self.check_trait_defaults(td),
-            Item::Import(_)
+            // All of these are fully handled during earlier registration passes
+            // and require no second-pass body checking.  Record declarations
+            // specifically are registered by `register_record_decl`; they have
+            // no method bodies, variants, or wire attributes in v0.5.
+            Item::Record(_)
+            | Item::Import(_)
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)
             | Item::Wire(_)
             | Item::ExternBlock(_)
-            | Item::Supervisor(_) => {} // Already handled during earlier checker passes
+            | Item::Supervisor(_) => {}
         }
     }
 
@@ -195,6 +200,15 @@ impl Checker {
             &mut self.current_actor_fields,
             ad.fields.iter().map(|f| f.name.clone()).collect(),
         );
+
+        // Record the per-actor arena cap from `#[max_heap(N)]` if present.
+        // The parser already converted suffixes (kb, mb) to bytes; we record
+        // `None`-absent as "no annotation" (unbounded) and `Some(cap)` as the
+        // caller-supplied cap. Codegen reads `actor_max_heap` to decide between
+        // `hew_arena_new` (unbounded) and `hew_arena_new_with_cap(cap)` (bounded).
+        if let Some(cap) = ad.max_heap_bytes {
+            self.actor_max_heap.insert(ad.name.clone(), cap);
+        }
 
         // Type-check init body if present
         if let Some(init) = &ad.init {

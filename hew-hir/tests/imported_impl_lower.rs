@@ -66,7 +66,10 @@ fn main() -> i64 {
     f.n
 }
 ";
+    build_imported_module_program_src(imported_src, root_src)
+}
 
+fn build_imported_module_program_src(imported_src: &str, root_src: &str) -> Program {
     let imported = hew_parser::parse(imported_src);
     assert!(
         imported.errors.is_empty(),
@@ -116,6 +119,145 @@ fn main() -> i64 {
         module_graph: Some(graph),
         ..root.program
     }
+}
+
+#[test]
+fn imported_private_struct_typedecl_is_registered_and_emitted() {
+    // Regression for std::net::tls: imported modules may keep FFI-result
+    // records private, while their emitted private helpers still field-access
+    // those records. The MIR boundary needs the private record TypeDecl so its
+    // field order is available downstream.
+    let imported_src = r"
+type FfiResult {
+    status: i32;
+}
+fn lift(raw: FfiResult) -> i64 {
+    raw.status as i64
+}
+pub fn status() -> i64 {
+    lift(FfiResult { status: 7 })
+}
+";
+    let root_src = r"
+fn main() -> i64 {
+    0
+}
+";
+    let program = build_imported_module_program_src(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    let ffi_result = output.module.items.iter().find_map(|item| {
+        if let HirItem::TypeDecl(td) = item {
+            (td.name == "FfiResult").then_some(td)
+        } else {
+            None
+        }
+    });
+    let ffi_result =
+        ffi_result.expect("expected private imported `FfiResult` TypeDecl to be emitted");
+    assert_eq!(
+        ffi_result
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["status"],
+        "private imported `FfiResult` must carry its field order"
+    );
+
+    let lift_emitted = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::Function(f) if f.name.ends_with("lift")));
+    assert!(
+        lift_emitted,
+        "expected private helper using `FfiResult.status` to be emitted"
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_ok(),
+        "private imported record field access must lower cleanly. Got: {:#?}",
+        result.err()
+    );
+}
+
+#[test]
+fn unused_imported_private_struct_typedecl_is_harmlessly_emitted() {
+    // The chosen scope mirrors public imported records: all private imported
+    // struct TypeDecls are emitted, even when no emitted body references them.
+    let imported_src = r"
+type UnusedPrivate {
+    status: i32;
+}
+pub fn ping() -> i64 {
+    1
+}
+";
+    let root_src = r"
+fn main() -> i64 {
+    0
+}
+";
+    let program = build_imported_module_program_src(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    let unused_emitted = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::TypeDecl(td) if td.name == "UnusedPrivate"));
+    assert!(
+        unused_emitted,
+        "expected unused private imported struct TypeDecl to be emitted harmlessly"
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_ok(),
+        "unused private imported struct TypeDecl must not introduce diagnostics. Got: {:#?}",
+        result.err()
+    );
+}
+
+#[test]
+fn imported_private_generic_struct_typedecl_stays_unemitted() {
+    // Generic private handles such as std::stream::Stream<T>/Sink<T> have
+    // intrinsic codegen paths. Emitting them as ordinary record TypeDecls would
+    // misclassify those handles at the MIR/codegen boundary.
+    let imported_src = r"
+type PrivateBox<T> {
+    value: T;
+}
+pub fn ping() -> i64 {
+    1
+}
+";
+    let root_src = r"
+fn main() -> i64 {
+    0
+}
+";
+    let program = build_imported_module_program_src(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    let generic_emitted = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::TypeDecl(td) if td.name == "PrivateBox"));
+    assert!(
+        !generic_emitted,
+        "private imported generic struct TypeDecls must stay on their existing non-record path"
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_ok(),
+        "skipping a private imported generic struct TypeDecl must remain clean. Got: {:#?}",
+        result.err()
+    );
 }
 
 #[test]

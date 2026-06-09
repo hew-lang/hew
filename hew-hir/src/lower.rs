@@ -1116,18 +1116,27 @@ pub fn lower_program_with_mono_cap(
                                 crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
                             ctx.register_fn_entry(&qualified, func);
                         }
-                        // Register pub type declarations from imported modules
-                        // into `record_registry` so `Expr::StructInit` and
+                        // Register public type declarations plus private
+                        // struct records from imported modules into
+                        // `record_registry` so `Expr::StructInit` and
                         // `Expr::FieldAccess` lowering can resolve their field
-                        // layouts. Without this, crash-info field access in an
-                        // `#[on(crash)]` body fails with `NotYetImplemented`
-                        // because the layout is missing from
-                        // `record_field_orders` at MIR time.
+                        // layouts. Without this, field access on imported
+                        // non-generic private FFI-result records fails with
+                        // `NotYetImplemented` because the layout is missing
+                        // from `record_field_orders` at MIR time.
                         //
-                        // All pub TypeDecls from non-root modules are registered,
-                        // not just monomorphic ones; the generic case is filtered
-                        // at MIR layout-emission time (same rule as root items).
-                        Item::TypeDecl(decl) if decl.visibility.is_pub() => {
+                        // All matching TypeDecls from non-root modules are
+                        // registered, not just monomorphic ones; the generic
+                        // case is filtered at MIR layout-emission time (same
+                        // rule as root items). Private imported generic
+                        // handles stay on their existing intrinsic paths, and
+                        // private imported enums stay on the existing enum-only
+                        // machinery.
+                        Item::TypeDecl(decl)
+                            if decl.visibility.is_pub()
+                                || (decl.kind == TypeDeclKind::Struct
+                                    && decl.type_params.is_none()) =>
+                        {
                             let id = ctx.ids.item();
                             let type_params: Vec<String> = decl
                                 .type_params
@@ -1922,7 +1931,11 @@ pub fn lower_program_with_mono_cap(
                 let diag_start = ctx.diagnostics.len();
                 for (item, span) in &module.items {
                     match item {
-                        Item::TypeDecl(decl) if decl.visibility.is_pub() => {
+                        Item::TypeDecl(decl)
+                            if decl.visibility.is_pub()
+                                || (decl.kind == TypeDeclKind::Struct
+                                    && decl.type_params.is_none()) =>
+                        {
                             let hir_decl = ctx.lower_type_decl(decl, span.clone());
                             ctx.type_classes
                                 .entry(hir_decl.name.clone())
@@ -2390,7 +2403,11 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::Function(lowered));
                             }
                         }
-                        Item::TypeDecl(decl) if decl.visibility.is_pub() => {
+                        Item::TypeDecl(decl)
+                            if decl.visibility.is_pub()
+                                || (decl.kind == TypeDeclKind::Struct
+                                    && decl.type_params.is_none()) =>
+                        {
                             // Consume the cached `HirTypeDecl` produced by the
                             // §4b imported-module pre-pass so the emitted item
                             // shares the same `ItemId` already seeded into

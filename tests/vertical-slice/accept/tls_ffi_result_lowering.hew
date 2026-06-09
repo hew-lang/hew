@@ -1,0 +1,27 @@
+import std::net::tls;
+
+extern "C" {
+    fn hew_bytes_from_str(s: string) -> bytes;
+}
+
+fn _try_write_probe() -> i64 {
+    let stream = tls.connect("127.0.0.1", 1);
+    match tls.try_write(stream, unsafe { hew_bytes_from_str("ping") }) {
+        Ok(n) => n,
+        Err(_) => -2,
+    }
+}
+
+fn _read_probe() -> i64 {
+    let stream = tls.connect("127.0.0.1", 1);
+    match tls.read(stream, 16) {
+        Ok(data) => data.len(),
+        Err(_) => -3,
+    }
+}
+
+fn main() {
+    let stream = tls.connect("127.0.0.1", 1);
+    let n = tls.write(stream, unsafe { hew_bytes_from_str("ping") });
+    println(f"write={n}");
+}

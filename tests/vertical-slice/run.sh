@@ -375,6 +375,7 @@ run_accept_expect_stdout "print_f64"
 # and exact stdout `Hi\n`.
 run_accept_expect_stdout "bytes_push_round_trip"
 run_accept_expect_stdout "regex_captures_find_all"
+run_accept_expect_stdout "tls_ffi_result_lowering"
 run_accept_expect_stdout "template_compiled_free_function_p0"
 run_accept_expect_stdout "template_oracle_02_compiled_substitution"
 run_accept_expect_stdout "template_oracle_03_if_range"

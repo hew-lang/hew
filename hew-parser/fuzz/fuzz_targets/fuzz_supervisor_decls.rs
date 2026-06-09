@@ -7,7 +7,7 @@ use libfuzzer_sys::fuzz_target;
 
 #[derive(Debug, Arbitrary)]
 struct SupervisorInput {
-    max_restarts: u8,
+    intensity: u8,
     window: u8,
     bind_child: bool,
 }
@@ -30,8 +30,7 @@ impl SupervisorInput {
 #[max_heap(8192)]
 supervisor FuzzSupervisor {{
     strategy: one_for_one;
-    max_restarts: {};
-    window: {};
+    intensity: {} within {}s;
 
     child worker: FuzzChild;
 }}
@@ -50,7 +49,7 @@ fn fuzz_supervisor_decls() -> i64 {{
     worker.ping(7)
 }}
 "#,
-            (self.max_restarts % 8) + 1,
+            (self.intensity % 8) + 1,
             (self.window % 60) + 1
         )
     }

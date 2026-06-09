@@ -31,22 +31,26 @@ impl Resource for File {
 }
 
 machine Bounded<T: Resource> {
+    events {
+        Start { handle: T; }
+        Finish;
+    }
+
     state Idle;
     state Holding { handle: T; }
 
-    event Start { handle: T; }
-    event Finish;
+    on Start(handle): Idle => Holding { handle: handle }
+    on Finish: Holding => Idle;
+    on Start: _ => _ {
 
-    on Start: Idle -> Holding {
-        Holding { handle: event.handle }
-    }
-    on Finish: Holding -> Idle {
-        Idle
-    }
-    on Start: _ -> _ {
+        // Acquire: Idle + Start => Holding. The head binding names the payload.
+
+        // Release: Holding + Finish => Idle.
+
+        // Already holding or already idle: ignore.
         state
     }
-    on Finish: _ -> _ {
+    on Finish: _ => _ {
         state
     }
 }

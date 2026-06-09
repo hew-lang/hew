@@ -220,6 +220,52 @@ fn tuple_numeric_field_access_out_of_bounds_fails_closed_in_hir() {
     );
 }
 
+/// Regression test: `Ok(())` in a `Result<(), E>` return position must lower
+/// and verify without `CheckerBoundaryViolation`.
+///
+/// Root cause (fixed): the verify pass matched `TupleLiteral` against
+/// `ResolvedTy::Tuple` only; `()` resolves to `ResolvedTy::Unit` (not
+/// `Tuple([])`), so the checker-accepted form was rejected by the verifier.
+/// The fix admits an empty-element literal whose resolved type is `Unit`.
+#[test]
+fn unit_tuple_in_result_lowers_and_verifies_cleanly() {
+    let source = r"
+fn fallible() -> Result<(), i64> {
+    Ok(())
+}
+
+fn main() -> i64 {
+    match fallible() {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+";
+    let parsed = parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(&parsed.program);
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+
+    let output = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
+    assert!(
+        output.diagnostics.is_empty(),
+        "HIR lowering must not produce diagnostics for Ok(()) in Result<(),E>; got: {:#?}",
+        output.diagnostics
+    );
+
+    let verify = hew_hir::verify_hir(&output.module);
+    assert!(
+        verify.is_empty(),
+        "HIR verifier must not reject Ok(()) in Result<(),E>; got: {verify:#?}"
+    );
+}
+
 /// Verifier regression test: a `TupleLiteral` with 2 elements but a 3-tuple
 /// type in `expr_types` must be caught by the verifier's arity check.
 /// This pins the fail-closed boundary contract: the verifier never silently

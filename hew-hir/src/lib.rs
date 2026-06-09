@@ -8,6 +8,7 @@ pub mod dispatch;
 pub mod dump;
 pub mod ids;
 pub mod intent;
+pub mod layout_mono;
 pub mod lower;
 pub mod machine_mono;
 pub mod mono;
@@ -21,6 +22,7 @@ pub use diagnostic::{HirDiagnostic, HirDiagnosticKind, ImportedItemKind};
 pub use dump::dump_hir;
 pub use ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 pub use intent::IntentKind;
+pub use layout_mono::run_layout_mono_pass;
 #[cfg(any(test, feature = "internal-test-hooks"))]
 pub use lower::run_call_shape_gates_for_test;
 pub use lower::{
@@ -33,8 +35,8 @@ pub use mono::{
     FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind, SymbolClass,
 };
 pub use monomorph::{
-    mangle, substitute_type_params, EnumLayout, EnumMonoKey, EnumVariantLayout, MonoKey,
-    MonomorphizedFn, RecordLayout, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
+    mangle, mangle_resolved_ty, substitute_type_params, EnumLayout, EnumMonoKey, EnumVariantLayout,
+    MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
 };
 pub use node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
@@ -42,9 +44,10 @@ pub use node::{
     HirField, HirFn, HirItem, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
     HirMachineBound, HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition,
     HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
-    HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
-    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
-    HirVarSelfMethodTarget, HirVariant, HirVariantKind, WhereOrigin,
+    HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
+    HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,

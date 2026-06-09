@@ -1380,15 +1380,20 @@ impl Checker {
                     }
                 }
                 let builtin = crate::lookup_builtin_type(resolved_name.as_str());
+                // A bare name that shadows a builtin via a local `type X {}` decl
+                // normally binds to the source decl (`builtin: None`). Collection
+                // and substrate-handle builtins are the exception: their stdlib
+                // modules declare zero-field carrier types (`type Sink<T> {}`,
+                // `type Stream<T> {}`, `type Duplex<S, R> {}`, …) whose real type
+                // identity is the compiler builtin. Keeping `builtin: Some(..)`
+                // here is what carries the discriminator through HIR→MIR so the
+                // MIR boundary recognises them as substrate handles rather than
+                // emitting `unknown type` — same discriminator-survival invariant
+                // as the collection types already excluded here.
+                let builtin_overrides_source_decl =
+                    builtin.is_some_and(|kind| kind.is_collection() || kind.is_substrate_handle());
                 let local_source_type_def = self.source_type_defs.contains(resolved_name.as_str())
-                    && !matches!(
-                        builtin,
-                        Some(
-                            crate::BuiltinType::Vec
-                                | crate::BuiltinType::HashMap
-                                | crate::BuiltinType::HashSet
-                        )
-                    );
+                    && !builtin_overrides_source_decl;
                 if builtin.is_some() && !local_source_type_def {
                     Ty::normalize_named(resolved_name, args)
                 } else {
@@ -1418,7 +1423,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &te.1,
-                        "`[T]` slice annotations are not supported; MLIR lowering cannot lower slice types yet"
+                        "`[T]` slice annotations are not supported; slice type composite lowering is not yet implemented"
                             .to_string(),
                     );
                 }

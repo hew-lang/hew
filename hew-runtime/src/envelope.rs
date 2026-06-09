@@ -39,6 +39,24 @@ pub const FRAME_TYPE_ENVELOPE: u8 = 1;
 /// Control-frame kind for registry-name gossip.
 pub const CTRL_REGISTRY_GOSSIP: u64 = 1;
 
+/// Control-frame kind for SWIM failure-detection protocol messages
+/// (PING / ACK / `PING_REQ` with piggybacked membership gossip).
+pub const CTRL_SWIM: u64 = 2;
+
+/// Maximum accepted SWIM control payload size, in bytes.
+///
+/// Bounds the piggybacked gossip list so a malicious or buggy peer cannot
+/// force an unbounded allocation on decode. A single SWIM frame carries one
+/// protocol message plus a small bounded gossip batch; 8 KiB is generous.
+pub const MAX_SWIM_PAYLOAD_BYTES: usize = 8192;
+
+/// Maximum number of piggybacked membership-gossip entries per SWIM frame.
+///
+/// Mirrors `ClusterConfig::max_gossip_per_msg`; the decoder rejects frames
+/// carrying more so an oversized list cannot be smuggled past the byte cap
+/// via tightly-packed small integers.
+pub const MAX_SWIM_GOSSIP_ENTRIES: usize = 64;
+
 /// Registry-gossip payload op for actor-name registration.
 ///
 /// Matches `cluster::GOSSIP_REGISTRY_ADD` on native targets.
@@ -162,6 +180,50 @@ pub struct RegistryGossipPayload {
     pub name: String,
     /// Packed actor PID. Non-zero for add events; ignored for removals.
     pub actor_id: u64,
+}
+
+/// A single piggybacked membership-gossip entry carried on a SWIM frame.
+///
+/// Encoded as a definite CBOR map `{1: node_id, 2: state, 3: incarnation}`.
+/// This is the SWIM infection-style dissemination vehicle (C6): every PING /
+/// ACK carries a bounded batch of recent membership transitions so that nodes
+/// not directly connected to a failing peer still learn of its state change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwimGossipEntry {
+    /// Affected member node ID.
+    pub node_id: u16,
+    /// New member state (`MEMBER_ALIVE` / `_SUSPECT` / `_DEAD` / `_LEFT`).
+    pub state: i32,
+    /// Incarnation of the affected member at the time of the transition.
+    pub incarnation: u64,
+}
+
+/// Bounded SWIM control payload.
+///
+/// Encoded as a definite CBOR map
+/// `{1: msg_type, 2: from_node, 3: incarnation, 4: target_node, 5: [gossip]}`.
+///
+/// - `msg_type` is one of the `SWIM_MSG_*` constants (PING / ACK / `PING_REQ`).
+/// - `from_node` is the sender's node ID. The receiver cross-checks this
+///   against the authenticated handshake identity of the connection the frame
+///   arrived on and rejects mismatches (cross-attribution defence).
+/// - `incarnation` is the sender's current incarnation (used for ACKs and
+///   self-refutation).
+/// - `target_node` is the probe subject for `PING_REQ` indirect probing (C4);
+///   `0` for direct PING / ACK.
+/// - `gossip` is the bounded piggybacked membership batch (C6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwimControlPayload {
+    /// SWIM message type (`SWIM_MSG_PING` / `_ACK` / `_PING_REQ`).
+    pub msg_type: i32,
+    /// Sender's node ID.
+    pub from_node: u16,
+    /// Sender's incarnation number.
+    pub incarnation: u64,
+    /// Indirect-probe target for `PING_REQ`; `0` for direct messages.
+    pub target_node: u16,
+    /// Piggybacked membership-gossip batch.
+    pub gossip: Vec<SwimGossipEntry>,
 }
 
 struct PayloadBytes<'a>(&'a [u8]);
@@ -360,6 +422,102 @@ impl From<DecodeError> for RegistryGossipPayloadError {
             | DecodeError::FrameTypeUnsupported { .. }
             | DecodeError::UnknownVersion { .. } => Self::MalformedPayload {
                 reason: "unexpected wire-frame field in registry gossip payload",
+            },
+        }
+    }
+}
+
+/// Errors returned by the bounded SWIM control payload codec.
+#[derive(Debug)]
+pub enum SwimPayloadError {
+    /// Encoded payload exceeded [`MAX_SWIM_PAYLOAD_BYTES`].
+    PayloadTooLarge { len: usize, max: usize },
+    /// Gossip batch exceeded [`MAX_SWIM_GOSSIP_ENTRIES`].
+    TooManyGossipEntries { len: usize, max: usize },
+    /// Payload CBOR was malformed or truncated.
+    CborDecode(ciborium::de::Error<std::io::Error>),
+    /// Payload CBOR encoding failed.
+    CborEncode(ciborium::ser::Error<std::io::Error>),
+    /// Top-level payload shape was not the expected map.
+    MalformedPayload { reason: &'static str },
+    /// A payload map key was malformed.
+    MalformedKey,
+    /// Required payload key was absent.
+    MissingKey { key: u64 },
+    /// Unsupported payload key was present.
+    UnknownKey { key: u64 },
+    /// Payload key appeared more than once.
+    DuplicateKey { key: u64 },
+    /// Payload field had the wrong CBOR type or value range.
+    MalformedField { key: u64, expected: &'static str },
+}
+
+impl std::fmt::Display for SwimPayloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PayloadTooLarge { len, max } => {
+                write!(f, "SWIM payload is too large ({len} > {max})")
+            }
+            Self::TooManyGossipEntries { len, max } => {
+                write!(
+                    f,
+                    "SWIM payload carries too many gossip entries ({len} > {max})"
+                )
+            }
+            Self::CborDecode(e) => write!(f, "SWIM CBOR decode failed: {e}"),
+            Self::CborEncode(e) => write!(f, "SWIM CBOR encode failed: {e}"),
+            Self::MalformedPayload { reason } => write!(f, "malformed SWIM payload: {reason}"),
+            Self::MalformedKey => {
+                write!(f, "SWIM payload map key is not a non-negative integer")
+            }
+            Self::MissingKey { key } => {
+                write!(f, "SWIM payload is missing required key {key}")
+            }
+            Self::UnknownKey { key } => {
+                write!(f, "SWIM payload contains unsupported key {key}")
+            }
+            Self::DuplicateKey { key } => {
+                write!(f, "SWIM payload contains duplicate key {key}")
+            }
+            Self::MalformedField { key, expected } => {
+                write!(f, "SWIM payload key {key} is not {expected}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SwimPayloadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::CborDecode(e) => Some(e),
+            Self::CborEncode(e) => Some(e),
+            Self::PayloadTooLarge { .. }
+            | Self::TooManyGossipEntries { .. }
+            | Self::MalformedPayload { .. }
+            | Self::MalformedKey
+            | Self::MissingKey { .. }
+            | Self::UnknownKey { .. }
+            | Self::DuplicateKey { .. }
+            | Self::MalformedField { .. } => None,
+        }
+    }
+}
+
+impl From<DecodeError> for SwimPayloadError {
+    fn from(err: DecodeError) -> Self {
+        match err {
+            DecodeError::Cbor(e) => Self::CborDecode(e),
+            DecodeError::MalformedFrame { reason } => Self::MalformedPayload { reason },
+            DecodeError::MalformedKey => Self::MalformedKey,
+            DecodeError::MissingKey { key } => Self::MissingKey { key },
+            DecodeError::UnknownKey { key } => Self::UnknownKey { key },
+            DecodeError::DuplicateKey { key } => Self::DuplicateKey { key },
+            DecodeError::MalformedField { key, expected } => Self::MalformedField { key, expected },
+            DecodeError::FrameTypeMissing
+            | DecodeError::FrameTypeMalformed
+            | DecodeError::FrameTypeUnsupported { .. }
+            | DecodeError::UnknownVersion { .. } => Self::MalformedPayload {
+                reason: "unexpected wire-frame field in SWIM payload",
             },
         }
     }
@@ -671,6 +829,127 @@ pub fn decode_registry_gossip_payload(
     };
     validate_registry_gossip_payload(&payload)?;
     Ok(payload)
+}
+
+/// Encode a bounded SWIM control payload.
+///
+/// # Errors
+///
+/// Returns [`SwimPayloadError`] if the gossip batch exceeds
+/// [`MAX_SWIM_GOSSIP_ENTRIES`], the encoded payload exceeds
+/// [`MAX_SWIM_PAYLOAD_BYTES`], or CBOR serialisation fails.
+pub fn encode_swim_payload(payload: &SwimControlPayload) -> Result<Vec<u8>, SwimPayloadError> {
+    if payload.gossip.len() > MAX_SWIM_GOSSIP_ENTRIES {
+        return Err(SwimPayloadError::TooManyGossipEntries {
+            len: payload.gossip.len(),
+            max: MAX_SWIM_GOSSIP_ENTRIES,
+        });
+    }
+
+    let gossip = Value::Array(
+        payload
+            .gossip
+            .iter()
+            .map(|entry| {
+                Value::Map(vec![
+                    (
+                        Value::Integer(Integer::from(1u64)),
+                        Value::Integer(Integer::from(entry.node_id)),
+                    ),
+                    (
+                        Value::Integer(Integer::from(2u64)),
+                        Value::Integer(Integer::from(entry.state)),
+                    ),
+                    (
+                        Value::Integer(Integer::from(3u64)),
+                        Value::Integer(Integer::from(entry.incarnation)),
+                    ),
+                ])
+            })
+            .collect(),
+    );
+
+    let value = Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            Value::Integer(Integer::from(payload.msg_type)),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Integer(Integer::from(payload.from_node)),
+        ),
+        (
+            Value::Integer(Integer::from(3u64)),
+            Value::Integer(Integer::from(payload.incarnation)),
+        ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Integer(Integer::from(payload.target_node)),
+        ),
+        (Value::Integer(Integer::from(5u64)), gossip),
+    ]);
+
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&value, &mut bytes).map_err(SwimPayloadError::CborEncode)?;
+    if bytes.len() > MAX_SWIM_PAYLOAD_BYTES {
+        return Err(SwimPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_SWIM_PAYLOAD_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Decode a bounded SWIM control payload.
+///
+/// # Errors
+///
+/// Returns [`SwimPayloadError`] if the payload is too large, malformed,
+/// contains unknown keys, or carries more than [`MAX_SWIM_GOSSIP_ENTRIES`]
+/// gossip entries.
+pub fn decode_swim_payload(bytes: &[u8]) -> Result<SwimControlPayload, SwimPayloadError> {
+    if bytes.len() > MAX_SWIM_PAYLOAD_BYTES {
+        return Err(SwimPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_SWIM_PAYLOAD_BYTES,
+        });
+    }
+
+    let value: Value = ciborium::de::from_reader(bytes).map_err(SwimPayloadError::CborDecode)?;
+    let map = collect_map(&value)?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
+
+    let gossip_value = required(&map, 5)?;
+    let Value::Array(entries) = gossip_value else {
+        return Err(SwimPayloadError::MalformedField {
+            key: 5,
+            expected: "array",
+        });
+    };
+    if entries.len() > MAX_SWIM_GOSSIP_ENTRIES {
+        return Err(SwimPayloadError::TooManyGossipEntries {
+            len: entries.len(),
+            max: MAX_SWIM_GOSSIP_ENTRIES,
+        });
+    }
+    let mut gossip = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let entry_map = collect_map(entry)?;
+        ensure_exact_keys(&entry_map, &[1, 2, 3])?;
+        gossip.push(SwimGossipEntry {
+            node_id: value_to_u16(required(&entry_map, 1)?, 1)?,
+            state: value_to_i32(required(&entry_map, 2)?, 2)?,
+            incarnation: value_to_u64(required(&entry_map, 3)?, 3)?,
+        });
+    }
+
+    Ok(SwimControlPayload {
+        msg_type: value_to_i32(required(&map, 1)?, 1)?,
+        from_node: value_to_u16(required(&map, 2)?, 2)?,
+        incarnation: value_to_u64(required(&map, 3)?, 3)?,
+        target_node: value_to_u16(required(&map, 4)?, 4)?,
+        gossip,
+    })
 }
 
 fn control_frame_from_value(value: &Value) -> Result<ControlFrame, DecodeError> {

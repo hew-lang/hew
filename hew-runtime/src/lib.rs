@@ -518,6 +518,11 @@ pub mod pid;
 pub mod pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod process;
+/// Active-mode network I/O reactor ("I/O completion as a mailbox message").
+/// Native-only: uses epoll/kqueue + an OS thread. WASM fails closed via the
+/// type checker's `WasmUnsupportedFeature::TcpNetworking` gate.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod reactor;
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod routing;
@@ -527,6 +532,8 @@ pub mod routing;
 pub mod session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stream;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod swim_driver;
 pub mod tracing;
 
 // ── Ecosystem modules (feature-gated) ───────────────────────────────────────

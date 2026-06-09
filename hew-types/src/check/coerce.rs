@@ -176,6 +176,94 @@ impl Checker {
         true
     }
 
+    /// Does the concrete actor type `actor_name` satisfy the handler trait
+    /// `trait_name` by virtue of its `receive fn`s?
+    ///
+    /// Active-mode handler traits (`ConnectionHandler`, `WebSocketHandler`)
+    /// are satisfied *structurally by an actor's receive functions*, not by an
+    /// explicit `impl Trait for Actor` block: the actor declares
+    /// `receive fn on_data(bytes)` / `receive fn on_close()` and the runtime
+    /// delivers reactor events to those handlers as mailbox messages. There is
+    /// no method-receiver, no vtable, and no `impl` — so neither
+    /// `type_implements_trait` (keyed on `trait_impls_set`) nor
+    /// `type_structurally_satisfies` (keyed on receiver-method `fn_sigs`)
+    /// recognises the relationship. This predicate closes that gap, which is
+    /// exactly why the pre-existing `WebSocketHandler` attach pattern had no
+    /// working caller.
+    ///
+    /// The actor satisfies the trait when, for every trait method, the actor
+    /// has a `receive fn` of the same name whose parameter types match the
+    /// trait method's parameter types. The actor's protocol descriptor (built
+    /// once the receive-fn signatures are known) is the authority for the
+    /// handler set and their parameter types.
+    pub(super) fn actor_satisfies_handler_trait(
+        &mut self,
+        actor_name: &str,
+        trait_name: &str,
+    ) -> bool {
+        let Some(trait_info) = self.trait_defs.get(trait_name).cloned() else {
+            return false;
+        };
+        // A trait with no methods is never "satisfied" implicitly (mirrors the
+        // conservative empty-method rule in `type_structurally_satisfies`).
+        if trait_info.methods.is_empty() {
+            return false;
+        }
+        let Some(descriptor) = self.actor_protocol_descriptors.get(actor_name).cloned() else {
+            return false;
+        };
+        for method in &trait_info.methods {
+            let Some(handler) = descriptor.handlers.iter().find(|h| h.name == method.name) else {
+                return false;
+            };
+            let Some(trait_sig) = self.lookup_trait_method(trait_name, &method.name) else {
+                return false;
+            };
+            if trait_sig.params.len() != handler.param_tys.len() {
+                return false;
+            }
+            for (trait_param, handler_param) in
+                trait_sig.params.iter().zip(handler.param_tys.iter())
+            {
+                if *trait_param != handler_param.to_ty() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Is `trait_name` an active-mode *handler* trait — one whose methods take
+    /// no `self` receiver and are therefore satisfied structurally by an actor's
+    /// `receive fn`s (e.g. `ConnectionHandler`, `WebSocketHandler`), rather than
+    /// by a vtable-dispatched `impl`?
+    ///
+    /// The parser names every receiver parameter `self` (and types it `Self`),
+    /// so a trait method with no first parameter named `self` is a non-receiver
+    /// (handler-shaped) method. A trait is handler-style when it declares at
+    /// least one method and EVERY method is non-receiver. The empty-method case
+    /// is not handler-style (it can never be satisfied by receive fns; the
+    /// conservative empty-trait rule applies).
+    ///
+    /// This gate is what keeps the `LocalPid<Actor>` → `LocalPid<Handler>`
+    /// coercion honest: for a handler trait, only the structural receive-fn
+    /// satisfaction is lowerable, so an explicit `impl` must not admit the
+    /// coercion.
+    pub(super) fn trait_is_handler_style(&self, trait_name: &str) -> bool {
+        let Some(trait_info) = self.trait_defs.get(trait_name) else {
+            return false;
+        };
+        if trait_info.methods.is_empty() {
+            return false;
+        }
+        trait_info.methods.iter().all(|method| {
+            method
+                .params
+                .first()
+                .is_none_or(|first| first.name != "self")
+        })
+    }
+
     /// Check if an expression is a numeric literal or a reference to an untyped const
     /// with a known compile-time value (eligible for coercion).
     pub(super) fn is_coercible_numeric(&self, expr: &Expr) -> bool {
@@ -244,6 +332,69 @@ impl Checker {
                         span,
                     ) {
                         return;
+                    }
+                }
+            }
+            // `LocalPid<C>` → `LocalPid<T>` coercion when `C: T`.
+            //
+            // The active-mode `conn.attach(this)` surface needs a concrete
+            // actor pid (`LocalPid<EchoConn>`) to satisfy an extern that takes
+            // the trait-typed handler pid (`LocalPid<ConnectionHandler>`). A
+            // `LocalPid<T>` is an opaque actor-ref pointer (`*mut HewActor`);
+            // the inner type parameter is purely a compile-time tag used for
+            // `.tell`/`.ask` message typing and (for handler traits) for
+            // msg_id synthesis. Narrowing a concrete-actor pid to a
+            // handler-trait pid is therefore pointer-identical at runtime — no
+            // vtable, no side-table entry, no representation change. Accept it
+            // in the type system only. Unlike `dyn Trait`, dispatch into the
+            // handler does NOT go through a vtable: the reactor delivers
+            // `on_data`/`on_close` as ordinary mailbox messages keyed by the
+            // concrete actor's hash-derived `msg_id`s (synthesised at the
+            // `attach` call site), so the trait erasure carries no runtime
+            // payload here.
+            if let (Some(expected_inner), Some(actual_inner)) = (
+                expected_resolved.as_local_pid(),
+                actual_resolved.as_local_pid(),
+            ) {
+                if let (
+                    Ty::Named {
+                        name: trait_name, ..
+                    },
+                    Ty::Named {
+                        name: concrete_name,
+                        ..
+                    },
+                ) = (expected_inner, actual_inner)
+                {
+                    // Only a true trait-implementation narrowing is admitted.
+                    // Identical inner names would have unified above; reaching
+                    // here with equal names means a generic-arg mismatch that
+                    // must not be silently coerced.
+                    //
+                    // Satisfaction depends on the KIND of trait:
+                    //  - Handler trait (active-mode: methods take no `self`
+                    //    receiver, satisfied structurally by an actor's
+                    //    `receive fn`s): the ONLY lowerable path is
+                    //    `actor_satisfies_handler_trait`. `attach` codegen
+                    //    synthesises the `on_data`/`on_close` `msg_id`s from the
+                    //    actor's receive-fn protocol descriptor; an explicit
+                    //    `impl ConnectionHandler for X {}` with no matching
+                    //    `receive fn`s carries nothing codegen can lower, so
+                    //    gating on `type_implements_trait` would admit a
+                    //    coercion that later fails closed with a late
+                    //    `E_CODEGEN`. Reject it here with an honest type error.
+                    //  - Ordinary (receiver-method) trait: an explicit or
+                    //    structural impl is the satisfaction authority.
+                    if trait_name != concrete_name && self.trait_defs.contains_key(trait_name) {
+                        let satisfied = if self.trait_is_handler_style(trait_name) {
+                            self.actor_satisfies_handler_trait(concrete_name, trait_name)
+                        } else {
+                            self.type_implements_trait(concrete_name, trait_name)
+                                || self.actor_satisfies_handler_trait(concrete_name, trait_name)
+                        };
+                        if satisfied {
+                            return;
+                        }
                     }
                 }
             }

@@ -736,9 +736,32 @@ impl Checker {
                 });
                 matched
             }
-            // For primitives and other built-in types, delegate to the marker-trait table which
-            // already knows which built-ins satisfy which markers (e.g. i32 satisfies Ord).
+            // For primitives and other built-in types: first consult the
+            // user-defined impl registry (`trait_impls_set`), keyed by the
+            // canonical lowering name (e.g. `"i64"`, `"bool"`).  An `impl
+            // UserTrait for i64` records `("i64", "UserTrait")` in that set via
+            // `record_trait_impl`; without this check, user-trait bounds on
+            // primitives were always rejected even when an impl existed.
+            //
+            // Literal kinds (`IntLiteral`, `FloatLiteral`) default to `i64`/`f64`
+            // so that bounds can be satisfied for literal call-site args whose
+            // type is not yet fully materialized (the deferred path materializes
+            // first, but the immediate path may reach here with a literal kind).
+            //
+            // The `MarkerTrait` table is consulted second so that built-in
+            // structural markers (e.g. `Ord`, `Clone`) continue to work without
+            // requiring an explicit `impl` in the source.
             _ => {
+                let canonical = ty.canonical_lowering_name().or(match ty {
+                    Ty::IntLiteral => Some("i64"),
+                    Ty::FloatLiteral => Some("f64"),
+                    _ => None,
+                });
+                if let Some(name) = canonical {
+                    if self.type_implements_trait(name, trait_name) {
+                        return true;
+                    }
+                }
                 if let Some(marker) = MarkerTrait::from_name(trait_name) {
                     self.registry.implements_marker(ty, marker)
                 } else {

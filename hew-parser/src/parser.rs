@@ -2,16 +2,16 @@
 
 use crate::ast::{
     ActorDecl, ActorInit, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block, CallArg,
-    ChildSpec, CompoundAssignOp, ConstDecl, ConstParam, ConstParamTy, ElseBlock, Expr, ExternBlock,
-    ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec,
-    IntRadix, Item, LambdaParam, Literal, MachineDecl, MachineEvent, MachineState,
-    MachineTransition, MatchArm, NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern,
-    PatternField, Program, ReceiveFnDecl, RecordDecl, RecordField, RecordKind, ResourceMarker,
-    RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
-    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
-    WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta,
-    WireMetadata,
+    ChildSpec, CompositeGroup, CompoundAssignOp, ConstDecl, ConstParam, ConstParamTy, ElseBlock,
+    Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl,
+    ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl,
+    MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase, OverflowFallback,
+    OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl, RecordField,
+    RecordKind, ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt,
+    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
+    WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
@@ -47,6 +47,16 @@ fn parse_int_literal(s: &str) -> Result<(i64, IntRadix), std::num::ParseIntError
 }
 
 /// Parse a duration literal string (e.g. "100ns", "5s") into nanoseconds.
+/// Parse a duration literal source string (e.g. `"60s"`, `"5m"`, `"100ms"`)
+/// into a count of nanoseconds. Returns `None` on an unrecognised unit suffix
+/// or an out-of-range value. This is the single source of truth for duration
+/// unit interpretation; downstream stages (codegen) call it rather than
+/// reimplementing unit math, keeping one duration parser.
+#[must_use]
+pub fn parse_duration_ns(s: &str) -> Option<i64> {
+    parse_duration_literal(s)
+}
+
 fn parse_duration_literal(s: &str) -> Option<i64> {
     let s = &s.replace('_', "");
     if let Some(num) = s.strip_suffix("ns") {
@@ -962,6 +972,27 @@ impl<'src> Parser<'src> {
     /// Returns true if the token can be used as an identifier (regular or contextual keyword).
     fn is_ident_token(tok: &Token<'_>) -> bool {
         matches!(tok, Token::Identifier(_)) || Self::contextual_keyword_name(tok).is_some()
+    }
+
+    /// Returns true when the current token is a bare `Identifier` matching `kw`.
+    ///
+    /// Used for machine-body contextual keywords (`events`, `emits`, `reenter`,
+    /// `initial`) that are NOT lexer keywords — they tokenize as ordinary
+    /// identifiers and only carry keyword meaning inside the machine body, so
+    /// they cost nothing in the global identifier namespace.
+    fn peek_machine_kw(&self, kw: &str) -> bool {
+        matches!(self.peek(), Some(Token::Identifier(name)) if *name == kw)
+    }
+
+    /// Consumes the current token iff it is a bare `Identifier` matching `kw`.
+    /// See `peek_machine_kw` for the contextual-keyword rationale.
+    fn eat_machine_kw(&mut self, kw: &str) -> bool {
+        if self.peek_machine_kw(kw) {
+            self.advance();
+            true
+        } else {
+            false
+        }
     }
 
     fn expect_ident(&mut self) -> Option<String> {
@@ -2808,10 +2839,6 @@ impl<'src> Parser<'src> {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "state machine parser has many production rules"
-    )]
     fn parse_machine_decl(&mut self, visibility: Visibility) -> Option<MachineDecl> {
         let name = self.expect_ident()?;
 
@@ -2837,161 +2864,62 @@ impl<'src> Parser<'src> {
 
         let mut states = Vec::new();
         let mut events = Vec::new();
+        let mut emits = Vec::new();
         let mut transitions = Vec::new();
+        let mut composite_groups = Vec::new();
         let mut has_default = false;
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-            if self.peek() == Some(&Token::State) {
+            if self.peek_machine_kw("events") {
+                // `events { Name; Name { f: T; } … }` — the input-event
+                // vocabulary header (contextual keyword; replaces the former
+                // interleaved `event Name;` declarations).
                 self.advance();
-                let state_name = self.expect_ident()?;
-                let mut fields = Vec::new();
-                let mut entry_block: Option<Block> = None;
-                let mut exit_block: Option<Block> = None;
-                if self.eat(&Token::LeftBrace) {
-                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        if self.peek() == Some(&Token::Entry) {
-                            self.advance();
-                            let block = self.parse_block()?;
-                            entry_block = Some(block);
-                        } else if self.peek() == Some(&Token::Exit) {
-                            self.advance();
-                            let block = self.parse_block()?;
-                            exit_block = Some(block);
-                        } else if self.peek() == Some(&Token::State) {
-                            // Nested states are reserved for v0.6 hierarchical statecharts.
-                            self.error(
-                                "hierarchical states are reserved for v0.6; \
-                                 nested `state` declarations inside a state body are not permitted"
-                                    .to_string(),
-                            );
-                            self.advance();
-                        } else {
-                            let field_name = self.expect_ident()?;
-                            self.expect(&Token::Colon)?;
-                            let ty = self.parse_type()?;
-                            if !self.eat(&Token::Semicolon) {
-                                self.eat(&Token::Comma);
-                            }
-                            fields.push((field_name, ty));
-                        }
-                    }
-                    self.expect(&Token::RightBrace)?;
-                }
-                self.eat(&Token::Semicolon);
-                states.push(MachineState {
-                    name: state_name,
-                    fields,
-                    entry: entry_block,
-                    exit: exit_block,
-                });
-            } else if self.peek() == Some(&Token::Event) {
-                self.advance();
-                let event_name = self.expect_ident()?;
-                let fields = if self.eat(&Token::LeftBrace) {
-                    let mut fields = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let field_name = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let ty = self.parse_type()?;
-                        if !self.eat(&Token::Semicolon) {
-                            self.eat(&Token::Comma);
-                        }
-                        fields.push((field_name, ty));
-                    }
-                    self.expect(&Token::RightBrace)?;
-                    fields
-                } else {
-                    Vec::new()
-                };
-                self.eat(&Token::Semicolon);
-                events.push(MachineEvent {
-                    name: event_name,
-                    fields,
-                });
-            } else if self.peek() == Some(&Token::On) {
-                self.advance();
-                let event_name = self.expect_ident()?;
-                self.expect(&Token::Colon)?;
-                let source_state = self.parse_state_pattern()?;
-                self.expect(&Token::Arrow)?;
-                let target_state = self.parse_state_pattern()?;
-
-                // Optional `@reenter` annotation (self-transition Mealy re-entry).
-                // Lexes as `Token::Label("@reenter")` — the label value includes
-                // the leading `@` (consistent with loop-label tokens).
-                // Grammar slot: `on E: Src -> Tgt @reenter [when guard] [body]`.
-                let reenter = if let Some(Token::Label(label)) = self.peek() {
-                    if *label == "@reenter" {
-                        self.advance();
-                        true
-                    } else {
-                        self.error(format!(
-                            "unknown transition annotation `{label}`; \
-                             the only supported annotation here is `@reenter`"
-                        ));
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                // Optional guard: `when <expr>`
-                let guard = if self.peek() == Some(&Token::When) {
-                    self.advance();
-                    Some(self.parse_expr()?)
-                } else {
-                    None
-                };
-
-                // Body is optional for unit target states, and target state
-                // name is inferred for payload states:
-                //   on Event: Source -> Target;                     ← no body
-                //   on Event: Source -> Target { field: expr, ... } ← struct fields, target inferred
-                //   on Event: Source -> Target { expression }       ← explicit body
-                let (body, body_start, body_end) = if self.eat(&Token::Semicolon) {
-                    let span_pos = self.peek_span().start;
-                    let body_expr = Expr::Identifier(target_state.clone());
-                    (body_expr, span_pos, span_pos)
-                } else if target_state != "_" && self.is_struct_init_body() {
-                    // `{ field: expr, ... }` — wrap in TargetState { ... }
-                    let bs = self.peek_span().start;
-                    self.expect(&Token::LeftBrace)?;
-                    let mut fields = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let fname = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let fval = self.parse_expr()?;
-                        fields.push((fname, fval));
-                        if !self.eat(&Token::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(&Token::RightBrace)?;
-                    let be = self.peek_span().start;
-                    let struct_init = Expr::StructInit {
-                        name: target_state.clone(),
+                self.expect(&Token::LeftBrace)?;
+                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    let event_name = self.expect_ident()?;
+                    let fields = self.parse_machine_event_fields()?;
+                    self.eat(&Token::Semicolon);
+                    events.push(MachineEvent {
+                        name: event_name,
                         fields,
-                        type_args: None,
-                        base: None,
-                    };
-                    (struct_init, bs, be)
-                } else {
-                    let bs = self.peek_span().start;
-                    let block = self.parse_block()?;
-                    let be = self.peek_span().start;
-                    (Expr::Block(block), bs, be)
-                };
-
-                transitions.push(MachineTransition {
-                    event_name,
-                    source_state,
-                    target_state,
-                    guard,
-                    body: (body, body_start..body_end),
-                    reenter,
-                });
+                    });
+                }
+                self.expect(&Token::RightBrace)?;
+            } else if self.peek_machine_kw("emits") {
+                // `emits { Name; … }` — optional Mealy-output manifest. Each
+                // entry names a declared event the machine may `emit`. Stored
+                // as a bare name list; HIR cross-checks emit sites against it.
+                self.advance();
+                self.expect(&Token::LeftBrace)?;
+                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    let emitted = self.expect_ident()?;
+                    self.eat(&Token::Semicolon);
+                    emits.push(emitted);
+                }
+                self.expect(&Token::RightBrace)?;
+            } else if self.peek() == Some(&Token::State) {
+                self.parse_machine_state_or_composite(
+                    &mut states,
+                    &mut transitions,
+                    &mut composite_groups,
+                )?;
+            } else if self.peek() == Some(&Token::Event) {
+                // Legacy interleaved `event Name;` form is a hard cutover —
+                // events now live in the `events { … }` header.
+                let span = self.peek_span();
+                self.error_at(
+                    "interleaved `event` declarations are no longer supported; \
+                     declare events in an `events { … }` header at the top of the machine body"
+                        .to_string(),
+                    span,
+                );
+                self.advance();
+            } else if self.peek() == Some(&Token::On) {
+                let transition = self.parse_machine_transition()?;
+                transitions.push(transition);
             } else if self.peek() == Some(&Token::Default) {
-                // `default { self }` — unhandled events stay in current state
+                // `default { state }` — unhandled events stay in current state.
                 self.advance();
                 if self.eat(&Token::LeftBrace) {
                     let mut depth = 1;
@@ -3013,12 +2941,21 @@ impl<'src> Parser<'src> {
                 }
                 has_default = true;
             } else {
-                self.error("expected state, event, or transition in machine body".to_string());
+                self.error(
+                    "expected `events`, `emits`, `state`, `on`, or `default` in machine body"
+                        .to_string(),
+                );
                 self.advance();
             }
         }
 
         self.expect(&Token::RightBrace)?;
+
+        // Splice composite entry/exit hooks into every boundary-crossing
+        // transition (top-level + expanded) now that the full flat list is
+        // assembled. Done as a post-pass so a top-level `Outside => Sk` enter
+        // and `Sk => Outside` leave are covered, not just parent-rule clones.
+        Self::splice_all_composite_hooks(&mut transitions, &composite_groups);
 
         Some(MachineDecl {
             visibility,
@@ -3028,20 +2965,567 @@ impl<'src> Parser<'src> {
             where_clause,
             states,
             events,
+            emits,
             transitions,
             has_default,
+            composite_groups,
         })
     }
 
-    /// Parse a state pattern: an identifier or `_` (wildcard).
-    fn parse_state_pattern(&mut self) -> Option<String> {
-        match self.peek() {
-            Some(Token::Identifier(name)) if *name == "_" => {
-                self.advance();
-                Some("_".to_string())
+    /// Post-pass: splice composite `entry`/`exit` hooks into every transition
+    /// that crosses a composite boundary, for each depth-1 group. A transition
+    /// entering composite C (source ∉ C, target ∈ C) gets `C.entry` prepended;
+    /// one leaving C (source ∈ C, target ∉ C) gets `C.exit` prepended. With the
+    /// MIR firing the source substate's own `exit` before the body and the
+    /// target substate's own `entry` after, this yields Harel ordering.
+    fn splice_all_composite_hooks(
+        transitions: &mut [MachineTransition],
+        composite_groups: &[CompositeGroup],
+    ) {
+        // First resolve any transition targeting a composite BY NAME
+        // (`=> Connected`) to that composite's initial substate, so the live
+        // target is a real leaf state and the entry chain (D2) splices.
+        for group in composite_groups {
+            for transition in transitions.iter_mut() {
+                if transition.target_state == group.name {
+                    transition.target_state.clone_from(&group.initial);
+                    // Rewrite a bare-identifier passthrough body that named the
+                    // composite to name the initial substate instead.
+                    if let Expr::Identifier(name) = &transition.body.0 {
+                        if name == &group.name {
+                            transition.body.0 = Expr::Identifier(group.initial.clone());
+                        }
+                    }
+                }
             }
-            _ => self.expect_ident(),
         }
+
+        for group in composite_groups {
+            let member_set: std::collections::HashSet<String> =
+                group.members.iter().cloned().collect();
+            for transition in transitions.iter_mut() {
+                Self::splice_composite_hooks(
+                    transition,
+                    &transition.source_state.clone(),
+                    &member_set,
+                    group.entry.as_ref(),
+                    group.exit.as_ref(),
+                );
+            }
+        }
+    }
+
+    /// Parse a single `on …` machine transition (the new `=>` / `reenter`
+    /// surface, with optional `on E(bindings):` head binding). Used both at the
+    /// top level of a machine body and inside composite blocks.
+    fn parse_machine_transition(&mut self) -> Option<MachineTransition> {
+        self.expect(&Token::On)?;
+        let event_name = self.expect_ident()?;
+
+        // Optional head binding: `on E(a, b): …`. The names alias the event's
+        // payload fields so the body can reference them directly instead of
+        // `event.field`. Threaded into the body as a let-binding prelude by
+        // `apply_event_head_bindings`.
+        let head_bindings = if self.eat(&Token::LeftParen) {
+            let mut binds = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                binds.push(self.expect_ident()?);
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Token::RightParen)?;
+            binds
+        } else {
+            Vec::new()
+        };
+
+        self.expect(&Token::Colon)?;
+        let source_state = self.parse_state_pattern()?;
+        // Hard cutover: `=>` (Token::FatArrow) is the state-routing arrow.
+        self.expect(&Token::FatArrow)?;
+        let target_state = self.parse_state_pattern()?;
+
+        // Optional `reenter` contextual keyword (self-transition Mealy
+        // re-entry). Grammar slot: `on E(b): Src => Tgt reenter [when g] [body]`.
+        let reenter = self.eat_machine_kw("reenter");
+
+        // Optional guard: `when <expr>`.
+        let guard = if self.peek() == Some(&Token::When) {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        // Body forms:
+        //   on Event: Source => Target;                     ← no body (unit)
+        //   on Event: Source => Target { field: expr, ... } ← struct fields, target inferred
+        //   on Event: Source => Target { expression }       ← explicit body
+        let (body, body_start, body_end) = if self.eat(&Token::Semicolon) {
+            let span_pos = self.peek_span().start;
+            let body_expr = Expr::Identifier(target_state.clone());
+            (body_expr, span_pos, span_pos)
+        } else if target_state != "_" && self.is_struct_init_body() {
+            let bs = self.peek_span().start;
+            self.expect(&Token::LeftBrace)?;
+            let mut fields = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                let fname = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let fval = self.parse_expr()?;
+                fields.push((fname, fval));
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Token::RightBrace)?;
+            let be = self.peek_span().start;
+            let struct_init = Expr::StructInit {
+                name: target_state.clone(),
+                fields,
+                type_args: None,
+                base: None,
+            };
+            (struct_init, bs, be)
+        } else {
+            let bs = self.peek_span().start;
+            let block = self.parse_block()?;
+            let be = self.peek_span().start;
+            (Expr::Block(block), bs, be)
+        };
+
+        let body = if head_bindings.is_empty() {
+            body
+        } else {
+            Self::apply_event_head_bindings(&head_bindings, body)
+        };
+
+        Some(MachineTransition {
+            event_name,
+            source_state,
+            target_state,
+            event_bindings: head_bindings,
+            composite_prelude_len: 0,
+            guard,
+            body: (body, body_start..body_end),
+            reenter,
+        })
+    }
+
+    /// Parse the field list of a single event declaration inside `events { }`:
+    /// either `;` (no fields) or `{ name: Type; … }`.
+    fn parse_machine_event_fields(&mut self) -> Option<Vec<(String, Spanned<TypeExpr>)>> {
+        if self.eat(&Token::LeftBrace) {
+            let mut fields = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                let field_name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let ty = self.parse_type()?;
+                if !self.eat(&Token::Semicolon) {
+                    self.eat(&Token::Comma);
+                }
+                fields.push((field_name, ty));
+            }
+            self.expect(&Token::RightBrace)?;
+            Some(fields)
+        } else {
+            Some(Vec::new())
+        }
+    }
+
+    /// Parse a `state Name … ` declaration that begins at the current `state`
+    /// token. A leaf state pushes one `MachineState`; a composite (a `state`
+    /// body containing substate declarations) desugars to flat substates plus
+    /// concrete-source transitions (D1–D5) and records a `CompositeGroup` for
+    /// the formatter / diagram renderer.
+    fn parse_machine_state_or_composite(
+        &mut self,
+        states: &mut Vec<MachineState>,
+        transitions: &mut Vec<MachineTransition>,
+        composite_groups: &mut Vec<CompositeGroup>,
+    ) -> Option<()> {
+        self.expect(&Token::State)?;
+        let state_name = self.expect_ident()?;
+        let mut fields: Vec<(String, Spanned<TypeExpr>)> = Vec::new();
+        let mut entry_block: Option<Block> = None;
+        let mut exit_block: Option<Block> = None;
+
+        if self.eat(&Token::LeftBrace) {
+            loop {
+                if self.at_end() || self.peek() == Some(&Token::RightBrace) {
+                    break;
+                }
+                if self.peek() == Some(&Token::Entry) {
+                    self.advance();
+                    entry_block = Some(self.parse_block()?);
+                } else if self.peek() == Some(&Token::Exit) {
+                    self.advance();
+                    exit_block = Some(self.parse_block()?);
+                } else if self.peek() == Some(&Token::State) || self.peek_machine_kw("initial") {
+                    // Composite block: this `state` owns substates. Hand the
+                    // already-parsed prefix (fields, entry, exit) to the
+                    // composite parser, which consumes the rest of the brace.
+                    return self.parse_composite_block(
+                        &state_name,
+                        fields,
+                        entry_block,
+                        exit_block,
+                        states,
+                        transitions,
+                        composite_groups,
+                    );
+                } else {
+                    let field_name = self.expect_ident()?;
+                    self.expect(&Token::Colon)?;
+                    let ty = self.parse_type()?;
+                    if !self.eat(&Token::Semicolon) {
+                        self.eat(&Token::Comma);
+                    }
+                    fields.push((field_name, ty));
+                }
+            }
+            self.expect(&Token::RightBrace)?;
+        }
+        self.eat(&Token::Semicolon);
+
+        states.push(MachineState {
+            name: state_name,
+            fields,
+            entry: entry_block,
+            exit: exit_block,
+        });
+        Some(())
+    }
+
+    /// Parse a depth-1 composite-state block and desugar it to the flat state
+    /// and transition lists, recording a `CompositeGroup` for the formatter and
+    /// diagram renderer. The `state`/`initial state` cursor is positioned at
+    /// the first substate; `composite_name`/`fields`/`entry`/`exit` are the
+    /// prefix already parsed by the caller.
+    ///
+    /// Desugar (all at parser/AST level, per the hierarchy contract):
+    ///   * each substate becomes a flat `MachineState`; composite-owned fields
+    ///     are stamped onto every member (shared-layout shorthand).
+    ///   * D1: each parent-level `on E: _ => T { body }` expands to one
+    ///     transition per member `Sk` with a CONCRETE `source_state = "Sk"`
+    ///     (never literal `_`, which the checker rejects for `self.field`).
+    ///     An explicit per-member `(Sk, E)` rule wins (override-skip).
+    ///   * D2/D3: composite `entry`/`exit` hooks splice into transition bodies
+    ///     so the existing MIR per-state hook firing yields Harel ordering:
+    ///     enter C ⇒ `C.entry` then child entry; leave C ⇒ child exit then
+    ///     `C.exit`. Intra-composite moves fire no composite hook (D4).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "threads the leaf-parse prefix plus the machine-body \
+                  accumulators the composite desugar appends to"
+    )]
+    fn parse_composite_block(
+        &mut self,
+        composite_name: &str,
+        fields: Vec<(String, Spanned<TypeExpr>)>,
+        entry: Option<Block>,
+        exit: Option<Block>,
+        states: &mut Vec<MachineState>,
+        transitions: &mut Vec<MachineTransition>,
+        composite_groups: &mut Vec<CompositeGroup>,
+    ) -> Option<()> {
+        let mut members: Vec<MachineState> = Vec::new();
+        let mut member_names: Vec<String> = Vec::new();
+        let mut initial: Option<String> = None;
+        let mut parent_transitions: Vec<MachineTransition> = Vec::new();
+
+        // ── Substate + parent-rule body of the composite block. ──────────────
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            let is_initial = self.eat_machine_kw("initial");
+            if self.peek() == Some(&Token::State) {
+                let substate = self.parse_machine_substate(composite_name)?;
+                if is_initial {
+                    if initial.is_some() {
+                        self.error_at(
+                            format!(
+                                "composite state `{composite_name}` declares more than one \
+                                 `initial` substate; exactly one is required"
+                            ),
+                            self.peek_span(),
+                        );
+                    }
+                    initial = Some(substate.name.clone());
+                }
+                member_names.push(substate.name.clone());
+                members.push(substate);
+            } else if is_initial {
+                self.error_at(
+                    "`initial` must be followed by a substate declaration \
+                     (`initial state Name`)"
+                        .to_string(),
+                    self.peek_span(),
+                );
+                break;
+            } else if self.peek() == Some(&Token::On) {
+                // Parent-level rule. Source is `_` (any member of THIS
+                // composite); kept verbatim on the group for the formatter and
+                // expanded to concrete members below.
+                parent_transitions.push(self.parse_machine_transition()?);
+            } else {
+                self.error_at(
+                    format!(
+                        "expected a substate (`state`/`initial state`) or a parent-level \
+                         `on …` rule inside composite state `{composite_name}`"
+                    ),
+                    self.peek_span(),
+                );
+                break;
+            }
+        }
+        self.expect(&Token::RightBrace)?;
+        self.eat(&Token::Semicolon);
+
+        let Some(initial_name) = initial else {
+            self.error_at(
+                format!(
+                    "composite state `{composite_name}` must mark exactly one substate \
+                     `initial` (`initial state Name`)"
+                ),
+                self.peek_span(),
+            );
+            return Some(());
+        };
+
+        // ── Desugar to the flat lists. ───────────────────────────────────────
+        let member_set: std::collections::HashSet<String> = member_names.iter().cloned().collect();
+
+        // Stamp composite-owned fields onto every member (shared layout).
+        for member in &mut members {
+            for (fname, fty) in &fields {
+                if !member.fields.iter().any(|(n, _)| n == fname) {
+                    member.fields.push((fname.clone(), fty.clone()));
+                }
+            }
+        }
+
+        // Explicit per-member rules already authored (inside the block as
+        // `on E: Sk => …`, or at the machine top level). Used for D1
+        // override-skip so an explicit rule beats the expanded parent rule.
+        let explicit_keys: std::collections::HashSet<(String, String)> = transitions
+            .iter()
+            .chain(parent_transitions.iter())
+            .filter(|t| member_set.contains(&t.source_state))
+            .map(|t| (t.source_state.clone(), t.event_name.clone()))
+            .collect();
+
+        // D1: expand each parent rule to one concrete-source transition per
+        // member. Composite entry/exit hooks are spliced uniformly in a
+        // post-pass (`splice_all_composite_hooks`) once every transition —
+        // top-level and expanded — is in the flat list, so boundary-crossing
+        // top-level transitions are covered too.
+        for pt in &parent_transitions {
+            for member in &member_names {
+                if explicit_keys.contains(&(member.clone(), pt.event_name.clone())) {
+                    continue;
+                }
+                let mut expanded = pt.clone();
+                expanded.source_state.clone_from(member);
+                transitions.push(expanded);
+            }
+        }
+
+        composite_groups.push(CompositeGroup {
+            name: composite_name.to_string(),
+            members: member_names,
+            initial: initial_name,
+            entry,
+            exit,
+            fields,
+            parent_transitions,
+        });
+
+        for member in members {
+            states.push(member);
+        }
+        Some(())
+    }
+
+    /// Parse a single substate declaration (`state Name;` /
+    /// `state Name { fields; entry {} exit {} }`). A `state` inside a substate
+    /// body is depth>1 nesting, rejected with a v0.6 diagnostic.
+    fn parse_machine_substate(&mut self, composite_name: &str) -> Option<MachineState> {
+        self.expect(&Token::State)?;
+        let name = self.expect_ident()?;
+        let mut fields = Vec::new();
+        let mut entry_block: Option<Block> = None;
+        let mut exit_block: Option<Block> = None;
+        if self.eat(&Token::LeftBrace) {
+            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                if self.peek() == Some(&Token::Entry) {
+                    self.advance();
+                    entry_block = Some(self.parse_block()?);
+                } else if self.peek() == Some(&Token::Exit) {
+                    self.advance();
+                    exit_block = Some(self.parse_block()?);
+                } else if self.peek() == Some(&Token::State) || self.peek_machine_kw("initial") {
+                    self.error_at(
+                        format!(
+                            "nested composite states (depth > 1) are reserved for v0.6; \
+                             substate `{name}` of composite `{composite_name}` may not contain \
+                             further substates"
+                        ),
+                        self.peek_span(),
+                    );
+                    // Recover: skip the nested block.
+                    let mut depth = 0;
+                    while !self.at_end() {
+                        match self.peek() {
+                            Some(Token::LeftBrace) => depth += 1,
+                            Some(Token::RightBrace) => {
+                                if depth == 0 {
+                                    break;
+                                }
+                                depth -= 1;
+                            }
+                            _ => {}
+                        }
+                        self.advance();
+                    }
+                } else {
+                    let field_name = self.expect_ident()?;
+                    self.expect(&Token::Colon)?;
+                    let ty = self.parse_type()?;
+                    if !self.eat(&Token::Semicolon) {
+                        self.eat(&Token::Comma);
+                    }
+                    fields.push((field_name, ty));
+                }
+            }
+            self.expect(&Token::RightBrace)?;
+        }
+        self.eat(&Token::Semicolon);
+        Some(MachineState {
+            name,
+            fields,
+            entry: entry_block,
+            exit: exit_block,
+        })
+    }
+
+    /// Splice composite `entry`/`exit` hook statements into a transition body
+    /// so the existing MIR per-state hook firing produces Harel ordering. The
+    /// composite hooks are prepended as body statements; MIR runs the source
+    /// substate's own `exit` before the body and the target substate's own
+    /// `entry` after it, so:
+    ///
+    ///   * leaving C (source ∈ C, target ∉ C): MIR `Sk.exit` → spliced
+    ///     `C.exit` → next.
+    ///   * entering C (source ∉ C, target ∈ C): spliced `C.entry` → MIR
+    ///     `Sk.entry`.
+    ///   * intra-composite moves splice nothing (both endpoints ∈ C).
+    fn splice_composite_hooks(
+        transition: &mut MachineTransition,
+        source_member: &str,
+        member_set: &std::collections::HashSet<String>,
+        entry: Option<&Block>,
+        exit: Option<&Block>,
+    ) {
+        let target = &transition.target_state;
+        let source_in = member_set.contains(source_member);
+        let target_in = target != "_" && member_set.contains(target);
+
+        // Prepend order matters: statements pushed last end up first. For a
+        // cross-composite move we want `exit-of-source-composite` before
+        // `entry-of-target-composite`; here each call handles ONE composite, so
+        // a single prepend per relevant hook is correct.
+        if source_in && !target_in {
+            if let Some(exit_block) = exit {
+                Self::prepend_block_stmts(transition, exit_block);
+            }
+        } else if !source_in && target_in {
+            if let Some(entry_block) = entry {
+                Self::prepend_block_stmts(transition, entry_block);
+            }
+        }
+        // Intra-composite (source_in && target_in) or unrelated: no splice.
+    }
+
+    /// Prepend a hook block's statements to the front of a transition body,
+    /// wrapping a non-block body into a block whose tail is the original value.
+    fn prepend_block_stmts(transition: &mut MachineTransition, hook: &Block) {
+        let body = std::mem::replace(&mut transition.body.0, Expr::Identifier(String::new()));
+        let mut block = match body {
+            Expr::Block(block) => block,
+            other => Block {
+                stmts: Vec::new(),
+                trailing_expr: Some(Box::new((other, transition.body.1.clone()))),
+            },
+        };
+        let mut prelude = hook.stmts.clone();
+        // If the hook block has a trailing expression (rare for entry/exit),
+        // treat it as a statement so it runs for its effect.
+        if let Some(tail) = &hook.trailing_expr {
+            prelude.push((
+                Stmt::Expression((tail.0.clone(), tail.1.clone())),
+                tail.1.clone(),
+            ));
+        }
+        // Record how many leading statements are composite-hook splices so the
+        // formatter can strip them and re-emit the authored transition body.
+        transition.composite_prelude_len += prelude.len();
+        prelude.append(&mut block.stmts);
+        block.stmts = prelude;
+        transition.body.0 = Expr::Block(block);
+    }
+
+    /// Rewrite a transition body so the named head bindings (`on E(a, b): …`)
+    /// are in scope as `let a = event.a; let b = event.b;` prelude statements.
+    /// This lowers identically to writing `event.a` directly — no new HIR kind.
+    fn apply_event_head_bindings(bindings: &[String], body: Expr) -> Expr {
+        let mut stmts: Vec<Spanned<Stmt>> = Vec::with_capacity(bindings.len());
+        for name in bindings {
+            let value = Expr::FieldAccess {
+                object: Box::new((Expr::Identifier("event".to_string()), 0..0)),
+                field: name.clone(),
+            };
+            stmts.push((
+                Stmt::Let {
+                    pattern: (Pattern::Identifier(name.clone()), 0..0),
+                    ty: None,
+                    value: Some((value, 0..0)),
+                },
+                0..0,
+            ));
+        }
+        // Splice the prelude in front of the existing body. A bare expression /
+        // struct-init body becomes the block's tail; an existing block has the
+        // prelude prepended to its statements.
+        match body {
+            Expr::Block(mut block) => {
+                let mut all = stmts;
+                all.append(&mut block.stmts);
+                block.stmts = all;
+                Expr::Block(block)
+            }
+            other => Expr::Block(Block {
+                stmts,
+                trailing_expr: Some(Box::new((other, 0..0))),
+            }),
+        }
+    }
+
+    /// Parse a state pattern: `_` (wildcard) or a state name, optionally a
+    /// dotted qualified name (`Composite.Leaf`). The dotted form is a
+    /// readability aid — the parser strips it to the leaf name, which is what
+    /// reaches the AST (substate names are flat and globally unique).
+    fn parse_state_pattern(&mut self) -> Option<String> {
+        if matches!(self.peek(), Some(Token::Identifier(name)) if *name == "_") {
+            self.advance();
+            return Some("_".to_string());
+        }
+        let mut name = self.expect_ident()?;
+        // Strip any qualifier prefix: `Composite.Leaf` → `Leaf`.
+        while self.peek() == Some(&Token::Dot) {
+            self.advance();
+            name = self.expect_ident()?;
+        }
+        Some(name)
     }
 
     /// Check if the next tokens look like a struct init body: `{ ident: expr }`.
@@ -3072,8 +3556,7 @@ impl<'src> Parser<'src> {
         self.expect(&Token::LeftBrace)?;
 
         let mut strategy = None;
-        let mut max_restarts = None;
-        let mut window = None;
+        let mut intensity = None;
         let mut children = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
@@ -3104,34 +3587,99 @@ impl<'src> Parser<'src> {
                         self.eat(&Token::Comma);
                     }
                 }
-                Some(Token::Identifier(s)) if *s == "max_restarts" => {
+                // `intensity: N within <duration>` — the restart-budget contract.
+                // Fuses the legacy `max_restarts:` + `window:` fields. `within`
+                // is a contextual keyword (a plain identifier outside this body).
+                Some(Token::Identifier(s)) if *s == "intensity" => {
                     self.advance();
                     self.expect(&Token::Colon)?;
-                    if let Some(Token::Integer(num_str)) = self.peek() {
-                        max_restarts = parse_int_literal(num_str).ok().map(|(v, _)| v);
+                    let restarts = if let Some(Token::Integer(num_str)) = self.peek() {
+                        let n = parse_int_literal(num_str).ok().map(|(v, _)| v);
                         self.advance();
+                        n
+                    } else {
+                        self.error_with_hint(
+                            "supervisor `intensity:` requires a restart count, \
+                             e.g. `intensity: 5 within 60s`"
+                                .to_string(),
+                            "write the maximum number of restarts as an integer",
+                        );
+                        None
+                    };
+                    // The `within` contextual keyword separates the count from
+                    // the window duration. Require it so the budget reads as one
+                    // English clause and can never be half-specified.
+                    if matches!(self.peek(), Some(Token::Identifier(w)) if *w == "within") {
+                        self.advance();
+                    } else {
+                        self.error_with_hint(
+                            "supervisor `intensity:` requires `within <duration>`, \
+                             e.g. `intensity: 5 within 60s`"
+                                .to_string(),
+                            "add `within` followed by a duration literal (60s, 5m, 1h)",
+                        );
+                    }
+                    // The window is a real `Token::Duration` literal. A bare
+                    // integer is a parse error with a fix-it — the implicit-unit
+                    // ambiguity of the old `window:` field is gone.
+                    let window = match self.peek() {
+                        Some(Token::Duration(d)) => {
+                            let d = d.to_string();
+                            self.advance();
+                            Some(d)
+                        }
+                        Some(Token::Integer(n)) => {
+                            let n = n.to_string();
+                            self.error_with_hint(
+                                format!(
+                                    "supervisor `intensity:` window must be a duration literal, \
+                                     not a bare integer `{n}`"
+                                ),
+                                format!("write `{n}s` (or another unit: {n}m, {n}h)"),
+                            );
+                            self.advance();
+                            None
+                        }
+                        _ => {
+                            self.error_with_hint(
+                                "supervisor `intensity:` requires a duration window, \
+                                 e.g. `intensity: 5 within 60s`"
+                                    .to_string(),
+                                "add a duration literal after `within` (60s, 5m, 1h)",
+                            );
+                            None
+                        }
+                    };
+                    if let (Some(restarts), Some(window)) = (restarts, window) {
+                        intensity = Some(Intensity { restarts, window });
                     }
                     if !self.eat(&Token::Semicolon) {
                         self.eat(&Token::Comma);
                     }
                 }
-                Some(Token::Identifier(s)) if *s == "window" => {
+                // Legacy `max_restarts:` / `window:` fields — removed in the
+                // flat-reliability-fields cutover. Emit a migration diagnostic
+                // naming the new `intensity:` form, then skip the field.
+                Some(Token::Identifier(s)) if *s == "max_restarts" || *s == "window" => {
+                    let field = (*s).to_string();
+                    self.error_with_hint(
+                        format!(
+                            "supervisor field `{field}:` was replaced by the fused \
+                             `intensity: N within <duration>` field"
+                        ),
+                        "write `intensity: <max_restarts> within <window>s`, \
+                         e.g. `intensity: 5 within 60s`",
+                    );
                     self.advance();
                     self.expect(&Token::Colon)?;
-                    let mut val = String::new();
-                    if let Some(Token::Integer(num_str)) = self.peek() {
-                        val.push_str(num_str);
+                    // Skip the value up to the field terminator for recovery.
+                    while !self.at_end()
+                        && !matches!(
+                            self.peek(),
+                            Some(Token::Semicolon | Token::Comma | Token::RightBrace)
+                        )
+                    {
                         self.advance();
-                    }
-                    // Accept optional 's' suffix for seconds (e.g. `10s`)
-                    if let Some(Token::Identifier(s)) = self.peek() {
-                        if *s == "s" {
-                            val.push('s');
-                            self.advance();
-                        }
-                    }
-                    if !val.is_empty() {
-                        window = Some(val);
                     }
                     if !self.eat(&Token::Semicolon) {
                         self.eat(&Token::Comma);
@@ -3202,101 +3750,137 @@ impl<'src> Parser<'src> {
                     }
 
                     // Legacy bare restart keyword (e.g. `child n: T permanent`)
-                    let mut restart = match self.peek() {
-                        Some(Token::Permanent) => {
-                            self.advance();
-                            Some(RestartPolicy::Permanent)
-                        }
-                        Some(Token::Transient) => {
-                            self.advance();
-                            Some(RestartPolicy::Transient)
-                        }
-                        Some(Token::Temporary) => {
-                            self.advance();
-                            Some(RestartPolicy::Temporary)
-                        }
-                        _ => None,
-                    };
-
-                    // New-surface: `with restart: <policy>` clause
+                    // was removed in the flat-reliability-fields cutover. The
+                    // only restart spelling is the `restart: <policy>` clause.
+                    if matches!(
+                        self.peek(),
+                        Some(Token::Permanent | Token::Transient | Token::Temporary)
+                    ) {
+                        self.error_with_hint(
+                            "bare restart keyword on a supervisor child was removed; \
+                             use the `restart:` clause"
+                                .to_string(),
+                            "write `restart: permanent` (or `transient` / `temporary`)",
+                        );
+                        self.advance();
+                    }
+                    // Legacy `with restart:` form was removed; only `restart:`.
                     if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "with") {
+                        self.error_with_hint(
+                            "the `with restart:` form was removed; \
+                             use the `restart:` clause directly"
+                                .to_string(),
+                            "drop `with` and write `restart: <policy>`",
+                        );
                         self.advance(); // consume `with`
-                        if self.eat(&Token::Restart) {
-                            self.expect(&Token::Colon)?;
-                            restart = match self.peek() {
-                                Some(Token::Permanent) => {
-                                    self.advance();
-                                    Some(RestartPolicy::Permanent)
-                                }
-                                Some(Token::Transient) => {
-                                    self.advance();
-                                    Some(RestartPolicy::Transient)
-                                }
-                                Some(Token::Temporary) => {
-                                    self.advance();
-                                    Some(RestartPolicy::Temporary)
-                                }
-                                _ => None,
-                            };
-                        }
                     }
 
-                    // New-surface: `wired_to: { key: sibling, bare_sibling }` clause
-                    let wired_to = if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "wired_to")
-                    {
-                        self.advance(); // consume `wired_to`
-                        self.expect(&Token::Colon)?;
-                        self.expect(&Token::LeftBrace)?;
-                        let mut map = std::collections::HashMap::new();
-                        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                            let key = self.expect_ident()?;
-                            if self.eat(&Token::Colon) {
-                                // explicit `key: sibling_name` form
-                                let val = self.expect_ident()?;
-                                map.insert(key, val);
-                            } else {
-                                // shorthand `sibling_name` — key and value are the same
-                                map.insert(key.clone(), key);
-                            }
-                            if !self.eat(&Token::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(&Token::RightBrace)?;
-                        if map.is_empty() {
-                            None
-                        } else {
-                            Some(map)
-                        }
-                    } else {
-                        None
-                    };
-
-                    // Skip legacy inline modifiers like restart(...) budget(...) strategy(...)
-                    while matches!(
-                        self.peek(),
-                        Some(
-                            Token::Identifier(_) | Token::Strategy | Token::Restart | Token::Budget
-                        )
-                    ) {
-                        self.advance();
-                        if self.eat(&Token::LeftParen) {
-                            let mut depth = 1u32;
-                            while !self.at_end() && depth > 0 {
-                                match self.peek() {
-                                    Some(Token::LeftParen) => {
-                                        depth += 1;
+                    // Per-child suffix clauses, accepted in any order:
+                    //   restart: permanent | transient | temporary
+                    //   shutdown: <duration> | brutal_kill | infinity
+                    //   wired_to: { param: sibling, bare_sibling }
+                    let mut restart: Option<RestartPolicy> = None;
+                    let mut shutdown: Option<ShutdownDirective> = None;
+                    let mut wired_to: Option<std::collections::HashMap<String, String>> = None;
+                    loop {
+                        match self.peek() {
+                            // `restart: <policy>` clause (the only restart spelling).
+                            Some(Token::Restart) => {
+                                self.advance();
+                                self.expect(&Token::Colon)?;
+                                restart = match self.peek() {
+                                    Some(Token::Permanent) => {
                                         self.advance();
+                                        Some(RestartPolicy::Permanent)
                                     }
-                                    Some(Token::RightParen) => {
-                                        depth -= 1;
+                                    Some(Token::Transient) => {
                                         self.advance();
+                                        Some(RestartPolicy::Transient)
+                                    }
+                                    Some(Token::Temporary) => {
+                                        self.advance();
+                                        Some(RestartPolicy::Temporary)
                                     }
                                     _ => {
+                                        self.error_with_hint(
+                                            "supervisor child `restart:` requires a policy"
+                                                .to_string(),
+                                            "write `restart: permanent` \
+                                             (or `transient` / `temporary`)",
+                                        );
+                                        None
+                                    }
+                                };
+                            }
+                            // `shutdown: <duration> | brutal_kill | infinity` clause.
+                            // `infinity` is accepted-only in v0.5 (no per-child
+                            // deadline wheel yet) and is a contextual keyword.
+                            Some(Token::Identifier(s)) if *s == "shutdown" => {
+                                self.advance();
+                                self.expect(&Token::Colon)?;
+                                shutdown = match self.peek() {
+                                    Some(Token::Duration(d)) => {
+                                        let d = d.to_string();
                                         self.advance();
+                                        Some(ShutdownDirective::Timeout(d))
+                                    }
+                                    Some(Token::BrutalKill) => {
+                                        self.advance();
+                                        Some(ShutdownDirective::BrutalKill)
+                                    }
+                                    Some(Token::Identifier(k)) if *k == "infinity" => {
+                                        self.advance();
+                                        Some(ShutdownDirective::Infinity)
+                                    }
+                                    Some(Token::Integer(n)) => {
+                                        let n = n.to_string();
+                                        self.error_with_hint(
+                                            format!(
+                                                "supervisor child `shutdown:` must be a duration \
+                                                 literal, `brutal_kill`, or `infinity`, \
+                                                 not a bare integer `{n}`"
+                                            ),
+                                            format!("write `{n}s` (or another unit: {n}ms, {n}m)"),
+                                        );
+                                        self.advance();
+                                        None
+                                    }
+                                    _ => {
+                                        self.error_with_hint(
+                                            "supervisor child `shutdown:` requires a duration, \
+                                             `brutal_kill`, or `infinity`"
+                                                .to_string(),
+                                            "write `shutdown: 30s`, `shutdown: brutal_kill`, \
+                                             or `shutdown: infinity`",
+                                        );
+                                        None
+                                    }
+                                };
+                            }
+                            // `wired_to: { key: sibling, bare_sibling }` clause.
+                            Some(Token::Identifier(s)) if *s == "wired_to" => {
+                                self.advance(); // consume `wired_to`
+                                self.expect(&Token::Colon)?;
+                                self.expect(&Token::LeftBrace)?;
+                                let mut map = std::collections::HashMap::new();
+                                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                                    let key = self.expect_ident()?;
+                                    if self.eat(&Token::Colon) {
+                                        // explicit `key: sibling_name` form
+                                        let val = self.expect_ident()?;
+                                        map.insert(key, val);
+                                    } else {
+                                        // shorthand `sibling_name` — key == value
+                                        map.insert(key.clone(), key);
+                                    }
+                                    if !self.eat(&Token::Comma) {
+                                        break;
                                     }
                                 }
+                                self.expect(&Token::RightBrace)?;
+                                wired_to = if map.is_empty() { None } else { Some(map) };
                             }
+                            _ => break,
                         }
                     }
 
@@ -3310,6 +3894,7 @@ impl<'src> Parser<'src> {
                         restart,
                         wired_to,
                         is_pool,
+                        shutdown,
                     });
                 }
                 _ => {
@@ -3332,8 +3917,7 @@ impl<'src> Parser<'src> {
             visibility,
             name,
             strategy,
-            max_restarts,
-            window,
+            intensity,
             children,
         })
     }

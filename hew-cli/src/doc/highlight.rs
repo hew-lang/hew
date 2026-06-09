@@ -111,6 +111,7 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         Token::Permanent
         | Token::Transient
         | Token::Temporary
+        | Token::BrutalKill
         | Token::OneForOne
         | Token::OneForAll
         | Token::RestForOne

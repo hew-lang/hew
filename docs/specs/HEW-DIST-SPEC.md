@@ -8,7 +8,7 @@
 
 ## 1. Status & scope
 
-This document is the normative distributed companion to [`HEW-SPEC.md`](./HEW-SPEC.md) section 11.
+This document is the normative distributed companion to [`HEW-SPEC-2026.md`](./HEW-SPEC-2026.md) section 11.
 
 In scope for v0:
 
@@ -64,7 +64,7 @@ The implementation may expose local convenience APIs, but distributed identity m
 ### 3.1 Pid reference ownership
 
 `LocalPid<A>` and `RemotePid<A>` are **refcounted identity references**
-(`Rc`/`Arc`-shaped), consistent with [`HEW-SPEC.md`](./HEW-SPEC.md) §3.7.8.
+(`Rc`/`Arc`-shaped), consistent with [`HEW-SPEC-2026.md`](./HEW-SPEC-2026.md) §3.7.8.
 They are `Frozen` and `Send`: the same identity may be addressed concurrently
 from many holders, locally and across node boundaries. They are **not** affine
 per-call handles in the sense of
@@ -77,7 +77,7 @@ governs distributed references.
   power, or any other resource — it only duplicates the means to *name*
   the actor.
 - Cycles between actors that hold strong identity references to one
-  another are broken with weak pid references, per `HEW-SPEC.md` §3.7.8.
+  another are broken with weak pid references, per `HEW-SPEC-2026.md` §3.7.8.
   Supervision trees naturally avoid cycles: parents hold strong identity
   references to children; children, when they need to address their
   parent, hold a weak pid reference or use an explicit message protocol.
@@ -398,7 +398,7 @@ This v0 spec is stage 0 of the distributed roadmap and gates later implementatio
 
 | Stage | Meaning | Dependency from this spec |
 | --- | --- | --- |
-| 0 | Spec and honesty pass | This document and `HEW-SPEC.md` section 11 define the public contract. |
+| 0 | Spec and honesty pass | This document and `HEW-SPEC-2026.md` section 11 define the public contract. |
 | 1 | Identity and ownership foundations | Gated by sections 3, 6, and 7; ownership ratification depends on [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md). |
 | 2 | Wire and version negotiation | Gated by section 11. |
 | 3 | Failure detector and supervision | Gated by sections 8 and 9. |
@@ -431,7 +431,7 @@ complete. All deferred-ownership markers have been resolved:
 
 - **§3 (pid-reference ownership):** Ratified. `LocalPid` and `RemotePid` are
   refcounted identity references (`Frozen`, `Send`) consistent with
-  `HEW-SPEC.md` §3.7.8. This
+  `HEW-SPEC-2026.md` §3.7.8. This
   matches already-shipped runtime behaviour; no implementation obligation
   survives.
 - **§8 (supervision ownership):** Ratified as normative spec intent. Runtime

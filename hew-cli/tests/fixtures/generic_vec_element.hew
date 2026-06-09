@@ -1,0 +1,14 @@
+// Generic fn that uses T in an operation (Vec<T> element access) and returns
+// it, monomorphised at i64 AND string in one program. Proves the generic-fn
+// body lowers polymorphically through HIR -> MIR -> LLVM for an owned-type
+// instantiation (string) as well as a BitCopy one (i64).
+fn first<T>(xs: Vec<T>) -> T {
+    xs[0]
+}
+
+fn main() {
+    let ints = [10, 20, 30];
+    let words = ["alpha", "beta"];
+    println(first(ints));
+    println(first(words));
+}

@@ -219,6 +219,20 @@ the structured changelog.
   bearing surfaces are gated by explicit `extern` and `unsafe` blocks; the
   type checker refuses to admit raw-pointer or foreign-call operations
   outside them.
+- **Value-typed state machines (`machine` declarations, Framed-flow surface):**
+  `machine` is a new nominal type that declares a closed set of states,
+  a closed set of named events (`events {}` header), an optional output
+  vocabulary (`emits {}` header), and transition rules written as
+  `on E: Source => Target`. The `reenter` modifier opts a self-transition
+  into entry/exit lifecycle re-execution. `on E(payload):` head bindings
+  name event payload fields at the rule site. `default { state }` is the
+  exhaustiveness fallback. Depth-1 composite state blocks (substates) and
+  inline `entry {}` / `exit {}` hooks ship in v0.5. `hew machine diagram`
+  renders any `machine` declaration as a Mermaid, Graphviz DOT, or JSON
+  schema diagram and doubles as a structural validator.
+  _Note: the frontend (parser, HIR, type checks, diagram) is complete in
+  v0.5.0. The `step()` codegen path and MIR/LLVM lowering are deferred
+  to v0.5.1._
 
 ### Added — runtime, mesh, and observability
 
@@ -313,8 +327,8 @@ the structured changelog.
 
 - **Machine transition resource lifetimes:** Machine state changes
   release `@resource`-typed payload fields when leaving a state or
-  taking an `@reenter` transition. Plain self-transitions without
-  `@reenter` keep their payloads live.
+  taking a `reenter` transition. Plain self-transitions without
+  `reenter` keep their payloads live.
 - **Lambda-actor handles accept `.send()`:** Prior to v0.5, calling
   `.send()` on a lambda-actor handle was a type error
   (`E_LAMBDA_NO_SEND_METHOD`). That restriction is lifted. Both

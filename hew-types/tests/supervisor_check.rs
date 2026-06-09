@@ -19,13 +19,13 @@ fn multi_child_with_wired_to_accepted() {
 
         supervisor ChatApp {
             strategy: one_for_one
-            max_restarts: 5
+            intensity: 5 within 60s
 
             child db: DbSupervisor
             child broadcaster: Broadcaster
             child worker_pool: WorkerPool
             child acceptor: ConnectionAcceptor wired_to: { workers: worker_pool, broadcaster: broadcaster }
-            child cache: MessageCache with restart: transient
+            child cache: MessageCache restart: transient
         }
 
         fn main() {}
@@ -51,7 +51,7 @@ fn simple_one_for_one_with_pool_accepted() {
 
         supervisor WorkerPool {
             strategy: simple_one_for_one
-            max_restarts: 10
+            intensity: 10 within 60s
 
             pool worker: Worker
         }

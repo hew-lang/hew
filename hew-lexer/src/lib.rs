@@ -196,6 +196,10 @@ pub enum Token<'src> {
     SimpleOneForOne,
     #[token("pool")]
     Pool,
+    /// `brutal_kill` shutdown directive on a supervisor child: skip the
+    /// graceful-stop deadline and terminate the child immediately.
+    #[token("brutal_kill")]
+    BrutalKill,
     #[token("scope")]
     Scope,
     #[token("fork")]
@@ -631,6 +635,7 @@ define_keywords! {
     RestForOne       => "rest_for_one",
     SimpleOneForOne  => "simple_one_for_one",
     Pool             => "pool",
+    BrutalKill       => "brutal_kill",
     Scope      => "scope",
     Fork       => "fork",
     Spawn      => "spawn",
@@ -741,6 +746,7 @@ impl Token<'_> {
                 | Token::Supervisor
                 | Token::Wire
                 | Token::Type
+                | Token::Machine
         )
     }
 
@@ -757,6 +763,7 @@ impl Token<'_> {
                 | Token::Supervisor
                 | Token::Wire
                 | Token::Type
+                | Token::Machine
         )
     }
 }
@@ -1202,6 +1209,45 @@ mod tests {
         assert_eq!(Token::Unsafe.keyword_str(), Some("unsafe"));
         // Identifiers that start with "unsafe" must not be mistaken for the keyword.
         assert_eq!(tokens("unsafe_ptr"), vec![Token::Identifier("unsafe_ptr")]);
+    }
+
+    #[test]
+    fn is_decl_keyword_covers_named_declarations() {
+        // Every keyword that introduces a named binding must return true.
+        assert!(Token::Let.is_decl_keyword());
+        assert!(Token::Var.is_decl_keyword());
+        assert!(Token::Const.is_decl_keyword());
+        assert!(Token::Fn.is_decl_keyword());
+        assert!(Token::Actor.is_decl_keyword());
+        assert!(Token::Struct.is_decl_keyword());
+        assert!(Token::Enum.is_decl_keyword());
+        assert!(Token::Trait.is_decl_keyword());
+        assert!(Token::Supervisor.is_decl_keyword());
+        assert!(Token::Wire.is_decl_keyword());
+        assert!(Token::Type.is_decl_keyword());
+        // `machine` introduces a named state-machine type — must be included.
+        assert!(Token::Machine.is_decl_keyword());
+        // A non-decl keyword must return false.
+        assert!(!Token::If.is_decl_keyword());
+        assert!(!Token::Return.is_decl_keyword());
+    }
+
+    #[test]
+    fn is_type_decl_keyword_covers_type_declarations() {
+        // Every keyword that introduces a named type must return true.
+        assert!(Token::Actor.is_type_decl_keyword());
+        assert!(Token::Struct.is_type_decl_keyword());
+        assert!(Token::Enum.is_type_decl_keyword());
+        assert!(Token::Trait.is_type_decl_keyword());
+        assert!(Token::Supervisor.is_type_decl_keyword());
+        assert!(Token::Wire.is_type_decl_keyword());
+        assert!(Token::Type.is_type_decl_keyword());
+        // `machine` declares a named type — must be included.
+        assert!(Token::Machine.is_type_decl_keyword());
+        // Non-type-decl keywords must return false.
+        assert!(!Token::Let.is_type_decl_keyword());
+        assert!(!Token::Fn.is_type_decl_keyword());
+        assert!(!Token::If.is_type_decl_keyword());
     }
 
     #[test]

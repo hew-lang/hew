@@ -9,7 +9,7 @@
 //! separate variant `Message(string)` carries a heap-owning field unrelated
 //! to the bitcopy type argument `i64`.  That case must also fail closed.
 
-use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
+use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_mir::{
     BasicBlock, EnumLayout, FunctionCallConv, Instr, IrPipeline, MachineVariantLayout, Place,
     RawMirFunction, Terminator,
@@ -236,33 +236,23 @@ fn option_i64_return_module_verifies() {
         .expect("emit_module with Option<i64> return must verify cleanly");
 }
 
-/// Option<string> triggers the heap-owning composite return fail-closed boundary.
+/// W5.020 — `Option<string>` is a heap-owning ENUM composite, so the
+/// move-out + caller-side tag-aware drop spine now lowers it instead of failing
+/// closed. The composite-return boundary admits it (the callee bit-copies the
+/// composite to `ReturnSlot`; the caller assumes the in-place drop obligation),
+/// so `emit_module` must succeed and produce the aggregate `Option$$string`
+/// return. This pipeline carries no caller and an empty `elaborated_mir`, so it
+/// exercises only the callee-side acceptance — the end-to-end caller-drop +
+/// no-double-free behaviour is proven by the `hew run` vertical-slice oracle
+/// (`substrate-tests-the-substrate`).
 #[test]
-fn option_string_return_fails_closed() {
-    let pipeline = option_string_pipeline();
-    let tmp = std::env::temp_dir().join("hew-composite-return-string-fail");
-    std::fs::create_dir_all(&tmp).expect("create scratch dir");
-    let options = EmitOptions {
-        module_name: "option_string_fail",
-        out_dir: &tmp,
-        native: false,
-        wasm: false,
-    };
-    let result = emit_module(&pipeline, &options);
-    match result {
-        Err(CodegenError::FailClosed(msg)) => {
-            assert!(
-                msg.contains("composite return of heap-owning payload"),
-                "expected heap-owning diagnostic, got: {msg}"
-            );
-            assert!(
-                msg.contains("tag-aware drop"),
-                "expected tag-aware drop mention, got: {msg}"
-            );
-        }
-        Err(other) => panic!("expected FailClosed, got: {other:?}"),
-        Ok(_) => panic!("expected Option<string> return to fail closed, but it succeeded"),
-    }
+fn option_string_return_lowers() {
+    let ll = emit_ll(&option_string_pipeline(), "option_string_ret");
+    assert!(
+        ll.contains("ret %\"Option$$string\""),
+        "Option<string> enum composite must lower to an aggregate return now \
+         that the W5.020 spine covers heap-owning enum composites; got:\n{ll}"
+    );
 }
 
 /// Build a pipeline with `fn send() -> Envelope<i64>` where
@@ -338,38 +328,156 @@ fn envelope_i64_pipeline() -> IrPipeline {
     }
 }
 
-/// `Envelope<i64>` with a `Message(string)` variant must fail closed even
-/// though the type argument `i64` is bitcopy.
-///
-/// Regression for the underbroad guard that only inspected enum layouts when
-/// `args.is_empty()`, allowing generic enums with non-param heap-owning
-/// variant fields to bypass the fail-closed boundary.
+/// W5.020 — `Envelope<i64>` with a non-param `Message(string)` variant is a
+/// heap-owning ENUM composite, so the W5.020 spine lowers it: the boundary's
+/// `ty_contains_heap_owning` layout walk still detects the heap variant (the
+/// bitcopy `i64` type argument does not mask it), but instead of failing closed
+/// the return is now admitted because the move-out + caller-side in-place drop
+/// covers enum composites regardless of which variant owns the heap. Confirms
+/// the non-param-variant detection path stayed live across the gate flip — a
+/// non-enum heap composite (tuple/record) would still fail closed.
 #[test]
-fn generic_enum_bitcopy_arg_heap_variant_fails_closed() {
-    let pipeline = envelope_i64_pipeline();
-    let tmp = std::env::temp_dir().join("hew-composite-return-envelope-fail");
+fn generic_enum_bitcopy_arg_heap_variant_lowers() {
+    let ll = emit_ll(&envelope_i64_pipeline(), "envelope_lowers");
+    assert!(
+        ll.contains("ret %\"Envelope$$i64\""),
+        "Envelope<i64> with a Message(string) variant is a heap-owning enum \
+         composite and must now lower to an aggregate return; got:\n{ll}"
+    );
+}
+
+/// Build a pipeline with `fn make() -> bytes { /* moved-out bytes local */ }`.
+///
+/// `bytes` is a single `ValueClass::CowValue` leaf that lowers to a
+/// `BytesTriple { ptr, offset, len }` struct, so it reaches the composite-return
+/// boundary's `StructType` arm — but it is NOT a multi-owner composite. The
+/// return is a flat struct copy into the caller's slot; the leaf has no
+/// scope-exit drop on either side, so it never double-frees. The boundary must
+/// admit it (parity with `string`, which lowers to a flat `ptr` and is already
+/// admitted). This unblocks `std::fs` (`fs.read_bytes -> bytes`).
+fn bytes_return_pipeline() -> IrPipeline {
+    let make_fn = RawMirFunction {
+        name: "main".to_string(),
+        return_ty: ResolvedTy::Bytes,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![ResolvedTy::Bytes],
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(0),
+            }],
+            terminator: Terminator::Return,
+        }],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+    };
+    IrPipeline {
+        thir: Vec::new(),
+        raw_mir: vec![make_fn],
+        checked_mir: Vec::new(),
+        elaborated_mir: Vec::new(),
+        diagnostics: Vec::new(),
+        opaque_handle_names: vec![],
+        record_layouts: Vec::new(),
+        actor_layouts: Vec::new(),
+        supervisor_layouts: Vec::new(),
+        machine_layouts: Vec::new(),
+        enum_layouts: Vec::new(),
+        regex_literals: vec![],
+        user_consts: Vec::new(),
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
+    }
+}
+
+/// A plain top-level `bytes` return is a single heap-owning leaf and must lower
+/// to an aggregate struct return rather than fail closed. Regression guard for
+/// the `std::fs` import blocker: `fs.read_bytes -> bytes` was force-codegen'd and
+/// aborted the whole module at the composite-return boundary.
+#[test]
+fn plain_bytes_return_lowers() {
+    let ll = emit_ll(&bytes_return_pipeline(), "bytes_ret");
+    assert!(
+        ll.contains("ret { ptr, i32, i32 }"),
+        "plain `bytes` return must lower to an aggregate BytesTriple ret; got:\n{ll}"
+    );
+}
+
+/// Build a pipeline with `fn make() -> (bytes,)` — a tuple carrying a
+/// heap-owning leaf. Unlike a bare `bytes`, a tuple is a multi-owner composite
+/// with no per-field tag-aware drop, so the boundary must STILL fail closed.
+fn tuple_of_bytes_return_pipeline() -> IrPipeline {
+    let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::Bytes]);
+    let make_fn = RawMirFunction {
+        name: "main".to_string(),
+        return_ty: tuple_ty.clone(),
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![tuple_ty],
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(0),
+            }],
+            terminator: Terminator::Return,
+        }],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+    };
+    IrPipeline {
+        thir: Vec::new(),
+        raw_mir: vec![make_fn],
+        checked_mir: Vec::new(),
+        elaborated_mir: Vec::new(),
+        diagnostics: Vec::new(),
+        opaque_handle_names: vec![],
+        record_layouts: Vec::new(),
+        actor_layouts: Vec::new(),
+        supervisor_layouts: Vec::new(),
+        machine_layouts: Vec::new(),
+        enum_layouts: Vec::new(),
+        regex_literals: vec![],
+        user_consts: Vec::new(),
+        gen_state_layouts: vec![],
+        extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
+    }
+}
+
+/// A `(bytes,)` tuple return is a multi-owner composite and must STILL fail
+/// closed — the narrowing only admits a single bare heap leaf, never a tuple or
+/// record carrying one.
+#[test]
+fn tuple_of_bytes_return_still_fails_closed() {
+    let pipeline = tuple_of_bytes_return_pipeline();
+    let tmp = std::env::temp_dir().join("hew-composite-return-tuple-bytes");
     std::fs::create_dir_all(&tmp).expect("create scratch dir");
     let options = EmitOptions {
-        module_name: "envelope_fail",
+        module_name: "tuple_bytes_ret",
         out_dir: &tmp,
         native: false,
         wasm: false,
     };
-    let result = emit_module(&pipeline, &options);
-    match result {
-        Err(CodegenError::FailClosed(msg)) => {
-            assert!(
-                msg.contains("composite return of heap-owning payload"),
-                "expected heap-owning diagnostic, got: {msg}"
-            );
-            assert!(
-                msg.contains("tag-aware drop"),
-                "expected tag-aware drop mention, got: {msg}"
-            );
-        }
-        Err(other) => panic!("expected FailClosed, got: {other:?}"),
-        Ok(_) => panic!(
-            "Envelope<i64> with Message(string) variant must fail closed, but emit succeeded"
-        ),
-    }
+    let err = emit_module(&pipeline, &options)
+        .expect_err("a tuple carrying a heap-owning leaf must still fail closed");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("requires tag-aware") && msg.contains("drop"),
+        "tuple-of-bytes return must fail closed with the tag-aware-drop \
+         diagnostic; got: {msg}"
+    );
 }

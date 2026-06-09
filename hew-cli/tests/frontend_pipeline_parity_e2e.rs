@@ -243,6 +243,13 @@ fn regex_literal_implicit_import_same_frontend_verdict() {
             (l.contains(": error:") || l.contains(": warning:"))
                 // A genuine frontend diagnostic always references the source file
                 && compile_stderr.contains(path)
+                // The compile path now routes HIR/MIR gate diagnostics through
+                // the source-attributed renderer (no more raw Debug payloads),
+                // so they read as `<path>:L:C: error: E_...`. Those are not
+                // frontend-layer diagnostics — exclude them by code, mirroring
+                // the `hew check` filter above.
+                && !l.contains("E_MIR")
+                && !l.contains("E_NOT_YET_IMPLEMENTED")
         })
         .collect();
     assert!(

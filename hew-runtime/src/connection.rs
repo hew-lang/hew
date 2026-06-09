@@ -47,10 +47,11 @@ use rand::RngExt;
 
 use crate::cluster::HewCluster;
 use crate::envelope::{
-    decode_registry_gossip_payload, decode_wire_frame, encode_control_frame,
-    encode_envelope_frame_from_raw_parts, encode_registry_gossip_payload, ControlFrame,
-    RegistryGossipPayload, WireFrame, CTRL_REGISTRY_GOSSIP, FRAME_TYPE_CONTROL,
-    FRAME_TYPE_ENVELOPE, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
+    decode_registry_gossip_payload, decode_swim_payload, decode_wire_frame, encode_control_frame,
+    encode_envelope_frame_from_raw_parts, encode_registry_gossip_payload, encode_swim_payload,
+    ControlFrame, RegistryGossipPayload, SwimControlPayload, SwimGossipEntry, WireFrame,
+    CTRL_REGISTRY_GOSSIP, CTRL_SWIM, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE,
+    REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
@@ -932,13 +933,24 @@ fn encode_registry_gossip_control(name: &str, actor_id: u64, is_add: bool) -> Op
     }
 }
 
-fn handle_control_frame(mgr: *mut HewConnMgr, peer_feature_flags: u32, control: &ControlFrame) {
-    if control.ctrl_kind != CTRL_REGISTRY_GOSSIP {
-        set_last_error(format!(
-            "connection reader unknown control frame kind {}",
-            control.ctrl_kind
-        ));
-        return;
+fn handle_control_frame(
+    mgr: *mut HewConnMgr,
+    peer_feature_flags: u32,
+    conn_id: c_int,
+    control: &ControlFrame,
+) {
+    match control.ctrl_kind {
+        CTRL_REGISTRY_GOSSIP => {}
+        CTRL_SWIM => {
+            handle_swim_control_frame(mgr, peer_feature_flags, conn_id, control);
+            return;
+        }
+        other => {
+            set_last_error(format!(
+                "connection reader unknown control frame kind {other}"
+            ));
+            return;
+        }
     }
     if !supports_gossip(peer_feature_flags) {
         set_last_error("connection reader rejected registry gossip from non-gossip peer");
@@ -1009,6 +1021,264 @@ fn flush_registry_gossip_to_connection(mgr: &HewConnMgr, conn_id: c_int, peer_fe
             set_last_error(format!(
                 "registry gossip flush send failed for conn {conn_id}"
             ));
+        }
+    }
+}
+
+// ── SWIM failure-detection transport ────────────────────────────────────
+
+/// Resolve the authenticated peer node ID for an active connection.
+///
+/// Returns `0` if the connection is not active or is not registered. SWIM
+/// uses this to cross-check a frame's claimed `from_node` against the identity
+/// established during the handshake.
+fn peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
+    mgr.connections.access(|conns| {
+        conns
+            .iter()
+            .find(|c| c.conn_id == conn_id && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE)
+            .map_or(0, |c| c.peer_node_id)
+    })
+}
+
+/// Encode a SWIM control frame from a payload.
+fn encode_swim_control(payload: &SwimControlPayload) -> Option<Vec<u8>> {
+    let payload_bytes = match encode_swim_payload(payload) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            set_last_error(format!("SWIM control payload encode failure: {err}"));
+            return None;
+        }
+    };
+    let frame = ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: CTRL_SWIM,
+        payload: payload_bytes,
+    };
+    match encode_control_frame(&frame) {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            set_last_error(format!("SWIM control frame encode failure: {err}"));
+            None
+        }
+    }
+}
+
+/// Drain the cluster's pending membership gossip as wire entries for
+/// piggybacking on an outbound SWIM frame (C6).
+fn collect_swim_gossip(cluster: &HewCluster) -> Vec<SwimGossipEntry> {
+    cluster
+        .take_swim_gossip(cluster.max_gossip_per_msg())
+        .into_iter()
+        .map(|(node_id, state, incarnation)| SwimGossipEntry {
+            node_id,
+            state,
+            incarnation,
+        })
+        .collect()
+}
+
+/// Build a SWIM frame of `msg_type` to `target_node`, stamped with the local
+/// node's identity and incarnation, carrying a fresh piggybacked gossip batch.
+fn build_swim_frame(
+    mgr: &HewConnMgr,
+    cluster: &HewCluster,
+    msg_type: i32,
+    target_node: u16,
+) -> Option<Vec<u8>> {
+    let payload = SwimControlPayload {
+        msg_type,
+        from_node: mgr.local_node_id,
+        incarnation: cluster.local_incarnation(),
+        target_node,
+        gossip: collect_swim_gossip(cluster),
+    };
+    encode_swim_control(&payload)
+}
+
+/// Send a single SWIM protocol message to a specific peer node.
+///
+/// Used by the SWIM driver to issue direct PINGs and by the indirect-probe
+/// path (C4) to relay `PING` / `PING_REQ`. `target_node` is the
+/// indirect-probe subject for `PING_REQ` frames; `0` for direct PING / ACK.
+///
+/// Returns `0` on a successful send, `-1` if no active gossip-capable
+/// connection to `peer_node_id` exists or the send failed.
+///
+/// # Safety
+///
+/// `mgr` must be a valid connection manager pointer for the duration of the
+/// call when non-null.
+pub(crate) unsafe fn hew_connmgr_send_swim(
+    mgr: *mut HewConnMgr,
+    peer_node_id: u16,
+    msg_type: i32,
+    target_node: u16,
+) -> c_int {
+    if mgr.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees manager pointer validity for this call.
+    let mgr_ref = unsafe { &*mgr };
+    if mgr_ref.cluster.is_null() {
+        return -1;
+    }
+
+    // SAFETY: mgr validity is the caller's contract, re-checked non-null above.
+    let conn_id = unsafe { hew_connmgr_conn_id_for_node(mgr, peer_node_id) };
+    if conn_id < 0 {
+        return -1;
+    }
+    // SAFETY: mgr validity is the caller's contract, re-checked non-null above.
+    let flags = unsafe { hew_connmgr_feature_flags_for_node(mgr, peer_node_id) };
+    if !supports_gossip(flags) {
+        return -1;
+    }
+
+    // SAFETY: cluster pointer is owned by the live manager.
+    let cluster = unsafe { &*mgr_ref.cluster };
+    let Some(bytes) = build_swim_frame(mgr_ref, cluster, msg_type, target_node) else {
+        return -1;
+    };
+    // SAFETY: manager is live, bytes is a complete encoded control frame.
+    if unsafe { send_preencoded_on_manager(mgr_ref, conn_id, bytes.as_ptr(), bytes.len()) } == 0 {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Return the node IDs of all active gossip-capable peer connections.
+///
+/// The SWIM driver uses this to choose indirect-probe relays (K random peers
+/// excluding the probe target).
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer for the duration of the call.
+pub(crate) unsafe fn hew_connmgr_active_swim_peers(mgr: *const HewConnMgr) -> Vec<u16> {
+    if mgr.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: caller guarantees `mgr` is valid.
+    let mgr_ref = unsafe { &*mgr };
+    mgr_ref.connections.access(|conns| {
+        conns
+            .iter()
+            .filter(|c| {
+                c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && supports_gossip(c.peer_feature_flags)
+                    && c.peer_node_id != 0
+            })
+            .map(|c| c.peer_node_id)
+            .collect()
+    })
+}
+
+/// Handle an inbound SWIM control frame.
+///
+/// 1. Decode + bound the payload (fail-closed).
+/// 2. Reject cross-attribution: the claimed `from_node` MUST match the
+///    handshake-authenticated identity of the connection it arrived on.
+/// 3. Apply piggybacked membership gossip (C6 import) and run incarnation
+///    self-refutation (C5).
+/// 4. Run the SWIM state machine via `process_message`.
+/// 5. Respond per message type: PING -> ACK; `PING_REQ` -> forward a real PING
+///    to the indirect-probe target (C4); ACK -> no response.
+fn handle_swim_control_frame(
+    mgr: *mut HewConnMgr,
+    peer_feature_flags: u32,
+    conn_id: c_int,
+    control: &ControlFrame,
+) {
+    if !supports_gossip(peer_feature_flags) {
+        set_last_error("connection reader rejected SWIM frame from non-gossip peer");
+        return;
+    }
+    let payload = match decode_swim_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader SWIM payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    if mgr.is_null() {
+        set_last_error("connection reader SWIM frame missing manager");
+        return;
+    }
+    // SAFETY: reader_loop owns a live manager pointer for this connection.
+    let mgr_ref = unsafe { &*mgr };
+    if mgr_ref.cluster.is_null() {
+        set_last_error("connection reader SWIM frame missing cluster");
+        return;
+    }
+
+    // Cross-attribution defence: the frame's claimed sender must equal the
+    // authenticated handshake identity of the connection it arrived on.
+    let authenticated = peer_node_id_for_conn(mgr_ref, conn_id);
+    if authenticated == 0 || authenticated != payload.from_node {
+        set_last_error(format!(
+            "connection reader SWIM frame from_node {} does not match authenticated peer {authenticated}",
+            payload.from_node
+        ));
+        return;
+    }
+
+    let gossip: Vec<(u16, i32, u64)> = payload
+        .gossip
+        .iter()
+        .map(|e| (e.node_id, e.state, e.incarnation))
+        .collect();
+
+    // SAFETY: cluster pointer is owned by the live node/manager and remains
+    // valid while the reader thread is running. All driven methods
+    // (apply_swim_gossip / refute_if_suspected / process_message) take &self
+    // and synchronize internally via Mutex/Atomic, so a shared reference is
+    // sound even with the SWIM driver thread concurrently calling tick().
+    let cluster = unsafe { &*mgr_ref.cluster };
+
+    // C6: fold piggybacked membership gossip into our view.
+    cluster.apply_swim_gossip(&gossip);
+    // C5: if any gossip suspects us, refute by bumping our incarnation. The
+    // refutation rides out on our next PING/ACK as an ALIVE-about-self event.
+    let _ = cluster.refute_if_suspected(&gossip);
+
+    // Run the SWIM state machine for this message. The authenticated peer ID
+    // is supplied as the source-connection identity so the cluster's
+    // source-mismatch guard validates the claim.
+    cluster.process_message(
+        payload.msg_type,
+        payload.from_node,
+        payload.incarnation,
+        authenticated,
+    );
+
+    // Respond per message type.
+    match payload.msg_type {
+        crate::cluster::SWIM_MSG_PING => {
+            // Direct probe: ACK the sender.
+            // SAFETY: manager is live for this call.
+            let _ = unsafe {
+                hew_connmgr_send_swim(mgr, payload.from_node, crate::cluster::SWIM_MSG_ACK, 0)
+            };
+        }
+        crate::cluster::SWIM_MSG_PING_REQ
+            if payload.target_node != 0 && payload.target_node != mgr_ref.local_node_id =>
+        {
+            // C4 indirect probing: forward a real PING to the probe target so
+            // the relay actually exercises the target's liveness, then the
+            // target's ACK propagates membership back via gossip. A no-op if
+            // we have no active connection to the target.
+            // SAFETY: manager is live for this call.
+            let _ = unsafe {
+                hew_connmgr_send_swim(mgr, payload.target_node, crate::cluster::SWIM_MSG_PING, 0)
+            };
+        }
+        _ => {
+            // ACK (and any other type) requires no response; state already
+            // updated via process_message above.
         }
     }
 }
@@ -1236,7 +1506,7 @@ fn reader_loop(
 
         match wire_frame {
             WireFrame::Control(control) => {
-                handle_control_frame(mgr, peer_feature_flags, &control);
+                handle_control_frame(mgr, peer_feature_flags, conn_id, &control);
             }
             WireFrame::Envelope(mut envelope) => {
                 let Some(router_fn) = router else {
@@ -2503,6 +2773,190 @@ mod tests {
             }
 
             hew_connmgr_free(mgr);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(sends));
+        }
+        drop(ops);
+    }
+
+    /// Build a SWIM control frame as it would arrive on the wire.
+    fn swim_control_frame_bytes(payload: &SwimControlPayload) -> Vec<u8> {
+        encode_swim_control(payload).expect("swim control frame should encode")
+    }
+
+    /// A PING SWIM frame is answered with an ACK, and the cross-attribution
+    /// guard rejects a frame whose `from_node` does not match the handshake
+    /// identity of the connection it arrived on.
+    #[test]
+    fn swim_ping_is_acked_and_cross_attribution_is_rejected() {
+        let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(record_registry_gossip_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: sends.cast(),
+        }));
+
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            // Active gossip-capable peer node 2 on conn 10.
+            let mut peer = ConnectionActor::new(10);
+            peer.peer_node_id = 2;
+            peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(peer));
+
+            // Honest PING from node 2 (matches the conn's authenticated id).
+            let ping = SwimControlPayload {
+                msg_type: crate::cluster::SWIM_MSG_PING,
+                from_node: 2,
+                incarnation: 1,
+                target_node: 0,
+                gossip: vec![],
+            };
+            let frame = decode_wire_frame(&swim_control_frame_bytes(&ping)).expect("frame");
+            let WireFrame::Control(control) = frame else {
+                panic!("expected control frame");
+            };
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+
+            // An ACK must have been sent back on conn 10.
+            {
+                let guard = (&*sends)
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(guard.len(), 1, "PING must produce exactly one ACK send");
+                assert_eq!(guard[0].0, 10);
+                let WireFrame::Control(ctrl) = decode_wire_frame(&guard[0].1).expect("ack frame")
+                else {
+                    panic!("ack must be a control frame");
+                };
+                assert_eq!(ctrl.ctrl_kind, CTRL_SWIM);
+                let ack = decode_swim_payload(&ctrl.payload).expect("ack payload");
+                assert_eq!(ack.msg_type, crate::cluster::SWIM_MSG_ACK);
+                assert_eq!(ack.from_node, 1, "ACK is stamped with our local node id");
+            }
+
+            // Spoofed PING claiming to be node 9 on node 2's connection is
+            // rejected — no further send.
+            let spoof = SwimControlPayload {
+                msg_type: crate::cluster::SWIM_MSG_PING,
+                from_node: 9,
+                incarnation: 1,
+                target_node: 0,
+                gossip: vec![],
+            };
+            let spoof_frame = decode_wire_frame(&swim_control_frame_bytes(&spoof)).expect("frame");
+            let WireFrame::Control(spoof_control) = spoof_frame else {
+                panic!("expected control frame");
+            };
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &spoof_control);
+            {
+                let guard = (&*sends)
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(
+                    guard.len(),
+                    1,
+                    "cross-attributed PING must be dropped without an ACK"
+                );
+            }
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(sends));
+        }
+        drop(ops);
+    }
+
+    /// An inbound SWIM frame carrying piggybacked DEAD gossip about a third
+    /// node folds that transition into the local membership view (C6 import).
+    #[test]
+    fn swim_frame_imports_piggybacked_gossip() {
+        let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(record_registry_gossip_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: sends.cast(),
+        }));
+
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            // Pre-seed node 3 as ALIVE so the gossip can transition it.
+            let addr = std::ffi::CString::new("10.0.0.3:9000").unwrap();
+            crate::cluster::hew_cluster_join(cluster, 3, addr.as_ptr());
+
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut peer = ConnectionActor::new(10);
+            peer.peer_node_id = 2;
+            peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(peer));
+
+            // ACK from node 2 carrying DEAD-about-node-3 gossip.
+            let ack = SwimControlPayload {
+                msg_type: crate::cluster::SWIM_MSG_ACK,
+                from_node: 2,
+                incarnation: 1,
+                target_node: 0,
+                gossip: vec![SwimGossipEntry {
+                    node_id: 3,
+                    state: crate::cluster::MEMBER_DEAD,
+                    incarnation: 5,
+                }],
+            };
+            let frame = decode_wire_frame(&swim_control_frame_bytes(&ack)).expect("frame");
+            let WireFrame::Control(control) = frame else {
+                panic!("expected control frame");
+            };
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+
+            // Node 3 must now be DEAD in our membership view.
+            assert_eq!(
+                crate::cluster::hew_cluster_member_state(cluster, 3),
+                crate::cluster::MEMBER_DEAD,
+                "piggybacked DEAD gossip must transition node 3 to DEAD"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
             drop(Box::from_raw(transport_ptr));
             drop(Box::from_raw(sends));
         }

@@ -388,7 +388,6 @@ fn eval_timeout_exit_code_is_non_zero() {
     assert!(stderr.contains("Error: evaluation timed out after 1s"));
 }
 
-#[ignore = "blocked on HIR scope lowering treating println as an unsupported spawned call"]
 #[test]
 fn eval_large_stdout_completes_before_timeout() {
     require_codegen();
@@ -463,7 +462,6 @@ fn eval_large_stderr_completes_before_timeout() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
-#[ignore = "blocked on HIR scope lowering treating println as an unsupported spawned call"]
 #[test]
 fn eval_repl_timeout_is_reported_and_quit_still_works() {
     require_codegen();
@@ -2121,15 +2119,22 @@ fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
 /// flush clock, then sends one statement and requires the resulting output to
 /// become observable in the parent before any process-exit boundary.  The
 /// deadline is a bounded budget for that observation, not the invariant.
+///
+/// `--timeout 120` is passed to the child so the child's internal
+/// compile+codegen+link budget matches the harness's load-invariant
+/// expectation.  Without it the child defaults to 30 s, which on a
+/// cold or heavily loaded machine can expire before the first statement
+/// compiles — causing `hew eval` to self-abort at the FLUSH path, not
+/// the STARTUP path, making the flake invisible to `STARTUP_BUDGET`.
 #[test]
 fn eval_repl_piped_stdout_flushes_per_submission() {
-    const STARTUP_BUDGET: Duration = Duration::from_secs(30);
-    const FLUSH_BUDGET: Duration = Duration::from_secs(30);
+    const STARTUP_BUDGET: Duration = Duration::from_mins(1);
+    const FLUSH_BUDGET: Duration = Duration::from_mins(1);
 
     require_codegen();
 
     let mut child = Command::new(hew_binary())
-        .args(["eval"])
+        .args(["eval", "--timeout", "120"])
         .current_dir(repo_root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -2450,11 +2455,13 @@ fn trait_bound_probe1_bounded_machine_runs() {
     std::fs::write(
         &hew_src,
         "machine Tagger<T: Display> {\n\
+         \x20   events {\n\
+         \x20       Tag { value: T; }\n\
+         \x20   }\n\
          \x20   state Empty;\n\
          \x20   state Tagged { value: T; }\n\
-         \x20   event Tag { value: T; }\n\
-         \x20   on Tag: Empty -> Tagged { Tagged { value: event.value } }\n\
-         \x20   on Tag: Tagged -> Tagged @reenter { Tagged { value: event.value } }\n\
+         \x20   on Tag: Empty => Tagged { Tagged { value: event.value } }\n\
+         \x20   on Tag: Tagged => Tagged reenter { Tagged { value: event.value } }\n\
          }\n\
          fn main() {\n\
          \x20   var t: Tagger<i64> = Empty;\n\
@@ -2500,14 +2507,16 @@ fn trait_bound_probe2_multi_bound_machine_runs() {
     std::fs::write(
         &hew_src,
         "machine Pair<A: Display, B: Display> {\n\
+         \x20   events {\n\
+         \x20       Load { first: A; second: B; }\n\
+         \x20       Clear;\n\
+         \x20   }\n\
          \x20   state Empty;\n\
          \x20   state Full { first: A; second: B; }\n\
-         \x20   event Load { first: A; second: B; }\n\
-         \x20   event Clear;\n\
-         \x20   on Load: Empty -> Full { Full { first: event.first, second: event.second } }\n\
-         \x20   on Load: Full -> Full @reenter { Full { first: event.first, second: event.second } }\n\
-         \x20   on Clear: Empty -> Empty @reenter { Empty }\n\
-         \x20   on Clear: Full -> Empty { Empty }\n\
+         \x20   on Load: Empty => Full { Full { first: event.first, second: event.second } }\n\
+         \x20   on Load: Full => Full reenter { Full { first: event.first, second: event.second } }\n\
+         \x20   on Clear: Empty => Empty reenter { Empty }\n\
+         \x20   on Clear: Full => Empty { Empty }\n\
          }\n\
          fn main() {\n\
          \x20   var p: Pair<i64, i64> = Empty;\n\
@@ -2538,17 +2547,15 @@ fn trait_bound_probe2_multi_bound_machine_runs() {
 }
 
 /// Slice ε probe 3 — `impl<T> Trait for UserType<T> where T: Bound` method
-/// is pre-registered (D2 fix) and lowered without diagnostic.  This probe
-/// captures the intended runtime behaviour once MIR supports user-defined
-/// record types and HIR gains a dot-syntax dispatch path for user impl methods.
-/// Until then, the program fails at the MIR boundary after successful
-/// type-checking and HIR lowering.
-///
-/// Blocked on:
-///   (a) HIR dot-syntax dispatch for user impl methods (`MethodCallNoRewrite`)
-///   (b) L1 generic type instantiation / monomorphisation in MIR codegen
+/// dispatched by dot-syntax on a concrete generic receiver runs end-to-end.
+/// `p.next()` on a `Pair<i64>` resolves through the inherent-method table to
+/// the qualified `Pair::next` symbol, registers the `Pair::next$$i64`
+/// monomorphisation, and dispatches to a concrete MIR body. The `where T:
+/// Display` predicate on the impl's own type parameter is admitted; the
+/// `type Item = T` associated-type binding is checker-only metadata and does
+/// not block this projection-free method (the method's return type is the
+/// concrete `Option<T>`, not a `Self::Item` projection).
 #[test]
-#[ignore = "blocked on MIR lowering for resolved trait method calls without a MIR body"]
 fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
     require_codegen();
 

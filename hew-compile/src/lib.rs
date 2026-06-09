@@ -455,7 +455,8 @@ fn typecheck_program_with_diagnostics(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<(TypeCheckResult, Vec<FrontendDiagnostic>), FrontendFailure> {
-    let search_paths = hew_types::module_registry::build_module_search_paths();
+    let search_paths =
+        hew_types::module_registry::build_module_search_paths_for(options.project_dir.as_deref());
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
 
     if options.no_typecheck {
@@ -648,7 +649,7 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
 
 fn canonical_floor_module_for_source(source_file: &Path) -> Option<hew_parser::module::ModuleId> {
     let input_canonical = std::fs::canonicalize(source_file).ok()?;
-    let search_roots = hew_types::module_registry::build_module_search_paths();
+    let search_roots = hew_types::module_registry::build_module_search_paths_for(Some(source_file));
 
     for dotted in hew_types::check::intrinsic_floor_modules() {
         let segments = dotted.split('.').collect::<Vec<_>>();
@@ -965,9 +966,6 @@ fn resolve_file_imports_internal(
                     .iter()
                     .collect::<PathBuf>()
                     .join(format!("{last}.hew"));
-                let exe_dir = std::env::current_exe()
-                    .ok()
-                    .and_then(|path| path.parent().map(Path::to_path_buf));
                 let mut candidates = Vec::new();
 
                 if is_local && !rest_path.is_empty() {
@@ -1034,24 +1032,14 @@ fn resolve_file_imports_internal(
                     }
                 }
 
-                if let Ok(hew_std) = std::env::var("HEW_STD") {
-                    let std_root = PathBuf::from(hew_std);
-                    if let Some(parent) = std_root.parent() {
-                        candidates.push(parent.join(&dir_path));
-                        candidates.push(parent.join(&rel_path));
-                    }
-                }
-
-                if let Some(ref exe) = exe_dir {
-                    let fhs_root = exe.join("../share/hew");
-                    candidates.push(fhs_root.join(&dir_path));
-                    candidates.push(fhs_root.join(&rel_path));
-                }
-                if let Some(ref exe) = exe_dir {
-                    if let Some(project_root) = exe.parent().and_then(|path| path.parent()) {
-                        candidates.push(project_root.join(&dir_path));
-                        candidates.push(project_root.join(&rel_path));
-                    }
+                // Stdlib / global search roots — apply exclusive precedence tiers so that
+                // a file in worktree-A always resolves std from A only, never from the
+                // build binary's worktree or a sibling checkout.
+                for root in
+                    hew_types::module_registry::build_module_search_paths_for(Some(source_file))
+                {
+                    candidates.push(root.join(&dir_path));
+                    candidates.push(root.join(&rel_path));
                 }
 
                 // Collect ALL candidates that resolve, then deduplicate by canonical path.
@@ -1874,6 +1862,65 @@ mod tests {
             "expected IntrinsicOutsideFloor for temp math.hew, got: {:?}",
             failure.diagnostics
         );
+    }
+
+    /// Two imported modules resolving to the same short name (last path
+    /// segment) must be REJECTED. HIR keys every cross-module fn registration
+    /// by `module_short.fn_name`; admitting `alpha` and `beta::alpha` together
+    /// would let two distinct `alpha::val` functions silently collide in the
+    /// fn-registry and miscompile. The guard lives in
+    /// `check_duplicate_short_module_names` (called from
+    /// `build_module_graph_with_diagnostics`); this test is the regression
+    /// pin for it (the run.sh fixture exercises the CLI, not the crate).
+    #[test]
+    fn check_file_rejects_duplicate_short_module_names() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        // Two modules whose short name (last path segment) is the same `alpha`:
+        // a flat `alpha.hew` and a nested `beta/alpha.hew`.
+        write_source(dir.path(), "alpha.hew", "pub fn val() -> i64 { 1 }\n");
+        fs::create_dir_all(dir.path().join("beta")).expect("create beta dir");
+        write_source(dir.path(), "beta/alpha.hew", "pub fn val() -> i64 { 2 }\n");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import alpha;\nimport beta::alpha;\n\nfn main() -> i64 { 0 }\n",
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("colliding short module names must fail closed");
+        assert!(
+            failure.message.contains("short name"),
+            "expected a duplicate-short-name diagnostic, got: {}",
+            failure.message
+        );
+        assert!(
+            failure.message.contains("alpha"),
+            "diagnostic should name the colliding short name `alpha`, got: {}",
+            failure.message
+        );
+    }
+
+    /// Negative control for the duplicate-short-name guard: two imported
+    /// modules with DISTINCT short names compile cleanly — the guard must not
+    /// over-reject. Same layout as the rejection case but the second module's
+    /// short name is `gamma`, not `alpha`.
+    #[test]
+    fn check_file_accepts_distinct_short_module_names() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(dir.path(), "alpha.hew", "pub fn val() -> i64 { 1 }\n");
+        fs::create_dir_all(dir.path().join("beta")).expect("create beta dir");
+        write_source(dir.path(), "beta/gamma.hew", "pub fn val() -> i64 { 2 }\n");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import alpha;\nimport beta::gamma;\n\nfn main() -> i64 { 0 }\n",
+        );
+
+        // A successful `check_file` is the precise complement of the rejection:
+        // the duplicate-short-name guard fails the whole pipeline with `Err`,
+        // so reaching `Ok` proves the guard did not fire on distinct names.
+        check_file(&input, &FrontendOptions::default())
+            .expect("distinct short module names must be accepted");
     }
 
     // ── check_program tests ───────────────────────────────────────────────

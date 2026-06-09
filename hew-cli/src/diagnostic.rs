@@ -68,6 +68,44 @@ pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'stat
     }
 }
 
+/// Stable, user-facing string identifier for an HIR diagnostic kind.
+///
+/// Returns the variant name (e.g. `NotYetImplemented`, `UnresolvedSymbol`)
+/// without any of the Rust `{:?}` struct payload. Used as the `code` field in
+/// JSON diagnostics and matches the LSP's `hir_diagnostic_kind_string`.
+pub(crate) fn hir_diagnostic_kind_string(kind: &hew_hir::HirDiagnosticKind) -> String {
+    let debug = format!("{kind:?}");
+    let end = debug.find([' ', '{', '(']).unwrap_or(debug.len());
+    debug[..end].to_string()
+}
+
+/// Build the user-facing message for an HIR diagnostic.
+///
+/// For a `NotYetImplemented` gap, the message frames the gap as a current
+/// compiler limitation — not a problem with the user's code — and never leaks
+/// the Rust `{:?}` field names (`construct`, `owning_pass`). Other kinds fall
+/// back to the stable prefix plus any attached note.
+pub(crate) fn hir_diagnostic_user_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
+    if let hew_hir::HirDiagnosticKind::NotYetImplemented { construct, .. } = &diagnostic.kind {
+        let mut message = format!(
+            "`{construct}` is not yet supported by the Hew compiler \
+             (this is a current Hew limitation, not your code)"
+        );
+        if !diagnostic.note.is_empty() {
+            message.push_str(": ");
+            message.push_str(&diagnostic.note);
+        }
+        return message;
+    }
+
+    let prefix = hir_diagnostic_prefix(&diagnostic.kind);
+    if diagnostic.note.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}: {}", diagnostic.note)
+    }
+}
+
 /// Map a MIR diagnostic kind to the stable CLI diagnostic family.
 pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
     match kind {
@@ -745,7 +783,13 @@ fn render_mir_diagnostic_without_source(
     }
 }
 
-/// Render MIR diagnostics for `hew check` without exposing Rust `Debug` payloads.
+/// Render MIR diagnostics for the deep gates without exposing Rust `Debug`
+/// payloads.
+///
+/// Routes through the JSON sink when `--format=json` is active so MIR
+/// diagnostics participate in machine-readable output identically to frontend
+/// diagnostics. The user-facing message is always the `mir_diagnostic_message`
+/// rendering — never the raw `MirDiagnostic` `{:?}` payload.
 pub(crate) fn render_mir_diagnostics(
     root_source: &str,
     root_filename: &str,
@@ -753,30 +797,78 @@ pub(crate) fn render_mir_diagnostics(
     site_spans: &HashMap<hew_hir::SiteId, hew_hir::HirSiteSource>,
     diagnostics: &[hew_mir::MirDiagnostic],
 ) {
+    let json = crate::diagnostic_json::json_output_active();
     for diagnostic in diagnostics {
         let primary_site = mir_primary_site(&diagnostic.kind)
             .and_then(|site| site_spans.get(&site).map(|source| (site, source)));
         let Some((_, site)) = primary_site else {
-            render_mir_diagnostic_without_source(diagnostic, None);
+            if json {
+                push_mir_json_diagnostic(diagnostic, None, None, &[]);
+            } else {
+                render_mir_diagnostic_without_source(diagnostic, None);
+            }
             continue;
         };
         let Some((source, filename)) =
             site_source(root_source, root_filename, module_source_map, site)
         else {
-            render_mir_diagnostic_without_source(diagnostic, Some(site));
+            if json {
+                push_mir_json_diagnostic(diagnostic, None, None, &[]);
+            } else {
+                render_mir_diagnostic_without_source(diagnostic, Some(site));
+            }
             continue;
         };
         let secondary_spans = mir_secondary_spans(diagnostic, site, site_spans);
         let suggestions = mir_context_notes(diagnostic);
-        render_diagnostic_with_raw_notes(
-            source,
-            filename,
-            &site.span,
-            &mir_diagnostic_message(diagnostic),
-            &secondary_spans,
-            &suggestions,
-        );
+        if json {
+            push_mir_json_diagnostic(
+                diagnostic,
+                Some((source, filename)),
+                Some(&site.span),
+                &secondary_spans,
+            );
+        } else {
+            render_diagnostic_with_raw_notes(
+                source,
+                filename,
+                &site.span,
+                &mir_diagnostic_message(diagnostic),
+                &secondary_spans,
+                &suggestions,
+            );
+        }
     }
+}
+
+/// Push a MIR diagnostic into the JSON sink, stripping the `E_*` prefix from
+/// the message (the prefix lives in the `code`/`source` fields in JSON).
+fn push_mir_json_diagnostic(
+    diagnostic: &hew_mir::MirDiagnostic,
+    source_and_filename: Option<(&str, &str)>,
+    span: Option<&Range<usize>>,
+    secondary_spans: &[(Range<usize>, String)],
+) {
+    let prefixed = mir_diagnostic_message(diagnostic);
+    // `mir_diagnostic_message` prepends `E_MIR: ` / `E_NOT_YET_IMPLEMENTED: `;
+    // strip it so the JSON `message` is clean prose and the family lives in
+    // `code`.
+    let message = prefixed
+        .split_once(": ")
+        .map_or(prefixed.as_str(), |(_, rest)| rest);
+    let (source, filename) = match source_and_filename {
+        Some((source, filename)) => (Some(source), Some(filename)),
+        None => (None, None),
+    };
+    crate::diagnostic_json::push_json_diagnostic(crate::diagnostic_json::from_mir_diagnostic(
+        source,
+        filename,
+        span,
+        mir_kind_name(&diagnostic.kind),
+        message,
+        secondary_spans,
+        &mir_context_notes(diagnostic),
+    ));
 }
 
 fn type_diagnostic_source<'a>(
@@ -854,6 +946,20 @@ fn hir_source_context_unavailable_note(diagnostic: &hew_hir::HirDiagnostic) -> S
 }
 
 fn hir_diagnostic_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
+    // For a `NotYetImplemented` gap, keep the stable `E_NOT_YET_IMPLEMENTED`
+    // family code (grep-able by tooling) but use the limitation-framed body and
+    // never leak the Rust `{:?}` field names. Other kinds fall back to the
+    // stable prefix plus any attached note.
+    if matches!(
+        diagnostic.kind,
+        hew_hir::HirDiagnosticKind::NotYetImplemented { .. }
+    ) {
+        return format!(
+            "{}: {}",
+            hir_diagnostic_prefix(&diagnostic.kind),
+            hir_diagnostic_user_message(diagnostic)
+        );
+    }
     let prefix = hir_diagnostic_prefix(&diagnostic.kind);
     if diagnostic.note.is_empty() {
         prefix.to_string()
@@ -865,13 +971,24 @@ fn hir_diagnostic_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
 /// Render a HIR diagnostic using source context when the frontend was able to
 /// resolve the diagnostic's source module. Non-root source-map misses are
 /// rendered explicitly rather than falling back to the root file.
+///
+/// Routes through the JSON sink when `--format=json` is active. The `HIR kind`
+/// note uses the stable kind string (never the Rust `{:?}` struct payload), so
+/// no Debug payload reaches user output on either path.
 pub(crate) fn render_hir_diagnostic(
     source: Option<&str>,
     filename: Option<&str>,
     diagnostic: &hew_hir::HirDiagnostic,
 ) {
+    if crate::diagnostic_json::json_output_active() {
+        crate::diagnostic_json::push_json_diagnostic(crate::diagnostic_json::from_hir_diagnostic(
+            source, filename, diagnostic,
+        ));
+        return;
+    }
+
     let message = hir_diagnostic_message(diagnostic);
-    let kind_note = format!("HIR kind: {:?}", diagnostic.kind);
+    let kind_note = format!("HIR kind: {}", hir_diagnostic_kind_string(&diagnostic.kind));
     if let (Some(source), Some(filename)) = (source, filename) {
         let suggestions = [kind_note];
         render_diagnostic_with_raw_notes(

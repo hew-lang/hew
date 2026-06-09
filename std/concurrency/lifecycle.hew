@@ -6,6 +6,13 @@ pub enum Error {
 }
 
 pub machine Lifecycle<T> {
+    events {
+        Initialise;
+        Started { handle: T; }
+        Stop;
+        Crashed { error: Error; }
+    }
+
     state Created;
     state Initialising;
     state Running { handle: T; }
@@ -13,39 +20,34 @@ pub machine Lifecycle<T> {
     state Stopped;
     state Faulted { error: Error; }
 
-    event Initialise;
-    event Started { handle: T; }
-    event Stop;
-    event Crashed { error: Error; }
-
-    on Initialise: Created -> Initialising {
+    on Initialise: Created => Initialising {
         Initialising
     }
-    on Initialise: _ -> _ {
+    on Initialise: _ => _ {
         state
     }
-    on Started: Initialising -> Running {
+    on Started: Initialising => Running {
         Running { handle: event.handle }
     }
-    on Started: _ -> _ {
+    on Started: _ => _ {
         state
     }
-    on Stop: Running -> Stopping {
+    on Stop: Running => Stopping {
         Stopping
     }
-    on Stop: Stopping -> Stopped {
+    on Stop: Stopping => Stopped {
         Stopped
     }
-    on Stop: _ -> _ {
+    on Stop: _ => _ {
         state
     }
-    on Crashed: Initialising -> Faulted {
+    on Crashed: Initialising => Faulted {
         Lifecycle::Faulted { error: event.error }
     }
-    on Crashed: Running -> Faulted {
+    on Crashed: Running => Faulted {
         Lifecycle::Faulted { error: event.error }
     }
-    on Crashed: _ -> _ {
+    on Crashed: _ => _ {
         state
     }
 }

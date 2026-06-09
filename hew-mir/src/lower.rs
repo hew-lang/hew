@@ -1581,6 +1581,7 @@ pub fn lower_hir_module_with_facts(
                         &actor_layout_map,
                         &supervisor_layout_map,
                         &machine_layout_names,
+                        &enum_layouts,
                         None,
                         &module_fn_names,
                         &module_generic_fn_names,
@@ -1626,6 +1627,7 @@ pub fn lower_hir_module_with_facts(
                     &actor_layout_map,
                     &supervisor_layout_map,
                     &machine_layout_names,
+                    &enum_layouts,
                     None,
                     &module_fn_names,
                     &module_generic_fn_names,
@@ -1665,6 +1667,7 @@ pub fn lower_hir_module_with_facts(
                     &record_field_orders,
                     &actor_layout_map,
                     &machine_layout_names,
+                    &enum_layouts,
                     &module_fn_names,
                     &module_generic_fn_names,
                     &module.call_site_type_args,
@@ -1706,6 +1709,7 @@ pub fn lower_hir_module_with_facts(
                     &record_field_orders,
                     &actor_layout_map,
                     &machine_layout_names,
+                    &enum_layouts,
                     &module_fn_names,
                     &module_generic_fn_names,
                     &module.call_site_type_args,
@@ -1779,6 +1783,7 @@ pub fn lower_hir_module_with_facts(
                     &actor_layout_map,
                     &supervisor_layout_map,
                     &machine_layout_names,
+                    &enum_layouts,
                     &module_fn_names,
                     &module_generic_fn_names,
                     &module.call_site_type_args,
@@ -1874,6 +1879,7 @@ pub fn lower_hir_module_with_facts(
             &actor_layout_map,
             &supervisor_layout_map,
             &machine_layout_names,
+            &enum_layouts,
             None,
             &module_fn_names,
             &module_generic_fn_names,
@@ -2021,6 +2027,7 @@ fn lower_actor_receive_handlers(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
+    enum_layouts: &[crate::model::EnumLayout],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2106,6 +2113,7 @@ fn lower_actor_receive_handlers(
             actor_layouts,
             &HashMap::new(),
             machine_layout_names,
+            enum_layouts,
             Some(&actor.name),
             module_fn_names,
             module_generic_fn_names,
@@ -2131,6 +2139,7 @@ fn lower_actor_body_handlers(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
+    enum_layouts: &[crate::model::EnumLayout],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2149,6 +2158,7 @@ fn lower_actor_body_handlers(
             record_field_orders,
             actor_layouts,
             machine_layout_names,
+            enum_layouts,
             module_fn_names,
             module_generic_fn_names,
             call_site_type_args,
@@ -2167,6 +2177,7 @@ fn lower_actor_body_handlers(
         record_field_orders,
         actor_layouts,
         machine_layout_names,
+        enum_layouts,
         module_fn_names,
         module_generic_fn_names,
         call_site_type_args,
@@ -2182,6 +2193,7 @@ fn lower_actor_body_handlers(
         record_field_orders,
         actor_layouts,
         machine_layout_names,
+        enum_layouts,
         module_fn_names,
         module_generic_fn_names,
         call_site_type_args,
@@ -2205,6 +2217,7 @@ fn lower_actor_init_handler(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
+    enum_layouts: &[crate::model::EnumLayout],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2250,6 +2263,7 @@ fn lower_actor_init_handler(
         actor_layouts,
         &HashMap::new(),
         machine_layout_names,
+        enum_layouts,
         Some(&actor.name),
         module_fn_names,
         module_generic_fn_names,
@@ -2276,6 +2290,7 @@ fn lower_actor_lifecycle_handlers(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
+    enum_layouts: &[crate::model::EnumLayout],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2326,6 +2341,7 @@ fn lower_actor_lifecycle_handlers(
                     actor_layouts,
                     &HashMap::new(),
                     machine_layout_names,
+                    enum_layouts,
                     Some(&actor.name),
                     module_fn_names,
                     module_generic_fn_names,
@@ -2368,6 +2384,7 @@ fn lower_actor_lifecycle_handlers(
                     actor_layouts,
                     &HashMap::new(),
                     machine_layout_names,
+                    enum_layouts,
                     Some(&actor.name),
                     module_fn_names,
                     module_generic_fn_names,
@@ -2549,6 +2566,7 @@ fn lower_actor_lifecycle_handlers(
                     actor_layouts,
                     &HashMap::new(),
                     machine_layout_names,
+                    enum_layouts,
                     Some(&actor.name),
                     module_fn_names,
                     module_generic_fn_names,
@@ -2701,6 +2719,7 @@ fn synthesize_machine_step_fn(
     actor_layouts: &HashMap<String, ActorLayout>,
     supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
     machine_layout_names: &HashSet<String>,
+    enum_layouts: &[crate::model::EnumLayout],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2745,6 +2764,7 @@ fn synthesize_machine_step_fn(
         actor_layouts: actor_layouts.clone(),
         supervisor_layout_map: supervisor_layout_map.clone(),
         machine_layout_names: machine_layout_names.clone(),
+        enum_layouts: enum_layouts.to_vec(),
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
         call_site_type_args: call_site_type_args.clone(),
@@ -2918,11 +2938,30 @@ fn synthesize_machine_step_fn(
         }
     }
 
-    // Default fall-through: trap with MachineDispatchUnreachable.
+    // Default fall-through. Two cases:
+    //
+    //   * `default { state }` present (`md.has_default`): an unhandled
+    //     `(state, event)` cell STAYS in the current state. Return `self`
+    //     unchanged — no lifecycle hooks run because the state did not change.
+    //   * no `default`: the dispatch is exhaustive by construction (HIR's
+    //     exhaustiveness check rejects any uncovered cell), so reaching this
+    //     block is a compiler invariant violation. Fail closed with a trap.
+    //
+    // Without the `has_default` branch the fall-through unconditionally trapped,
+    // so a `default` machine compiled but ran broken: the first unhandled cell
+    // garbled `self` instead of staying put (the Q379 bug).
     builder.start_block(trap_block);
-    builder.finish_current_block(Terminator::Trap {
-        kind: TrapKind::MachineDispatchUnreachable,
-    });
+    if md.has_default {
+        builder.instructions.push(Instr::Move {
+            dest: Place::ReturnSlot,
+            src: self_place,
+        });
+        builder.finish_current_block(Terminator::Return);
+    } else {
+        builder.finish_current_block(Terminator::Trap {
+            kind: TrapKind::MachineDispatchUnreachable,
+        });
+    }
 
     // Drain pending blocks into the function's final blocks vec. The
     // builder's current block is the trap (already finished); there is no
@@ -3370,6 +3409,13 @@ fn build_supervisor_layout(
             cycle_capable: false,
             // Populated in the post-loop pass along with actor layout fields.
             init_state_fields: Vec::new(),
+            // accepted-only: the per-child `shutdown:` directive
+            // (HirSupervisorChild.shutdown) is parsed, checked, and round-trips
+            // through the formatter, but is NOT lowered into the runtime ABI in
+            // v0.5 — there is no per-child graceful-stop deadline wheel yet.
+            // Threading it here would require a HewChildSpec ABI field the
+            // runtime would ignore, which would fake enforcement. When the
+            // deadline wheel lands, read child.shutdown here and emit it.
         })
         .collect();
 
@@ -3444,6 +3490,7 @@ fn lower_supervisor_bootstrap(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
     machine_layout_names: &HashSet<String>,
+    enum_layouts: &[crate::model::EnumLayout],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -3682,6 +3729,7 @@ fn lower_supervisor_bootstrap(
         actor_layouts,
         supervisor_layouts,
         machine_layout_names,
+        enum_layouts,
         // Supervisors have no actor state. `lower_actor_init_handler`
         // passes `Some(&actor.name)` for the same role; here we pass
         // `None` because there's no state-field table to lift into the
@@ -4008,6 +4056,18 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(scrutinee, state_fields, seen, unknown);
             collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
         }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_unknown_self_fields_in_expr(scrutinee, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
+            if let Some(eb) = else_body {
+                collect_unknown_self_fields_in_block(eb, state_fields, seen, unknown);
+            }
+        }
         HirExprKind::Loop { body } => {
             collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
         }
@@ -4135,6 +4195,7 @@ fn lower_function(
     actor_layouts: &HashMap<String, ActorLayout>,
     supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
     machine_layout_names: &HashSet<String>,
+    enum_layouts: &[crate::model::EnumLayout],
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
@@ -4153,6 +4214,7 @@ fn lower_function(
         record_field_orders: record_field_orders.clone(),
         actor_layouts: actor_layouts.clone(),
         machine_layout_names: machine_layout_names.clone(),
+        enum_layouts: enum_layouts.to_vec(),
         supervisor_layout_map: supervisor_layout_map.clone(),
         current_actor_state_fields: current_actor_name
             .and_then(|name| actor_layouts.get(name))
@@ -4606,6 +4668,17 @@ struct Builder {
     /// gate. Field access and drop elaboration consult this binding-scoped proof
     /// instead of re-opening arbitrary user-record reads.
     owned_string_record_bindings: HashSet<BindingId>,
+    /// W5.016 owned-Vec-element allow-list of record/enum layout KEYS that are
+    /// used as the element of an owned-Vec anywhere in the current function. A
+    /// value of such a type classifies as `CowValue` (the runtime deep-clones
+    /// it in and drops it via the seeded per-type thunks) instead of tripping
+    /// the W3.029 wholesale `Unknown` reject. Pre-computed by `function_body`
+    /// before any `decide` runs (so it is robust to the `lower_value`-decides-
+    /// before-arm ordering). This is a bounded allow-list keyed on the exact
+    /// types codegen seeds thunks for — it does NOT open the general
+    /// user-record value-class surface (a record with a `Vec`/`HashMap` field
+    /// is never an owned-Vec element, so it never enters this set).
+    vec_owned_element_keys: HashSet<String>,
     /// Per-named-type marker registry, cloned from the parent `HirModule` at
     /// builder construction. Read by every `ValueClass::of_ty` call site in
     /// MIR lowering so the marker is the single fact about whether a Named
@@ -4679,6 +4752,15 @@ struct Builder {
     /// from `module.machine_layouts` in `lower_hir_module` and threaded
     /// through every Builder construction site.
     machine_layout_names: HashSet<String>,
+    /// Monomorphised tagged-union enum layouts, cloned from the pipeline-wide
+    /// `enum_layouts` at builder construction. The drop elaborator consults
+    /// these via `ty_contains_heap_owning` (the single MIR/codegen authority)
+    /// to decide whether an enum-composite binding owns a heap payload and so
+    /// earns a tag-aware `DropKind::EnumInPlace` scope-exit drop (W5.020).
+    /// Empty for builders constructed before layout collection (synthetic
+    /// test pipelines) — such bodies simply never elaborate the enum-in-place
+    /// drop, matching the pre-W5.020 leak-not-double-free posture.
+    enum_layouts: Vec<crate::model::EnumLayout>,
     current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
@@ -4928,6 +5010,76 @@ impl Builder {
         crate::state_clone::classify_owned_string_record_fields(&field_tys, &record_layouts, &[])
             .ok()
             .flatten()
+    }
+
+    /// Unified owned-aggregate-record value-class authority (RC-4 / RC-6 / G12).
+    ///
+    /// Returns `Some(kinds)` iff the record named by `key`:
+    ///   1. has a registered layout (`record_field_orders`),
+    ///   2. classifies cleanly under the SAME field classifier actor-state
+    ///      records use (`classify_actor_state_fields_with_enum_layouts`) — so
+    ///      codegen is guaranteed to be able to synthesize the matching
+    ///      `__hew_record_{clone,drop}_inplace_<R>` thunk for every field, AND
+    ///   3. carries at least one non-`BitCopy` owned field (otherwise it is a
+    ///      plain `BitCopy` aggregate that needs no owned-value drop and is
+    ///      classified by `ValueClass::of_ty` upstream).
+    ///
+    /// This is the single admission gate for an owned record passed/returned by
+    /// value: `string` fields (RC-6), `bytes` fields (RC-4), `Vec`/`HashMap`/
+    /// `HashSet` fields (G12), and nested owned record/enum fields all classify
+    /// here. A record carrying a field the classifier rejects (e.g. an
+    /// unsupported IO handle that has no clone helper, or an unresolved nested
+    /// type) returns `None` and stays fail-closed at the W3.029 reject —
+    /// codegen never sees a record whose drop thunk it cannot emit.
+    ///
+    /// Generalizes `owned_string_record_field_kinds_for_key` (String-only) to
+    /// the full owned-field surface. Passing `self.enum_layouts` lets a record
+    /// with an `Option`/`Result`/user-enum field classify as `Enum` rather than
+    /// failing closed (the enum drop thunk already exists, W5.006/W5.020).
+    fn owned_aggregate_record_field_kinds_for_key(
+        &self,
+        key: &str,
+    ) -> Option<Vec<crate::state_clone::StateFieldCloneKind>> {
+        let fields = self.record_field_orders.get(key)?;
+        if fields.is_empty() {
+            return None;
+        }
+        let field_tys: Vec<ResolvedTy> = fields.iter().map(|(_, ty)| ty.clone()).collect();
+        let record_layouts = self.record_layouts_for_classification();
+        let kinds = crate::state_clone::classify_actor_state_fields_with_enum_layouts(
+            &field_tys,
+            &record_layouts,
+            &self.enum_layouts,
+        )
+        .ok()?;
+        let has_owned_field = kinds
+            .iter()
+            .any(|k| !matches!(k, crate::state_clone::StateFieldCloneKind::BitCopy { .. }));
+        has_owned_field.then_some(kinds)
+    }
+
+    /// True when `ty` is a monomorphic user record admitted by the unified
+    /// owned-aggregate-record authority. The single predicate the `decide`
+    /// value-class gate and the drop-elaboration allow-set derivation share so
+    /// they can never disagree on which records are owned-by-value.
+    ///
+    /// Restricted to **bare-name monomorphic** records (`monomorphic_user_
+    /// record_key` — args empty). The `RecordInPlace` drop path keys its helper
+    /// on the bare record name (`record_inplace_drop_name` requires
+    /// `args.is_empty()`), and the drop-plan validator re-derives the same way,
+    /// so admitting a generic INSTANTIATION (`Wrapper<string>`, whose `ty`
+    /// carries `args: [string]`) here would emit a `RecordInPlace` drop the
+    /// validator rejects (`DropPlanUndetermined`) and codegen cannot lower.
+    /// Generic record instantiations therefore stay fail-closed at the W3.029
+    /// reject — a clean typed diagnostic, never a codegen-front error. A
+    /// monomorphic record whose layout is registered under a `$$`-mangled key
+    /// is still admitted via the bare-name path; only the use-site `ty` shape
+    /// (bare vs args-bearing) gates here.
+    fn is_owned_aggregate_record_ty(&self, ty: &ResolvedTy) -> bool {
+        monomorphic_user_record_key(ty).is_some_and(|key| {
+            self.owned_aggregate_record_field_kinds_for_key(&key)
+                .is_some()
+        })
     }
 
     fn owned_string_record_init_key_for_let(
@@ -5215,7 +5367,334 @@ impl Builder {
         blocks
     }
 
+    /// Harvest the record/enum layout key of an owned-Vec element type into
+    /// `vec_owned_element_keys`. `ty` is any type observed in the function; only
+    /// a `Vec<elem>` whose `elem` is a registered, non-BitCopy record/enum (the
+    /// shape codegen synthesizes `__hew_*_inplace` thunks for) contributes a
+    /// key. Mirrors codegen's `owned_elem_thunk_key` resolution so the MIR
+    /// value-class allow-list and the codegen descriptor/seeding agree on which
+    /// types are owned-Vec elements (`dedup-semantic-boundary`).
+    fn harvest_vec_owned_element_key(&mut self, ty: &ResolvedTy) {
+        let ResolvedTy::Named { name, args, .. } = ty else {
+            return;
+        };
+        if name != "Vec" || args.len() != 1 {
+            return;
+        }
+        let ResolvedTy::Named {
+            name: elem_name,
+            args: elem_args,
+            ..
+        } = &args[0]
+        else {
+            return;
+        };
+        // A registered, non-BitCopy record/enum element. BitCopy records stay on
+        // the existing `_layout` path and never enter the owned allow-list.
+        let key = if elem_args.is_empty() {
+            elem_name.clone()
+        } else {
+            hew_hir::mangle(elem_name, elem_args)
+        };
+        let is_enum = self
+            .enum_layouts
+            .iter()
+            .any(|el| el.name == key || short_name(&el.name) == short_name(elem_name));
+        let is_record = self.record_field_orders.contains_key(&key)
+            || self.record_field_orders.contains_key(elem_name.as_str());
+        if !is_enum && !is_record {
+            return;
+        }
+        // ONLY a genuinely heap-owning (non-BitCopy) element is an owned-Vec
+        // element. An all-BitCopy record/enum (e.g. `type Point { x: i64; y:
+        // i64 }`) is `Copy` and stays on the existing BitCopy `_layout` path —
+        // harvesting it would mis-route its Vec's element loads through the
+        // owned getter (which reads an owned descriptor the Copy Vec never
+        // carries). Check field/variant heap-ownership via the record/enum
+        // registries.
+        if !self.named_elem_owns_heap(&args[0], &mut HashSet::new()) {
+            return;
+        }
+        // Use the record-layout-key form for records (matches
+        // `user_record_layout_key` consulted by the W3.029 escape hatch).
+        let record_key = if self.record_field_orders.contains_key(&key) {
+            key.clone()
+        } else {
+            elem_name.clone()
+        };
+        if is_enum {
+            // Enums are gated by their own EnumInPlace drop path; record the
+            // mangled enum key so a value of the enum admits as CowValue too.
+            self.vec_owned_element_keys.insert(key);
+        } else {
+            self.vec_owned_element_keys.insert(record_key);
+        }
+    }
+
+    /// True when a `ResolvedTy` transitively owns heap (a `string`/`bytes`
+    /// leaf, or a record/enum/tuple containing one). Resolves user record
+    /// fields via `record_field_orders` and enum variant payloads via
+    /// `enum_layouts`, with a visited-set guard for recursive nominals. This is
+    /// the heap-owning authority the owned-Vec element harvest consults so an
+    /// all-BitCopy record/enum (which is `Copy` and uses the `BitCopy` `_layout`
+    /// path) is NOT treated as an owned-Vec element.
+    fn named_elem_owns_heap(&self, ty: &ResolvedTy, visiting: &mut HashSet<String>) -> bool {
+        match ty {
+            ResolvedTy::String | ResolvedTy::Bytes => true,
+            ResolvedTy::Tuple(elems) => {
+                elems.iter().any(|e| self.named_elem_owns_heap(e, visiting))
+            }
+            ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+                self.named_elem_owns_heap(inner, visiting)
+            }
+            ResolvedTy::Named { name, args, .. } => {
+                if args.iter().any(|a| self.named_elem_owns_heap(a, visiting)) {
+                    return true;
+                }
+                let short = short_name(name);
+                let key = if args.is_empty() {
+                    name.clone()
+                } else {
+                    hew_hir::mangle(short, args)
+                };
+                if !visiting.insert(key.clone()) {
+                    return false;
+                }
+                // Record fields.
+                let mut owns = false;
+                if let Some(fields) = self
+                    .record_field_orders
+                    .get(&key)
+                    .or_else(|| self.record_field_orders.get(name))
+                {
+                    owns = fields
+                        .iter()
+                        .any(|(_, fty)| self.named_elem_owns_heap(fty, visiting));
+                }
+                // Enum variant payloads.
+                if !owns {
+                    if let Some(layout) = self.enum_layouts.iter().find(|el| {
+                        el.name == key || el.name == *name || short_name(&el.name) == short
+                    }) {
+                        owns = layout.variants.iter().any(|v| {
+                            v.field_tys
+                                .iter()
+                                .any(|fty| self.named_elem_owns_heap(fty, visiting))
+                        });
+                    }
+                }
+                visiting.remove(&key);
+                owns
+            }
+            _ => false,
+        }
+    }
+
+    /// True when `elem_ty` is an owned (non-Copy) Vec element that was
+    /// constructed through the owned descriptor and must route element loads
+    /// through `hew_vec_get_owned`. Two owned shapes:
+    ///   - a `Tuple` that owns heap (a `(string, string)`-style element); an
+    ///     all-BitCopy tuple is `Copy` and stays on the layout getter.
+    ///   - a `Named` record/enum that is in the function's owned-Vec element key
+    ///     set (the same set the W3.029 value-class allow-list and the codegen
+    ///     descriptor derive from — `dedup-semantic-boundary`).
+    fn is_owned_vec_element(&self, elem_ty: &ResolvedTy) -> bool {
+        match elem_ty {
+            ResolvedTy::Tuple(elems) => elems
+                .iter()
+                .any(|e| crate::model::ty_contains_heap_owning(e, &self.enum_layouts)),
+            ResolvedTy::Named { name, args, .. } => {
+                let short = short_name(name);
+                let key = if args.is_empty() {
+                    name.clone()
+                } else {
+                    hew_hir::mangle(name, args)
+                };
+                self.vec_owned_element_keys.contains(&key)
+                    || self.vec_owned_element_keys.contains(name)
+                    || self
+                        .enum_layouts
+                        .iter()
+                        .any(|el| short_name(&el.name) == short)
+                        && self
+                            .vec_owned_element_keys
+                            .iter()
+                            .any(|k| short_name(k) == short)
+            }
+            _ => false,
+        }
+    }
+
+    /// True when `ty` is a `Vec<T>` whose element `T` is an owned-Vec element
+    /// (record/enum in `vec_owned_element_keys`, or a heap-owning tuple). Uses
+    /// the same `is_owned_vec_element` authority the getter routing uses, so the
+    /// scope-exit `hew_vec_free_owned` drop fires for exactly the Vecs that were
+    /// constructed through the owned ABI (`dedup-semantic-boundary`).
+    fn binding_ty_is_owned_element_vec(&self, ty: &ResolvedTy) -> bool {
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::Vec),
+            ..
+        } = ty
+        else {
+            return false;
+        };
+        args.first()
+            .is_some_and(|elem| self.is_owned_vec_element(elem))
+    }
+
+    /// True when `vec_ty` is a `Vec<T>` whose element `T` is an owned-Vec element.
+    /// Substitutes through the monomorphisation map first so a polymorphic
+    /// receiver type resolves to its concrete element before the owned-ness
+    /// authority is consulted. Shares the `is_owned_vec_element` authority that
+    /// the getter/free routing uses so the push ABI cannot disagree with the
+    /// constructor (`dedup-semantic-boundary`).
+    fn vec_receiver_has_owned_element(&self, vec_ty: &ResolvedTy) -> bool {
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::Vec),
+            ..
+        } = self.subst_ty(vec_ty)
+        else {
+            return false;
+        };
+        args.first()
+            .is_some_and(|elem| self.is_owned_vec_element(elem))
+    }
+
+    /// Recursively walk a block's statements + tail, harvesting owned-Vec
+    /// element keys from every expression's type (the `Vec<T>` receiver of an
+    /// owned-Vec op carries the type) and every let binding's declared type.
+    fn collect_vec_owned_element_keys_from_block(&mut self, block: &HirBlock) {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                HirStmtKind::Let(binding, value) => {
+                    let binding_ty = self.subst_ty(&binding.ty);
+                    self.harvest_vec_owned_element_key(&binding_ty);
+                    if let Some(v) = value {
+                        self.collect_vec_owned_element_keys_from_expr(v);
+                    }
+                }
+                HirStmtKind::Assign { target, value } => {
+                    self.collect_vec_owned_element_keys_from_expr(target);
+                    self.collect_vec_owned_element_keys_from_expr(value);
+                }
+                HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
+                    self.collect_vec_owned_element_keys_from_expr(e);
+                }
+                _ => {}
+            }
+        }
+        if let Some(tail) = &block.tail {
+            self.collect_vec_owned_element_keys_from_expr(tail);
+        }
+    }
+
+    /// Harvest owned-Vec element keys from an expression's type and recurse into
+    /// the structural child expressions that may carry a `Vec<owned>` value.
+    /// Every visited expr contributes its own `.ty` (so a `Vec<Header>`
+    /// `BindingRef`/`Call`/`StructInit` receiver is caught); the recursion
+    /// reaches nested blocks (if/match/scope/loop bodies) where an owned-Vec
+    /// could be constructed or used.
+    fn collect_vec_owned_element_keys_from_expr(&mut self, expr: &HirExpr) {
+        let ty = self.subst_ty(&expr.ty);
+        self.harvest_vec_owned_element_key(&ty);
+        match &expr.kind {
+            HirExprKind::Binary { left, right, .. } => {
+                self.collect_vec_owned_element_keys_from_expr(left);
+                self.collect_vec_owned_element_keys_from_expr(right);
+            }
+            HirExprKind::Unary { operand, .. } => {
+                self.collect_vec_owned_element_keys_from_expr(operand);
+            }
+            HirExprKind::NumericCast { value, .. } => {
+                self.collect_vec_owned_element_keys_from_expr(value);
+            }
+            HirExprKind::TupleLiteral { elements } => {
+                for e in elements {
+                    self.collect_vec_owned_element_keys_from_expr(e);
+                }
+            }
+            HirExprKind::Call { callee, args } => {
+                self.collect_vec_owned_element_keys_from_expr(callee);
+                for a in args {
+                    self.collect_vec_owned_element_keys_from_expr(a);
+                }
+            }
+            HirExprKind::ResolvedImplCall { receiver, args, .. }
+            | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+                self.collect_vec_owned_element_keys_from_expr(receiver);
+                for a in args {
+                    self.collect_vec_owned_element_keys_from_expr(a);
+                }
+            }
+            HirExprKind::StructInit { fields, base, .. } => {
+                for (_, f) in fields {
+                    self.collect_vec_owned_element_keys_from_expr(f);
+                }
+                if let Some(b) = base {
+                    self.collect_vec_owned_element_keys_from_expr(b);
+                }
+            }
+            HirExprKind::FieldAccess { object, .. }
+            | HirExprKind::TupleIndex { tuple: object, .. } => {
+                self.collect_vec_owned_element_keys_from_expr(object);
+            }
+            HirExprKind::Index { container, index } => {
+                self.collect_vec_owned_element_keys_from_expr(container);
+                self.collect_vec_owned_element_keys_from_expr(index);
+            }
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.collect_vec_owned_element_keys_from_expr(condition);
+                self.collect_vec_owned_element_keys_from_expr(then_expr);
+                if let Some(eb) = else_expr {
+                    self.collect_vec_owned_element_keys_from_expr(eb);
+                }
+            }
+            HirExprKind::Block(body) | HirExprKind::Scope { body } | HirExprKind::Loop { body } => {
+                self.collect_vec_owned_element_keys_from_block(body);
+            }
+            HirExprKind::Match { scrutinee, arms } => {
+                self.collect_vec_owned_element_keys_from_expr(scrutinee);
+                for arm in arms {
+                    self.collect_vec_owned_element_keys_from_expr(&arm.body);
+                }
+            }
+            HirExprKind::While { condition, body } => {
+                self.collect_vec_owned_element_keys_from_expr(condition);
+                self.collect_vec_owned_element_keys_from_block(body);
+            }
+            HirExprKind::ForRange {
+                start, end, body, ..
+            } => {
+                self.collect_vec_owned_element_keys_from_expr(start);
+                self.collect_vec_owned_element_keys_from_expr(end);
+                self.collect_vec_owned_element_keys_from_block(body);
+            }
+            // Remaining variants either carry no owned-Vec sub-expression in
+            // this slice's surface or are leaves; their own `.ty` was already
+            // harvested above. Fail-open here is sound: a missed harvest only
+            // leaves a value at the W3.029 fail-closed reject (never an
+            // over-admit), so the worst case is a still-rejected program, not
+            // an unsound lowering.
+            _ => {}
+        }
+    }
+
     fn function_body(&mut self, func: &HirFn) {
+        // W5.016 pre-pass: collect the record/enum layout keys used as the
+        // element of an owned-Vec anywhere in this function BEFORE any `decide`
+        // runs. `lower_value` calls `decide` at its entry (before the producing
+        // arm), so a site-based seed would race; a function-scoped key set is
+        // order-independent. Only owned-Vec element types (which carry
+        // synthesizable clone/drop thunks) enter the set, so the W3.029 reject
+        // stays fail-closed for every non-owned-Vec record.
+        self.collect_vec_owned_element_keys_from_block(&func.body);
+
         self.active_scopes.push(func.body.scope);
         for stmt in &func.body.statements {
             self.stmt(stmt);
@@ -5564,6 +6043,12 @@ impl Builder {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single match over assignable HIR target shapes (binding, record field, \
+                  actor field, HashMap index); each arm is a fail-closed boundary rule and \
+                  splitting would obscure the exhaustiveness requirement"
+    )]
     fn assign(&mut self, target: &HirExpr, value: &HirExpr) {
         let Some(src) = self.lower_value(value) else {
             return;
@@ -5663,10 +6148,34 @@ impl Builder {
                     src,
                 });
             }
+            // `m[k] = v` over a `HashMap<K, V>` lowers to the same
+            // `hew_hashmap_insert_layout(map, key, val)` runtime call that
+            // `m.insert(k, v)` emits, discarding the returned `bool` (the
+            // index-assignment surface has no "was-new" result). The checker
+            // accepted this target with value type `V`, so `src` already holds
+            // a `V`-typed value. The container/index were NOT pre-lowered (the
+            // outer `assign` only lowered `value`), so lower them here.
+            HirExprKind::Index { container, index } if matches!(&self.subst_ty(&container.ty), ResolvedTy::Named { name, .. } if name == "HashMap") =>
+            {
+                let Some(map_place) = self.lower_value(container) else {
+                    return;
+                };
+                let Some(key_place) = self.lower_value(index) else {
+                    return;
+                };
+                let next = self.alloc_block();
+                self.finish_current_block(Terminator::Call {
+                    callee: "hew_hashmap_insert_layout".to_string(),
+                    args: vec![map_place, key_place, src],
+                    dest: None,
+                    next,
+                });
+                self.start_block(next);
+            }
             _ => self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::UnsupportedNode {
-                    reason: "only local bindings, record fields, and actor state fields are \
-                         assignable in MIR slice 4"
+                    reason: "only local bindings, record fields, actor state fields, and \
+                         HashMap index targets are assignable in MIR slice 4"
                         .to_string(),
                 },
                 note: "assignment target did not lower to a writable place".to_string(),
@@ -5722,17 +6231,26 @@ impl Builder {
                     }
                 }
                 let use_ty = self.subst_ty(&expr.ty);
-                self.statements.push(MirStatement::Use {
-                    binding: *id,
-                    name: name.clone(),
-                    site: expr.site,
-                    ty: use_ty.clone(),
-                    intent: expr.intent,
-                });
-                if expr.intent == IntentKind::Consume
-                    && ValueClass::of_ty(&use_ty, &self.type_classes) != ValueClass::BitCopy
-                {
-                    self.mark_binding_moved(*id);
+                // Skip `MirStatement::Use` for captured bindings: the
+                // dataflow checker sees `Use` as a read of `binding_locals`,
+                // but captured bindings are NOT in `binding_locals` — they
+                // are loaded via `ClosureEnvFieldLoad` below. Emitting `Use`
+                // for a capture causes the initialisation checker to report
+                // `InitialisedBeforeUse` because the outer binding id was
+                // never initialised in this closure-shim context.
+                if !self.capture_env_sources.contains_key(id) {
+                    self.statements.push(MirStatement::Use {
+                        binding: *id,
+                        name: name.clone(),
+                        site: expr.site,
+                        ty: use_ty.clone(),
+                        intent: expr.intent,
+                    });
+                    if expr.intent == IntentKind::Consume
+                        && ValueClass::of_ty(&use_ty, &self.type_classes) != ValueClass::BitCopy
+                    {
+                        self.mark_binding_moved(*id);
+                    }
                 }
                 if let Some(source) = self.capture_env_sources.get(id).cloned() {
                     let dest = self.alloc_local(source.ty.clone());
@@ -6235,7 +6753,14 @@ impl Builder {
 
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.instructions.push(Instr::RecordInit {
-                    ty: expr.ty.clone(),
+                    // Substitute the monomorphisation's type-arg map so a
+                    // generic record constructed inside a substituted body
+                    // (`Box { value: x }` in `make$$i64`) carries the concrete
+                    // `Box<i64>` ty, matching the `record_key`/`dest` above.
+                    // Cloning `expr.ty` verbatim would leave an abstract
+                    // `Box<T>` that codegen rejects (`Box$$T` not in the
+                    // record-layout map).
+                    ty: self.subst_ty(&expr.ty),
                     fields: field_pairs,
                     dest,
                 });
@@ -6764,6 +7289,30 @@ impl Builder {
                 // presence check stays out (rationale above).
                 let _ = type_args;
 
+                // W5.016: finalize the owned-vs-BitCopy Vec element ABI through
+                // the SINGLE consumer-side authority (`is_owned_vec_element`, the
+                // same predicate get/set/pop and scope-exit-free consult). A
+                // `hew_vec_push_layout` whose receiver Vec has an owned
+                // (heap-owning) element must route to `hew_vec_push_owned` so the
+                // push agrees with the owned constructor descriptor — otherwise a
+                // BitCopy push op on an owned-constructed handle trips the runtime
+                // layout-aware abort. This upgrade is the array-literal-desugar
+                // path's owned-ness decision: the HIR desugar bakes
+                // `hew_vec_push_layout` from the marker-only `ValueClass`, which
+                // cannot see structural heap-ownership; MIR owns that structural
+                // authority. A genuine checker-resolved owned `.push()` already
+                // carries `hew_vec_push_owned`, and a real BitCopy element returns
+                // false here, so this only ever corrects the synthesized guess —
+                // it never re-derives the checker's impl-resolution verdict
+                // (`dedup-semantic-boundary`).
+                let callee = if target_symbol == "hew_vec_push_layout"
+                    && self.vec_receiver_has_owned_element(&receiver.ty)
+                {
+                    "hew_vec_push_owned".to_string()
+                } else {
+                    target_symbol.clone()
+                };
+
                 // Lower receiver as arg[0], then explicit args.
                 let receiver_place = self.lower_value(receiver)?;
                 let mut arg_places = vec![receiver_place];
@@ -6777,7 +7326,7 @@ impl Builder {
                 };
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
-                    callee: target_symbol.clone(),
+                    callee,
                     args: arg_places,
                     dest,
                     next,
@@ -7307,6 +7856,22 @@ impl Builder {
                 body,
                 ..
             } => self.lower_while_let(scrutinee, *variant_idx, bindings, body),
+            HirExprKind::IfLet {
+                scrutinee,
+                variant_idx,
+                bindings,
+                body,
+                else_body,
+                result_ty,
+                ..
+            } => self.lower_if_let(
+                scrutinee,
+                *variant_idx,
+                bindings,
+                body,
+                else_body.as_ref(),
+                result_ty,
+            ),
             HirExprKind::Loop { body } => self.lower_loop(body),
             HirExprKind::Break { value, .. } => {
                 // Lower the operand for its side effects — `break value` does
@@ -8889,9 +9454,43 @@ impl Builder {
         Some(result_place)
     }
 
+    /// Lower a match whose arms compare a scalar/string scrutinee against
+    /// literals, interleaved with guarded `Binding`/`Wildcard` (catch-all)
+    /// arms. Arms are tried **in source order** as one ordered chain — a
+    /// literal mismatch *or* a guard failure on any arm falls through to the
+    /// next arm, and the final fall-through emits an `ExhaustivenessFallthrough`
+    /// trap.
+    ///
+    /// Treating every arm uniformly is load-bearing: a `Binding`/`Wildcard`
+    /// arm is a catch-all only when it has no guard. A guarded binding arm
+    /// (`x if x > 100 => ...`) must fall through on guard failure so a later
+    /// arm — including a final `_` wildcard — still runs. The previous
+    /// implementation collapsed all binding/wildcard arms into a single
+    /// catch-all, silently dropping every arm after the first guarded binding
+    /// arm (the real `_` default among them); on the fall-through path codegen
+    /// then trapped, producing `check`-green / `run`-exit-1 with no output.
+    /// See LESSONS `match-fail-closed`.
+    ///
+    /// Block topology (per arm `i`):
+    /// ```text
+    /// arm_i_bb:
+    ///   (Literal)  cond = IntCmp(Eq, scrutinee, const_i)
+    ///              Branch { cond, then: matched_i_bb, else: arm_{i+1}_bb }
+    ///   matched_i_bb:
+    ///              guard_i = lower(guard)             (if present)
+    ///              Branch { guard_i, then: body_i_bb, else: arm_{i+1}_bb }
+    ///   (Binding/Wildcard)
+    ///              bind x = scrutinee                 (Binding only)
+    ///              guard_i = lower(guard)             (if present)
+    ///              Branch { guard_i, then: body_i_bb, else: arm_{i+1}_bb }
+    /// body_i_bb:   result = lower(arm_i.body); Goto join_bb
+    ///
+    /// trap_bb:     Trap { ExhaustivenessFallthrough } (final fall-through)
+    /// join_bb:     (result)
+    /// ```
     #[allow(
         clippy::too_many_lines,
-        reason = "literal match lowering is one CFG builder mirroring lower_match_enum_tag; \
+        reason = "literal match lowering is one ordered-chain CFG builder; \
                   splitting it would obscure block allocation and branch topology"
     )]
     fn lower_match_literal(
@@ -8902,23 +9501,14 @@ impl Builder {
     ) -> Option<Place> {
         let result_place = self.alloc_local(result_ty.clone());
 
-        let mut literal_arms: Vec<&hew_hir::HirMatchArm> = Vec::new();
-        let mut wildcard_arm: Option<&hew_hir::HirMatchArm> = None;
+        // Validate arm predicates up front; the checker guarantees a
+        // homogeneous literal scrutinee, so the only legal arms are Literal
+        // (refutable) and Binding/Wildcard (catch-all, optionally guarded).
         for arm in arms {
             match &arm.predicate {
-                hew_hir::HirMatchArmPredicate::Literal { .. } => {
-                    if wildcard_arm.is_none() {
-                        literal_arms.push(arm);
-                    }
-                }
-                hew_hir::HirMatchArmPredicate::Wildcard
-                | hew_hir::HirMatchArmPredicate::Binding { .. } => {
-                    // Binding arms are catch-all (like Wildcard) in the literal
-                    // dispatch; the scrutinee binding is handled in the body block.
-                    if wildcard_arm.is_none() {
-                        wildcard_arm = Some(arm);
-                    }
-                }
+                hew_hir::HirMatchArmPredicate::Literal { .. }
+                | hew_hir::HirMatchArmPredicate::Wildcard
+                | hew_hir::HirMatchArmPredicate::Binding { .. } => {}
                 hew_hir::HirMatchArmPredicate::EnumVariant { .. } => {
                     panic!("checker invariant violated: mixed Literal/Variant arms");
                 }
@@ -8950,82 +9540,56 @@ impl Builder {
         };
 
         let join_bb = self.alloc_block();
-        let body_bbs: Vec<u32> = (0..literal_arms.len())
-            .map(|_| self.alloc_block())
-            .collect();
-        let tail_bb = self.alloc_block();
+        // One entry block per arm, linked in source order, plus a terminal
+        // trap block reached only when no arm matches.
+        let arm_bbs: Vec<u32> = (0..arms.len()).map(|_| self.alloc_block()).collect();
+        let trap_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Goto { target: arm_bbs[0] });
 
-        let mut fallthrough_bbs: Vec<u32> = Vec::with_capacity(literal_arms.len());
-        for (i, arm) in literal_arms.iter().enumerate() {
-            let (lit, ty) = match &arm.predicate {
-                hew_hir::HirMatchArmPredicate::Literal { lit, ty } => (lit, ty),
-                other => {
-                    unreachable!("literal_arms must only contain Literal predicates; got {other:?}")
-                }
-            };
-            let expected = self.lower_match_literal_constant(lit, ty, arm.body.site)?;
-            let cond_local = self.alloc_local(ResolvedTy::Bool);
-            self.instructions.push(Instr::IntCmp {
-                pred: CmpPred::Eq,
-                lhs: Place::Local(scrutinee_local),
-                rhs: expected,
-                dest: cond_local,
-            });
+        for (i, arm) in arms.iter().enumerate() {
+            self.start_block(arm_bbs[i]);
+            // The fall-through target when this arm does not match (literal
+            // mismatch) or its guard fails: the next arm, or the trap.
+            let fallthrough_bb = arm_bbs.get(i + 1).copied().unwrap_or(trap_bb);
 
-            let next_target = if i + 1 < literal_arms.len() {
-                self.alloc_block()
-            } else {
-                tail_bb
-            };
-            fallthrough_bbs.push(next_target);
-            self.finish_current_block(Terminator::Branch {
-                cond: cond_local,
-                then_target: body_bbs[i],
-                else_target: next_target,
-            });
-            self.start_block(next_target);
-        }
-
-        if let Some(wildcard) = wildcard_arm {
-            // Binding and Wildcard arms may have guards; failure traps.
-            let guard_failed_bb = self.alloc_block();
-            self.emit_match_arm_binding(wildcard, Place::Local(scrutinee_local), None);
-            if let Some(guard) = &wildcard.guard {
-                let guard_place = self.lower_value(guard);
-                if let Some(guard_local) = guard_place {
-                    let body_bb = self.alloc_block();
-                    self.finish_current_block(Terminator::Branch {
-                        cond: guard_local,
-                        then_target: body_bb,
-                        else_target: guard_failed_bb,
-                    });
-                    self.start_block(body_bb);
-                }
-            }
-            if let Some(src) = self.lower_value(&wildcard.body) {
-                self.instructions.push(Instr::Move {
-                    dest: result_place,
-                    src,
+            // Literal arms first test the scrutinee against the constant; a
+            // mismatch falls through immediately to the next arm.
+            if let hew_hir::HirMatchArmPredicate::Literal { lit, ty } = &arm.predicate {
+                let expected = self.lower_match_literal_constant(lit, ty, arm.body.site)?;
+                let cond_local = self.alloc_local(ResolvedTy::Bool);
+                self.instructions.push(Instr::IntCmp {
+                    pred: CmpPred::Eq,
+                    lhs: Place::Local(scrutinee_local),
+                    rhs: expected,
+                    dest: cond_local,
                 });
+                let matched_bb = self.alloc_block();
+                self.finish_current_block(Terminator::Branch {
+                    cond: cond_local,
+                    then_target: matched_bb,
+                    else_target: fallthrough_bb,
+                });
+                self.start_block(matched_bb);
+                if !arm.bindings.is_empty() {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "bindings in literal match arm".to_string(),
+                            site: arm.body.site,
+                        },
+                        note: "top-level literal match arms do not introduce payload bindings"
+                            .to_string(),
+                    });
+                    return None;
+                }
+            } else {
+                // Binding/Wildcard catch-all: bind the scrutinee name (if any).
+                self.emit_match_arm_binding(arm, Place::Local(scrutinee_local), None);
             }
-            self.finish_current_block(Terminator::Goto { target: join_bb });
-            self.start_block(guard_failed_bb);
-            self.finish_current_block(Terminator::Trap {
-                kind: TrapKind::ExhaustivenessFallthrough,
-            });
-        } else {
-            self.finish_current_block(Terminator::Trap {
-                kind: TrapKind::ExhaustivenessFallthrough,
-            });
-        }
 
-        for (i, arm) in literal_arms.iter().enumerate() {
-            self.start_block(body_bbs[i]);
-            let fallthrough_bb = fallthrough_bbs[i];
-            // Guard check on literal arm: failure falls through to next arm.
+            // Guard check (applies to literal and catch-all arms alike):
+            // failure falls through to the next arm.
             if let Some(guard) = &arm.guard {
-                let guard_place = self.lower_value(guard);
-                if let Some(guard_local) = guard_place {
+                if let Some(guard_local) = self.lower_value(guard) {
                     let body_entry_bb = self.alloc_block();
                     self.finish_current_block(Terminator::Branch {
                         cond: guard_local,
@@ -9035,17 +9599,8 @@ impl Builder {
                     self.start_block(body_entry_bb);
                 }
             }
-            if !arm.bindings.is_empty() {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "bindings in literal match arm".to_string(),
-                        site: arm.body.site,
-                    },
-                    note: "top-level literal match arms do not introduce payload bindings"
-                        .to_string(),
-                });
-                return None;
-            }
+
+            // Arm body: produce the result and jump to the join.
             if let Some(src) = self.lower_value(&arm.body) {
                 self.instructions.push(Instr::Move {
                     dest: result_place,
@@ -9054,6 +9609,13 @@ impl Builder {
             }
             self.finish_current_block(Terminator::Goto { target: join_bb });
         }
+
+        // Terminal fall-through: no arm matched. The checker pre-gates
+        // non-exhaustive matches, so this is a fail-closed backstop.
+        self.start_block(trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::ExhaustivenessFallthrough,
+        });
 
         self.start_block(join_bb);
         Some(result_place)
@@ -10275,6 +10837,184 @@ impl Builder {
         None
     }
 
+    /// Lower `if let PAT = scrutinee { body } else { else_body }` to a
+    /// three-block CFG that mirrors `lower_if` (for the branch shape) plus the
+    /// payload-binding emit from `lower_while_let` (for the then arm):
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   result_local = alloc(result_ty)
+    ///   scrutinee_local = lower(scrutinee)
+    ///   tag_local = Move from Place::EnumTag(scrutinee_local)
+    ///   k = ConstI64(variant_idx)
+    ///   cond = IntCmp(Eq, tag, k)
+    ///   Branch { cond, then: then_bb, else: else_bb }
+    ///
+    /// then_bb:
+    ///   [payload bindings via Place::MachineVariant]
+    ///   result_local = lower(body)
+    ///   Goto join_bb
+    ///
+    /// else_bb:
+    ///   [result_local = lower(else_body)]   (or no-op when else absent)
+    ///   Goto join_bb
+    ///
+    /// join_bb:
+    ///   (subsequent lowering continues here; value = result_local)
+    /// ```
+    ///
+    /// Returns the result `Place::Local` (which both branches write). For a
+    /// Unit-typed `if let` the result local is allocated but never read.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single coherent CFG builder for if-let; mirrors lower_while_let binding \
+                  setup and lower_if branch shape — splitting would require passing many \
+                  intermediate block IDs and binding-restore state across helper boundaries"
+    )]
+    fn lower_if_let(
+        &mut self,
+        scrutinee: &HirExpr,
+        variant_idx: u32,
+        bindings: &[hew_hir::HirMatchArmBinding],
+        body: &hew_hir::HirBlock,
+        else_body: Option<&hew_hir::HirBlock>,
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let result_place = self.alloc_local(self.subst_ty(result_ty));
+
+        // Entry: evaluate scrutinee, load tag, branch.
+        let scrutinee_place = self.lower_value(scrutinee)?;
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(n) => n,
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "if-let scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "if-let scrutinee must lower to Place::Local; got {other:?}. \
+                         The HIR producer should only emit IfLet for enum-typed scrutinees \
+                         backed by a local slot"
+                    ),
+                });
+                return None;
+            }
+        };
+
+        let tag_local = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::Move {
+            dest: tag_local,
+            src: Place::EnumTag(scrutinee_local),
+        });
+        let k_local = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: k_local,
+            value: i64::from(variant_idx),
+        });
+        let cond_local = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            pred: crate::model::CmpPred::Eq,
+            lhs: tag_local,
+            rhs: k_local,
+            dest: cond_local,
+        });
+
+        let then_bb = self.alloc_block();
+        let else_bb = self.alloc_block();
+        let join_bb = self.alloc_block();
+
+        self.finish_current_block(Terminator::Branch {
+            cond: cond_local,
+            then_target: then_bb,
+            else_target: else_bb,
+        });
+
+        // Then arm: bind payload fields (same as lower_while_let body entry),
+        // lower body, move result into result_place.
+        self.start_block(then_bb);
+        let mut overwritten_bindings = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let binding_ty = self.subst_ty(&binding.ty);
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: scrutinee.site,
+                ty: binding_ty.clone(),
+            });
+            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                self.owned_locals
+                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+            }
+            let dest = self.alloc_local(binding.ty.clone());
+            self.instructions.push(Instr::Move {
+                dest,
+                src: Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: binding.field_idx,
+                },
+            });
+            let previous = self.binding_locals.insert(binding.binding, dest);
+            overwritten_bindings.push((binding.binding, previous));
+        }
+
+        self.active_scopes.push(body.scope);
+        for stmt in &body.statements {
+            self.stmt(stmt);
+        }
+        let then_value = if let Some(tail) = &body.tail {
+            self.lower_value(tail)
+        } else {
+            None
+        };
+        if let Some(src) = then_value {
+            self.instructions.push(Instr::Move {
+                dest: result_place,
+                src,
+            });
+        }
+        self.emit_pending_defers(body.scope);
+        self.active_scopes.pop();
+
+        // Restore binding_locals after then-arm scope ends.
+        for (binding, previous) in overwritten_bindings.into_iter().rev() {
+            if let Some(previous) = previous {
+                self.binding_locals.insert(binding, previous);
+            } else {
+                self.binding_locals.remove(&binding);
+            }
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        // Else arm: lower else_body (if present), move result into result_place.
+        self.start_block(else_bb);
+        if let Some(eb) = else_body {
+            self.active_scopes.push(eb.scope);
+            for stmt in &eb.statements {
+                self.stmt(stmt);
+            }
+            let else_value = if let Some(tail) = &eb.tail {
+                self.lower_value(tail)
+            } else {
+                None
+            };
+            if let Some(src) = else_value {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+            self.emit_pending_defers(eb.scope);
+            self.active_scopes.pop();
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        // Join: subsequent lowering continues here.
+        self.start_block(join_bb);
+        Some(result_place)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single coherent CFG builder for the for-range loop; splitting would require passing many intermediate block IDs across helper boundaries"
@@ -10714,7 +11454,31 @@ impl Builder {
     ) -> Option<Place> {
         // Lower the container and index sub-expressions.
         let vec_place = self.lower_value(container)?;
-        let index_place = self.lower_value(index)?;
+        let raw_index_place = self.lower_value(index)?;
+
+        // Implicit index-site widening: if the checker accepted a signed integer
+        // narrower than i64 (i8/i16/i32) as the index, sign-extend it to i64 here
+        // so the bounds-check IntCmp and the hew_vec_get_T call both receive
+        // matching i64 operands.  This is operand widening at the use site, not
+        // result-type widening (LESSONS `widen-operands-not-result-when-tightening-int-coercion`).
+        let index_place = if let Place::Local(raw_id) = raw_index_place {
+            let raw_ty = self.locals[raw_id as usize].clone();
+            match raw_ty {
+                ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => {
+                    let wide_place = self.alloc_local(ResolvedTy::I64);
+                    self.instructions.push(Instr::NumericCast {
+                        dest: wide_place,
+                        src: raw_index_place,
+                        from_ty: raw_ty,
+                        to_ty: ResolvedTy::I64,
+                    });
+                    wide_place
+                }
+                _ => raw_index_place,
+            }
+        } else {
+            raw_index_place
+        };
 
         // Step 1: Call hew_vec_len(vec) -> i64 to get the length.
         let len_place = self.alloc_local(ResolvedTy::I64);
@@ -10764,12 +11528,21 @@ impl Builder {
         //     applies the correct per-element stride via the layout descriptor.
         //   - Heap-handle nominals (Resource / Linear): stored as pointer-sized
         //     opaque handles; `hew_vec_get_ptr` is correct for these.
+        // W5.016: an owned (non-Copy) record/enum/tuple element was constructed
+        // through the owned descriptor (`hew_vec_new_with_elem_layout`), so its
+        // element load must route to the owned borrow getter. `hew_vec_get_ptr`
+        // (8-byte stride) would mis-stride a value-shaped element (the E3
+        // panic); `hew_vec_get_layout` aborts on an owned descriptor. The
+        // owned getter borrows the live buffer slot (no clone/drop) — a for-in
+        // / index read is a BORROW, not an independent owner.
+        let owned_elem = self.is_owned_vec_element(elem_ty);
         let get_symbol = match elem_ty {
             ResolvedTy::Bool => "hew_vec_get_bool",
             ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
             ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_get_i64",
             ResolvedTy::F64 => "hew_vec_get_f64",
             ResolvedTy::String => "hew_vec_get_str",
+            _ if owned_elem => "hew_vec_get_owned",
             // BitCopy Named value records: use layout-descriptor getter so the
             // runtime applies the correct element stride.
             ResolvedTy::Named { .. }
@@ -12183,6 +12956,8 @@ impl Builder {
                 self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
             }
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
+            "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
+            "hew_vec_get_i32" => self.lower_bytes_get_i32(hir_args, site, context),
             "hew_option_is_none"
             | "hew_option_is_some"
             | "hew_option_unwrap_f64"
@@ -12256,6 +13031,71 @@ impl Builder {
         let byte = self.lower_value(&hir_args[1])?;
         self.push_runtime_call("hew_bytes_push", vec![bytes, byte], None);
         None
+    }
+
+    /// Emit `hew_vec_len(buf) -> i64` for `bytes.len()` calls.
+    ///
+    /// The `impl bytes` extern block in `std/io.hew` declares `len` with
+    /// `#[extern_symbol(hew_vec_len)]`. At MIR time the callee name is
+    /// already `hew_vec_len` (allowlisted), so it routes here rather than
+    /// through the for-in-loop path that uses `hew_vec_len` directly.
+    /// ABI: 1 arg (bytes receiver, passed as a `*mut HewVec`), returns `i64`.
+    fn lower_bytes_len(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 1 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_vec_len` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_vec_len` (bytes.len) expects 1 argument (receiver), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        let buf = self.lower_value(&hir_args[0])?;
+        let dest =
+            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::I64));
+        self.push_runtime_call("hew_vec_len", vec![buf], dest);
+        dest
+    }
+
+    /// Emit `hew_vec_get_i32(buf, index) -> i32` for `bytes.get(index)` calls.
+    ///
+    /// The `impl bytes` extern block in `std/io.hew` declares `get` with
+    /// `#[extern_symbol(hew_vec_get_i32)]`. Returns the byte at `index` as
+    /// `i32` (ABI mirrors the `Vec<i32>` element getter).
+    fn lower_bytes_get_i32(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_vec_get_i32` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_vec_get_i32` (bytes.get) expects 2 arguments (receiver, index), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        let buf = self.lower_value(&hir_args[0])?;
+        let idx = self.lower_value(&hir_args[1])?;
+        let dest =
+            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::I32));
+        self.push_runtime_call("hew_vec_get_i32", vec![buf, idx], dest);
+        dest
     }
 
     fn lower_option_result_runtime_call(
@@ -14448,10 +15288,31 @@ impl Builder {
                 && monomorphic_user_record_key(&resolved_ty).is_some())
                 || vec_iter_record_layout_key(&resolved_ty)
                     .is_some_and(|key| self.record_field_orders.contains_key(&key))
+                || user_record_layout_key(&resolved_ty)
+                    .is_some_and(|key| self.vec_owned_element_keys.contains(&key))
+                || self.is_owned_aggregate_record_ty(&resolved_ty)
             {
-                // Two distinct owned-aggregate gates that both classify as
-                // CowValue: the owned-string-record let-bound direct-string record site, and
-                // the VecIter record layout.
+                // Owned-aggregate gates that all classify as CowValue:
+                //   1. the owned-string-record let-bound direct-string record
+                //      site (legacy W3.029 narrow path),
+                //   2. the VecIter record layout,
+                //   3. (W5.016) any value whose type is used as an owned-Vec
+                //      element in this function, and
+                //   4. (value-class capstone) the UNIFIED authority — any
+                //      monomorphic user record whose fields ALL classify under
+                //      the actor-state field classifier, so codegen can
+                //      synthesize the matching `__hew_record_{clone,drop}_
+                //      inplace_<R>` thunk. This admits the standalone
+                //      record-by-value shape (construct + return) the
+                //      site-based gate (1) and the element-context gate (3)
+                //      both missed: RC-6 (string field), RC-4 (bytes field),
+                //      and G12 (Vec/HashMap/HashSet fields). It is NOT a
+                //      blanket relaxation — a record carrying a field the
+                //      classifier rejects (an IO handle with no clone helper,
+                //      an unresolved nested type) is excluded by
+                //      `is_owned_aggregate_record_ty` and stays fail-closed at
+                //      the W3.029 reject below, so codegen never observes a
+                //      record whose drop thunk it cannot emit.
                 ValueClass::CowValue
             } else {
                 ValueClass::Unknown
@@ -14827,13 +15688,85 @@ fn elaborate(
         }
     }
 
+    // W5.020 — fail-closed sole-owner allow-set for heap-owning enum
+    // composite bindings (`Result<T, string>` / `Option<string>` / user enums
+    // with an owned-payload variant). A composite is admitted for the tag-aware
+    // `DropKind::EnumInPlace` scope-exit drop only when its active payload is
+    // proven not to escape; everything else leaks (as before W5.020) rather
+    // than double-free. Empty when the builder carries no enum layouts (some
+    // synthetic test pipelines), so those bodies keep the pre-W5.020 posture.
+    let enum_composite_drop_allowed = derive_enum_composite_drop_allowed(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.locals,
+        &builder.enum_layouts,
+    );
+
+    // W5.016 — owned-element `Vec<T>` scope-exit drop allow-set. An owned Vec
+    // is admitted for the `hew_vec_free_owned` release UNLESS it is consumed or
+    // maybe-consumed at any exit (for-in `into_iter` moves it, a return moves it
+    // to the ReturnSlot, a rebind moves it). The per-exit `Live` filter in
+    // `enumerate_exits` is the final authority on which exits actually fire the
+    // drop; this allow-set is the conservative gate that removes any binding the
+    // dataflow proves leaves this scope's ownership, so the drop never
+    // double-frees a moved-out Vec (`raii-null-after-move`, `cleanup-all-exits`).
+    let mut owned_vec_drop_allowed: HashSet<BindingId> = builder
+        .owned_locals
+        .iter()
+        .filter(|(_, _, ty)| builder.binding_ty_is_owned_element_vec(ty))
+        .map(|(binding, _, _)| *binding)
+        .collect();
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) {
+                owned_vec_drop_allowed.remove(binding);
+            }
+        }
+    }
+
+    // Value-class capstone — owned-aggregate-record scope-exit drop allow-set.
+    // A by-value owned record (RC-4 bytes field / RC-6 string field / G12
+    // Vec/HashMap/HashSet field) earns the tag-aware `DropKind::RecordInPlace`
+    // (the recursive per-field `__hew_record_drop_inplace_<R>` thunk) ONLY when
+    // the fail-closed escape-scan proves it still solely owns its heap fields at
+    // scope exit. A whole-record return (`Move { dest: ReturnSlot }` at an
+    // if-arm/function tail) does NOT emit a `MirStatement::Use { Consume }`, so
+    // an `exit_states`-only gate (as the owned-Vec arm uses) would keep the
+    // binding and double-free its fields on the return path. The escape-scan
+    // (modelled on `derive_enum_composite_drop_allowed`: a record is an OWNER
+    // and the question is whether it escapes) is the correct authority — it
+    // excludes the return path and admits the field-read-only path.
+    //
+    // This is the audit #5 reconciliation: the owned-record drop is now gated by
+    // a per-exit escape analysis instead of the path-insensitive global
+    // `owned_locals` removal (`mark_binding_moved`), so a record consumed on one
+    // arm but live on another is still dropped on the live arm. The legacy
+    // `owned_string_record_bindings` membership is folded into the same gate (a
+    // string record is a subset of the owned-aggregate records covered here).
+    let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
+    let owned_record_drop_allowed = derive_owned_record_drop_allowed(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.locals,
+        &is_owned_record,
+        &builder.enum_layouts,
+    );
+
     let lifo_drops = build_lifo_drops(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.type_classes,
         &builder.dyn_trait_storage,
-        &builder.owned_string_record_bindings,
+        &owned_record_drop_allowed,
         &cow_drop_allowed,
+        &builder.enum_layouts,
+        &enum_composite_drop_allowed,
+        &owned_vec_drop_allowed,
     );
     let (elab_blocks, drop_plans) = enumerate_exits(
         &checked.blocks,
@@ -15013,6 +15946,33 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
                 drop_kind_for(drop.place, &drop.ty, None)
             }
         }
+        // W5.020 — heap-owning enum composite drops are keyed by both kind and
+        // `ElabDrop::ty` (the enum identity selects the synthesized in-place
+        // helper), while the place is an ordinary stack `Local`. Accept the
+        // dedicated kind on local enum-composite storage; any other shape
+        // re-derives via the Place-driven dispatcher and so cannot silently
+        // carry an `EnumInPlace` kind on a non-enum place.
+        DropKind::EnumInPlace => {
+            if matches!(drop.place, Place::Local(_)) && matches!(&drop.ty, ResolvedTy::Named { .. })
+            {
+                DropKind::EnumInPlace
+            } else {
+                drop_kind_for(drop.place, &drop.ty, None)
+            }
+        }
+        // W5.016 — owned-element `Vec<T>` scope-exit release. The place is an
+        // ordinary stack `Local` holding the Vec handle; the owned-ness
+        // decision lives in the function-scoped owned-element key set, not in
+        // the type-only `drop_kind_for` dispatcher (which would re-derive
+        // `Resource` for a `Vec` Local). Accept the dedicated
+        // `CowHeap { hew_vec_free_owned }` kind on a local Vec; any other shape
+        // re-derives via the dispatcher so a non-Vec place cannot silently
+        // carry the owned-Vec release symbol.
+        DropKind::CowHeap {
+            drop_fn: "hew_vec_free_owned",
+        } if matches!(drop.place, Place::Local(_)) && ty_is_vec(&drop.ty) => DropKind::CowHeap {
+            drop_fn: "hew_vec_free_owned",
+        },
         // Extract the storage discriminator from the elaborated drop kind
         // itself so the dispatcher can re-derive the same
         // `DropKind::TraitObject { storage }` for the expected-vs-actual
@@ -16277,6 +17237,626 @@ fn derive_cow_sole_owner(
     allowed
 }
 
+/// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
+/// composite** bindings (`Result<T, string>`, `Option<string>`, any user
+/// `enum` whose active variant owns heap). Returns the subset of
+/// `owned_locals` whose composite binding still owns its active variant's
+/// heap payload at scope exit and therefore earns a tag-aware
+/// `DropKind::EnumInPlace` drop.
+///
+/// ## Why this is separate from `derive_cow_sole_owner`
+///
+/// `derive_cow_sole_owner` excludes any binding whose base local is read as
+/// a source operand. A matched enum composite is ALWAYS read — `match a {…}`
+/// copies the scrutinee whole-value into a fresh local and then reads its
+/// tag/payload via interior projections — so that derivation can never admit
+/// a matched composite (it would always leak). This derivation is the
+/// inverse: the composite is the *owner*, and the question is whether its
+/// payload **escapes** that ownership, not whether it is read.
+///
+/// ## The ownership model
+///
+/// The enum is a single tagged-union struct stored inline in the binding's
+/// alloca. The active variant's owned payload (e.g. a `string` handle) is
+/// the only heap owner. The M-COW spine emits NO retain on share, so:
+/// - A whole-value `Move` of the composite (the `let a = …; match a` scrutinee
+///   copy, or a `let b = a` rebind) byte-copies the struct, aliasing the same
+///   payload pointer into a transient/rebind local with no retain. That copy
+///   never independently drops (it is not in `owned_locals`, or is the rebind
+///   tail we follow), so dropping the *original* owner exactly once is correct.
+/// - A `match` destructure binder (`Move { dest, src: MachineVariant{..} }`)
+///   is a non-owning alias of the payload (already excluded from its own drop
+///   by `derive_cow_sole_owner`'s projection-alias taint). If such a binder
+///   merely reads the payload transiently, the composite still owns it and
+///   must drop it. If the binder **escapes** (is read into an owning sink —
+///   returned, stored into another aggregate, sent, or passed as an owning
+///   call argument), then the payload's single owner has moved out and the
+///   composite must NOT drop (the escapee owns it now).
+///
+/// ## The fail-closed rule
+///
+/// A composite binding `b` is admitted IFF:
+///   1. `b`'s base local is not itself read as a source EXCEPT as the `src`
+///      of a whole-value `Move` (the scrutinee copy / rebind hand-off), AND
+///   2. no interior-payload binder transitively derived from `b`'s alias set
+///      escapes into an owning sink.
+///
+/// Anything the prover cannot positively clear is excluded — it leaks (as
+/// before W5.020) but never double-frees. The escape classifier is the same
+/// exhaustive `instr_source_places` / `terminator_source_places` machinery
+/// `derive_cow_sole_owner` uses, so a future alias-producing instruction
+/// auto-excludes rather than silently re-opening a double-free.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the body is four sequential single-purpose passes — candidate \
+              collection, whole-value alias propagation, payload-binder \
+              seeding, and the escape scan — each shallow and independently \
+              commented; splitting them would scatter the shared fixpoint \
+              state and obscure the fail-closed ordering the passes depend on"
+)]
+fn derive_enum_composite_drop_allowed(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+    local_tys: &[ResolvedTy],
+    enum_layouts: &[crate::model::EnumLayout],
+) -> HashSet<BindingId> {
+    // A local carries a heap-owning value (string/Bytes/owning aggregate or a
+    // nested heap-owning enum) iff its registered type says so. Bitcopy payload
+    // binders (an `i64`/`bool` extracted from an `Ok(i64)` arm) carry no owner,
+    // so their "escape" is harmless and must not exclude the composite drop —
+    // that over-exclusion would leak every `Result<i64, string>` whose Ok arm
+    // returns the i64 (the dominant real case).
+    let local_is_heap_owning = |local: u32| -> bool {
+        local_tys
+            .get(local as usize)
+            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+    };
+    // The candidate composite locals: base locals of heap-owning enum
+    // composite bindings.
+    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !ty_is_heap_owning_enum_composite(ty, enum_layouts) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        candidate_local_to_binding.insert(local, *binding);
+    }
+    if candidate_local_to_binding.is_empty() {
+        return HashSet::new();
+    }
+
+    // Alias set: each candidate's local plus every local reachable from it
+    // through forward-propagated whole-value `Move { dest: Local, src: Local }`
+    // copies (the scrutinee copy and rebind chain). These all byte-alias the
+    // same payload pointer with no retain.
+    let mut alias_of: HashMap<u32, u32> = HashMap::new();
+    for &local in candidate_local_to_binding.keys() {
+        alias_of.insert(local, local);
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        // Only whole-value Local→Local copies propagate the
+                        // alias. An interior-projection src is a payload
+                        // destructure, handled by the escape scan below.
+                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
+                            && matches!(dest, Place::Local(_))
+                        {
+                            if let Some(&root) = alias_of.get(&sl) {
+                                if alias_of.insert(dl, root) != Some(root) {
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Payload-binder set: destinations of `Move { dest, src: interior
+    // projection of an alias-set local }` — the match/while-let destructure
+    // binders. Propagate forward through whole-value Move so a binder copied
+    // onward is still tracked.
+    let mut payload_binders: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Move { dest, src } = instr {
+                if place_is_interior_projection(*src) {
+                    if let Some(sl) = base_local(*src) {
+                        if alias_of.contains_key(&sl) {
+                            if let Some(dl) = base_local(*dest) {
+                                // Only a binder that actually receives a
+                                // heap-owning payload can carry the buffer out
+                                // of the composite. A bitcopy payload (an i64
+                                // from an `Ok(i64)` arm) is harmless to alias
+                                // out — tracking it would over-exclude the
+                                // composite drop and leak.
+                                if local_is_heap_owning(dl) {
+                                    payload_binders.insert(dl);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if payload_binders.contains(&sl) && payload_binders.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Escape scan. A composite root is excluded if:
+    //   (a) any alias-set member is read into an OWNING sink (a source operand
+    //       that is NOT the whole-value `Move` hand-off already folded into the
+    //       alias set, and NOT a tag/interior projection read for the match) —
+    //       i.e. the whole composite escaped, OR
+    //   (b) any payload binder derived from this root is read as a source into
+    //       an owning sink (the payload escaped out of the composite).
+    //
+    // For (a): the only non-escaping whole-value read of a composite local is
+    // a `Move { dest: Local, src: Local(member) }` whose dest is itself an
+    // alias-set member (already followed). Any other read of the *whole* local
+    // (a call arg, a field store, a return) escapes the composite. Interior
+    // projection reads (tag/payload) do not escape the composite — they feed
+    // the payload-binder scan instead.
+    let mut excluded_roots: HashSet<u32> = HashSet::new();
+    let note_alias_escape = |local: u32, excluded: &mut HashSet<u32>| {
+        if let Some(&root) = alias_of.get(&local) {
+            excluded.insert(root);
+        }
+    };
+    for block in blocks {
+        for instr in &block.instructions {
+            // Move escapes. A `Move` is the one instruction whose `dest`
+            // discriminates a benign hand-off from a real escape, so it needs
+            // its own analysis rather than the blanket source scan below.
+            if let Instr::Move { dest, src } = instr {
+                let src_local = base_local(*src);
+                let dest_local = base_local(*dest);
+                // (a) Whole-composite escape: an alias-set member read as a
+                //     *whole* `Place::Local` source whose dest is NOT another
+                //     alias-set member (the only benign whole-value read is the
+                //     scrutinee-copy / rebind hand-off we already folded into
+                //     the alias set).
+                if let Some(sl) = src_local {
+                    let src_is_member = alias_of.contains_key(&sl)
+                        && matches!(src, Place::Local(_) | Place::ReturnSlot);
+                    let dest_is_member = dest_local.is_some_and(|dl| {
+                        alias_of.contains_key(&dl) && matches!(dest, Place::Local(_))
+                    });
+                    if src_is_member && !dest_is_member {
+                        note_alias_escape(sl, &mut excluded_roots);
+                    }
+                }
+                // (b) Payload-binder escape: a heap-owning destructure binder
+                //     (or a value transitively copied from one) moved into an
+                //     owning sink — `ReturnSlot`, an interior aggregate
+                //     projection (stored into another struct/variant), or a
+                //     plain local that is NOT itself a tracked binder (the
+                //     value left the binder set into general storage). A
+                //     binder→binder copy is the benign onward hand-off the
+                //     forward-propagation already tracks.
+                if let Some(sl) = src_local {
+                    if payload_binders.contains(&sl) {
+                        let benign_handoff = dest_local
+                            .is_some_and(|dl| payload_binders.contains(&dl))
+                            && matches!(dest, Place::Local(_));
+                        if !benign_handoff {
+                            note_payload_escape(
+                                &payload_binders,
+                                sl,
+                                &alias_of,
+                                blocks,
+                                &mut excluded_roots,
+                            );
+                        }
+                    }
+                }
+            }
+            // Owning-sink reads (other than Move, handled above): any source
+            // operand that is a whole alias-set member or a payload binder is
+            // conservatively an escape. `print`/`println` lower as
+            // `Terminator::Call` (handled with the borrow exemption below), not
+            // as instructions, so an instruction that reads a payload binder is
+            // always an owning use here (a runtime call that consumes it, an
+            // aggregate construction, an arithmetic op on a non-string — the
+            // last cannot occur for a heap binder). Fail-closed: exclude.
+            if !matches!(instr, Instr::Move { .. } | Instr::Drop { .. }) {
+                for p in instr_source_places(instr) {
+                    if let Some(l) = base_local(p) {
+                        if alias_of.contains_key(&l)
+                            && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                        {
+                            note_alias_escape(l, &mut excluded_roots);
+                        }
+                        if payload_binders.contains(&l) {
+                            note_payload_escape(
+                                &payload_binders,
+                                l,
+                                &alias_of,
+                                blocks,
+                                &mut excluded_roots,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Terminator reads. A return value / send / ask payload escapes; a
+        // branch cond is bitcopy and harmless. A `print`/`println` call
+        // BORROWS its string argument (it does not take ownership), so a
+        // payload binder passed there is a transient read, NOT an escape —
+        // the same borrow-only-sink exemption W5.011's
+        // `retained_string_terminator_drop_safe` encodes.
+        for p in terminator_source_places(&block.terminator) {
+            if let Some(l) = base_local(p) {
+                if alias_of.contains_key(&l) && matches!(p, Place::Local(_) | Place::ReturnSlot) {
+                    // A whole composite passed to a borrowing print sink is
+                    // not how composites are consumed, but apply the same
+                    // borrow exemption for symmetry; any non-print read of a
+                    // whole composite escapes.
+                    if !retained_string_terminator_drop_safe(&block.terminator, l) {
+                        note_alias_escape(l, &mut excluded_roots);
+                    }
+                }
+                if payload_binders.contains(&l)
+                    && !retained_string_terminator_drop_safe(&block.terminator, l)
+                {
+                    note_payload_escape(
+                        &payload_binders,
+                        l,
+                        &alias_of,
+                        blocks,
+                        &mut excluded_roots,
+                    );
+                }
+            }
+        }
+    }
+
+    let mut allowed = HashSet::new();
+    for (&local, &binding) in &candidate_local_to_binding {
+        if !excluded_roots.contains(&local) {
+            allowed.insert(binding);
+        }
+    }
+    allowed
+}
+
+/// Value-class capstone — fail-closed sole-owner derivation for owned-aggregate
+/// **record** bindings passed/returned by value (RC-4 / RC-6 / G12). Returns
+/// the subset of `owned_locals` whose record binding still owns its heap fields
+/// at scope exit and therefore earns a tag-aware `DropKind::RecordInPlace` drop.
+///
+/// ## Why this mirrors `derive_enum_composite_drop_allowed`, not the simpler
+/// dataflow `exit_states` allow-set
+///
+/// A returned record is moved whole-value into the `ReturnSlot` via
+/// `Instr::Move { dest: ReturnSlot, src: Local }` at a *tail* position — the
+/// dataflow's `MirStatement::Use { intent: Consume }` is NOT emitted for that
+/// implicit tail/if-arm move, so the `exit_states`-only allow-set (used for
+/// owned Vecs) would keep the binding and the `RecordInPlace` drop would run on
+/// the return path AFTER the record escaped — a double-free of its heap fields.
+/// The enum-composite escape-scan is the correct model: the record is the
+/// *owner*; the question is whether it (or one of its owned fields) **escapes**.
+///
+/// ## The ownership model (records are simpler than enum composites)
+///
+/// The record is an inline struct in the binding's alloca; its owned fields
+/// (string / bytes / Vec / nested owned record-or-enum) are the heap owners. The
+/// M-COW spine emits no retain on share, so:
+/// - A whole-value `Move` of the record (`let b = a` rebind, or the if-arm tail
+///   that flows to the return) byte-copies the struct, aliasing every field
+///   pointer with no retain. That alias never independently drops, so dropping
+///   the original owner exactly once is correct — UNLESS the alias is what
+///   escapes (returned), in which case the *escapee* owns the fields now.
+/// - A `RecordFieldLoad` reads one field out. Reading a `BitCopy` field is
+///   harmless. Reading an OWNED field shares its pointer with no retain; if that
+///   loaded field then escapes into an owning sink, the record must NOT drop it.
+///
+/// ## The fail-closed rule
+///
+/// A record binding `b` is admitted IFF:
+///   1. `b`'s base local (and its whole-value alias set) is never read as a
+///      *whole-value* source into an owning sink (return, call arg, field store,
+///      send) EXCEPT the benign whole-value `Move` hand-off folded into the
+///      alias set, AND
+///   2. no owned field loaded from `b`'s alias set escapes into an owning sink.
+///
+/// Anything the prover cannot positively clear is excluded — it leaks (never
+/// double-frees). A `RecordFieldLoad` is an interior read (it does NOT escape
+/// the whole record); it only seeds an owned-field binder for rule 2.
+#[allow(
+    clippy::too_many_lines,
+    reason = "four sequential single-purpose passes (candidate collection, \
+              whole-value alias propagation, owned-field-binder seeding, escape \
+              scan) sharing fixpoint state, mirroring derive_enum_composite_\
+              drop_allowed; splitting scatters the fail-closed ordering"
+)]
+fn derive_owned_record_drop_allowed(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+    local_tys: &[ResolvedTy],
+    is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> HashSet<BindingId> {
+    // A local carries a heap-owning value iff its registered type says so. Used
+    // to decide whether a `RecordFieldLoad` dest is an owned-field binder (a
+    // BitCopy field load is harmless to alias out).
+    let local_is_heap_owning = |local: u32| -> bool {
+        local_tys
+            .get(local as usize)
+            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+    };
+
+    // Candidate record locals: base locals of owned-aggregate-record bindings.
+    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !is_owned_record(ty) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        candidate_local_to_binding.insert(local, *binding);
+    }
+    if candidate_local_to_binding.is_empty() {
+        return HashSet::new();
+    }
+
+    // Whole-value alias set: each candidate plus every local reachable through
+    // forward-propagated whole-value `Move { dest: Local, src: Local }` copies.
+    let mut alias_of: HashMap<u32, u32> = HashMap::new();
+    for &local in candidate_local_to_binding.keys() {
+        alias_of.insert(local, local);
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
+                            && matches!(dest, Place::Local(_))
+                        {
+                            if let Some(&root) = alias_of.get(&sl) {
+                                if alias_of.insert(dl, root) != Some(root) {
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Owned-field-binder set: destinations of `RecordFieldLoad { record: alias-
+    // set member }` whose loaded field is itself heap-owning. Propagate forward
+    // through whole-value Move so a binder copied onward is still tracked.
+    let mut field_binders: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::RecordFieldLoad { record, dest, .. } = instr {
+                if let Some(sl) = base_local(*record) {
+                    if alias_of.contains_key(&sl) {
+                        if let Some(dl) = base_local(*dest) {
+                            if local_is_heap_owning(dl) {
+                                field_binders.insert(dl);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if field_binders.contains(&sl) && field_binders.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Escape scan. Exclude a record root if any whole-value alias member, or any
+    // owned-field binder derived from it, is read into an owning sink. A
+    // `RecordFieldLoad` reading the record is an INTERIOR read (it feeds the
+    // field-binder pass, never escapes the whole record), so it is exempt from
+    // the whole-value escape check below.
+    let mut excluded_roots: HashSet<u32> = HashSet::new();
+    let note_alias_escape = |local: u32, excluded: &mut HashSet<u32>| {
+        if let Some(&root) = alias_of.get(&local) {
+            excluded.insert(root);
+        }
+    };
+    // A field binder escaping means the record no longer solely owns that field.
+    // We cannot cheaply attribute a binder to one record root, so — fail-closed
+    // — exclude every record root when any field binder escapes (over-exclusion
+    // leaks; never double-frees), mirroring `note_payload_escape`.
+    let note_field_escape = |excluded: &mut HashSet<u32>| {
+        for &root in alias_of.values() {
+            excluded.insert(root);
+        }
+    };
+    for block in blocks {
+        for instr in &block.instructions {
+            // A `Move` discriminates a benign whole-value hand-off (dest is
+            // another alias member) from a real whole-record escape.
+            if let Instr::Move { dest, src } = instr {
+                let src_local = base_local(*src);
+                let dest_local = base_local(*dest);
+                if let Some(sl) = src_local {
+                    let src_is_member = alias_of.contains_key(&sl)
+                        && matches!(src, Place::Local(_) | Place::ReturnSlot);
+                    let dest_is_member = dest_local.is_some_and(|dl| {
+                        alias_of.contains_key(&dl) && matches!(dest, Place::Local(_))
+                    });
+                    // ReturnSlot dest is never an alias member, so a
+                    // Move { dest: ReturnSlot, src: member } excludes the root.
+                    if src_is_member && !dest_is_member {
+                        note_alias_escape(sl, &mut excluded_roots);
+                    }
+                    if field_binders.contains(&sl) {
+                        let benign = dest_local.is_some_and(|dl| field_binders.contains(&dl))
+                            && matches!(dest, Place::Local(_));
+                        if !benign {
+                            note_field_escape(&mut excluded_roots);
+                        }
+                    }
+                }
+            }
+            // Non-Move owning-sink reads. A `RecordFieldLoad` reading the record
+            // base is interior (exempt); every other instruction reading a whole
+            // alias member or a field binder is an escape. Fail-closed.
+            if !matches!(
+                instr,
+                Instr::Move { .. } | Instr::Drop { .. } | Instr::RecordFieldLoad { .. }
+            ) {
+                for p in instr_source_places(instr) {
+                    if let Some(l) = base_local(p) {
+                        if alias_of.contains_key(&l)
+                            && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                        {
+                            note_alias_escape(l, &mut excluded_roots);
+                        }
+                        if field_binders.contains(&l) {
+                            note_field_escape(&mut excluded_roots);
+                        }
+                    }
+                }
+            }
+        }
+        // Terminator reads. A return / send / ask of a whole record or an owned
+        // field binder escapes. `print`/`println` borrows its string arg, so a
+        // field binder passed there is a transient read, not an escape.
+        for p in terminator_source_places(&block.terminator) {
+            if let Some(l) = base_local(p) {
+                if alias_of.contains_key(&l)
+                    && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                    && !retained_string_terminator_drop_safe(&block.terminator, l)
+                {
+                    note_alias_escape(l, &mut excluded_roots);
+                }
+                if field_binders.contains(&l)
+                    && !retained_string_terminator_drop_safe(&block.terminator, l)
+                {
+                    note_field_escape(&mut excluded_roots);
+                }
+            }
+        }
+    }
+
+    let mut allowed = HashSet::new();
+    for (&local, &binding) in &candidate_local_to_binding {
+        if !excluded_roots.contains(&local) {
+            allowed.insert(binding);
+        }
+    }
+    allowed
+}
+
+/// A payload binder read into an owning sink means the active payload escaped
+/// the composite. We cannot cheaply attribute a binder to a single composite
+/// root (a binder may be reachable from several composites through onward
+/// copies), so — fail-closed — exclude EVERY heap-owning enum composite root
+/// in the function when any payload binder escapes. Over-exclusion leaks; it
+/// never double-frees. The vast majority of real handlers have at most one
+/// matched heap-owning composite per scope, so this coarsening is rarely
+/// observable, and the precise per-root attribution is a follow-on slice if a
+/// fixture ever needs it.
+fn note_payload_escape(
+    _payload_binders: &HashSet<u32>,
+    _escaping_binder: u32,
+    alias_of: &HashMap<u32, u32>,
+    _blocks: &[BasicBlock],
+    excluded_roots: &mut HashSet<u32>,
+) {
+    for &root in alias_of.values() {
+        excluded_roots.insert(root);
+    }
+}
+
+/// True when `ty` is a tagged-union enum composite (`Result`/`Option`/user
+/// `enum`) whose active variant can own a heap allocation. Borrowed views,
+/// `dyn Trait`, and non-enum aggregates are excluded — only an inline
+/// tagged-union struct earns the in-place tag-aware drop. The heap-owning
+/// decision delegates to the single `ty_contains_heap_owning` authority so
+/// MIR and codegen agree.
+fn ty_is_heap_owning_enum_composite(
+    ty: &ResolvedTy,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> bool {
+    let ResolvedTy::Named { name, args, .. } = ty else {
+        return false;
+    };
+    // Must resolve to a registered tagged-union enum layout (not a record,
+    // not an opaque/builtin handle). Indirect (heap-boxed) enums route their
+    // payload drop through the boxed-storage release path, not this in-place
+    // helper, so they are excluded here.
+    let short = crate::model::short_name(name);
+    let layout = if args.is_empty() {
+        enum_layouts
+            .iter()
+            .find(|el| el.name == *name || crate::model::short_name(&el.name) == short)
+    } else {
+        let mangled = hew_hir::mangle(short, args);
+        enum_layouts
+            .iter()
+            .find(|el| el.name == mangled || el.name == *name)
+    };
+    let Some(layout) = layout else {
+        return false;
+    };
+    if layout.is_indirect {
+        return false;
+    }
+    crate::model::ty_contains_heap_owning(ty, enum_layouts)
+}
+
 /// Resolve the `DropKind` for an `ElabDrop` given the addressable
 /// `Place` and the binding's `ResolvedTy`.
 ///
@@ -16532,20 +18112,105 @@ fn classify_dyn_trait_storage(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "drop elaboration threads the binding ledgers, the per-class \
+              allow-sets, and the enum layouts the W5.020 enum-composite arm \
+              needs; each is a distinct authority, not foldable"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flat match over the per-binding drop classes (dyn / \
+              owned-string-record / enum-composite / owned-Vec / value-class); \
+              splitting per-class helpers would scatter the fail-closed arms"
+)]
 fn build_lifo_drops(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     type_classes: &hew_hir::TypeClassTable,
     dyn_trait_storage: &HashMap<BindingId, TraitObjectStorage>,
-    owned_string_record_bindings: &HashSet<BindingId>,
+    owned_record_drop_allowed: &HashSet<BindingId>,
     cow_drop_allowed: &HashSet<BindingId>,
+    enum_layouts: &[crate::model::EnumLayout],
+    enum_composite_drop_allowed: &HashSet<BindingId>,
+    owned_vec_drop_allowed: &HashSet<BindingId>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
-        if owned_string_record_bindings.contains(binding) {
+        // W5.016 — owned-element `Vec<T>` local (an element that owns heap:
+        // record/enum/tuple with a string field, etc.). Its scope-exit release
+        // is `hew_vec_free_owned`, which drops every live element exactly once
+        // via the per-element descriptor `drop_fn` then frees the buffer. A Vec
+        // is `ValueClass::CowValue` but `cow_value_leaf_drop_symbol` only
+        // handles the leaf `string` case, so an owned Vec would otherwise leak.
+        // Gated fail-closed on `owned_vec_drop_allowed`: a Vec consumed by
+        // for-in (`into_iter` moves it) or returned (moved to the ReturnSlot)
+        // is excluded, so it is never double-freed. The drop is a `CowHeap`
+        // runtime release; the per-element drop logic lives in the runtime.
+        // `owned_vec_drop_allowed` already encodes the owned-element decision
+        // (derived from the builder's `is_owned_vec_element` authority); the
+        // local guard here only confirms the binding's type is a `Vec` so the
+        // `hew_vec_free_owned` ABI is correct for the handle.
+        if owned_vec_drop_allowed.contains(binding) && ty_is_vec(ty) {
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(
-                    "build_lifo_drops invariant: owned-string record binding {binding:?} is in \
+                    "build_lifo_drops invariant: owned-Vec binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::CowHeap {
+                    drop_fn: "hew_vec_free_owned",
+                },
+            });
+            continue;
+        }
+        // W5.020 — heap-owning enum composite (`Result<T, string>` /
+        // `Option<string>` / user enum with an owned-payload variant). A user
+        // enum is `ValueClass::Unknown` and so would otherwise fall into the
+        // no-drop arm below (leak). Intercept BEFORE the value-class match,
+        // mirroring the dyn-trait and owned-string-record arms, and emit the
+        // tag-aware `DropKind::EnumInPlace` drop ONLY when the fail-closed
+        // sole-owner derivation proved this composite still owns its active
+        // payload at scope exit (`enum_composite_drop_allowed`). A binding the
+        // prover did not clear leaks (as before W5.020); it never double-frees.
+        if enum_composite_drop_allowed.contains(binding)
+            && ty_is_heap_owning_enum_composite(ty, enum_layouts)
+        {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: heap-owning enum composite binding {binding:?} \
+                     is in owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before drop elaboration observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::EnumInPlace,
+            });
+            continue;
+        }
+        // Owned-aggregate record by value (RC-4 / RC-6 / G12). The
+        // `owned_record_drop_allowed` set is the fail-closed sole-owner gate:
+        // it contains every owned record binding (legacy owned-string records
+        // plus the unified owned-aggregate records admitted by the value-class
+        // gate) that the dataflow proved is NOT consumed/maybe-consumed at any
+        // exit, so the whole-record `DropKind::RecordInPlace` thunk
+        // (`__hew_record_drop_inplace_<R>`, which recurses through every owned
+        // field — string/bytes/Vec/HashMap/HashSet/nested record/enum) runs
+        // exactly once on the owner and never on a moved-out record. A returned
+        // record is excluded (the `ReturnSlot` owns it); a field-read-only
+        // record stays in the set and is dropped here.
+        if owned_record_drop_allowed.contains(binding) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: owned record binding {binding:?} is in \
                      owned_locals but missing from binding_locals; lowering must wire a \
                      Place before the drop-elaboration pass observes the binding"
                 )
@@ -16708,6 +18373,20 @@ fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str> {
         ResolvedTy::String => Some("hew_string_drop"),
         _ => None,
     }
+}
+
+/// True when `ty` is the builtin `Vec<T>`. The owned-element decision lives in
+/// `Builder::binding_ty_is_owned_element_vec` (which consults the function's
+/// owned-element key set); this is only the ABI-shape confirmation that the
+/// `hew_vec_free_owned` handle is a Vec.
+fn ty_is_vec(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Vec),
+            ..
+        }
+    )
 }
 
 /// Build the elaborated block list + per-`ExitPath` drop plans for a
@@ -17026,6 +18705,7 @@ mod slice3_invariants {
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashSet::new(),
+                &[],
                 None,
                 &HashSet::new(),
                 &HashSet::new(),
@@ -17435,6 +19115,7 @@ mod slice3_invariants {
                     | DropKind::CowHeap { .. }
                     | DropKind::RecordInPlace
                     | DropKind::AggregateRecursive
+                    | DropKind::EnumInPlace
                     | DropKind::TraitObject { .. } => {}
                 }
             }
@@ -19004,6 +20685,256 @@ mod cow_sole_owner_derivation {
         assert!(
             allowed.contains(&dst),
             "the move destination is the live owner and must be admitted (no over-taint)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod owned_record_drop_derivation {
+    //! Direct structural tests for `derive_owned_record_drop_allowed` — the
+    //! value-class-capstone fail-closed sole-owner gate for owned-aggregate
+    //! records passed/returned by value. These poke the derivation with
+    //! synthetic MIR blocks: a returned record (escape) must be EXCLUDED so its
+    //! `RecordInPlace` drop never double-frees the escapee's fields, while a
+    //! field-read-only record must be ADMITTED so its heap fields are freed.
+    //!
+    //! The headline `one_arm_consume_*` pair pins the audit-#5 reconciliation:
+    //! a record consumed (returned) on one branch but live on another is gated
+    //! by this per-exit escape analysis, NOT by a path-insensitive global
+    //! `owned_locals` removal.
+    use super::*;
+
+    /// An owned record named "Rec"; everything else is not a record candidate.
+    fn rec_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Rec".to_string(),
+            args: vec![],
+            builtin: None,
+        }
+    }
+
+    fn is_rec(ty: &ResolvedTy) -> bool {
+        matches!(ty, ResolvedTy::Named { name, .. } if name == "Rec")
+    }
+
+    fn block(id: u32, instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: vec![],
+            instructions,
+            terminator,
+        }
+    }
+
+    fn derive(
+        blocks: &[BasicBlock],
+        owned: &[(BindingId, String, ResolvedTy)],
+        binding_locals: &HashMap<BindingId, Place>,
+        local_tys: &[ResolvedTy],
+    ) -> HashSet<BindingId> {
+        derive_owned_record_drop_allowed(blocks, owned, binding_locals, local_tys, &is_rec, &[])
+    }
+
+    /// A record local that is never read (no construction-site escape, no field
+    /// read) is its own sole owner and must be admitted for `RecordInPlace`.
+    #[test]
+    fn untouched_record_local_is_admitted() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(0));
+        let local_tys = vec![rec_ty()];
+
+        let allowed = derive(
+            &[block(0, vec![], Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            allowed.contains(&b),
+            "an untouched owned record is its own sole owner and must be admitted"
+        );
+    }
+
+    /// A record read via `RecordFieldLoad` of a `BitCopy` field stays the sole
+    /// owner — the field read is an interior read, not an escape — and must be
+    /// admitted (so its other owned fields are freed at scope exit).
+    #[test]
+    fn record_bitcopy_field_read_is_admitted() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(0));
+        // local 1 receives the loaded BitCopy field (i64).
+        let local_tys = vec![rec_ty(), ResolvedTy::I64];
+        let instrs = vec![Instr::RecordFieldLoad {
+            record: Place::Local(0),
+            field_offset: FieldOffset(1),
+            dest: Place::Local(1),
+        }];
+
+        let allowed = derive(
+            &[block(0, instrs, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            allowed.contains(&b),
+            "a record whose only use is reading a BitCopy field stays the sole \
+             owner and must be admitted; got {allowed:?}"
+        );
+    }
+
+    /// A record moved whole-value into the `ReturnSlot` (returned) has escaped:
+    /// the caller owns its fields now, so it must be EXCLUDED — dropping it
+    /// would double-free the returned value's heap fields.
+    #[test]
+    fn returned_record_is_excluded() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(0));
+        let local_tys = vec![rec_ty()];
+        let instrs = vec![Instr::Move {
+            dest: Place::ReturnSlot,
+            src: Place::Local(0),
+        }];
+
+        let allowed = derive(
+            &[block(0, instrs, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            !allowed.contains(&b),
+            "a returned record escaped to the caller and must be excluded from \
+             the scope-exit drop (else double-free); got {allowed:?}"
+        );
+    }
+
+    /// An owned (string) field loaded out of the record and moved into the
+    /// `ReturnSlot` means the field escaped: the record must be EXCLUDED so it
+    /// does not double-free the returned field.
+    #[test]
+    fn escaped_owned_field_excludes_record() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(0));
+        // local 1 receives the loaded owned (string) field.
+        let local_tys = vec![rec_ty(), ResolvedTy::String];
+        let instrs = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(1),
+            },
+        ];
+
+        let allowed = derive(
+            &[block(0, instrs, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            !allowed.contains(&b),
+            "an owned field loaded out and returned escaped the record; the \
+             record must be excluded to avoid double-freeing it; got {allowed:?}"
+        );
+    }
+
+    /// One-arm-consume (audit #5): a record consumed (returned) on one branch
+    /// and field-read on the other. The whole-record escape on the consume arm
+    /// excludes the binding fail-closed (over-exclusion leaks on the live arm,
+    /// never double-frees on the consume arm). This pins that the gate is the
+    /// per-exit escape analysis — not the path-insensitive global removal that
+    /// would silently produce the same exclusion but for the wrong reason and
+    /// could not be tightened to per-arm precision later.
+    #[test]
+    fn one_arm_consume_record_is_excluded_fail_closed() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(0));
+        let local_tys = vec![rec_ty(), ResolvedTy::I64];
+        // bb0: branch to bb1 (consume) / bb2 (live).
+        let bb0 = block(
+            0,
+            vec![],
+            Terminator::Branch {
+                cond: Place::Local(1),
+                then_target: 1,
+                else_target: 2,
+            },
+        );
+        // bb1: return the record (consume / escape).
+        let bb1 = block(
+            1,
+            vec![Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(0),
+            }],
+            Terminator::Return,
+        );
+        // bb2: only read a BitCopy field (live; would be dropped here).
+        let bb2 = block(
+            2,
+            vec![Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(1),
+                dest: Place::Local(1),
+            }],
+            Terminator::Return,
+        );
+
+        let allowed = derive(&[bb0, bb1, bb2], &owned, &binding_locals, &local_tys);
+        assert!(
+            !allowed.contains(&b),
+            "a record consumed on one arm must be excluded fail-closed (the \
+             escape on the consume arm wins); got {allowed:?}"
+        );
+    }
+
+    /// Companion to the one-arm-consume case: a record that is field-read on
+    /// BOTH arms (never escapes) must be ADMITTED — the escape analysis does not
+    /// over-exclude a record merely because it is branched on.
+    #[test]
+    fn record_live_on_both_arms_is_admitted() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
+        binding_locals.insert(b, Place::Local(0));
+        let local_tys = vec![rec_ty(), ResolvedTy::I64];
+        let bb0 = block(
+            0,
+            vec![],
+            Terminator::Branch {
+                cond: Place::Local(1),
+                then_target: 1,
+                else_target: 2,
+            },
+        );
+        let field_read = |dest| Instr::RecordFieldLoad {
+            record: Place::Local(0),
+            field_offset: FieldOffset(1),
+            dest,
+        };
+        let bb1 = block(1, vec![field_read(Place::Local(1))], Terminator::Return);
+        let bb2 = block(2, vec![field_read(Place::Local(1))], Terminator::Return);
+
+        let allowed = derive(&[bb0, bb1, bb2], &owned, &binding_locals, &local_tys);
+        assert!(
+            allowed.contains(&b),
+            "a record field-read on both arms never escapes and must be admitted \
+             so its heap fields are freed; got {allowed:?}"
         );
     }
 }

@@ -314,6 +314,18 @@ pub unsafe extern "C" fn hew_actor_ref_is_alive(ref_ptr: *const HewActorRef) -> 
     c_int::from(unsafe { r.data.remote.conn } != HEW_CONN_INVALID)
 }
 
+/// Return the local `*mut HewActor` pointer (as `*mut c_void`) for a LOCAL
+/// actor reference, or null for a REMOTE reference. Used by the active-mode
+/// reactor, which only supports local actors (mirrors the websocket attach
+/// reader's `actor_ref_local_actor`).
+pub(crate) fn actor_ref_local_ptr(actor_ref: &HewActorRef) -> *mut c_void {
+    if actor_ref.kind != ACTOR_REF_LOCAL {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the local union variant is active when kind == ACTOR_REF_LOCAL.
+    unsafe { actor_ref.data.local }.cast::<c_void>()
+}
+
 // ===========================================================================
 // TCP transport
 // ===========================================================================
@@ -817,6 +829,21 @@ fn tcp_clone_listener(handle: c_int) -> Option<TcpListener> {
     TCP_API_STATE.access(|state| state.listeners.get(&handle)?.try_clone().ok())
 }
 
+/// Return the bound local port of a stdlib TCP listener handle, or `None` if
+/// the handle is unknown. Useful when binding to port 0 (ephemeral) and
+/// needing the OS-assigned port; consumed by active-mode e2e tests.
+#[must_use]
+pub fn tcp_listener_local_port(handle: c_int) -> Option<u16> {
+    TCP_API_STATE.access(|state| {
+        state
+            .listeners
+            .get(&handle)?
+            .local_addr()
+            .ok()
+            .map(|a| a.port())
+    })
+}
+
 pub(crate) fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
     TCP_API_STATE.access(|state| state.streams.get(&handle)?.try_clone().ok())
 }
@@ -835,6 +862,114 @@ pub(crate) fn tcp_release_conn(handle: c_int) {
         state.streams.remove(&handle);
         // Drop the removed TcpStream here. No shutdown call.
     });
+}
+
+// ---- Active-mode reactor support -------------------------------------------
+//
+// These helpers back the non-blocking "I/O completion as a mailbox message"
+// reactor (`crate::reactor`). The reactor registers a connection's raw fd for
+// readiness; on readiness it reads available bytes and delivers them to the
+// owning actor's mailbox. All three operate by the user-facing `Connection`
+// handle (the `c_int` in `TCP_API_STATE`), so they share the same socket
+// table — clone/close coordination is identical to the blocking read path.
+
+/// Return the raw OS file descriptor for a TCP connection handle, or `None`
+/// if the handle is unknown. Used by the reactor to register the fd with the
+/// platform poller. The fd remains owned by the `TcpStream` in
+/// `TCP_API_STATE`; the reactor must NOT close it directly (it closes via
+/// `hew_tcp_close` / handle removal).
+#[cfg(unix)]
+pub(crate) fn tcp_conn_raw_fd(handle: c_int) -> Option<c_int> {
+    use std::os::fd::AsRawFd;
+    TCP_API_STATE.access(|state| state.streams.get(&handle).map(AsRawFd::as_raw_fd))
+}
+
+/// Put a TCP connection handle's socket into non-blocking mode (active mode
+/// reads must never park the reactor thread). Returns `true` on success.
+pub(crate) fn tcp_conn_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
+    TCP_API_STATE.access(|state| {
+        state
+            .streams
+            .get(&handle)
+            .is_some_and(|stream| stream.set_nonblocking(nonblocking).is_ok())
+    })
+}
+
+/// Outcome of a single non-blocking active-mode read.
+#[cfg(unix)]
+pub(crate) enum ActiveReadOutcome {
+    /// Bytes were read (non-empty).
+    Data(Vec<u8>),
+    /// The socket is readable-empty for now (`WouldBlock`); nothing to deliver.
+    WouldBlock,
+    /// Peer closed the connection (read returned 0) — deliver `on_close`.
+    Eof,
+    /// The handle is unknown or a hard read error occurred — deliver `on_close`.
+    Closed,
+}
+
+/// Read all currently-available bytes from a non-blocking TCP connection
+/// handle, draining the socket until it would block (so a single readiness
+/// notification does not strand buffered data when the poller is edge
+/// triggered). Returns the concatenated bytes, or a non-`Data` outcome
+/// describing EOF / would-block / error.
+#[cfg(unix)]
+pub(crate) fn tcp_conn_read_available(handle: c_int) -> ActiveReadOutcome {
+    let Some(mut stream) = tcp_clone_stream(handle) else {
+        return ActiveReadOutcome::Closed;
+    };
+    let mut out: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => {
+                tcp_counters()
+                    .bytes_read
+                    .fetch_add(out.len() as u64, Ordering::Relaxed);
+                // Peer closed. If we already drained some bytes, deliver them
+                // first; the caller re-polls and observes EOF next time. With
+                // an empty buffer this is a clean EOF.
+                return if out.is_empty() {
+                    ActiveReadOutcome::Eof
+                } else {
+                    ActiveReadOutcome::Data(out)
+                };
+            }
+            Ok(n) => {
+                out.extend_from_slice(&buf[..n]);
+                // Keep draining; a partial fill (< buf len) means the kernel
+                // buffer is empty and the next read would block, so stop to
+                // avoid an extra syscall.
+                if n < buf.len() {
+                    tcp_counters()
+                        .bytes_read
+                        .fetch_add(out.len() as u64, Ordering::Relaxed);
+                    return ActiveReadOutcome::Data(out);
+                }
+            }
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                tcp_counters()
+                    .bytes_read
+                    .fetch_add(out.len() as u64, Ordering::Relaxed);
+                return if out.is_empty() {
+                    ActiveReadOutcome::WouldBlock
+                } else {
+                    ActiveReadOutcome::Data(out)
+                };
+            }
+            Err(ref e) if e.kind() == ErrorKind::Interrupted => {
+                // Retry the read; EINTR is not a failure.
+            }
+            Err(e) => {
+                record_tcp_error_kind(e.kind());
+                return if out.is_empty() {
+                    ActiveReadOutcome::Closed
+                } else {
+                    ActiveReadOutcome::Data(out)
+                };
+            }
+        }
+    }
 }
 
 /// Open a TCP listener at `addr` (`host:port`).
@@ -1944,11 +2079,96 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
     })
 }
 
+/// Attach a TCP connection to an actor for active-mode delivery.
+///
+/// After this call the connection's socket is non-blocking and registered with
+/// the active-mode reactor: each chunk of inbound data is delivered to the
+/// actor as an `on_data(bytes)` message (`on_data_type`), and a single
+/// `on_close()` message (`on_close_type`) is delivered when the peer closes or
+/// the socket errors. The actor must NOT call blocking `read`/`read_string`
+/// after attach (the reactor owns the read side); outbound `send`/`write`
+/// remain valid until close.
+///
+/// Returns 0 on success, -1 on failure (unknown handle, reactor unavailable).
+///
+/// # Safety
+///
+/// - `conn` must be a valid TCP connection handle from the stdlib `net` API.
+/// - `actor_ref` must point to a valid [`HewActorRef`] for the duration of the
+///   call (a by-value snapshot is taken; mirrors `hew_ws_attach`).
+#[no_mangle]
+pub unsafe extern "C" fn hew_tcp_attach(
+    conn: c_int,
+    actor_ref: *const HewActorRef,
+    on_data_type: i32,
+    on_close_type: i32,
+) -> c_int {
+    // SAFETY: caller guarantees `actor_ref` is valid for this call; the reactor
+    // takes a by-value snapshot before returning.
+    unsafe { crate::reactor::reactor_attach(conn, actor_ref, on_data_type, on_close_type) }
+}
+
+/// Attach a TCP connection to a *local* actor, identified by its raw
+/// `*mut HewActor` pointer rather than a fully-formed `HewActorRef`.
+///
+/// This is the entry point the Hew `conn.attach(handler)` surface lowers to:
+/// a Hew `LocalPid<T>` reaches the C ABI as the bare actor pointer (no
+/// `HewActorRef` wrapper), so codegen cannot hand `hew_tcp_attach` the
+/// `*const HewActorRef` it expects. This wrapper constructs the local
+/// `HewActorRef` on the runtime side (the owner of that layout) and forwards
+/// to the same reactor path. Mirrors `hew_ws_attach`, which likewise accepts
+/// the raw actor pointer for the active-mode WebSocket surface.
+///
+/// `on_data_type` / `on_close_type` are the `msg_id`s (SipHash-1-3 over the
+/// handler's fully-qualified name) the compiler synthesises at the attach call
+/// site from the concrete actor's `on_data` / `on_close` receive functions.
+///
+/// Returns 0 on success, -1 on failure (unknown handle, reactor unavailable,
+/// leak-prone mailbox).
+///
+/// # Safety
+///
+/// - `conn` must be a valid TCP connection handle from the stdlib `net` API.
+/// - `actor` must be a valid pointer to a live [`HewActor`] that outlives the
+///   connection's active-mode registration.
+#[no_mangle]
+pub unsafe extern "C" fn hew_tcp_attach_local(
+    conn: c_int,
+    actor: *mut HewActor,
+    on_data_type: i32,
+    on_close_type: i32,
+) -> c_int {
+    if actor.is_null() {
+        set_last_error("hew_tcp_attach_local: null actor pointer");
+        return -1;
+    }
+    // SAFETY: `actor` is non-null (checked above) and the caller guarantees it
+    // points to a live actor for this call.
+    let actor_ref = unsafe { hew_actor_ref_local(actor) };
+    // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; `reactor_attach`
+    // takes a by-value snapshot before returning, so the address is only needed
+    // for the duration of this call.
+    unsafe {
+        crate::reactor::reactor_attach(conn, &raw const actor_ref, on_data_type, on_close_type)
+    }
+}
+
+/// Detach a TCP connection from the active-mode reactor without closing it.
+///
+/// Idempotent; a no-op if the connection was never attached.
+#[no_mangle]
+pub extern "C" fn hew_tcp_detach(conn: c_int) {
+    crate::reactor::reactor_detach_conn(conn);
+}
+
 /// Close either a TCP connection handle or listener handle.
 ///
 /// Returns 0 on success, -1 if handle is unknown.
 #[no_mangle]
 pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
+    // Detach from the active-mode reactor first so the reactor stops polling a
+    // fd we are about to close (reactor-fd ownership: unregister before close).
+    crate::reactor::reactor_detach_conn(handle);
     TCP_API_STATE.access(|state| {
         if let Some(stream) = state.streams.remove(&handle) {
             let _ = stream.shutdown(Shutdown::Both);

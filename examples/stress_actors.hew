@@ -137,8 +137,7 @@ actor MonitorActor {
 // Main supervisor that orchestrates the entire system
 supervisor MainSupervisor {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 10;
+    intensity: 5 within 10s;
 }
 
 // Helper function used by WorkerActor

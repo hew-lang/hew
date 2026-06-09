@@ -1376,9 +1376,24 @@ pub struct SupervisorDecl {
     pub visibility: Visibility,
     pub name: String,
     pub strategy: Option<SupervisorStrategy>,
-    pub max_restarts: Option<i64>,
-    pub window: Option<String>,
+    /// Restart-budget contract, written `intensity: N within <duration>`.
+    /// Fuses the legacy `max_restarts:` + `window:` fields into one typed
+    /// field so a budget can never be half-specified. `None` when the
+    /// declaration omits the clause — runtime defaults apply at codegen.
+    pub intensity: Option<Intensity>,
     pub children: Vec<ChildSpec>,
+}
+
+/// A supervisor restart-budget contract: at most `restarts` restarts are
+/// permitted inside the rolling `window`.  Written `intensity: N within <D>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Intensity {
+    /// Maximum number of restarts permitted inside the window.
+    pub restarts: i64,
+    /// Window duration, retained as the raw `Token::Duration` source string
+    /// (e.g. `"60s"`, `"5m"`).  Duration unit interpretation stays in codegen
+    /// so the lexer remains the single source of truth for duration units.
+    pub window: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1411,6 +1426,10 @@ pub struct ChildSpec {
     /// Indicates a dynamic pool (`simple_one_for_one` strategy child).
     #[serde(default)]
     pub is_pool: bool,
+    /// Per-child graceful-stop deadline, written `shutdown: <duration> |
+    /// brutal_kill | infinity`.  `None` means the supervisor default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shutdown: Option<ShutdownDirective>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1418,6 +1437,22 @@ pub enum RestartPolicy {
     Permanent,
     Transient,
     Temporary,
+}
+
+/// Per-child shutdown directive: how long the supervisor waits for a child to
+/// stop gracefully before killing it.  Written `shutdown: <duration> |
+/// brutal_kill | infinity`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShutdownDirective {
+    /// Graceful-stop deadline as a raw `Token::Duration` source string
+    /// (e.g. `"30s"`).  Unit interpretation stays in codegen.
+    Timeout(String),
+    /// Skip the graceful-stop deadline; kill the child immediately.
+    BrutalKill,
+    /// Wait indefinitely.  ACCEPTED-ONLY in v0.5: there is no per-child
+    /// deadline wheel in the runtime yet, so this parses but is not enforced.
+    /// See `format_child_spec` and the codegen note for the accepted-only seam.
+    Infinity,
 }
 
 #[cfg(test)]
@@ -1470,6 +1505,17 @@ mod tests {
 
 // ── Machine declarations ─────────────────────────────────────────────
 
+/// serde `skip_serializing_if` helper: true when the count is zero, keeping
+/// the additive `composite_prelude_len` field out of the wire form for the
+/// common (flat / non-boundary) case.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde `skip_serializing_if` requires a `fn(&T) -> bool` signature"
+)]
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineDecl {
     #[serde(default)]
@@ -1506,9 +1552,55 @@ pub struct MachineDecl {
     pub where_clause: Option<WhereClause>,
     pub states: Vec<MachineState>,
     pub events: Vec<MachineEvent>,
+    /// Optional `emits { … }` Mealy-output manifest. Each entry is the name of
+    /// an event the machine may produce via `emit Name { … }` in a transition
+    /// body. Names reference declared `events`; the manifest is an auditable
+    /// allowlist, not a second declaration site. When non-empty, the HIR
+    /// cross-checks that every `emit` in a body names an event in this list.
+    /// Empty when the machine declares no `emits {}` header (no cross-check).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub emits: Vec<String>,
     pub transitions: Vec<MachineTransition>,
     #[serde(default)]
     pub has_default: bool, // `default { self }` — unhandled events stay in current state
+    /// Composite-state grouping side-table populated by the parser when a
+    /// `state Name { … }` body contains substate declarations. Consumed only
+    /// by the formatter (to re-emit composite blocks) and the diagram renderer
+    /// (to draw nested boxes). Hierarchy desugars to the flat `transitions` /
+    /// `states` lists at parse time — HIR/MIR/codegen never see a composite.
+    /// Empty for flat machines, keeping the JSON/msgpack schema additive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composite_groups: Vec<CompositeGroup>,
+}
+
+/// Parser-level grouping record for a depth-1 composite state. Carries the
+/// information the flat `MachineDecl` lists drop during desugaring so the
+/// formatter and diagram renderer can reconstruct the nested view. Not seen by
+/// HIR/MIR/codegen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompositeGroup {
+    /// Composite (grouping) name. Not a live state — only its members are.
+    pub name: String,
+    /// Leaf substate names, in declaration order.
+    pub members: Vec<String>,
+    /// The substate marked `initial` — the state entered when the composite is
+    /// targeted by name.
+    pub initial: String,
+    /// Composite-level `entry` block, spliced parent-then-child on entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<Block>,
+    /// Composite-level `exit` block, spliced child-then-parent on exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<Block>,
+    /// Composite-owned shared fields (sugar: stamped onto every member). Kept
+    /// here so the formatter re-emits them on the composite, not each member.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    /// Parent-level transitions authored inside the composite block, retained
+    /// verbatim (source `_` = any member) so the formatter re-emits them on the
+    /// composite rather than as the N expanded flat copies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parent_transitions: Vec<MachineTransition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1534,15 +1626,31 @@ pub struct MachineTransition {
     pub event_name: String,
     pub source_state: String,
     pub target_state: String,
+    /// Event-payload field names bound in the transition head
+    /// (`on E(a, b): …`). These alias the event's fields so the body can use
+    /// the bare names instead of `event.field`. The parser splices a
+    /// `let a = event.a;` prelude into `body` for lowering (no new HIR kind);
+    /// this list is retained purely so the formatter can re-emit the head form
+    /// and strip that prelude. Empty when the rule used no head binding.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_bindings: Vec<String>,
+    /// Number of leading `body` statements that are composite entry/exit hook
+    /// splices (D2/D3), prepended by the parser's composite post-pass. The
+    /// formatter strips exactly this many leading statements so the authored
+    /// transition (without the spliced hooks) is re-emitted; HIR/MIR see the
+    /// spliced body unchanged. Zero for flat machines and non-boundary
+    /// transitions, so the schema stays additive.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub composite_prelude_len: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
     /// When true, a self-transition (`source == target`) explicitly opts in to
     /// Mealy re-entry semantics: the source `exit` block and target `entry` block
-    /// both run even though the state does not change.  Written as `@reenter`
-    /// after the target state name.  Without this annotation, a non-empty self-
-    /// transition body is a compile error (HIR enforces the Moore-style rule that
-    /// self-loops must be annotated or empty).
+    /// both run even though the state does not change.  Written as the `reenter`
+    /// contextual keyword after the target state name (`=> Tgt reenter`). Without
+    /// it, a non-empty self-transition body is a compile error (HIR enforces the
+    /// Moore-style rule that self-loops must be annotated or empty).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reenter: bool,
 }

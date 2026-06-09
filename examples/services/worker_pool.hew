@@ -42,8 +42,7 @@ actor Worker {
 // Budget: up to 10 restarts in 60 seconds before giving up.
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 10;
-    window: 60;
+    intensity: 10 within 60s;
 
     child w0: Worker(id: 0, jobs_done: 0);
     child w1: Worker(id: 1, jobs_done: 0);

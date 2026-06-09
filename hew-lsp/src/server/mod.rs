@@ -2220,9 +2220,12 @@ impl Worker {
 }
 
 machine Traffic {
-    event Start;
+    events {
+        Start;
+    }
+
     state Idle;
-    on Start: Idle -> Idle;
+    on Start: Idle => Idle;
 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
@@ -2662,9 +2665,12 @@ machine Traffic {
 }
 
 machine Traffic {
-    event Start;
+    events {
+        Start;
+    }
+
     state Idle;
-    on Start: Idle -> Idle;
+    on Start: Idle => Idle;
 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
@@ -2703,10 +2709,12 @@ machine Traffic {
             .find(|symbol| symbol.name == "Idle")
             .unwrap();
         assert_eq!(event.kind, SymbolKind::EVENT);
-        assert_eq!(event.selection_range.start.line, 5);
-        assert_eq!(event.selection_range.start.character, 10);
+        // `Start` now lives inside the `events { … }` header (line 6, indented
+        // 8 spaces) rather than the former interleaved `event Start;` line.
+        assert_eq!(event.selection_range.start.line, 6);
+        assert_eq!(event.selection_range.start.character, 8);
         assert_eq!(state.kind, SymbolKind::ENUM_MEMBER);
-        assert_eq!(state.selection_range.start.line, 6);
+        assert_eq!(state.selection_range.start.line, 9);
         assert_eq!(state.selection_range.start.character, 10);
     }
 
@@ -6408,7 +6416,7 @@ machine Traffic {
             include_str!("../../tests/fixtures/lsp_reject_gen_in_transition.hew"),
             "E_GENBLOCK_IN_MACHINE_TRANSITION",
             "GenBlockInMachineTransition",
-            7,
+            9, // 0-indexed: `gen { yield Open; }` is on line 9 (1-indexed line 10)
         );
     }
 
@@ -6419,7 +6427,7 @@ machine Traffic {
             include_str!("../../tests/fixtures/lsp_reject_await_in_transition.hew"),
             "E_AWAIT_IN_MACHINE_TRANSITION",
             "AwaitInMachineTransition",
-            7,
+            9, // 0-indexed: `await pending;` is on line 9 (1-indexed line 10)
         );
     }
 
@@ -6842,6 +6850,35 @@ machine Traffic {
             include_str!("../../tests/fixtures/v05_scope_fork.hew"),
             "fork_worker",
             &["fork_worker", "scope_fork"],
+        );
+    }
+
+    #[test]
+    fn v05_supervisor_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_supervisor",
+            include_str!("../../tests/fixtures/v05_supervisor.hew"),
+            "supervisor_probe",
+            &[
+                "LogWorker",
+                "AppSupervisor",
+                "supervisor_probe",
+                "supervisor_use",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_composite_machine_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_composite_machine",
+            include_str!("../../tests/fixtures/v05_composite_machine.hew"),
+            "composite_machine_probe",
+            &[
+                "ConnectionLifecycle",
+                "composite_machine_probe",
+                "composite_machine_use",
+            ],
         );
     }
 

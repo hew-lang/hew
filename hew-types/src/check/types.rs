@@ -1010,6 +1010,22 @@ pub enum AssignTargetKind {
     Index,
 }
 
+/// Position context for `synthesize_index` (`obj[k]`).
+///
+/// The result type and recorded runtime call differ between a read (`let x =
+/// m[k]`) and an assignment target (`m[k] = v`).  For `HashMap<K, V>` a read
+/// yields `Option<V>` and records `hew_hashmap_get_layout`, while an assignment
+/// target yields the bare `V` (the RHS checks against `V`) and records
+/// `hew_hashmap_insert_layout`.  Other receivers (Vec, string, bytes) are
+/// context-insensitive and ignore this flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum IndexContext {
+    /// `obj[k]` appearing in value position (read).
+    Read,
+    /// `obj[k]` appearing as the target of an assignment (`obj[k] = rhs`).
+    AssignTarget,
+}
+
 /// Checker-owned type-shape annotation for an assignment target.
 ///
 /// Populated alongside [`AssignTargetKind`] for every `Stmt::Assign` accepted
@@ -2002,6 +2018,14 @@ pub struct Checker {
     pub(super) current_actor_type: Option<Ty>,
     /// Field names of the current actor (for purity checks on bare field assignment).
     pub(super) current_actor_fields: Vec<String>,
+    /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
+    /// built once before body checking so the active-mode
+    /// `LocalPid<Actor>` → `LocalPid<ConnectionHandler>` coercion can confirm an
+    /// actor's `receive fn`s structurally satisfy a handler trait. Moved into
+    /// `TypeCheckOutput::actor_protocol_descriptors` at the end of
+    /// `check_program` (no rebuild — see `actor_satisfies_handler_trait`).
+    pub(super) actor_protocol_descriptors:
+        HashMap<String, crate::actor_protocol::ActorProtocolDescriptor>,
     pub(super) impl_alias_scopes: Vec<ImplAliasScope>,
     /// When set, the resolver is inside a trait-body context that gives
     /// meaning to `Self::Bar` as a projection into this trait's associated
@@ -2281,6 +2305,7 @@ impl Checker {
             current_self_type: None,
             current_actor_type: None,
             current_actor_fields: Vec::new(),
+            actor_protocol_descriptors: HashMap::new(),
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
             impl_assoc_type_bindings: HashMap::new(),

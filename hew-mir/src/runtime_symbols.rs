@@ -411,6 +411,11 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_vec_get_i32",
     "hew_vec_get_i64",
     "hew_vec_get_layout",
+    // W5.016 owned-element borrow getter: returns a borrowed pointer into the
+    // live buffer for an owned (non-Copy) record/enum/tuple element. The for-in
+    // / index getter routes owned elements here instead of `hew_vec_get_layout`
+    // (which aborts on an owned descriptor) or `hew_vec_get_ptr` (8-byte stride).
+    "hew_vec_get_owned",
     "hew_vec_get_ptr",
     "hew_vec_get_str",
     // hew_vec_len(v: *mut HewVec) -> i64

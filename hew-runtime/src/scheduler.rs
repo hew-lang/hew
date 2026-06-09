@@ -519,6 +519,12 @@ pub extern "C" fn hew_sched_shutdown() {
 /// initialized.
 #[no_mangle]
 pub extern "C" fn hew_runtime_cleanup() {
+    // Stop the active-mode I/O reactor BEFORE any actors are freed. The reactor
+    // thread delivers socket data into actor mailboxes; joining it here ensures
+    // no in-flight readiness event can target an actor that cleanup_all_actors
+    // is about to free (cleanup-all-exits / reactor shutdown ordering).
+    crate::reactor::reactor_shutdown();
+
     // Stop the periodic ticker thread before any timer wheel memory is freed.
     // SAFETY: shutdown_ticker joins the thread, so no concurrent ticks after this.
     unsafe { crate::timer_periodic::hew_periodic_shutdown() };

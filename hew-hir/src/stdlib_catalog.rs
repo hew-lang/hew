@@ -276,6 +276,8 @@ const VEC_ANY_I32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I32];
 const VEC_ANY_I64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64];
 const VEC_ANY_F64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::F64];
 const VEC_ANY_STRING: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::String];
+const VEC_ANY_PTR: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::Pointer];
+const VEC_ANY_I64_PTR: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::Pointer];
 const VEC_ANY_I64_BOOL: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::Bool];
 const VEC_ANY_I64_I32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::I32];
 const VEC_ANY_I64_I64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::I64];
@@ -509,6 +511,34 @@ pub const CATALOG: &[BuiltinEntry] = &[
     ),
     direct(
         "round",
+        BuiltinClass::ClassA,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "exp",
+        BuiltinClass::ClassA,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "log",
+        BuiltinClass::ClassA,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "sin",
+        BuiltinClass::ClassA,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "cos",
         BuiltinClass::ClassA,
         F64,
         BuiltinTy::F64,
@@ -982,6 +1012,24 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_vec_push_str",
         },
     ),
+    // Pointer-shaped element family (`Vec<LocalPid<T>>` / `Vec<ActorRef<T>>` /
+    // `Vec<Actor<T>>`): the actor-handle builtins lower to a single
+    // pointer-sized word (`*mut HewActor`) and the checker classifies them via
+    // `BuiltinType::lowers_as_pointer_vec_element` → `"ptr"`. The runtime ABI
+    // (`hew_vec_new_ptr` + `hew_vec_{push,get,set,pop}_ptr`) already exists;
+    // these rows register the symbols with HIR's `fn_registry` and codegen's
+    // `fn_symbols` so the constructor (`hew_vec_new_ptr`) and the element ops
+    // agree on the pointer-shaped path instead of tripping the runtime
+    // layout-aware abort.
+    direct(
+        "hew_vec_push_ptr",
+        BuiltinClass::ClassA,
+        VEC_ANY_PTR,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_ptr",
+        },
+    ),
     direct(
         "hew_vec_pop_bool",
         BuiltinClass::ClassA,
@@ -1025,6 +1073,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::String,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_pop_str",
+        },
+    ),
+    direct(
+        "hew_vec_pop_ptr",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::Pointer,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_ptr",
         },
     ),
     direct(
@@ -1073,6 +1130,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_get_ptr",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::Pointer,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_ptr",
+        },
+    ),
+    direct(
         "hew_vec_set_bool",
         BuiltinClass::ClassA,
         VEC_ANY_I64_BOOL,
@@ -1115,6 +1181,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_set_str",
+        },
+    ),
+    direct(
+        "hew_vec_set_ptr",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_PTR,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_ptr",
         },
     ),
     // Layout-backed Vec<T> methods are checker-only rewrite targets for
@@ -1973,6 +2048,31 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinClass::ClassB,
         &[BuiltinTy::U64, BuiltinTy::U64],
         BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // Active-mode `conn.attach(handler)` dispatch symbol.
+    //
+    // The checker rewrites every `conn.attach(handler)` site on a
+    // `net.Connection` receiver to a direct call to `hew_tcp_attach_local`
+    // (see hew-types::check::methods); HIR's direct-call lowering produces a
+    // `Terminator::Call("hew_tcp_attach_local", [conn, handler])`. Codegen
+    // intercepts that call by name (`emit_tcp_attach_local_call`): it resolves
+    // the concrete actor type from the `handler` arg's recorded
+    // `LocalPid<Actor>` type, looks up the actor's `on_data` / `on_close`
+    // handler `msg_id`s in its `ActorLayout`, and emits the real runtime ABI
+    // `hew_tcp_attach_local(conn, actor_ptr, on_data_id, on_close_id)`.
+    //
+    // Linkage is `CalleeNameDispatchOnly`, mirroring `hew_remote_pid_tell`:
+    // the real runtime symbol has a 4-arg ABI declared via `intern_runtime_decl`
+    // inside the codegen interceptor, not through the catalog FFI predeclare
+    // path. The catalog entry's params/return shape only needs to satisfy HIR's
+    // fn_registry lookup and MIR's `module_fn_names` membership so the call
+    // lowers to `Terminator::Call`; the params are not consulted by typecheck.
+    direct(
+        "hew_tcp_attach_local",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::I32, BuiltinTy::Pointer],
+        BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // ── W5.005 (F1b): memory-intrinsic floor (`mem.*`) ────────────────────

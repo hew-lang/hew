@@ -58,8 +58,8 @@ use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
     DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
     DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, ImportKey,
-    IntegerTypeInfo, PendingLoweringFact, TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
-    WasmUnsupportedFeature,
+    IndexContext, IntegerTypeInfo, PendingLoweringFact, TraitAssociatedTypeInfo, TraitInfo,
+    TypeParamScope, WasmUnsupportedFeature,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -167,6 +167,36 @@ impl Checker {
         self.register_builtins();
         self.collect_types(program);
         self.collect_functions(program);
+
+        // Build the actor protocol descriptor side-table BEFORE body checking.
+        //
+        // The descriptor maps each `receive fn` to its stable, hash-derived
+        // `msg_id` (`SipHash-1-3("Actor::handler")`). Body checking needs this
+        // map available because the active-mode `conn.attach(this)` coercion
+        // (`LocalPid<Actor>` → `LocalPid<ConnectionHandler>`) consults
+        // `actor_satisfies_handler_trait`, which reads
+        // `self.actor_protocol_descriptors` to confirm an actor's `receive fn`s
+        // structurally satisfy the handler trait. Building it after body
+        // checking (the pre-Q90 placement) left the map empty during the
+        // coercion, so the predicate always failed and the attach surface had
+        // no working caller.
+        //
+        // `build_actor_protocol_descriptors` needs only `program` plus the
+        // registered fn signatures, both of which `collect_functions` has
+        // finalized by this point. Receive-fn parameter types are concrete
+        // declared annotations (no inference vars to resolve), so the
+        // descriptor built here is identical to one built from the post-
+        // substitution `resolved_fn_sigs` snapshot later in the pipeline; the
+        // published descriptor in `TypeCheckOutput` reads this same field
+        // rather than rebuilding.
+        //
+        // `fn_sigs` is borrowed immutably while `errors` is borrowed mutably;
+        // both are `self` fields, so swap `fn_sigs` out across the build to
+        // keep the borrow checker happy without cloning the whole signature map.
+        let fn_sigs_for_descriptors = std::mem::take(&mut self.fn_sigs);
+        self.actor_protocol_descriptors =
+            build_actor_protocol_descriptors(program, &fn_sigs_for_descriptors, &mut self.errors);
+        self.fn_sigs = fn_sigs_for_descriptors;
 
         // Check non-root module_graph bodies first (dependencies before dependents).
         // Mirrors the traversal order in collect_functions so every registered
@@ -450,15 +480,19 @@ impl Checker {
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();
 
-        // Q87 slice 1: build the actor protocol descriptor side-table once
-        // all handler signatures are resolved. Collisions (two `receive fn`s
-        // hashing to the same msg_id) emit `ActorProtocolCollision`
-        // diagnostics and the offending actor is **absent** from the map —
-        // MIR/codegen treat a missing entry for an actor with handlers as
-        // fail-closed. There is no fallback `enumerate()` path: the
-        // descriptor is the only msg_id authority downstream.
-        let actor_protocol_descriptors =
-            build_actor_protocol_descriptors(program, &resolved_fn_sigs, &mut self.errors);
+        // Q87 slice 1: the actor protocol descriptor side-table is the only
+        // msg_id authority downstream. Collisions (two `receive fn`s hashing
+        // to the same msg_id) emit `ActorProtocolCollision` diagnostics and
+        // the offending actor is **absent** from the map — MIR/codegen treat a
+        // missing entry for an actor with handlers as fail-closed. There is no
+        // fallback `enumerate()` path.
+        //
+        // The map was built once before body checking (so the active-mode
+        // `conn.attach(this)` coercion could read it) and cached in
+        // `self.actor_protocol_descriptors`. Take it for the typed output here
+        // rather than rebuilding: a rebuild would re-run collision detection
+        // and double-emit the diagnostics.
+        let actor_protocol_descriptors = std::mem::take(&mut self.actor_protocol_descriptors);
 
         // Compute the set of monomorphic builtin enum names that landed in
         // `type_defs` via internal pre-registration (e.g.

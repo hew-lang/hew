@@ -30,8 +30,10 @@ are wire-rejected or handled as composites.
 
 Stage 9 (`hew-codegen-rs` Rust/Inkwell emitter) should call
 `TypeDescriptorWireExt::wire_kind()` for every wire field instead of ad-hoc
-type-name string matching. See `hew-wirecodec::wire_boundary`.
+type-name string matching. The wire boundary contract lives in `hew-types`
+(`TypeDescriptorWireExt` in `hew-types/src/type_descriptor.rs`). The
+`hew-wirecodec` crate was retired and is no longer in the workspace.
 
 ## Source of truth
 
-`hew-types/src/type_descriptor.rs` and `hew-wirecodec::wire_boundary`
+`hew-types/src/type_descriptor.rs` (`TypeDescriptor`, `TypeDescriptorWireExt`)

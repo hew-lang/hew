@@ -1369,6 +1369,7 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
     let header = Row::new(vec![
         Cell::from("Time"),
         Cell::from("Actor"),
+        Cell::from("Cause"),
         Cell::from("Signal"),
         Cell::from("Msg Type"),
         Cell::from("Fault Address"),
@@ -1385,15 +1386,22 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default()
             };
-            let sig_name = match c.signal {
-                6 => "SIGABRT".to_owned(),
-                11 => "SIGSEGV".to_owned(),
-                s => format!("SIG({s})"),
+            // Show the human-readable trap kind when available; fall back to raw signal.
+            let cause = if c.trap_kind.is_empty() {
+                match c.signal {
+                    6 => "SIGABRT".to_owned(),
+                    11 => "SIGSEGV".to_owned(),
+                    s => format!("SIG({s})"),
+                }
+            } else {
+                c.trap_kind.clone()
             };
+            let sig_raw = format!("{}", c.signal);
             Row::new(vec![
                 Cell::from(format!("{:.1}s", c.time_s)),
                 Cell::from(format!("actor:{}", c.actor_id)),
-                Cell::from(sig_name).style(Style::default().fg(theme::STATE_ERROR)),
+                Cell::from(cause).style(Style::default().fg(theme::STATE_ERROR)),
+                Cell::from(sig_raw),
                 Cell::from(format!("{}", c.msg_type)),
                 Cell::from(format!("{:#018x}", c.fault_addr)),
             ])
@@ -1406,7 +1414,8 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
         [
             Constraint::Length(10),
             Constraint::Length(12),
-            Constraint::Length(10),
+            Constraint::Length(16),
+            Constraint::Length(8),
             Constraint::Length(10),
             Constraint::Min(20),
         ],

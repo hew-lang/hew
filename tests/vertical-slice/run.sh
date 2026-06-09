@@ -971,14 +971,57 @@ run_accept_expect_status "composite_return_option_none" 99
 # Exit 106 proves both Ok and Err variants return and destructure correctly.
 run_accept_expect_status "composite_return_result" 106
 
-# Reject: Option<string> composite return — heap-owning payload rejected at codegen.
+# W5.020 — heap-owning ENUM composite returns (`Result<T, string>` /
+# `Option<string>` / user enums with an owned-payload variant). The move-out +
+# caller-side tag-aware in-place drop spine transfers the active payload's single
+# owner across the return boundary and drops it exactly once. (These were a
+# reject fixture before W5.020.)
+
+# Accept: Option<string> composite return — Some("hello") matched in the caller.
+# Exit 1 proves the heap-owning composite crossed the boundary and matched.
+run_accept_expect_status "composite_return_heap_owning" 1
+
+# Runtime oracle: fn handle(...) -> Result<i64, string>, BOTH arms exercised.
+# Ok arm returns a bitcopy i64; Err arm returns an owned string. Asserting the
+# observable stdout proves both drop paths run end to end with correct output.
+run_accept_expect_stdout "result_handler_heap_oracle"
+
+# Runtime oracle: heap payload in the Ok position (Result<string, i64>) — the
+# gate keys on which variant owns heap, not arm position.
+run_accept_expect_stdout "result_ok_string_payload"
+
+# Runtime oracle: `?` on a heap-owning Result return path. Unblocked by the gate
+# lift with ZERO HIR change (the W3.044 `?` desugar was already type-agnostic).
+run_accept_expect_stdout "try_op_heap_result"
+
+# Double-free guard: 50k iterations each construct, return, and drop a
+# heap-owning Result across both arms. A clean exit (no SIGABRT from the
+# free_cstring header-sentinel guard) is the behavioural proof the active
+# payload is released without a double-free. (Per-iteration loop-scope leak is a
+# pre-existing W5.011-shared limitation, not a double-free — see the fixture
+# header.) (raii-null-after-move, cleanup-all-exits, boundary-fail-closed.)
+run_accept_expect_stdout "result_heap_drop_loop"
+
+# Reject: heap-owning composite returns with NO tag-aware drop coverage stay
+# fail-closed (boundary-fail-closed). A tuple carrying an owned string is not an
+# enum composite, so the move-out + in-place drop spine does not cover it.
+cat >"${ROOT}/.tmp/reject_tuple_heap_return.hew" <<'REJECT_EOF'
+fn pair() -> (string, i64) {
+    ("hello", 42)
+}
+fn main() -> i64 {
+    let p = pair();
+    p.1
+}
+REJECT_EOF
 if "${HEW}" compile \
-    "${ROOT}/tests/vertical-slice/reject/composite_return_heap_owning.hew" \
+    "${ROOT}/.tmp/reject_tuple_heap_return.hew" \
     >"${reject_output}" 2>&1; then
-  echo "expected composite_return_heap_owning fixture to fail" >&2
+  echo "expected tuple heap-owning composite return to fail closed" >&2
   exit 1
 fi
 grep -q 'composite return of heap-owning payload' "${reject_output}"
+rm -f "${ROOT}/.tmp/reject_tuple_heap_return.hew"
 
 # WASM: composite return for Option<i64> compiles to wasm32.
 "${HEW}" compile --target wasm32-unknown-unknown \
@@ -988,6 +1031,14 @@ grep -q 'composite return of heap-owning payload' "${reject_output}"
 # WASM: composite return for Result<i64, i64> compiles to wasm32.
 "${HEW}" compile --target wasm32-unknown-unknown \
     "${ROOT}/tests/vertical-slice/accept/composite_return_result.hew" \
+    >"${accept_output}" 2>&1
+
+# WASM parity (W5.020): the heap-owning enum composite return + caller-side
+# tag-aware in-place drop must emit on wasm32 too, not native-only. The
+# `emit_one_elab_drop` consumer and `__hew_enum_drop_inplace_*` synthesis are
+# backend-agnostic; this asserts the wasm path stays compiled (native-wasm-parity).
+"${HEW}" compile --target wasm32-unknown-unknown \
+    "${ROOT}/tests/vertical-slice/accept/result_handler_heap_oracle.hew" \
     >"${accept_output}" 2>&1
 
 # ---------------------------------------------------------------------------

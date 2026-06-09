@@ -269,18 +269,21 @@ fn vec_index_in_machine_transition_body_rejected() {
         fn make_strings() -> Vec<string> { [] }
 
         machine M {
+            events {
+                Go;
+                Reset;
+            }
+
             state Idle;
             state Done;
-            event Go;
-            event Reset;
-            on Go: Idle -> Done {
+            on Go: Idle => Done {
                 let xs: Vec<string> = make_strings();
                 let _: string = xs[0];
                 Done
             }
-            on Go: Done -> Done;
-            on Reset: Done -> Idle;
-            on Reset: Idle -> Idle;
+            on Go: Done => Done;
+            on Reset: Done => Idle;
+            on Reset: Idle => Idle;
         }
         ",
     );
@@ -307,14 +310,17 @@ fn vec_index_in_machine_transition_guard_rejected() {
         fn make_strings() -> Vec<string> { [] }
 
         machine M {
+            events {
+                Go;
+                Reset;
+            }
+
             state Idle;
             state Done;
-            event Go;
-            event Reset;
-            on Go: Idle -> Done when make_strings()[0] == "" { Done }
-            on Go: Done -> Done;
-            on Reset: Done -> Idle;
-            on Reset: Idle -> Idle;
+            on Go: Idle => Done when make_strings()[0] == "" { Done }
+            on Go: Done => Done;
+            on Reset: Done => Idle;
+            on Reset: Idle => Idle;
         }
         "#,
     );
@@ -348,6 +354,11 @@ fn machine_state_entry_exit_blocks_are_walked_by_vec_index_gate() {
         fn make_bools() -> Vec<bool> { [] }
 
         machine M {
+            events {
+                Go;
+                Reset;
+            }
+
             state Idle {
                 entry {
                     let xs: Vec<bool> = make_bools();
@@ -359,12 +370,10 @@ fn machine_state_entry_exit_blocks_are_walked_by_vec_index_gate() {
                 }
             }
             state Done;
-            event Go;
-            event Reset;
-            on Go: Idle -> Done;
-            on Go: Done -> Done;
-            on Reset: Done -> Idle;
-            on Reset: Idle -> Idle;
+            on Go: Idle => Done;
+            on Go: Done => Done;
+            on Reset: Done => Idle;
+            on Reset: Idle => Idle;
         }
         ",
     );

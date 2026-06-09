@@ -3613,6 +3613,97 @@ fn hashset_int_insert_ok() {
 }
 
 #[test]
+fn hashmap_string_key_index_read_typechecks() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var m: HashMap<string, string> = HashMap::new();
+            m.insert("a", "alpha");
+            let _x = m["a"];
+        }"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected `m[\"a\"]` over HashMap<string, string> to typecheck, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_string_key_index_write_typechecks() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var m: HashMap<string, string> = HashMap::new();
+            m["a"] = "alpha";
+        }"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected `m[\"a\"] = \"alpha\"` over HashMap<string, string> to typecheck, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_wrong_key_type_index_read_rejected() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            var m: HashMap<string, string> = HashMap::new();
+            let _x = m[5];
+        }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "expected a key-type mismatch for `m[5]` on HashMap<string, _>, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_wrong_value_type_index_write_rejected() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var m: HashMap<string, string> = HashMap::new();
+            m["a"] = 5;
+        }"#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "expected a value-type mismatch for `m[\"a\"] = 5` on HashMap<_, string>, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_string_index_still_rejected() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var v: Vec<i64> = Vec::new();
+            v.push(1);
+            let _x = v["nope"];
+        }"#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "expected Vec index to keep rejecting a string subscript, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn slice_param_annotation_rejected_before_codegen() {
     let output = typecheck_inline(
         r"

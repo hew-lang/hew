@@ -449,7 +449,7 @@ stateDiagram-v2
 
 ## Cross-References
 
-- **Language specification:** [`docs/specs/HEW-SPEC.md`](specs/HEW-SPEC.md) — §8 (Compilation Model), §9 (Runtime Model)
+- **Language specification:** [`docs/specs/HEW-SPEC-2026.md`](specs/HEW-SPEC-2026.md) — §8 (Compilation Model), §9 (Runtime Model)
 - **Runtime source:** [`hew-runtime/src/`](../hew-runtime/src/)
 - **Codegen source:** [`hew-codegen-rs/src/`](../hew-codegen-rs/src/)
-- **Wire format spec:** HEW-SPEC.md §7.3.1 (HBF encoding)
+- **Wire format spec:** HEW-SPEC-2026.md §7.3.1 (HBF encoding)

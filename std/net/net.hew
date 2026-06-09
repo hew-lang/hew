@@ -142,6 +142,41 @@ trait ConnectionMethods {
     /// Pass a negative value to clear the timeout.
     fn set_write_timeout(self, ms: i64) -> Result<(), fs.IoError>;
 
+    /// Send raw bytes to the connection (active-mode-paired name for `write`).
+    ///
+    /// Identical to `write`, named `send` to match the active-mode actor
+    /// idiom: an actor that has `attach`ed a connection writes outbound data
+    /// with `conn.send(...)` while the runtime delivers inbound data to its
+    /// `on_data` handler.
+    fn send(self, data: bytes);
+
+    /// Send a UTF-8 string to the connection (active-mode-paired name for
+    /// `write_string`).
+    fn send_string(self, data: string);
+
+    /// Attach this connection to an actor for Erlang-style active mode.
+    ///
+    /// After this call the runtime reads the socket on a background reactor
+    /// thread and delivers each inbound chunk to the actor as an
+    /// `on_data(bytes)` message (`on_data_type`), and a single `on_close()`
+    /// message (`on_close_type`) when the peer disconnects or the socket
+    /// errors. The actor must NOT call blocking `read`/`read_string` after
+    /// attach — the reactor owns the read side — but `send`/`write` remain
+    /// valid for outbound data until the connection closes.
+    ///
+    /// `handler` is the actor implementing [`ConnectionHandler`]. The compiler
+    /// synthesises the `on_data` / `on_close` `msg_id`s (SipHash-1-3 over each
+    /// handler's fully-qualified name) from the concrete actor type behind the
+    /// `LocalPid`, so the caller writes only `conn.attach(handler)`.
+    ///
+    /// This is the substrate that lets a networked actor serve many idle
+    /// connections without stranding a scheduler worker in a blocking read.
+    ///
+    /// On `wasm32` targets this method is unavailable; the type checker
+    /// rejects calls to `Connection` methods with
+    /// `WasmUnsupportedFeature::TcpNetworking` before codegen (`WASM-TODO(#1451)`).
+    fn attach(self, handler: LocalPid<ConnectionHandler>);
+
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair
     /// backed by the same TCP socket.
     ///
@@ -167,6 +202,41 @@ trait ConnectionMethods {
     /// calls to `Connection` methods with `WasmUnsupportedFeature::TcpNetworking`
     /// before any codegen is reached (`WASM-TODO(#1451)`).
     fn into_stream_sink(self) -> (Stream<bytes>, Sink<bytes>);
+}
+
+// ── Connection handler trait (active mode) ────────────────────────────
+/// Trait for actors that handle a TCP connection in active mode.
+///
+/// Implement this on an actor (declare matching `receive fn on_data(bytes)` /
+/// `receive fn on_close()`) and call `conn.attach(this)` to have the runtime
+/// deliver socket data as actor messages. The actor never calls `read` — the
+/// runtime reads in a background reactor thread — but it may call
+/// `conn.send(...)` for outbound data.
+///
+/// Declared `pub` so the type checker can recognise that a concrete actor's
+/// `receive fn`s structurally satisfy this handler trait at the
+/// `LocalPid<Actor>` → `LocalPid<ConnectionHandler>` coercion site (the
+/// `conn.attach(this)` surface).
+///
+/// # Example
+///
+/// ```
+/// actor Echo {
+///     let conn: Connection;
+///     receive fn on_data(data: bytes) {
+///         conn.send(data);
+///     }
+///     receive fn on_close() {
+///         println("client disconnected");
+///     }
+/// }
+/// ```
+pub trait ConnectionHandler {
+    /// Called when a chunk of bytes arrives from the peer.
+    fn on_data(data: bytes);
+
+    /// Called once when the connection closes or errors.
+    fn on_close();
 }
 
 impl ConnectionMethods for Connection {
@@ -216,6 +286,30 @@ impl ConnectionMethods for Connection {
             hew_tcp_set_write_timeout(conn, ms as i32)
         })
     }
+    /// Send raw bytes to the connection (active-mode-paired name for `write`).
+    fn send(conn: Connection, data: bytes) {
+        unsafe {
+            hew_tcp_write(conn, data)
+        }
+    }
+    /// Send a UTF-8 string to the connection (active-mode-paired name).
+    fn send_string(conn: Connection, data: string) {
+        unsafe {
+            hew_tcp_write(conn, unsafe {
+                hew_string_to_bytes(data)
+            })
+        }
+    }
+    /// Attach this connection to an actor for active-mode delivery.
+    ///
+    /// The body is a fail-closed stub: every `conn.attach(handler)` call site
+    /// is rewritten by the checker to a direct `hew_tcp_attach_local` call,
+    /// which the LLVM backend intercepts to synthesise the `on_data` /
+    /// `on_close` `msg_id`s from the concrete actor type and emit the runtime
+    /// attach ABI. The body below is never lowered on the native path; it
+    /// exists only so the trait surface type-checks. (Mirrors the
+    /// `RemotePid::tell` stub in std/builtins.hew.)
+    fn attach(conn: Connection, handler: LocalPid<ConnectionHandler>) {}
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair.
     fn into_stream_sink(conn: Connection) -> (Stream<bytes>, Sink<bytes>) {
         unsafe {
@@ -320,15 +414,20 @@ pub fn try_connect(addr: string) -> Result<Connection, fs.IoError> {
 /// `timeout_sec` and `timeout_usec` specify the deadline.
 pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Connection {
     let colon = addr.find(":");
-    var host = addr;
+    // Derive `host`/`port` without moving `addr` into `host` up front: a bare
+    // `var host = addr;` consumes `addr` (string is move-typed), which would
+    // make the subsequent `addr.slice(...)`/`addr.len()` reads use-after-move.
+    // Keep `addr` live for the slice/len reads and only bind `host` to the
+    // borrowed-derived substring.
+    var host = "127.0.0.1";
     var port: i64 = 0;
     if colon >= 0 {
-        if colon == 0 {
-            host = "127.0.0.1";
-        } else {
+        if colon != 0 {
             host = addr.slice(0, colon);
         }
         port = string.to_int(addr.slice(colon + 1, addr.len()));
+    } else {
+        host = addr;
     }
     let millis_per_second: i64 = 1000;
     let micros_per_millisecond: i64 = 1000;
@@ -382,6 +481,13 @@ extern "C" {
     fn hew_tcp_connect_timeout(host: string, port: i32, timeout_ms: i32) -> Connection;
     fn hew_tcp_read(conn: Connection) -> bytes;
     fn hew_tcp_write(conn: Connection, data: bytes);
+    // `conn.attach(handler)` does not call a Hew-declared extern: the checker
+    // rewrites each call site to `hew_tcp_attach_local`, which codegen
+    // intercepts to synthesise the handler `msg_id`s and emit the runtime attach
+    // ABI directly. No extern declaration here would match that 4-arg ABI, so
+    // none is declared (mirrors `hew_remote_pid_tell`, whose real symbol
+    // `hew_actor_send_by_id` is interned in codegen rather than declared in Hew).
+    fn hew_tcp_detach(conn: Connection);
     fn hew_bytes_to_string(data: bytes) -> string;
     fn hew_string_to_bytes(s: string) -> bytes;
     fn hew_tcp_listener_close(listener: Listener) -> i32;

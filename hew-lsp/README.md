@@ -26,7 +26,8 @@ Shipped IDE/LSP features for Hew source files include:
 ## Usage
 
 The language server is the standalone `hew-lsp` binary crate. The `hew` CLI
-does not currently expose a `hew lsp` subcommand.
+also exposes `hew lsp` as a thin launcher that forwards all arguments to this
+binary.
 
 From a source checkout, run:
 

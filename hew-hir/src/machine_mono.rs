@@ -1773,6 +1773,48 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            walk_expr(
+                scrutinee,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            walk_block(
+                body,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            if let Some(eb) = else_body {
+                walk_block(
+                    eb,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+        }
         HirExprKind::Break { value, .. } => {
             if let Some(value) = value {
                 walk_expr(

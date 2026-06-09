@@ -6,8 +6,7 @@ actor Worker {
 
 supervisor WorkerTree {
     strategy: one_for_one;
-    max_restarts: 1;
-    window: 60;
+    intensity: 1 within 60s;
 }
 
 fn main() {

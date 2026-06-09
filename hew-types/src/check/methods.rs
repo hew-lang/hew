@@ -16,7 +16,24 @@ use crate::method_resolution::{
     collect_method_sigs_for_receiver, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
+use crate::traits::RcFreeStatus;
 use crate::BuiltinType;
+
+/// Map a `Vec<T>` element method to its W5.016 owned-element runtime symbol.
+///
+/// Returns `None` for methods the owned runtime ops do not implement; the
+/// caller keeps those fail-closed. Mirrors the `_layout` family but routes to
+/// `hew_vec_*_owned`, which deep-clone on push/set, borrow on get, and move on
+/// pop, dropping each element exactly once via the descriptor `drop_fn`.
+fn owned_vec_runtime_symbol(method: &str) -> Option<&'static str> {
+    match method {
+        "push" => Some("hew_vec_push_owned"),
+        "get" => Some("hew_vec_get_owned"),
+        "set" => Some("hew_vec_set_owned"),
+        "pop" => Some("hew_vec_pop_owned"),
+        _ => None,
+    }
+}
 
 /// Which builtin collection a [`check_collection_method`](Checker::check_collection_method)
 /// call is resolving.  This is the single discriminant the descriptor-driven
@@ -1428,6 +1445,19 @@ impl Checker {
         let Ty::Named { name, .. } = receiver_ty else {
             return;
         };
+        // Active-mode `conn.attach(handler)`: rewrite to `hew_tcp_attach_local`,
+        // a callee-name-dispatch symbol the LLVM backend intercepts. The backend
+        // resolves the concrete actor type from the `handler` arg's recorded
+        // `LocalPid<Actor>` (the `LocalPid<ConcreteActor>` → `LocalPid<Handler>`
+        // coercion deliberately does not erase that recorded type), synthesises
+        // the `on_data` / `on_close` `msg_id`s from the actor's protocol
+        // descriptor, and emits the runtime attach ABI. The `attach` impl body
+        // is a stub, so the handle-method auto-derivation below produces nothing;
+        // this explicit rewrite is the authority. Mirrors `RemotePid::tell`.
+        if (name == "Connection" || name == "net.Connection") && method == "attach" {
+            self.record_runtime_method_call_rewrite(span, "hew_tcp_attach_local");
+            return;
+        }
         if let Some(c_symbol) = self.module_registry.resolve_handle_method(name, method) {
             self.record_runtime_method_call_rewrite(span, c_symbol);
         }
@@ -1467,6 +1497,10 @@ impl Checker {
         matches!(
             method,
             "sqrt"
+                | "exp"
+                | "log"
+                | "sin"
+                | "cos"
                 | "abs"
                 | "min"
                 | "max"
@@ -2750,7 +2784,7 @@ impl Checker {
         }
     }
 
-    fn record_resolved_hashmap_call(
+    pub(super) fn record_resolved_hashmap_call(
         &mut self,
         method: &str,
         key_ty: &Ty,
@@ -2849,9 +2883,41 @@ impl Checker {
             }
             let expected = Self::collection_arg_ty(*template, cx);
             let (expr, sp) = arg.expr();
+            // `ArgTemplate::I64` index slots (Vec `get`/`set`/`remove`): accept
+            // any signed integer narrower than i64 as a widening coercion.  The
+            // operand is widened at the index site — the Vec element type and the
+            // call's return type are NOT changed (LESSONS
+            // `widen-operands-not-result-when-tightening-int-coercion`).
+            // Codegen (via `load_signed_int_arg_to_declared_width`) sign-extends
+            // the narrower MIR local to the i64 ABI width; no MIR cast is needed
+            // for the `Terminator::Call` method path.
+            if matches!(template, ArgTemplate::I64) {
+                let actual = self.synthesize(expr, sp);
+                let resolved = self.subst.resolve(&actual);
+                if Self::is_narrower_signed_int(&resolved) {
+                    // Accept: the narrower signed int widens to i64 at the call
+                    // site. `synthesize` already recorded the actual type in
+                    // `expr_types`; we do not override it here — the identifier's
+                    // binding type (I32) is what HIR/MIR use for the local.
+                    continue;
+                }
+                // Not a narrower signed int — fall through to the normal path.
+                // `check_against` is called on the already-synthesised form; it
+                // will re-synthesize internally for non-identifier expressions
+                // (that is fine: the type is idempotent).
+            }
             self.check_against(expr, sp, &expected);
         }
         true
+    }
+
+    /// Returns `true` when `ty` is a concrete signed integer type strictly
+    /// narrower than `i64` (i.e. `i8`, `i16`, or `i32`).  Used as the guard
+    /// for implicit index-site widening — we do NOT widen unsigned types,
+    /// float literals, or `IntLiteral` (integer literals are already accepted
+    /// by the `check_against` literal-coercion arm).
+    pub(super) fn is_narrower_signed_int(ty: &Ty) -> bool {
+        matches!(ty, Ty::I8 | Ty::I16 | Ty::I32)
     }
 
     /// Construct a collection method's return type from its [`RetTemplate`].
@@ -3220,35 +3286,244 @@ impl Checker {
                 return Some(sym);
             }
 
+            // W5.016 owned-element path: a non-Copy record / enum element whose
+            // ownership has a synthesizable clone/drop thunk path (and which is
+            // RcFree, so the runtime can drop it deterministically) routes
+            // through the `hew_vec_*_owned` ABI instead of failing closed. The
+            // owned routing only covers the methods the owned runtime ops
+            // implement (`hew_vec_{push,get,set,pop}_owned`); `remove`/`clone`
+            // on owned elements remain fail-closed until their owned ops land.
+            if matches!(method, "push" | "get" | "set" | "pop")
+                && self.vec_owned_element_admissible(elem_ty)
+            {
+                if let Some(owned) = owned_vec_runtime_symbol(method) {
+                    return Some(owned);
+                }
+            }
+
             // Stage 3a fail-closed boundary: layout-backed Vec operations are
             // only lifted when type routing, runtime support, and codegen
             // pseudo-FFI operand synthesis all exist.  Keep LayoutManaged
             // records/tuples and unsupported layout methods out of the rewrite
             // side table so downstream layers never fabricate a value.
-            let reason = if supported_bitcopy_method {
+            let message = if supported_bitcopy_method {
+                // Non-Copy element on a supported op (push/get/set/pop/...): it
+                // reached here because it is neither Copy nor owned-admissible.
+                // Name the real blocker (recursive container / Rc / no thunk
+                // path) instead of a blanket Copy diagnostic.
+                let why = self.vec_element_rejection_reason(elem_ty);
                 format!(
-                    "element type `{}` is not `Copy`; layout-managed Vec elements \
-                     require clone/drop semantics that are not implemented",
+                    "`{}` cannot be a `Vec` element for `Vec::{method}`: {why} \
+                     (runtime symbol `{sym}`)",
                     elem_ty.user_facing()
                 )
             } else {
                 format!(
                     "`Vec::{method}` on layout-backed element type `{}` is not \
-                     runtime-backed yet",
+                     runtime-backed yet (runtime symbol `{sym}`); supported layout Vec \
+                     methods are push/get/set/pop/remove/clone for Copy record/tuple elements",
                     elem_ty.user_facing()
                 )
             };
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "{reason} (runtime symbol `{sym}`); supported layout Vec \
-                     methods are push/get/set/pop/remove/clone for Copy record/tuple elements"
-                ),
-            );
+            self.report_error(TypeErrorKind::InvalidOperation, span, message);
             return None;
         }
         Some(sym)
+    }
+
+    /// Decide whether a non-Copy `Vec<T>` element type may route through the
+    /// W5.016 owned-element ABI (`hew_vec_*_owned`).
+    ///
+    /// Admissible when the element is a user record or enum (the shapes whose
+    /// per-type `__hew_record/enum_{clone,drop}_inplace` thunks codegen
+    /// synthesizes) AND it is `RcFree` (so the runtime drop pass terminates
+    /// deterministically — `Rc` ownership is not tracked per element). Tuple
+    /// elements are NOT yet admitted here: their `__hew_tuple_*_inplace` thunk
+    /// synthesis lands in a later slice; until then they stay fail-closed.
+    ///
+    /// Stays fail-closed for every element that lacks a thunk path: an element
+    /// containing a `Vec`/`HashMap`/`HashSet` field (general container-in-
+    /// container clone/drop is a separate lane) and any non-record/enum nominal.
+    /// Explain why a non-`Copy` Vec element type was rejected at construction,
+    /// for use in the fail-closed diagnostic. Returns a clause that completes
+    /// "element type `X` cannot be a Vec element: {clause}". Only called on the
+    /// non-`Copy` + not-admissible path, so the element genuinely lacks a Vec
+    /// lowering today.
+    ///
+    /// Distinguishes the common self-recursive / container-in-container case
+    /// (`enum R { Array(Vec<R>); ... }`) — which IS owned but needs the
+    /// recursive owned-thunk synthesis that is a separate follow-on — from a
+    /// generically unsupported element shape, so the message does not
+    /// misleadingly blame `Copy` or name `hew_vec_new_with_layout` for an
+    /// owned enum.
+    pub(super) fn vec_element_rejection_reason(&self, elem_ty: &Ty) -> String {
+        if let Ty::Named { name, builtin, .. } = elem_ty {
+            if builtin.is_none() {
+                if let Some(type_def) = self.type_defs.get(name) {
+                    let is_record_or_enum = matches!(
+                        type_def.kind,
+                        TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
+                    );
+                    if is_record_or_enum {
+                        if !matches!(self.registry.rc_free_status(elem_ty), RcFreeStatus::RcFree) {
+                            return "it transitively holds an `Rc`, whose per-element \
+                                    drop is not deterministically tracked by the \
+                                    owned-element Vec runtime"
+                                .to_string();
+                        }
+                        if self.vec_element_contains_unowned_container(
+                            elem_ty,
+                            &HashSet::new(),
+                            &mut HashSet::new(),
+                        ) {
+                            return "it contains a `Vec`/`HashMap`/`HashSet` field \
+                                    (including a self-recursive one), which requires \
+                                    recursive owned clone/drop thunk synthesis that is \
+                                    not implemented yet"
+                                .to_string();
+                        }
+                    }
+                }
+            }
+        }
+        "it has no clone/drop thunk path for the owned-element Vec runtime".to_string()
+    }
+
+    pub(super) fn vec_owned_element_admissible(&self, elem_ty: &Ty) -> bool {
+        match elem_ty {
+            // Tuple element (W5.016 F2): a tuple with at least one owned
+            // (non-Copy) field routes through the synthesized
+            // `__hew_tuple_*_inplace` thunk. An all-Copy tuple is `Copy` and
+            // never reaches this admissibility check (it takes the BitCopy
+            // `_layout` path). A nested-tuple or container field has no thunk
+            // path — fail closed.
+            Ty::Tuple(elems) => {
+                // RcFree + no nested-tuple / unowned-container field. A tuple
+                // has no self-recursion root, so the `roots` set is empty: any
+                // container field is unowned.
+                matches!(self.registry.rc_free_status(elem_ty), RcFreeStatus::RcFree)
+                    && elems.iter().all(|e| !matches!(e, Ty::Tuple(_)))
+                    && !self.vec_element_contains_unowned_container(
+                        elem_ty,
+                        &HashSet::new(),
+                        &mut HashSet::new(),
+                    )
+            }
+            Ty::Named { name, builtin, .. } => {
+                // Builtin nominals (Vec/HashMap/Rc/...) are not user records/enums.
+                if builtin.is_some() {
+                    return false;
+                }
+                let Some(type_def) = self.type_defs.get(name) else {
+                    return false;
+                };
+                // Only record/struct/enum value types have synthesizable
+                // inplace thunks.
+                if !matches!(
+                    type_def.kind,
+                    TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
+                ) {
+                    return false;
+                }
+                // RcFree is required so the per-element runtime drop is
+                // deterministic.
+                if !matches!(self.registry.rc_free_status(elem_ty), RcFreeStatus::RcFree) {
+                    return false;
+                }
+                // A record/enum that transitively contains a `Vec`/`HashMap`/
+                // `HashSet` field has no in-place thunk path today — keep it
+                // fail-closed (general container-in-container is a separate
+                // lane). This INCLUDES the self-recursive enum
+                // (`enum R { A(Vec<R>); ... }`): admitting it requires the enum
+                // clone/drop thunk synthesis to recurse through the field's
+                // OWNED-Vec ops (`hew_vec_{clone,free}_owned` with the owned
+                // descriptor) rather than the witness-managed
+                // `hew_vec_free_managed` (which aborts on owned elements). That
+                // recursive-enum-clone synthesis is a follow-on; until it
+                // lands, `Vec<RedisReply>` stays fail-closed here (the empty
+                // `roots` set rejects every container field, self-recursive or
+                // not), so the checker never admits a type the codegen drop
+                // path cannot handle (the Slice-1-era over-admit revert trap).
+                !self.vec_element_contains_unowned_container(
+                    elem_ty,
+                    &HashSet::new(),
+                    &mut HashSet::new(),
+                )
+            }
+            _ => false,
+        }
+    }
+
+    /// True when `ty` (or a transitive record/enum member) is — or contains a
+    /// field of — a builtin collection (`Vec`/`HashMap`/`HashSet`). Such a
+    /// member has no `__hew_*_inplace` thunk path, so an owned-Vec element that
+    /// transitively reaches one must stay fail-closed. The recursive enum's
+    /// own self-edge through a `Vec` (`Array(Vec<RedisReply>)`) is the one
+    /// admitted exception (gated by the later `RcFree` refinement) — here we
+    /// only reject UNOWNED-container fields, not the self-recursive edge.
+    fn vec_element_contains_unowned_container(
+        &self,
+        ty: &Ty,
+        roots: &HashSet<String>,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        match ty {
+            Ty::Named {
+                name,
+                builtin,
+                args,
+            } => {
+                if matches!(
+                    builtin,
+                    Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet)
+                ) {
+                    // A collection whose every type argument is a `root` (the
+                    // recursing element type) is the admitted self-recursion
+                    // (`enum R { A(Vec<R>) }`): the enum's own owned thunk
+                    // recurses through this field. Any other container element
+                    // is unowned (no thunk path) — reject.
+                    return !args.iter().all(|a| match a {
+                        Ty::Named { name: an, .. } => roots.contains(an),
+                        _ => false,
+                    });
+                }
+                if builtin.is_some() {
+                    // Other builtins (Option/Result/Rc/handles) carry their own
+                    // ABI; recurse only through their type arguments.
+                    return args
+                        .iter()
+                        .any(|a| self.vec_element_contains_unowned_container(a, roots, visiting));
+                }
+                if !visiting.insert(name.clone()) {
+                    // Self-recursive edge on a user type: the recursion through a
+                    // user record/enum is finite by construction here (it only
+                    // recurses once per name). It carries no bare container.
+                    return false;
+                }
+                let result = self.type_defs.get(name).is_some_and(|td| {
+                    td.fields.values().any(|fty| {
+                        self.vec_element_contains_unowned_container(fty, roots, visiting)
+                    }) || td.variants.values().any(|variant| match variant {
+                        VariantDef::Unit => false,
+                        VariantDef::Tuple(tys) => tys.iter().any(|t| {
+                            self.vec_element_contains_unowned_container(t, roots, visiting)
+                        }),
+                        VariantDef::Struct(fields) => fields.iter().any(|(_, t)| {
+                            self.vec_element_contains_unowned_container(t, roots, visiting)
+                        }),
+                    })
+                });
+                visiting.remove(name);
+                result
+            }
+            Ty::Tuple(elems) => elems
+                .iter()
+                .any(|e| self.vec_element_contains_unowned_container(e, roots, visiting)),
+            Ty::Array(inner, _) | Ty::Slice(inner) => {
+                self.vec_element_contains_unowned_container(inner, roots, visiting)
+            }
+            _ => false,
+        }
     }
 
     #[expect(

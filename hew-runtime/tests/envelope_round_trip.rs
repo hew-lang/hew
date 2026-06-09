@@ -6,11 +6,13 @@
 use ciborium::value::{Integer, Value};
 use hew_runtime::cluster::{GOSSIP_REGISTRY_ADD, GOSSIP_REGISTRY_REMOVE};
 use hew_runtime::envelope::{
-    decode_control_frame, decode_envelope_frame, decode_registry_gossip_payload, decode_wire_frame,
-    encode_control_frame, encode_envelope_frame, encode_registry_gossip_payload, ControlFrame,
-    DecodeError, EncodeError, EnvelopeFrame, RegistryGossipPayload, RegistryGossipPayloadError,
-    WireFrame, CTRL_REGISTRY_GOSSIP, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE,
-    MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD,
+    decode_control_frame, decode_envelope_frame, decode_registry_gossip_payload,
+    decode_swim_payload, decode_wire_frame, encode_control_frame, encode_envelope_frame,
+    encode_registry_gossip_payload, encode_swim_payload, ControlFrame, DecodeError, EncodeError,
+    EnvelopeFrame, RegistryGossipPayload, RegistryGossipPayloadError, SwimControlPayload,
+    SwimGossipEntry, SwimPayloadError, WireFrame, CTRL_REGISTRY_GOSSIP, FRAME_TYPE_CONTROL,
+    FRAME_TYPE_ENVELOPE, MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES,
+    MAX_SWIM_GOSSIP_ENTRIES, MAX_SWIM_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD,
     REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
 
@@ -818,4 +820,191 @@ fn array_payload_with_integer_keys_is_rejected() {
         decode_envelope_frame(&value_to_cbor(&array_payload)),
         Err(DecodeError::MalformedField { key: 6, .. })
     ));
+}
+
+// -- SWIM control payload codec ---------------------------------------------
+
+fn swim_payload(msg_type: i32, from_node: u16, gossip: Vec<SwimGossipEntry>) -> SwimControlPayload {
+    SwimControlPayload {
+        msg_type,
+        from_node,
+        incarnation: 7,
+        target_node: 0,
+        gossip,
+    }
+}
+
+#[test]
+fn swim_payload_round_trips_with_piggybacked_gossip() {
+    let original = SwimControlPayload {
+        msg_type: 1, // SWIM_MSG_PING
+        from_node: 42,
+        incarnation: 9,
+        target_node: 99,
+        gossip: vec![
+            SwimGossipEntry {
+                node_id: 7,
+                state: 2, // MEMBER_DEAD
+                incarnation: 4,
+            },
+            SwimGossipEntry {
+                node_id: 8,
+                state: 0, // MEMBER_ALIVE
+                incarnation: 12,
+            },
+        ],
+    };
+    let bytes = encode_swim_payload(&original).expect("payload should encode");
+    let decoded = decode_swim_payload(&bytes).expect("payload should decode");
+    assert_eq!(decoded, original);
+
+    // CDDL shape: top-level map keyed {1,2,3,4,5}.
+    let value = decode_value(&bytes);
+    let entries = map_entries(&value);
+    assert_eq!(entries.len(), 5);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5]);
+    assert_integer_value(find_field(entries, 1), 1);
+    assert_integer_value(find_field(entries, 2), 42);
+    assert_integer_value(find_field(entries, 3), 9);
+    assert_integer_value(find_field(entries, 4), 99);
+}
+
+#[test]
+fn swim_payload_empty_gossip_round_trips() {
+    let original = swim_payload(2, 5, vec![]); // SWIM_MSG_ACK, no gossip
+    let bytes = encode_swim_payload(&original).expect("payload should encode");
+    assert_eq!(decode_swim_payload(&bytes).unwrap(), original);
+}
+
+#[test]
+fn swim_payload_codec_rejects_malformed_payloads() {
+    // Unknown top-level key.
+    let unknown_key = Value::Map(vec![
+        (int(1u64), int(1i32)),
+        (int(2u64), int(5u16)),
+        (int(3u64), int(7u64)),
+        (int(4u64), int(0u16)),
+        (int(5u64), Value::Array(vec![])),
+        (int(6u64), int(0u64)),
+    ]);
+    assert!(matches!(
+        decode_swim_payload(&value_to_cbor(&unknown_key)),
+        Err(SwimPayloadError::UnknownKey { key: 6 })
+    ));
+
+    // Missing required key 5 (gossip array).
+    let missing_gossip = Value::Map(vec![
+        (int(1u64), int(1i32)),
+        (int(2u64), int(5u16)),
+        (int(3u64), int(7u64)),
+        (int(4u64), int(0u16)),
+    ]);
+    assert!(matches!(
+        decode_swim_payload(&value_to_cbor(&missing_gossip)),
+        Err(SwimPayloadError::MissingKey { key: 5 })
+    ));
+
+    // Duplicate key 1.
+    let duplicate = Value::Map(vec![
+        (int(1u64), int(1i32)),
+        (int(1u64), int(2i32)),
+        (int(2u64), int(5u16)),
+        (int(3u64), int(7u64)),
+        (int(4u64), int(0u16)),
+        (int(5u64), Value::Array(vec![])),
+    ]);
+    assert!(matches!(
+        decode_swim_payload(&value_to_cbor(&duplicate)),
+        Err(SwimPayloadError::DuplicateKey { key: 1 })
+    ));
+
+    // Gossip field is not an array.
+    let gossip_not_array = Value::Map(vec![
+        (int(1u64), int(1i32)),
+        (int(2u64), int(5u16)),
+        (int(3u64), int(7u64)),
+        (int(4u64), int(0u16)),
+        (int(5u64), int(0u64)),
+    ]);
+    assert!(matches!(
+        decode_swim_payload(&value_to_cbor(&gossip_not_array)),
+        Err(SwimPayloadError::MalformedField { key: 5, .. })
+    ));
+
+    // Oversized payload (byte cap).
+    let oversized = vec![0u8; MAX_SWIM_PAYLOAD_BYTES + 1];
+    assert!(matches!(
+        decode_swim_payload(&oversized),
+        Err(SwimPayloadError::PayloadTooLarge { .. })
+    ));
+}
+
+#[test]
+fn swim_payload_rejects_oversized_gossip_batch() {
+    // Encode-side guard: too many entries.
+    let oversized_count = MAX_SWIM_GOSSIP_ENTRIES + 1;
+    let too_many = SwimControlPayload {
+        msg_type: 1,
+        from_node: 1,
+        incarnation: 1,
+        target_node: 0,
+        gossip: (0..oversized_count)
+            .map(|i| SwimGossipEntry {
+                node_id: u16::try_from(i).unwrap_or(0),
+                state: 0,
+                incarnation: 1,
+            })
+            .collect(),
+    };
+    assert!(matches!(
+        encode_swim_payload(&too_many),
+        Err(SwimPayloadError::TooManyGossipEntries { .. })
+    ));
+
+    // Decode-side guard: a hand-built array exceeding the cap is rejected.
+    let entries: Vec<(Value, Value)> = vec![
+        (int(1u64), int(1i32)),
+        (int(2u64), int(1u16)),
+        (int(3u64), int(1u64)),
+        (int(4u64), int(0u16)),
+        (
+            int(5u64),
+            Value::Array(
+                (0..oversized_count)
+                    .map(|i| {
+                        Value::Map(vec![
+                            (int(1u64), int(u16::try_from(i).unwrap_or(0))),
+                            (int(2u64), int(0i32)),
+                            (int(3u64), int(1u64)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ];
+    let oversized_batch = Value::Map(entries);
+    assert!(matches!(
+        decode_swim_payload(&value_to_cbor(&oversized_batch)),
+        Err(SwimPayloadError::TooManyGossipEntries { .. })
+    ));
+}
+
+#[test]
+fn swim_payload_truncated_cbor_returns_error() {
+    let original = swim_payload(
+        1,
+        3,
+        vec![SwimGossipEntry {
+            node_id: 4,
+            state: 1,
+            incarnation: 2,
+        }],
+    );
+    let bytes = encode_swim_payload(&original).expect("payload should encode");
+    for cut in 1..bytes.len() {
+        assert!(
+            decode_swim_payload(&bytes[..cut]).is_err(),
+            "decoder returned Ok on a {cut}-byte truncation"
+        );
+    }
 }

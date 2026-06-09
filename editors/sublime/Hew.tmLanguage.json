@@ -278,7 +278,7 @@
         {
           "comment": "Supervisor strategy and overflow policy values",
           "name": "constant.language.strategy.hew",
-          "match": "\\b(one_for_all|one_for_one|permanent|rest_for_one|temporary|transient)\\b"
+          "match": "\\b(brutal_kill|one_for_all|one_for_one|permanent|rest_for_one|simple_one_for_one|temporary|transient)\\b"
         },
         {
           "comment": "Wire protocol keywords",
@@ -921,7 +921,7 @@
         {
           "comment": "Contextual identifiers (special meaning in specific contexts)",
           "name": "variable.language.contextual.hew",
-          "match": "\\b(block|coalesce|drop_new|drop_old|export|fail|fallback|json|mailbox|max_restarts|mut|overflow|repeated|window|yaml)\\b"
+          "match": "\\b(block|coalesce|drop_new|drop_old|export|fail|fallback|infinity|intensity|json|mailbox|mut|overflow|repeated|shutdown|wired_to|within|yaml)\\b"
         },
         {
           "comment": "Field label in records, type fields, and named arguments",

@@ -17,30 +17,36 @@
 // `tests/machine_exec.rs::run_emit_signal_fixture_executes` is the
 // end-to-end signal for this fixture.
 machine Signal {
+    events {
+        Start;
+        Stop;
+        Ready;
+    }
+
+    emits {
+        Ready;
+    }
+
     state Idle;
     state Active;
 
-    event Start;
-    event Stop;
-    event Ready;
-
-    on Start: Idle -> Active {
+    on Start: Idle => Active {
         emit Ready {};
         Active
     }
-    on Stop: Active -> Idle {
+    on Stop: Active => Idle {
         Idle
     }
-    on Ready: Idle -> Idle @reenter {
+    on Ready: Idle => Idle reenter {
         Idle
     }
-    on Ready: Active -> Active @reenter {
+    on Ready: Active => Active reenter {
         Active
     }
-    on Start: Active -> Active @reenter {
+    on Start: Active => Active reenter {
         Active
     }
-    on Stop: Idle -> Idle @reenter {
+    on Stop: Idle => Idle reenter {
         Idle
     }
 }

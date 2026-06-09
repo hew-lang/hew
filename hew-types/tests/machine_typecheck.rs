@@ -34,7 +34,9 @@ fn make_machine(
         has_default: false,
         states,
         events,
+        emits: vec![],
         transitions,
+        composite_groups: vec![],
     }
 }
 
@@ -88,6 +90,8 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         event_name: event.to_string(),
         source_state: source.to_string(),
         target_state: target.to_string(),
+        event_bindings: vec![],
+        composite_prelude_len: 0,
         guard: None,
         body: (Expr::Identifier("state".to_string()), 0..0),
         reenter: false,
@@ -99,6 +103,8 @@ fn wildcard_transition(event: &str) -> MachineTransition {
         event_name: event.to_string(),
         source_state: "_".to_string(),
         target_state: "_".to_string(),
+        event_bindings: vec![],
+        composite_prelude_len: 0,
         guard: None,
         body: (Expr::Identifier("state".to_string()), 0..0),
         reenter: false,
@@ -614,12 +620,14 @@ fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
         has_default: false,
         states: vec![unit_state("Idle"), unit_state("Active")],
         events: vec![unit_event("Start"), unit_event("Stop")],
+        emits: vec![],
         transitions: vec![
             transition("Start", "Idle", "Active"),
             transition("Stop", "Active", "Idle"),
             wildcard_transition("Start"),
             wildcard_transition("Stop"),
         ],
+        composite_groups: vec![],
     }
 }
 
@@ -689,11 +697,14 @@ fn machine_step_dispatch() {
     let output = typecheck_isolated(
         r"
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
 
         fn main() {
@@ -752,11 +763,14 @@ fn machine_step_suppresses_unused_mut_warning() {
     let output = typecheck_isolated(
         r"
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
 
         fn main() {
@@ -786,11 +800,14 @@ fn machine_step_on_let_receiver_is_rejected() {
     let output = typecheck_isolated(
         r"
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
 
         fn main() {
@@ -815,14 +832,17 @@ fn machine_state_pattern_match_uses_variant_infrastructure() {
     let output = typecheck_isolated(
         r"
         machine TcpState {
+            events {
+                Connect;
+                Disconnect;
+            }
+
             state Closed;
             state Established { seq: i64; }
-            event Connect;
-            event Disconnect;
-            on Connect: Closed -> Established { seq: 1 }
-            on Connect: Established -> Established { seq: state.seq }
-            on Disconnect: Closed -> Closed;
-            on Disconnect: Established -> Closed;
+            on Connect: Closed => Established { seq: 1 }
+            on Connect: Established => Established { seq: state.seq }
+            on Disconnect: Closed => Closed;
+            on Disconnect: Established => Closed;
         }
 
         fn seq_or_zero(state: TcpState) -> i64 {
@@ -858,14 +878,17 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
     let output = typecheck_isolated(
         r"
         machine Lifecycle<T> {
+            events {
+                Load { value: T; }
+                Reset;
+            }
+
             state Empty;
             state Loaded { value: T; }
-            event Load { value: T; }
-            event Reset;
-            on Load: Empty -> Loaded { value: event.value }
-            on Load: Loaded -> Loaded { value: event.value }
-            on Reset: Empty -> Empty;
-            on Reset: Loaded -> Empty;
+            on Load: Empty => Loaded { value: event.value }
+            on Load: Loaded => Loaded { value: event.value }
+            on Reset: Empty => Empty;
+            on Reset: Loaded => Empty;
         }
 
         fn main() {
@@ -964,11 +987,14 @@ fn machine_event_match_outside_transition_rejected() {
     let output = typecheck_isolated(
         r"
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
 
         fn main() {
@@ -1216,12 +1242,14 @@ fn imported_generic_machine_type_params_survive_registration() {
         has_default: false,
         states: vec![unit_state("Idle"), unit_state("Active")],
         events: vec![unit_event("Start"), unit_event("Stop")],
+        emits: vec![],
         transitions: vec![
             transition("Start", "Idle", "Active"),
             transition("Stop", "Active", "Idle"),
             wildcard_transition("Start"),
             wildcard_transition("Stop"),
         ],
+        composite_groups: vec![],
     };
 
     let mut graph = ModuleGraph::new(ModuleId::new(vec!["root".to_string()]));
@@ -1358,16 +1386,19 @@ trait Resource {
 }
 
 machine Lifecycle<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let output = typecheck_isolated(source);
@@ -1399,16 +1430,19 @@ impl Resource for File {
 }
 
 machine Lifecycle<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn main() {
@@ -1437,16 +1471,19 @@ trait Resource {
 type Plain { x: i64; }
 
 machine Lifecycle<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn main() {
@@ -1480,16 +1517,19 @@ fn main() {
 fn machine_generic_unknown_trait_in_bound_errors() {
     let source = r"
 machine Lifecycle<T: NonExistentTrait> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let output = typecheck_isolated(source);
@@ -1517,19 +1557,22 @@ fn machine_state_entry_exit_well_typed_no_errors() {
     let output = typecheck_isolated(
         r"
         machine Door {
+            events {
+                Push;
+                Pull;
+            }
+
             state Closed {
                 entry { let _x: i64 = 1; }
                 exit  { let _y: i64 = 2; }
             }
             state Open;
 
-            event Push;
-            event Pull;
 
-            on Push: Closed -> Open;
-            on Push: Open   -> Open;
-            on Pull: Open   -> Closed;
-            on Pull: Closed -> Closed;
+            on Push: Closed => Open;
+            on Push: Open   => Open;
+            on Pull: Open   => Closed;
+            on Pull: Closed => Closed;
         }
         ",
     );
@@ -1546,6 +1589,11 @@ fn machine_state_entry_type_error_reported() {
     let output = typecheck_isolated(
         r"
         machine Door {
+            events {
+                Push;
+                Pull;
+            }
+
             state Closed {
                 entry {
                     // assigning a bool to an i64 — must be a type error
@@ -1554,13 +1602,11 @@ fn machine_state_entry_type_error_reported() {
             }
             state Open;
 
-            event Push;
-            event Pull;
 
-            on Push: Closed -> Open;
-            on Push: Open   -> Open;
-            on Pull: Open   -> Closed;
-            on Pull: Closed -> Closed;
+            on Push: Closed => Open;
+            on Push: Open   => Open;
+            on Pull: Open   => Closed;
+            on Pull: Closed => Closed;
         }
         ",
     );
@@ -1576,6 +1622,11 @@ fn machine_state_exit_type_error_reported() {
     let output = typecheck_isolated(
         r"
         machine Door {
+            events {
+                Push;
+                Pull;
+            }
+
             state Open {
                 exit {
                     // assigning a bool to an i64 — must be a type error
@@ -1584,13 +1635,11 @@ fn machine_state_exit_type_error_reported() {
             }
             state Closed;
 
-            event Push;
-            event Pull;
 
-            on Push: Closed -> Open;
-            on Push: Open   -> Open;
-            on Pull: Open   -> Closed;
-            on Pull: Closed -> Closed;
+            on Push: Closed => Open;
+            on Push: Open   => Open;
+            on Pull: Open   => Closed;
+            on Pull: Closed => Closed;
         }
         ",
     );
@@ -1607,6 +1656,11 @@ fn machine_state_entry_event_binding_not_in_scope() {
     let output = typecheck_isolated(
         r"
         machine Door {
+            events {
+                Push;
+                Pull;
+            }
+
             state Closed {
                 entry {
                     // `event` is a transition-scope binding; must be undefined here
@@ -1615,13 +1669,11 @@ fn machine_state_entry_event_binding_not_in_scope() {
             }
             state Open;
 
-            event Push;
-            event Pull;
 
-            on Push: Closed -> Open;
-            on Push: Open   -> Open;
-            on Pull: Open   -> Closed;
-            on Pull: Closed -> Closed;
+            on Push: Closed => Open;
+            on Push: Open   => Open;
+            on Pull: Open   => Closed;
+            on Pull: Closed => Closed;
         }
         ",
     );
@@ -1641,6 +1693,11 @@ fn machine_state_exit_event_binding_not_in_scope() {
     let output = typecheck_isolated(
         r"
         machine Door {
+            events {
+                Push;
+                Pull;
+            }
+
             state Open {
                 exit {
                     // `event` is a transition-scope binding; must be undefined here
@@ -1649,13 +1706,11 @@ fn machine_state_exit_event_binding_not_in_scope() {
             }
             state Closed;
 
-            event Push;
-            event Pull;
 
-            on Push: Closed -> Open;
-            on Push: Open   -> Open;
-            on Pull: Open   -> Closed;
-            on Pull: Closed -> Closed;
+            on Push: Closed => Open;
+            on Push: Open   => Open;
+            on Pull: Open   => Closed;
+            on Pull: Closed => Closed;
         }
         ",
     );
@@ -1675,6 +1730,11 @@ fn machine_state_entry_state_binding_in_scope() {
     let output = typecheck_isolated(
         r"
         machine Door {
+            events {
+                Push;
+                Pull;
+            }
+
             state Closed {
                 entry {
                     // `state` is the machine value; discarding it must be fine
@@ -1683,13 +1743,11 @@ fn machine_state_entry_state_binding_in_scope() {
             }
             state Open;
 
-            event Push;
-            event Pull;
 
-            on Push: Closed -> Open;
-            on Push: Open   -> Open;
-            on Pull: Open   -> Closed;
-            on Pull: Closed -> Closed;
+            on Push: Closed => Open;
+            on Push: Open   => Open;
+            on Pull: Open   => Closed;
+            on Pull: Closed => Closed;
         }
         ",
     );
@@ -1707,6 +1765,11 @@ fn machine_state_entry_payload_field_resolves() {
     let output = typecheck_isolated(
         r"
         machine TcpState {
+            events {
+                Connect;
+                Disconnect;
+            }
+
             state Closed;
             state Established {
                 entry {
@@ -1716,13 +1779,11 @@ fn machine_state_entry_payload_field_resolves() {
                 seq: i64;
             }
 
-            event Connect;
-            event Disconnect;
 
-            on Connect:    Closed      -> Established { seq: 0 }
-            on Connect:    Established -> Established { seq: state.seq }
-            on Disconnect: Closed      -> Closed;
-            on Disconnect: Established -> Closed;
+            on Connect:    Closed      => Established { seq: 0 }
+            on Connect:    Established => Established { seq: state.seq }
+            on Disconnect: Closed      => Closed;
+            on Disconnect: Established => Closed;
         }
         ",
     );
@@ -1740,6 +1801,11 @@ fn machine_state_exit_payload_field_resolves() {
     let output = typecheck_isolated(
         r"
         machine TcpState {
+            events {
+                Connect;
+                Disconnect;
+            }
+
             state Closed;
             state Established {
                 exit {
@@ -1749,13 +1815,11 @@ fn machine_state_exit_payload_field_resolves() {
                 seq: i64;
             }
 
-            event Connect;
-            event Disconnect;
 
-            on Connect:    Closed      -> Established { seq: 0 }
-            on Connect:    Established -> Established { seq: state.seq }
-            on Disconnect: Closed      -> Closed;
-            on Disconnect: Established -> Closed;
+            on Connect:    Closed      => Established { seq: 0 }
+            on Connect:    Established => Established { seq: state.seq }
+            on Disconnect: Closed      => Closed;
+            on Disconnect: Established => Closed;
         }
         ",
     );
@@ -1772,6 +1836,11 @@ fn machine_state_entry_nonexistent_payload_field_errors() {
     let output = typecheck_isolated(
         r"
         machine TcpState {
+            events {
+                Connect;
+                Disconnect;
+            }
+
             state Closed;
             state Established {
                 entry {
@@ -1780,13 +1849,11 @@ fn machine_state_entry_nonexistent_payload_field_errors() {
                 seq: i64;
             }
 
-            event Connect;
-            event Disconnect;
 
-            on Connect:    Closed      -> Established { seq: 0 }
-            on Connect:    Established -> Established { seq: state.seq }
-            on Disconnect: Closed      -> Closed;
-            on Disconnect: Established -> Closed;
+            on Connect:    Closed      => Established { seq: 0 }
+            on Connect:    Established => Established { seq: state.seq }
+            on Disconnect: Closed      => Closed;
+            on Disconnect: Established => Closed;
         }
         ",
     );
@@ -1807,17 +1874,20 @@ fn machine_transition_guard_type_error_reported() {
     let output = typecheck_isolated(
         r"
         machine Door {
+            events {
+                Push;
+                Pull;
+            }
+
             state Closed;
             state Open;
 
-            event Push;
-            event Pull;
 
             // guard expects bool, but 42 is i64 — type error
-            on Push: Closed -> Open when 42;
-            on Push: Open   -> Open;
-            on Pull: Open   -> Closed;
-            on Pull: Closed -> Closed;
+            on Push: Closed => Open when 42;
+            on Push: Open   => Open;
+            on Pull: Open   => Closed;
+            on Pull: Closed => Closed;
         }
         ",
     );
@@ -1834,15 +1904,18 @@ fn machine_entry_exit_errors_and_exhaustiveness_both_reported() {
     let output = typecheck_isolated(
         r"
         machine Door {
+            events {
+                Push;
+                Pull;
+            }
+
             state Closed {
                 entry { let _x: i64 = true; }   // type error
             }
             state Open;
 
-            event Push;
-            event Pull;
 
-            on Push: Closed -> Open;
+            on Push: Closed => Open;
             // Missing: Open -> Push and both Pull transitions
         }
         ",
@@ -1888,16 +1961,19 @@ impl Resource for File {
 }
 
 machine Holder<T> where T: Resource {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn main() {
@@ -1927,16 +2003,19 @@ trait Resource {
 type Plain { x: i64; }
 
 machine Holder<T> where T: Resource {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn main() {
@@ -1970,16 +2049,19 @@ trait Resource {
 }
 
 machine Bogus<T> where U: Resource {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let output = typecheck_isolated(source);
@@ -2014,16 +2096,19 @@ impl Resource for File {
 }
 
 machine Twin<T: Resource> where T: Resource {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn main() {
@@ -2068,16 +2153,19 @@ impl Resource for File {
 }
 
 machine Holder<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn use_holder(h: Holder<File>) -> Holder<File> {
@@ -2106,16 +2194,19 @@ trait Resource {
 type Plain { x: i64; }
 
 machine Holder<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn use_holder(h: Holder<Plain>) {
@@ -2155,16 +2246,19 @@ trait Resource {
 type Plain { x: i64; }
 
 machine Holder<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn main() {
@@ -2231,16 +2325,19 @@ trait Resource {
 type Plain { x: i64; }
 
 machine Holder<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn build() -> Holder<Plain> {
@@ -2290,16 +2387,19 @@ trait Resource {
 type Plain { x: i64; }
 
 machine Holder<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn takes(opt: Option<Holder<Plain>>) -> i64 { 0 }
@@ -2332,16 +2432,19 @@ trait Resource {
 type Plain { x: i64; }
 
 machine Holder<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn takes(pair: (Holder<Plain>, i64)) -> i64 { 0 }
@@ -2373,16 +2476,19 @@ trait Resource {
 type Plain { x: i64; }
 
 machine Holder<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn takes_fn(f: fn(Holder<Plain>) -> i64) -> i64 { 0 }
@@ -2418,16 +2524,19 @@ trait Resource {
 type Plain { x: i64; }
 
 machine Holder<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 { 0 }
@@ -2451,12 +2560,15 @@ fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 { 0 }
 #[test]
 fn machine_const_param_decl_passes_typecheck() {
     let src = r"machine FixedBuffer<const N: usize = 16> {
+    events {
+        Write;
+        Drain;
+    }
+
     state Empty;
     state Full;
-    event Write;
-    event Drain;
-    on Write: Empty -> Full { Full }
-    on Drain: Full -> Empty { Empty }
+    on Write: Empty => Full { Full }
+    on Drain: Full => Empty { Empty }
     default { self }
 }
 ";
@@ -2481,12 +2593,15 @@ fn machine_const_param_decl_passes_typecheck() {
 #[test]
 fn machine_mixed_type_and_const_params_pass_typecheck() {
     let src = r"machine M<T, const N: usize> {
+    events {
+        Put { payload: T; }
+        Take;
+    }
+
     state Empty;
     state Full { val: T; }
-    event Put { payload: T; }
-    event Take;
-    on Put: Empty -> Full { Full { val: event.payload } }
-    on Take: Full -> Empty { Empty }
+    on Put: Empty => Full { Full { val: event.payload } }
+    on Take: Full => Empty { Empty }
     default { self }
 }
 ";

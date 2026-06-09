@@ -42,32 +42,38 @@ fn first_machine_emit(expr: &HirExpr) -> Option<(usize, &[(String, HirExpr)])> {
 /// A minimal two-state Moore machine with full coverage.
 const TRAFFIC_LIGHT_SRC: &str = r"
 machine TrafficLight {
+    events {
+        Tick;
+    }
+
     state Red;
     state Green;
 
-    event Tick;
 
-    on Tick: Red -> Green;
-    on Tick: Green -> Red;
+    on Tick: Red => Green;
+    on Tick: Green => Red;
 }
 ";
 
 /// A Mealy machine with entry/exit blocks.
 const MEALY_MACHINE_SRC: &str = r"
 machine Door {
+    events {
+        OpenDoor;
+        CloseDoor;
+    }
+
     state Closed {
         entry { Closed }
         exit { Closed }
     }
     state Open;
 
-    event OpenDoor;
-    event CloseDoor;
 
-    on OpenDoor: Closed -> Open;
-    on OpenDoor: Open -> Open;
-    on CloseDoor: Open -> Closed;
-    on CloseDoor: Closed -> Closed;
+    on OpenDoor: Closed => Open;
+    on OpenDoor: Open => Open;
+    on CloseDoor: Open => Closed;
+    on CloseDoor: Closed => Closed;
 }
 ";
 
@@ -122,14 +128,17 @@ fn reject_machine_missing_transition_coverage() {
     // Only covers Tick: Red -> Green, not Tick: Green -> ???
     let src = r"
 machine Bad {
+    events {
+        Tick;
+        Reset;
+    }
+
     state Red;
     state Green;
 
-    event Tick;
-    event Reset;
 
-    on Tick: Red -> Green;
-    on Reset: Red -> Red;
+    on Tick: Red => Green;
+    on Reset: Red => Red;
 }
 ";
     let output = lower(src);
@@ -151,14 +160,17 @@ machine Bad {
 fn accept_machine_with_default_arm_satisfies_exhaustiveness() {
     let src = r"
 machine WithDefault {
+    events {
+        Toggle;
+        Ping;
+    }
+
     state On;
     state Off;
 
-    event Toggle;
-    event Ping;
 
-    on Toggle: On -> Off;
-    on Toggle: Off -> On;
+    on Toggle: On => Off;
+    on Toggle: Off => On;
 
     default { self }
 }
@@ -176,11 +188,14 @@ machine WithDefault {
 fn reject_machine_emit_cycle() {
     let src = r"
 machine Cyclic {
+    events {
+        Tick;
+    }
+
     state Active;
 
-    event Tick;
 
-    on Tick: Active -> Active {
+    on Tick: Active => Active {
         emit Tick {};
         Active
     }
@@ -207,17 +222,20 @@ fn accept_indirect_machine_emit_cycle_out_of_scope() {
     // (`on A` emits `A`), not graph cycles across multiple events.
     let src = r"
 machine Indirect {
+    events {
+        A;
+        B;
+    }
+
     state Active;
 
-    event A;
-    event B;
 
-    on A: Active -> Active @reenter {
+    on A: Active => Active reenter {
         emit B {};
         Active
     }
 
-    on B: Active -> Active @reenter {
+    on B: Active => Active reenter {
         emit A {};
         Active
     }
@@ -244,11 +262,14 @@ fn self_transition_flag_recorded() {
     // @reenter is required for a non-empty self-transition body.
     let src = r"
 machine Counter {
+    events {
+        Tick;
+    }
+
     state Running { count: Int; }
 
-    event Tick;
 
-    on Tick: Running -> Running @reenter {
+    on Tick: Running => Running reenter {
         Running { count: 1 }
     }
 }
@@ -282,14 +303,17 @@ machine Counter {
 
 #[test]
 fn reject_self_transition_nonempty_body_without_reenter() {
-    // A non-empty self-loop without @reenter must be rejected.
+    // A non-empty self-loop without reenter must be rejected.
     let src = r"
 machine Counter {
+    events {
+        Tick;
+    }
+
     state Running { count: Int; }
 
-    event Tick;
 
-    on Tick: Running -> Running {
+    on Tick: Running => Running {
         Running { count: 1 }
     }
 }
@@ -318,11 +342,14 @@ fn accept_self_transition_empty_body_no_reenter() {
     // An empty self-loop (semicolon shorthand) requires no @reenter annotation.
     let src = r"
 machine Ping {
+    events {
+        Noop;
+    }
+
     state Active;
 
-    event Noop;
 
-    on Noop: Active -> Active;
+    on Noop: Active => Active;
 }
 ";
     let output = lower(src);
@@ -350,6 +377,11 @@ fn reject_effect_parity_entry_conflict() {
     // Uses `this.count` (Hew keyword for self-reference in machine context).
     let src = r"
 machine Conflict {
+    events {
+        Start;
+        Stop;
+    }
+
     state Idle;
     state Active {
         count: Int;
@@ -358,16 +390,14 @@ machine Conflict {
         }
     }
 
-    event Start;
-    event Stop;
 
-    on Start: Idle -> Active {
+    on Start: Idle => Active {
         this.count = 1;
         Active { count: 1 }
     }
-    on Stop: Active -> Idle;
-    on Start: Active -> Active;
-    on Stop: Idle -> Idle;
+    on Stop: Active => Idle;
+    on Start: Active => Active;
+    on Stop: Idle => Idle;
 }
 ";
     let output = lower(src);
@@ -396,6 +426,11 @@ fn reject_effect_parity_exit_conflict() {
     // Uses `this.val` (Hew keyword for self-reference in machine context).
     let src = r"
 machine ExitConflict {
+    events {
+        Move;
+        Reset;
+    }
+
     state Source {
         val: Int;
         exit {
@@ -404,16 +439,14 @@ machine ExitConflict {
     }
     state Target;
 
-    event Move;
-    event Reset;
 
-    on Move: Source -> Target {
+    on Move: Source => Target {
         this.val = 99;
         Target
     }
-    on Reset: Target -> Source;
-    on Move: Target -> Target;
-    on Reset: Source -> Source;
+    on Reset: Target => Source;
+    on Move: Target => Target;
+    on Reset: Source => Source;
 }
 ";
     let output = lower(src);
@@ -446,11 +479,14 @@ fn transition_body_lowers_to_hir_expr_substrate() {
     // `HirExprKind::Unsupported` placeholders).
     let src = r"
 machine Counter {
+    events {
+        Tick;
+    }
+
     state Running { count: Int; }
 
-    event Tick;
 
-    on Tick: Running -> Running @reenter {
+    on Tick: Running => Running reenter {
         Running { count: 1 }
     }
 }
@@ -494,11 +530,14 @@ fn transition_body_scopes_state_event_implicit_bindings() {
     // produce normal BindingRef nodes instead of unresolved-symbol diagnostics.
     let src = r"
 machine Counter {
+    events {
+        Tick;
+    }
+
     state Running;
 
-    event Tick;
 
-    on Tick: Running -> Running @reenter {
+    on Tick: Running => Running reenter {
         state;
         event;
         Running
@@ -568,19 +607,22 @@ fn entry_exit_blocks_lower_to_hir_block_substrate() {
     // covered by `entry_block_unrelated_unresolved_symbol_still_diagnoses`).
     let src = r"
 machine Door {
+    events {
+        OpenDoor;
+        CloseDoor;
+    }
+
     state Closed {
         entry { Closed }
         exit { Closed }
     }
     state Open;
 
-    event OpenDoor;
-    event CloseDoor;
 
-    on OpenDoor: Closed -> Open;
-    on OpenDoor: Open -> Open;
-    on CloseDoor: Open -> Closed;
-    on CloseDoor: Closed -> Closed;
+    on OpenDoor: Closed => Open;
+    on OpenDoor: Open => Open;
+    on CloseDoor: Open => Closed;
+    on CloseDoor: Closed => Closed;
 }
 ";
     let output = lower(src);
@@ -634,11 +676,14 @@ fn transition_body_with_machine_emit_filters_only_emit_noise() {
     //      `emit Tick {}` expression itself.
     let src = r"
 machine Cyclic {
+    events {
+        Tick;
+    }
+
     state Active;
 
-    event Tick;
 
-    on Tick: Active -> Active {
+    on Tick: Active => Active {
         emit Tick {};
         Active
     }
@@ -667,17 +712,20 @@ machine Cyclic {
 fn transition_body_machine_emit_resolves_event_idx_and_payload_fields() {
     let src = r#"
 machine Payloads {
+    events {
+        First { code: Int; }
+        Second { label: String; }
+    }
+
     state Active;
 
-    event First { code: Int; }
-    event Second { label: String; }
 
-    on First: Active -> Active @reenter {
+    on First: Active => Active reenter {
         emit Second { label: "ok" };
         Active
     }
 
-    on Second: Active -> Active @reenter {
+    on Second: Active => Active reenter {
         emit First { code: 7 };
         Active
     }
@@ -758,11 +806,14 @@ fn transition_body_unrelated_unresolved_symbol_still_diagnoses() {
     // a typo in user code cannot be silently embedded as success-shaped HIR.
     let src = r"
 machine Counter {
+    events {
+        Tick;
+    }
+
     state Running { count: Int; }
 
-    event Tick;
 
-    on Tick: Running -> Running @reenter {
+    on Tick: Running => Running reenter {
         not_a_real_helper();
         Running { count: 1 }
     }
@@ -802,18 +853,21 @@ fn entry_block_unrelated_unresolved_symbol_still_diagnoses() {
     // not swallow `not_a_real_helper`.
     let src = r"
 machine Door {
+    events {
+        OpenDoor;
+        CloseDoor;
+    }
+
     state Closed {
         entry { not_a_real_helper(); }
     }
     state Open;
 
-    event OpenDoor;
-    event CloseDoor;
 
-    on OpenDoor: Closed -> Open;
-    on OpenDoor: Open -> Open;
-    on CloseDoor: Open -> Closed;
-    on CloseDoor: Closed -> Closed;
+    on OpenDoor: Closed => Open;
+    on OpenDoor: Open => Open;
+    on CloseDoor: Open => Closed;
+    on CloseDoor: Closed => Closed;
 }
 ";
     let output = lower(src);
@@ -836,18 +890,21 @@ fn exit_block_unrelated_unresolved_symbol_still_diagnoses() {
     // Same falsification for an exit block.
     let src = r"
 machine Door {
+    events {
+        OpenDoor;
+        CloseDoor;
+    }
+
     state Closed {
         exit { not_a_real_helper(); }
     }
     state Open;
 
-    event OpenDoor;
-    event CloseDoor;
 
-    on OpenDoor: Closed -> Open;
-    on OpenDoor: Open -> Open;
-    on CloseDoor: Open -> Closed;
-    on CloseDoor: Closed -> Closed;
+    on OpenDoor: Closed => Open;
+    on OpenDoor: Open => Open;
+    on CloseDoor: Open => Closed;
+    on CloseDoor: Closed => Closed;
 }
 ";
     let output = lower(src);
@@ -872,11 +929,14 @@ fn transition_body_non_state_name_identifier_still_diagnoses() {
     // still produce an UnresolvedSymbol diagnostic.
     let src = r"
 machine Counter {
+    events {
+        Tick;
+    }
+
     state Running;
 
-    event Tick;
 
-    on Tick: Running -> Running @reenter {
+    on Tick: Running => Running reenter {
         NotAState
     }
 }
@@ -916,11 +976,14 @@ fn reject_machine_emit_cycle_inside_conditional_or_match() {
     // descending into the `HirExprKind::If` branch, not on statement lowering.
     let src = r"
 machine Conditional {
+    events {
+        Tick;
+    }
+
     state Active;
 
-    event Tick;
 
-    on Tick: Active -> Active @reenter {
+    on Tick: Active => Active reenter {
         if true { emit Tick {}; Active } else { Active }
     }
 }
@@ -956,11 +1019,14 @@ fn reject_machine_emit_cycle_in_stmt_else_if() {
     // the self-emit in the else-if arm was invisible to the walker.
     let src = r"
 machine StmtElseIf {
+    events {
+        Tick;
+    }
+
     state Active;
 
-    event Tick;
 
-    on Tick: Active -> Active @reenter {
+    on Tick: Active => Active reenter {
         if false { }
         else if true { emit Tick {} }
         Active
@@ -1016,16 +1082,19 @@ impl Resource for File {
 }
 
 machine Holder<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let output = lower(source);
@@ -1061,16 +1130,19 @@ impl Resource for File {
 }
 
 machine Holder<T> where T: Resource {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let output = lower(source);
@@ -1115,16 +1187,19 @@ impl Display for File {
 }
 
 machine Holder<T: Resource> where T: Display {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let output = lower(source);
@@ -1153,16 +1228,19 @@ machine Holder<T: Resource> where T: Display {
 fn machine_without_bounds_lowers_empty_type_param_bounds() {
     let source = r"
 machine Counter<T> {
+    events {
+        Start;
+        Stop;
+    }
+
     state Idle;
     state Running;
 
-    event Start;
-    event Stop;
 
-    on Start: Idle -> Running { Running }
-    on Stop: Running -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Running { Running }
+    on Stop: Running => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let output = lower(source);

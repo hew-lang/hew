@@ -394,24 +394,18 @@ supervisorBody
     ;
 
 supervisorField
-    : ident ':' supervisorFieldValue ( ',' | ';' )?
-    ;
-
-supervisorFieldValue
-    : ident                                     // strategy: one_for_one
-    | INT_LIT                                   // max_restarts: 5
-    | DURATION_LIT                              // window: 10s
-    | '[' ident ( ',' ident )* ']'              // children: [Worker, Logger]
+    : 'strategy' ':' ident ( ',' | ';' )?                       // strategy: one_for_one
+    | 'intensity' ':' INT_LIT 'within' DURATION_LIT ( ',' | ';' )? // intensity: 5 within 60s
     ;
 
 childSpec
-    : 'child' ident ':' ident ( '(' args ')' )? ( 'permanent' | 'transient' | 'temporary' )? ( ',' | ';' )?
+    : ( 'child' | 'pool' ) ident ':' ident ( '(' args ')' )? childClause* ( ',' | ';' )?
     ;
 
-restartSpec
-    : 'restart' '(' ( 'permanent' | 'transient' | 'temporary' ) ')'
-      ( 'budget' '(' INT_LIT ',' DURATION_LIT ')' )?
-      ( 'strategy' '(' ( 'one_for_one' | 'one_for_all' | 'rest_for_one' ) ')' )?
+childClause
+    : 'restart' ':' ( 'permanent' | 'transient' | 'temporary' )
+    | 'shutdown' ':' ( DURATION_LIT | 'brutal_kill' | 'infinity' )
+    | 'wired_to' ':' '{' ( ident ( ':' ident )? ','? )* '}'
     ;
 
 // ----------------------------------------------------------------
@@ -419,30 +413,35 @@ restartSpec
 // ----------------------------------------------------------------
 
 machineDecl
-    : 'machine' ident '{' machineItem* '}'
+    : 'machine' ident typeParams? '{' eventsHeader emitsHeader? stateDecl* transitionDecl* defaultArm? '}'
     ;
 
-machineItem
-    : machineState
-    | machineEvent
-    | machineTransition
-    | machineDefault
+eventsHeader
+    : 'events' '{' eventDecl* '}'
     ;
 
-machineState
-    : 'state' ident ( '{' ( ident ':' type_ ( ';' | ',' )? )* '}' )? ';'?
+eventDecl
+    : ident ( ';' | '{' ( ident ':' type_ ( ';' | ',' )? )* '}' ';'? )
     ;
 
-machineEvent
-    : 'event' ident ( '{' ( ident ':' type_ ( ';' | ',' )? )* '}' )? ';'?
+emitsHeader
+    : 'emits' '{' ( ident ';' )* '}'
     ;
 
-machineTransition
-    : 'on' ident ':' statePattern '->' statePattern ( 'when' expr )? ( block | '{' fieldInitList '}' | ';' )
+stateDecl
+    : 'state' ident ( '{' ( ident ':' type_ ( ';' | ',' )? )* ( 'entry' block )? ( 'exit' block )? compositeMember* '}' )? ';'?
     ;
 
-machineDefault
-    : 'default' ( block | ';' )
+compositeMember
+    : 'initial'? stateDecl
+    ;
+
+transitionDecl
+    : 'on' ident ( '(' ident ( ',' ident )* ')' )? ':' statePattern '=>' statePattern 'reenter'? ( 'when' expr )? ( block | '{' fieldInitList '}' | ';' )
+    ;
+
+defaultArm
+    : 'default' '{' 'state' '}'
     ;
 
 statePattern

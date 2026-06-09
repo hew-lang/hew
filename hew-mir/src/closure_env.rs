@@ -460,6 +460,18 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             walk_expr_for_suspend(scrutinee, found);
             walk_block_for_suspend(body, found);
         }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            walk_expr_for_suspend(scrutinee, found);
+            walk_block_for_suspend(body, found);
+            if let Some(eb) = else_body {
+                walk_block_for_suspend(eb, found);
+            }
+        }
         HirExprKind::Loop { body } => walk_block_for_suspend(body, found),
         HirExprKind::Break { value, .. } => {
             if let Some(value) = value {

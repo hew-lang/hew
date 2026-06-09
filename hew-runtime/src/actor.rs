@@ -1023,6 +1023,12 @@ unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
         // SAFETY: caller guarantees `actor` is valid and quiescent.
         let actor_id = unsafe { (*actor).id };
         crate::timer_periodic::cancel_all_timers_for_actor(actor);
+        // Unregister any active-mode connection fds owned by this actor BEFORE
+        // it is untracked/freed, so a readiness event arriving after the actor
+        // stops is dropped (the dead-actor-while-registered race) rather than
+        // delivered to a freed actor. Keyed by the actor's address, matching
+        // the snapshot the reactor stored at attach time.
+        crate::reactor::reactor_detach_actor(actor as usize);
         crate::link::remove_all_links_for_actor(actor_id, actor);
         crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
         // SAFETY: caller guarantees `actor` is valid; `unregister_actor_names`

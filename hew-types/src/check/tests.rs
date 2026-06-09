@@ -293,7 +293,12 @@ fn vec_new_with_error_element_remains_error_typed() {
 }
 
 #[test]
-fn vec_layout_managed_record_new_remains_fail_closed() {
+fn vec_owned_record_new_admitted_via_owned_abi() {
+    // W5.016: an owned record element (`Person { name: string }`) carries a
+    // synthesizable clone/drop thunk path, so `Vec<Person>::new()` constructs
+    // through the owned-element ABI (`hew_vec_new_with_elem_layout`) instead of
+    // failing closed. The construction no longer emits the layout-managed
+    // Copy-gate diagnostic.
     let output = check_source(
         r"
         type Person { name: string }
@@ -306,12 +311,11 @@ fn vec_layout_managed_record_new_remains_fail_closed() {
     );
 
     assert!(
-        output.errors.iter().any(|error| {
-            error.message.contains("hew_vec_new_with_layout")
-                && error.message.contains("not `Copy`")
+        !output.errors.iter().any(|error| {
+            error.message.contains("not `Copy`")
                 && error.message.contains("layout-managed Vec construction")
         }),
-        "LayoutManaged record Vec::new must fail closed, got {:#?}",
+        "owned record Vec::new must be admitted via the owned ABI, got {:#?}",
         output.errors
     );
 }
@@ -524,7 +528,11 @@ fn vec_contains_layout_managed_record_rejected_with_eq_eligibility_diagnostic() 
 }
 
 #[test]
-fn vec_layout_managed_record_remains_fail_closed() {
+fn vec_owned_record_push_routes_to_owned_abi() {
+    // W5.016: pushing an owned record element routes to the owned-element ABI
+    // (`hew_vec_push_owned`) rather than failing the layout-managed Copy gate.
+    // The owned op deep-clones the element in; the record's per-type
+    // clone/drop thunks make it droppable.
     let output = check_source(
         r#"
         type Person { name: string }
@@ -538,12 +546,97 @@ fn vec_layout_managed_record_remains_fail_closed() {
     );
 
     assert!(
-        output.errors.iter().any(|error| {
-            error.message.contains("hew_vec_push_layout")
-                && error.message.contains("not `Copy`")
+        !output.errors.iter().any(|error| {
+            error.message.contains("not `Copy`")
                 && error.message.contains("layout-managed Vec elements")
         }),
-        "LayoutManaged record Vec::push must fail closed, got {:#?}",
+        "owned record Vec::push must be admitted via the owned ABI, got {:#?}",
+        output.errors
+    );
+    assert!(
+        output.resolved_calls.values().any(|call| {
+            call.method_name == "push" && call.target.symbol_name == "hew_vec_push_owned"
+        }),
+        "owned record Vec::push must route to hew_vec_push_owned via resolved_calls: {:#?}",
+        output.resolved_calls
+    );
+}
+
+#[test]
+fn vec_local_pid_push_routes_to_pointer_abi() {
+    // Regression: `Vec<LocalPid<T>>` is a collection of pointer-shaped actor
+    // handles. The constructor lowers `hew_vec_new_ptr` (null layout) in
+    // codegen; the checker MUST agree and route push to `hew_vec_push_ptr`, not
+    // `hew_vec_push_layout` (which would abort at runtime on the null layout —
+    // the constructor-vs-push authority split). Driven by the `builtin`
+    // discriminant (`BuiltinType::lowers_as_pointer_vec_element`), NOT the
+    // `TypeDef.is_indirect` flag, which actor handles leave `false`.
+    let output = check_source(
+        r"
+        actor Worker {
+            receive fn ping() {}
+        }
+
+        fn main() {
+            let v: Vec<LocalPid<Worker>> = Vec::new();
+            let w = spawn Worker;
+            v.push(w);
+            let _ = v.len();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "Vec<LocalPid<Worker>> must type-check: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.resolved_calls.values().any(|call| {
+            call.method_name == "push" && call.target.symbol_name == "hew_vec_push_ptr"
+        }),
+        "Vec<LocalPid<Worker>>::push must route to hew_vec_push_ptr via resolved_calls: {:#?}",
+        output.resolved_calls
+    );
+}
+
+#[test]
+fn vec_self_recursive_enum_fails_closed_with_accurate_diagnostic() {
+    // A self-recursive enum (`Array(Vec<RedisReply>)`) is owned but needs the
+    // recursive owned-thunk synthesis that is a separate follow-on. It must
+    // fail closed at construction with a diagnostic that names the real blocker
+    // (the container field), NOT a misleading `Copy` / `hew_vec_new_with_layout`
+    // message.
+    let output = check_source(
+        r"
+        enum RedisReply {
+            Nil;
+            Int(i64);
+            Array(Vec<RedisReply>);
+        }
+
+        fn main() {
+            let v: Vec<RedisReply> = Vec::new();
+            let _ = v.len();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.message.contains("cannot be a `Vec` element")
+                && error.message.contains("Vec`/`HashMap`/`HashSet` field")
+        }),
+        "self-recursive enum Vec must fail closed naming the container blocker: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output.errors.iter().any(|error| {
+            error.message.contains("hew_vec_new_with_layout")
+                || error.message.contains("is not `Copy`")
+        }),
+        "self-recursive enum Vec diagnostic must not blame Copy or name \
+         hew_vec_new_with_layout: {:#?}",
         output.errors
     );
 }
@@ -711,15 +804,18 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
     let output = check_source(
         r"
         machine MachineState {
+            events {
+                Tick;
+            }
+
             state Idle;
             state Running;
 
-            event Tick;
 
-            on Tick: Idle -> Running {
+            on Tick: Idle => Running {
                 Running
             }
-            on Tick: Running -> Idle {
+            on Tick: Running => Idle {
                 Idle
             }
         }
@@ -11164,6 +11260,173 @@ fn type_satisfies_trait_bound_missing_impl_still_fails() {
 }
 
 // -------------------------------------------------------------------------
+// Primitive bound-satisfiability tests
+//
+// Guard the path where a primitive type (i64, f64, bool, string) satisfies a
+// user-defined trait bound via an explicit `impl Trait for <primitive>`.
+// Before the fix, the `_` arm in `type_satisfies_trait_bound` only consulted
+// the `MarkerTrait` table and never checked `trait_impls_set`, causing all
+// user-trait bounds on primitives to be falsely rejected.
+// -------------------------------------------------------------------------
+
+#[test]
+fn primitive_i64_with_impl_satisfies_user_trait_bound() {
+    // Positive: an explicit `impl Show for i64` must allow `i64` to satisfy
+    // the `T: Show` bound on a generic function.
+    let source = r#"
+        trait Show {
+            fn show(val: Self) -> string;
+        }
+
+        impl Show for i64 {
+            fn show(val: i64) -> string { "i64" }
+        }
+
+        fn display<T: Show>(x: T) -> string {
+            x.show()
+        }
+
+        fn main() -> i64 {
+            let s = display(5);
+            if s == "i64" { 0 } else { 1 }
+        }
+    "#;
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+        .collect();
+    assert!(
+        bound_errors.is_empty(),
+        "i64 with explicit impl must satisfy user-trait bound; got: {bound_errors:?}"
+    );
+}
+
+#[test]
+fn primitive_f64_bool_string_with_impl_satisfy_user_trait_bound() {
+    // Positive: f64, bool, and string each satisfy the bound when an impl exists.
+    let source = r#"
+        trait Label {
+            fn label(val: Self) -> string;
+        }
+
+        impl Label for f64    { fn label(val: f64)    -> string { "f64"    } }
+        impl Label for bool   { fn label(val: bool)   -> string { "bool"   } }
+        impl Label for string { fn label(val: string) -> string { "string" } }
+
+        fn tag<T: Label>(x: T) -> string {
+            x.label()
+        }
+
+        fn main() -> i64 {
+            let a = tag(1.5);
+            let b = tag(true);
+            let c = tag("hi");
+            if a == "f64" && b == "bool" && c == "string" { 0 } else { 1 }
+        }
+    "#;
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+        .collect();
+    assert!(
+        bound_errors.is_empty(),
+        "f64/bool/string with explicit impl must satisfy user-trait bound; got: {bound_errors:?}"
+    );
+}
+
+#[test]
+fn primitive_without_impl_still_rejected_for_user_trait_bound() {
+    // Negative: a primitive with no `impl Trait for <primitive>` must still
+    // produce a `BoundsNotSatisfied` error — the fix must not weaken the gate.
+    let source = r"
+        trait Show {
+            fn show(val: Self) -> string;
+        }
+
+        fn display<T: Show>(x: T) -> string {
+            x.show()
+        }
+
+        fn main() {
+            let _ = display(5);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+        .collect();
+    assert!(
+        !bound_errors.is_empty(),
+        "primitive without a matching impl must still be rejected with BoundsNotSatisfied"
+    );
+}
+
+#[test]
+fn marker_trait_bounds_on_primitives_unaffected() {
+    // Regression: built-in marker traits (e.g. `Ord`) on primitives must
+    // still be satisfied via the `MarkerTrait` table, not just through
+    // `trait_impls_set`.  The fix adds a pre-check for user impls but must
+    // not remove or skip the `MarkerTrait` fallback.
+    let source = r"
+        fn max_val<T: Ord>(a: T, b: T) -> T {
+            if a > b { a } else { b }
+        }
+
+        fn main() -> i64 {
+            max_val(3, 7)
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let bound_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+        .collect();
+    assert!(
+        bound_errors.is_empty(),
+        "built-in Ord marker on i64 must still satisfy bound after primitive-impl fix; got: {bound_errors:?}"
+    );
+}
+
+// -------------------------------------------------------------------------
 // E2 structural method-presence tests
 //
 // These exercises the live structural-satisfaction logic that replaced the
@@ -12057,14 +12320,27 @@ fn index_dispatch_via_trait_for_vec() {
 }
 
 #[test]
-fn index_dispatch_via_trait_for_hashmap_string_key_is_deferred() {
+fn index_read_for_hashmap_string_key_yields_option() {
+    // `m["k"]` now reads through the HashMap get ABI and yields `Option<V>`
+    // (not the i32-keyed `Index` trait). A function returning `Option<i32>`
+    // accepts the index result directly.
+    let output = check_source(r#"fn f(m: HashMap<string, i32>) -> Option<i32> { m["k"] }"#);
+    assert!(
+        output.errors.is_empty(),
+        "HashMap<string, _> read indexing should type-check as Option<V>: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn index_read_for_hashmap_string_key_is_not_bare_value() {
+    // The read result is `Option<V>`, so a function annotated to return the
+    // bare value `i32` must be rejected — proving the surface is fail-closed
+    // (callers must handle the `None` case) rather than aborting on a miss.
     let output = check_source(r#"fn f(m: HashMap<string, i32>) -> i32 { m["k"] }"#);
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|err| err.message.contains(".get(k)") || err.message.contains("cannot index")),
-        "HashMap<string, _> indexing remains deferred under the i32-key Index contract: {:?}",
+        !output.errors.is_empty(),
+        "HashMap read index returns Option<V>, so a bare-i32 return must mismatch: {:?}",
         output.errors
     );
 }
@@ -16515,8 +16791,7 @@ mod wasm_rejects {
 
             supervisor WorkerPool {
                 strategy: one_for_one,
-                max_restarts: 1,
-                window: 10,
+                intensity: 1 within 10s,
                 child w1: Worker
             }
 
@@ -16628,8 +16903,7 @@ mod wasm_rejects {
 
             supervisor WorkerPool {
                 strategy: one_for_one,
-                max_restarts: 1,
-                window: 10,
+                intensity: 1 within 10s,
                 child w1: Worker
             }
 
@@ -20480,15 +20754,18 @@ mod assoc_types_slice2 {
         let output = check_source(
             r"
             machine Door {
+                events {
+                    Toggle;
+                }
+
                 state Closed;
                 state Open;
 
-                event Toggle;
 
-                on Toggle: Closed -> Open {
+                on Toggle: Closed => Open {
                     gen { yield Open; }
                 }
-                on Toggle: Open -> Closed {
+                on Toggle: Open => Closed {
                     Closed
                 }
             }
@@ -20510,16 +20787,19 @@ mod assoc_types_slice2 {
         let output = check_source(
             r"
             machine Door {
+                events {
+                    Toggle;
+                }
+
                 state Closed;
                 state Open;
 
-                event Toggle;
 
-                on Toggle: Closed -> Open {
+                on Toggle: Closed => Open {
                     await pending;
                     Open
                 }
-                on Toggle: Open -> Closed {
+                on Toggle: Open => Closed {
                     Closed
                 }
             }
@@ -21350,15 +21630,18 @@ fn generic_machine_struct_state_bare_constructor_infers() {
     let output = check_source(
         r"
         machine Work<T> {
+            events {
+                Crash { code: i64; }
+            }
+
             state Running { handle: T; }
             state Faulted { code: i64; }
 
-            event Crash { code: i64; }
 
-            on Crash: Running -> Faulted {
+            on Crash: Running => Faulted {
                 Faulted { code: event.code }
             }
-            on Crash: Faulted -> Faulted {
+            on Crash: Faulted => Faulted {
                 state
             }
         }
@@ -21380,15 +21663,18 @@ fn generic_machine_struct_state_qualified_constructor_infers() {
     let output = check_source(
         r"
         machine Work<T> {
+            events {
+                Crash { code: i64; }
+            }
+
             state Running { handle: T; }
             state Faulted { code: i64; }
 
-            event Crash { code: i64; }
 
-            on Crash: Running -> Faulted {
+            on Crash: Running => Faulted {
                 Work::Faulted { code: event.code }
             }
-            on Crash: Faulted -> Faulted {
+            on Crash: Faulted => Faulted {
                 state
             }
         }
@@ -21410,22 +21696,25 @@ fn non_generic_machine_struct_state_constructor_regression_free() {
     let output = check_source(
         r"
         machine Door {
+            events {
+                OpenDoor { id: i64; }
+                CloseDoor;
+            }
+
             state Closed;
             state Opened { handle: i64; }
 
-            event OpenDoor { id: i64; }
-            event CloseDoor;
 
-            on OpenDoor: Closed -> Opened {
+            on OpenDoor: Closed => Opened {
                 Door::Opened { handle: event.id }
             }
-            on CloseDoor: Opened -> Closed {
+            on CloseDoor: Opened => Closed {
                 Closed
             }
-            on OpenDoor: Opened -> Opened {
+            on OpenDoor: Opened => Opened {
                 state
             }
-            on CloseDoor: Closed -> Closed {
+            on CloseDoor: Closed => Closed {
                 state
             }
         }
@@ -21445,22 +21734,25 @@ fn machine_transition_self_field_reads_source_payload() {
     let output = check_source(
         r"
         machine Counter {
+            events {
+                Inc;
+                Reset;
+            }
+
             state Zero;
             state NonZero { value: i64; }
 
-            event Inc;
-            event Reset;
 
-            on Inc: Zero -> NonZero {
+            on Inc: Zero => NonZero {
                 NonZero { value: 1 }
             }
-            on Inc: NonZero -> NonZero @reenter {
+            on Inc: NonZero => NonZero reenter {
                 NonZero { value: self.value + 1 }
             }
-            on Reset: NonZero -> Zero {
+            on Reset: NonZero => Zero {
                 Zero
             }
-            on Reset: Zero -> Zero @reenter {
+            on Reset: Zero => Zero reenter {
                 Zero
             }
         }
@@ -21480,14 +21772,17 @@ fn machine_transition_bare_self_remains_rejected() {
     let output = check_source(
         r"
         machine Counter {
+            events {
+                Reset;
+            }
+
             state Zero;
             state NonZero { value: i64; }
-            event Reset;
 
-            on Reset: NonZero -> Zero {
+            on Reset: NonZero => Zero {
                 self
             }
-            on Reset: Zero -> Zero @reenter {
+            on Reset: Zero => Zero reenter {
                 Zero
             }
         }
@@ -21513,22 +21808,25 @@ fn generic_machine_step_bare_event_propagates_receiver_args() {
     let output = check_source(
         r"
         machine Work<T> {
+            events {
+                Initialise;
+                Started { handle: T; }
+            }
+
             state Created;
             state Running { handle: T; }
 
-            event Initialise;
-            event Started { handle: T; }
 
-            on Initialise: Created -> Created {
+            on Initialise: Created => Created {
                 Created
             }
-            on Initialise: Running -> Running {
+            on Initialise: Running => Running {
                 state
             }
-            on Started: Created -> Running {
+            on Started: Created => Running {
                 Running { handle: event.handle }
             }
-            on Started: Running -> Running {
+            on Started: Running => Running {
                 state
             }
         }
@@ -21559,7 +21857,7 @@ fn supervisor_permanent_owned_heap_rejects_vec_field() {
         }
 
         supervisor App {
-            child worker: Counter permanent;
+            child worker: Counter restart: permanent;
         }
         ",
     );
@@ -21587,7 +21885,7 @@ fn supervisor_permanent_owned_heap_rejects_string_field() {
         }
 
         supervisor App {
-            child item: Labelled permanent;
+            child item: Labelled restart: permanent;
         }
         ",
     );
@@ -21613,7 +21911,7 @@ fn supervisor_permanent_owned_heap_rejects_hashmap_field() {
         }
 
         supervisor App {
-            child reg: Registry permanent;
+            child reg: Registry restart: permanent;
         }
         ",
     );
@@ -21639,7 +21937,7 @@ fn supervisor_permanent_owned_heap_rejects_hashset_field() {
         }
 
         supervisor App {
-            child dedup: Deduplicator permanent;
+            child dedup: Deduplicator restart: permanent;
         }
         ",
     );
@@ -21665,7 +21963,7 @@ fn supervisor_permanent_owned_heap_rejects_bytes_field() {
         }
 
         supervisor App {
-            child store: Blob permanent;
+            child store: Blob restart: permanent;
         }
         ",
     );
@@ -21720,7 +22018,7 @@ fn supervisor_permanent_owned_heap_rejects_nested_vec() {
         }
 
         supervisor App {
-            child n: Nested permanent;
+            child n: Nested restart: permanent;
         }
         ",
     );
@@ -21749,7 +22047,7 @@ fn supervisor_transient_owned_heap_ok() {
         }
 
         supervisor App {
-            child w: Worker transient;
+            child w: Worker restart: transient;
         }
         ",
     );
@@ -21774,7 +22072,7 @@ fn supervisor_temporary_owned_heap_ok() {
         }
 
         supervisor App {
-            child w: Worker temporary;
+            child w: Worker restart: temporary;
         }
         ",
     );
@@ -21801,7 +22099,7 @@ fn supervisor_permanent_copy_only_fields_ok() {
         }
 
         supervisor App {
-            child c: Counter permanent;
+            child c: Counter restart: permanent;
         }
         ",
     );
@@ -21864,7 +22162,7 @@ fn supervisor_permanent_record_containing_vec_known_residual_gap() {
         }
 
         supervisor App {
-            child h: Holder permanent;
+            child h: Holder restart: permanent;
         }
         ",
     );
@@ -22538,6 +22836,123 @@ fn resolved_expr_types_populated_and_concrete_for_concrete_program() {
 }
 
 /// `TypeCheckOutput::insert_expr_type` keeps the two maps in sync exactly as
+// ── Vec index auto-widening tests ────────────────────────────────────────────
+//
+// A372 / A373: signed integers narrower than i64 are accepted as Vec index
+// arguments (`.get`, `.set`, `.remove`) and as `xs[i]` index expressions.
+// The widening is operand-only: the Vec element return type is NOT changed.
+// Non-integer and unsigned-integer indices remain rejected.
+
+#[test]
+fn vec_get_accepts_i32_index() {
+    let output = check_source(
+        r"
+        fn main() {
+            let xs: Vec<i64> = Vec::new();
+            xs.push(10);
+            let i: i32 = 0;
+            let _v = xs.get(i);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec::get with i32 index should be accepted without error, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_set_accepts_i32_index() {
+    let output = check_source(
+        r"
+        fn main() {
+            let xs: Vec<i64> = Vec::new();
+            xs.push(0);
+            let i: i32 = 0;
+            xs.set(i, 99);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec::set with i32 index should be accepted without error, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_index_accepts_i32_index() {
+    let output = check_source(
+        r"
+        fn main() -> i64 {
+            let xs: Vec<i64> = Vec::new();
+            xs.push(42);
+            let i: i32 = 0;
+            xs[i]
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "xs[i32] index expression should be accepted without error, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_index_rejects_string_index() {
+    let output = check_source(
+        r#"
+        fn main() {
+            let xs: Vec<i64> = Vec::new();
+            let s = "hello";
+            let _v = xs.get(s);
+        }
+        "#,
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "Vec::get with a string index must be rejected"
+    );
+}
+
+#[test]
+fn vec_index_rejects_bool_index() {
+    let output = check_source(
+        r"
+        fn main() {
+            let xs: Vec<i64> = Vec::new();
+            let flag = true;
+            let _v = xs.get(flag);
+        }
+        ",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "Vec::get with a bool index must be rejected"
+    );
+}
+
+#[test]
+fn vec_index_rejects_unsigned_i32_index() {
+    let output = check_source(
+        r"
+        fn main() {
+            let xs: Vec<i64> = Vec::new();
+            let u: u32 = 0;
+            let _v = xs.get(u);
+        }
+        ",
+    );
+    // u32 is not a narrower *signed* integer — unsigned indices are not
+    // auto-widened because the sign-extension semantics differ.
+    assert!(
+        !output.errors.is_empty(),
+        "Vec::get with a u32 index must be rejected (unsigned is not auto-widened)"
+    );
+}
+
 /// the boundary does: a concrete type lands in both maps; a non-concrete type
 /// (a leaked inference var) lands only in `expr_types`, leaving the typed map
 /// correctly absent (fail-closed omission, never a fabricated guess).

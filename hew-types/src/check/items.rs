@@ -68,6 +68,52 @@ impl Checker {
 
         // ── 5. Permanent children must not have owned-heap state fields ──────
         self.check_supervisor_permanent_owned_heap(sd, span);
+
+        // ── 6. Intensity restart-budget sanity ──────────────────────────────
+        self.check_supervisor_intensity(sd, span);
+    }
+
+    /// Validate the `intensity: N within <duration>` restart budget: the
+    /// restart count must be non-negative and the window must parse to a
+    /// positive duration. The parser already guarantees the window is a real
+    /// duration literal (not a bare integer), so this catches the remaining
+    /// semantically-empty cases (e.g. `intensity: -1 within 0s`).
+    fn check_supervisor_intensity(&mut self, sd: &SupervisorDecl, span: &Span) {
+        let Some(intensity) = &sd.intensity else {
+            return;
+        };
+        if intensity.restarts < 0 {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_INTENSITY_RESTARTS: supervisor `{}` has a negative restart \
+                     budget `{}`; `intensity:` requires a non-negative restart count",
+                    sd.name, intensity.restarts
+                ),
+            ));
+        }
+        match hew_parser::parse_duration_ns(&intensity.window) {
+            Some(ns) if ns > 0 => {}
+            Some(_) => self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_INTENSITY_WINDOW: supervisor `{}` has a zero-length restart \
+                     window `{}`; the window must be a positive duration",
+                    sd.name, intensity.window
+                ),
+            )),
+            None => self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_INTENSITY_WINDOW: supervisor `{}` window `{}` is not a valid \
+                     duration literal",
+                    sd.name, intensity.window
+                ),
+            )),
+        }
     }
 
     /// Guard against C1 UAF: a supervisor with a permanent restart policy will

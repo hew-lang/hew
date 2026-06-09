@@ -477,18 +477,24 @@ fn duplicate_definition_same_machine() {
     let output = typecheck(
         r"
         machine Traffic {
+            events {
+                Tick;
+            }
+
             state Red;
             state Green;
-            event Tick;
-            on Tick: Red -> Green;
-            on Tick: Green -> Red;
+            on Tick: Red => Green;
+            on Tick: Green => Red;
         }
         machine Traffic {
+            events {
+                Tick;
+            }
+
             state Idle;
             state Busy;
-            event Tick;
-            on Tick: Idle -> Busy;
-            on Tick: Busy -> Idle;
+            on Tick: Idle => Busy;
+            on Tick: Busy => Idle;
         }
         fn main() {}
     ",
@@ -510,11 +516,14 @@ fn duplicate_definition_machine_companion_event_same_type() {
     let output = typecheck(
         r"
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
         type LightEvent { code: i64; }
         fn main() {}
@@ -536,11 +545,14 @@ fn duplicate_definition_machine_companion_event_type_before_machine() {
         r"
         type LightEvent { code: i64; }
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
         fn main() {}
     ",
@@ -562,11 +574,14 @@ fn duplicate_definition_machine_companion_event_same_trait() {
     let output = typecheck(
         r"
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
         trait LightEvent { fn render(val: Self) -> i64; }
         fn main() {}
@@ -588,11 +603,14 @@ fn duplicate_definition_machine_companion_event_trait_before_machine() {
         r"
         trait LightEvent { fn render(val: Self) -> i64; }
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
         fn main() {}
     ",
@@ -977,9 +995,12 @@ fn machine_exhaustiveness_too_few_states() {
     let output = typecheck(
         r"
         machine Broken {
+            events {
+                Ping;
+            }
+
             state Only;
-            event Ping;
-            on Ping: Only -> Only;
+            on Ping: Only => Only;
         }
         fn main() {}
     ",
@@ -1024,12 +1045,15 @@ fn machine_exhaustiveness_unknown_event() {
     let output = typecheck(
         r"
         machine Broken {
+            events {
+                X;
+            }
+
             state A;
             state B;
-            event X;
-            on X: A -> B;
-            on X: B -> A;
-            on Ghost: A -> B;
+            on X: A => B;
+            on X: B => A;
+            on Ghost: A => B;
         }
         fn main() {}
     ",
@@ -1052,11 +1076,14 @@ fn machine_exhaustiveness_unknown_state() {
     let output = typecheck(
         r"
         machine Broken {
+            events {
+                X;
+            }
+
             state A;
             state B;
-            event X;
-            on X: A -> B;
-            on X: B -> Phantom;
+            on X: A => B;
+            on X: B => Phantom;
         }
         fn main() {}
     ",
@@ -1079,11 +1106,14 @@ fn machine_exhaustiveness_duplicate_wildcard() {
     let output = typecheck(
         r"
         machine Broken {
+            events {
+                X;
+            }
+
             state A;
             state B;
-            event X;
-            on X: _ -> _ { state }
-            on X: _ -> _ { state }
+            on X: _ => _ { state }
+            on X: _ => _ { state }
         }
         fn main() {}
     ",
@@ -1778,12 +1808,15 @@ fn machine_exhaustiveness_duplicate_explicit() {
     let output = typecheck(
         r"
         machine Broken {
+            events {
+                X;
+            }
+
             state A;
             state B;
-            event X;
-            on X: A -> B;
-            on X: A -> A;
-            on X: B -> A;
+            on X: A => B;
+            on X: A => A;
+            on X: B => A;
         }
         fn main() {}
     ",

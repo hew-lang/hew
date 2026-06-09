@@ -22,8 +22,7 @@ struct StatusUpdate {
 
 supervisor CounterPool {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 60;
+    intensity: 5 within 60s;
 }
 
 fn fibonacci(n: i32) -> i32 {
@@ -48,7 +47,7 @@ fn main() {
     println("   Compile-time schema evolution checking");
     println("4. Supervision trees:");
     println("   CounterPool supervises Counter actors");
-    println("   strategy: one_for_one, max_restarts: 5");
+    println("   strategy: one_for_one, intensity: 5 within 60s");
     println("5. string operations:");
     let greeting = "Hello, " + "Hew!";
     println(f"   {greeting}");

@@ -1600,6 +1600,7 @@ dependencies = [
  "clap_complete",
  "dirs",
  "fd-lock",
+ "hew-analysis",
  "hew-codegen-rs",
  "hew-compile",
  "hew-hir",
@@ -1678,6 +1679,7 @@ dependencies = [
  "hew-std-encoding-base64",
  "hew-std-encoding-compress",
  "hew-std-encoding-csv",
+ "hew-std-encoding-hex",
  "hew-std-encoding-json",
  "hew-std-encoding-markdown",
  "hew-std-encoding-msgpack",
@@ -1692,11 +1694,13 @@ dependencies = [
  "hew-std-net-dns",
  "hew-std-net-http",
  "hew-std-net-ipnet",
+ "hew-std-net-mime",
  "hew-std-net-quic",
  "hew-std-net-smtp",
  "hew-std-net-tls",
  "hew-std-net-url",
  "hew-std-net-websocket",
+ "hew-std-random",
  "hew-std-sort",
  "hew-std-text-regex",
  "hew-std-text-semver",
@@ -2059,6 +2063,10 @@ dependencies = [
  "parking_lot",
  "tungstenite",
 ]
+
+[[package]]
+name = "hew-std-random"
+version = "0.5.0-pre"
 
 [[package]]
 name = "hew-std-sort"

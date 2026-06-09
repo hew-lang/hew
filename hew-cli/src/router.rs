@@ -22,6 +22,8 @@ pub(crate) trait CommandDispatcher {
     fn completions(&mut self, args: &args::CompletionsArgs);
     fn version(&mut self);
     fn help(&mut self);
+    fn observe(&mut self, args: &args::ObserveArgs);
+    fn lsp(&mut self, args: &args::LspArgs);
 }
 
 pub(crate) struct MainCommandDispatcher;
@@ -94,6 +96,14 @@ impl CommandDispatcher for MainCommandDispatcher {
         eprintln!();
         std::process::exit(1);
     }
+
+    fn observe(&mut self, args: &args::ObserveArgs) {
+        crate::cmd_observe(args);
+    }
+
+    fn lsp(&mut self, args: &args::LspArgs) {
+        crate::cmd_lsp(args);
+    }
 }
 
 pub(crate) fn parse_cli_or_exit() -> Cli {
@@ -117,6 +127,8 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Playground(args)) => dispatcher.playground(args),
         Some(Command::Completions(args)) => dispatcher.completions(args),
         Some(Command::Version) => dispatcher.version(),
+        Some(Command::Observe(args)) => dispatcher.observe(args),
+        Some(Command::Lsp(args)) => dispatcher.lsp(args),
         None => dispatcher.help(),
     }
 }
@@ -235,6 +247,7 @@ mod tests {
             emit_dir: None,
             dump_mir: None,
             target: None,
+            format: crate::args::DiagnosticFormat::Text,
         });
         let mut dispatcher = RecordingDispatcher::default();
 
@@ -276,6 +289,28 @@ mod tests {
         dispatch_command(None, &mut dispatcher);
 
         assert_eq!(dispatcher.calls, vec!["help"]);
+    }
+
+    #[test]
+    fn dispatch_command_routes_observe_to_dispatcher() {
+        let command = crate::args::Command::Observe(crate::args::ObserveArgs {
+            args: vec!["--demo".to_string()],
+        });
+        let mut dispatcher = RecordingDispatcher::default();
+
+        dispatch_command(Some(&command), &mut dispatcher);
+
+        assert_eq!(dispatcher.calls, vec!["observe"]);
+    }
+
+    #[test]
+    fn dispatch_command_routes_lsp_to_dispatcher() {
+        let command = crate::args::Command::Lsp(crate::args::LspArgs { args: vec![] });
+        let mut dispatcher = RecordingDispatcher::default();
+
+        dispatch_command(Some(&command), &mut dispatcher);
+
+        assert_eq!(dispatcher.calls, vec!["lsp"]);
     }
 
     #[derive(Default)]
@@ -354,6 +389,14 @@ mod tests {
 
         fn help(&mut self) {
             self.calls.push("help".to_string());
+        }
+
+        fn observe(&mut self, _args: &crate::args::ObserveArgs) {
+            self.calls.push("observe".to_string());
+        }
+
+        fn lsp(&mut self, _args: &crate::args::LspArgs) {
+            self.calls.push("lsp".to_string());
         }
     }
 }

@@ -668,6 +668,9 @@ pub struct HirSupervisorChild {
     /// MIR lowering reads these to build `SupervisorChildLayout.init_state_fields`
     /// so codegen can construct the per-child state template.
     pub init_args: Vec<(String, HirExpr)>,
+    /// Per-child graceful-stop directive from the `shutdown:` clause.
+    /// `None` means the supervisor default applies.
+    pub shutdown: Option<HirShutdownDirective>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -684,6 +687,19 @@ pub enum HirRestartPolicy {
     Permanent,
     Transient,
     Temporary,
+}
+
+/// Per-child shutdown directive lowered from the `shutdown:` clause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HirShutdownDirective {
+    /// Graceful-stop deadline as a raw duration source string (e.g. `"30s"`);
+    /// codegen interprets the unit.
+    Timeout(String),
+    /// Skip the deadline; kill immediately.
+    BrutalKill,
+    /// Wait indefinitely. ACCEPTED-ONLY in v0.5 — there is no per-child
+    /// deadline wheel in the runtime yet, so codegen does not enforce it.
+    Infinity,
 }
 
 /// Lowered top-level type declaration.
@@ -1614,6 +1630,40 @@ pub enum HirExprKind {
         bindings: Vec<HirMatchArmBinding>,
         /// Loop body.
         body: HirBlock,
+    },
+    /// `if let PAT = scrutinee { then_body } else { else_body }` — a
+    /// conditional that succeeds when the scrutinee matches a single enum
+    /// constructor pattern.
+    ///
+    /// MIR lowering emits a three-block CFG: a tag-check block branching to
+    /// `then_bb` or `else_bb`, both converging at a `join_bb`.  The `then_bb`
+    /// binds payload fields from `bindings` (identical to `Match` arm entry)
+    /// and lowers `body`; `else_bb` lowers `else_body` (or falls through as
+    /// Unit if absent).
+    ///
+    /// The expression type is `result_ty`, which is `Unit` when the `if let`
+    /// appears in statement position or when no else branch exists, and the
+    /// branch-unified type when used as an expression.
+    ///
+    /// **Scope (v0.5 substrate)**: same shape restrictions as `WhileLet` —
+    /// only a single payload-bearing enum-constructor pattern is accepted.
+    IfLet {
+        /// Evaluated once. Its `ty` is the resolved enum type.
+        scrutinee: Box<HirExpr>,
+        /// Checker-resolved `(type_name, variant_name)` identity of the
+        /// match-arm variant.
+        variant_match: VariantMatch,
+        /// Zero-based variant index in declaration order.
+        variant_idx: u32,
+        /// Payload bindings introduced by the pattern; bound for `body` only.
+        bindings: Vec<HirMatchArmBinding>,
+        /// Then-branch body (executed when the pattern matches).
+        body: HirBlock,
+        /// Optional else-branch body; `None` when there is no `else` clause.
+        else_body: Option<HirBlock>,
+        /// The unified result type of both branches (`Unit` when no else or
+        /// in statement position).
+        result_ty: ResolvedTy,
     },
     /// `break;` / `break <value>;` — early exit from the innermost enclosing
     /// loop, transferring control to the loop's exit block.

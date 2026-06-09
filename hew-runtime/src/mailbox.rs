@@ -969,6 +969,42 @@ impl HewMailbox {
     pub(crate) fn use_slow_path(&self) -> bool {
         self.use_slow_path
     }
+
+    /// `true` when this mailbox's overflow policy can free an already-queued
+    /// node's payload *without* the consumer handler ever running on it —
+    /// i.e. `DropOld` (evicts the oldest queued node) or `Coalesce` (replaces
+    /// a matching node's payload, or falls back to `DropOld`). Both retire the
+    /// superseded node's `data` buffer via `libc::free` / `hew_msg_node_free`.
+    ///
+    /// The active-mode I/O reactor relies on this to fail closed at attach
+    /// time: its `on_data` envelope is a raw (`envelope == null`) node whose
+    /// embedded `BytesTriple` refcount is dropped *only* by the handler that
+    /// consumes it. An eviction would free the triple container as plain bytes
+    /// and leak the underlying refcounted buffer, so attaching to such a
+    /// mailbox is refused rather than risk a leak (or a double-free, were the
+    /// node given evict-time drop glue that the happy path would re-run).
+    #[inline]
+    pub(crate) fn overflow_evicts_queued_payload(&self) -> bool {
+        matches!(
+            self.overflow,
+            HewOverflowPolicy::DropOld | HewOverflowPolicy::Coalesce
+        )
+    }
+}
+
+/// Read the overflow-eviction classification for a mailbox behind a raw
+/// pointer. Returns `false` for a null pointer (no mailbox = nothing to
+/// evict). Used by the active-mode reactor's attach-time fail-closed guard.
+///
+/// # Safety
+///
+/// `mb`, when non-null, must be a valid pointer to a live [`HewMailbox`].
+pub(crate) unsafe fn mailbox_overflow_evicts_queued_payload(mb: *const HewMailbox) -> bool {
+    if mb.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees `mb` is a live mailbox when non-null.
+    unsafe { (*mb).overflow_evicts_queued_payload() }
 }
 
 /// Update the high-water mark after incrementing `count`.

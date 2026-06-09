@@ -455,4 +455,4 @@ make release      # release: builds hew + adze + stdlib
 ---
 
 *This document is an internal engineering reference.  The public-facing
-language specification is `docs/specs/HEW-SPEC.md`.*
+language specification is `docs/specs/HEW-SPEC-2026.md`.*

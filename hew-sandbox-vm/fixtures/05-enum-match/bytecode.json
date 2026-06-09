@@ -688,6 +688,11 @@
     "supervisors": [],
     "types": [
       {
+        "id": "type:AskError",
+        "kind": "enum",
+        "name": "AskError"
+      },
+      {
         "id": "type:Instant",
         "kind": "record",
         "name": "Instant"
@@ -784,7 +789,7 @@
       }
     ]
   },
-  "package_id": "pkg:bc2571f401871566",
+  "package_id": "pkg:22042753790690b5",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

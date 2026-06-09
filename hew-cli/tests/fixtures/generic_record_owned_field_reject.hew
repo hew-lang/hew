@@ -1,0 +1,19 @@
+// Out-of-slice shape: a generic record monomorphised with an OWNED (non-BitCopy)
+// field type (string). This is NOT covered by the foundational layout-discovery
+// slice — the MIR user-record value-class path (W3.029) only lowers aggregates
+// whose every substituted field is BitCopy, because the in-place record drop
+// path keys on bare names. The compiler must fail closed with a clean typed
+// diagnostic (UnsupportedUserRecordValueClass), never a crash or codegen-front
+// error, and never silently-wrong output.
+record Box<T> {
+    value: T
+}
+
+fn make<T>(x: T) -> Box<T> {
+    Box { value: x }
+}
+
+fn main() {
+    let b = make("hello");
+    println(b.value);
+}

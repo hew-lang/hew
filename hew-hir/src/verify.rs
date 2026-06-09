@@ -273,6 +273,15 @@ impl Verifier {
                             ));
                         }
                     }
+                    // A zero-element tuple literal `()` whose resolved type is
+                    // `ResolvedTy::Unit` is structurally valid: the checker
+                    // accepts `Ok(())` and `Result<(),E>` returns (fixture
+                    // `result_constructors_accept_unit_payloads` passes), but
+                    // `()` resolves to `Unit` rather than `Tuple([])`, so it
+                    // must be admitted here rather than rejected as a
+                    // CheckerBoundaryViolation. Non-empty literals with a
+                    // non-tuple type still fail closed below.
+                    ResolvedTy::Unit if elements.is_empty() => {}
                     other => {
                         self.diagnostics.push(self.diagnostic(
                             HirDiagnosticKind::CheckerBoundaryViolation {
@@ -625,6 +634,24 @@ impl Verifier {
                     self.binding(binding.binding, expr.span.clone());
                 }
                 self.block(body);
+            }
+            HirExprKind::IfLet {
+                scrutinee,
+                bindings,
+                body,
+                else_body,
+                ..
+            } => {
+                self.expr(scrutinee);
+                for binding in bindings {
+                    // If-let payload bindings are scoped to the then-body;
+                    // register them here mirroring `WhileLet` and `Match`.
+                    self.binding(binding.binding, expr.span.clone());
+                }
+                self.block(body);
+                if let Some(eb) = else_body {
+                    self.block(eb);
+                }
             }
             HirExprKind::Break { value, .. } => {
                 if let Some(value) = value {

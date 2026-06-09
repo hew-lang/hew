@@ -15,6 +15,17 @@
 //   hew machine diagram examples/machine/tcp_handshake.hew --format mermaid
 //   hew machine diagram examples/machine/tcp_handshake.hew --machine TcpHandshake
 machine TcpHandshake {
+    events {
+        SynReceive { remote_port: u16; }
+        AckReceive;
+        FinReceive;
+        Reset;
+    }
+
+    emits {
+        AckReceive;
+    }
+
     state Closed;
     state SynReceived {
         remote_port: u16;
@@ -36,70 +47,66 @@ machine TcpHandshake {
         }
     }
 
-    event SynReceive { remote_port: u16; }
-    event AckReceive;
-    event FinReceive;
-    event Reset;
-
-    on SynReceive: Closed -> SynReceived {
+    on SynReceive(remote_port): Closed => SynReceived {
 
         // ── Named transitions ────────────────────────────────────────────────
 
-        // Passive open: peer sends SYN.
+        // Passive open: peer sends SYN; the `(remote_port)` head binding names the
+        // event payload so the body reads it directly.
         emit AckReceive {};
         SynReceived { remote_port: remote_port }
     }
-    on AckReceive: SynReceived -> Established {
+    on AckReceive: SynReceived => Established {
 
         // Peer's ACK completes the handshake.
         Established { remote_port: self.remote_port }
     }
-    on FinReceive: Established -> CloseWait {
+    on FinReceive: Established => CloseWait {
 
         // Peer initiates close while established.
         emit AckReceive {};
         CloseWait
     }
-    on AckReceive: CloseWait -> Closed {
+    on AckReceive: CloseWait => Closed {
 
         // Close-wait → closed (we have sent our FIN and got ACK).
         Closed
     }
-    on Reset: _ -> Closed {
+    on Reset: _ => Closed {
 
         // Reset collapses to Closed from any state.
         Closed
     }
-    on SynReceive: SynReceived -> SynReceived @reenter {
+    on SynReceive: SynReceived => SynReceived reenter {
 
         // ── Wildcard fallbacks (protocol violations — stay in current state) ─
 
         // SYN while not Closed: ignore (already connected or waiting).
         SynReceived { remote_port: self.remote_port }
     }
-    on SynReceive: Established -> Established @reenter {
+    on SynReceive: Established => Established reenter {
         Established { remote_port: self.remote_port }
     }
-    on SynReceive: CloseWait -> CloseWait @reenter {
+    on SynReceive: CloseWait => CloseWait reenter {
         CloseWait
     }
-    on AckReceive: Closed -> Closed @reenter {
+    on AckReceive: Closed => Closed reenter {
 
         // Unexpected ACK while Closed or Established: ignore.
         Closed
     }
-    on AckReceive: Established -> Established @reenter {
+    on AckReceive: Established => Established reenter {
         Established { remote_port: self.remote_port }
     }
-    on FinReceive: Closed -> Closed @reenter {
+    on FinReceive: Closed => Closed reenter {
 
         // FIN while not Established: ignore (nothing to close).
         Closed
     }
-    on FinReceive: SynReceived -> SynReceived @reenter {
+    on FinReceive: SynReceived => SynReceived reenter {
         SynReceived { remote_port: self.remote_port }
     }
-    on FinReceive: CloseWait -> CloseWait @reenter {
+    on FinReceive: CloseWait => CloseWait reenter {
         CloseWait
     }
 }

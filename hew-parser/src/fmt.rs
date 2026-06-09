@@ -6,12 +6,13 @@ use std::ops::Range;
 use crate::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
     CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
-    ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl, MatchArm,
-    NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl,
-    RecordKind, RestartPolicy, SelectArm, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
+    ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
+    MachineState, MachineTransition, MatchArm, NamingCase, OverflowPolicy, Param, Pattern,
+    PatternField, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm,
+    ShutdownDirective, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
+    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
+    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
+    WhereClause, WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -1119,133 +1120,110 @@ impl<'a> Formatter<'a> {
         self.write(" {\n");
         self.indent += 1;
 
-        for state in &decl.states {
+        // `events { … }` header — the input-event vocabulary.
+        let mut emitted_section = false;
+        if !decl.events.is_empty() {
             self.write_indent();
-            self.write("state ");
-            self.write(&state.name);
-            let has_entry_exit = state.entry.is_some() || state.exit.is_some();
-            if has_entry_exit {
-                // Multiline: entry/exit blocks require their own lines.
-                self.write(" {\n");
-                self.indent += 1;
-                for (name, ty) in &state.fields {
-                    self.write_indent();
-                    self.write(name);
-                    self.write(": ");
-                    self.format_type_expr(&ty.0);
-                    self.write(";\n");
-                }
-                if let Some(entry) = &state.entry {
-                    self.write_indent();
-                    self.write("entry ");
-                    self.format_block(entry, self.source.len());
-                    self.newline();
-                }
-                if let Some(exit) = &state.exit {
-                    self.write_indent();
-                    self.write("exit ");
-                    self.format_block(exit, self.source.len());
-                    self.newline();
-                }
-                self.indent -= 1;
+            self.write("events {\n");
+            self.indent += 1;
+            for event in &decl.events {
                 self.write_indent();
-                self.write("}\n");
-            } else if !state.fields.is_empty() {
-                // Compact single-line: `state S { field: Type; }`.
-                self.write(" {");
-                for (name, ty) in &state.fields {
-                    self.write(" ");
-                    self.write(name);
-                    self.write(": ");
-                    self.format_type_expr(&ty.0);
-                    self.write(";");
-                }
-                self.write(" }\n");
-            } else {
+                self.write(&event.name);
+                self.format_machine_field_list(&event.fields);
+                self.write("\n");
+            }
+            self.indent -= 1;
+            self.write_indent();
+            self.write("}\n");
+            emitted_section = true;
+        }
+
+        // `emits { … }` Mealy-output manifest (optional).
+        if !decl.emits.is_empty() {
+            self.newline();
+            self.write_indent();
+            self.write("emits {\n");
+            self.indent += 1;
+            for name in &decl.emits {
+                self.write_indent();
+                self.write(name);
                 self.write(";\n");
             }
-        }
-
-        if !decl.states.is_empty() && !decl.events.is_empty() {
-            self.newline();
-        }
-
-        for event in &decl.events {
+            self.indent -= 1;
             self.write_indent();
-            self.write("event ");
-            self.write(&event.name);
-            if event.fields.is_empty() {
-                self.write(";\n");
-            } else {
-                self.write(" { ");
-                for (i, (name, ty)) in event.fields.iter().enumerate() {
-                    if i > 0 {
-                        self.write(" ");
-                    }
-                    self.write(name);
-                    self.write(": ");
-                    self.format_type_expr(&ty.0);
-                    self.write(";");
-                }
-                self.write(" }\n");
-            }
+            self.write("}\n");
+            emitted_section = true;
         }
 
-        if !decl.events.is_empty() && !decl.transitions.is_empty() {
-            self.newline();
+        // Composite-group membership: substates owned by a composite are
+        // re-emitted inside their `state Composite { … }` block (driven by the
+        // side-table), not as flat top-level states.
+        let composite_members: std::collections::HashSet<&str> = decl
+            .composite_groups
+            .iter()
+            .flat_map(|g| g.members.iter().map(String::as_str))
+            .collect();
+
+        if !decl.states.is_empty() {
+            if emitted_section {
+                self.newline();
+            }
+            for state in &decl.states {
+                if composite_members.contains(state.name.as_str()) {
+                    continue;
+                }
+                self.format_machine_leaf_state(state);
+            }
+            emitted_section = true;
         }
 
-        for transition in &decl.transitions {
-            self.write_indent();
-            self.write("on ");
-            self.write(&transition.event_name);
-            self.write(": ");
-            self.write(&transition.source_state);
-            self.write(" -> ");
-            self.write(&transition.target_state);
-            if transition.reenter {
-                self.write(" @reenter");
-            }
-            if let Some(guard) = &transition.guard {
-                self.write(" when ");
-                self.format_expr(&guard.0);
-            }
-            // Omit body when it's just the implicit target state identifier
-            let is_implicit_body = matches!(&transition.body.0,
-                Expr::Identifier(name) if name == &transition.target_state);
-            if is_implicit_body {
-                self.write(";");
-            } else if let Expr::StructInit { name, fields, .. } = &transition.body.0 {
-                // Elided state constructor: emit fields directly without wrapping type name
-                if name == &transition.target_state {
-                    self.write(" { ");
-                    for (i, (fname, fval)) in fields.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.write(fname);
-                        self.write(": ");
-                        self.format_expr(&fval.0);
-                    }
-                    self.write(" }");
-                } else {
-                    self.write(" { ");
-                    self.format_expr(&transition.body.0);
-                    self.write(" }");
-                }
-            } else if let Expr::Block(block) = &transition.body.0 {
-                self.write(" ");
-                self.format_block(block, span_end);
-            } else {
-                self.write(" { ");
-                self.format_expr(&transition.body.0);
-                self.write(" }");
-            }
+        // Composite blocks (depth-1) reconstructed from the grouping side-table.
+        for group in &decl.composite_groups {
             self.newline();
+            self.format_machine_composite(decl, group, span_end);
+            emitted_section = true;
+        }
+
+        // Top-level transitions, excluding those that belong to a composite's
+        // parent-rule block (those are re-emitted inside the composite).
+        let parent_rule_keys: std::collections::HashSet<(String, String, String)> = decl
+            .composite_groups
+            .iter()
+            .flat_map(|g| {
+                g.members.iter().flat_map(move |m| {
+                    g.parent_transitions
+                        .iter()
+                        .map(move |pt| (m.clone(), pt.event_name.clone(), pt.target_state.clone()))
+                })
+            })
+            .collect();
+
+        let top_transitions: Vec<&MachineTransition> = decl
+            .transitions
+            .iter()
+            .filter(|t| {
+                !parent_rule_keys.contains(&(
+                    t.source_state.clone(),
+                    t.event_name.clone(),
+                    t.target_state.clone(),
+                ))
+            })
+            .collect();
+
+        if !top_transitions.is_empty() {
+            if emitted_section {
+                self.newline();
+            }
+            for transition in &top_transitions {
+                self.write_indent();
+                self.format_machine_transition(transition, span_end);
+                self.newline();
+            }
+            emitted_section = true;
         }
 
         if decl.has_default {
-            if !decl.transitions.is_empty() {
+            if emitted_section {
                 self.newline();
             }
             self.write_indent();
@@ -1254,6 +1232,339 @@ impl<'a> Formatter<'a> {
 
         self.indent -= 1;
         self.writeln("}");
+    }
+
+    /// Emit `{ name: Type; … }` after an event/state name, or `;` when empty.
+    fn format_machine_field_list(&mut self, fields: &[(String, Spanned<TypeExpr>)]) {
+        if fields.is_empty() {
+            self.write(";");
+        } else {
+            self.write(" { ");
+            for (i, (name, ty)) in fields.iter().enumerate() {
+                if i > 0 {
+                    self.write(" ");
+                }
+                self.write(name);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                self.write(";");
+            }
+            self.write(" }");
+        }
+    }
+
+    /// Emit one leaf `state` declaration (fields + entry/exit).
+    fn format_machine_leaf_state(&mut self, state: &MachineState) {
+        self.write_indent();
+        self.write("state ");
+        self.write(&state.name);
+        let has_entry_exit = state.entry.is_some() || state.exit.is_some();
+        if has_entry_exit {
+            self.write(" {\n");
+            self.indent += 1;
+            for (name, ty) in &state.fields {
+                self.write_indent();
+                self.write(name);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                self.write(";\n");
+            }
+            if let Some(entry) = &state.entry {
+                self.write_indent();
+                self.write("entry ");
+                self.format_block(entry, self.source.len());
+                self.newline();
+            }
+            if let Some(exit) = &state.exit {
+                self.write_indent();
+                self.write("exit ");
+                self.format_block(exit, self.source.len());
+                self.newline();
+            }
+            self.indent -= 1;
+            self.write_indent();
+            self.write("}\n");
+        } else if !state.fields.is_empty() {
+            self.write(" {");
+            for (name, ty) in &state.fields {
+                self.write(" ");
+                self.write(name);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                self.write(";");
+            }
+            self.write(" }\n");
+        } else {
+            self.write(";\n");
+        }
+    }
+
+    /// Emit one machine transition head + body in the `=>` / `reenter` surface.
+    /// Caller writes the leading indent.
+    fn format_machine_transition(&mut self, transition: &MachineTransition, span_end: usize) {
+        self.write("on ");
+        self.write(&transition.event_name);
+        // Re-emit the `on E(a, b):` head binding from the side-list. The
+        // parser splices a `let a = event.a;` prelude into the body for
+        // lowering; we strip that prelude below so it does not double up.
+        if !transition.event_bindings.is_empty() {
+            self.write("(");
+            for (i, name) in transition.event_bindings.iter().enumerate() {
+                if i > 0 {
+                    self.write(", ");
+                }
+                self.write(name);
+            }
+            self.write(")");
+        }
+        self.write(": ");
+        self.write(&transition.source_state);
+        self.write(" => ");
+        self.write(&transition.target_state);
+        if transition.reenter {
+            self.write(" reenter");
+        }
+        if let Some(guard) = &transition.guard {
+            self.write(" when ");
+            self.format_expr(&guard.0);
+        }
+        // Re-emit the AUTHORED body: strip the composite entry/exit hook
+        // prelude (D2/D3 splices, counted by `composite_prelude_len`) first,
+        // then the head-binding `let a = event.a;` prelude. Both are parser
+        // desugar artifacts the formatter must not echo, or re-parsing would
+        // double-apply them.
+        let hook_stripped;
+        let after_hooks = if transition.composite_prelude_len == 0 {
+            &transition.body.0
+        } else {
+            hook_stripped = Self::strip_leading_block_stmts(
+                &transition.body.0,
+                transition.composite_prelude_len,
+            );
+            &hook_stripped
+        };
+        let stripped_body;
+        let body_expr = if transition.event_bindings.is_empty() {
+            after_hooks
+        } else {
+            stripped_body =
+                Self::strip_event_binding_prelude(after_hooks, &transition.event_bindings);
+            &stripped_body
+        };
+        let is_implicit_body = matches!(body_expr,
+            Expr::Identifier(name) if name == &transition.target_state);
+        if is_implicit_body {
+            self.write(";");
+        } else if let Expr::StructInit { name, fields, .. } = body_expr {
+            if name == &transition.target_state {
+                self.write(" { ");
+                for (i, (fname, fval)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.write(fname);
+                    self.write(": ");
+                    self.format_expr(&fval.0);
+                }
+                self.write(" }");
+            } else {
+                self.write(" { ");
+                self.format_expr(body_expr);
+                self.write(" }");
+            }
+        } else if let Expr::Block(block) = body_expr {
+            self.write(" ");
+            self.format_block(block, span_end);
+        } else {
+            self.write(" { ");
+            self.format_expr(body_expr);
+            self.write(" }");
+        }
+    }
+
+    /// Drop the first `count` statements of a block body (the composite
+    /// entry/exit hook splice prelude). If only a tail remains, surface it
+    /// directly so the body collapses back to its authored shorthand.
+    fn strip_leading_block_stmts(body: &Expr, count: usize) -> Expr {
+        let Expr::Block(block) = body else {
+            return body.clone();
+        };
+        if count == 0 || count > block.stmts.len() {
+            return body.clone();
+        }
+        let remaining: Vec<Spanned<Stmt>> = block.stmts[count..].to_vec();
+        if remaining.is_empty() {
+            if let Some(tail) = &block.trailing_expr {
+                return tail.0.clone();
+            }
+        }
+        Expr::Block(Block {
+            stmts: remaining,
+            trailing_expr: block.trailing_expr.clone(),
+        })
+    }
+
+    /// Strip the leading `let <binding> = event.<binding>;` prelude statements
+    /// the parser splices in for an `on E(bindings): …` head binding, so the
+    /// formatter can re-emit the head form without the desugar. If, after
+    /// stripping, only a tail expression remains, that tail becomes the body
+    /// (collapsing a one-line `on E(x): S => T { Body }` back to its head form).
+    fn strip_event_binding_prelude(body: &Expr, bindings: &[String]) -> Expr {
+        let Expr::Block(block) = body else {
+            return body.clone();
+        };
+        // Count how many leading statements are the synthesized prelude lets.
+        let mut skip = 0;
+        for (stmt, _) in &block.stmts {
+            if skip >= bindings.len() {
+                break;
+            }
+            let Stmt::Let {
+                pattern: (Pattern::Identifier(name), _),
+                value: Some((Expr::FieldAccess { object, field }, _)),
+                ..
+            } = stmt
+            else {
+                break;
+            };
+            let is_event_field = matches!(&object.0, Expr::Identifier(o) if o == "event");
+            if is_event_field && name == field && bindings.contains(name) {
+                skip += 1;
+            } else {
+                break;
+            }
+        }
+        if skip == 0 {
+            return body.clone();
+        }
+        let remaining: Vec<Spanned<Stmt>> = block.stmts[skip..].to_vec();
+        // If only a tail expression remains, surface it directly so the body
+        // collapses to the canonical struct-init / identifier shorthand.
+        if remaining.is_empty() {
+            if let Some(tail) = &block.trailing_expr {
+                return tail.0.clone();
+            }
+        }
+        Expr::Block(Block {
+            stmts: remaining,
+            trailing_expr: block.trailing_expr.clone(),
+        })
+    }
+
+    /// Re-emit a composite `state Composite { … }` block from the grouping
+    /// side-table: composite fields, entry/exit, `initial`-marked substates,
+    /// then the parent-level transitions authored inside the block.
+    fn format_machine_composite(
+        &mut self,
+        decl: &MachineDecl,
+        group: &crate::ast::CompositeGroup,
+        span_end: usize,
+    ) {
+        self.write_indent();
+        self.write("state ");
+        self.write(&group.name);
+        self.write(" {\n");
+        self.indent += 1;
+
+        for (name, ty) in &group.fields {
+            self.write_indent();
+            self.write(name);
+            self.write(": ");
+            self.format_type_expr(&ty.0);
+            self.write(";\n");
+        }
+        if let Some(entry) = &group.entry {
+            self.write_indent();
+            self.write("entry ");
+            self.format_block(entry, self.source.len());
+            self.newline();
+        }
+        if let Some(exit) = &group.exit {
+            self.write_indent();
+            self.write("exit ");
+            self.format_block(exit, self.source.len());
+            self.newline();
+        }
+
+        for member_name in &group.members {
+            let Some(state) = decl.states.iter().find(|s| &s.name == member_name) else {
+                continue;
+            };
+            self.write_indent();
+            if &group.initial == member_name {
+                self.write("initial ");
+            }
+            // Substate fields exclude the composite-owned shared fields (which
+            // are emitted on the composite, not stamped here).
+            let own_fields: Vec<&(String, Spanned<TypeExpr>)> = state
+                .fields
+                .iter()
+                .filter(|(fname, _)| !group.fields.iter().any(|(gn, _)| gn == fname))
+                .collect();
+            self.format_machine_substate(&state.name, &own_fields, state, span_end);
+        }
+
+        for pt in &group.parent_transitions {
+            self.write_indent();
+            self.format_machine_transition(pt, span_end);
+            self.newline();
+        }
+
+        self.indent -= 1;
+        self.write_indent();
+        self.write("}\n");
+    }
+
+    /// Emit a substate declaration inside a composite block. The `initial`
+    /// modifier (when present) is already written by the caller.
+    fn format_machine_substate(
+        &mut self,
+        name: &str,
+        own_fields: &[&(String, Spanned<TypeExpr>)],
+        state: &MachineState,
+        _span_end: usize,
+    ) {
+        self.write("state ");
+        self.write(name);
+        let has_entry_exit = state.entry.is_some() || state.exit.is_some();
+        if has_entry_exit {
+            self.write(" {\n");
+            self.indent += 1;
+            for (fname, ty) in own_fields {
+                self.write_indent();
+                self.write(fname);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                self.write(";\n");
+            }
+            if let Some(entry) = &state.entry {
+                self.write_indent();
+                self.write("entry ");
+                self.format_block(entry, self.source.len());
+                self.newline();
+            }
+            if let Some(exit) = &state.exit {
+                self.write_indent();
+                self.write("exit ");
+                self.format_block(exit, self.source.len());
+                self.newline();
+            }
+            self.indent -= 1;
+            self.write_indent();
+            self.write("}\n");
+        } else if !own_fields.is_empty() {
+            self.write(" {");
+            for (fname, ty) in own_fields {
+                self.write(" ");
+                self.write(fname);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                self.write(";");
+            }
+            self.write(" }\n");
+        } else {
+            self.write(";\n");
+        }
     }
 
     fn format_field_decl(&mut self, f: &FieldDecl) {
@@ -1347,27 +1658,24 @@ impl<'a> Formatter<'a> {
         self.write(" {\n");
         self.indent += 1;
 
-        if let Some(strategy) = &decl.strategy {
-            self.write_indent();
-            self.write("strategy: ");
-            match strategy {
-                SupervisorStrategy::OneForOne => self.write("one_for_one"),
-                SupervisorStrategy::OneForAll => self.write("one_for_all"),
-                SupervisorStrategy::RestForOne => self.write("rest_for_one"),
-                SupervisorStrategy::SimpleOneForOne => self.write("simple_one_for_one"),
-            }
-            self.write(";\n");
+        // Always write `strategy:` explicitly. When the declaration omitted it,
+        // the formatter materializes the default (`one_for_one`) so the restart
+        // contract is never silently defaulted at the surface.
+        self.write_indent();
+        self.write("strategy: ");
+        match decl.strategy.unwrap_or(SupervisorStrategy::OneForOne) {
+            SupervisorStrategy::OneForOne => self.write("one_for_one"),
+            SupervisorStrategy::OneForAll => self.write("one_for_all"),
+            SupervisorStrategy::RestForOne => self.write("rest_for_one"),
+            SupervisorStrategy::SimpleOneForOne => self.write("simple_one_for_one"),
         }
-        if let Some(max) = decl.max_restarts {
+        self.write(";\n");
+        if let Some(intensity) = &decl.intensity {
             self.write_indent();
-            self.write("max_restarts: ");
-            self.write(&max.to_string());
-            self.write(";\n");
-        }
-        if let Some(window) = &decl.window {
-            self.write_indent();
-            self.write("window: ");
-            self.write(window);
+            self.write("intensity: ");
+            self.write(&intensity.restarts.to_string());
+            self.write(" within ");
+            self.write(&intensity.window);
             self.write(";\n");
         }
 
@@ -1384,7 +1692,10 @@ impl<'a> Formatter<'a> {
 
     fn format_child_spec(&mut self, spec: &ChildSpec) {
         self.write_indent();
-        self.write("child ");
+        // `pool` vs `child` is load-bearing — a pool is a dynamic
+        // simple_one_for_one child, not a static one. The old formatter always
+        // wrote `child`, silently dropping pool-ness; preserve it here.
+        self.write(if spec.is_pool { "pool " } else { "child " });
         self.write(&spec.name);
         self.write(": ");
         self.write(&spec.actor_type);
@@ -1403,6 +1714,30 @@ impl<'a> Formatter<'a> {
                 RestartPolicy::Permanent => self.write("permanent"),
                 RestartPolicy::Transient => self.write("transient"),
                 RestartPolicy::Temporary => self.write("temporary"),
+            }
+        }
+        if let Some(shutdown) = &spec.shutdown {
+            self.write(" shutdown: ");
+            match shutdown {
+                ShutdownDirective::Timeout(d) => self.write(d),
+                ShutdownDirective::BrutalKill => self.write("brutal_kill"),
+                ShutdownDirective::Infinity => self.write("infinity"),
+            }
+        }
+        // `wired_to:` was silently dropped by the old formatter — preserve it.
+        // HashMap iteration order is non-deterministic, so emit keys sorted to
+        // keep the round-trip stable and idempotent.
+        if let Some(wired_to) = &spec.wired_to {
+            if !wired_to.is_empty() {
+                let mut entries: Vec<(&String, &String)> = wired_to.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                self.write(" wired_to: { ");
+                self.comma_sep(&entries, |f, (key, sibling)| {
+                    f.write(key);
+                    f.write(": ");
+                    f.write(sibling);
+                });
+                self.write(" }");
             }
         }
         self.write(";\n");

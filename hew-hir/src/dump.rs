@@ -1029,6 +1029,30 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             dump_expr(out, scrutinee, indent + 4);
             dump_block(out, body, indent + 4);
         }
+        HirExprKind::IfLet {
+            scrutinee,
+            variant_match,
+            variant_idx,
+            bindings,
+            body,
+            else_body,
+            result_ty,
+        } => {
+            writeln!(
+                out,
+                "{pad}  if-let {}::{} [variant_idx={variant_idx}, bindings={}, result_ty={result_ty:?}]",
+                variant_match.type_name,
+                variant_match.variant_name,
+                bindings.len(),
+            )
+            .expect("write to string");
+            dump_expr(out, scrutinee, indent + 4);
+            dump_block(out, body, indent + 4);
+            if let Some(eb) = else_body {
+                writeln!(out, "{pad}  else").expect("write to string");
+                dump_block(out, eb, indent + 4);
+            }
+        }
         HirExprKind::Break { label, value } => {
             writeln!(out, "{pad}  break label={label:?}").expect("write to string");
             if let Some(value) = value {

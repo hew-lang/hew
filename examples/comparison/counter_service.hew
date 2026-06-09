@@ -13,8 +13,7 @@ actor Counter {
 // Supervision is a language construct, not a library choice.
 supervisor CounterPool {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 60;
+    intensity: 5 within 60s;
 
     child c1: Counter(count: 0);
     child c2: Counter(count: 0);

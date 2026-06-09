@@ -1,0 +1,29 @@
+// A generic inherent impl method dispatched by dot-syntax on a concrete generic
+// receiver, monomorphised at two distinct BitCopy types (i64 and bool) in one
+// program. `p.first()` / `p.pick(..)` on a `Pair<i64>` resolve to the qualified
+// `Pair::first` / `Pair::pick` symbols and register the `Pair::first$$i64` /
+// `Pair::pick$$bool` monomorphisations so MIR has a concrete body to dispatch
+// to. Passing at *both* types proves the impl-method monomorphisation is
+// genuinely polymorphic, not a single-instantiation special case.
+pub type Pair<T> {
+    left: T;
+    right: T;
+}
+
+impl<T> Pair<T> {
+    fn first(self) -> T {
+        self.left
+    }
+    fn pick(self, take_left: bool) -> T {
+        if take_left { self.left } else { self.right }
+    }
+}
+
+fn main() {
+    let nums = Pair { left: 7, right: 8 };
+    println(nums.first());
+    println(nums.pick(false));
+
+    let flags = Pair { left: true, right: false };
+    println(flags.pick(true));
+}

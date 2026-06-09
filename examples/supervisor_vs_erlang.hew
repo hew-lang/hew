@@ -88,8 +88,7 @@ actor ConnWorker {
 // This IS the supervision tree. 6 lines.
 supervisor ConnectionPool {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 60;
+    intensity: 5 within 60s;
 
     child reader: ConnWorker(role: 0, port: 8080);
     child writer: ConnWorker(role: 1, port: 8081);

@@ -1,0 +1,25 @@
+// Accept (W5.020): the idiomatic service-handler signature
+// `fn handle(...) -> Result<T, string>`, with BOTH arms exercised at runtime.
+// The Err arm returns an owned `string` across the return boundary; the Ok arm
+// returns a bitcopy `i64`. The caller matches each result, and the active
+// payload is dropped exactly once at the caller's scope exit (no leak, no
+// double-free). This is the runtime proof that "typed supervised request-reply"
+// composes — a Result<_, string> handler compiles and runs end to end.
+fn handle(n: i64) -> Result<i64, string> {
+    if n >= 0 {
+        Ok(n * 2)
+    } else {
+        Err("negative input")
+    }
+}
+
+fn main() {
+    match handle(21) {
+        Ok(v) => println("ok"),
+        Err(e) => println(e),
+    }
+    match handle(0 - 5) {
+        Ok(v) => println("ok"),
+        Err(e) => println(e),
+    }
+}

@@ -4,16 +4,18 @@
 fn parse_simple_machine() {
     let source = r"
 machine Light {
+    events {
+        Toggle;
+    }
+
     state Off;
     state On;
 
-    event Toggle;
-
-    on Toggle: Off -> On {
+    on Toggle: Off => On {
         On
     }
 
-    on Toggle: On -> Off {
+    on Toggle: On => Off {
         Off
     }
 }
@@ -51,21 +53,23 @@ fn main() {
 fn parse_machine_with_fields() {
     let source = r"
 machine Counter {
+    events {
+        Increment;
+        Reset;
+    }
+
     state Idle;
     state Running { count: Int; }
 
-    event Increment;
-    event Reset;
-
-    on Increment: Idle -> Running {
+    on Increment: Idle => Running {
         Running { count: 1 }
     }
 
-    on Increment: Running -> Running {
+    on Increment: Running => Running {
         Running { count: self.count + 1 }
     }
 
-    on Reset: _ -> Idle {
+    on Reset: _ => Idle {
         Idle
     }
 }
@@ -96,17 +100,19 @@ machine Counter {
 fn parse_machine_with_event_payload() {
     let source = r"
 machine Tcp {
+    events {
+        Connect { port: Int; }
+        Disconnect;
+    }
+
     state Closed;
     state Open { port: Int; }
 
-    event Connect { port: Int; }
-    event Disconnect;
-
-    on Connect: Closed -> Open {
+    on Connect: Closed => Open {
         Open { port: port }
     }
 
-    on Disconnect: _ -> Closed {
+    on Disconnect: _ => Closed {
         Closed
     }
 }
@@ -128,15 +134,119 @@ machine Tcp {
 }
 
 #[test]
+fn parse_machine_event_head_binding() {
+    // `on E(field): …` head binding names the event payload at the rule site.
+    // It lowers identically to `event.field`; the parser splices a `let`
+    // prelude in front of the body, so the body just sees the bare name.
+    let source = r"
+machine Tcp {
+    events {
+        Connect { port: Int; }
+    }
+
+    state Closed;
+    state Open { port: Int; }
+
+    on Connect(port): Closed => Open {
+        Open { port: port }
+    }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
+        assert_eq!(m.transitions.len(), 1);
+        // The binding names are recorded on the transition for the formatter.
+        assert_eq!(m.transitions[0].event_bindings, vec!["port".to_string()]);
+        // The head binding makes the body a block whose first statement binds
+        // `port` from `event.port`.
+        let hew_parser::ast::Expr::Block(block) = &m.transitions[0].body.0 else {
+            panic!("expected head-binding body to be a block");
+        };
+        assert!(
+            !block.stmts.is_empty(),
+            "head binding should splice a `let port = event.port;` prelude"
+        );
+        let hew_parser::ast::Stmt::Let { pattern, value, .. } = &block.stmts[0].0 else {
+            panic!("expected first prelude stmt to be a let binding");
+        };
+        assert!(
+            matches!(&pattern.0, hew_parser::ast::Pattern::Identifier(n) if n == "port"),
+            "expected `let port = …`"
+        );
+        let Some((hew_parser::ast::Expr::FieldAccess { field, .. }, _)) = value.as_ref() else {
+            panic!("expected let value to be `event.port`");
+        };
+        assert_eq!(field, "port");
+    } else {
+        panic!("expected Machine item");
+    }
+}
+
+#[test]
+fn machine_event_head_binding_round_trips_through_formatter() {
+    // The `on E(field): …` head form must survive parse → format → parse: the
+    // formatter re-emits the head binding and strips the synthesized
+    // `let field = event.field;` prelude, so the formatted source is the head
+    // form again (not the desugar).
+    let source = r"machine Tcp {
+    events {
+        Connect { port: Int; }
+    }
+
+    state Closed;
+    state Open { port: Int; }
+
+    on Connect(port): Closed => Open { Open { port: port } }
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    assert!(
+        formatted.contains("on Connect(port): Closed => Open"),
+        "formatter must re-emit the head binding; got:\n{formatted}"
+    );
+    assert!(
+        !formatted.contains("let port = event.port"),
+        "formatter must strip the synthesized head-binding prelude; got:\n{formatted}"
+    );
+
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "reparse errors: {:?}\n---\n{}",
+        reparsed.errors,
+        formatted
+    );
+    assert!(
+        hew_parser::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+        "AST structural inequality after round-trip\n--- formatted ---\n{formatted}"
+    );
+}
+
+#[test]
 fn parse_machine_wildcard_both() {
     let source = r"
 machine Noop {
+    events {
+        Ping;
+    }
+
     state A;
     state B;
 
-    event Ping;
-
-    on Ping: _ -> _ {
+    on Ping: _ => _ {
         self
     }
 }
@@ -160,6 +270,10 @@ machine Noop {
 fn parse_state_with_entry_exit_blocks() {
     let source = r"
 machine Traffic {
+    events {
+        Tick;
+    }
+
     state Red {
         entry { log(entering_red); }
         exit { log(leaving_red); }
@@ -167,10 +281,8 @@ machine Traffic {
 
     state Green;
 
-    event Tick;
-
-    on Tick: Red -> Green;
-    on Tick: Green -> Red;
+    on Tick: Red => Green;
+    on Tick: Green => Red;
 }
 ";
     let result = hew_parser::parse(source);
@@ -198,19 +310,21 @@ machine Traffic {
 fn parse_emit_in_transition_body() {
     let source = r"
 machine Counter {
+    events {
+        Start;
+        Tick;
+        Overflow;
+    }
+
     state Idle;
     state Running { count: Int; }
 
-    event Start;
-    event Tick;
-    event Overflow;
-
-    on Start: Idle -> Running {
+    on Start: Idle => Running {
         emit Overflow { code: 0 };
         Running { count: 0 }
     }
 
-    on Tick: Running -> Running {
+    on Tick: Running => Running {
         Running { count: self.count + 1 }
     }
 }
@@ -231,14 +345,56 @@ machine Counter {
 }
 
 #[test]
-fn parse_machine_transition_with_reenter_annotation() {
+fn parse_machine_emits_manifest() {
+    // `emits { … }` manifest parses into `MachineDecl::emits`.
+    let source = r"
+machine Signal {
+    events {
+        Start;
+        Ready;
+    }
+
+    emits {
+        Ready;
+    }
+
+    state Idle;
+    state Active;
+
+    on Start: Idle => Active {
+        emit Ready {};
+        Active
+    }
+    on Ready: Idle => Idle reenter { Idle }
+    on Ready: Active => Active reenter { Active }
+    on Start: Active => Active reenter { Active }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
+        assert_eq!(m.emits, vec!["Ready".to_string()]);
+    } else {
+        panic!("expected Machine item");
+    }
+}
+
+#[test]
+fn parse_machine_transition_with_reenter_keyword() {
     let source = r"
 machine Counter {
+    events {
+        Inc;
+    }
+
     state Active { n: Int; }
 
-    event Inc;
-
-    on Inc: Active -> Active @reenter {
+    on Inc: Active => Active reenter {
         Active { n: self.n + 1 }
     }
 }
@@ -254,7 +410,7 @@ machine Counter {
         assert_eq!(m.transitions.len(), 1);
         assert!(
             m.transitions[0].reenter,
-            "expected transition annotation to set reenter=true"
+            "expected `reenter` keyword to set reenter=true"
         );
     } else {
         panic!("expected Machine item");
@@ -262,29 +418,189 @@ machine Counter {
 }
 
 #[test]
-fn reject_nested_state_in_state_body() {
+fn reject_interleaved_event_declaration() {
+    // The legacy interleaved `event Name;` form is a hard cutover — events now
+    // live in the `events { … }` header.
     let source = r"
 machine Bad {
-    state Outer {
-        state Inner;
-    }
-
-    event Ping;
+    state Off;
+    event Toggle;
 }
 ";
     let result = hew_parser::parse(source);
-    // Must have at least one error about nested state
     assert!(
         !result.errors.is_empty(),
-        "expected parse error for nested state, got none"
+        "expected parse error for interleaved event decl"
     );
-    let has_nested_state_error = result
+    let has_event_header_error = result
         .errors
         .iter()
-        .any(|e| format!("{e:?}").contains("hierarchical"));
+        .any(|e| format!("{e:?}").contains("interleaved `event` declarations are no longer"));
     assert!(
-        has_nested_state_error,
-        "expected hierarchical-states diagnostic, errors: {:?}",
+        has_event_header_error,
+        "expected events-header diagnostic, errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn composite_parent_rule_expands_to_concrete_source_transitions() {
+    // The load-bearing constraint: a parent-level `on E: _ => T` inside a
+    // composite expands to ONE transition per member with a CONCRETE source
+    // state, never a literal `_` source (which the checker rejects for
+    // `self.field` reads). The composite name is dropped from the flat lists.
+    let source = r"
+machine Conn {
+    events {
+        Disconnect;
+        Connect;
+    }
+
+    state Disconnected;
+
+    state Connected {
+        initial state Authenticating;
+        state Active;
+        state Draining;
+
+        on Disconnect: _ => Disconnected;
+    }
+
+    on Connect: Disconnected => Authenticating { Authenticating }
+    on Connect: _ => _ { state }
+    on Disconnect: _ => _ { state }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 else {
+        panic!("expected Machine item");
+    };
+
+    // Composite name is NOT a flat state; the three substates + Disconnected are.
+    let state_names: Vec<&str> = m.states.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        !state_names.contains(&"Connected"),
+        "composite name must be dropped from flat states; got {state_names:?}"
+    );
+    for sub in ["Authenticating", "Active", "Draining", "Disconnected"] {
+        assert!(state_names.contains(&sub), "missing flat state `{sub}`");
+    }
+
+    // The parent `Disconnect` rule expanded to three concrete-source
+    // transitions — one per member — with NO literal `_` source.
+    let disconnect_sources: Vec<&str> = m
+        .transitions
+        .iter()
+        .filter(|t| t.event_name == "Disconnect" && t.target_state == "Disconnected")
+        .map(|t| t.source_state.as_str())
+        .collect();
+    let mut sorted = disconnect_sources.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        vec!["Active", "Authenticating", "Draining"],
+        "parent rule must expand to concrete member sources, never `_`"
+    );
+    assert!(
+        !disconnect_sources.contains(&"_"),
+        "expanded parent rule must NOT carry a literal `_` source"
+    );
+
+    // The grouping side-table records the composite for the formatter/diagram.
+    assert_eq!(m.composite_groups.len(), 1);
+    let group = &m.composite_groups[0];
+    assert_eq!(group.name, "Connected");
+    assert_eq!(group.initial, "Authenticating");
+    assert_eq!(group.members, vec!["Authenticating", "Active", "Draining"]);
+}
+
+#[test]
+fn composite_block_round_trips_through_formatter() {
+    // A depth-1 composite must survive parse → format → parse: the formatter
+    // reconstructs the `state Composite { initial state …; on E: _ => T; }`
+    // block from the grouping side-table.
+    let source = r"machine Conn {
+    events {
+        Disconnect;
+        Connect;
+    }
+
+    state Disconnected;
+
+    state Connected {
+        initial state Authenticating;
+        state Active;
+
+        on Disconnect: _ => Disconnected;
+    }
+
+    on Connect: Disconnected => Authenticating { Authenticating }
+    on Connect: _ => _ { state }
+    on Disconnect: _ => _ { state }
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    assert!(
+        formatted.contains("state Connected {"),
+        "formatter must re-emit the composite block; got:\n{formatted}"
+    );
+    assert!(
+        formatted.contains("initial state Authenticating"),
+        "formatter must mark the initial substate; got:\n{formatted}"
+    );
+
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "reparse errors: {:?}\n---\n{}",
+        reparsed.errors,
+        formatted
+    );
+    assert!(
+        hew_parser::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+        "AST structural inequality after composite round-trip\n--- formatted ---\n{formatted}"
+    );
+}
+
+#[test]
+fn reject_depth_two_composite_nesting() {
+    // Depth-1 composites are accepted; a `state` inside a substate body
+    // (depth > 1) is rejected with a v0.6 diagnostic.
+    let source = r"
+machine Deep {
+    events {
+        Go;
+    }
+
+    state Outer {
+        initial state Inner {
+            initial state TooDeep;
+        }
+    }
+
+    on Go: _ => _ { state }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| format!("{e:?}").contains("depth > 1")),
+        "expected depth>1 v0.6 diagnostic, errors: {:?}",
         result.errors
     );
 }
@@ -337,33 +653,39 @@ fn machine_generic_decl() {
     // are accepted at the parser level (see the bounded-decl test below).
     let source = r"
 machine Light {
+    events {
+        Toggle;
+    }
+
     state Off;
     state On;
 
-    event Toggle;
-
-    on Toggle: Off -> On { On }
-    on Toggle: On -> Off { Off }
+    on Toggle: Off => On { On }
+    on Toggle: On => Off { Off }
 }
 
 machine Lifecycle<T> {
+    events {
+        Start;
+    }
+
     state Created;
     state Running;
 
-    event Start;
-
-    on Start: Created -> Running {
+    on Start: Created => Running {
         Running
     }
 }
 
 machine Triple<T, U, V> {
+    events {
+        Insert;
+    }
+
     state Empty;
     state Filled;
 
-    event Insert;
-
-    on Insert: Empty -> Filled {
+    on Insert: Empty => Filled {
         Filled
     }
 }
@@ -451,16 +773,18 @@ trait Display {
 }
 
 machine Bounded<T: Resource, U: Resource + Display> {
+    events {
+        Start { handle: T; meta: U; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; meta: U; }
 
-    event Start { handle: T; meta: U; }
-    event Stop;
-
-    on Start: Idle -> Active { Active { handle: event.handle, meta: event.meta } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle, meta: event.meta } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let result = hew_parser::parse(source);
@@ -500,16 +824,18 @@ fn machine_trait_bounds_round_trip_through_formatter() {
 }
 
 machine Lifecycle<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
-
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let parsed = hew_parser::parse(source);
@@ -546,16 +872,18 @@ trait Resource {
 }
 
 machine Container<T> where T: Resource {
+    events {
+        Start { item: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { item: T; }
 
-    event Start { item: T; }
-    event Stop;
-
-    on Start: Idle -> Active { Active { item: event.item } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { item: event.item } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let result = hew_parser::parse(source);
@@ -605,16 +933,18 @@ trait Display {
 }
 
 machine Combined<T: Resource> where T: Display {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
-
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let result = hew_parser::parse(source);
@@ -666,16 +996,18 @@ trait Send {
 }
 
 machine Multi<T, U> where T: Resource, U: Display + Send {
+    events {
+        Start { left: T; right: U; }
+        Stop;
+    }
+
     state Idle;
     state Active { left: T; right: U; }
 
-    event Start { left: T; right: U; }
-    event Stop;
-
-    on Start: Idle -> Active { Active { left: event.left, right: event.right } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { left: event.left, right: event.right } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let result = hew_parser::parse(source);
@@ -719,16 +1051,18 @@ trait Display {
 }
 
 machine Combined<T: Resource> where T: Display {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
-
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 ";
     let parsed = hew_parser::parse(source);
@@ -777,9 +1111,13 @@ fn first_machine_named<'a>(
 #[test]
 fn machine_const_param_minimal_parses() {
     let src = r"machine M<const N: usize> {
+    events {
+        E;
+    }
+
     state S;
-    event E;
-    on E: S -> S { S }
+
+    on E: S => S { S }
 }
 ";
     let r = hew_parser::parse(src);
@@ -798,9 +1136,13 @@ fn machine_const_param_minimal_parses() {
 #[test]
 fn machine_const_param_with_default_parses() {
     let src = r"machine M<const N: usize = 16> {
+    events {
+        E;
+    }
+
     state S;
-    event E;
-    on E: S -> S { S }
+
+    on E: S => S { S }
 }
 ";
     let r = hew_parser::parse(src);
@@ -813,9 +1155,13 @@ fn machine_const_param_with_default_parses() {
 #[test]
 fn machine_mixed_type_and_const_params_parses() {
     let src = r"machine M<T, const N: usize> {
+    events {
+        E;
+    }
+
     state S { val: T; }
-    event E;
-    on E: S -> S { S { val: event.val } }
+
+    on E: S => S { S { val: event.val } }
 }
 ";
     let r = hew_parser::parse(src);
@@ -830,9 +1176,13 @@ fn machine_mixed_type_and_const_params_parses() {
 #[test]
 fn machine_const_param_rejects_non_usize_width() {
     let src = r"machine M<const N: i32> {
+    events {
+        E;
+    }
+
     state S;
-    event E;
-    on E: S -> S { S }
+
+    on E: S => S { S }
 }
 ";
     let r = hew_parser::parse(src);
@@ -850,9 +1200,13 @@ fn machine_const_param_rejects_non_usize_width() {
 #[test]
 fn machine_const_param_rejects_const_before_type_param() {
     let src = r"machine M<const N: usize, T> {
+    events {
+        E;
+    }
+
     state S;
-    event E;
-    on E: S -> S { S }
+
+    on E: S => S { S }
 }
 ";
     let r = hew_parser::parse(src);
@@ -865,9 +1219,13 @@ fn machine_const_param_rejects_const_before_type_param() {
 #[test]
 fn machine_const_param_round_trips_through_formatter() {
     let src = r"machine M<T, const N: usize = 16> {
+    events {
+        E;
+    }
+
     state S { val: T; }
-    event E;
-    on E: S -> S { S { val: event.val } }
+
+    on E: S => S { S { val: event.val } }
 }
 ";
     let r = hew_parser::parse(src);

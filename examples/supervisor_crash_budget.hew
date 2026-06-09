@@ -3,9 +3,9 @@
 
 // Crash Cascade Prevention
 //
-// The supervisor's (max_restarts, window) setting prevents infinite restart
-// loops. When a child crashes more than max_restarts times within the window,
-// the supervisor stops — it won't keep restarting a fundamentally broken actor.
+// The supervisor's `intensity: N within <window>` setting prevents infinite
+// restart loops. When a child crashes more than N times within the window, the
+// supervisor stops — it won't keep restarting a fundamentally broken actor.
 //
 // This is the "let it crash" philosophy with a safety valve: crash and restart
 // is fine for transient failures, but persistent failures need human attention.
@@ -30,8 +30,7 @@ actor Fragile {
 // Only allow 3 restarts in 60 seconds — after that, stop escalating
 supervisor FragilePool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
 
     child f1: Fragile(id: 1, lives: 3);
     child f2: Fragile(id: 2, lives: 3);

@@ -13,34 +13,32 @@ impl Resource for FileHandle {
 }
 
 machine Lifecycle<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+        Started;
+    }
+
     state Idle;
-    state Active {
-        handle: T;
-    }
+    state Active { handle: T; }
 
-    event Start {
-        handle: T;
-    }
-    event Stop;
-    event Started;
-
-    on Start: Idle -> Active {
+    on Start: Idle => Active {
         emit Started {};
         Active { handle: event.handle }
     }
-    on Stop: Active -> Idle {
+    on Stop: Active => Idle {
         Idle
     }
-    on Stop: Idle -> Idle @reenter {
+    on Stop: Idle => Idle reenter {
         Idle
     }
-    on Start: Active -> Active @reenter {
+    on Start: Active => Active reenter {
         Active { handle: event.handle }
     }
-    on Started: Idle -> Idle @reenter {
+    on Started: Idle => Idle reenter {
         Idle
     }
-    on Started: Active -> Active @reenter {
+    on Started: Active => Active reenter {
         Active { handle: state.handle }
     }
 }

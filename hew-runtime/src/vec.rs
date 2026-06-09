@@ -26,7 +26,9 @@
 )]
 
 // Re-export types from hew-cabi so `crate::vec::HewVec` etc. continue to work.
-pub use hew_cabi::vec::{ElemKind, HewTypeLayout, HewTypeOwnershipKind, HewVec, HewVecEqThunk};
+pub use hew_cabi::vec::{
+    ElemKind, HewTypeLayout, HewTypeOwnershipKind, HewVec, HewVecElemLayout, HewVecEqThunk,
+};
 
 use core::ffi::{c_char, c_void};
 use core::ptr;
@@ -329,6 +331,12 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewV
         (*v).elem_size = elem_size as usize;
         (*v).elem_kind = ElemKind::Plain;
         (*v).layout = ptr::null();
+        // W5.016: the owned-element descriptor is opt-in. Null it here so every
+        // constructor path (the typed `hew_vec_new_*` family, the Plain
+        // `_layout` constructor, the generic constructor) leaves it absent
+        // unless `hew_vec_new_with_elem_layout` stamps it. The owned ops gate on
+        // a non-null `elem_layout`; a null one keeps the legacy/Plain ABI.
+        (*v).elem_layout = ptr::null();
         v
     }
 }
@@ -2093,6 +2101,358 @@ pub unsafe extern "C" fn hew_vec_pop_layout(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Owned-element Vec operations (W5.016)
+// ---------------------------------------------------------------------------
+//
+// These ops back `Vec<T>` where `T` owns heap (strings, owned-payload or
+// recursive enums, records with owned fields). They are the descriptor-driven
+// twin of the HashMap owned-value path. The per-element ownership contract is
+// pinned on `HewVecElemLayout` (`hew-cabi/src/vec.rs`):
+//
+//   * push  — memcpy `src` bytes into the new slot, then `clone_fn(src, slot)`
+//             to deep-copy owned heap. The Vec now owns the element.
+//   * get   — borrow a pointer into the live buffer; no clone/drop runs.
+//   * set   — `drop_fn(old_slot)` to release the replaced element, then memcpy
+//             + `clone_fn(new, slot)`.
+//   * pop   — memcpy the last slot to `out` (move out), NO drop.
+//   * free  — `drop_fn(slot)` on every live slot exactly once, then free.
+//   * clone — alloc a fresh buffer, memcpy + `clone_fn` per element.
+//
+// `clone_fn` REQUIRES the caller to have memcpy'd `dst <- src` first so the
+// BitCopy fields and any enum tag/inactive bytes are correct; the thunk
+// deep-clones only the owned fields. Every owned op below satisfies this
+// precondition before calling `clone_fn` (`container-ingress-ownership-is-
+// per-container` / `lifecycle-symmetry` P0).
+
+/// Abort fail-closed when an owned Vec op is reached without a stamped owned
+/// descriptor. A null `elem_layout` on an owned op means codegen routed a
+/// non-owned vec into the owned path — a substrate invariant violation that
+/// must never silently bit-copy owned handles (`boundary-fail-closed` P0).
+unsafe fn abort_owned_descriptor_missing() -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        let msg = b"PANIC: Vec owned operation requires an element layout descriptor\n\0";
+        write_stderr(&msg[..msg.len() - 1]);
+        libc::abort();
+    }
+}
+
+/// Abort fail-closed when an owned descriptor is missing a required thunk. A
+/// `None` clone/drop thunk on a non-Plain descriptor is a silent UAF/leak
+/// channel; reject it at first use (`boundary-fail-closed` P0).
+unsafe fn abort_owned_thunk_missing(which: &str) -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        write_stderr(b"PANIC: Vec owned descriptor is missing the ");
+        write_stderr(which.as_bytes());
+        write_stderr(b" thunk\n");
+        libc::abort();
+    }
+}
+
+/// Read the stamped owned descriptor from a vec, aborting fail-closed if it is
+/// absent. The returned reference borrows the vec's inline `elem_layout_storage`.
+///
+/// # Safety
+///
+/// `v` must point to a valid, non-null `HewVec`.
+unsafe fn owned_descriptor<'a>(v: *const HewVec) -> &'a HewVecElemLayout {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let layout = (*v).elem_layout;
+        if layout.is_null() {
+            abort_owned_descriptor_missing();
+        }
+        &*layout
+    }
+}
+
+/// Resolve and validate the clone thunk for an owned descriptor, aborting
+/// fail-closed when it is absent.
+unsafe fn owned_clone_fn(layout: &HewVecElemLayout) -> hew_cabi::vec::HewVecElemCloneThunk {
+    match layout.clone_fn {
+        Some(f) => f,
+        // SAFETY: abort path.
+        None => unsafe { abort_owned_thunk_missing("clone") },
+    }
+}
+
+/// Resolve and validate the drop thunk for an owned descriptor, aborting
+/// fail-closed when it is absent.
+unsafe fn owned_drop_fn(layout: &HewVecElemLayout) -> hew_cabi::vec::HewVecElemDropThunk {
+    match layout.drop_fn {
+        Some(f) => f,
+        // SAFETY: abort path.
+        None => unsafe { abort_owned_thunk_missing("drop") },
+    }
+}
+
+/// Create a new owned-element `HewVec` backed by a `HewVecElemLayout`.
+///
+/// Copies the descriptor into the vec's inline `elem_layout_storage` so
+/// `elem_layout` never dangles (mirrors `hew_vec_new_with_layout`). Fails closed
+/// when the descriptor is non-`Plain` but is missing a clone or drop thunk —
+/// a thunk-absent owned element is a silent UAF/leak channel.
+///
+/// # Safety
+///
+/// `layout` must be a valid, non-null pointer for the duration of this call.
+/// The returned pointer must eventually be freed with [`hew_vec_free_owned`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
+    layout: *const HewVecElemLayout,
+) -> *mut HewVec {
+    cabi_guard!(layout.is_null(), ptr::null_mut());
+    // SAFETY: null was rejected above.
+    unsafe {
+        let descriptor = &*layout;
+        if descriptor.size == 0 {
+            let msg = b"PANIC: HewVecElemLayout size must be non-zero\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+        if descriptor.align == 0 || !descriptor.align.is_power_of_two() {
+            let msg = b"PANIC: HewVecElemLayout align must be a non-zero power of two\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+        // Fail-closed thunk presence check for non-Plain elements. A Plain owned
+        // descriptor is admissible (no heap to clone/drop) but the owned ops
+        // would never be selected for one; the check protects the LayoutManaged
+        // / String path that DOES carry owned heap.
+        if descriptor.ownership_kind != HewTypeOwnershipKind::Plain {
+            if descriptor.clone_fn.is_none() {
+                abort_owned_thunk_missing("clone");
+            }
+            if descriptor.drop_fn.is_none() {
+                abort_owned_thunk_missing("drop");
+            }
+        }
+        let elem_size = i64::try_from(descriptor.size).unwrap_or_else(|_| {
+            let msg = b"PANIC: HewVecElemLayout size exceeds Hew ABI range\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        });
+        let v = hew_vec_new_with_elem_size(elem_size);
+        // Owned elements use the Plain bulk-buffer kind; ownership is driven by
+        // the descriptor thunks, not the legacy `elem_kind` string path.
+        (*v).elem_kind = ElemKind::Plain;
+        (*v).elem_layout_storage = *descriptor;
+        (*v).elem_layout = core::ptr::addr_of!((*v).elem_layout_storage);
+        v
+    }
+}
+
+/// Push an owned element: deep-copy it into a new slot via the descriptor
+/// `clone_fn`. The Vec takes ownership; the caller's source remains its own
+/// (the move-in is a deep copy, then the source binding is `Consumed` at the
+/// MIR level for owned-aggregate args).
+///
+/// # Safety
+///
+/// `v` must be an owned-element `HewVec` (created by
+/// [`hew_vec_new_with_elem_layout`]). `data` must point to at least
+/// `descriptor.size` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::ffi::c_void) {
+    cabi_guard!(v.is_null() || data.is_null());
+    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let elem_size = layout.size;
+        let clone_fn = owned_clone_fn(layout);
+        let len = (*v).len;
+        let Some(new_len) = len.checked_add(1) else {
+            libc::abort();
+        };
+        ensure_cap_raw(v, new_len);
+        let dst = (*v).data.add(len * elem_size);
+        // Memcpy first so BitCopy fields / enum tag bytes are correct, then run
+        // the clone thunk to deep-copy the owned heap (clone-fn contract).
+        core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
+        let status = clone_fn(data, dst.cast::<core::ffi::c_void>());
+        if status != 0 {
+            // The clone thunk rolled back its own partial work; the slot is not
+            // live. Fail closed rather than admit a half-cloned element.
+            let msg = b"PANIC: Vec owned element clone failed\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+        (*v).len = new_len;
+    }
+}
+
+/// Return a borrowed pointer to an owned element at `index`. The pointer aliases
+/// the live buffer (BORROW) — the caller must NOT free or drop it, and it is
+/// valid only until the next mutation. Aborts on out-of-bounds.
+///
+/// # Safety
+///
+/// `v` must be an owned-element `HewVec`. The returned pointer is valid only
+/// while the vec is not reallocated.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_get_owned(
+    v: *const HewVec,
+    index: i64,
+) -> *const core::ffi::c_void {
+    cabi_guard!(v.is_null(), ptr::null());
+    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let index = index as usize;
+        if index >= (*v).len {
+            abort_oob(index, (*v).len);
+        }
+        (*v).data.add(index * layout.size).cast()
+    }
+}
+
+/// Overwrite an owned element: drop the old element (descriptor `drop_fn`),
+/// then deep-copy the new one in (`clone_fn`). Aborts on out-of-bounds.
+///
+/// # Safety
+///
+/// `v` must be an owned-element `HewVec`. `data` must point to at least
+/// `descriptor.size` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_set_owned(
+    v: *mut HewVec,
+    index: i64,
+    data: *const core::ffi::c_void,
+) {
+    cabi_guard!(v.is_null() || data.is_null());
+    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let elem_size = layout.size;
+        let clone_fn = owned_clone_fn(layout);
+        let drop_fn = owned_drop_fn(layout);
+        let index = index as usize;
+        if index >= (*v).len {
+            abort_oob(index, (*v).len);
+        }
+        let slot = (*v).data.add(index * elem_size);
+        // Drop the replaced element exactly once, then deep-copy the new one in.
+        drop_fn(slot.cast::<core::ffi::c_void>());
+        core::ptr::copy_nonoverlapping(data.cast::<u8>(), slot, elem_size);
+        let status = clone_fn(data, slot.cast::<core::ffi::c_void>());
+        if status != 0 {
+            let msg = b"PANIC: Vec owned element clone failed\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+    }
+}
+
+/// Pop the last owned element, moving it into `out`. The element's ownership
+/// transfers to the caller, so NO drop runs — `out` is the new owner. Returns 1
+/// on success, 0 if the vec is empty.
+///
+/// # Safety
+///
+/// `v` must be an owned-element `HewVec`. `out` must point to at least
+/// `descriptor.size` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_pop_owned(v: *mut HewVec, out: *mut core::ffi::c_void) -> i32 {
+    cabi_guard!(v.is_null() || out.is_null(), 0);
+    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let elem_size = layout.size;
+        if (*v).len == 0 {
+            return 0;
+        }
+        (*v).len -= 1;
+        let src = (*v).data.add((*v).len * elem_size);
+        // Move out: byte-copy to `out`, leaving no live copy in the buffer (the
+        // length decrement makes the slot unreachable). No drop — possession
+        // transfers to the caller.
+        core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), elem_size);
+        1
+    }
+}
+
+/// Free an owned-element `HewVec`, dropping every live element exactly once via
+/// the descriptor `drop_fn` and then freeing the backing buffer + struct. A
+/// null `v` is a documented no-op.
+///
+/// # Safety
+///
+/// `v` must have been returned by [`hew_vec_new_with_elem_layout`] /
+/// [`hew_vec_clone_owned`] (or be null). After this call `v` is invalid.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_free_owned(v: *mut HewVec) {
+    // SAFETY: caller guarantees `v` was allocated by the owned constructor (or
+    // is null).
+    unsafe {
+        if v.is_null() {
+            return;
+        }
+        let layout = owned_descriptor(v);
+        let elem_size = layout.size;
+        let drop_fn = owned_drop_fn(layout);
+        if !(*v).data.is_null() {
+            // Drop each live element exactly once, in order.
+            for i in 0..(*v).len {
+                let slot = (*v).data.add(i * elem_size);
+                drop_fn(slot.cast::<core::ffi::c_void>());
+            }
+            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
+        }
+        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
+    }
+}
+
+/// Deep-clone an owned-element `HewVec`: every element is independently cloned
+/// via the descriptor `clone_fn`, so the result owns its own heap.
+///
+/// # Safety
+///
+/// `v` must be an owned-element `HewVec` (or null, which returns null). The
+/// result must eventually be freed with [`hew_vec_free_owned`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_clone_owned(v: *const HewVec) -> *mut HewVec {
+    cabi_guard!(v.is_null(), ptr::null_mut());
+    // SAFETY: guards reject null; descriptor presence is validated.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let elem_size = layout.size;
+        let clone_fn = owned_clone_fn(layout);
+        let new_v = hew_vec_new_with_elem_layout(layout);
+        let len = (*v).len;
+        if len == 0 {
+            return new_v;
+        }
+        ensure_cap_raw(new_v, len);
+        for i in 0..len {
+            let src = (*v).data.add(i * elem_size);
+            let dst = (*new_v).data.add(i * elem_size);
+            core::ptr::copy_nonoverlapping(src, dst, elem_size);
+            let status = clone_fn(
+                src.cast::<core::ffi::c_void>(),
+                dst.cast::<core::ffi::c_void>(),
+            );
+            if status != 0 {
+                // Roll back: drop the elements cloned so far, then free.
+                if let Some(drop_fn) = layout.drop_fn {
+                    for j in 0..i {
+                        let cleanup = (*new_v).data.add(j * elem_size);
+                        drop_fn(cleanup.cast::<core::ffi::c_void>());
+                    }
+                }
+                (*new_v).len = 0;
+                hew_vec_free_owned(new_v);
+                let msg = b"PANIC: Vec owned clone failed\n\0";
+                write_stderr(&msg[..msg.len() - 1]);
+                libc::abort();
+            }
+        }
+        (*new_v).len = len;
+        new_v
+    }
+}
+
 /// Stage 1 fail-closed stub for layout-descriptor equality/contains.
 ///
 /// # Safety
@@ -3751,6 +4111,389 @@ mod tests {
             // Pretend a live element exists so the fail-closed drop guard fires.
             (*v).len = 1;
             hew_vec_free_managed(v);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Owned-element op tests (W5.016) — substrate-level no-leak / no-double-free
+// oracle with hand-written clone/drop thunks, before any Hew code exists.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod vec_owned_tests {
+    use super::*;
+    use core::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::{Mutex, MutexGuard};
+
+    // The thunk counters are process-global, so the counter-using tests must run
+    // serially. This mutex serialises them; each test holds the guard for its
+    // duration. (The death tests run in subprocesses and need no guard.)
+    static COUNTER_LOCK: Mutex<()> = Mutex::new(());
+
+    // Global counters: every owned-heap allocation by the clone thunk bumps
+    // ALLOC_COUNT; every release by the drop thunk bumps FREE_COUNT. A correct
+    // ownership discipline keeps (ALLOC - FREE) equal to the number of live
+    // elements at all times and == 0 after free. CLONE_CALLS / DROP_CALLS track
+    // thunk invocation counts directly.
+    static ALLOC_COUNT: AtomicI64 = AtomicI64::new(0);
+    static FREE_COUNT: AtomicI64 = AtomicI64::new(0);
+    static CLONE_CALLS: AtomicI64 = AtomicI64::new(0);
+    static DROP_CALLS: AtomicI64 = AtomicI64::new(0);
+
+    /// Acquire the serialisation lock and zero every counter. The returned guard
+    /// must be held for the test's duration. Recovers from a poisoned lock so one
+    /// failing test does not cascade.
+    fn reset_counters() -> MutexGuard<'static, ()> {
+        let guard = COUNTER_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ALLOC_COUNT.store(0, Ordering::SeqCst);
+        FREE_COUNT.store(0, Ordering::SeqCst);
+        CLONE_CALLS.store(0, Ordering::SeqCst);
+        DROP_CALLS.store(0, Ordering::SeqCst);
+        guard
+    }
+
+    fn live_allocations() -> i64 {
+        ALLOC_COUNT.load(Ordering::SeqCst) - FREE_COUNT.load(Ordering::SeqCst)
+    }
+
+    /// Test element: an 8-byte struct that owns a heap-allocated `i64`. Models a
+    /// `String`-element / owned-aggregate whose heap must be deep-copied on push
+    /// and freed exactly once on drop.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct OwnedElem {
+        payload: *mut i64,
+    }
+
+    /// Build a source `OwnedElem` owning a fresh heap `i64`. The caller owns it
+    /// (the deep-copy contract: push clones it in, this source stays the
+    /// caller's to free). Counted under ALLOC so leak/double-free of the source
+    /// is visible too.
+    fn make_source(value: i64) -> OwnedElem {
+        let payload = Box::into_raw(Box::new(value));
+        ALLOC_COUNT.fetch_add(1, Ordering::SeqCst);
+        OwnedElem { payload }
+    }
+
+    /// Free a source `OwnedElem` the test still owns.
+    ///
+    /// # Safety
+    /// `e.payload` must be a live allocation produced by `make_source`/clone.
+    unsafe fn free_source(e: OwnedElem) {
+        // SAFETY: payload is a Box::into_raw allocation.
+        unsafe {
+            drop(Box::from_raw(e.payload));
+        }
+        FREE_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Clone thunk: `dst` was bit-copied from `src` (so `dst.payload` aliases
+    /// `src.payload`). Deep-copy: allocate a fresh heap `i64` and overwrite
+    /// `dst.payload`, so the two elements own independent heap. Mirrors the
+    /// codegen `__hew_record_clone_inplace` contract (caller memcpy'd first).
+    unsafe extern "C" fn clone_thunk(src: *const c_void, dst: *mut c_void) -> i32 {
+        CLONE_CALLS.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: src/dst point to OwnedElem-sized blobs per the descriptor.
+        unsafe {
+            let src_elem = &*src.cast::<OwnedElem>();
+            let value = *src_elem.payload;
+            let fresh = Box::into_raw(Box::new(value));
+            ALLOC_COUNT.fetch_add(1, Ordering::SeqCst);
+            (*dst.cast::<OwnedElem>()).payload = fresh;
+        }
+        0
+    }
+
+    /// Drop thunk: release the element's owned heap exactly once. Does NOT free
+    /// the slot bytes (the Vec owns the buffer).
+    unsafe extern "C" fn drop_thunk(slot: *mut c_void) {
+        DROP_CALLS.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: slot points to a live OwnedElem with a heap payload.
+        unsafe {
+            let elem = &*slot.cast::<OwnedElem>();
+            drop(Box::from_raw(elem.payload));
+        }
+        FREE_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn owned_layout() -> HewVecElemLayout {
+        HewVecElemLayout {
+            size: core::mem::size_of::<OwnedElem>(),
+            align: core::mem::align_of::<OwnedElem>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: Some(clone_thunk),
+            drop_fn: Some(drop_thunk),
+        }
+    }
+
+    /// push clones each element in exactly once; free drops each exactly once;
+    /// no element leaks and none is double-freed.
+    #[test]
+    fn push_clones_in_and_free_drops_each_once() {
+        let _guard = reset_counters();
+        // SAFETY: owned ops use a valid descriptor + valid element pointers.
+        unsafe {
+            let layout = owned_layout();
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+
+            let s0 = make_source(10);
+            let s1 = make_source(20);
+            let s2 = make_source(30);
+            hew_vec_push_owned(v, (&raw const s0).cast());
+            hew_vec_push_owned(v, (&raw const s1).cast());
+            hew_vec_push_owned(v, (&raw const s2).cast());
+
+            assert_eq!(hew_vec_len(v), 3);
+            assert_eq!(CLONE_CALLS.load(Ordering::SeqCst), 3, "one clone per push");
+            // 3 sources + 3 cloned-in elements live = 6 allocations outstanding.
+            assert_eq!(live_allocations(), 6);
+
+            // Free the caller's sources (the deep-copy left them independent).
+            free_source(s0);
+            free_source(s1);
+            free_source(s2);
+            assert_eq!(live_allocations(), 3, "only the vec's copies remain");
+
+            hew_vec_free_owned(v);
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 3, "one drop per element");
+            assert_eq!(live_allocations(), 0, "no leak, no double-free after free");
+        }
+    }
+
+    /// get returns a borrow: no clone, no drop, and the borrowed value reads the
+    /// live buffer.
+    #[test]
+    fn get_borrows_without_clone_or_drop() {
+        let _guard = reset_counters();
+        // SAFETY: owned ops use a valid descriptor.
+        unsafe {
+            let layout = owned_layout();
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let s0 = make_source(42);
+            hew_vec_push_owned(v, (&raw const s0).cast());
+            free_source(s0);
+
+            let clones_before = CLONE_CALLS.load(Ordering::SeqCst);
+            let drops_before = DROP_CALLS.load(Ordering::SeqCst);
+            let borrowed = hew_vec_get_owned(v, 0).cast::<OwnedElem>();
+            assert_eq!(*(*borrowed).payload, 42, "borrow reads live buffer");
+            assert_eq!(
+                CLONE_CALLS.load(Ordering::SeqCst),
+                clones_before,
+                "get must not clone"
+            );
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                drops_before,
+                "get must not drop"
+            );
+
+            hew_vec_free_owned(v);
+            assert_eq!(live_allocations(), 0);
+        }
+    }
+
+    /// set drops the old element exactly once and clones the new one in; the
+    /// replaced element's heap is freed, not leaked.
+    #[test]
+    fn set_drops_old_once_and_clones_new() {
+        let _guard = reset_counters();
+        // SAFETY: owned ops use a valid descriptor.
+        unsafe {
+            let layout = owned_layout();
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let s0 = make_source(1);
+            hew_vec_push_owned(v, (&raw const s0).cast());
+            free_source(s0);
+            // 1 element live (the vec's copy).
+            assert_eq!(live_allocations(), 1);
+
+            let s1 = make_source(99);
+            hew_vec_set_owned(v, 0, (&raw const s1).cast());
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                1,
+                "old element dropped once"
+            );
+            // s1 source + vec's new copy = 2 live (old copy was freed by set).
+            assert_eq!(live_allocations(), 2);
+            free_source(s1);
+
+            let borrowed = hew_vec_get_owned(v, 0).cast::<OwnedElem>();
+            assert_eq!(*(*borrowed).payload, 99, "set replaced the value");
+
+            hew_vec_free_owned(v);
+            assert_eq!(live_allocations(), 0, "no leak after set + free");
+        }
+    }
+
+    /// pop moves the element out (no drop); the caller becomes the owner and
+    /// frees it. After pop, free drops only the remaining live elements.
+    #[test]
+    fn pop_moves_out_without_drop() {
+        let _guard = reset_counters();
+        // SAFETY: owned ops use a valid descriptor.
+        unsafe {
+            let layout = owned_layout();
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let s0 = make_source(7);
+            let s1 = make_source(8);
+            hew_vec_push_owned(v, (&raw const s0).cast());
+            hew_vec_push_owned(v, (&raw const s1).cast());
+            free_source(s0);
+            free_source(s1);
+            assert_eq!(live_allocations(), 2);
+
+            let mut out = OwnedElem {
+                payload: core::ptr::null_mut(),
+            };
+            let ok = hew_vec_pop_owned(v, (&raw mut out).cast());
+            assert_eq!(ok, 1);
+            assert_eq!(hew_vec_len(v), 1);
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 0, "pop must not drop");
+            assert_eq!(*out.payload, 8, "popped value moved out intact");
+            // The caller now owns `out`; still 2 live (1 in vec, 1 in out).
+            assert_eq!(live_allocations(), 2);
+
+            free_source(out); // caller drops the moved-out element.
+            hew_vec_free_owned(v); // drops the 1 remaining element.
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                1,
+                "free drops the survivor"
+            );
+            assert_eq!(live_allocations(), 0);
+        }
+    }
+
+    /// clone deep-copies every element; the two vecs own independent heap and
+    /// each frees its own elements once.
+    #[test]
+    fn clone_deep_copies_and_both_free_independently() {
+        let _guard = reset_counters();
+        // SAFETY: owned ops use a valid descriptor.
+        unsafe {
+            let layout = owned_layout();
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let s0 = make_source(100);
+            let s1 = make_source(200);
+            hew_vec_push_owned(v, (&raw const s0).cast());
+            hew_vec_push_owned(v, (&raw const s1).cast());
+            free_source(s0);
+            free_source(s1);
+            assert_eq!(live_allocations(), 2);
+
+            let cloned = hew_vec_clone_owned(v);
+            assert_eq!(hew_vec_len(cloned), 2);
+            assert_eq!(live_allocations(), 4, "clone allocated independent heap");
+
+            // Mutate the original via set; the clone must be unaffected
+            // (independent heap).
+            let s2 = make_source(999);
+            hew_vec_set_owned(v, 0, (&raw const s2).cast());
+            free_source(s2);
+            let copied_elem = hew_vec_get_owned(cloned, 0).cast::<OwnedElem>();
+            assert_eq!(
+                *(*copied_elem).payload,
+                100,
+                "clone is independent of original"
+            );
+
+            hew_vec_free_owned(v);
+            hew_vec_free_owned(cloned);
+            assert_eq!(live_allocations(), 0, "both vecs freed their own heap once");
+        }
+    }
+
+    /// The owned constructor fails closed when a non-Plain descriptor omits a
+    /// required thunk (silent UAF/leak channel). `libc::abort()` is not catchable
+    /// by `should_panic`, so this uses the repo's death-test subprocess pattern.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn constructor_rejects_missing_clone_thunk_aborts() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "vec::vec_owned_tests::_helper_constructor_missing_clone_thunk",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_constructor_missing_clone_thunk")
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "owned constructor with no clone thunk must terminate abnormally"
+        );
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        assert!(
+            stderr.contains("missing the clone thunk"),
+            "must report the fail-closed clone-thunk diagnostic; got: {stderr}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn _helper_constructor_missing_clone_thunk() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |v| v != "_helper_constructor_missing_clone_thunk")
+        {
+            return;
+        }
+        let layout = HewVecElemLayout {
+            size: core::mem::size_of::<OwnedElem>(),
+            align: core::mem::align_of::<OwnedElem>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(drop_thunk),
+        };
+        // SAFETY: the fail-closed abort is the expected outcome.
+        unsafe {
+            let _ = hew_vec_new_with_elem_layout(&raw const layout);
+        }
+    }
+
+    /// Owned ops fail closed when reached on a vec with no stamped descriptor
+    /// (codegen routed a non-owned vec into the owned path).
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn owned_op_rejects_missing_descriptor_aborts() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "vec::vec_owned_tests::_helper_owned_op_missing_descriptor",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_owned_op_missing_descriptor")
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "owned op on a descriptor-less vec must terminate abnormally"
+        );
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        assert!(
+            stderr.contains("requires an element layout descriptor"),
+            "must report the fail-closed missing-descriptor diagnostic; got: {stderr}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn _helper_owned_op_missing_descriptor() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |v| v != "_helper_owned_op_missing_descriptor")
+        {
+            return;
+        }
+        // SAFETY: the fail-closed abort is the expected outcome.
+        unsafe {
+            let v = hew_vec_new();
+            let s0 = OwnedElem {
+                payload: core::ptr::null_mut(),
+            };
+            hew_vec_push_owned(v, (&raw const s0).cast());
         }
     }
 }

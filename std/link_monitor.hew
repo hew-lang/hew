@@ -34,7 +34,7 @@ impl Closable for MonitorRef {
     ///
     /// `hew_actor_demonitor` is idempotent for stale or already-swept ref_ids,
     /// so actor-free close paths also resolve to `Ok(())`.
-    fn close(monitor_ref: MonitorRef) -> Result<(), closable.CloseError> {
+    fn close(monitor_ref: MonitorRef) -> Result<(), CloseError> {
         unsafe {
             hew_actor_demonitor(monitor_ref.ref_id)
         };

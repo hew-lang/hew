@@ -4,15 +4,17 @@
 // so the HIR module-scope ctor-resolution path is exercised through
 // the qualified registry entry rather than the unambiguous-bare one.
 machine Counter {
+    events {
+        Tick;
+    }
+
     state Idle;
     state Running;
 
-    event Tick;
-
-    on Tick: Idle -> Running {
+    on Tick: Idle => Running {
         Running
     }
-    on Tick: Running -> Running @reenter {
+    on Tick: Running => Running reenter {
         Running
     }
 }

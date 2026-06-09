@@ -257,6 +257,17 @@ impl<'a> ProfileChecker<'a> {
                 then_block,
                 else_block,
             } => {
+                // Statement-position `if` is not yet lowered by the sandbox
+                // emitter; reject at the profile level so the caller gets a
+                // compile-time diagnostic instead of a runtime trap.
+                // Sub-expressions are still checked so any nested profile
+                // violations are surfaced in the same compilation.
+                self.reject(
+                    span.clone(),
+                    "statement_control_flow_rejected",
+                    "statement-position `if` is not yet admitted to sandbox bytecode export; \
+                     use expression-position `if` (assign the result to a variable)",
+                );
                 self.check_expr(condition);
                 self.check_block(then_block);
                 if let Some(else_block) = else_block {
@@ -269,6 +280,14 @@ impl<'a> ProfileChecker<'a> {
                 }
             }
             Stmt::Match { scrutinee, arms } => {
+                // Statement-position `match` is not yet lowered by the sandbox
+                // emitter; reject at the profile level.
+                self.reject(
+                    span.clone(),
+                    "statement_control_flow_rejected",
+                    "statement-position `match` is not yet admitted to sandbox bytecode export; \
+                     use expression-position `match` (assign the result to a variable)",
+                );
                 self.check_expr(scrutinee);
                 for arm in arms {
                     self.check_pattern(&arm.pattern);
@@ -346,6 +365,14 @@ impl<'a> ProfileChecker<'a> {
             }
             Stmt::Continue { .. } => {}
             Stmt::IfLet { expr, body, else_body, .. } => {
+                // Statement-position `if let` is not yet lowered by the sandbox
+                // emitter; reject at the profile level.
+                self.reject(
+                    span.clone(),
+                    "statement_control_flow_rejected",
+                    "statement-position `if let` is not yet admitted to sandbox bytecode export; \
+                     use a `match` in expression position (assign the result to a variable)",
+                );
                 self.check_expr(expr);
                 self.check_block(body);
                 if let Some(block) = else_body {
@@ -533,7 +560,7 @@ impl<'a> ProfileChecker<'a> {
     fn check_call(
         &mut self,
         function: &Spanned<Expr>,
-        args: &[CallArg],
+        _args: &[CallArg],
         span: &std::ops::Range<usize>,
     ) {
         match &function.0 {
@@ -573,13 +600,17 @@ impl<'a> ProfileChecker<'a> {
                 );
             }
             _ => {
-                if args.is_empty() {
-                    self.reject(
-                        span.clone(),
-                        "unknown_indirect_call",
-                        "indirect calls are not admitted to sandbox bytecode export yet",
-                    );
-                }
+                // Reject ALL indirect calls regardless of argument count.
+                // The prior guard `args.is_empty()` only rejected zero-arg calls,
+                // allowing non-trivial indirect calls (`f(a, b)` where `f` is not
+                // an Identifier or FieldAccess) to slip past the profile to a
+                // generic runtime trap. The security-sensitive profile layer must
+                // statically flag every non-admitted call form.
+                self.reject(
+                    span.clone(),
+                    "unknown_indirect_call",
+                    "indirect calls are not admitted to sandbox bytecode export yet",
+                );
             }
         }
     }

@@ -1659,77 +1659,115 @@ fn fmt_wire_attr_enum_with_version_roundtrip() {
 #[test]
 fn fmt_machine_decl_roundtrip() {
     exact_roundtrip(
-        "machine Light {\n    state Off;\n    state On;\n\n    event Toggle;\n\n    on Toggle: Off -> On;\n    on Toggle: On -> Off;\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_state_with_fields_roundtrip() {
     exact_roundtrip(
-        "machine Bucket {\n    state Full { tokens: Int; }\n    state Empty;\n\n    event Drain;\n\n    on Drain: Full -> Empty;\n    on Drain: Empty -> Empty;\n}\n",
+        "machine Bucket {\n    events {\n        Drain;\n    }\n\n    state Full { tokens: Int; }\n    state Empty;\n\n    on Drain: Full => Empty;\n    on Drain: Empty => Empty;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_event_with_payload_roundtrip() {
     exact_roundtrip(
-        "machine Bank {\n    state Open;\n\n    event Deposit { amount: Int; }\n\n    on Deposit: Open -> Open;\n}\n",
+        "machine Bank {\n    events {\n        Deposit { amount: Int; }\n    }\n\n    state Open;\n\n    on Deposit: Open => Open;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_emits_manifest_roundtrip() {
+    exact_roundtrip(
+        "machine Signal {\n    events {\n        Start;\n        Ready;\n    }\n\n    emits {\n        Ready;\n    }\n\n    state Idle;\n    state Active;\n\n    on Start: Idle => Active {\n        emit Ready {};\n        Active\n    }\n    on Ready: Idle => Idle reenter;\n    on Ready: Active => Active reenter;\n    on Start: Active => Active reenter;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_transition_with_guard_implicit_body_roundtrip() {
     exact_roundtrip(
-        "machine Gate {\n    state Locked;\n    state Open;\n\n    event Try;\n\n    on Try: Locked -> Locked when flag;\n    on Try: Locked -> Open;\n}\n",
+        "machine Gate {\n    events {\n        Try;\n    }\n\n    state Locked;\n    state Open;\n\n    on Try: Locked => Locked when flag;\n    on Try: Locked => Open;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_transition_with_guard_and_body_roundtrip() {
     exact_roundtrip(
-        "machine Counter {\n    state Active { n: Int; }\n\n    event Inc;\n\n    on Inc: Active -> Active when active {\n        Active { n: active.n + 1 }\n    }\n}\n",
+        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active when active {\n        Active { n: active.n + 1 }\n    }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_transition_with_reenter_roundtrip() {
     exact_roundtrip(
-        "machine Counter {\n    state Active { n: Int; }\n\n    event Inc;\n\n    on Inc: Active -> Active @reenter {\n        Active { n: active.n + 1 }\n    }\n}\n",
+        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active reenter {\n        Active { n: active.n + 1 }\n    }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_default_clause_roundtrip() {
     exact_roundtrip(
-        "machine Safe {\n    state On;\n    state Off;\n\n    event Toggle;\n\n    on Toggle: On -> Off;\n\n    default { state }\n}\n",
+        "machine Safe {\n    events {\n        Toggle;\n    }\n\n    state On;\n    state Off;\n\n    on Toggle: On => Off;\n\n    default { state }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_single_generic_param_roundtrip() {
     exact_roundtrip(
-        "machine Lifecycle<T> {\n    state Created;\n    state Running;\n\n    event Start;\n\n    on Start: Created -> Running;\n    on Start: Running -> Running;\n}\n",
+        "machine Lifecycle<T> {\n    events {\n        Start;\n    }\n\n    state Created;\n    state Running;\n\n    on Start: Created => Running;\n    on Start: Running => Running;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_multiple_generic_params_roundtrip() {
     exact_roundtrip(
-        "machine Pair<K, V> {\n    state Empty;\n    state Filled;\n\n    event Insert;\n\n    on Insert: Empty -> Filled;\n    on Insert: Filled -> Filled;\n}\n",
+        "machine Pair<K, V> {\n    events {\n        Insert;\n    }\n\n    state Empty;\n    state Filled;\n\n    on Insert: Empty => Filled;\n    on Insert: Filled => Filled;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_pub_generic_param_roundtrip() {
     exact_roundtrip(
-        "pub machine Lifecycle<T> {\n    state Created;\n    state Running;\n\n    event Start;\n\n    on Start: Created -> Running;\n    on Start: Running -> Running;\n}\n",
+        "pub machine Lifecycle<T> {\n    events {\n        Start;\n    }\n\n    state Created;\n    state Running;\n\n    on Start: Created => Running;\n    on Start: Running => Running;\n}\n",
     );
 }
 
 #[test]
 fn fmt_supervisor_decl_roundtrip() {
+    // Flat reliability fields: fused `intensity:`, named init args, and the
+    // explicit `strategy:` the formatter always materializes.
     exact_roundtrip(
-        "supervisor Pool {\n    strategy: one_for_one;\n    max_restarts: 5;\n    window: 30;\n\n    child worker: Worker(1);\n}\n",
+        "supervisor Pool {\n    strategy: one_for_one;\n    intensity: 5 within 30s;\n\n    child worker: Worker(id: 1);\n}\n",
+    );
+}
+
+#[test]
+fn fmt_supervisor_default_strategy_written_explicitly() {
+    // A declaration that omits `strategy:` is canonicalised to the explicit
+    // default so the restart contract is never silently defaulted.
+    let formatted = roundtrip_no_comments(
+        "supervisor Pool {\n    intensity: 5 within 30s;\n\n    child w: Worker(id: 1);\n}\n",
+    );
+    assert_eq!(
+        formatted,
+        "supervisor Pool {\n    strategy: one_for_one;\n    intensity: 5 within 30s;\n\n    child w: Worker(id: 1);\n}\n",
+    );
+}
+
+#[test]
+fn fmt_supervisor_pool_and_clauses_roundtrip() {
+    // Exercises every previously-lossy field: `pool` vs `child`, `wired_to:`,
+    // `restart:`, and `shutdown:` — all must round-trip exactly.
+    exact_roundtrip(
+        "supervisor ServiceStack {\n    strategy: rest_for_one;\n    intensity: 5 within 60s;\n\n    child db: Database(connections: 4) restart: permanent shutdown: 10s;\n    child api: ApiHandler(port: 8080) restart: transient shutdown: brutal_kill wired_to: { backend: db };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_supervisor_pool_keyword_roundtrip() {
+    exact_roundtrip(
+        "supervisor ConnectionPool {\n    strategy: simple_one_for_one;\n    intensity: 20 within 60s;\n\n    pool handler: ApiHandler(port: 8080);\n}\n",
     );
 }
 

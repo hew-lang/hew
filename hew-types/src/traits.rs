@@ -271,6 +271,50 @@ impl TraitRegistry {
                     Some(BuiltinType::ActorRef | BuiltinType::LocalPid | BuiltinType::RemotePid),
                 ..
             } => RcFreeStatus::RcFree,
+            // Heap-indirecting collections (`Vec`/`HashMap`/`HashSet`): the
+            // element type lives behind a heap allocation, so a recursive
+            // back-edge through one of these is FINITE in value size (the
+            // recursion terminates at the heap buffer, not at an infinite-size
+            // inline value). `Vec<RedisReply>` where
+            // `enum RedisReply { Array(Vec<RedisReply>); ... }` is therefore
+            // RcFree-admissible — the indirection is the witness that the value
+            // is representable. A `Recursive(name)` reported for a name that is
+            // CURRENTLY being visited is exactly such an indirection-broken
+            // back-edge → admit it as `RcFree`. A `Recursive(name)` for a name
+            // NOT on the active stack is a genuine cycle elsewhere and is
+            // preserved (fail-closed). `ContainsRc` is always preserved.
+            //
+            // This is the ONLY relaxation: a DIRECT value back-edge
+            // (`enum E { V(E) }`) never passes through a collection arm — it
+            // recurses through the general `Named` member walk below and stays
+            // `Recursive`, which keeps the infinite-size value cycle rejected
+            // (over-admitting it would unbound codegen layout recursion).
+            Ty::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
+            } => {
+                let mut worst = RcFreeStatus::RcFree;
+                for arg in args {
+                    match self.implements_rc_free(arg, visiting) {
+                        RcFreeStatus::RcFree => {}
+                        RcFreeStatus::ContainsRc => return RcFreeStatus::ContainsRc,
+                        RcFreeStatus::Recursive(rec_name) => {
+                            if visiting.contains(&rec_name) {
+                                // Indirection-broken back-edge: finite value
+                                // size, drop terminates at the heap buffer.
+                                // Admit (leave `worst` as RcFree).
+                            } else if matches!(worst, RcFreeStatus::RcFree) {
+                                // A genuine recursive cycle not broken by this
+                                // collection — preserve it (fail-closed).
+                                worst = RcFreeStatus::Recursive(rec_name);
+                            }
+                        }
+                    }
+                }
+                let _ = name;
+                worst
+            }
             Ty::Named {
                 name,
                 args,
@@ -460,11 +504,34 @@ impl TraitRegistry {
     /// - `ActorRef` is always `Send` and `Frozen`
     /// - Negative impls can override automatic derivation
     #[must_use]
+    pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
+        let mut visiting = HashSet::new();
+        self.implements_marker_guarded(ty, marker, &mut visiting)
+    }
+
+    /// Structural marker derivation with a recursion guard over named types.
+    ///
+    /// The guard makes the walk total on recursive type graphs. A type whose
+    /// member set transitively re-enters itself (`enum E { V(E) }`, or an
+    /// indirection-broken recursive enum `enum R { A(Vec<R>) }`) would
+    /// otherwise recurse forever through the `type_fields` / record / collection
+    /// member arms. On re-entry to a name already on the active stack we return
+    /// `true` (the neutral element of the `all(...)` member conjunction): the
+    /// re-entered edge contributes no NEW obligation, so the result is decided
+    /// by the non-recursive members. Genuine infinite-size value cycles are
+    /// rejected upstream by the dedicated cycle detector (`cycle.rs`); this
+    /// guard only prevents the derivation from diverging while computing a
+    /// marker for a type the cycle detector permits (the `Vec`-indirected case).
     #[expect(
         clippy::too_many_lines,
         reason = "marker derivation covers many Ty variants"
     )]
-    pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
+    fn implements_marker_guarded(
+        &self,
+        ty: &Ty,
+        marker: MarkerTrait,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
         if marker == MarkerTrait::Serializable {
             return self.is_serializable(ty);
         }
@@ -606,7 +673,7 @@ impl TraitRegistry {
                 ..
             } if args.len() == 1 => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker(&args[0], MarkerTrait::Send)
+                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
                 }
                 _ => false,
             },
@@ -624,25 +691,27 @@ impl TraitRegistry {
                 ..
             } if args.len() == 2 => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker(&args[0], MarkerTrait::Send)
-                        && self.implements_marker(&args[1], MarkerTrait::Send)
+                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
+                        && self.implements_marker_guarded(&args[1], MarkerTrait::Send, visiting)
                 }
                 MarkerTrait::Resource => true,
                 _ => false,
             },
 
             // Tuple: marker holds if ALL elements have it
-            Ty::Tuple(elems) => elems.iter().all(|e| self.implements_marker(e, marker)),
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|e| self.implements_marker_guarded(e, marker, visiting)),
 
             // Array: marker holds if element has it
-            Ty::Array(inner, _) => self.implements_marker(inner, marker),
+            Ty::Array(inner, _) => self.implements_marker_guarded(inner, marker, visiting),
 
             // Slice: like array but NOT Copy (unsized)
             Ty::Slice(elem) => {
                 if marker == MarkerTrait::Copy {
                     false
                 } else {
-                    self.implements_marker(elem, marker)
+                    self.implements_marker_guarded(elem, marker, visiting)
                 }
             }
 
@@ -694,13 +763,25 @@ impl TraitRegistry {
                 if builtin.is_some_and(BuiltinType::is_collection) {
                     return match marker {
                         MarkerTrait::Copy | MarkerTrait::Frozen => false,
-                        _ => args.iter().all(|a| self.implements_marker(a, marker)),
+                        _ => args
+                            .iter()
+                            .all(|a| self.implements_marker_guarded(a, marker, visiting)),
                     };
                 }
                 // Rc<T>: reference-counted, single-threaded — explicitly NOT Send or Sync.
                 // Supports Clone (inc ref-count) and Drop (dec ref-count); NOT Copy or Frozen.
                 if *builtin == Some(BuiltinType::Rc) {
                     return matches!(marker, MarkerTrait::Clone | MarkerTrait::Drop);
+                }
+                // Recursion guard: a recursive type graph (e.g. an
+                // indirection-broken recursive enum `enum R { A(Vec<R>) }`)
+                // re-enters this name through its member walk. On re-entry,
+                // return the neutral `true` — the re-entered edge adds no new
+                // obligation; the result is decided by the non-recursive
+                // members. (Direct infinite-size cycles are rejected by
+                // `cycle.rs`; this only keeps the derivation total.)
+                if !visiting.insert(name.clone()) {
+                    return true;
                 }
                 // Record types: value types declared with `record`. Markers are
                 // derived entirely from field types with two exceptions:
@@ -711,25 +792,29 @@ impl TraitRegistry {
                 // The two genuine exceptions (Resource, Num) are explicit; all
                 // other markers share the structural `field_derives(marker)` rule
                 // via the fallthrough.
-                if self.records.contains(name) {
-                    let field_derives = |m: MarkerTrait| {
-                        self.type_fields.get(name).is_some_and(|fields| {
-                            fields.iter().all(|f| self.implements_marker(f, m))
-                        })
-                    };
-                    return match marker {
+                let result = if self.records.contains(name) {
+                    match marker {
                         // Records are not OS/runtime resources or scalar numeric values.
                         MarkerTrait::Resource | MarkerTrait::Num => false,
-                        // All other markers derive from field types.
-                        _ => field_derives(marker),
-                    };
-                }
-                // Check if all fields implement the trait
-                if let Some(fields) = self.type_fields.get(name) {
-                    fields.iter().all(|f| self.implements_marker(f, marker))
+                        // All other markers derive from field types. Clone the
+                        // member list so the `&self` borrow does not alias the
+                        // `&mut visiting` recursion below.
+                        _ => {
+                            let fields = self.type_fields.get(name).cloned().unwrap_or_default();
+                            fields
+                                .iter()
+                                .all(|f| self.implements_marker_guarded(f, marker, visiting))
+                        }
+                    }
+                } else if let Some(fields) = self.type_fields.get(name).cloned() {
+                    fields
+                        .iter()
+                        .all(|f| self.implements_marker_guarded(f, marker, visiting))
                 } else {
                     false // Unknown type — conservatively fail
-                }
+                };
+                visiting.remove(name);
+                result
             }
 
             // Pointers: NOT Send (unless explicitly marked), but Copy
@@ -754,9 +839,9 @@ impl TraitRegistry {
 
             // Closures: Send/Sync only if all captured types are Send/Sync
             Ty::Closure { captures, .. } => match marker {
-                MarkerTrait::Send | MarkerTrait::Sync => {
-                    captures.iter().all(|c| self.implements_marker(c, marker))
-                }
+                MarkerTrait::Send | MarkerTrait::Sync => captures
+                    .iter()
+                    .all(|c| self.implements_marker_guarded(c, marker, visiting)),
                 MarkerTrait::Clone => true,
                 _ => false,
             },
@@ -1232,6 +1317,73 @@ mod tests {
         );
         assert!(!registry.implements_marker(&a, MarkerTrait::RcFree));
         assert!(!registry.implements_marker(&b, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn rcfree_admits_recursion_broken_by_vec_indirection() {
+        // W5.016 F4: `enum RedisReply { Array(Vec<RedisReply>); ... }` recurses
+        // through a `Vec` — the heap indirection makes the value finite-size, so
+        // it is RcFree-admissible (the recursive-cycle gate must NOT reject it).
+        let mut registry = TraitRegistry::new();
+        let reply = Ty::Named {
+            builtin: None,
+            name: "RedisReply".to_string(),
+            args: vec![],
+        };
+        let vec_of_reply = Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            name: "Vec".to_string(),
+            args: vec![reply.clone()],
+        };
+        registry.register_rcfree_members("RedisReply".to_string(), vec![vec_of_reply]);
+
+        assert_eq!(registry.rc_free_status(&reply), RcFreeStatus::RcFree);
+        assert!(registry.implements_marker(&reply, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn rcfree_rejects_direct_value_cycle_not_broken_by_indirection() {
+        // W5.016 F4 negative guard: `enum E { V(E) }` recurses by VALUE (no heap
+        // indirection) — infinite-size, MUST stay rejected. Over-admitting this
+        // would push an infinite-size value type to codegen (unbounded layout
+        // recursion / stack overflow).
+        let mut registry = TraitRegistry::new();
+        let e = Ty::Named {
+            builtin: None,
+            name: "E".to_string(),
+            args: vec![],
+        };
+        registry.register_rcfree_members("E".to_string(), vec![e.clone()]);
+
+        assert_eq!(
+            registry.rc_free_status(&e),
+            RcFreeStatus::Recursive("E".to_string())
+        );
+        assert!(!registry.implements_marker(&e, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn marker_derivation_terminates_on_vec_indirected_recursive_enum() {
+        // W5.016 F4: the marker derivation must be total on a recursive type
+        // graph reachable through a collection. Before the recursion guard, a
+        // `Vec<Self>`-bearing enum overflowed the stack while deriving any
+        // structural marker. The enum is NOT Copy (heap-owning Vec field) but
+        // the derivation must terminate to report that.
+        let mut registry = TraitRegistry::new();
+        let reply = Ty::Named {
+            builtin: None,
+            name: "RedisReply".to_string(),
+            args: vec![],
+        };
+        let vec_of_reply = Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            name: "Vec".to_string(),
+            args: vec![reply.clone()],
+        };
+        registry.register_type("RedisReply".to_string(), vec![vec_of_reply]);
+
+        // Terminates (no overflow) and a Vec-bearing enum is not Copy.
+        assert!(!registry.implements_marker(&reply, MarkerTrait::Copy));
     }
 
     #[test]

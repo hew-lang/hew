@@ -1,18 +1,22 @@
 //! Tests for HIR lowering of `impl` blocks declared in imported modules.
 //!
-//! Covers two properties introduced by the fix:
+//! Covers two properties:
 //!
-//! 1. **Positive**: an imported module's `impl` block whose method bodies do
-//!    not call private helpers is registered in the pre-pass and its methods
-//!    are emitted as `HirItem::Function` entries in the lowered module.
+//! 1. **Positive**: an imported module's `impl` block whose method bodies and
+//!    signatures resolve in the imported context is registered in the pre-pass
+//!    and its methods are emitted as `HirItem::Function` entries in the lowered
+//!    module.
 //!
-//! 2. **Negative**: when a method body calls a private (non-pub) function from
-//!    the same module the lowering emits
-//!    `HirDiagnosticKind::ImportedBodyMissingPrivateHelper { item_kind:
-//!    ImplMethod, .. }` instead of silently failing or producing a bare
-//!    `UnresolvedSymbol`.
+//! 2. **Skip**: when a method body calls a private (non-pub) function from the
+//!    same module that is not reachable through the imported closure, that
+//!    method is *skipped* — not emitted, and the module still imports cleanly
+//!    (no module-level hard error). This matches the pre-fix behaviour where
+//!    every imported impl method was dropped: importing the module compiles,
+//!    and only an actual call to the skipped method fails closed downstream.
+//!    Lowering such bodies needs the private-helper closure extended to impl
+//!    methods (a separate lane).
 
-use hew_hir::{HirDiagnosticKind, HirItem, ImportedItemKind};
+use hew_hir::{HirDiagnosticKind, HirItem};
 use hew_parser::ast::{Item, Program};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
@@ -152,49 +156,12 @@ fn imported_impl_methods_registered_and_emitted() {
 }
 
 #[test]
-fn imported_impl_body_calling_private_helper_emits_diagnostic() {
+fn imported_impl_body_calling_private_helper_is_skipped_without_module_error() {
     let program = build_imported_impl_program(true);
     let output = support::checker_pipeline::lower_through_checker_from_program(&program);
 
-    // Must emit exactly one ImportedBodyMissingPrivateHelper for `helper`
-    // with `item_kind: ImplMethod`.
-    let blocked: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            matches!(
-                d.kind,
-                HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
-                    item_kind: ImportedItemKind::ImplMethod,
-                    ..
-                }
-            )
-        })
-        .collect();
-    assert!(
-        !blocked.is_empty(),
-        "expected at least one ImportedBodyMissingPrivateHelper {{ item_kind: \
-         ImplMethod }} diagnostic; got none. All diagnostics: {:#?}",
-        output.diagnostics
-    );
-
-    let has_helper = blocked.iter().any(|d| {
-        matches!(
-            &d.kind,
-            HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
-                module,
-                helper_fn,
-                item_kind: ImportedItemKind::ImplMethod,
-            } if module == "shapes" && helper_fn == "helper"
-        )
-    });
-    assert!(
-        has_helper,
-        "expected ImportedBodyMissingPrivateHelper {{ module: \"shapes\", \
-         helper_fn: \"helper\", item_kind: ImplMethod }}; got: {blocked:?}"
-    );
-
-    // The blocked method must NOT be emitted as HirItem::Function.
+    // The method whose body calls the unreachable private helper is skipped:
+    // it must NOT be emitted as a `HirItem::Function`.
     let bar_emitted = output
         .module
         .items
@@ -202,29 +169,36 @@ fn imported_impl_body_calling_private_helper_emits_diagnostic() {
         .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::bar"));
     assert!(
         !bar_emitted,
-        "expected `Foo::bar` NOT to be emitted when body calls private helper; \
+        "expected `Foo::bar` to be skipped (not emitted) when its body calls a \
+         private same-module helper unreachable across the import boundary; \
          but it was found in lowered items"
     );
 
-    // Fail-closed boundary contract: `into_result()` must return `Err` when
-    // `ImportedBodyMissingPrivateHelper` is present — downstream consumers
-    // that call `into_result()` must not silently receive a broken module.
+    // Skipping must NOT raise a module-level hard error: importing the module
+    // still compiles cleanly (matching the prior drop-everything behaviour).
+    // An actual call to `Foo::bar` would fail closed downstream — but merely
+    // importing the module must not.
+    let blocked: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                HirDiagnosticKind::ImportedBodyMissingPrivateHelper { .. }
+            )
+        })
+        .collect();
+    assert!(
+        blocked.is_empty(),
+        "skipping a private-helper-calling imported impl method must not emit a \
+         module-level diagnostic; got: {blocked:?}"
+    );
+
     let result = output.into_result();
     assert!(
-        result.is_err(),
-        "into_result() must return Err when ImportedBodyMissingPrivateHelper \
-         is present; got Ok — fail-closed boundary is broken"
-    );
-    let err_diags = result.unwrap_err();
-    assert!(
-        err_diags.iter().any(|d| matches!(
-            d.kind,
-            HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
-                item_kind: ImportedItemKind::ImplMethod,
-                ..
-            }
-        )),
-        "Err diagnostics must contain ImportedBodyMissingPrivateHelper \
-         (ImplMethod); got: {err_diags:#?}",
+        result.is_ok(),
+        "into_result() must be Ok when a private-helper-calling imported impl \
+         method is skipped; importing the module must compile cleanly. Got: {:#?}",
+        result.err()
     );
 }

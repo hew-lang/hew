@@ -81,8 +81,7 @@ actor Counter {
 // === Supervisor ===
 supervisor CounterSupervisor {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 30;
+    intensity: 5 within 30s;
 }
 
 // === Functions ===

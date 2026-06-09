@@ -113,9 +113,12 @@ fn supervisor_spawn_with_args_in_machine_transition_body_rejected() {
             receive fn work() {}
         }
         machine M {
+            events {
+                Tick;
+            }
+
             state Active;
-            event Tick;
-            on Tick: Active -> Active @reenter {
+            on Tick: Active => Active reenter {
                 let s = spawn Root(value: 1);
                 Active
             }
@@ -158,13 +161,16 @@ fn supervisor_spawn_with_args_in_machine_state_entry_rejected() {
             receive fn work() {}
         }
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle {
                 entry {
                     let s = spawn Root(value: 1);
                 }
             }
-            event Tick;
-            on Tick: Idle -> Idle @reenter { Idle }
+            on Tick: Idle => Idle reenter { Idle }
         }
         fn main() {}
     ";

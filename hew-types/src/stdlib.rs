@@ -86,6 +86,19 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
         crate::Ty::String => Some("string"),
         // Tuples lower through the layout-descriptor protocol.
         crate::Ty::Tuple(_) => Some("layout"),
+        // Local actor-handle builtins (`LocalPid<T>` / `ActorRef<T>` /
+        // `Actor<T>`) lower to a single pointer-shaped runtime word and their
+        // `Vec<T>` constructor routes to `hew_vec_new_ptr` in codegen. Classify
+        // them by the `builtin` discriminant — NOT the `TypeDef.is_indirect`
+        // field, which these builtins leave `false` — so the element ops route
+        // to the `hew_vec_*_ptr` family and agree with the constructor. Missing
+        // this arm sent them to `"layout"`, which built a null-layout vec via
+        // `hew_vec_new_ptr` and then pushed via `hew_vec_push_layout`, tripping
+        // the runtime "layout-aware operation is not implemented" abort
+        // (constructor-vs-push authority split).
+        crate::Ty::Named {
+            builtin: Some(b), ..
+        } if b.lowers_as_pointer_vec_element() => Some("ptr"),
         // Named element types: heap-handle nominals (`is_indirect = true`)
         // share the pointer-shaped ABI; value-record nominals
         // (`is_indirect = false`) lower through the layout-descriptor

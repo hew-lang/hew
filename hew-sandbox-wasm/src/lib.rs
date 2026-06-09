@@ -163,6 +163,38 @@ pub fn compile_to_sandbox_bytecode(
     })
 }
 
+/// Compile Hew source into a sandbox bytecode package and return the result
+/// as a JSON-encoded string.
+///
+/// This is the browser entry point exported via wasm-bindgen as
+/// `compileToSandboxBytecode`. The TS consumer in
+/// `hew-sandbox-vm/src/interpreter/run-program.ts` calls this function and
+/// JSON-parses the result as a `CompileOutput` object.
+///
+/// `profile` should be `"sandbox-vm-export"` for the educational sandbox VM.
+/// An unrecognised profile is reported as a diagnostic with `bytecode: null`.
+#[must_use]
+#[wasm_bindgen::prelude::wasm_bindgen(js_name = compileToSandboxBytecode)]
+pub fn compile_to_sandbox_bytecode_js(source: &str, profile: &str) -> String {
+    compile_to_sandbox_bytecode_json(source, profile)
+}
+
+/// Serialize the result of [`compile_to_sandbox_bytecode`] as a JSON string.
+///
+/// Used by [`compile_to_sandbox_bytecode_js`] (the wasm-bindgen export) and by
+/// native tests that verify the serialization path without a WASM runtime.
+#[must_use]
+pub fn compile_to_sandbox_bytecode_json(source: &str, profile: &str) -> String {
+    match compile_to_sandbox_bytecode(source, Some(profile)) {
+        Ok(output) => serde_json::to_string(&output)
+            .unwrap_or_else(|e| format!("{{\"error\":\"serialization failed: {e}\"}}")),
+        Err(err) => format!(
+            "{{\"error\":\"internal compiler error: {}\"}}",
+            err.message.replace('"', "\\\"")
+        ),
+    }
+}
+
 fn has_error_diagnostics(diagnostics: &[Diagnostic]) -> bool {
     diagnostics
         .iter()
@@ -729,11 +761,13 @@ fn main() {
         assert_profile_rejection(
             r#"
 machine Boxed<T> {
-    event Store;
+    events {
+        Store;
+    }
     state Idle;
     state Full;
-    on Store: Idle -> Full;
-    on Store: Full -> Full;
+    on Store: Idle => Full;
+    on Store: Full => Full;
 }
 
 fn main() {
@@ -875,6 +909,124 @@ fn main() {
             main_fn.blocks.len() > 1,
             "for-loop should produce multiple blocks, got: {:?}",
             main_fn.blocks.iter().map(|b| &b.id).collect::<Vec<_>>()
+        );
+    }
+
+    // --- Browser WASM export ---
+
+    #[test]
+    fn compile_to_sandbox_bytecode_wasm_export_returns_valid_json() {
+        // The wasm-bindgen export `compile_to_sandbox_bytecode_js` must
+        // return a JSON-serialized CompileOutput. The TS consumer in
+        // hew-sandbox-vm/src/interpreter/run-program.ts calls
+        // `compiler(source, profile)` and parses the result as CompileOutput.
+        // This test exercises the JSON serialization path on native so CI can
+        // verify the bridge code compiles and produces the expected schema
+        // without requiring a full wasm-pack + Node.js environment.
+        set_test_hewpath();
+        let json = compile_to_sandbox_bytecode_json(
+            "fn main() { println(\"hello\"); }",
+            "sandbox-vm-export",
+        );
+        assert!(!json.is_empty(), "JSON output must not be empty");
+        let output: serde_json::Value =
+            serde_json::from_str(&json).expect("output must be valid JSON");
+        assert!(
+            output.get("diagnostics").is_some(),
+            "output must have a 'diagnostics' field; got: {output}"
+        );
+    }
+
+    // --- Fail-closed: indirect calls must ALL be rejected at the profile
+    //     level regardless of argument count. ---
+
+    #[test]
+    fn unknown_module_call_with_args_is_profile_rejected() {
+        // A call through a module-qualified name that is NOT in the sandbox
+        // allowlist must be rejected regardless of how many arguments it has.
+        // This covers the general case that any non-admitted call form is blocked
+        // at the profile layer before bytecode emission.
+        // Note: the `_` fallthrough in check_call (triggered by callee expressions
+        // that are not Identifier or FieldAccess) previously had an `args.is_empty()`
+        // guard, meaning non-zero-arg indirect calls slipped past. After removing
+        // that guard, all non-admitted call forms are rejected. In v0.5 the `_` arm
+        // with args is hard to reach through a type-checked program (callable types
+        // are not supported), but the guard removal ensures defense-in-depth for
+        // any future callable-type surface.
+        set_test_hewpath();
+        // `fs.read("path.txt")` with `import std::fs` — uses a native-only stdlib
+        // function so the call type-checks and reaches the profile gate.
+        // The native-only surface is rejected at the profile level.
+        assert_profile_rejection(
+            r#"
+import std::fs;
+
+fn main() {
+    fs.read("path.txt");
+}
+"#,
+            "sandbox_profile_rejected",
+        );
+    }
+
+    // --- Fail-closed: statement-position if/match/if-let must reject at
+    //     the profile level, not silently trap at runtime. ---
+
+    #[test]
+    fn statement_position_if_is_profile_rejected() {
+        // The `if` must be a non-tail statement (something must follow it) so
+        // the parser keeps it as `Stmt::If` rather than promoting it to a
+        // `trailing_expr`.  The `return` after the `if` ensures this.
+        set_test_hewpath();
+        assert_profile_rejection(
+            r#"
+fn main() {
+    let x: i64 = 1;
+    if x == 1 {
+        println("yes");
+    }
+    return;
+}
+"#,
+            "statement_control_flow_rejected",
+        );
+    }
+
+    #[test]
+    fn statement_position_match_is_profile_rejected() {
+        // Same pattern: a statement after the `match` prevents tail-promotion.
+        set_test_hewpath();
+        assert_profile_rejection(
+            r#"
+fn main() {
+    let x: i64 = 2;
+    match x {
+        1 => println("one"),
+        _ => println("other"),
+    }
+    return;
+}
+"#,
+            "statement_control_flow_rejected",
+        );
+    }
+
+    #[test]
+    fn statement_position_if_let_is_profile_rejected() {
+        // Same pattern: a statement after `if let` prevents tail-promotion.
+        set_test_hewpath();
+        assert_profile_rejection(
+            r#"
+enum Color { Red; Green; Blue; }
+fn main() {
+    let c: Color = Color::Red;
+    if let Color::Red = c {
+        println("red");
+    }
+    return;
+}
+"#,
+            "statement_control_flow_rejected",
         );
     }
 }

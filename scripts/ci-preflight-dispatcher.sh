@@ -697,7 +697,7 @@ case "$LANE" in
     fallback)
         CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_FALLBACK"
         ;;
-    compiler-pipeline|vertical-slice|hew-tests)
+    compiler-pipeline|vertical-slice|hew-tests|scripts-config)
         CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_FALLBACK"
         ;;
     *)

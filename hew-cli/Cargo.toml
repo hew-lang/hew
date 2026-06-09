@@ -15,6 +15,7 @@ name = "hew"
 path = "src/main.rs"
 
 [dependencies]
+hew-analysis = { path = "../hew-analysis" }
 hew-compile = { path = "../hew-compile" }
 hew-hir = { path = "../hew-hir" }
 hew-lexer = { path = "../hew-lexer" }

@@ -51,11 +51,14 @@ fn wasm_blocking_recv_in_machine_state_entry() {
     // Position 1: state.entry block.
     let source = r"
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle {
                 entry { let _ = ch.recv(); }
             }
-            event Tick;
-            on Tick: Idle -> Idle @reenter { Idle }
+            on Tick: Idle => Idle reenter { Idle }
         }
     ";
     let out = lower_wasm(source);
@@ -71,11 +74,14 @@ fn wasm_blocking_recv_in_machine_state_exit() {
     // Position 2: state.exit block.
     let source = r"
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle {
                 exit { let _ = ch.recv(); }
             }
-            event Tick;
-            on Tick: Idle -> Idle @reenter { Idle }
+            on Tick: Idle => Idle reenter { Idle }
         }
     ";
     let out = lower_wasm(source);
@@ -91,9 +97,12 @@ fn wasm_blocking_recv_in_machine_transition_guard() {
     // Position 3: transition.guard expression.
     let source = r"
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle;
-            event Tick;
-            on Tick: Idle -> Idle @reenter when ch.recv() { Idle }
+            on Tick: Idle => Idle reenter when ch.recv() { Idle }
         }
     ";
     let out = lower_wasm(source);
@@ -109,9 +118,12 @@ fn wasm_blocking_recv_in_machine_transition_body() {
     // Position 4: transition.body expression (Expr::Block here).
     let source = r"
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle;
-            event Tick;
-            on Tick: Idle -> Idle @reenter { let _ = ch.recv(); Idle }
+            on Tick: Idle => Idle reenter { let _ = ch.recv(); Idle }
         }
     ";
     let out = lower_wasm(source);
@@ -127,11 +139,14 @@ fn wasm_machine_without_recv_no_diagnostic() {
     // Negative: a benign machine on wasm32 must not trigger the recv gate.
     let source = r"
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle {
                 entry { let _ = 1; }
             }
-            event Tick;
-            on Tick: Idle -> Idle @reenter { Idle }
+            on Tick: Idle => Idle reenter { Idle }
         }
     ";
     let out = lower_wasm(source);
@@ -154,11 +169,14 @@ fn task_gate_in_machine_state_entry() {
     let source = r"
         fn worker(x: int) {}
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle {
                 entry { scope { fork child = worker(42); } }
             }
-            event Tick;
-            on Tick: Idle -> Idle @reenter { Idle }
+            on Tick: Idle => Idle reenter { Idle }
         }
     ";
     let out = lower_host(source);
@@ -174,11 +192,14 @@ fn task_gate_in_machine_state_exit() {
     let source = r"
         fn worker(x: int) {}
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle {
                 exit { scope { fork child = worker(42); } }
             }
-            event Tick;
-            on Tick: Idle -> Idle @reenter { Idle }
+            on Tick: Idle => Idle reenter { Idle }
         }
     ";
     let out = lower_host(source);
@@ -198,9 +219,12 @@ fn task_gate_in_machine_transition_guard() {
     let source = r"
         fn worker(x: int) {}
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle;
-            event Tick;
-            on Tick: Idle -> Idle @reenter
+            on Tick: Idle => Idle reenter
                 when { scope { fork child = worker(42); } true }
                 { Idle }
         }
@@ -218,9 +242,12 @@ fn task_gate_in_machine_transition_body() {
     let source = r"
         fn worker(x: int) {}
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle;
-            event Tick;
-            on Tick: Idle -> Idle @reenter {
+            on Tick: Idle => Idle reenter {
                 scope { fork child = worker(42); }
                 Idle
             }
@@ -240,11 +267,14 @@ fn task_gate_machine_without_fork_no_diagnostic() {
     // the task-gate walker.
     let source = r"
         machine M {
+            events {
+                Tick;
+            }
+
             state Idle {
                 entry { let _ = 1; }
             }
-            event Tick;
-            on Tick: Idle -> Idle @reenter { Idle }
+            on Tick: Idle => Idle reenter { Idle }
         }
     ";
     let out = lower_host(source);

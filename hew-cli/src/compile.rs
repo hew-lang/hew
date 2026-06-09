@@ -64,6 +64,10 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
 }
 
 pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
+    if crate::diagnostic_json::json_output_active() {
+        push_frontend_diagnostics_json(diagnostics);
+        return;
+    }
     for diagnostic in diagnostics {
         match &diagnostic.kind {
             FrontendDiagnosticKind::Message(message) => {
@@ -148,6 +152,34 @@ pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
                 );
             }
         }
+    }
+}
+
+/// Append every frontend diagnostic to the JSON sink, reusing the per-kind
+/// converters in [`crate::diagnostic_json`]. Diagnostics that carry no source
+/// context (free-form `Message`, or parse/type errors emitted before the source
+/// was attached) are emitted with a zero span and the best available code.
+fn push_frontend_diagnostics_json(diagnostics: &[FrontendDiagnostic]) {
+    use crate::diagnostic_json::{
+        from_hir_diagnostic, from_parse_error, from_type_error, message_diagnostic,
+        push_json_diagnostic,
+    };
+    for diagnostic in diagnostics {
+        let source = diagnostic.source.as_deref();
+        let filename = diagnostic.filename.as_deref();
+        let json = match &diagnostic.kind {
+            FrontendDiagnosticKind::Message(message) => message_diagnostic(message),
+            FrontendDiagnosticKind::Parse(error) => match (source, filename) {
+                (Some(source), Some(filename)) => from_parse_error(source, filename, error),
+                _ => message_diagnostic(&error.message),
+            },
+            FrontendDiagnosticKind::Type(error) => match (source, filename) {
+                (Some(source), Some(filename)) => from_type_error(source, filename, error),
+                _ => message_diagnostic(&error.message),
+            },
+            FrontendDiagnosticKind::Hir(error) => from_hir_diagnostic(source, filename, error),
+        };
+        push_json_diagnostic(json);
     }
 }
 

@@ -1,0 +1,12 @@
+// scope { while { println } }: previously failed with TaskSpawnSignatureUnsupported
+// and TaskSpawnCalleeUnsupported because scope_depth leaked into nested
+// control-flow bodies via lower_block not resetting scope_depth.
+fn main() {
+    scope {
+        var i = 0;
+        while i < 3 {
+            println("tick");
+            i = i + 1;
+        }
+    }
+}

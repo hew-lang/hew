@@ -320,16 +320,19 @@ fn binop_in_machine_transition_body_rejected() {
         fn ident(x: isize) -> isize { x }
 
         machine M {
+            events {
+                Go;
+            }
+
             state A { n: i32; }
             state B { n: i32; }
 
-            event Go;
 
-            on Go: A -> B {
+            on Go: A => B {
                 let _ = ident(0) / ident(0);
                 B { n: 0 }
             }
-            on Go: B -> A {
+            on Go: B => A {
                 A { n: 0 }
             }
         }
@@ -356,6 +359,10 @@ fn binop_in_machine_state_entry_rejected() {
     let output = typecheck_and_lower(
         r"
         machine M {
+            events {
+                Go;
+            }
+
             state A {
                 n: i32;
                 entry {
@@ -365,10 +372,9 @@ fn binop_in_machine_state_entry_rejected() {
             }
             state B { n: i32; }
 
-            event Go;
 
-            on Go: A -> B { B { n: 0 } }
-            on Go: B -> A { A { n: 0 } }
+            on Go: A => B { B { n: 0 } }
+            on Go: B => A { A { n: 0 } }
         }
         ",
     );
@@ -389,6 +395,10 @@ fn binop_in_machine_state_exit_rejected() {
     let output = typecheck_and_lower(
         r"
         machine M {
+            events {
+                Go;
+            }
+
             state A {
                 n: i32;
                 exit {
@@ -398,10 +408,9 @@ fn binop_in_machine_state_exit_rejected() {
             }
             state B { n: i32; }
 
-            event Go;
 
-            on Go: A -> B { B { n: 0 } }
-            on Go: B -> A { A { n: 0 } }
+            on Go: A => B { B { n: 0 } }
+            on Go: B => A { A { n: 0 } }
         }
         ",
     );
@@ -425,16 +434,19 @@ fn binop_in_machine_transition_guard_rejected() {
         fn ident(x: isize) -> isize { x }
 
         machine M {
+            events {
+                Go;
+            }
+
             state A { n: i32; }
             state B { n: i32; }
 
-            event Go;
 
-            on Go: A -> B when (ident(0) >> 2) == ident(0) {
+            on Go: A => B when (ident(0) >> 2) == ident(0) {
                 B { n: 0 }
             }
-            on Go: A -> B { B { n: 0 } }
-            on Go: B -> A { A { n: 0 } }
+            on Go: A => B { B { n: 0 } }
+            on Go: B => A { A { n: 0 } }
         }
         ",
     );

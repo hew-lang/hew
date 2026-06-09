@@ -5,4 +5,3 @@ fn cross_module_machine_probe() -> string {
     toggle.step(Flip);
     toggle.state_name()
 }
-

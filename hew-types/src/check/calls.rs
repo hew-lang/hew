@@ -435,14 +435,16 @@ impl Checker {
                 && matches!(elem_ty, Ty::Named { .. })
             {
                 let is_copy = self.registry.implements_marker(&elem_ty, MarkerTrait::Copy);
-                if !is_copy {
+                // W5.016: admit a non-Copy record/enum element with a
+                // synthesizable owned thunk path (constructed through the owned
+                // ABI). Stays fail-closed for elements with no thunk path.
+                if !is_copy && !self.vec_owned_element_admissible(&elem_ty) {
+                    let reason = self.vec_element_rejection_reason(&elem_ty);
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
                         format!(
-                            "element type `{}` is not `Copy`; layout-managed Vec construction \
-                             requires clone/drop semantics that are not implemented \
-                             (runtime symbol `hew_vec_new_with_layout`)",
+                            "`{}` cannot be a `Vec` element: {reason}",
                             elem_ty.user_facing()
                         ),
                     );
@@ -737,14 +739,18 @@ impl Checker {
                     let is_copy = self
                         .registry
                         .implements_marker(&resolved_elem, MarkerTrait::Copy);
-                    if !is_copy {
+                    // W5.016: a non-Copy record/enum element with a synthesizable
+                    // owned clone/drop thunk path constructs through
+                    // `hew_vec_new_with_elem_layout` (the owned ABI), so do not
+                    // reject it here. Stays fail-closed for elements with no
+                    // thunk path (e.g. a record carrying a `Vec` field).
+                    if !is_copy && !self.vec_owned_element_admissible(&resolved_elem) {
+                        let reason = self.vec_element_rejection_reason(&resolved_elem);
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
                             span,
                             format!(
-                                "element type `{}` is not `Copy`; layout-managed Vec construction \
-                                 requires clone/drop semantics that are not implemented \
-                                 (runtime symbol `hew_vec_new_with_layout`)",
+                                "`{}` cannot be a `Vec` element: {reason}",
                                 resolved_elem.user_facing()
                             ),
                         );

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
+use hew_hir::{mangle, sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
 use hew_types::{NumericWidth, ResolvedTy};
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
@@ -820,7 +820,7 @@ pub struct SupervisorChildLayout {
     /// verbatim. The bootstrap function's spawn instructions name this
     /// type for the `Instr::SpawnActor.actor_name` field.
     pub actor_name: String,
-    /// `with restart: <policy>` clause. `None` when the child declaration
+    /// `restart: <policy>` clause. `None` when the child declaration
     /// omitted the clause — runtime defaults apply at codegen.
     pub restart_policy: Option<hew_hir::HirRestartPolicy>,
     /// `true` for `pool name: Type`; `false` for `child name: Type`.
@@ -991,6 +991,104 @@ pub struct EnumLayout {
     /// accesses through a pointer load and emits `hew_alloc` on construction
     /// plus `hew_dealloc` on drop. Propagated from `HirTypeDecl::is_indirect`.
     pub is_indirect: bool,
+}
+
+/// Unqualified tail of a possibly module-qualified type name
+/// (`"mod.Expr"` → `"Expr"`). The single short-name authority shared by
+/// the MIR drop elaborator and the codegen layout lookup.
+#[must_use]
+pub fn short_name(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(_, short)| short)
+}
+
+/// Returns `true` if the given `ResolvedTy` (or any type reachable through
+/// its generic arguments or enum variant field types) contains a heap-owning
+/// type such as `string` or `Bytes`.
+///
+/// This is the SINGLE authority for "does this composite carry an owned heap
+/// payload?" — both the MIR drop elaborator (which uses it to decide whether
+/// an enum-composite binding earns a tag-aware `DropKind::EnumInPlace`) and
+/// the codegen composite-return boundary call through here, so the two can
+/// never disagree about which return/binding shapes own heap memory
+/// (LESSONS: dedup-semantic-boundary).
+///
+/// ## Coverage
+///
+/// Two independent paths may flag a heap-owning result:
+///
+/// 1. **Type arguments** — `Option<string>`, `Result<i64, string>`. Caught by
+///    the `args` walk first; returns early.
+/// 2. **Non-param variant fields** — a generic enum whose type args are all
+///    bitcopy but a separate variant carries a concrete `string` field, e.g.
+///    `Envelope<i64>` where `enum Envelope<T> { Data(T), Message(string) }`.
+///    Caught by inspecting the monomorphised `EnumLayout` regardless of
+///    whether `args` is empty.
+///
+/// Layout lookup uses the same mangling scheme as `register_enum_layouts`:
+/// - Non-generic (args empty): bare name or `short_name` fallback.
+/// - Generic (args non-empty): `mangle(short_name, args)` → e.g. `Envelope$$i64`.
+#[must_use]
+pub fn ty_contains_heap_owning(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
+    ty_contains_heap_owning_inner(ty, enum_layouts, &mut HashSet::new())
+}
+
+fn ty_contains_heap_owning_inner(
+    ty: &ResolvedTy,
+    enum_layouts: &[EnumLayout],
+    visited_enum_layouts: &mut HashSet<String>,
+) -> bool {
+    match ty {
+        ResolvedTy::String | ResolvedTy::Bytes => true,
+        ResolvedTy::Named { name, args, .. } => {
+            // 1. Check type arguments first (fast path: Option<string>, etc.)
+            if args
+                .iter()
+                .any(|arg| ty_contains_heap_owning_inner(arg, enum_layouts, visited_enum_layouts))
+            {
+                return true;
+            }
+            // 2. Inspect the enum layout's variant field types directly.
+            //    Covers non-param heap-owning fields in generic enums
+            //    (e.g. `Envelope<i64>` where `Message(string)` is unrelated
+            //    to the type parameter `T`). Layout names follow the
+            //    monomorphisation scheme registered by `register_enum_layouts`:
+            //    - args empty:     bare name or short_name match
+            //    - args non-empty: mangle(short_name, args) → "Envelope$$i64"
+            let short = short_name(name);
+            let found = if args.is_empty() {
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == *name || short_name(&el.name) == short)
+            } else {
+                let mangled = mangle(short, args);
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == mangled || el.name == *name)
+            };
+            if let Some(layout) = found {
+                if !visited_enum_layouts.insert(layout.name.clone()) {
+                    // The checker rejects recursive value types; if one reaches
+                    // elaboration anyway, force the fail-closed path.
+                    return true;
+                }
+                let contains_heap_owning = layout.variants.iter().any(|v| {
+                    v.field_tys.iter().any(|ft| {
+                        ty_contains_heap_owning_inner(ft, enum_layouts, visited_enum_layouts)
+                    })
+                });
+                visited_enum_layouts.remove(&layout.name);
+                return contains_heap_owning;
+            }
+            false
+        }
+        ResolvedTy::Tuple(elems) => elems
+            .iter()
+            .any(|e| ty_contains_heap_owning_inner(e, enum_layouts, visited_enum_layouts)),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            ty_contains_heap_owning_inner(inner, enum_layouts, visited_enum_layouts)
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3403,6 +3501,30 @@ pub enum DropKind {
     /// — Hew has no recursive owned value types today, so the bound is a
     /// safety net rather than a live path.
     AggregateRecursive,
+    /// W5.020 — function-scope tag-aware drop of a heap-owning user-enum
+    /// composite local (`Result<T, E>` / `Option<T>` / any user `enum`
+    /// whose active variant transitively owns a heap allocation). The
+    /// composite is a single tagged-union struct stored inline in its
+    /// binding's alloca; the active variant's owned payload is the *only*
+    /// heap owner, and it transfers to whichever binding owns the composite
+    /// at scope exit. Codegen resolves the enum's mangled layout name from
+    /// the paired [`ElabDrop::ty`] and calls the synthesised
+    /// `__hew_enum_drop_inplace_<Enum>(*mut)` helper (the same tag-dispatch
+    /// authority the embedded-field record/actor drop path uses), which
+    /// drops only the active variant's owned fields (reverse order) and
+    /// frees no wrapper — the enum is embedded in the caller's alloca.
+    ///
+    /// `ElabDrop::drop_fn` must be `None`; the helper symbol is derived from
+    /// `ElabDrop::ty`, not from the runtime-vs-user `resolve_drop_fn`
+    /// dispatch. The MIR elaborator emits this kind ONLY for a composite the
+    /// fail-closed sole-owner derivation
+    /// (`derive_enum_composite_sole_owner`) proves still owns its active
+    /// payload at scope exit: a composite whose payload was moved out and
+    /// escaped (a destructure binder read into an owning sink, a whole-value
+    /// hand-off to another binding) is excluded so exactly one owner drops
+    /// the buffer. A binding the prover does not positively clear leaks (as
+    /// before W5.020); it never double-frees.
+    EnumInPlace,
 }
 
 /// Storage discriminator for `DropKind::TraitObject`. Distinguishes the

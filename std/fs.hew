@@ -189,14 +189,6 @@ fn move_copy_error(source: string, target: string) -> IoError {
     }
 }
 
-fn clone_bytes(data: bytes) -> bytes {
-    let out: bytes = bytes::new();
-    for i in 0 .. data.len() {
-        out.push(data.get(i));
-    }
-    out
-}
-
 /// Read the entire contents of a file as a UTF-8 string.
 ///
 /// Panics if the file does not exist or cannot be read.
@@ -340,7 +332,10 @@ pub fn try_read_bytes(file_path: string) -> Result<bytes, IoError> {
         if errno != 0 {
             Err(io_error_from_errno(errno as i64))
         } else {
-            Ok(clone_bytes(data))
+            // `data` is the sole owner of the freshly-read buffer and is not
+            // used after this point, so move it straight into the result. A
+            // byte-by-byte copy would be pure overhead (bytes is a CoW value).
+            Ok(data)
         }
     }
 }

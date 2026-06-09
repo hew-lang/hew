@@ -1,14 +1,15 @@
 pub machine Toggle {
+    events {
+        Flip;
+    }
+
     state Off;
     state On;
 
-    event Flip;
-
-    on Flip: Off -> On {
+    on Flip: Off => On {
         On
     }
-    on Flip: On -> Off {
+    on Flip: On => Off {
         Off
     }
 }
-

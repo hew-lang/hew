@@ -4,7 +4,7 @@ This document is the **authoritative** source for which Hew features are
 available on each WASM target tier.  It is referenced by the type checker
 (`hew-types/src/check/types.rs :: WasmUnsupportedFeature`), the runtime stubs
 (`hew-runtime/src/lib.rs :: wasm_stubs`), and the spec
-(`docs/specs/HEW-SPEC.md §8.0`).
+(`docs/specs/HEW-SPEC-2026.md §8.0`).
 
 When a feature is listed as **Reject** or **Warn**, the type checker enforces
 that disposition at compile time before any code reaches LLVM/WASM codegen.

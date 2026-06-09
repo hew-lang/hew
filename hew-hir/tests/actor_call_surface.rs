@@ -184,6 +184,18 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(scrutinee, out);
             visit_block(body, out);
         }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            visit_expr(scrutinee, out);
+            visit_block(body, out);
+            if let Some(eb) = else_body {
+                visit_block(eb, out);
+            }
+        }
         HirExprKind::Loop { body } => visit_block(body, out),
         HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
@@ -286,8 +298,14 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
 }
 
 #[test]
-fn await_actor_ask_let_value_lowers_to_same_actor_ask_as_unawaited_form() {
-    let awaited = lower_checked(
+fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
+    // The `await` keyword on an actor method call is required (R-ASK surface:
+    // bare call without `await` is rejected at the type-checker). The HIR node
+    // produced must be `HirExprKind::ActorAsk` carrying the handler's declared
+    // return type (the inner `i64`), not the wrapped `Result<i64, AskError>`.
+    // The `let v = await g.get()` binding stores the full `Result` value;
+    // the `ActorAsk` node itself records the inner reply type for codegen sizing.
+    let output = lower_checked(
         r"
         actor Getter {
             receive fn get() -> i64 {
@@ -295,61 +313,54 @@ fn await_actor_ask_let_value_lowers_to_same_actor_ask_as_unawaited_form() {
             }
         }
 
-        fn main() -> i64 {
+        fn main() -> Result<i64, AskError> {
             let g = spawn Getter;
             let v = await g.get();
             return v;
         }
         ",
     );
-    let unawaited = lower_checked(
-        r"
-        actor Getter {
-            receive fn get() -> i64 {
-                7
-            }
-        }
-
-        fn main() -> i64 {
-            let g = spawn Getter;
-            let v = g.get();
-            return v;
-        }
-        ",
-    );
-
-    #[allow(clippy::items_after_statements, reason = "test-local helper")]
-    fn bound_actor_ask(output: &hew_hir::LowerOutput) -> (&str, &hew_types::ResolvedTy) {
-        let main = output
-            .module
-            .items
-            .iter()
-            .find_map(|item| match item {
-                HirItem::Function(func) if func.name == "main" => Some(func),
-                _ => None,
-            })
-            .expect("main function should lower");
-        let HirStmtKind::Let(binding, Some(value)) = &main.body.statements[1].kind else {
-            panic!(
-                "second statement should be `let v = <actor ask>`; got {:#?}",
-                main.body.statements[1]
-            );
-        };
-        assert_eq!(binding.name, "v");
-        match &value.kind {
-            HirExprKind::ActorAsk {
-                method_id,
-                reply_ty,
-                ..
-            } => (method_id.as_str(), reply_ty),
-            other => panic!("bound value should lower to ActorAsk, got {other:#?}"),
-        }
-    }
 
     assert!(
-        awaited.diagnostics.is_empty(),
-        "awaited actor ask let-value should be accepted: {:?}",
-        awaited.diagnostics
+        output.diagnostics.is_empty(),
+        "awaited actor ask let-value should lower without HIR diagnostics: {:?}",
+        output.diagnostics
     );
-    assert_eq!(bound_actor_ask(&awaited), bound_actor_ask(&unawaited));
+
+    let main = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(func) if func.name == "main" => Some(func),
+            _ => None,
+        })
+        .expect("main function should lower");
+
+    let HirStmtKind::Let(binding, Some(value)) = &main.body.statements[1].kind else {
+        panic!(
+            "second statement should be `let v = await g.get()`; got {:#?}",
+            main.body.statements[1]
+        );
+    };
+    assert_eq!(binding.name, "v");
+
+    let (method_id, reply_ty) = match &value.kind {
+        HirExprKind::ActorAsk {
+            method_id,
+            reply_ty,
+            ..
+        } => (method_id.as_str(), reply_ty),
+        other => panic!("awaited actor ask should lower to HirExprKind::ActorAsk, got {other:#?}"),
+    };
+
+    assert_eq!(
+        method_id, "Getter::get",
+        "ActorAsk method_id should be fully qualified handler name"
+    );
+    assert_eq!(
+        reply_ty.user_facing().to_string(),
+        "i64",
+        "ActorAsk reply_ty carries the handler's declared return type (inner i64, not the wrapped Result)"
+    );
 }

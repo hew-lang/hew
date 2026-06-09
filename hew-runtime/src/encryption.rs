@@ -660,6 +660,53 @@ pub(crate) fn hew_allowlist_check_active_peer(public_key: &[u8; KEY_LEN]) -> boo
 }
 
 // ---------------------------------------------------------------------------
+// Test-only hooks for the process-global allowlist state
+// ---------------------------------------------------------------------------
+//
+// `hew_allowlist_new` populates `ACTIVE_ALLOWLIST` / `ALLOWLIST_STRICT_REQUIRED`
+// only under `#[cfg(not(test))]` (so the default unit tests stay isolated from
+// each other across the shared statics). That leaves the fail-closed
+// deny-after-free latch — the most important invariant in this module —
+// unreachable in CI. These hooks let a serialized test drive the latch
+// through its states and reset it afterwards, without re-introducing the
+// cross-test poisoning that an unconditional `cfg(test)` population would.
+
+/// Install `list` as the active allowlist (set the strict latch when the list
+/// is strict), mirroring the `#[cfg(not(test))]` population in
+/// `hew_allowlist_new`. Test-only; callers must serialize via
+/// `ALLOWLIST_OPS_LOCK` (see the deny-after-free test) and reset with
+/// [`reset_allowlist_state_for_test`] afterwards.
+#[cfg(test)]
+pub(crate) fn activate_allowlist_for_test(list_ptr: *mut HewPeerAllowlist, list: HewPeerAllowlist) {
+    let strict = list.mode == AllowlistMode::Strict;
+    let mut active = ACTIVE_ALLOWLIST.write_or_recover();
+    *active = Some(ActiveAllowlist {
+        ptr: list_ptr as usize,
+        list,
+    });
+    if strict {
+        ALLOWLIST_STRICT_REQUIRED.store(true, Ordering::Release);
+    }
+}
+
+/// Read the current value of the monotonic strict-required latch. Test-only.
+#[cfg(test)]
+pub(crate) fn strict_required_for_test() -> bool {
+    ALLOWLIST_STRICT_REQUIRED.load(Ordering::Acquire)
+}
+
+/// Restore the process-global allowlist state to its pristine baseline (no
+/// active list, latch cleared). Test-only — exists solely so the otherwise
+/// set-once latch can be reset between serialized tests, preventing the
+/// cross-test poisoning the production `#[cfg(not(test))]` guard avoids.
+#[cfg(test)]
+pub(crate) fn reset_allowlist_state_for_test() {
+    let mut active = ACTIVE_ALLOWLIST.write_or_recover();
+    *active = None;
+    ALLOWLIST_STRICT_REQUIRED.store(false, Ordering::Release);
+}
+
+// ---------------------------------------------------------------------------
 // Public C ABI
 // ---------------------------------------------------------------------------
 
@@ -1976,5 +2023,113 @@ mod tests {
             conns: std::array::from_fn(|_| None),
         };
         assert_eq!(*enc.private_key(), TEST_PRIVATE_KEY);
+    }
+
+    // -----------------------------------------------------------------------
+    // Fail-closed deny-after-free latch (the process-global strict allowlist)
+    // -----------------------------------------------------------------------
+
+    /// Serialises every test that drives the process-global allowlist statics
+    /// (`ACTIVE_ALLOWLIST` / `ALLOWLIST_STRICT_REQUIRED`). The default allowlist
+    /// unit tests above never touch these (population is `#[cfg(not(test))]`),
+    /// so only the latch tests below contend; the mutex keeps them from racing
+    /// each other on the shared monotonic latch.
+    static ALLOWLIST_STATE_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Fail-closed boundary: once a STRICT allowlist has been the active list,
+    /// freeing it must leave `hew_allowlist_check_active_peer` DENYING every
+    /// peer — a dropped strict list must never silently disable peer filtering
+    /// (deny-after-free), and a later Open list must not reset the latch (the
+    /// deny-all boundary persists). This drives the latch the `#[cfg(not(test))]`
+    /// population otherwise hides from CI.
+    #[test]
+    fn strict_allowlist_denies_all_peers_after_free() {
+        let _serial = ALLOWLIST_STATE_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_allowlist_state_for_test();
+
+        let arbitrary_key = [0x5A; KEY_LEN];
+
+        // Baseline: with no active list and the latch unset, the check is OPEN.
+        assert!(
+            hew_allowlist_check_active_peer(&arbitrary_key),
+            "pristine state (no active list, latch unset) should allow"
+        );
+
+        // Create a strict list and install it as the active list (the test-only
+        // hook stands in for the `#[cfg(not(test))]` population in
+        // `hew_allowlist_new`). This also trips the monotonic strict latch.
+        // SAFETY: STRICT is a valid mode.
+        let list = unsafe { hew_allowlist_new(ALLOWLIST_MODE_STRICT) };
+        assert!(!list.is_null());
+        activate_allowlist_for_test(list, HewPeerAllowlist::new(AllowlistMode::Strict));
+        assert!(
+            strict_required_for_test(),
+            "installing a strict active list must set the strict-required latch"
+        );
+
+        // A non-listed peer is denied while the strict list is active.
+        assert!(
+            !hew_allowlist_check_active_peer(&arbitrary_key),
+            "strict mode must deny a peer that is not on the active list"
+        );
+
+        // Free the strict list. The active list becomes None, but the latch is
+        // set, so the fail-closed `None` arm must DENY rather than fall open.
+        // SAFETY: list was created by hew_allowlist_new and is freed once.
+        unsafe { hew_allowlist_free(list) };
+        assert!(
+            strict_required_for_test(),
+            "the strict latch is monotonic: freeing must not clear it"
+        );
+        assert!(
+            !hew_allowlist_check_active_peer(&arbitrary_key),
+            "deny-after-free: a freed strict list must not silently disable filtering"
+        );
+
+        // A subsequent OPEN list must NOT reset the latch — the deny-all
+        // boundary persists for the lifetime of the process once strict was
+        // ever required.
+        // SAFETY: OPEN is a valid mode.
+        let open_list = unsafe { hew_allowlist_new(ALLOWLIST_MODE_OPEN) };
+        assert!(!open_list.is_null());
+        assert!(
+            strict_required_for_test(),
+            "creating an Open list after strict must not reset the strict latch"
+        );
+        assert!(
+            !hew_allowlist_check_active_peer(&arbitrary_key),
+            "the deny-all boundary must persist: an Open list cannot lift a tripped strict latch"
+        );
+
+        // SAFETY: open_list was created by hew_allowlist_new and is freed once.
+        unsafe { hew_allowlist_free(open_list) };
+        reset_allowlist_state_for_test();
+    }
+
+    /// Negative control for the deny-after-free latch: with the latch never
+    /// tripped and no active list, the check ALLOWS. This proves the deny in
+    /// `strict_allowlist_denies_all_peers_after_free` is specifically a
+    /// consequence of the strict latch (the `None` arm reads it), not a blanket
+    /// "no active list => deny".
+    #[test]
+    fn no_active_list_allows_when_strict_never_required() {
+        let _serial = ALLOWLIST_STATE_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_allowlist_state_for_test();
+
+        let arbitrary_key = [0x42; KEY_LEN];
+        assert!(
+            !strict_required_for_test(),
+            "precondition: the strict latch must be clear for this control"
+        );
+        assert!(
+            hew_allowlist_check_active_peer(&arbitrary_key),
+            "with no active list and no strict ever required, the check must allow"
+        );
+
+        reset_allowlist_state_for_test();
     }
 }

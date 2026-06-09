@@ -44,6 +44,7 @@
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
 #   make test-hew          — run Hew test files (std/ *_test.hew)
+#   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make tsan         — run the nightly rust-runtime TSan test command locally
 #   make lint         — cargo clippy (workspace + tests, warnings are errors) + hew fmt gate
@@ -54,7 +55,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-runtime-net test-runtime-unit test-stdlib test-hew test-release-binary asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-release-binary asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
@@ -414,9 +415,16 @@ test: test-rust
 # by CI (which uses cargo nextest directly). Use `make test-all` when you
 # want the previous behaviour.
 # TODO: Add test-stdlib to `test-all` unconditionally once stdlib files are type-check clean
-test-all: test test-stdlib test-hew
+test-all: test test-stdlib test-hew test-ux-examples
 
-test-rust:
+# Build the combined runtime+stdlib static lib and the WASM runtime before
+# running the full workspace test suite.  Several hew-cli integration tests
+# (eval_e2e, eval_wasm_*) call `hew eval` which needs both libs at link time.
+# The WASM runtime (libhew_runtime.a for wasm32-wasip1) is required by the
+# wasm32-wasi eval tests even when they are expected to fail before codegen:
+# the linker library search runs before the fast-typecheck diagnostic path,
+# so a missing staticlib causes an unrelated error that aborts those tests.
+test-rust: stdlib wasm-runtime
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
 		cargo nextest run --workspace --profile ci; \
 	else \
@@ -434,7 +442,16 @@ test-types:
 test-cli:
 	cargo nextest run --profile ci -p hew-cli -p adze-cli
 
-test-compiler-pipeline:
+# Build the combined runtime+stdlib static lib and the WASM runtime before
+# running the compiler-pipeline tests.  Several hew-cli integration tests
+# (eval_e2e, eval_wasm_*) call `hew eval` which needs both libs at link time.
+# Without this prerequisite the lazy per-test build of libhew.a (~18 s on a
+# cold worktree) consumes most of the default 30 s `hew eval --timeout` budget,
+# causing spurious timeouts under the concurrent nextest run.  The WASM runtime
+# (libhew_runtime.a for wasm32-wasip1) is needed by wasm32-wasi eval tests
+# even when they are expected to fail before codegen (the linker search runs
+# before the fast typecheck path reports its diagnostic).
+test-compiler-pipeline: stdlib wasm-runtime
 	cargo nextest run --profile ci \
 		-p hew-lexer \
 		-p hew-parser \
@@ -488,6 +505,51 @@ test-stdlib: hew
 test-hew: hew runtime stdlib
 	@echo "==> Running Hew test files"
 	$(DEBUG_DIR)/hew test tests/hew/
+
+# Run every examples/ux and examples/progressive tutorial against its paired
+# .expected file.  Any tutorial whose .expected output diverges from `hew run`
+# output fails the gate, catching dialect regressions before they reach users.
+#
+# Tutorials that depend on unimplemented substrate are explicitly listed in
+# UX_SKIP and PROG_SKIP with a one-line reason; they are reported as SKIP, not
+# failures.  Remove a file from the skip list once the substrate gap is closed.
+#
+#   hew_duplex_close NYI — lambda-actor close() not yet lowered to MIR
+#     tracked: deferred-v05-followups.md (hew_duplex_close)
+UX_SKIP   := examples/ux/10_lambda_actor.hew
+PROG_SKIP  := examples/progressive/10_lambda_actor.hew
+
+test-ux-examples: hew runtime stdlib
+	@echo "==> Running ux + progressive tutorials against .expected"
+	@fail=0; pass=0; skip=0; \
+	for corpus in examples/ux examples/progressive; do \
+	  for src in $$(find $$corpus -maxdepth 1 -name '*.hew' | sort); do \
+	    exp="$${src%.hew}.expected"; \
+	    test -f "$$exp" || continue; \
+	    for s in $(UX_SKIP) $(PROG_SKIP); do \
+	      if [ "$$src" = "$$s" ]; then \
+	        echo "  SKIP: $$src  (substrate-gated: hew_duplex_close NYI)"; \
+	        skip=$$((skip + 1)); \
+	        continue 2; \
+	      fi; \
+	    done; \
+	    actual=$$($(DEBUG_DIR)/hew run "$$src" 2>&1); \
+	    expected=$$(cat "$$exp"); \
+	    if [ "$$actual" = "$$expected" ]; then \
+	      pass=$$((pass + 1)); \
+	    else \
+	      echo "  FAIL: $$src"; \
+	      echo "    expected: $$(echo "$$expected" | head -3 | tr '\n' '|')"; \
+	      echo "    actual:   $$(echo "$$actual"   | head -3 | tr '\n' '|')"; \
+	      fail=$$((fail + 1)); \
+	    fi; \
+	  done; \
+	done; \
+	echo "  $$pass passed, $$skip skipped (substrate-gated), $$fail failed"; \
+	if [ $$fail -gt 0 ]; then \
+	  echo "ERROR: $$fail tutorial(s) failed — run \`hew run <file>\` to reproduce"; \
+	  exit 1; \
+	fi
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
 asan:

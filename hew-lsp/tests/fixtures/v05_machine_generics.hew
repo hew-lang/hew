@@ -1,7 +1,11 @@
 machine Boxed<T> {
-    event Store;
+    events {
+        Store;
+    }
+
     state Idle;
-    on Store: Idle -> Idle;
+
+    on Store: Idle => Idle;
 }
 
 fn machine_generics_probe() -> i32 {

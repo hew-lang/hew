@@ -1,32 +1,34 @@
 // Runnable fixture: TCP handshake state machine executed end-to-end.
 machine TcpHandshake {
+    events {
+        Syn;
+        Ack;
+        Reset;
+    }
+
     state Closed;
     state SynReceived;
     state Established;
 
-    event Syn;
-    event Ack;
-    event Reset;
-
-    on Syn: Closed -> SynReceived {
+    on Syn: Closed => SynReceived {
         SynReceived
     }
-    on Ack: Closed -> Closed @reenter {
+    on Ack: Closed => Closed reenter {
         Closed
     }
-    on Syn: SynReceived -> SynReceived @reenter {
+    on Syn: SynReceived => SynReceived reenter {
         SynReceived
     }
-    on Ack: SynReceived -> Established {
+    on Ack: SynReceived => Established {
         Established
     }
-    on Syn: Established -> Established @reenter {
+    on Syn: Established => Established reenter {
         Established
     }
-    on Ack: Established -> Established @reenter {
+    on Ack: Established => Established reenter {
         Established
     }
-    on Reset: _ -> Closed {
+    on Reset: _ => Closed {
         Closed
     }
 }

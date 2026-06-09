@@ -176,6 +176,16 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
             std::process::exit(1);
         }
 
+        // HIR is flat by invariant — composite grouping lives only on the AST.
+        // Parse the source again to recover the grouping side-table and render
+        // nested boxes over the flat HIR. Keyed by machine name.
+        let ast_machines = parse_machines(path, &source);
+        let groups_by_name: std::collections::HashMap<&str, &[hew_parser::ast::CompositeGroup]> =
+            ast_machines
+                .iter()
+                .map(|m| (m.name.as_str(), m.composite_groups.as_slice()))
+                .collect();
+
         // Filter by --machine if specified.
         let filtered: Vec<&HirMachineDecl> = if let Some(name) = &args.machine_name {
             let matched: Vec<_> = hir_machines.iter().filter(|m| &m.name == name).collect();
@@ -189,10 +199,14 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
         };
 
         for machine in filtered {
+            let groups = groups_by_name
+                .get(machine.name.as_str())
+                .copied()
+                .unwrap_or(&[]);
             match format {
-                MachineFormat::Mermaid => print_mermaid_hir(machine),
-                MachineFormat::Graphviz | MachineFormat::Dot => print_dot_hir(machine),
-                MachineFormat::Json => print_json_hir(machine),
+                MachineFormat::Mermaid => print_mermaid_hir(machine, groups),
+                MachineFormat::Graphviz | MachineFormat::Dot => print_dot_hir(machine, groups),
+                MachineFormat::Json => print_json_hir(machine, groups),
             }
         }
     } else {
@@ -227,12 +241,29 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
 
 // ── HIR-backed renderers (used when --check is active) ──────────────────────
 
-fn print_mermaid_hir(machine: &HirMachineDecl) {
+fn print_mermaid_hir(machine: &HirMachineDecl, groups: &[hew_parser::ast::CompositeGroup]) {
     print_mermaid_title(&machine.name, &machine.type_params);
     println!("stateDiagram-v2");
 
     if let Some(first) = machine.states.first() {
         println!("    [*] --> {}", first.name);
+    }
+
+    // Emit composite nesting first: a `state Composite { … }` block groups its
+    // members with the initial-substate marker. Members rendered inside a block
+    // are still valid transition endpoints below. The grouping comes from the
+    // AST side-table threaded in by `cmd_diagram` (HIR is flat).
+    let composite_members: std::collections::HashSet<&str> = groups
+        .iter()
+        .flat_map(|g| g.members.iter().map(String::as_str))
+        .collect();
+    for group in groups {
+        println!("    state {} {{", group.name);
+        println!("        [*] --> {}", group.initial);
+        for member in &group.members {
+            println!("        {member}");
+        }
+        println!("    }}");
     }
 
     for tr in &machine.transitions {
@@ -266,7 +297,9 @@ fn print_mermaid_hir(machine: &HirMachineDecl) {
         }
     }
 
-    // State annotations: entry/exit notes and field names.
+    // State annotations: entry/exit notes and field names. Members rendered
+    // inside a composite block still take their annotations at the top level.
+    let _ = &composite_members;
     for state in &machine.states {
         let mut notes: Vec<String> = state.fields.iter().map(|f| f.name.clone()).collect();
         if state.has_entry {
@@ -297,7 +330,7 @@ fn print_mermaid_title(name: &str, type_params: &[String]) {
     println!("---");
 }
 
-fn print_dot_hir(machine: &HirMachineDecl) {
+fn print_dot_hir(machine: &HirMachineDecl, groups: &[hew_parser::ast::CompositeGroup]) {
     println!("digraph {} {{", machine.name);
     println!("    rankdir=LR;");
     println!("    node [shape=circle];");
@@ -307,7 +340,13 @@ fn print_dot_hir(machine: &HirMachineDecl) {
         println!("    __start -> {};", first.name);
     }
 
-    for state in &machine.states {
+    // Composite members render inside a `subgraph cluster_<Composite>` box.
+    let member_to_group: std::collections::HashMap<&str, &str> = groups
+        .iter()
+        .flat_map(|g| g.members.iter().map(move |m| (m.as_str(), g.name.as_str())))
+        .collect();
+
+    let node_decl = |state: &hew_hir::HirMachineState| -> String {
         let mut annotations: Vec<String> = state.fields.iter().map(|f| f.name.clone()).collect();
         if state.has_entry {
             annotations.push("entry".into());
@@ -316,15 +355,35 @@ fn print_dot_hir(machine: &HirMachineDecl) {
             annotations.push("exit".into());
         }
         if annotations.is_empty() {
-            println!("    {} [label=\"{}\"];", state.name, state.name);
+            format!("{} [label=\"{}\"];", state.name, state.name)
         } else {
-            println!(
-                "    {} [label=\"{}\\n({})\", shape=Mrecord];",
+            format!(
+                "{} [label=\"{}\\n({})\", shape=Mrecord];",
                 state.name,
                 state.name,
                 annotations.join(", ")
-            );
+            )
         }
+    };
+
+    // Emit clustered composite members first.
+    for group in groups {
+        println!("    subgraph cluster_{} {{", group.name);
+        println!("        label=\"{}\";", group.name);
+        for member in &group.members {
+            if let Some(state) = machine.states.iter().find(|s| &s.name == member) {
+                println!("        {}", node_decl(state));
+            }
+        }
+        println!("    }}");
+    }
+
+    // Emit the remaining (non-member) states at the top level.
+    for state in &machine.states {
+        if member_to_group.contains_key(state.name.as_str()) {
+            continue;
+        }
+        println!("    {}", node_decl(state));
     }
 
     for tr in &machine.transitions {
@@ -368,7 +427,7 @@ fn print_dot_hir(machine: &HirMachineDecl) {
     println!();
 }
 
-fn print_json_hir(machine: &HirMachineDecl) {
+fn print_json_hir(machine: &HirMachineDecl, groups: &[hew_parser::ast::CompositeGroup]) {
     // Stable JSON schema for tooling. Field order is deterministic.
     print!("{{");
     print!("\"name\":{:?}", machine.name);
@@ -398,6 +457,25 @@ fn print_json_hir(machine: &HirMachineDecl) {
             "{{\"event\":{:?},\"from\":{:?},\"to\":{:?},\"selfTransition\":{}}}",
             tr.event_name, tr.source_state, tr.target_state, tr.is_self_transition
         );
+    }
+    // Composite grouping (from the AST side-table; HIR is flat). Omitted as an
+    // empty array for flat machines so the schema stays additive.
+    print!("],\"composites\":[");
+    for (i, group) in groups.iter().enumerate() {
+        if i > 0 {
+            print!(",");
+        }
+        print!(
+            "{{\"name\":{:?},\"initial\":{:?},\"members\":[",
+            group.name, group.initial
+        );
+        for (j, member) in group.members.iter().enumerate() {
+            if j > 0 {
+                print!(",");
+            }
+            print!("{member:?}");
+        }
+        print!("]}}");
     }
     println!("]}}");
 }

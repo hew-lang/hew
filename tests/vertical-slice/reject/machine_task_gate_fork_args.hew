@@ -5,6 +5,10 @@
 fn worker(x: i64) {}
 
 machine M {
+    events {
+        Tick;
+    }
+
     state Idle {
         entry {
             scope {
@@ -13,9 +17,12 @@ machine M {
         }
     }
     state Done;
-    event Tick;
-    on Tick: Idle -> Done { Done }
-    default { self }
+
+    on Tick: Idle => Done {
+        Done
+    }
+
+    default { state }
 }
 
 fn main() {}

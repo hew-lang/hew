@@ -293,3 +293,63 @@ fn main() {
         args[0]
     );
 }
+
+// ── checker_spawn_hashmap_new_infers_from_field_type ─────────────────────────
+
+/// `spawn Cache(store: HashMap::new())` must check clean: the field's declared
+/// type (`HashMap<string, i64>`) is pushed down so `HashMap::new()` infers
+/// its key/value type variables rather than leaving them unbound and triggering
+/// a spurious "not Send" error.
+///
+/// Regression for the bug where `check_spawn` called `synthesize` without an
+/// expected type, leaving `HashMap<?T, ?U>` unbound and producing:
+///   "cannot send `HashMap<?T22, ?T23>` to actor: type is not Send"
+///   "cannot infer type for expression type at checker output boundary"
+#[test]
+fn checker_spawn_hashmap_new_infers_from_field_type() {
+    let source = r"
+actor Cache {
+    let store: HashMap<string, i64>;
+    receive fn size() -> i64 {
+        store.len()
+    }
+}
+
+fn main() {
+    let c = spawn Cache(store: HashMap::new());
+}
+";
+    let (_prog, output) = common::parse_and_typecheck_inline(source);
+    assert!(
+        output.errors.is_empty(),
+        "spawn Cache(store: HashMap::new()) should check clean; errors: {:#?}",
+        output.errors
+    );
+}
+
+// ── checker_spawn_vec_new_infers_from_field_type ─────────────────────────────
+
+/// `spawn Log(entries: Vec::new())` must check clean: the field's declared
+/// type (`Vec<string>`) is pushed down so `Vec::new()` infers its element
+/// type.  Same root cause as the `HashMap` case.
+#[test]
+fn checker_spawn_vec_new_infers_from_field_type() {
+    let source = r"
+actor Log {
+    let entries: Vec<string>;
+    receive fn count() -> i64 {
+        entries.len()
+    }
+}
+
+fn main() {
+    let _log = spawn Log(entries: Vec::new());
+}
+";
+    let (_prog, output) = common::parse_and_typecheck_inline(source);
+    assert!(
+        output.errors.is_empty(),
+        "spawn Log(entries: Vec::new()) should check clean; errors: {:#?}",
+        output.errors
+    );
+}

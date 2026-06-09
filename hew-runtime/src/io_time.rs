@@ -448,6 +448,78 @@ mod platform {
         n
     }
 
+    /// Poll for I/O readiness and report the ready fds WITHOUT dispatching.
+    ///
+    /// Unlike [`hew_io_poller_poll`], which auto-sends a 4-byte event-mask
+    /// message to the registered actor from inside the poll loop (no liveness
+    /// guard, wrong payload for byte-stream `on_data` delivery), this variant
+    /// writes each ready `(fd, hew_event_mask)` pair into the caller-provided
+    /// `out_fds` / `out_events` buffers and returns the number of pairs
+    /// written. The caller (the active-mode reactor) then performs the
+    /// liveness check, the socket read, and the deep-copied mailbox delivery
+    /// itself — outside any lock. This is the primitive the
+    /// "I/O completion as a mailbox message" reactor needs; the auto-send
+    /// variant is unsuitable because it neither reads the data nor checks
+    /// actor liveness.
+    ///
+    /// Returns the number of ready fds (0..=`out_cap`), or -1 on error.
+    /// At most `out_cap` (clamped to [`MAX_EVENTS`]) fds are reported per call;
+    /// any excess remain ready and surface on the next poll (level/edge per
+    /// the registration flags).
+    ///
+    /// # Safety
+    ///
+    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
+    /// `out_fds` and `out_events` must each point to at least `out_cap`
+    /// writable `c_int` slots, or be null when `out_cap` is 0.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_poll_ready(
+        p: *mut HewIoPoller,
+        timeout_ms: c_int,
+        out_fds: *mut c_int,
+        out_events: *mut c_int,
+        out_cap: c_int,
+    ) -> c_int {
+        cabi_guard!(p.is_null(), -1);
+        if out_cap <= 0 || out_fds.is_null() || out_events.is_null() {
+            return 0;
+        }
+        // SAFETY: caller guarantees `p` is valid.
+        let poller = unsafe { &mut *p };
+
+        let mut ep_events = [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS as usize];
+
+        // SAFETY: epoll_wait with valid fd and buffer.
+        let n = unsafe {
+            libc::epoll_wait(poller.epfd, ep_events.as_mut_ptr(), MAX_EVENTS, timeout_ms)
+        };
+        if n < 0 {
+            return -1;
+        }
+
+        #[expect(clippy::cast_sign_loss, reason = "n >= 0 checked above")]
+        let count = (n as usize).min(out_cap as usize);
+        for (i, ev) in ep_events[..count].iter().enumerate() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "fd was stored as u64; fits in c_int"
+            )]
+            let fd = ev.u64 as c_int;
+            let hew_ev = epoll_to_hew(ev.events);
+            // SAFETY: i < count <= out_cap; out_fds/out_events have out_cap slots.
+            unsafe {
+                *out_fds.add(i) = fd;
+                *out_events.add(i) = hew_ev;
+            }
+        }
+
+        #[expect(clippy::cast_possible_truncation, reason = "count <= out_cap (c_int)")]
+        #[expect(clippy::cast_possible_wrap, reason = "count <= out_cap (c_int)")]
+        {
+            count as c_int
+        }
+    }
+
     /// Stop and destroy the poller.
     ///
     /// # Safety
@@ -788,6 +860,112 @@ mod platform {
         n
     }
 
+    /// Poll for I/O readiness and report the ready fds WITHOUT dispatching.
+    ///
+    /// kqueue counterpart of the epoll `hew_io_poller_poll_ready`. Writes each
+    /// ready `(fd, hew_event_mask)` pair into the caller buffers and returns
+    /// the count, leaving the liveness check, socket read, and deep-copied
+    /// mailbox delivery to the active-mode reactor (outside any lock). See the
+    /// epoll variant's rationale for why the auto-send `hew_io_poller_poll`
+    /// is unsuitable for byte-stream `on_data` delivery.
+    ///
+    /// Returns the number of ready fds (0..=`out_cap`), or -1 on error.
+    ///
+    /// # Safety
+    ///
+    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
+    /// `out_fds` and `out_events` must each point to at least `out_cap`
+    /// writable `c_int` slots, or be null when `out_cap` is 0.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_poll_ready(
+        p: *mut HewIoPoller,
+        timeout_ms: c_int,
+        out_fds: *mut c_int,
+        out_events: *mut c_int,
+        out_cap: c_int,
+    ) -> c_int {
+        cabi_guard!(p.is_null(), -1);
+        if out_cap <= 0 || out_fds.is_null() || out_events.is_null() {
+            return 0;
+        }
+        // SAFETY: caller guarantees `p` is valid.
+        let poller = unsafe { &mut *p };
+
+        // SAFETY: `libc::kevent` is a POD C struct; all-zero is a valid bit pattern.
+        let mut kq_events: [libc::kevent; MAX_EVENTS] = unsafe { std::mem::zeroed() };
+
+        let ts;
+        let timeout_ptr = if timeout_ms < 0 {
+            std::ptr::null()
+        } else {
+            ts = libc::timespec {
+                tv_sec: libc::time_t::from(timeout_ms / 1000),
+                tv_nsec: libc::c_long::from(timeout_ms % 1000) * 1_000_000,
+            };
+            &raw const ts
+        };
+
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "MAX_EVENTS is 64, fits in c_int"
+        )]
+        #[expect(clippy::cast_possible_wrap, reason = "MAX_EVENTS is 64, fits in c_int")]
+        let max_events_cint = MAX_EVENTS as c_int;
+
+        // SAFETY: kevent with valid kq, no changelist, eventlist buffer.
+        let n = unsafe {
+            libc::kevent(
+                poller.kq,
+                std::ptr::null(),
+                0,
+                kq_events.as_mut_ptr(),
+                max_events_cint,
+                timeout_ptr,
+            )
+        };
+        if n < 0 {
+            return -1;
+        }
+
+        #[expect(clippy::cast_sign_loss, reason = "n >= 0 checked above")]
+        let count = (n as usize).min(out_cap as usize);
+        for (i, ev) in kq_events[..count].iter().enumerate() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "fd was stored as usize via ident; fits in c_int"
+            )]
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "fd was stored as usize via ident; original value was a non-negative c_int"
+            )]
+            let fd = ev.ident as c_int;
+            let mut hew_ev: c_int = 0;
+            if ev.filter == libc::EVFILT_READ {
+                hew_ev |= HEW_IO_READ;
+            }
+            if ev.filter == libc::EVFILT_WRITE {
+                hew_ev |= HEW_IO_WRITE;
+            }
+            if ev.flags & libc::EV_EOF != 0 {
+                hew_ev |= HEW_IO_HUP;
+            }
+            if ev.flags & libc::EV_ERROR != 0 {
+                hew_ev |= HEW_IO_ERROR;
+            }
+            // SAFETY: i < count <= out_cap; out_fds/out_events have out_cap slots.
+            unsafe {
+                *out_fds.add(i) = fd;
+                *out_events.add(i) = hew_ev;
+            }
+        }
+
+        #[expect(clippy::cast_possible_truncation, reason = "count <= out_cap (c_int)")]
+        #[expect(clippy::cast_possible_wrap, reason = "count <= out_cap (c_int)")]
+        {
+            count as c_int
+        }
+    }
+
     /// Stop and destroy the poller.
     ///
     /// # Safety
@@ -842,11 +1020,32 @@ mod platform {
     }
 
     #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_poll_ready(
+        _p: *mut HewIoPoller,
+        _timeout_ms: c_int,
+        _out_fds: *mut c_int,
+        _out_events: *mut c_int,
+        _out_cap: c_int,
+    ) -> c_int {
+        -1
+    }
+
+    #[no_mangle]
     pub unsafe extern "C" fn hew_io_poller_stop(_p: *mut HewIoPoller) {}
 }
 
 // Re-export the platform poller type so consumers can reference it.
 pub use platform::HewIoPoller;
+
+// Re-export the poller C-ABI entry points so the in-process active-mode reactor
+// (`crate::reactor`) can drive the poller directly without an FFI round-trip.
+// These are `#[no_mangle] extern "C"` for the codegen/runtime boundary; the
+// re-export only adds a Rust path, it does not change the ABI.
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+pub use platform::{
+    hew_io_poller_new, hew_io_poller_poll_ready, hew_io_poller_register, hew_io_poller_stop,
+    hew_io_poller_unregister,
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1228,6 +1427,79 @@ mod tests {
                 libc::close(wfd);
                 hew_io_poller_stop(p);
             }
+        }
+
+        #[test]
+        fn poll_ready_reports_ready_fd_without_dispatch() {
+            // SAFETY: no preconditions for new.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            let (rfd, wfd) = make_pipe();
+
+            // Register the read end. The actor is a dangling dummy that must
+            // NEVER be dereferenced — poll_ready reports readiness, it does not
+            // dispatch, so the dummy is safe even though data is written.
+            // SAFETY: p valid; rfd from pipe(); dummy actor never dispatched.
+            let reg = unsafe { hew_io_poller_register(p, rfd, dummy_actor(), 1, HEW_IO_READ) };
+            assert_eq!(reg, 0);
+
+            // Write a byte so the read end becomes ready.
+            let byte = [0xABu8];
+            // SAFETY: wfd is a valid write fd; byte is one valid byte.
+            let written = unsafe { libc::write(wfd, byte.as_ptr().cast(), 1) };
+            assert_eq!(written, 1);
+
+            let mut out_fds = [0i32; 8];
+            let mut out_events = [0i32; 8];
+            // SAFETY: p valid; out buffers have 8 slots each; cap is 8.
+            let n = unsafe {
+                hew_io_poller_poll_ready(p, 100, out_fds.as_mut_ptr(), out_events.as_mut_ptr(), 8)
+            };
+            assert_eq!(n, 1, "exactly one fd should be ready");
+            assert_eq!(out_fds[0], rfd, "the ready fd is the registered read end");
+            assert!(
+                out_events[0] & HEW_IO_READ != 0,
+                "ready event must carry READ"
+            );
+
+            // SAFETY: p valid; closing our own fds.
+            unsafe {
+                hew_io_poller_unregister(p, rfd);
+                libc::close(rfd);
+                libc::close(wfd);
+                hew_io_poller_stop(p);
+            }
+        }
+
+        #[test]
+        fn poll_ready_empty_returns_zero() {
+            // SAFETY: no preconditions for new.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            let mut out_fds = [0i32; 4];
+            let mut out_events = [0i32; 4];
+            // SAFETY: p valid; buffers have 4 slots; 0ms timeout returns at once.
+            let n = unsafe {
+                hew_io_poller_poll_ready(p, 0, out_fds.as_mut_ptr(), out_events.as_mut_ptr(), 4)
+            };
+            assert_eq!(n, 0);
+            // SAFETY: p valid, surrendering ownership.
+            unsafe { hew_io_poller_stop(p) };
+        }
+
+        #[test]
+        fn poll_ready_zero_cap_returns_zero() {
+            // SAFETY: no preconditions for new.
+            let p = unsafe { hew_io_poller_new() };
+            assert!(!p.is_null());
+            // SAFETY: p valid; out_cap 0 means no slots, returns 0 without
+            // touching the (null) buffers.
+            let n = unsafe {
+                hew_io_poller_poll_ready(p, 0, std::ptr::null_mut(), std::ptr::null_mut(), 0)
+            };
+            assert_eq!(n, 0);
+            // SAFETY: p valid, surrendering ownership.
+            unsafe { hew_io_poller_stop(p) };
         }
 
         #[test]

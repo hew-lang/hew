@@ -44,8 +44,7 @@ actor Logger {
 // If any child crashes, only that child restarts.
 supervisor ServiceTree {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 60;
+    intensity: 5 within 60s;
 
     child counter: Counter(value: 100);
     child debug_log: Logger(level: 1);
@@ -56,8 +55,7 @@ supervisor ServiceTree {
 // If any child crashes, ALL children restart.
 supervisor StrictPool {
     strategy: one_for_all;
-    max_restarts: 3;
-    window: 30;
+    intensity: 3 within 30s;
 
     child a: Counter(value: 0);
     child b: Counter(value: 0);

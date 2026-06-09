@@ -115,9 +115,12 @@ pub fn mangle(origin_name: &str, type_args: &[ResolvedTy]) -> String {
 ///
 /// Uses `_` as the nested separator so a top-level `$`-separated mangle
 /// can recover individual args by splitting on `$` alone. Returns names
-/// that are stable across runs (no hash, no monotonic counter).
+/// that are stable across runs (no hash, no monotonic counter). The
+/// rendering is structural and injective over the `ResolvedTy` variants
+/// (distinct types render to distinct fragments), so it is also the
+/// canonical key source for codegen-synthesised per-type thunks.
 #[must_use]
-pub(crate) fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
+pub fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
     match ty {
         ResolvedTy::I8 => "i8".to_string(),
         ResolvedTy::I16 => "i16".to_string(),

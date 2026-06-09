@@ -61,16 +61,19 @@ impl Resource for File {
 }
 
 machine Holder<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn main() {
@@ -104,13 +107,16 @@ fn main() {
 fn machine_mono_pass_uniform_path_includes_non_generic_machines() {
     let source = r"
 machine TrafficLight {
+    events {
+        Tick;
+    }
+
     state Red;
     state Green;
 
-    event Tick;
 
-    on Tick: Red -> Green;
-    on Tick: Green -> Red;
+    on Tick: Red => Green;
+    on Tick: Green => Red;
 }
 
 fn main() {}
@@ -280,16 +286,19 @@ fn machine_mono_residual_check_does_not_false_positive_on_unrelated_type_param_n
 type T { value: i64; }
 
 machine Holder {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn make<U>(u: U) -> U { u }
@@ -334,16 +343,19 @@ impl Resource for Socket {
 }
 
 machine Lifecycle<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: T; }
 
-    event Start { handle: T; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn main() {
@@ -529,13 +541,16 @@ fn machine_mono_emits_cap_diagnostic_when_distinct_instantiations_exceed_cap() {
 fn machine_mono_walker_covers_top_level_record_annotation() {
     let source = r"
 machine TrafficLight {
+    events {
+        Tick;
+    }
+
     state Red;
     state Green;
 
-    event Tick;
 
-    on Tick: Red -> Green;
-    on Tick: Green -> Red;
+    on Tick: Red => Green;
+    on Tick: Green => Red;
 }
 
 record Dashboard {
@@ -570,13 +585,16 @@ fn main() {}
 fn machine_mono_walker_covers_top_level_type_decl_enum_variant_payload() {
     let source = r"
 machine TrafficLight {
+    events {
+        Tick;
+    }
+
     state Red;
     state Green;
 
-    event Tick;
 
-    on Tick: Red -> Green;
-    on Tick: Green -> Red;
+    on Tick: Red => Green;
+    on Tick: Green => Red;
 }
 
 enum Signal {
@@ -617,8 +635,7 @@ actor Worker {
 
 supervisor Root {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 10;
+    intensity: 3 within 10s;
 
     child w1: Worker(id: 1);
     child w2: Worker(id: 2);
@@ -721,16 +738,19 @@ fn machine_mono_residual_check_does_not_false_positive_on_concrete_type_with_sam
 type T { value: i64; }
 
 machine Holder<X> {
+    events {
+        Start { handle: X; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: X; }
 
-    event Start { handle: X; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 fn make<T>(t: T) -> T {
@@ -776,16 +796,19 @@ fn machine_mono_impl_block_residual_check_does_not_get_masked_by_same_name_top_l
 type T { value: i64; }
 
 machine Holder<X> {
+    events {
+        Start { handle: X; }
+        Stop;
+    }
+
     state Idle;
     state Active { handle: X; }
 
-    event Start { handle: X; }
-    event Stop;
 
-    on Start: Idle -> Active { Active { handle: event.handle } }
-    on Stop: Active -> Idle { Idle }
-    on Start: _ -> _ { state }
-    on Stop: _ -> _ { state }
+    on Start: Idle => Active { Active { handle: event.handle } }
+    on Stop: Active => Idle { Idle }
+    on Start: _ => _ { state }
+    on Stop: _ => _ { state }
 }
 
 type Wrap<T> { value: T; }

@@ -46,8 +46,7 @@ actor Worker {
 // No boilerplate, no factory functions, no lifecycle hooks.
 supervisor WorkerPool {
     strategy: one_for_one;
-    max_restarts: 10;
-    window: 60;
+    intensity: 10 within 60s;
 
     child w1: Worker(id: 1, processed: 0);
     child w2: Worker(id: 2, processed: 0);

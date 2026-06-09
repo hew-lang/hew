@@ -258,6 +258,10 @@ impl Checker {
                 }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                // Record the pattern resolution so HIR lowering can consume
+                // the same `pattern_resolutions` side-table that powers
+                // `WhileLet` and `Match` lowering.
+                self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
                 let then_ty = self.check_block(body, expected);
                 self.env.pop_scope();
                 if let Some(block) = else_body {
@@ -655,7 +659,28 @@ impl Checker {
                     }
                 }
 
-                let target_ty = self.synthesize(&target.0, &target.1);
+                // Index targets (`obj[k] = rhs`) synthesise in assignment
+                // context so the target type is the element/value type the RHS
+                // must match — for `HashMap<K, V>` this is the bare `V` (a read
+                // would instead yield `Option<V>`), and the checker records the
+                // `hew_hashmap_insert_layout` runtime call at the index span.
+                let target_ty = match &target.0 {
+                    Expr::Index { object, index } => {
+                        let ty = self.synthesize_index(
+                            object,
+                            index,
+                            &target.1,
+                            IndexContext::AssignTarget,
+                        );
+                        // `synthesize_index` is called directly here (not via the
+                        // `synthesize` dispatch tail), so stamp `expr_types` for
+                        // the target span ourselves — downstream HIR/MIR read the
+                        // checker-authoritative type at this site.
+                        self.record_type(&target.1, &ty);
+                        ty
+                    }
+                    _ => self.synthesize(&target.0, &target.1),
+                };
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the MLIR
                 // compound-assignment paths can read signedness without
@@ -723,6 +748,12 @@ impl Checker {
                 }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                // Record the pattern resolution so HIR lowering can consume
+                // the same `pattern_resolutions` side-table that powers
+                // `WhileLet` and `Match` lowering — without this entry HIR
+                // cannot resolve the constructor's `(type_name, variant_name)`
+                // identity or payload-binding field indices for `if-let`.
+                self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
                 self.check_block(body, None);
                 self.env.pop_scope();
                 if let Some(block) = else_body {

@@ -121,20 +121,6 @@ fn emit_ll(pipeline: IrPipeline, module_name: &str) -> String {
     std::fs::read_to_string(&ll_path).expect("read emitted .ll")
 }
 
-fn emit_error(pipeline: IrPipeline, module_name: &str) -> String {
-    let tmp = std::env::temp_dir().join(format!("hew-vec-layout-{module_name}"));
-    std::fs::create_dir_all(&tmp).expect("create out_dir");
-    let options = EmitOptions {
-        module_name,
-        out_dir: &tmp,
-        native: false,
-        wasm: false,
-    };
-    emit_module(&pipeline, &options)
-        .expect_err("layout Vec pipeline must fail closed")
-        .to_string()
-}
-
 #[test]
 fn vec_layout_new_constructs_with_descriptor() {
     let vec_ty = ResolvedTy::Named {
@@ -191,7 +177,10 @@ fn vec_bitcopy_tuple_new_constructs_with_plain_descriptor() {
 }
 
 #[test]
-fn vec_non_bitcopy_tuple_new_constructor_is_not_descriptor_backed() {
+fn vec_non_bitcopy_tuple_new_constructor_routes_to_owned_abi() {
+    // W5.016 F2: a non-BitCopy (owned) tuple element routes `Vec::new` through
+    // the owned-element ABI (`hew_vec_new_with_elem_layout`) with a
+    // thunk-bearing `HewVecElemLayout` descriptor, rather than failing closed.
     let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::String]);
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
@@ -209,15 +198,150 @@ fn vec_non_bitcopy_tuple_new_constructor_is_not_descriptor_backed() {
             next: 1,
         },
     };
-    let error = emit_error(
+    let ll = emit_ll(
         base_pipeline(block, vec![vec_ty], ResolvedTy::Unit),
-        "tuple_new",
+        "tuple_new_owned",
     );
 
     assert!(
-        error.contains("Vec::new has no constructor lowering for element type Tuple"),
-        "non-BitCopy tuple Vec::new must fail closed instead of fabricating a \
-         Plain layout descriptor: {error}"
+        ll.contains("declare ptr @hew_vec_new_with_elem_layout(ptr)"),
+        "owned tuple Vec::new must declare the owned constructor: {ll}"
+    );
+    assert!(
+        ll.contains("call ptr @hew_vec_new_with_elem_layout"),
+        "owned tuple Vec::new must call the owned constructor: {ll}"
+    );
+    // The owned descriptor's clone/drop thunks point at the synthesized
+    // per-tuple in-place helpers (non-null in the descriptor).
+    assert!(
+        ll.contains("__hew_tuple_clone_inplace_") && ll.contains("__hew_tuple_drop_inplace_"),
+        "owned tuple descriptor must reference the synthesized tuple thunks: {ll}"
+    );
+}
+
+#[test]
+fn vec_payload_free_enum_new_routes_bitcopy_not_owned() {
+    // W5.016 regression: a payload-free enum (`enum Color { Red; Green; Blue }`)
+    // owns no heap, so `Vec<Color>::new` MUST route the BitCopy `_layout`
+    // constructor — the SAME ABI the push/get sides use for it — and never the
+    // owned `hew_vec_new_with_elem_layout`. The pre-fix constructor predicate
+    // (`!resolved_ty_is_plain_bitcopy && owned_elem_thunk_key.is_some()`)
+    // over-routed every enum to owned because the bitcopy probe had no enum arm,
+    // constructing an owned handle that the BitCopy push then aborted on.
+    use hew_mir::{EnumLayout, MachineVariantLayout};
+
+    let enum_ty = ResolvedTy::Named {
+        name: "Color".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    let vec_ty = ResolvedTy::Named {
+        name: "Vec".to_string(),
+        args: vec![enum_ty.clone()],
+        builtin: None,
+    };
+    let block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![],
+        terminator: Terminator::Call {
+            callee: "Vec::new".to_string(),
+            args: vec![],
+            dest: Some(Place::Local(0)),
+            next: 1,
+        },
+    };
+    let mut pipeline = base_pipeline(block, vec![vec_ty], ResolvedTy::Unit);
+    pipeline.record_layouts = vec![];
+    pipeline.enum_layouts = vec![EnumLayout {
+        name: "Color".to_string(),
+        tag_width: 1,
+        variants: vec![
+            MachineVariantLayout {
+                name: "Red".to_string(),
+                field_tys: vec![],
+            },
+            MachineVariantLayout {
+                name: "Green".to_string(),
+                field_tys: vec![],
+            },
+            MachineVariantLayout {
+                name: "Blue".to_string(),
+                field_tys: vec![],
+            },
+        ],
+        is_indirect: false,
+    }];
+
+    let ll = emit_ll(pipeline, "payload_free_enum_new");
+
+    assert!(
+        ll.contains("call ptr @hew_vec_new_with_layout"),
+        "payload-free enum Vec::new must route the BitCopy constructor:\n{ll}"
+    );
+    assert!(
+        !ll.contains("hew_vec_new_with_elem_layout"),
+        "payload-free enum Vec::new must NOT route the owned constructor:\n{ll}"
+    );
+}
+
+#[test]
+fn vec_scalar_payload_enum_new_routes_bitcopy_not_owned() {
+    // W5.016 regression: an all-scalar-payload enum (`enum Tag { A(i64); B(i64) }`)
+    // owns no heap, so its `Vec` must stay on the BitCopy `_layout` constructor —
+    // the owned ABI is reserved for heap-owning elements. Same root cause as the
+    // payload-free case: the bitcopy probe had no enum arm, so every enum
+    // wrongly resolved as non-bitcopy and over-routed to owned.
+    use hew_mir::{EnumLayout, MachineVariantLayout};
+
+    let enum_ty = ResolvedTy::Named {
+        name: "Tag".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    let vec_ty = ResolvedTy::Named {
+        name: "Vec".to_string(),
+        args: vec![enum_ty.clone()],
+        builtin: None,
+    };
+    let block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![],
+        terminator: Terminator::Call {
+            callee: "Vec::new".to_string(),
+            args: vec![],
+            dest: Some(Place::Local(0)),
+            next: 1,
+        },
+    };
+    let mut pipeline = base_pipeline(block, vec![vec_ty], ResolvedTy::Unit);
+    pipeline.record_layouts = vec![];
+    pipeline.enum_layouts = vec![EnumLayout {
+        name: "Tag".to_string(),
+        tag_width: 1,
+        variants: vec![
+            MachineVariantLayout {
+                name: "A".to_string(),
+                field_tys: vec![ResolvedTy::I64],
+            },
+            MachineVariantLayout {
+                name: "B".to_string(),
+                field_tys: vec![ResolvedTy::I64],
+            },
+        ],
+        is_indirect: false,
+    }];
+
+    let ll = emit_ll(pipeline, "scalar_payload_enum_new");
+
+    assert!(
+        ll.contains("call ptr @hew_vec_new_with_layout"),
+        "scalar-payload enum Vec::new must route the BitCopy constructor:\n{ll}"
+    );
+    assert!(
+        !ll.contains("hew_vec_new_with_elem_layout"),
+        "scalar-payload enum Vec::new must NOT route the owned constructor:\n{ll}"
     );
 }
 

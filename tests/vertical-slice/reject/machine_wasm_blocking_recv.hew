@@ -8,18 +8,20 @@
 import std::channel::channel;
 
 machine M {
+    events {
+        Tick;
+    }
+
     state Idle;
     state Done;
-    event Tick;
-    on Tick: Idle -> Done {
+
+    on Tick: Idle => Done {
         let (_tx, rx): (Sender<i64>, Receiver<i64>) = channel.new(8);
         let _ = rx.recv();
         Done
     }
-    default { self }
+
+    default { state }
 }
 
 fn main() {}
-
-
-

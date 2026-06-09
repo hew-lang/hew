@@ -1652,8 +1652,24 @@ impl Checker {
             is_indirect: td.is_indirect,
         };
 
-        // Register with trait registry for Send/Frozen derivation
-        let field_types: Vec<_> = type_def.fields.values().cloned().collect();
+        // Register with trait registry for Send/Frozen/Copy/... derivation.
+        //
+        // Structural markers (`Copy`, `Send`, `Clone`, …) derive from a Named
+        // type's reachable member types. For a struct/record those are its
+        // fields; for an ENUM they are the variant PAYLOAD types — an enum with
+        // a `string`-payload variant is NOT Copy even though it has no named
+        // fields. The marker registry stores member types by name, and its
+        // derivation walks them with `all(...)` (vacuously true on an empty
+        // list), so an enum registered with only its (empty) `fields` would be
+        // spuriously Copy/Frozen. Register the variant-inclusive member set for
+        // enums so the marker derivation is correct (W5.016: the spurious-Copy
+        // bug routed owned-payload enum Vecs down the BitCopy path → runtime
+        // stride panic).
+        let field_types: Vec<_> = if kind == TypeDefKind::Enum {
+            Self::structural_member_types_for_type(&type_def)
+        } else {
+            type_def.fields.values().cloned().collect()
+        };
         let all_fields_encodable = td.wire.is_none()
             && kind == TypeDefKind::Struct
             && field_types
@@ -5540,7 +5556,7 @@ impl Checker {
                 }
                 Some(format!(
                     "module file contains unsupported slice annotations in signature(s): {}. \
-                     MLIR lowering cannot lower slice types yet",
+                     slice type composite lowering is not yet implemented",
                     info.unsupported_type_signatures.join(", ")
                 ))
             }

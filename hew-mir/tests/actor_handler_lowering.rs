@@ -343,6 +343,7 @@ fn supervisor_child_layout_mirrors_cycle_capable_actor_metadata() {
             is_pool: false,
             slot_index: 0,
             init_args: Vec::new(),
+            shutdown: None,
         }],
         span: 0..0,
     };

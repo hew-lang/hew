@@ -31,6 +31,7 @@ extern crate hew_std_net_smtp;
 extern crate hew_std_net_tls;
 extern crate hew_std_net_url;
 extern crate hew_std_net_websocket;
+extern crate hew_std_random;
 extern crate hew_std_sort;
 extern crate hew_std_text_regex;
 extern crate hew_std_text_semver;

@@ -413,9 +413,12 @@ mod tests {
 }
 
 machine Traffic {
-    event Start;
+    events {
+        Start;
+    }
+
     state Idle;
-    on Start: Idle -> Idle;
+    on Start: Idle => Idle;
 }";
         let pr = parse(source);
         let symbols = build_document_symbols(source, &pr);

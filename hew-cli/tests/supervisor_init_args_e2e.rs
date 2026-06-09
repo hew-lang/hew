@@ -28,8 +28,7 @@ fn supervisor_child_init_args_seed_actor_state() {
 }
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child w1: Worker(id: 7);
 }
 fn main() {
@@ -85,8 +84,7 @@ fn supervisor_child_i32_fields_reversed_arg_order() {
 }
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child w: Worker(a: 7, b: 99);
 }
 fn main() {
@@ -105,8 +103,7 @@ fn main() {
 }
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child w: Worker(b: 99, a: 7);
 }
 fn main() {
@@ -165,8 +162,7 @@ fn supervisor_child_mixed_width_fields_reversed_arg_order() {
 }
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child w: Worker(z: true, x: 42, y: 1234567890123);
 }
 fn main() {
@@ -216,8 +212,7 @@ fn supervisor_stateful_child_without_init_args_fails_at_compile_time() {
 }
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child w1: Worker;
 }
 fn main() {
@@ -274,8 +269,7 @@ fn supervisor_child_declared_default_fills_omitted_field() {
 }
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child w: Worker(a: 7);
 }
 fn main() {
@@ -323,8 +317,7 @@ fn supervisor_child_all_declared_defaults_no_explicit_args() {
 }
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child w: Worker;
 }
 fn main() {
@@ -373,8 +366,7 @@ fn supervisor_child_explicit_arg_overrides_declared_default() {
 }
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child w: Worker(b: 50);
 }
 fn main() {
@@ -427,8 +419,7 @@ fn supervisor_child_required_field_omitted_is_compile_error() {
 }
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child w: Worker;
 }
 fn main() {
@@ -477,8 +468,7 @@ fn supervisor_child_i32_field_with_declared_default() {
 }
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
     child w: Worker(b: 99);
 }
 fn main() {

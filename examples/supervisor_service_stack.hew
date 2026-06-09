@@ -65,8 +65,7 @@ actor ApiHandler {
 // If cache crashes, only cache restarts (DB and API are independent of it).
 supervisor ServiceStack {
     strategy: rest_for_one;
-    max_restarts: 5;
-    window: 60;
+    intensity: 5 within 60s;
 
     child cache: Cache(capacity: 1000, entries: 0);
     child db: Database(connections: 4);

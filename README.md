@@ -214,7 +214,6 @@ source.hew → Lexer → Parser → Type Checker → HIR → MIR → LLVM IR/obj
 - **hew-lexer/** — Tokenizer
 - **hew-parser/** — Recursive-descent + Pratt precedence parser
 - **hew-types/** — Bidirectional type checker with Hindley-Milner inference; warnings carry source-module attribution so diagnostics in multi-module programs identify which module triggered each warning
-- **hew-serialize/** — MessagePack AST serialization
 - **hew-hir/**, **hew-mir/** — High-level and middle-level intermediate representations of the typed program
 - **hew-codegen-rs/** — LLVM-backed code generation via inkwell (the compiler backend, embedded in the `hew` binary)
 - **hew-runtime/** — Pure Rust actor runtime (`libhew_runtime.a`) with node mesh networking, QUIC transport, SWIM cluster membership, and cross-node actor registry; also compiles for WASM targets

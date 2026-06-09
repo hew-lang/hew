@@ -1,0 +1,41 @@
+// Runnable fixture: the `default { state }` arm makes an unhandled
+// (state, event) cell STAY in the current state instead of trapping.
+//
+// `Drain` has an explicit `Filling => Draining` rule; every other cell
+// (e.g. `(Draining, Fill)`, `(Filling, Fill)`) is unhandled and so the
+// `default` arm keeps the machine where it is. The oracle below proves
+// the stay semantics: stepping an unhandled event is a no-op, and the
+// handled `Drain` event still transitions.
+//
+// Negative control: removing the `default { state }` line makes this
+// machine fail exhaustiveness at compile time — `default` is the only
+// thing that permits the uncovered cells.
+machine Tank {
+    events {
+        Fill;
+        Drain;
+    }
+
+    state Filling;
+    state Draining;
+
+    on Drain: Filling => Draining {
+        Draining
+    }
+
+    default { state }
+}
+
+fn main() {
+    var t = Filling;
+    println(t.state_name());
+    // Unhandled (Filling, Fill): stays in Filling.
+    t.step(Fill);
+    println(t.state_name());
+    // Handled (Filling, Drain): transitions to Draining.
+    t.step(Drain);
+    println(t.state_name());
+    // Unhandled (Draining, Drain): stays in Draining.
+    t.step(Drain);
+    println(t.state_name());
+}

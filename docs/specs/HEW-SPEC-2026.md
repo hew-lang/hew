@@ -900,6 +900,35 @@ hew doc std/
 
 This produces an index plus per-module pages for the shipped `std/` sources.
 
+#### 3.5.3 Per-module type namespacing
+
+Types defined in different modules are distinct even if they share a name. A
+`Point` defined in `geometry` and a `Point` defined in `graphics` are unrelated
+types; the qualified names `geometry::Point` and `graphics::Point` disambiguate
+them everywhere — in type annotations, `match` patterns, and struct literals.
+
+```hew
+import geometry;
+import graphics;
+
+let gp: geometry::Point = geometry::Point { x: 0.0, y: 0.0 };
+let sp: graphics::Point = graphics::Point { x: 0,   y: 0   };
+```
+
+**Import aliasing** resolves ambiguity at the module level:
+
+```hew
+import geometry as geo;
+import graphics  as gfx;
+
+let p1: geo::Point = geo::Point { x: 1.0, y: 2.0 };
+let p2: gfx::Point = gfx::Point { x: 10, y: 20 };
+```
+
+Within a module, all locally-defined types are in scope unqualified. The
+compiler rejects ambiguous unqualified references when two imports export the
+same name; qualifying with the module (or alias) resolves the conflict.
+
 ---
 
 ### 3.6 Trait System
@@ -1074,9 +1103,14 @@ fn broadcast<T: Send>(message: T, recipients: Vec<LocalPid<Receiver>>) {
 
 **Trait objects (`dyn Trait`):**
 
-> See HEW-FUTURE.md §2.2 for `dyn Trait` object types, object-safety
-> rules, associated-type bounds, and higher-ranked trait bounds —
-> targeted for v0.6, gated on coherence rules stabilising.
+> `dyn Trait` in type position is admitted by the parser and grammar
+> in v0.5 — the syntax `dyn TraitBound` is valid and parses without
+> error. Type-checking and codegen for trait objects are partial: basic
+> dispatch through a `dyn` reference works for simple cases, but
+> object-safety enforcement, associated-type bounds, and higher-ranked
+> trait bounds remain incomplete. See HEW-FUTURE.md §2.2 for the
+> full object-type roadmap. This is the same status-note pattern as
+> §3.11 (machine codegen) — admitted surface, partial implementation.
 
 ---
 
@@ -2170,6 +2204,21 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 
 `HashMap<K, V>` is also built in. `HashMap.get()` returns `Option<V>`.
 
+**Bracket indexing** — a `HashMap<K, V>` supports `m[k]` subscript syntax keyed
+by the same `K: Hash + Eq` bound every HashMap method enforces. A read `m[k]`
+returns `Option<V>` (it is sugar for `m.get(k)`, so a missing key yields `None`
+rather than aborting), and an assignment `m[k] = v` inserts or overwrites the
+entry (sugar for `m.insert(k, v)`). Indexing with a key of the wrong type is a
+type error. This differs from `Vec<T>` indexing, where `v[i]` takes an `i64`
+index and returns the bare element `T`.
+
+```hew
+var m: HashMap<string, i64> = HashMap::new();
+m["answer"] = 42;        // insert/overwrite via index-assignment
+let hit = m["answer"];   // Option<i64> — Some(42)
+let miss = m["absent"];  // Option<i64> — None
+```
+
 **Current implementation boundary** — although the surface spelling is generic,
 the shipped runtime/codegen ABI currently supports only `HashMap<string, V>`
 where `V` is `string`, `bool`, `char`, any integer type, any float type, or
@@ -2300,8 +2349,6 @@ Eq, Ord, Hash
 
 // Functions
 print, println
-read_file
-string_length, string_char_at, string_equals, string_concat, string_from_char
 panic, assert, debug_assert
 ```
 
@@ -2377,21 +2424,39 @@ with per-state fields and compiler-checked transition logic.
 
 ```hew
 machine Name {
+    // Input-event vocabulary — declared up front (mandatory header)
+    events {
+        EventX;                            // event with no payload
+        EventY { payload: Type; }          // event with payload
+    }
+
+    // Output vocabulary — optional; lists events this machine may `emit`
+    emits {
+        EventX;
+    }
+
     // States — at least two required
-    state StateA;                           // unit state (no fields)
-    state StateB { field: Type; }          // state with data
+    state StateA;                          // unit state (no fields)
+    state StateB { field: Type; }         // state with data
 
-    // Events — at least one required
-    event EventX;                           // event with no payload
-    event EventY { payload: Type; }        // event with payload
+    // Transitions: on Event: Source => Target { body }
+    on EventX: StateA => StateB { StateB } // explicit body returns target value
+    on EventY: StateA => StateB { StateB { field: event.payload } }
 
-    // Transitions: on Event: Source -> Target { body }
-    on EventX: StateA -> StateB;           // body-less: target constructed implicitly
-    on EventX: StateB -> StateA { StateA } // explicit body returns target value
-    on EventY: StateA -> StateB { StateB { field: event.payload } }
+    // Head binding: name payload fields at the rule site
+    on EventY(payload): StateB => StateA { StateA }
 
-    // Wildcard — applies when no specific transition matches
-    on EventX: _ -> _ { state }            // _ -> _ means "stay in current state"
+    // Self-transition with reenter (runs exit/entry even when state is unchanged)
+    on EventX: StateB => StateB reenter { StateB { field: self.field } }
+
+    // Wildcard — applies in all unhandled source states for this event
+    on EventX: _ => _ { state }           // _ => _ means "stay in current state"
+
+    // Depth-1 composite state (substate block, depth > 1 is v0.6)
+    state Parent {
+        initial state Sub1;
+        state Sub2 { value: i64; }
+    }
 
     // Default handler — fallback for ALL unmatched (state, event) pairs
     default { state }
@@ -2401,24 +2466,40 @@ machine Name {
 **Grammar (EBNF, from `docs/specs/grammar.ebnf`):**
 
 ```ebnf
-MachineDecl   = "machine" Ident "{" { MachineItem } "}" ;
-MachineItem   = MachineState | MachineEvent | MachineTransition | MachineDefault ;
-MachineState  = "state" Ident ( "{" { StateBodyItem } "}" )? ";"? ;
-StateBodyItem = ( Ident ":" Type (";" | ",") )      (* field declaration *)
-              | ( "entry" Block )                    (* entry hook — v0.5.0 *)
-              | ( "exit"  Block )                    (* exit hook  — v0.5.0 *)
-              ;
-MachineEvent  = "event" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
-MachineTransition = "on" Ident ":" StatePattern "->" StatePattern
-                    ("when" Expr)? (Block | "{" FieldInitList "}" | ";") ;
-MachineDefault = "default" (Block | ";") ;
+MachineDecl    = "machine" Ident TypeParams? "{"
+                   EventsHeader
+                   [ EmitsHeader ]
+                   { StateDecl }
+                   { TransitionDecl }
+                   [ DefaultArm ]
+                 "}" ;
+
+EventsHeader   = "events" "{" { EventDecl } "}" ;
+EventDecl      = Ident ( ";" | "{" { Ident ":" Type (";" | ",") } "}" ";"? ) ;
+EmitsHeader    = "emits" "{" { Ident ";" } "}" ;
+
+StateDecl      = "state" Ident ( "{"
+                   { Ident ":" Type (";" | ",") }  (* field declarations *)
+                   [ "entry" Block ]                (* entry hook — v0.5.0 *)
+                   [ "exit"  Block ]                (* exit hook  — v0.5.0 *)
+                   { CompositeMember }              (* depth-1 composite only *)
+                 "}" )? ";"? ;
+CompositeMember = [ "initial" ] StateDecl ;         (* exactly one "initial" required *)
+
+TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
+                 StatePattern "=>" StatePattern
+                 [ "reenter" ] [ "when" Expr ] TransitionBody ;
+TransitionBody = ";" | "{" FieldInitList "}" | Block ;
+StatePattern   = Ident | "_" ;
+DefaultArm     = "default" "{" "state" "}" ;
 
 (* Emit expression (usable inside transition bodies and entry/exit blocks): *)
 EmitExpr = "emit" Ident ( "{" FieldInitList "}" )? ;
 ```
 
-> **Nested states are reserved** — a `state` declaration inside a state body
-> is a parse error.  Hierarchical states are planned for v0.6.
+> **Depth > 1 nesting is reserved** — a substate body may not itself contain
+> substates.  Depth-1 composite state blocks ship in v0.5; deeper nesting is
+> reserved for v0.6.
 
 **Visualisation (v0.5.0):** `hew machine diagram <file.hew>` renders any
 `machine` declaration as a Mermaid state diagram, Graphviz DOT, or JSON
@@ -2478,10 +2559,10 @@ machine Elevator {
     event GoTo  { floor: i64; }
     event Arrive;
 
-    on GoTo: Stopped -> Moving {
+    on GoTo: Stopped => Moving {
         Moving { from: state.floor, to: event.floor }   // state.floor, event.floor
     }
-    on Arrive: Moving -> Stopped {
+    on Arrive: Moving => Stopped {
         Stopped { floor: state.to }
     }
 
@@ -2494,16 +2575,16 @@ machine Elevator {
 list is written:
 
 ```hew
-on Work: Active -> Active { count: state.count + event.amount }
+on Work: Active => Active { count: state.count + event.amount }
 // equivalent to:
-// on Work: Active -> Active { Active { count: state.count + event.amount } }
+// on Work: Active => Active { Active { count: state.count + event.amount } }
 ```
 
 **Body-less shorthand** — when a transition has no body, the compiler
 constructs the target state's zero-field (unit) variant automatically:
 
 ```hew
-on Toggle: Off -> On;   // equivalent to: on Toggle: Off -> On { On }
+on Toggle: Off => On;   // equivalent to: on Toggle: Off => On { On }
 ```
 
 ### 3.11.4 Guard Conditions (`when`)
@@ -2511,10 +2592,10 @@ on Toggle: Off -> On;   // equivalent to: on Toggle: Off -> On { On }
 A transition may carry a boolean guard expression after the target state name:
 
 ```hew
-on Request: Allowing -> Allowing when state.tokens > 1 {
+on Request: Allowing => Allowing when state.tokens > 1 {
     Allowing { tokens: state.tokens - 1 }
 }
-on Request: Allowing -> Throttled when state.tokens <= 1;
+on Request: Allowing => Throttled when state.tokens <= 1;
 ```
 
 Guards are evaluated in declaration order.  The first transition whose event
@@ -2526,7 +2607,7 @@ then to `default`.
 
 `_` in the source position matches any state.  `_` in the target position means
 "return a value of the machine type" (any variant, not a specific one).  The
-conventional identity pattern `on E: _ -> _ { state }` keeps the current state
+conventional identity pattern `on E: _ => _ { state }` keeps the current state
 unchanged.
 
 Priority order (highest to lowest):
@@ -3421,26 +3502,40 @@ Hew's supervision is modeled after OTP concepts with first-class language syntax
 
 ```hew
 supervisor MyPool {
-    strategy: one_for_one
-    max_restarts: 5
-    window: 60
-    child worker1: Worker(1, 0)
-    child worker2: Worker(2, 0) transient
-    child logger: Logger(3) temporary
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child worker1: Worker(id: 1, count: 0);
+    child worker2: Worker(id: 2, count: 0) restart: transient;
+    child logger: Logger(level: 3) restart: temporary shutdown: 10s;
 }
 ```
 
 **Fields:**
 
-- `strategy`: Restart strategy (`one_for_one`, `one_for_all`, `rest_for_one`)
-- `max_restarts`: Maximum restarts allowed within the time window (default: 5)
-- `window`: Time window in seconds for restart budget tracking (default: 60)
+- `strategy`: Restart strategy (`one_for_one`, `one_for_all`, `rest_for_one`,
+  `simple_one_for_one`). Default `one_for_one`; the formatter always writes it
+  explicitly so the restart contract is never silently defaulted.
+- `intensity: N within <duration>`: the restart budget — at most `N` restarts
+  within the rolling `<duration>` window. The window is a duration literal
+  (`60s`, `5m`, `1h`), not a bare integer. Default `10 within 5s`.
 
 **Child specifications:**
 
-- `child <name>: <ActorType>(<init_args>)` — declares a supervised child actor
-- Optional restart policy suffix: `permanent` (default), `transient`, `temporary`
-- Child actor types must be declared before the supervisor
+- `child <name>: <ActorType>(<field>: <expr>, ...)` — a static supervised child.
+  Init args are named (positional args are rejected with a migration diagnostic).
+- `pool <name>: <ActorType>(...)` — a dynamic pool child (only under
+  `simple_one_for_one`); the args are the per-spawn template.
+- Optional per-child suffix clauses, accepted in any order:
+  - `restart: permanent | transient | temporary` (default `permanent`). This is
+    the only restart spelling — bare `T permanent` and `with restart:` were
+    removed.
+  - `shutdown: <duration> | brutal_kill | infinity` — the graceful-stop
+    deadline (default `5s`). `infinity` is accepted but not yet enforced (no
+    per-child deadline wheel in v0.5).
+  - `wired_to: { <param>: <sibling>, ... }` — passes a sibling child's handle to
+    this child's init param.
+- Child actor types must be declared before the supervisor.
 
 ### 5.2 Restart Semantics (normative)
 
@@ -3467,11 +3562,9 @@ Then:
 
 ### 5.4 Restart Budget and Escalation
 
-Supervisor has `(max_restarts, window)`; exceeding the restart budget escalates failure to its parent supervisor. The runtime tracks restarts in a sliding window.
+The supervisor's `intensity: N within <window>` budget caps restarts; exceeding it escalates failure to the parent supervisor. The runtime tracks restarts in a sliding window.
 
-**Exponential backoff:** After a crash, the runtime applies exponential backoff (starting at 100ms, doubling each crash, max 30s). If the backoff period hasn't elapsed when the next crash occurs, the restart is delayed — not abandoned.
-
-**Circuit breaker:** Per-child circuit breaker transitions through CLOSED → OPEN → HALF_OPEN states to prevent cascading restart storms.
+**Exponential backoff** and **circuit breaker** are policy objects in `std::supervision`, not supervisor keywords — Hew leans on the standard library rather than the grammar for these tunable policies.
 
 ### 5.5 Nested Supervisors
 
@@ -3485,19 +3578,19 @@ The intended v0.6 shape is:
 
 ```hew
 supervisor Inner {
-    strategy: one_for_one
-    max_restarts: 3
-    window: 60
-    child w1: Worker(1, 0)
-    child w2: Worker(2, 0)
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child w1: Worker(id: 1, count: 0);
+    child w2: Worker(id: 2, count: 0);
 }
 
 supervisor Root {
-    strategy: one_for_one
-    max_restarts: 5
-    window: 60
-    child pool: Inner
-    child cache: CacheActor(1000)
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child pool: Inner;
+    child cache: CacheActor(capacity: 1000);
 }
 ```
 
@@ -3748,7 +3841,7 @@ Hew tooling provides:
 
 ### 7.3 Encoding Formats
 
-Hew supports multiple encoding formats for wire types. The primary internal format (HBF) is designed for efficiency; JSON encoding provides external interoperability.
+Hew supports multiple encoding formats. The runtime envelope (actor-to-actor transport) uses CBOR (ratified in R62; the legacy HBF path is being retired — some `hew-runtime` modules still reference it during the migration). The `std::encoding::*` surface provides user-level wire type serialization for cross-service and file I/O use cases.
 
 #### 7.3.1 MessagePack — Default Binary Encoding
 
@@ -3756,7 +3849,7 @@ The MessagePack format is the primary shipped binary wire encoding for Hew wire 
 
 Design goals: compact representation, fast encode/decode, language interoperability, forward/backward compatibility.
 
-**Implementation reference:** The canonical MessagePack descriptor is implemented in `hew-wirecodec/src/msgpack_desc.rs` (codec emitter) and leverages the plan-based architecture in `hew-wirecodec/src/plan.rs`.
+**Implementation reference:** The canonical type descriptor is defined in `hew-types/src/type_descriptor.rs` (`TypeDescriptor = ResolvedTy`). The `hew-wirecodec` crate was retired; wire codec consumers should use `TypeDescriptor::canonical_string()` and the wire-kind surface in `hew-types`.
 
 ##### 7.3.1.1 Wire Type–to–MessagePack Mapping
 
@@ -3884,7 +3977,7 @@ To enable deterministic encoding (important for hashing, signatures, and compari
 
 ##### 7.3.1.9 Versioning Guarantees
 
-The MessagePack descriptor version is embedded in compiled plans (see `hew-wirecodec/src/plan.rs`). Wire types produced by the current compiler are compatible with any decoder that implements this §7.3.1 specification. Future versions of the codec will increment the plan version to signal breaking changes.
+Wire types produced by the current compiler are compatible with any decoder that implements this §7.3.1 specification. Future versions may increment the descriptor version to signal breaking changes.
 
 #### 7.3.2 JSON Encoding — External Interop
 
@@ -3999,10 +4092,10 @@ Encoders select format based on context:
 
 | Context                 | Default Format |
 | ----------------------- | -------------- |
-| Actor-to-actor (local)  | HBF            |
-| Actor-to-actor (remote) | HBF            |
+| Actor-to-actor (local)  | CBOR           |
+| Actor-to-actor (remote) | CBOR           |
 | HTTP API response       | JSON           |
-| File storage            | HBF            |
+| File storage            | user choice (`std::encoding::*`) |
 | Debugging/logging       | JSON           |
 
 Explicit format selection:
@@ -4174,9 +4267,9 @@ that provides it.
 
 ## 9. Runtime model
 
-> **Detailed design:** See [docs/research/runtime-design.md](../research/runtime-design.md) for the
-> complete M:N runtime architecture including C struct layouts, Chase-Lev deque pseudocode,
-> I/O poller integration, timer wheel design, blocking pool, and shutdown protocol.
+> **Detailed design:** The full M:N runtime architecture (C struct layouts, Chase-Lev deque,
+> I/O poller integration, timer wheel, blocking pool, shutdown protocol) is documented in
+> [`docs/dev/runtime-handle-api.md`](../dev/runtime-handle-api.md).
 
 ### 9.0 Scheduler Design
 
@@ -4418,7 +4511,7 @@ mailbox 100 overflow coalesce(request_id);
 
 ---
 
-## 12. Syntax and EBNF (audited for v0.2.0)
+## 12. Syntax and EBNF (edition 2026)
 
 The complete formal grammar is maintained in two files:
 
@@ -4438,9 +4531,9 @@ When the grammar files and this specification disagree, the parser implementatio
 ### 12.1 Built-in Numeric Types
 
 > **v0.5 policy:** Primitive integer annotations must use explicit width (`i8`–`i64`, `u8`–`u64`) or
-> platform width (`isize`/`usize`). The `i64` and `u64` aliases are removed in v0.5; the compiler
-> will reject them once alias removal lands. Integer literals continue to default to `i64`; literal
-> defaulting is not a user-nameable alias and does not affect wire shape or ABI.
+> platform width (`isize`/`usize`). The `int` and `uint` aliases are removed in v0.5; the compiler
+> rejects them. Integer literals continue to default to `i64`; literal defaulting is not a
+> user-nameable alias and does not affect wire shape or ABI.
 
 | Type                      | Size          | Description             |
 | ------------------------- | ------------- | ----------------------- |
@@ -4454,12 +4547,9 @@ When the grammar files and this specification disagree, the parser implementatio
 
 **Type aliases** (compile-time synonyms only — the aliased type is what the checker sees):
 
-| Alias   | Resolves to | Description                                    |
-| ------- | ----------- | ---------------------------------------------- |
-| `i64`   | `i64`       | Default integer type (fixed 64-bit)            |
-| `u64`  | `u64`       | Default unsigned integer type (fixed 64-bit)   |
-| `byte`  | `u8`        | Single byte                                    |
-| `f64`   | `f64`       | Default floating-point type                    |
+| Alias  | Resolves to | Description |
+| ------ | ----------- | ----------- |
+| `byte` | `u8`        | Single byte |
 
 Integer literals default to `i64`. Float literals default to `f64`.
 
@@ -4638,6 +4728,49 @@ ContinueStmt   = "continue" ("@" Ident)? ";" ;
 
 The lexer tokenizes `@outer`-style labels as a dedicated label token; the EBNF
 above shows their surface spelling.
+
+### 12.5 `if let` and `while let` (v0.5)
+
+`if let` and `while let` are first-class control-flow constructs for
+single-branch pattern matching. They ship in v0.5 and work on any type
+that supports pattern matching, including `Option<T>`, `Result<T, E>`,
+enums, and `machine` values.
+
+**`if let`** — execute a block only when a pattern matches, binding the
+extracted value:
+
+```hew
+let opt: Option<string> = Some("hello");
+
+if let Some(s) = opt {
+    println(s);      // prints "hello"
+}
+
+// With else:
+if let Some(s) = opt {
+    println(s);
+} else {
+    println("nothing");
+}
+```
+
+**`while let`** — loop as long as a pattern matches:
+
+```hew
+var stack: Vec<i64> = vec![1, 2, 3];
+
+while let Some(top) = stack.pop() {
+    println(f"{top}");   // prints 3, 2, 1
+}
+```
+
+Both forms are syntactic sugar over `match`. `if let P = expr { body }` is
+equivalent to `match expr { P => { body }, _ => {} }`.
+
+```ebnf
+IfLetExpr   = "if" "let" Pattern "=" Expr Block ("else" Block)? ;
+WhileLetStmt = "while" "let" Pattern "=" Expr Block ;
+```
 
 ---
 

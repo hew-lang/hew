@@ -55,6 +55,26 @@ pub enum Command {
     Completions(CompletionsArgs),
     /// Print version info.
     Version,
+    /// Launch the TUI actor observer (`hew-observe`).
+    ///
+    /// Forwards all arguments to `hew-observe`. Requires the `hew-observe`
+    /// binary to be available in the same directory as `hew` or on PATH.
+    ///
+    /// Examples:
+    ///   hew observe --demo
+    ///   hew observe --addr localhost:6060
+    ///   hew observe --list
+    Observe(ObserveArgs),
+    /// Start the Hew Language Server (`hew-lsp`).
+    ///
+    /// Forwards all arguments to `hew-lsp`. Requires the `hew-lsp`
+    /// binary to be available in the same directory as `hew` or on PATH.
+    /// Communicates via stdin/stdout using the Language Server Protocol.
+    ///
+    /// Examples:
+    ///   hew lsp
+    ///   hew lsp --version
+    Lsp(LspArgs),
 }
 
 #[derive(Debug, Args)]
@@ -75,6 +95,30 @@ pub struct CompileArgs {
     /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
+    /// Diagnostic output format: `text` (default) or `json`.
+    #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
+    pub format: DiagnosticFormat,
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic output format
+// ---------------------------------------------------------------------------
+
+/// Output format for compiler diagnostics on `check`, `run`, and `compile`.
+///
+/// `text` is the human-readable Rust/Elm-style rendering with source context
+/// and `^^^` underlines. `json` emits a machine-readable JSON array of
+/// structured diagnostics on stdout — one object per diagnostic with a stable
+/// `code`, `severity`, `file`, `span`, `message`, `notes`, and machine-checked
+/// `fixes`. The JSON shape mirrors the LSP diagnostic substrate so agentic
+/// tooling can apply fixes without re-parsing prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum DiagnosticFormat {
+    /// Human-readable diagnostics with source context (default).
+    #[default]
+    Text,
+    /// Machine-readable JSON array of structured diagnostics on stdout.
+    Json,
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +199,9 @@ pub struct RunArgs {
     /// early phases; never affects exit code or program output.
     #[arg(long = "show-stack-hints")]
     pub show_stack_hints: bool,
+    /// Diagnostic output format: `text` (default) or `json`.
+    #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
+    pub format: DiagnosticFormat,
     /// Arguments to pass to the compiled program (after --).
     #[arg(last = true)]
     pub program_args: Vec<String>,
@@ -229,6 +276,9 @@ pub struct CheckArgs {
     /// side resolves to a heap allocation class. Never affects exit code.
     #[arg(long = "show-stack-hints")]
     pub show_stack_hints: bool,
+    /// Diagnostic output format: `text` (default) or `json`.
+    #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
+    pub format: DiagnosticFormat,
 }
 
 impl CheckArgs {
@@ -546,4 +596,30 @@ pub struct PlaygroundVerifyArgs {
     /// Per-example execution timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
     #[arg(long, default_value = "30", value_name = "DURATION")]
     pub timeout: String,
+}
+
+// ---------------------------------------------------------------------------
+// Observe
+// ---------------------------------------------------------------------------
+
+/// Arguments forwarded verbatim to `hew-observe`.
+#[derive(Debug, Args)]
+#[command(disable_help_flag = true)]
+pub struct ObserveArgs {
+    /// Arguments passed through to `hew-observe`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Lsp
+// ---------------------------------------------------------------------------
+
+/// Arguments forwarded verbatim to `hew-lsp`.
+#[derive(Debug, Args)]
+#[command(disable_help_flag = true)]
+pub struct LspArgs {
+    /// Arguments passed through to `hew-lsp`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }

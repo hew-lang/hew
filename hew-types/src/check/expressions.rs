@@ -504,7 +504,9 @@ impl Checker {
             }
 
             // Index
-            Expr::Index { object, index } => self.synthesize_index(object, index, span),
+            Expr::Index { object, index } => {
+                self.synthesize_index(object, index, span, IndexContext::Read)
+            }
 
             // Range
             Expr::Range {
@@ -829,6 +831,10 @@ impl Checker {
         }
         self.env.push_scope();
         self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+        // Record the pattern resolution so HIR lowering can consume
+        // the same `pattern_resolutions` side-table that powers
+        // `WhileLet` and `Match` lowering.
+        self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
         let then_ty = self.check_block(body, None);
         self.env.pop_scope();
         if let Some(block) = else_body {
@@ -1248,6 +1254,7 @@ impl Checker {
         object: &Spanned<Expr>,
         index: &Spanned<Expr>,
         span: &Span,
+        ctx: IndexContext,
     ) -> Ty {
         let obj_ty = self.synthesize(&object.0, &object.1);
 
@@ -1330,13 +1337,64 @@ impl Checker {
             // Vec keeps the existing runtime-backed indexing ABI. The std
             // `Index` impl exposes the trait surface, but MIR still owns the
             // bounds-check + hew_vec_get_T lowering and that ABI takes i64.
+            //
+            // Implicit index-site widening: accept a signed integer narrower
+            // than i64 (i8/i16/i32) as a Vec index.  The operand widens to i64
+            // at the call site; the element result type is NOT changed (LESSONS
+            // `widen-operands-not-result-when-tightening-int-coercion`).
+            // MIR `lower_vec_index` inserts a `NumericCast` for the `xs[i]`
+            // path so the bounds-check `IntCmp` sees matching i64 operands.
             Ty::Named {
                 builtin: Some(BuiltinType::Vec),
                 args,
                 ..
             } if !args.is_empty() => {
-                self.check_against(&index.0, &index.1, &Ty::I64);
+                let idx_actual = self.synthesize(&index.0, &index.1);
+                let idx_resolved = self.subst.resolve(&idx_actual);
+                if !Self::is_narrower_signed_int(&idx_resolved) {
+                    self.check_against(&index.0, &index.1, &Ty::I64);
+                }
                 args[0].clone()
+            }
+            // `m[k]` over `HashMap<K, V>` reuses the existing `.get(k)` /
+            // `.insert(k, v)` runtime ABI rather than the `Index` trait.
+            //
+            // Read context (`let x = m[k]`): result type is `Option<V>` — a
+            // missing key is a normal, non-aborting outcome for a map, so the
+            // surface is fail-closed by construction (the caller must match the
+            // `None`). The checker records a `ResolvedCall` to
+            // `hew_hashmap_get_layout` at this span; HIR routes the index node
+            // to the same `ResolvedImplCall` that `m.get(k)` produces.
+            //
+            // Write context (`m[k] = v`): the assignment-target type is the
+            // bare value `V` (so the RHS checks against `V`, not `Option<V>`),
+            // and the checker records a `ResolvedCall` to
+            // `hew_hashmap_insert_layout` at this span. The key bound is the
+            // existing `K: Hash + Eq` admission contract — the same one every
+            // HashMap method call enforces.
+            Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
+                args,
+                ..
+            } if args.len() == 2 => {
+                let key_ty = args[0].clone();
+                let val_ty = args[1].clone();
+                self.check_against(&index.0, &index.1, &key_ty);
+                let method = match ctx {
+                    IndexContext::Read => "get",
+                    IndexContext::AssignTarget => "insert",
+                };
+                // Enforce `K: Hash + Eq` and record the resolved runtime call
+                // (`hew_hashmap_get_layout` / `hew_hashmap_insert_layout`) at
+                // the index span, exactly as the method-call path does.
+                if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                self.record_resolved_hashmap_call(method, &key_ty, &val_ty, span);
+                match ctx {
+                    IndexContext::Read => Ty::option(val_ty),
+                    IndexContext::AssignTarget => val_ty,
+                }
             }
             // W3 collections-sugar S2: `s[i]` over `string` returns a `char`
             // at codepoint offset, O(n), panic on OOB. Index is i64. The
@@ -2122,15 +2180,19 @@ impl Checker {
                                     return Ty::Error;
                                 }
                             }
-                            // Mark the identifier as used
+                            // Mark the identifier as used and register any
+                            // closure capture. `synthesize_identifier` uses
+                            // `lookup_with_depth` which tracks the scope index
+                            // and pushes `lambda_capture_facts` when the binding
+                            // is from an outer scope — `env.lookup` would not.
                             self.expect_inferable_literal_binding(name, expected, span);
-                            let _ = self.env.lookup(name);
+                            let _ = self.synthesize_identifier(name, span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
                         (ConstValue::Integer(_), ty) if ty.is_float() => {
                             self.expect_inferable_literal_binding(name, expected, span);
-                            let _ = self.env.lookup(name);
+                            let _ = self.synthesize_identifier(name, span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
@@ -2148,7 +2210,7 @@ impl Checker {
                                 return Ty::Error;
                             }
                             self.expect_inferable_literal_binding(name, expected, span);
-                            let _ = self.env.lookup(name);
+                            let _ = self.synthesize_identifier(name, span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
@@ -5109,6 +5171,53 @@ impl Checker {
         }
     }
 
+    /// Check each constructor argument of a `spawn` expression, pushing the
+    /// actor field's declared type down as the expected type so that generic
+    /// constructors like `HashMap::new()` and `Vec::new()` can resolve their
+    /// type parameters.
+    ///
+    /// Without this, `spawn Cache(store: HashMap::new())` synthesises the arg
+    /// with unbound type variables (`HashMap<?T, ?U>`).  The Send check then
+    /// fires on those unbound vars with the misleading message:
+    ///   "cannot send `HashMap<?T22, ?T23>` to actor: type is not Send"
+    ///
+    /// Mirrors `check_struct_init`'s field push-down.  Two exceptions fall back
+    /// to `synthesize`:
+    ///
+    /// 1. Unknown field name — an error will be reported separately.
+    /// 2. Bare-actor-name field (e.g. `let target: Printer`): the spawn arg is
+    ///    `LocalPid<Printer>`, not `Printer`, so checking against the bare name
+    ///    produces a spurious type mismatch.
+    fn check_spawn_constructor_args(&mut self, actor_name: &str, args: &[(String, Spanned<Expr>)]) {
+        let actor_fields: Option<HashMap<String, Ty>> =
+            self.lookup_type_def(actor_name).map(|td| td.fields);
+        for (field_name, (arg, as_)) in args {
+            let declared = actor_fields.as_ref().and_then(|f| f.get(field_name));
+            let ty_raw = match declared {
+                Some(declared_ty) => {
+                    let is_bare_actor = if let Ty::Named {
+                        name: field_type_name,
+                        ..
+                    } = declared_ty
+                    {
+                        self.type_defs
+                            .get(field_type_name)
+                            .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                    } else {
+                        false
+                    };
+                    if is_bare_actor {
+                        self.synthesize(arg, as_)
+                    } else {
+                        self.check_against(arg, as_, declared_ty)
+                    }
+                }
+                None => self.synthesize(arg, as_),
+            };
+            self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
+        }
+    }
+
     pub(super) fn check_spawn(
         &mut self,
         target: &Spanned<Expr>,
@@ -5137,10 +5246,7 @@ impl Checker {
         };
 
         if let Some(name) = actor_name {
-            for (_field_name, (arg, as_)) in args {
-                let ty_raw = self.synthesize(arg, as_);
-                self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
-            }
+            self.check_spawn_constructor_args(&name, args);
 
             // Resolve the explicit type-argument list.  When type_args is
             // non-empty, substitute them into the PID type and enforce any

@@ -24,11 +24,14 @@ mod support;
 fn build_cross_module_program() -> Program {
     let imported_src = r"
 pub machine Toggle {
+    events {
+        Flip;
+    }
+
     state Off;
     state On;
-    event Flip;
-    on Flip: Off -> On { On }
-    on Flip: On -> Off { Off }
+    on Flip: Off => On { On }
+    on Flip: On => Off { Off }
 }
 ";
     let root_src = r"

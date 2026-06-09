@@ -7,7 +7,7 @@
 //   - control returns to `main`, which exits 42
 //
 // Out-of-scope (deferred): crash + restart-policy assertion,
-// window-as-string parsing, `on(crash)` hooks.
+// `on(crash)` hooks.
 actor Worker {
     receive fn ping(_n: i64) {
         _n;
@@ -16,8 +16,7 @@ actor Worker {
 
 supervisor AppSupervisor {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
 
     child w1: Worker;
 }

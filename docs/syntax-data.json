@@ -71,6 +71,7 @@
       "permanent",
       "transient",
       "temporary",
+      "brutal_kill",
       "one_for_one",
       "one_for_all",
       "rest_for_one",
@@ -142,6 +143,7 @@
     "rest_for_one",
     "simple_one_for_one",
     "pool",
+    "brutal_kill",
     "scope",
     "fork",
     "spawn",
@@ -189,10 +191,16 @@
   ],
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
+    "events": "Machine input-event vocabulary block header (contextual inside machine body)",
+    "emits": "Machine Mealy-output manifest block header (contextual inside machine body)",
+    "reenter": "Machine transition self-re-entry modifier (contextual after target state name)",
     "mailbox": "Actor mailbox configuration block",
     "overflow": "Mailbox overflow policy",
-    "window": "Supervisor restart window parameter",
-    "max_restarts": "Supervisor max restarts parameter",
+    "intensity": "Supervisor restart-budget field (intensity: N within <duration>)",
+    "within": "Supervisor intensity window separator",
+    "shutdown": "Supervisor child graceful-stop deadline clause",
+    "infinity": "Supervisor child shutdown: wait indefinitely (accepted-only)",
+    "wired_to": "Supervisor child sibling-wiring clause",
     "export": "FFI export attribute",
     "json": "Wire serialization format",
     "yaml": "Wire serialization format",
@@ -248,8 +256,7 @@
     ],
     "arrow": [
       "->",
-      "=>",
-      "<-"
+      "=>"
     ],
     "range": [
       "..",

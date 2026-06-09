@@ -14,6 +14,10 @@ categories = ["compilers"]
 hew-hir = { path = "../hew-hir" }
 hew-mir = { path = "../hew-mir" }
 hew-types = { path = "../hew-types" }
+# Supervisor restart-budget windows arrive as raw duration source strings
+# (e.g. `"60s"`). Codegen interprets the unit via `hew_parser::parse_duration_ns`
+# so duration parsing stays centralised in one place (no second parser).
+hew-parser = { path = "../hew-parser" }
 # Inkwell wraps LLVM. Pinned to llvm22-1 because the v0.5 backend probe
 # (.claude/worktrees/c1-backend-probe @ e6c83faa) established this version
 # empirically against Homebrew llvm@22, and the release/tooling surface keeps
@@ -23,7 +27,6 @@ inkwell = { version = "0.9", features = ["llvm22-1"] }
 [dev-dependencies]
 hew-testutil = { path = "../hew-testutil" }
 hew-runtime = { path = "../hew-runtime", default-features = false }
-hew-parser = { path = "../hew-parser" }
 # Required by jit_trap_bridge.rs: libc::c_int for the sigsetjmp/siglongjmp FFI
 # declarations used in the trap recorder (same pattern as hew-runtime/src/signal.rs).
 libc.workspace = true

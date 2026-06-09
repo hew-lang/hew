@@ -137,9 +137,9 @@ fn actor_ask_non_unit_handler_accepted() {
             }
         }
 
-        fn main() -> i64 {
+        fn main() {
             let c = spawn Calculator(total: 0);
-            return await c.compute(3);
+            let _ = await c.compute(3);
         }
         ",
     );
@@ -196,17 +196,20 @@ fn actor_send_in_machine_transition_body_rejected() {
         }
 
         machine M {
+            events {
+                Tick;
+            }
+
             state Active;
             state Idle;
 
-            event Tick;
 
-            on Tick: Active -> Active @reenter {
+            on Tick: Active => Active reenter {
                 let c = spawn Calculator(total: 0);
                 c.send(3);
                 Active
             }
-            on Tick: Idle -> Active {
+            on Tick: Idle => Active {
                 Active
             }
         }

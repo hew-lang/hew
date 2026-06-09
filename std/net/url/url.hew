@@ -137,6 +137,18 @@ pub fn parse(s: string) -> Url {
     }
 }
 
+// ── Internal helpers ──────────────────────────────────────────────────
+/// Return the character at `index` in `s`.
+///
+/// `std::builtins.string_char_at` is defined there but free functions from
+/// `builtins.hew` are not injected into module scope, so this private wrapper
+/// bridges the gap until the resolver makes builtin free-functions available
+/// module-wide (tracked separately).
+fn string_char_at(s: string, index: i64) -> char {
+    let chars = s.chars();
+    chars.get(index)
+}
+
 // ── Percent-encoding ──────────────────────────────────────────────────
 /// Percent-encode a string (RFC 3986 unreserved characters are left unchanged).
 ///

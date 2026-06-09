@@ -768,7 +768,8 @@ fn non_bitcopy_user_record_instantiation_reports_precise_valueclass_diagnostic()
     );
 }
 
-fn source_has_user_record_w3029(src: &str, record_name: &str) -> bool {
+/// Lower `src` to the MIR pipeline, asserting front-half cleanliness.
+fn lower_source(src: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(src);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -781,19 +782,29 @@ fn source_has_user_record_w3029(src: &str, record_name: &str) -> bool {
         hew_hir::TargetArch::host(),
     );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let pipeline = lower_hir_module(&output.module);
-    pipeline.diagnostics.iter().any(|d| {
-        matches!(
-            &d.kind,
-            MirDiagnosticKind::UnsupportedUserRecordValueClass { name, .. }
-                if name == record_name
-        )
+    lower_hir_module(&output.module)
+}
+
+/// True when the pipeline elaborated at least one `DropKind::RecordInPlace`
+/// scope-exit drop — i.e. an owned aggregate record was admitted by value AND
+/// earned a tag-aware drop.
+fn pipeline_has_record_inplace_drop(pipeline: &hew_mir::IrPipeline) -> bool {
+    pipeline.elaborated_mir.iter().any(|f| {
+        f.drop_plans.iter().any(|(_, plan)| {
+            plan.drops
+                .iter()
+                .any(|d| d.kind == hew_mir::DropKind::RecordInPlace)
+        })
     })
 }
 
+/// Value-class capstone — a monomorphic owned record copied (rebound) by value
+/// is ADMITTED (no W3.029) and the original earns a `RecordInPlace` drop.
+/// Migrated forward from `user_record_string_copy_still_reports_w3029`, which
+/// pinned the now-reversed reject behaviour.
 #[test]
-fn user_record_string_copy_still_reports_w3029() {
-    assert!(source_has_user_record_w3029(
+fn user_record_string_copy_admits_with_record_drop() {
+    let pipeline = lower_source(
         r#"
         type User { name: string }
         fn main() -> i64 {
@@ -801,17 +812,31 @@ fn user_record_string_copy_still_reports_w3029() {
             let last = "Lovelace";
             let full = first + " " + last;
             let user = User { name: full };
-            let _copy = user;
+            let copy = user;
+            println(copy.name);
             0
         }
         "#,
-        "User",
-    ));
+    );
+    assert!(
+        !source_has_w3029_in(&pipeline, "User"),
+        "monomorphic owned record copy must be admitted, not W3.029-rejected: {:?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        pipeline_has_record_inplace_drop(&pipeline),
+        "the admitted owned record must earn a RecordInPlace scope-exit drop: {:?}",
+        pipeline.elaborated_mir
+    );
 }
 
+/// A monomorphic owned record returned by value is ADMITTED (no W3.029). The
+/// returned binding ESCAPES, so it must NOT earn a scope-exit drop in the
+/// returning function (the caller owns it); the fail-closed escape-scan
+/// excludes it. Migrated forward from the reject-pinning test.
 #[test]
-fn user_record_string_return_still_reports_w3029() {
-    assert!(source_has_user_record_w3029(
+fn user_record_string_return_admits_and_excludes_drop_on_escape() {
+    let pipeline = lower_source(
         r#"
         type User { name: string }
         fn make() -> User {
@@ -823,13 +848,34 @@ fn user_record_string_return_still_reports_w3029() {
         }
         fn main() -> i64 { 0 }
         "#,
-        "User",
-    ));
+    );
+    assert!(
+        !source_has_w3029_in(&pipeline, "User"),
+        "monomorphic owned record return must be admitted, not W3.029-rejected: {:?}",
+        pipeline.diagnostics
+    );
+    let make = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "make")
+        .expect("make function present");
+    assert!(
+        make.drop_plans.iter().all(|(_, plan)| plan
+            .drops
+            .iter()
+            .all(|d| d.kind != hew_mir::DropKind::RecordInPlace)),
+        "a returned (escaped) record must NOT earn a RecordInPlace drop in its \
+         producing function — that would double-free the caller's value: {:?}",
+        make.drop_plans
+    );
 }
 
+/// A functional-update (`..user`) consumes the source record's fields into the
+/// new record; both are owned-by-value and admitted. The source's owned field
+/// moves out, so the new record owns it. Migrated forward from the reject test.
 #[test]
-fn user_record_string_functional_update_still_reports_w3029() {
-    assert!(source_has_user_record_w3029(
+fn user_record_string_functional_update_admits() {
+    let pipeline = lower_source(
         r#"
         type User { name: string }
         fn main() -> i64 {
@@ -842,13 +888,26 @@ fn user_record_string_functional_update_still_reports_w3029() {
             0
         }
         "#,
-        "User",
-    ));
+    );
+    assert!(
+        !source_has_w3029_in(&pipeline, "User"),
+        "owned record functional-update must be admitted, not W3.029-rejected: {:?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        pipeline_has_record_inplace_drop(&pipeline),
+        "the functional-update result owns its fields and must earn a \
+         RecordInPlace drop: {:?}",
+        pipeline.elaborated_mir
+    );
 }
 
+/// A record nested inside another record (`Boxed { user: User }`) is admitted:
+/// the outer record's drop thunk recurses into the nested record field.
+/// Migrated forward from the reject test.
 #[test]
-fn user_record_string_nested_record_still_reports_w3029() {
-    assert!(source_has_user_record_w3029(
+fn user_record_string_nested_record_admits() {
+    let pipeline = lower_source(
         r#"
         type User { name: string }
         type Boxed { user: User }
@@ -858,11 +917,33 @@ fn user_record_string_nested_record_still_reports_w3029() {
             let full = first + " " + last;
             let user = User { name: full };
             let boxed = Boxed { user: user };
+            println(boxed.user.name);
             0
         }
         "#,
-        "User",
-    ));
+    );
+    assert!(
+        !source_has_w3029_in(&pipeline, "User") && !source_has_w3029_in(&pipeline, "Boxed"),
+        "nested owned record must be admitted, not W3.029-rejected: {:?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        pipeline_has_record_inplace_drop(&pipeline),
+        "the outer record owning a nested owned record must earn a RecordInPlace \
+         drop (its thunk recurses into the nested field): {:?}",
+        pipeline.elaborated_mir
+    );
+}
+
+/// Helper: is there a W3.029 reject for `record_name` in this pipeline?
+fn source_has_w3029_in(pipeline: &hew_mir::IrPipeline, record_name: &str) -> bool {
+    pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::UnsupportedUserRecordValueClass { name, .. }
+                if name == record_name
+        )
+    })
 }
 
 #[test]

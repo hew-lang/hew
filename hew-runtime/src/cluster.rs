@@ -50,7 +50,7 @@ use crate::phi_accrual::PhiAccrualDetector;
 use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 // ── Member states ──────────────────────────────────────────────────────
@@ -110,10 +110,6 @@ pub struct ClusterMember {
 }
 
 /// A membership event for gossip dissemination.
-#[expect(
-    dead_code,
-    reason = "fields used in gossip dissemination and serialization"
-)]
 #[derive(Debug, Clone)]
 struct MemberEvent {
     /// Node ID of the affected member.
@@ -354,7 +350,11 @@ pub struct HewCluster {
     /// Recent registry events for gossip dissemination.
     registry_events: Mutex<VecDeque<RegistryEvent>>,
     /// Our own incarnation number.
-    local_incarnation: u64,
+    ///
+    /// Atomic because incarnation self-refutation (C5) bumps it from the
+    /// connection reader thread (on receiving SUSPECT-about-self) while the
+    /// SWIM driver thread reads it to stamp outbound PING/ACK frames.
+    local_incarnation: AtomicU64,
     /// Membership change callback.
     callback: Option<MemberChangeCallback>,
     /// Membership event callback binding.
@@ -366,7 +366,10 @@ pub struct HewCluster {
     /// User data for [`HewRegistryGossipCallback`].
     registry_callback_user_data: *mut c_void,
     /// Monotonic timestamp of last tick.
-    last_tick_ms: u64,
+    ///
+    /// Atomic so `tick` takes `&self` (the SWIM driver thread drives the
+    /// cluster through a shared reference).
+    last_tick_ms: AtomicU64,
     /// Protocol strategy (SWIM message handlers + tick-transition logic).
     ///
     /// Holds `Box<dyn ClusterProtocol>` so the v0.6 Lifeguard
@@ -492,7 +495,12 @@ pub trait ClusterProtocol: Send + Sync + std::fmt::Debug {
     /// implementation-defined selection).
     ///
     /// Returns `None` when the live set is empty.
-    fn next_ping_target(&mut self, alive_members: &[u16]) -> Option<u16>;
+    ///
+    /// Takes `&self` (not `&mut self`): any selection cursor must live behind
+    /// interior mutability so the SWIM driver thread and the connection reader
+    /// thread can both drive the cluster through shared references without
+    /// `&mut`-aliasing the same `HewCluster`.
+    fn next_ping_target(&self, alive_members: &[u16]) -> Option<u16>;
 
     /// Called when a peer node transitions to DEAD.
     ///
@@ -619,19 +627,22 @@ impl PartitionRegistry {
 /// trait.
 #[derive(Debug, Default)]
 pub struct SimpleSwim {
-    /// Index for round-robin ping target selection.
+    /// Cursor for round-robin ping target selection.
     ///
     /// Owned here (not on `HewCluster`) because it is purely
     /// SWIM-protocol-driver state; a Lifeguard impl may use a different
-    /// target-selection strategy.
-    ping_index: usize,
+    /// target-selection strategy. Atomic so `next_ping_target` takes `&self`
+    /// (the driver and reader threads share the protocol via `&self`).
+    ping_index: AtomicUsize,
 }
 
 impl SimpleSwim {
     /// Create a new `SimpleSwim` instance.
     #[must_use]
     pub fn new() -> Self {
-        Self { ping_index: 0 }
+        Self {
+            ping_index: AtomicUsize::new(0),
+        }
     }
 }
 
@@ -706,14 +717,27 @@ impl ClusterProtocol for SimpleSwim {
         changes
     }
 
-    fn next_ping_target(&mut self, alive_members: &[u16]) -> Option<u16> {
+    fn next_ping_target(&self, alive_members: &[u16]) -> Option<u16> {
         if alive_members.is_empty() {
             return None;
         }
-        self.ping_index %= alive_members.len();
-        let target = alive_members[self.ping_index];
-        self.ping_index = (self.ping_index + 1) % alive_members.len();
-        Some(target)
+        // Atomically pick-and-advance the cursor modulo the live set so two
+        // concurrent callers never select the same slot twice in a row.
+        let len = alive_members.len();
+        let mut current = self.ping_index.load(Ordering::Relaxed);
+        loop {
+            let slot = current % len;
+            let next = (slot + 1) % len;
+            match self.ping_index.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(alive_members[slot]),
+                Err(observed) => current = observed,
+            }
+        }
     }
 }
 
@@ -753,13 +777,13 @@ impl HewCluster {
             pending_member_transitions: Mutex::new(PendingMemberTransitions::default()),
             events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             registry_events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
-            local_incarnation: 1,
+            local_incarnation: AtomicU64::new(1),
             callback: None,
             membership_callback_binding: Mutex::new(MembershipCallbackBinding::default()),
             membership_callback_epoch: Arc::new(MembershipCallbackEpoch::default()),
             registry_callback: None,
             registry_callback_user_data: std::ptr::null_mut(),
-            last_tick_ms: 0,
+            last_tick_ms: AtomicU64::new(0),
             protocol: Box::new(SimpleSwim::new()),
             detectors: Mutex::new(HashMap::new()),
             partition_registry: None,
@@ -1088,8 +1112,12 @@ impl HewCluster {
 
     /// Process a received SWIM message, delegating protocol decisions to
     /// the installed [`ClusterProtocol`] strategy.
-    fn process_message(
-        &mut self,
+    ///
+    /// `pub(crate)` so the connection reader thread can drive the SWIM state
+    /// machine directly when a `CTRL_SWIM` control frame arrives, without
+    /// round-tripping through the FFI wrapper.
+    pub(crate) fn process_message(
+        &self,
         msg_type: i32,
         from_node: u16,
         incarnation: u64,
@@ -1173,8 +1201,8 @@ impl HewCluster {
     /// The phi-accrual detector snapshot is computed here (detectors are
     /// orthogonal to the protocol: they stay on `HewCluster`) and
     /// supplied as a read-only argument to the protocol.
-    fn tick(&mut self, now_ms: u64) {
-        self.last_tick_ms = now_ms;
+    fn tick(&self, now_ms: u64) {
+        self.last_tick_ms.store(now_ms, Ordering::Relaxed);
 
         let suspect_timeout_ms = u64::from(self.config.suspect_timeout_ms);
         let ping_timeout_ms = u64::from(self.config.ping_timeout_ms);
@@ -1432,7 +1460,7 @@ impl HewCluster {
 
     /// Get the next ping target, delegating selection to the installed
     /// [`ClusterProtocol`] strategy.
-    fn next_ping_target(&mut self) -> Option<u16> {
+    fn next_ping_target(&self) -> Option<u16> {
         let alive_members: Vec<u16> = {
             let members = self.members.lock_or_recover();
             members
@@ -1514,6 +1542,127 @@ impl HewCluster {
             self.registry_callback_user_data,
         );
     }
+
+    // ── SWIM membership gossip (piggyback dissemination) ────────────────
+
+    /// The current local incarnation number.
+    ///
+    /// Stamped on outbound PING/ACK frames so peers can resolve conflicting
+    /// membership beliefs about this node (higher incarnation wins).
+    pub fn local_incarnation(&self) -> u64 {
+        self.local_incarnation.load(Ordering::SeqCst)
+    }
+
+    /// Configured maximum number of membership-gossip entries to piggyback
+    /// per SWIM frame.
+    #[must_use]
+    pub fn max_gossip_per_msg(&self) -> usize {
+        self.config.max_gossip_per_msg as usize
+    }
+
+    /// Configured SWIM protocol period in milliseconds (the driver's tick
+    /// cadence).
+    #[must_use]
+    pub fn protocol_period_ms(&self) -> u64 {
+        u64::from(self.config.protocol_period_ms.max(1))
+    }
+
+    /// Configured number of indirect-ping relays (K in SWIM).
+    #[must_use]
+    pub fn indirect_ping_count(&self) -> usize {
+        self.config.indirect_ping_count as usize
+    }
+
+    /// Drain up to `max_count` pending membership-gossip entries for
+    /// piggybacking on an outbound SWIM frame (C6 infection-style export).
+    ///
+    /// Returns `(node_id, state, incarnation)` triples. The caller maps these
+    /// onto the wire `SwimGossipEntry` type; the cluster stays decoupled from
+    /// the wire codec. Dissemination counters are advanced and exhausted
+    /// events pruned, exactly as [`Self::take_registry_gossip`] does for
+    /// registry events.
+    pub fn take_swim_gossip(&self, max_count: usize) -> Vec<(u16, i32, u64)> {
+        let mut events = self.events.lock_or_recover();
+        let mut result = Vec::with_capacity(max_count.min(events.len()));
+        for event in events.iter_mut() {
+            if result.len() >= max_count {
+                break;
+            }
+            result.push((event.node_id, event.new_state, event.incarnation));
+            event.dissemination_count += 1;
+        }
+        events.retain(|e| e.dissemination_count < 8);
+        result
+    }
+
+    /// Apply a batch of piggybacked membership-gossip entries received on a
+    /// SWIM frame (C6 infection-style import).
+    ///
+    /// Each entry is folded into the membership list via the normal
+    /// incarnation-LWW `upsert_member` path, so a node learns of a peer's
+    /// DEAD/SUSPECT/ALIVE state even when it has no direct connection to the
+    /// affected peer. Entries about the local node are ignored here — local
+    /// state is authoritative and self-refutation is handled separately by
+    /// [`Self::refute_if_suspected`].
+    pub fn apply_swim_gossip(&self, entries: &[(u16, i32, u64)]) {
+        let local = self.config.local_node_id;
+        for &(node_id, state, incarnation) in entries {
+            if node_id == local {
+                continue;
+            }
+            if !matches!(
+                state,
+                MEMBER_ALIVE | MEMBER_SUSPECT | MEMBER_DEAD | MEMBER_LEFT
+            ) {
+                continue;
+            }
+            self.upsert_member(node_id, state, incarnation, &[]);
+        }
+    }
+
+    /// Incarnation self-refutation (C5).
+    ///
+    /// If any entry in `entries` claims the local node is `MEMBER_SUSPECT`
+    /// (or DEAD) at an incarnation greater-or-equal to ours, bump the local
+    /// incarnation past it and enqueue a fresh `MEMBER_ALIVE` gossip event so
+    /// the next outbound SWIM frame disseminates the refutation. Returns the
+    /// new incarnation if a refutation was issued, else `None`.
+    ///
+    /// This is the standard SWIM defence against a false suspicion: a healthy
+    /// node that sees itself suspected re-asserts liveness at a higher
+    /// incarnation, which wins the LWW conflict resolution everywhere.
+    pub fn refute_if_suspected(&self, entries: &[(u16, i32, u64)]) -> Option<u64> {
+        let local = self.config.local_node_id;
+        let mut max_suspect_incarnation: Option<u64> = None;
+        for &(node_id, state, incarnation) in entries {
+            if node_id == local && (state == MEMBER_SUSPECT || state == MEMBER_DEAD) {
+                max_suspect_incarnation =
+                    Some(max_suspect_incarnation.map_or(incarnation, |m| m.max(incarnation)));
+            }
+        }
+        let suspect_incarnation = max_suspect_incarnation?;
+
+        // Bump our incarnation strictly past the suspicion. Loop on CAS so a
+        // concurrent refutation/leave on another thread cannot regress us.
+        let mut current = self.local_incarnation.load(Ordering::SeqCst);
+        loop {
+            let next = current.max(suspect_incarnation).saturating_add(1);
+            match self.local_incarnation.compare_exchange(
+                current,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    // Enqueue a fresh ALIVE-about-self gossip event so the
+                    // refutation is disseminated on the next outbound frame.
+                    self.emit_event(local, MEMBER_ALIVE, next);
+                    return Some(next);
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
 }
 
 // ── C ABI ──────────────────────────────────────────────────────────────
@@ -1592,7 +1741,8 @@ pub unsafe extern "C" fn hew_cluster_leave(cluster: *mut HewCluster) {
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
     let local_id = cluster.config.local_node_id;
-    cluster.upsert_member(local_id, MEMBER_LEFT, cluster.local_incarnation + 1, &[]);
+    let leave_incarnation = cluster.local_incarnation.fetch_add(1, Ordering::SeqCst) + 1;
+    cluster.upsert_member(local_id, MEMBER_LEFT, leave_incarnation, &[]);
 }
 
 /// Return the number of known members (all states).
@@ -1636,8 +1786,10 @@ pub unsafe extern "C" fn hew_cluster_process_message(
     if cluster.is_null() {
         return -1;
     }
-    // SAFETY: caller guarantees `cluster` is valid.
-    let cluster = unsafe { &mut *cluster };
+    // SAFETY: caller guarantees `cluster` is valid. `process_message` takes
+    // `&self`, so a shared reference is sound even with the SWIM driver thread
+    // concurrently driving `tick` through another shared reference.
+    let cluster = unsafe { &*cluster };
     cluster.process_message(msg_type, from_node, incarnation, source_conn_node_id);
     0
 }
@@ -1658,8 +1810,10 @@ pub unsafe extern "C" fn hew_cluster_tick(cluster: *mut HewCluster) -> u16 {
     }
     // SAFETY: hew_now_ms has no preconditions.
     let now = unsafe { crate::io_time::hew_now_ms() };
-    // SAFETY: caller guarantees `cluster` is valid.
-    let cluster = unsafe { &mut *cluster };
+    // SAFETY: caller guarantees `cluster` is valid. `tick` / `next_ping_target`
+    // take `&self`, so a shared reference is sound even when the connection
+    // reader thread concurrently drives `process_message` (also `&self`).
+    let cluster = unsafe { &*cluster };
     cluster.tick(now);
     cluster.next_ping_target().unwrap_or(0)
 }
@@ -2064,6 +2218,29 @@ pub unsafe extern "C" fn hew_cluster_alive_count(cluster: *mut HewCluster) -> c_
     }
 }
 
+/// Return the membership state of `node_id`, or `-1` if the node is unknown.
+///
+/// States are the `MEMBER_*` constants (`MEMBER_ALIVE` / `_SUSPECT` / `_DEAD`
+/// / `_LEFT`). Used to observe SWIM transitions (e.g. confirming a peer was
+/// declared DEAD by the driven failure detector).
+///
+/// # Safety
+///
+/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_cluster_member_state(cluster: *mut HewCluster, node_id: u16) -> i32 {
+    if cluster.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    let members = cluster.members.lock_or_recover();
+    members
+        .iter()
+        .find(|m| m.node_id == node_id)
+        .map_or(-1, |m| m.state)
+}
+
 /// Get the number of pending gossip events.
 ///
 /// # Safety
@@ -2302,7 +2479,7 @@ mod tests {
 
     #[test]
     fn tick_suspects_and_kills() {
-        let mut cluster = HewCluster::new(ClusterConfig {
+        let cluster = HewCluster::new(ClusterConfig {
             local_node_id: 1,
             ping_timeout_ms: 100,
             suspect_timeout_ms: 300,
@@ -2787,7 +2964,7 @@ mod tests {
                     .last_seen_ms
                     .saturating_add(u64::from(config.ping_timeout_ms));
                 drop(members);
-                (&mut *cluster).tick(guarded_tick);
+                (&*cluster).tick(guarded_tick);
             }
 
             let queued_events = (&*callback_state)
@@ -3335,13 +3512,13 @@ mod tests {
 
     #[test]
     fn next_ping_target_empty_returns_none() {
-        let mut cluster = HewCluster::new(make_config(1));
+        let cluster = HewCluster::new(make_config(1));
         assert_eq!(cluster.next_ping_target(), None);
     }
 
     #[test]
     fn next_ping_target_round_robins_through_members() {
-        let mut cluster = HewCluster::new(make_config(1));
+        let cluster = HewCluster::new(make_config(1));
         cluster.upsert_member(10, MEMBER_ALIVE, 1, b"a:1");
         cluster.upsert_member(20, MEMBER_ALIVE, 1, b"b:1");
 
@@ -3356,7 +3533,7 @@ mod tests {
 
     #[test]
     fn next_ping_target_skips_dead_and_left() {
-        let mut cluster = HewCluster::new(make_config(1));
+        let cluster = HewCluster::new(make_config(1));
         cluster.upsert_member(2, MEMBER_ALIVE, 1, b"a:1");
         cluster.upsert_member(3, MEMBER_DEAD, 5, b"b:1");
         cluster.upsert_member(4, MEMBER_LEFT, 1, b"c:1");
@@ -3419,7 +3596,7 @@ mod tests {
 
     #[test]
     fn process_message_ping_recovers_suspect_to_alive() {
-        let mut cluster = HewCluster::new(make_config(1));
+        let cluster = HewCluster::new(make_config(1));
         cluster.upsert_member(2, MEMBER_SUSPECT, 1, b"10.0.0.1:9000");
 
         // A PING from node 2 should update last_seen and recover to alive.
@@ -3430,7 +3607,7 @@ mod tests {
 
     #[test]
     fn process_message_unknown_type_is_noop() {
-        let mut cluster = HewCluster::new(make_config(1));
+        let cluster = HewCluster::new(make_config(1));
         cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.1:9000");
 
         // Unknown message type should not change anything.
@@ -3457,7 +3634,7 @@ mod tests {
 
     #[test]
     fn tick_skips_left_members() {
-        let mut cluster = HewCluster::new(ClusterConfig {
+        let cluster = HewCluster::new(ClusterConfig {
             local_node_id: 1,
             ping_timeout_ms: 100,
             suspect_timeout_ms: 300,
@@ -3728,7 +3905,7 @@ mod tests {
         // The post-extraction cluster must produce the same final
         // membership state as the pre-extraction cluster would have.
 
-        let mut cluster = HewCluster::new(make_config(1));
+        let cluster = HewCluster::new(make_config(1));
         cluster.upsert_member(2, MEMBER_SUSPECT, 1, b"10.0.0.2:9000");
 
         // Step 1: PING recovers SUSPECT → ALIVE via update_last_seen.
@@ -3757,5 +3934,99 @@ mod tests {
                 "ACK must update incarnation to the supplied value"
             );
         }
+    }
+
+    // ── SWIM gossip export / import / self-refutation (C5/C6) ───────────
+
+    #[test]
+    fn take_swim_gossip_exports_pending_member_events() {
+        let cluster = HewCluster::new(make_config(1));
+        // A membership transition queues a gossip event.
+        cluster.upsert_member(2, MEMBER_ALIVE, 3, b"10.0.0.2:9000");
+        cluster.emit_event(2, MEMBER_DEAD, 5);
+
+        let gossip = cluster.take_swim_gossip(8);
+        assert!(
+            gossip
+                .iter()
+                .any(|&(n, s, i)| n == 2 && s == MEMBER_DEAD && i == 5),
+            "exported gossip must carry the DEAD transition: {gossip:?}"
+        );
+    }
+
+    #[test]
+    fn apply_swim_gossip_folds_remote_death_into_membership() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.2:9000");
+
+        // A peer gossips that node 2 is DEAD at a higher incarnation.
+        cluster.apply_swim_gossip(&[(2, MEMBER_DEAD, 2)]);
+
+        let members = cluster.members.lock().unwrap();
+        let m2 = members
+            .iter()
+            .find(|m| m.node_id == 2)
+            .expect("node 2 present");
+        assert_eq!(
+            m2.state, MEMBER_DEAD,
+            "remote DEAD gossip must transition the member to DEAD"
+        );
+    }
+
+    #[test]
+    fn apply_swim_gossip_ignores_entries_about_self() {
+        let cluster = HewCluster::new(make_config(1));
+        // Gossip claiming the local node (id 1) is DEAD must be ignored here;
+        // self-state is authoritative (refutation handled separately).
+        cluster.apply_swim_gossip(&[(1, MEMBER_DEAD, 99)]);
+        let members = cluster.members.lock().unwrap();
+        assert!(
+            !members
+                .iter()
+                .any(|m| m.node_id == 1 && m.state == MEMBER_DEAD),
+            "self DEAD gossip must not mark the local node dead"
+        );
+    }
+
+    #[test]
+    fn refute_if_suspected_bumps_incarnation_past_suspicion() {
+        let cluster = HewCluster::new(make_config(1));
+        let before = cluster.local_incarnation();
+
+        // A peer suspects the local node (id 1) at incarnation 7.
+        let new_inc = cluster
+            .refute_if_suspected(&[(1, MEMBER_SUSPECT, 7)])
+            .expect("self-suspicion must trigger refutation");
+
+        assert!(
+            new_inc > 7,
+            "refuted incarnation {new_inc} must exceed the suspicion (7)"
+        );
+        assert!(
+            new_inc > before,
+            "refutation must advance the local incarnation"
+        );
+        assert_eq!(cluster.local_incarnation(), new_inc);
+
+        // The refutation is queued as an ALIVE-about-self gossip event.
+        let gossip = cluster.take_swim_gossip(8);
+        assert!(
+            gossip
+                .iter()
+                .any(|&(n, s, i)| n == 1 && s == MEMBER_ALIVE && i == new_inc),
+            "refutation must enqueue an ALIVE-about-self gossip event: {gossip:?}"
+        );
+    }
+
+    #[test]
+    fn refute_if_suspected_noop_when_not_suspected() {
+        let cluster = HewCluster::new(make_config(1));
+        let before = cluster.local_incarnation();
+        // Gossip about other nodes, and ALIVE-about-self, must not refute.
+        assert_eq!(
+            cluster.refute_if_suspected(&[(2, MEMBER_SUSPECT, 9), (1, MEMBER_ALIVE, 3)]),
+            None
+        );
+        assert_eq!(cluster.local_incarnation(), before);
     }
 }

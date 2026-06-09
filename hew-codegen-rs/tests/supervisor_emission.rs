@@ -473,12 +473,30 @@ fn supervisor_bootstrap_fails_closed_on_missing_on_crash_symbol() {
     );
 }
 
-/// Non-integer `window` literal must fail closed — the duration-string
-/// form (`"60s"`) is deferred to a follow-on slice.
+/// A duration-literal `window` (`"60s"`) is now interpreted by codegen — the
+/// flat-reliability-fields surface carries the window as a duration string and
+/// codegen converts the unit via the centralised duration parser.
 #[test]
-fn supervisor_bootstrap_rejects_non_integer_window() {
+fn supervisor_bootstrap_accepts_duration_window() {
     let mut pipeline = supervisor_pipeline();
     pipeline.supervisor_layouts[0].window = Some("60s".to_string());
+    let tmp = std::env::temp_dir().join("hew-supervisor-emission-duration-window");
+    let options = EmitOptions {
+        module_name: "probe",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+    };
+    emit_module(&pipeline, &options)
+        .expect("a `60s` duration window must be accepted and converted to seconds");
+}
+
+/// An unparseable `window` literal (neither a duration nor an integer) still
+/// fails closed — silently coercing to 0 would hide a parser/MIR drift bug.
+#[test]
+fn supervisor_bootstrap_rejects_invalid_window() {
+    let mut pipeline = supervisor_pipeline();
+    pipeline.supervisor_layouts[0].window = Some("sixty".to_string());
     let tmp = std::env::temp_dir().join("hew-supervisor-emission-bad-window");
     let options = EmitOptions {
         module_name: "probe",
@@ -487,10 +505,10 @@ fn supervisor_bootstrap_rejects_non_integer_window() {
         wasm: false,
     };
     let err = emit_module(&pipeline, &options)
-        .expect_err("non-integer window should fail closed at codegen");
+        .expect_err("a non-duration, non-integer window must fail closed at codegen");
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("integer-seconds") || msg.contains("60s"),
+        msg.contains("sixty") || msg.contains("duration literal"),
         "expected fail-closed diagnostic to name the bad window literal; got: {msg}"
     );
 }

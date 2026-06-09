@@ -19,11 +19,14 @@
 //! hew playground verify            # Verify runnable playground examples
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
+//! hew observe [args...]             # Launch the TUI actor observer (delegates to hew-observe)
+//! hew lsp [args...]                 # Start the language server (delegates to hew-lsp)
 //! ```
 
 mod args;
 mod compile;
 mod diagnostic;
+mod diagnostic_json;
 mod doc;
 mod eval;
 mod explain_cow;
@@ -75,14 +78,6 @@ fn hew_main() {
 // Sub-commands
 // ---------------------------------------------------------------------------
 
-/// Surface the diagnostic family in the CLI prefix so users see what
-/// gate tripped at a glance. `MirCheck` findings (move/init/aliasing
-/// legality) are a distinct family from spine-subset rejections; the
-/// kind in the debug payload disambiguates further.
-fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
-    diagnostic::mir_diagnostic_prefix(kind)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompileEmitTarget {
     Native,
@@ -101,6 +96,28 @@ fn resolve_compile_emit_target(requested: Option<&str>) -> CompileEmitTarget {
             std::process::exit(2);
         }
     }
+}
+
+/// Render the MIR pipeline diagnostics through the source-attributed renderer.
+///
+/// Shared by every native-lowering entry point so a MIR gate failure is
+/// reported identically (and never as a raw `MirDiagnostic { .. }` Debug
+/// payload) regardless of the command. Returns `true` when diagnostics were
+/// emitted and the caller should fail.
+fn render_pipeline_mir_diagnostics(
+    program: &hew_parser::ast::Program,
+    source: &str,
+    label: &str,
+    module: &hew_hir::HirModule,
+    diagnostics: &[hew_mir::MirDiagnostic],
+) -> bool {
+    if diagnostics.is_empty() {
+        return false;
+    }
+    let module_source_map = diagnostic::build_module_source_map(program);
+    let site_spans = hew_hir::collect_site_spans(module);
+    diagnostic::render_mir_diagnostics(source, label, &module_source_map, &site_spans, diagnostics);
+    true
 }
 
 fn lower_file_to_mir(
@@ -164,10 +181,13 @@ fn lower_file_to_mir(
         hew_mir::lower_hir_module_with_facts(&lower_output.module, &tco.actor_send_aliasing);
     // Route checker-authored layout facts onto the pipeline.
     pipeline.attach_lowering_facts(&tco);
-    if !pipeline.diagnostics.is_empty() {
-        for diagnostic in &pipeline.diagnostics {
-            eprintln!("{} {diagnostic:?}", diagnostic_prefix(&diagnostic.kind));
-        }
+    if render_pipeline_mir_diagnostics(
+        &state.program,
+        &state.source,
+        &input,
+        &lower_output.module,
+        &pipeline.diagnostics,
+    ) {
         return Err(());
     }
 
@@ -223,16 +243,13 @@ fn run_check_deep_gates(
     // Clone checker-authored layout-fact lifecycle into the pipeline
     // (see the matching invocation in `check_command`).
     pipeline.attach_lowering_facts(tco);
-    if !pipeline.diagnostics.is_empty() {
-        let module_source_map = diagnostic::build_module_source_map(&state.program);
-        let site_spans = hew_hir::collect_site_spans(&lower_output.module);
-        diagnostic::render_mir_diagnostics(
-            &state.source,
-            input,
-            &module_source_map,
-            &site_spans,
-            &pipeline.diagnostics,
-        );
+    if render_pipeline_mir_diagnostics(
+        &state.program,
+        &state.source,
+        input,
+        &lower_output.module,
+        &pipeline.diagnostics,
+    ) {
         return Err(());
     }
 
@@ -373,10 +390,13 @@ pub(crate) fn compile_native_from_program(
         hew_mir::lower_hir_module_with_facts(&lower_output.module, &tco.actor_send_aliasing);
     // Route checker-authored layout facts onto the pipeline.
     pipeline.attach_lowering_facts(&tco);
-    if !pipeline.diagnostics.is_empty() {
-        for diagnostic in &pipeline.diagnostics {
-            eprintln!("{} {diagnostic:?}", diagnostic_prefix(&diagnostic.kind));
-        }
+    if render_pipeline_mir_diagnostics(
+        &state.program,
+        &state.source,
+        source_label,
+        &lower_output.module,
+        &pipeline.diagnostics,
+    ) {
         return Err(());
     }
 
@@ -421,7 +441,13 @@ pub(crate) fn compile_native_from_program(
 }
 
 fn cmd_compile(a: &args::CompileArgs) {
+    let json = a.format == args::DiagnosticFormat::Json;
+    diagnostic_json::set_output_format(a.format.into());
+
     let pipeline = lower_file_to_mir(&a.input, a.target.as_deref()).unwrap_or_else(|()| {
+        if json {
+            diagnostic_json::flush_json_diagnostics();
+        }
         std::process::exit(1);
     });
 
@@ -469,6 +495,9 @@ fn cmd_compile(a: &args::CompileArgs) {
     let emit_target = resolve_compile_emit_target(a.target.as_deref());
     let artefacts = emit_module(&pipeline, module_name, emit_dir, emit_target, true)
         .unwrap_or_else(|()| {
+            if json {
+                diagnostic_json::flush_json_diagnostics();
+            }
             std::process::exit(1);
         });
 
@@ -483,12 +512,24 @@ fn cmd_compile(a: &args::CompileArgs) {
     if let Some(obj) = &artefacts.native_obj_path {
         let bin_path = emit_dir.join(module_name);
         link_native_object(obj, &bin_path).unwrap_or_else(|()| {
+            if json {
+                diagnostic_json::flush_json_diagnostics();
+            }
             std::process::exit(1);
         });
-        println!("native: {}", bin_path.display());
+        if !json {
+            println!("native: {}", bin_path.display());
+        }
     }
     if let Some(wasm) = &artefacts.wasm_path {
-        println!("wasm:   {}", wasm.display());
+        if !json {
+            println!("wasm:   {}", wasm.display());
+        }
+    }
+    // Clean compile under JSON: emit the (empty) diagnostic array on stdout so
+    // the contract holds — `[]` and exit 0.
+    if json {
+        diagnostic_json::flush_json_diagnostics();
     }
 }
 
@@ -532,6 +573,11 @@ fn compile_temp_artifact(
         artifact
     } else {
         drop(artifact);
+        // Flush any collected JSON diagnostics before the sentinel exit. A
+        // no-op when JSON output is not active (e.g. `hew debug`).
+        if diagnostic_json::json_output_active() {
+            diagnostic_json::flush_json_diagnostics();
+        }
         // Exit 125 = compile failure (sentinel used by the playground to
         // distinguish compile errors from program exit codes).
         std::process::exit(125);
@@ -569,6 +615,12 @@ fn create_run_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExe
 }
 
 fn cmd_run(a: &args::RunArgs) {
+    // `--format=json` governs compile-time diagnostics. On a compile failure the
+    // collected JSON array is flushed (in `compile_temp_artifact`); on a clean
+    // compile the program runs normally and its own stdout is preserved — no
+    // empty array is emitted so program output is never corrupted.
+    diagnostic_json::set_output_format(a.format.into());
+
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
     let target = resolve_run_target(options.target.as_deref());
@@ -652,12 +704,16 @@ fn resolve_run_target(requested: Option<&str>) -> target::ExecutionTarget {
 }
 
 fn cmd_check(a: &args::CheckArgs) {
+    let json = a.format == args::DiagnosticFormat::Json;
+    diagnostic_json::set_output_format(a.format.into());
+
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
     let target =
         target::TargetSpec::from_requested(options.target.as_deref()).unwrap_or_else(|e| {
             eprintln!("Error: {e}");
-            std::process::exit(1);
+            // Usage/configuration error before any diagnostics — exit 2.
+            std::process::exit(2);
         });
     let frontend_options = compile::frontend_options(&target, &options);
 
@@ -665,28 +721,45 @@ fn cmd_check(a: &args::CheckArgs) {
         Ok(result) => result,
         Err(failure) => {
             compile::render_frontend_diagnostics(&failure.diagnostics);
-            eprintln!("{}", failure.message);
+            if json {
+                diagnostic_json::flush_json_diagnostics();
+            } else {
+                eprintln!("{}", failure.message);
+            }
             std::process::exit(1);
         }
     };
 
     compile::render_frontend_diagnostics(&result.diagnostics);
-    if a.show_stack_hints {
-        diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
-    } else if a.explain_cow {
-        explain_cow::render_explain_cow(
-            &result.actor_send_aliasing,
-            &result.source,
-            &input,
-            &mut std::io::stdout(),
-        );
+    // Stack hints and explain-cow are human-only diagnostic surfaces; suppress
+    // them under JSON so stdout carries only the diagnostic array.
+    if !json {
+        if a.show_stack_hints {
+            diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
+        } else if a.explain_cow {
+            explain_cow::render_explain_cow(
+                &result.actor_send_aliasing,
+                &result.source,
+                &input,
+                &mut std::io::stdout(),
+            );
+        }
     }
 
     if run_check_deep_gates(&input, &target, &state).is_err() {
+        if json {
+            diagnostic_json::flush_json_diagnostics();
+        }
         std::process::exit(1);
     }
 
-    eprintln!("{input}: OK");
+    if json {
+        // Clean program (warnings may still be present in the array): emit the
+        // collected diagnostics — `[]` when none — and exit 0.
+        diagnostic_json::flush_json_diagnostics();
+    } else {
+        eprintln!("{input}: OK");
+    }
 }
 
 fn cmd_debug(a: &args::DebugArgs) {
@@ -1011,6 +1084,75 @@ fn cmd_version() {
         println!("hew {version} ({profile})");
     } else {
         println!("hew {version} ({profile}, {git_hash}{dirty})");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Observe / LSP — sibling binary delegation
+// ---------------------------------------------------------------------------
+
+/// Launch `hew-observe` as a subprocess, forwarding `extra_args`.
+///
+/// Looks for `hew-observe` in the same directory as the running `hew` binary
+/// first, then falls back to PATH resolution. This keeps `hew observe` usable
+/// both from an install prefix and from a Cargo workspace `target/` tree.
+fn cmd_observe(a: &args::ObserveArgs) {
+    exec_sibling_binary("hew-observe", &a.args);
+}
+
+/// Launch `hew-lsp` as a subprocess, forwarding `extra_args`.
+///
+/// Looks for `hew-lsp` in the same directory as the running `hew` binary
+/// first, then falls back to PATH resolution.
+fn cmd_lsp(a: &args::LspArgs) {
+    exec_sibling_binary("hew-lsp", &a.args);
+}
+
+/// Replace the current process with `binary_name [extra_args]`.
+///
+/// Resolution order:
+///   1. `<dir of current executable>/<binary_name>[.exe]`
+///   2. PATH lookup (via `std::process::Command` which inherits `PATH`)
+///
+/// On Unix the process image is replaced via `execvp`; on other platforms a
+/// child process is spawned, waited for, and the exit code is forwarded.
+fn exec_sibling_binary(binary_name: &str, extra_args: &[String]) -> ! {
+    // Prefer a sibling binary next to the running `hew` executable.
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|dir| dir.join(binary_name)));
+
+    let binary_path: std::path::PathBuf = match sibling {
+        Some(ref candidate) if candidate.exists() => candidate.clone(),
+        _ => std::path::PathBuf::from(binary_name),
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let mut cmd = std::process::Command::new(&binary_path);
+        cmd.args(extra_args);
+        let error = cmd.exec();
+        // exec() only returns on failure.
+        eprintln!(
+            "error: failed to launch `{}`: {error}",
+            binary_path.display()
+        );
+        std::process::exit(1);
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = std::process::Command::new(&binary_path)
+            .args(extra_args)
+            .status();
+        match status {
+            Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+            Err(e) => {
+                eprintln!("error: failed to launch `{}`: {e}", binary_path.display());
+                std::process::exit(1);
+            }
+        }
     }
 }
 

@@ -118,7 +118,7 @@ What to check:
 See also:
 [`../examples/directory_module_demo/README.md`](../examples/directory_module_demo/README.md),
 [`../examples/multifile/README.md`](../examples/multifile/README.md), and
-[`specs/HEW-SPEC.md`](specs/HEW-SPEC.md).
+[`specs/HEW-SPEC-2026.md`](specs/HEW-SPEC-2026.md).
 
 ## Pattern matching & exhaustiveness
 
@@ -252,7 +252,7 @@ What to check:
   multi-file module patterns
 - [`cross-platform-build-guide.md`](cross-platform-build-guide.md) — native
   toolchain setup
-- [`specs/HEW-SPEC.md`](specs/HEW-SPEC.md) — language and module-system rules
+- [`specs/HEW-SPEC-2026.md`](specs/HEW-SPEC-2026.md) — language and module-system rules
 - [`specs/MACHINE-SPEC.md`](specs/MACHINE-SPEC.md) — machine semantics
 - [`diagrams.md`](diagrams.md) — compiler pipeline and runtime diagrams
 

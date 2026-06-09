@@ -239,6 +239,14 @@ pub enum HirDiagnosticKind {
         machine_name: String,
         event_name: String,
     },
+    /// A transition body `emit`s an event that is not listed in the machine's
+    /// `emits { … }` Mealy-output manifest. When the manifest is present it is
+    /// an exhaustive allowlist of permitted outputs; emitting anything else is
+    /// rejected so the declared output vocabulary stays auditable.
+    MachineEmitNotInManifest {
+        machine_name: String,
+        event_name: String,
+    },
     /// A method call expression has no entry in `TypeCheckOutput.method_call_rewrites`
     /// AND no entry in `TypeCheckOutput.resolved_calls` for its span. Fail-closed
     /// per the `checker-output-boundary` invariant: HIR lowering never re-infers
@@ -419,6 +427,26 @@ pub enum HirDiagnosticKind {
         /// The configured cap (shared with the function-mono and layout
         /// registries — see [`crate::monomorph::MONOMORPHISATION_REGISTRY_CAP`]).
         cap: usize,
+    },
+    /// The dedicated layout-mono pass
+    /// ([`crate::layout_mono::run_layout_mono_pass`]) observed a generic
+    /// record or enum type whose substituted type arguments still carry a
+    /// residual type-parameter symbol after function-mono completed. This is
+    /// the record/enum analogue of
+    /// [`Self::UnresolvedMachineTypeParamPostMono`]: once the function-mono
+    /// closure has finished, every record/enum instantiation reachable from a
+    /// monomorphic entry point must be fully concrete. A residual abstract
+    /// symbol is a function-mono defect (the closure failed to reach this site
+    /// with a concrete substitution map) or a checker-authority gap. The
+    /// layout-mono pass fails closed rather than registering an
+    /// under-instantiated layout that would leak `T` to MIR/codegen.
+    UnresolvedLayoutTypeParamPostMono {
+        /// Origin record/enum name as written in source.
+        type_name: String,
+        /// Human-readable rendering of the residual abstract symbol (e.g.
+        /// `"T"`). Kept as a `String` so the diagnostic schema does not leak
+        /// the full `ResolvedTy` shape; the surrounding span pins the site.
+        residual_var: String,
     },
     /// A function declared with `#[intrinsic("key")]` names an intrinsic
     /// key that does not appear in `stdlib_catalog`. Fail-closed: the

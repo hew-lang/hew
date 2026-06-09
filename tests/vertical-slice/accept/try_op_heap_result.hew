@@ -1,0 +1,29 @@
+// Accept (W5.020): the `?` operator on a heap-owning `Result` return path.
+// The `?` desugar (W3.044) is type-agnostic and already lowered; its early
+// `return Err(e)` arm was blocked ONLY by the composite-return gate this lane
+// lifts. With the gate lifted, heap-owning `?` works end to end with ZERO HIR
+// change: `divide(a, b)?` propagates the owned `Err(string)` on the error path
+// and binds the unwrapped `i64` on the success path.
+fn divide(a: i64, b: i64) -> Result<i64, string> {
+    if b == 0 {
+        Err("division by zero")
+    } else {
+        Ok(a / b)
+    }
+}
+
+fn try_divide(a: i64, b: i64) -> Result<i64, string> {
+    let x = divide(a, b)?;
+    Ok(x * 2)
+}
+
+fn main() {
+    match try_divide(10, 2) {
+        Ok(v) => println("ok"),
+        Err(e) => println(e),
+    }
+    match try_divide(10, 0) {
+        Ok(v) => println("ok"),
+        Err(e) => println(e),
+    }
+}

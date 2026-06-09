@@ -1416,3 +1416,297 @@ fn named_fn_returned_and_called() {
     let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     assert_eq!(actual, "14\n", "expected 14; got: {actual:?}");
 }
+
+/// Inline capturing closure: `base` is an untyped local integer binding.
+///
+/// Previously failed at HIR with `E_HIR: CheckerBoundaryViolation` because
+/// the `check_against` const-values coercion path in the type checker called
+/// `env.lookup` instead of `synthesize_identifier`, bypassing the
+/// `lambda_capture_depth` depth-check that registers closure captures.
+#[test]
+fn capturing_closure_inline_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/capturing_closure_inline.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "capturing_closure_inline should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "15\n10\n", "expected 15/10; got: {actual:?}");
+}
+
+/// Returned capturing closure: a function returns a closure that captures a
+/// parameter binding.
+///
+/// Previously failed at MIR with `E_MIR_CHECK: InitialisedBeforeUse` because
+/// `MirStatement::Use` was emitted unconditionally for all `BindingRef` nodes,
+/// including captured bindings handled via `ClosureEnvFieldLoad`. The dataflow
+/// checker saw the outer binding id as `Uninit` in the closure shim context.
+#[test]
+fn capturing_closure_returned_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/capturing_closure_returned.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "capturing_closure_returned should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "8\n", "expected 8; got: {actual:?}");
+}
+
+/// `scope { while { println } }`: calls inside nested control-flow within a
+/// scope block must NOT be treated as spawned tasks.
+///
+/// Previously failed at HIR with `TaskSpawnSignatureUnsupported` and
+/// `TaskSpawnCalleeUnsupported` because `lower_block` did not reset
+/// `scope_depth` to 0, causing the `scope_depth > 0` guard in
+/// `lower_expression_stmt_kind` to intercept all calls at any nesting depth
+/// inside a scope body.
+#[test]
+fn scope_nested_while_println_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/scope_while_println.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "scope_while_println should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual, "tick\ntick\ntick\n",
+        "expected three tick lines; got: {actual:?}"
+    );
+}
+
+/// Value-class capstone (RC-6) — a user record carrying an owned `string` field
+/// is constructed, returned by value across the MIR boundary, round-tripped
+/// through a `let` binding, field-read, and dropped at scope exit. Before this
+/// lane MIR rejected it with `UnsupportedUserRecordValueClass` (W3.029).
+#[test]
+fn owned_record_string_field_by_value_round_trips() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("owned_record_string.hew");
+    std::fs::write(
+        &path,
+        r#"
+        type CommandOutput {
+            stdout: string;
+            code: i64;
+        }
+
+        fn run() -> CommandOutput {
+            CommandOutput { stdout: "ok", code: 7 }
+        }
+
+        fn main() {
+            let o = run();
+            println(o.stdout);
+            println(f"{o.code}");
+        }
+        "#,
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, dir.path());
+    assert!(
+        output.status.success(),
+        "owned-string-record by value should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n7\n");
+}
+
+/// Value-class capstone (G12) — a user record aggregating a `Vec<i64>` field is
+/// constructed (the highest-value shape: rejected at MIR even on construction
+/// before this lane), returned by value, field-read, and dropped at scope exit.
+#[test]
+fn owned_record_vec_field_by_value_round_trips() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("owned_record_vec.hew");
+    std::fs::write(
+        &path,
+        r"
+        type Histogram {
+            counts: Vec<i64>;
+            total: i64;
+        }
+
+        fn build() -> Histogram {
+            let v: Vec<i64> = Vec::new();
+            v.push(10);
+            v.push(20);
+            Histogram { counts: v, total: 30 }
+        }
+
+        fn main() {
+            let h = build();
+            println(h.counts.len());
+            println(h.total);
+        }
+        ",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, dir.path());
+    assert!(
+        output.status.success(),
+        "owned-Vec-field record by value should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n30\n");
+}
+
+/// Value-class capstone — a record nested inside another record (both owning
+/// heap) round-trips by value; the outer record's drop thunk recurses into the
+/// nested owned-record field.
+#[test]
+fn owned_nested_record_by_value_round_trips() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("owned_nested_record.hew");
+    std::fs::write(
+        &path,
+        r#"
+        type User {
+            name: string;
+        }
+
+        type Boxed {
+            user: User;
+            tag: i64;
+        }
+
+        fn wrap(n: i64) -> Boxed {
+            let u = User { name: "ada" };
+            Boxed { user: u, tag: n }
+        }
+
+        fn main() {
+            let b = wrap(99);
+            println(b.user.name);
+            println(f"{b.tag}");
+        }
+        "#,
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, dir.path());
+    assert!(
+        output.status.success(),
+        "nested owned record by value should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ada\n99\n");
+}
+
+/// `import std::encoding::json` then using the imported `#[opaque]` `Value`
+/// handle. Guards the regression where an imported opaque type reached the
+/// LLVM emitter under its module-qualified name (`json.Value`) while the
+/// opaque-name set was keyed by the bare decl name (`Value`), tripping the D10
+/// fail-closed sentinel ("Named/user type `json.Value` reached the LLVM
+/// emitter"). The fix matches the short name in codegen's opaque-ptr decision
+/// (`hew-codegen-rs/src/llvm.rs`). Exercises a trivial pass-through handle
+/// method (`get_int`) and `free`, asserting the runtime round-trip.
+#[test]
+fn run_imports_json_opaque_handle_round_trips() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("json_opaque.hew");
+    std::fs::write(
+        &hew_src,
+        "import std::encoding::json;\n\
+         \n\
+         fn main() -> i32 {\n\
+         \x20   let v = json.from_int(42);\n\
+         \x20   let n = v.get_int();\n\
+         \x20   v.free();\n\
+         \x20   println(f\"n={n}\");\n\
+         \x20   0\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&hew_src, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "n=42\n");
+}
+
+/// `import std::encoding::json` then chaining the fluent builder methods.
+/// Guards the regression where non-trivial imported impl methods (a void C
+/// call followed by `return self`, e.g. `with_int` / `push_int`) were absent
+/// from `fn_registry` and the lowered item list because imported impl-method
+/// registration was gated on per-method `pub` visibility (which impl methods
+/// never carry). Across the import boundary they surfaced as
+/// `IndirectCallUnsupported` / `CallableUnsupportedInMir`. The fix drops the
+/// `pub` gate so HIR matches the checker-authoritative `fn_sigs`
+/// (`hew-hir/src/lower.rs`). Exercises an object builder + array builder +
+/// serialize + reparse, asserting the runtime byte-level output.
+#[test]
+fn run_imports_json_fluent_builders_round_trip() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("json_builders.hew");
+    std::fs::write(
+        &hew_src,
+        "import std::encoding::json;\n\
+         \n\
+         fn main() -> i32 {\n\
+         \x20   let obj = json.object()\n\
+         \x20       .with_string(\"name\", \"Hew\")\n\
+         \x20       .with_int(\"version\", 1);\n\
+         \x20   let s = obj.stringify();\n\
+         \x20   println(s);\n\
+         \x20   let parsed = json.parse(s);\n\
+         \x20   let field = parsed.get_field(\"version\");\n\
+         \x20   println(f\"version={field.get_int()}\");\n\
+         \x20   field.free();\n\
+         \x20   parsed.free();\n\
+         \x20   obj.free();\n\
+         \x20   let arr = json.array().push_int(1).push_int(2).push_int(3);\n\
+         \x20   println(f\"len={arr.array_len()}\");\n\
+         \x20   arr.free();\n\
+         \x20   0\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&hew_src, repo_root());
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"name\":\"Hew\",\"version\":1}\nversion=1\nlen=3\n",
+    );
+}

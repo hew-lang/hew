@@ -30,6 +30,7 @@ members = [
   "std/text/regex",
   "std/text/semver",
   "std/sort",
+  "std/random",
   "std/encoding/compress",
   "std/math",
   "std/mem",

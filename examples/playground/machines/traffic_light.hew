@@ -2,19 +2,21 @@
 //! @description A traffic signal state machine
 
 machine TrafficLight {
+    events {
+        Tick;
+    }
+
     state Red;
     state Green;
     state Yellow;
 
-    event Tick;
-
-    on Tick: Red -> Green {
+    on Tick: Red => Green {
         Green
     }
-    on Tick: Green -> Yellow {
+    on Tick: Green => Yellow {
         Yellow
     }
-    on Tick: Yellow -> Red {
+    on Tick: Yellow => Red {
         Red
     }
 }

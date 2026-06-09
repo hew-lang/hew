@@ -324,6 +324,28 @@ impl BuiltinType {
             Self::Duplex | Self::Sink | Self::Stream | Self::SendHalf | Self::RecvHalf
         )
     }
+
+    /// True for the local actor-handle builtins that lower to a single
+    /// pointer-shaped runtime word (`*mut HewActor`) — `LocalPid<T>`,
+    /// `ActorRef<T>`, and `Actor<T>`.
+    ///
+    /// These are the builtins whose codegen `resolve_ty` arm produces an opaque
+    /// `ptr` and whose `Vec<T>` constructor routes to `hew_vec_new_ptr` (see
+    /// `resolve_ty` + `resolved_ty_is_plain_bitcopy` in `hew-codegen-rs`). The
+    /// checker MUST classify them as the pointer-shaped (`"ptr"`) Vec-element
+    /// ABI so `push`/`get`/`set`/`pop` route to the `hew_vec_*_ptr` family
+    /// rather than the layout-descriptor family — otherwise the constructor and
+    /// the element ops disagree (null-layout `hew_vec_new_ptr` + layout push),
+    /// tripping the runtime "layout-aware operation is not implemented" abort.
+    ///
+    /// `RemotePid<T>` is intentionally excluded: it lowers to a bare `i64`
+    /// packed PID, not a pointer, so it takes a different element ABI.
+    /// Substrate handles (`Duplex`/`Stream`/`Sink`/channel halves) are affine
+    /// move-only resources and are not admitted as Vec elements here.
+    #[must_use]
+    pub const fn lowers_as_pointer_vec_element(self) -> bool {
+        matches!(self, Self::LocalPid | Self::ActorRef | Self::Actor)
+    }
 }
 
 #[must_use]

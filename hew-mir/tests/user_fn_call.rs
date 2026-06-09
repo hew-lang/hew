@@ -197,14 +197,23 @@ fn unresolved_call_emits_not_yet_implemented_not_call_terminator() {
         pipeline.diagnostics
     );
 
-    // Must not produce a call terminator — the fail-closed path must fire.
-    let has_call = pipeline
+    // Must not produce a call terminator in `main` — the fail-closed path must
+    // fire for the unresolved callee. Scope the check to user-declared functions
+    // (here just `main`) so stdlib-synthesized fmt shims (e.g. `i64::fmt`) that
+    // legitimately use `Terminator::Call` do not trigger a false positive.
+    let main_fn = pipeline
         .raw_mir
         .iter()
-        .flat_map(|f| f.blocks.iter())
+        .find(|f| f.name == "main")
+        .expect("main function must be in raw_mir");
+    let has_call = main_fn
+        .blocks
+        .iter()
         .any(|b| matches!(b.terminator, Terminator::Call { .. }));
     assert!(
         !has_call,
-        "unresolved call must not emit a call terminator; fail-closed path must fire"
+        "unresolved call must not emit a call terminator in main; \
+         fail-closed path must fire; got blocks: {:#?}",
+        main_fn.blocks
     );
 }

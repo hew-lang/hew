@@ -204,3 +204,48 @@ fn tcp_handshake_step_fn_has_real_dispatch_tree_with_payload_and_wildcards() {
         "emit expressions in transition bodies lower to MachineEmitPlaceholder"
     );
 }
+
+#[test]
+fn default_machine_step_fn_falls_through_to_stay_return_not_trap() {
+    // A `default { state }` machine must NOT trap on an unhandled cell — the
+    // dispatch fall-through returns `self` unchanged (the unhandled-⇒-stay
+    // semantics). This is the MIR side of the Q379 fix; the runtime oracle is
+    // `examples/machine/run_default_stay.expected`.
+    let pipeline = pipeline_for("../examples/machine/run_default_stay.hew");
+    let step_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Tank__step")
+        .expect("Tank__step synthesised");
+
+    // No block may trap with MachineDispatchUnreachable: the default arm
+    // replaces the fail-closed trap with a stay-return.
+    assert!(
+        !step_fn.blocks.iter().any(|b| matches!(
+            b.terminator,
+            Terminator::Trap {
+                kind: TrapKind::MachineDispatchUnreachable,
+            }
+        )),
+        "default machine fall-through must not trap; it stays in the current state"
+    );
+
+    // The fall-through returns: at least one Return block writes the return
+    // slot from the `self` parameter (Local 0) — the stay path.
+    let stays_via_self_return = step_fn.blocks.iter().any(|b| {
+        matches!(b.terminator, Terminator::Return)
+            && b.instructions.iter().any(|i| {
+                matches!(
+                    i,
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(0),
+                    }
+                )
+            })
+    });
+    assert!(
+        stays_via_self_return,
+        "default fall-through returns `self` (Local 0) unchanged into the return slot"
+    );
+}

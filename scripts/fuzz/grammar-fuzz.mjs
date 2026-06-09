@@ -175,10 +175,10 @@ actor Counter {
 }
 
 supervisor CounterSup {
-    child counter: Counter;
-    restart permanent;
-    budget 5;
-    strategy one_for_one;
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child counter: Counter restart: permanent;
 }
 
 fn main() {
@@ -248,13 +248,12 @@ fn main() {
     category: 'keywords',
     source: `
 supervisor MySup {
-    child worker: Worker;
-    restart permanent;
-    restart transient;
-    restart temporary;
-    strategy one_for_one;
-    strategy one_for_all;
-    strategy rest_for_one;
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child worker1: Worker restart: permanent;
+    child worker2: Worker restart: transient;
+    child worker3: Worker restart: temporary shutdown: brutal_kill;
 }
 `,
   });
@@ -632,10 +631,10 @@ actor MyActor {
 }
 
 supervisor MySup {
-    child actor: MyActor;
-    restart permanent;
-    window 60s;
-    max_restarts 5;
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child actor: MyActor restart: permanent;
 }
 
 #[export]

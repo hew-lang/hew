@@ -16,9 +16,9 @@ use std::collections::{HashMap, HashSet};
 use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, CallArg, CompoundAssignOp, ConstDecl, Expr, FnDecl,
     Item, LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl,
-    RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt,
-    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl,
-    TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
+    RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, ShutdownDirective,
+    Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause,
+    TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
 };
 use hew_types::BuiltinType;
 use hew_types::{
@@ -42,8 +42,8 @@ use crate::node::{
     HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
     HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding,
     HirMatchArmPredicate, HirModule, HirPayloadPredicate, HirRecordDecl, HirRegexLiteral,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
-    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
+    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
     HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
@@ -235,6 +235,26 @@ const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 /// `ResolvedRef::Item(_)` guard via [`is_synthetic_builtin_item`].
 const SYNTHETIC_LINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 9);
 const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
+
+/// Synthetic-builtin sentinel `ItemId` for the user-facing `duplex_pair`
+/// constructor. The checker (`Checker::register_builtins`) registers it as a
+/// builtin function with no AST `fn` item, so — like `link`/`monitor`/
+/// `supervisor_stop` — it needs a synthetic `Item(id)` in `fn_registry` for
+/// `lower_identifier` to resolve and for `verify_hir` to accept (it rejects
+/// `Unresolved` callee refs). It sits just below `monitor` in the same
+/// `u32::MAX / 2` band, inside the [`SYNTHETIC_BUILTIN_ITEM_FLOOR`] band, so
+/// the MIR user-name → C-symbol bridge (`runtime_symbol_for_call_expr`)
+/// exempts it from its `ResolvedRef::Item(_)` guard via
+/// [`is_synthetic_builtin_item`] and routes it to `hew_duplex_pair`.
+///
+/// The sibling checker builtins `duplex` (detached) and `channel` are
+/// deliberately NOT seeded here: `duplex` has no runtime constructor
+/// (`hew_duplex_new` was removed in the M2 runtime refactor) and `channel`
+/// has no MIR producer / allowlisted runtime symbol. Registering either would
+/// pass `verify_hir` but fail closed at the MIR boundary — pretend-support
+/// rather than a real lowering path. The runnable Stream/Sink constructor
+/// surface is `std::stream`'s `pipe`/`bytes_pipe` (real `fn` items).
+const SYNTHETIC_DUPLEX_PAIR_ITEM: ItemId = ItemId(u32::MAX / 2 - 11);
 
 /// Inclusive floor of the synthetic-builtin sentinel `ItemId` band.
 ///
@@ -436,6 +456,13 @@ impl LowerOutput {
     /// - [`HirDiagnosticKind::VecSliceElementTypeUnsupported`] — `xs[a..b]`
     ///   on a `Vec<T>` whose element type `T` has no
     ///   `hew_vec_slice_range_T` runtime symbol.
+    /// - [`HirDiagnosticKind::MonomorphisationCallTypeArgsViolation`] — a
+    ///   generic-function call's `call_type_args` entry failed the
+    ///   `ResolvedTy::from_ty` boundary conversion (e.g. contained `Ty::Error`
+    ///   or an unresolved inference variable); passing a corrupt monomorphisation
+    ///   entry downstream produces an invalid MIR.
+    /// - [`HirDiagnosticKind::RecordLayoutTypeArgsViolation`] — same as above
+    ///   for the record-layout side-table.
     ///
     /// Callers that want to continue despite non-fatal diagnostics should
     /// check `.diagnostics` directly.  This method is the recommended
@@ -479,6 +506,8 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::VecIndexElementTypeUnsupported { .. }
                     | crate::HirDiagnosticKind::VecSliceElementTypeUnsupported { .. }
                     | crate::HirDiagnosticKind::CloneNotYetSupported { .. }
+                    | crate::HirDiagnosticKind::MonomorphisationCallTypeArgsViolation { .. }
+                    | crate::HirDiagnosticKind::RecordLayoutTypeArgsViolation { .. }
             )
         });
         if has_fatal {
@@ -563,6 +592,16 @@ struct ImplCloseSignature {
     /// User-facing rendering of the offending non-unit return type. Only
     /// meaningful when `!return_ty_unit`.
     return_ty_display: String,
+}
+
+/// Per-impl-block context threaded into `lower_impl_block` for imported
+/// modules. Carries the same-module fn-name rewrite map (bare helper name →
+/// mangled qualified symbol, identical to the free-function imported path) and
+/// the set of method names to skip because their bodies call a private helper
+/// the importer cannot reach.
+struct ImportedImplLowering<'a> {
+    rewrites: &'a HashMap<String, String>,
+    skip_methods: &'a HashSet<String>,
 }
 
 /// Walk the root program's items collecting inherent-impl `close` method
@@ -976,15 +1015,31 @@ pub fn lower_program_with_mono_cap(
                                 ctx.register_extern_fn_entry(extern_fn);
                             }
                         }
-                        // Register imported pub impl block methods in
-                        // `fn_registry` under the same unqualified
-                        // `<SelfType>::<method>` key used for root impl blocks.
-                        // The key must be unqualified because the checker's
-                        // `fn_sigs` table also uses unqualified keys for impl
-                        // methods (see `scoped_module_item_name` in checker).
-                        // Only `pub` methods are registered: private methods are
-                        // not visible to importers and must not leak via
-                        // fn_registry across module boundaries.
+                        // Register imported impl block methods in `fn_registry`
+                        // under the same unqualified `<SelfType>::<method>` key
+                        // used for root impl blocks. The key must be unqualified
+                        // because the checker's `fn_sigs` table also uses
+                        // unqualified keys for impl methods (see
+                        // `scoped_module_item_name` / `register_impl_method` in
+                        // checker).
+                        //
+                        // No per-method `pub` gate: impl methods in Hew have no
+                        // independent visibility — access is governed by the
+                        // trait/type, and impl bodies never carry `pub fn`. The
+                        // checker registers EVERY imported impl method into
+                        // `fn_sigs` without a `pub` filter and emits
+                        // `RewriteToFunction { c_symbol: "<Type>::<method>" }`
+                        // for any non-trivial builder method (one whose body is
+                        // not a single C pass-through, so it is not captured by
+                        // the runtime handle-method path). Gating this pre-pass
+                        // on `pub` left those `<Type>::<method>` symbols absent
+                        // from `fn_registry`, so the call lowered to a
+                        // `ResolvedRef::Unresolved` callee and tripped
+                        // `IndirectCallUnsupported` at the import boundary
+                        // (e.g. `import std::encoding::json` then a `with_*`
+                        // builder chain). Matching the root pre-pass (which has
+                        // no `pub` filter) keeps HIR aligned with the
+                        // checker-authoritative `fn_sigs`.
                         Item::Impl(impl_decl) => {
                             if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
                                 if impl_decl.where_clause.is_none()
@@ -992,9 +1047,6 @@ pub fn lower_program_with_mono_cap(
                                 {
                                     let impl_type_params = impl_type_param_names(impl_decl);
                                     for method in &impl_decl.methods {
-                                        if !method.visibility.is_pub() {
-                                            continue;
-                                        }
                                         ctx.register_impl_method_fn_entry(
                                             name,
                                             method,
@@ -1919,7 +1971,7 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Impl(impl_decl) => {
-                ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false);
+                ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
             }
             Item::Machine(machine) => {
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
@@ -2189,48 +2241,105 @@ pub fn lower_program_with_mono_cap(
                                 }));
                             }
                         }
-                        // Emit `HirItem::Function` entries for each method
-                        // of an imported impl block so that MIR/codegen can
-                        // process cross-module method calls on named types.
-                        // If any method body makes a direct call to a private
-                        // (non-pub) function in the same module the body
-                        // cannot be lowered — emit a fatal diagnostic instead
-                        // so the root cause is identified at the module boundary
-                        // rather than silently producing an `UnresolvedSymbol`.
+                        // Emit `HirItem::Function` entries for the methods of an
+                        // imported impl block so that MIR/codegen can process
+                        // cross-module method calls on named types.
+                        //
+                        // No per-method `pub` gate: impl methods in Hew have no
+                        // independent visibility (impl bodies never carry
+                        // `pub fn`; access is governed by the trait/type), so a
+                        // `pub` filter excluded ALL imported impl methods. That
+                        // left non-trivial builder methods (e.g. JSON `with_*` /
+                        // `push_*`, whose bodies are a void C call followed by
+                        // `return self`, so they are NOT captured by the runtime
+                        // handle-method pass-through path) without a MIR body,
+                        // surfacing as `CallableUnsupportedInMir` /
+                        // `IndirectCallUnsupported` at the import boundary. The
+                        // root impl-block path emits every method
+                        // (`pub_only = false`); the imported path now matches.
+                        //
+                        // A method whose body calls a private (non-pub) free
+                        // function in the same module that is NOT in the imported
+                        // private-fn closure cannot be lowered (the helper is not
+                        // in the emitted item list and has no qualified rewrite).
+                        // Such methods are skipped — matching the prior behaviour
+                        // where every imported impl method was dropped — so the
+                        // module still imports cleanly. If an importer actually
+                        // CALLS a skipped method it fails closed downstream with
+                        // `CallableUnsupportedInMir`, exactly as before this
+                        // change. (Lowering those bodies requires registering the
+                        // private-helper closure reachable from impl methods, a
+                        // follow-up to the free-fn closure already wired here.)
                         Item::Impl(impl_decl) => {
-                            if let TypeExpr::Named { .. } = &impl_decl.target_type.0 {
-                                let mut any_blocked = false;
+                            if let TypeExpr::Named {
+                                name: self_type_name,
+                                ..
+                            } = &impl_decl.target_type.0
+                            {
+                                // Conservatively lower only the imported impl
+                                // methods that are provably safe cross-module;
+                                // skip the rest so they stay dropped exactly as
+                                // before this change (the module still imports
+                                // cleanly, and an actual call to a skipped method
+                                // fails closed downstream just as it did on the
+                                // prior, drop-everything path).
+                                //
+                                // A method is skipped when EITHER:
+                                //  - its body calls a bare name that resolves in
+                                //    neither the same-module rewrite map nor
+                                //    `fn_registry` (which by now holds every
+                                //    seeded stdlib/runtime symbol and every
+                                //    same-module extern fn) — catches
+                                //    codegen-intercepted builtins that are not
+                                //    extern-declared, e.g. `std::channel`'s
+                                //    `recv` → `hew_channel_recv`; OR
+                                //  - its signature names a user type that would
+                                //    not resolve at the MIR boundary — a
+                                //    cross-module dotted type (`fs.IoError`) or a
+                                //    user trait/type used as a generic argument
+                                //    (`LocalPid<WebSocketHandler>`). Only
+                                //    primitives/builtins and the impl's own self
+                                //    type are admitted.
+                                //
+                                // This is intentionally tight: it captures the
+                                // fluent-builder shape (e.g. JSON `with_*` /
+                                // `push_*`, params `string`/`i64`/`f64`/`bool`,
+                                // returning the opaque self handle) without
+                                // eagerly lowering methods that would unmask
+                                // pre-existing per-module cross-module-resolution
+                                // gaps. Lifting the signature restriction needs
+                                // imported user-type/trait registration at the
+                                // MIR boundary — a separate lane.
+                                let mut skip_methods: HashSet<String> = HashSet::new();
                                 for method in &impl_decl.methods {
-                                    // Private imported methods are not visible to
-                                    // importers — skip body scan and emission.
-                                    if !method.visibility.is_pub() {
-                                        continue;
-                                    }
-                                    let blocked = collect_bare_fn_call_refs(
-                                        &method.body,
-                                        &same_module_private_fns,
-                                    );
-                                    for helper_fn in blocked {
-                                        ctx.diagnostics.push(HirDiagnostic::new(
-                                            HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
-                                                module: module_short.to_string(),
-                                                helper_fn,
-                                                item_kind:
-                                                    crate::diagnostic::ImportedItemKind::ImplMethod,
+                                    let body_unresolvable =
+                                        collect_all_bare_call_names(&method.body).into_iter().any(
+                                            |callee| {
+                                                !same_module_fn_rewrites.contains_key(&callee)
+                                                    && !ctx.fn_registry.contains_key(&callee)
                                             },
-                                            span.clone(),
-                                            "imported impl method body calls a private helper \
-                                             function from the same module; private functions \
-                                             are not accessible across module boundaries — \
-                                             make the helper `pub`, inline its logic, or \
-                                             restructure the module",
-                                        ));
-                                        any_blocked = true;
+                                        );
+                                    let sig_unresolvable =
+                                        method_signature_type_exprs(method).any(|ty| {
+                                            !imported_impl_signature_type_is_safe(
+                                                ty,
+                                                self_type_name,
+                                            )
+                                        });
+                                    if body_unresolvable || sig_unresolvable {
+                                        skip_methods.insert(method.name.clone());
                                     }
                                 }
-                                if !any_blocked {
-                                    ctx.lower_impl_block(impl_decl, span.clone(), &mut items, true);
-                                }
+                                ctx.lower_impl_block(
+                                    impl_decl,
+                                    span.clone(),
+                                    &mut items,
+                                    false,
+                                    Some(&ImportedImplLowering {
+                                        rewrites: &same_module_fn_rewrites,
+                                        skip_methods: &skip_methods,
+                                    }),
+                                );
                             }
                         }
                         // Item::Record, Item::Actor, Item::Supervisor from
@@ -2294,7 +2403,7 @@ pub fn lower_program_with_mono_cap(
                         if !registered {
                             continue;
                         }
-                        ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false);
+                        ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
                     }
                 }
             }
@@ -2335,8 +2444,8 @@ pub fn lower_program_with_mono_cap(
 
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
-    let record_layouts = ctx.record_layout_registry.into_vec();
-    let enum_layouts = ctx.enum_layout_registry.into_vec();
+    let mut record_layouts = ctx.record_layout_registry.into_vec();
+    let mut enum_layouts = ctx.enum_layout_registry.into_vec();
     let supervisor_child_slots = ctx.supervisor_child_slots;
 
     // Closure under substitution: walk every monomorphisation's origin
@@ -2351,6 +2460,29 @@ pub fn lower_program_with_mono_cap(
         mono_cap,
         &mut ctx.diagnostics,
     );
+
+    // Post-function-mono record/enum layout discovery. MUST run AFTER
+    // `closure_under_substitution` has closed the function-mono registry —
+    // a generic record/enum constructed only inside a generic fn body (e.g.
+    // `fn make<T>() -> Box<T> { Box { value: x } }`) is observable as a
+    // concrete `Box<i64>` layout only after `make` is substituted as
+    // `make$$i64`. Mirrors the `run_machine_mono_pass` ordering invariant.
+    // The pass is purely additive: the origin-site path already registered
+    // every concrete-site instantiation, and the dedup set is seeded from
+    // those so nothing is double-counted. New entries are merged BEFORE
+    // `finalize_user_record_value_classes` so each new mangled layout gets a
+    // value-class assigned.
+    let (extra_record_layouts, extra_enum_layouts, layout_mono_diagnostics) =
+        crate::layout_mono::run_layout_mono_pass(
+            &items,
+            &monomorphisations,
+            &record_layouts,
+            &enum_layouts,
+            mono_cap,
+        );
+    record_layouts.extend(extra_record_layouts);
+    enum_layouts.extend(extra_enum_layouts);
+    ctx.diagnostics.extend(layout_mono_diagnostics);
 
     finalize_user_record_value_classes(
         &ctx.record_registry,
@@ -2909,6 +3041,18 @@ fn collect_call_sites_in_expr(
         } => {
             collect_call_sites_in_expr(scrutinee, out, trait_out);
             collect_call_sites_in_block(body, out, trait_out);
+        }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_call_sites_in_expr(scrutinee, out, trait_out);
+            collect_call_sites_in_block(body, out, trait_out);
+            if let Some(eb) = else_body {
+                collect_call_sites_in_block(eb, out, trait_out);
+            }
         }
         HirExprKind::Break { value, .. } => {
             if let Some(value) = value {
@@ -4059,6 +4203,10 @@ impl LowerCtx {
     /// the same origin record with different concrete args;
     /// `RecordLayoutCapExceeded` (at most once per invocation) when the
     /// registry cap is hit.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single fail-closed validation pipeline (side-table read + boundary conversion + arity + abstract-skip + recursive-self + cap) kept in one place for ordering clarity"
+    )]
     fn record_record_layout(
         &mut self,
         record_name: &str,
@@ -4135,6 +4283,23 @@ impl LowerCtx {
             return None;
         }
 
+        // Fail-closed: do NOT *register* an abstract origin-site layout, but DO
+        // return the (abstract) type-args so the `StructInit` node's `expr.ty`
+        // keeps `Box<T>`. Inside a generic fn body (`Box { value: x }` in
+        // `make<T>`) the side-table carries the enclosing fn's `T`, not a
+        // concrete arg; registering it would mangle `Box$$T` with a `T`-typed
+        // field that leaks to the MIR boundary. The concrete `Box$$i64` layout
+        // is discovered post-function-mono by `layout_mono` on the substituted
+        // body. The abstract args must still ride on `expr.ty` so MIR's
+        // monomorph lowering (`subst_ty` + `mangle`, hew-mir/src/lower.rs:6634)
+        // recovers `Box<i64>` → `Box$$i64`. Never fires at a concrete site.
+        if type_args
+            .iter()
+            .any(|t| self.contains_abstract_type_param(t))
+        {
+            return Some(type_args);
+        }
+
         // Substitute the type-params with the concrete args to produce
         // this layout's field shape.
         let substituted_fields: Vec<(String, ResolvedTy)> = source_fields
@@ -4203,10 +4368,95 @@ impl LowerCtx {
 /// deduplicated list of matching names.
 fn collect_bare_fn_call_refs(body: &Block, candidate_fns: &HashSet<String>) -> Vec<String> {
     let mut found = Vec::new();
-    scan_block_for_private_refs(body, candidate_fns, &mut found);
+    scan_block_for_private_refs(body, Some(candidate_fns), &mut found);
     found.sort_unstable();
     found.dedup();
     found
+}
+
+/// Collect every bare-identifier call target (`foo(...)` where `foo` is an
+/// identifier) reachable in `body`, regardless of any candidate filter.
+///
+/// Used to decide whether an imported impl-method body is safe to lower: a body
+/// that calls a bare name resolvable in neither `fn_registry`, the same-module
+/// rewrite map, nor the runtime/stdlib catalog cannot be lowered cross-module
+/// (e.g. `std::channel`'s `recv` calls the codegen-intercepted `hew_channel_recv`,
+/// which is not extern-declared in the module and never reaches the imported
+/// `fn_registry`). Such methods are skipped, matching the prior behaviour where
+/// every imported impl method was dropped.
+fn collect_all_bare_call_names(body: &Block) -> Vec<String> {
+    let mut found = Vec::new();
+    scan_block_for_private_refs(body, None, &mut found);
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// Iterate the parameter and return `TypeExpr`s of an impl-block method.
+fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExpr> {
+    method
+        .params
+        .iter()
+        .map(|param| &param.ty.0)
+        .chain(method.return_type.as_ref().map(|rt| &rt.0))
+}
+
+/// Whether a `TypeExpr` appearing in an imported impl-method signature is safe
+/// to lower cross-module: it must reference only primitives/builtins and the
+/// impl's own self type. A user type, a user trait used as a generic argument,
+/// or a cross-module dotted type (`fs.IoError`) is rejected, because the
+/// imported-module lowering does not register such types at the MIR boundary —
+/// lowering a method that names one trips `unknown type` / D10 there.
+///
+/// Conservative by design: it admits the fluent-builder shape (scalar params +
+/// opaque self return) while excluding the signatures that surfaced
+/// pre-existing per-module resolution gaps when impl methods were eagerly
+/// lowered. Composite forms recurse into their components.
+fn imported_impl_signature_type_is_safe(ty: &TypeExpr, self_type_name: &str) -> bool {
+    match ty {
+        TypeExpr::Named { name, type_args } => {
+            // A cross-module dotted reference (`fs.IoError`) is never resolvable
+            // through the importing module's registries.
+            if name.contains('.') {
+                return false;
+            }
+            // The impl's own self type is the opaque handle (already resolvable);
+            // scalar primitives (`string`, `i64`, `bool`, …) and compound
+            // builtins (`Vec`, `Option`, `LocalPid`, …) are resolvable by name.
+            let is_primitive = hew_types::ty::PRIMITIVE_ALIASES
+                .iter()
+                .any(|(canonical, aliases)| *canonical == name || aliases.contains(&name.as_str()));
+            let head_ok = name == self_type_name
+                || is_primitive
+                || hew_types::lookup_builtin_type(name).is_some();
+            if !head_ok {
+                return false;
+            }
+            type_args.as_ref().is_none_or(|args| {
+                args.iter()
+                    .all(|arg| imported_impl_signature_type_is_safe(&arg.0, self_type_name))
+            })
+        }
+        TypeExpr::Option(inner) | TypeExpr::Slice(inner) | TypeExpr::Borrow(inner) => {
+            imported_impl_signature_type_is_safe(&inner.0, self_type_name)
+        }
+        TypeExpr::Array { element, .. } => {
+            imported_impl_signature_type_is_safe(&element.0, self_type_name)
+        }
+        TypeExpr::Pointer { pointee, .. } => {
+            imported_impl_signature_type_is_safe(&pointee.0, self_type_name)
+        }
+        TypeExpr::Result { ok, err } => {
+            imported_impl_signature_type_is_safe(&ok.0, self_type_name)
+                && imported_impl_signature_type_is_safe(&err.0, self_type_name)
+        }
+        TypeExpr::Tuple(elems) => elems
+            .iter()
+            .all(|elem| imported_impl_signature_type_is_safe(&elem.0, self_type_name)),
+        // Function-typed params, trait objects, and any other composite carry
+        // user-type identity that the importer cannot resolve — reject.
+        _ => false,
+    }
 }
 
 fn collect_imported_private_fn_closure(
@@ -4250,7 +4500,7 @@ fn collect_imported_private_fn_closure(
     reachable
 }
 
-fn scan_block_for_private_refs(block: &Block, pf: &HashSet<String>, out: &mut Vec<String>) {
+fn scan_block_for_private_refs(block: &Block, pf: Option<&HashSet<String>>, out: &mut Vec<String>) {
     for (stmt, _) in &block.stmts {
         scan_stmt_for_private_refs(stmt, pf, out);
     }
@@ -4259,7 +4509,7 @@ fn scan_block_for_private_refs(block: &Block, pf: &HashSet<String>, out: &mut Ve
     }
 }
 
-fn scan_stmt_for_private_refs(stmt: &Stmt, pf: &HashSet<String>, out: &mut Vec<String>) {
+fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &mut Vec<String>) {
     match stmt {
         Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
             scan_expr_for_private_refs(&v.0, pf, out);
@@ -4334,11 +4584,13 @@ fn scan_stmt_for_private_refs(stmt: &Stmt, pf: &HashSet<String>, out: &mut Vec<S
     clippy::too_many_lines,
     reason = "exhaustive single-pass AST walk; splitting into sub-functions would obscure the traversal structure without adding clarity"
 )]
-fn scan_expr_for_private_refs(expr: &Expr, pf: &HashSet<String>, out: &mut Vec<String>) {
+fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &mut Vec<String>) {
     match expr {
         Expr::Call { function, args, .. } => {
             if let Expr::Identifier(name) = &function.0 {
-                if pf.contains(name) {
+                // `pf == None` collects every bare call name; `Some(set)` records
+                // only names present in `set` (the same-module private-fn filter).
+                if pf.is_none_or(|set| set.contains(name)) {
                     out.push(name.clone());
                 }
             }
@@ -4634,6 +4886,26 @@ impl LowerCtx {
                 },
             );
         }
+        // `duplex_pair<S, R>(capacity: i64) -> (Duplex<S, R>, Duplex<R, S>)`.
+        // The checker (`Checker::register_builtins`) registers it as a builtin
+        // with no AST `fn` item, so — like `link`/`monitor`/`supervisor_stop`
+        // — it needs a synthetic `Item(id)` here for `lower_identifier` to
+        // resolve and for `verify_hir` to accept (the verifier rejects
+        // `Unresolved` callee refs). The call-result type is read from the
+        // checker's `expr_types` at the call site, so the entry's `return_ty`
+        // is only a placeholder; the param carries the `i64` capacity arity.
+        // MIR routes `BindingRef { name: "duplex_pair", resolved: Item(_) }`
+        // through `user_name_to_c_symbol("duplex_pair")` → `hew_duplex_pair`.
+        self.fn_registry.insert(
+            "duplex_pair".to_string(),
+            FnEntry {
+                id: SYNTHETIC_DUPLEX_PAIR_ITEM,
+                return_ty: ResolvedTy::Unit,
+                param_tys: vec![ResolvedTy::I64],
+                linkage: None,
+                type_params: vec!["S".to_string(), "R".to_string()],
+            },
+        );
         // Duplex method-call rewrites: `check_duplex_method` records
         // `RewriteToFunction { c_symbol: "hew_duplex_*" }` for the Duplex
         // built-in methods.  The `RewriteToFunction` HIR path resolves the
@@ -4943,6 +5215,18 @@ impl LowerCtx {
             } => {
                 self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
+            }
+            HirExprKind::IfLet {
+                scrutinee,
+                body,
+                else_body,
+                ..
+            } => {
+                self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
+                self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
+                if let Some(eb) = else_body {
+                    self.wrap_var_self_explicit_returns_in_block(eb, receiver, abi_return_ty);
+                }
             }
             HirExprKind::Loop { body } => {
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
@@ -5739,12 +6023,20 @@ impl LowerCtx {
     /// (where-clauses, default-method bodies, non-nominal targets, blanket
     /// impls) emits a named [`HirDiagnosticKind::ImplBlockShapeNotLowered`]
     /// rather than falling through to the generic catch-all.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single linear lowering path with a sequence of fail-closed \
+                  shape guards (where-clause / non-nominal / blanket / builtin \
+                  inherent) followed by the per-method emission loop; splitting \
+                  would scatter the guards from the emission they protect"
+    )]
     fn lower_impl_block(
         &mut self,
         decl: &hew_parser::ast::ImplDecl,
         span: std::ops::Range<usize>,
         items: &mut Vec<HirItem>,
         pub_only: bool,
+        imported: Option<&ImportedImplLowering<'_>>,
     ) {
         // Pre-flight: classify the impl shape. Bail with a precise diagnostic
         // on any unsupported variant before lowering bodies.
@@ -5847,9 +6139,22 @@ impl LowerCtx {
         // impl-lowering reentry — should it ever arise — does not leak state.
         let prior_self_ty = self.current_impl_self_ty.take();
         self.current_impl_self_ty = Some(self.lower_type(&decl.target_type));
+        // For imported impl blocks, apply the same-module fn-name rewrite map
+        // (bare helper name → mangled qualified symbol) to method bodies, just
+        // as `lower_imported_fn_with_name` does for free functions. Methods
+        // whose bodies call a private same-module helper that is NOT in the
+        // rewrite closure are listed in `skip_methods` and dropped here; the
+        // caller has already emitted a fail-closed diagnostic for them.
+        let prior_imported_rewrites =
+            imported.map(|imp| self.imported_fn_rewrites.replace(imp.rewrites.clone()));
         for method in &decl.methods {
             if pub_only && !method.visibility.is_pub() {
                 continue;
+            }
+            if let Some(imp) = imported {
+                if imp.skip_methods.contains(method.name.as_str()) {
+                    continue;
+                }
             }
             let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
             // Pass impl-level type params so that methods of e.g. `impl<U> Trait for Wrapper<U>`
@@ -5863,6 +6168,9 @@ impl LowerCtx {
             )));
             method_symbols.push(symbol);
             method_names.push(method.name.clone());
+        }
+        if let Some(prev) = prior_imported_rewrites {
+            self.imported_fn_rewrites = prev;
         }
         self.current_impl_self_ty = prior_self_ty;
 
@@ -6349,6 +6657,11 @@ impl LowerCtx {
                             (field_name.clone(), hir_expr)
                         })
                         .collect(),
+                    shutdown: child.shutdown.as_ref().map(|s| match s {
+                        ShutdownDirective::Timeout(d) => HirShutdownDirective::Timeout(d.clone()),
+                        ShutdownDirective::BrutalKill => HirShutdownDirective::BrutalKill,
+                        ShutdownDirective::Infinity => HirShutdownDirective::Infinity,
+                    }),
                 }
             })
             .collect();
@@ -6358,8 +6671,12 @@ impl LowerCtx {
             node: self.ids.node(),
             name: decl.name.clone(),
             strategy,
-            max_restarts: decl.max_restarts,
-            window: decl.window.clone(),
+            // Decompose the fused `intensity` AST field into the two HIR fields
+            // (max_restarts + window) the MIR/codegen/runtime path already uses.
+            // The window duration string flows through verbatim; codegen
+            // interprets the unit so duration parsing stays centralised there.
+            max_restarts: decl.intensity.as_ref().map(|i| i.restarts),
+            window: decl.intensity.as_ref().map(|i| i.window.clone()),
             children,
             span,
         }
@@ -6777,6 +7094,32 @@ impl LowerCtx {
             }
         }
 
+        // 5. Emits-manifest cross-check: when the machine declares an
+        //    `emits { … }` header, every event named by an `emit` statement in
+        //    any transition body must appear in that manifest. The manifest is
+        //    an auditable allowlist of permitted Mealy outputs.
+        if !decl.emits.is_empty() {
+            for tr in &hir_transitions {
+                for emitted in &tr.body_emits {
+                    if !decl.emits.contains(emitted) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::MachineEmitNotInManifest {
+                                machine_name: decl.name.clone(),
+                                event_name: emitted.clone(),
+                            },
+                            tr.span.clone(),
+                            format!(
+                                "transition `on {}` emits `{}`, which is not declared in the \
+                                 `emits {{ … }}` manifest of machine `{}`; add `{}` to `emits` \
+                                 or remove the emit",
+                                tr.event_name, emitted, decl.name, emitted
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
         // Fail-closed: if any diagnostic was pushed for this machine, abort.
         // (Effect-parity, self-transition, and emit-cycle diagnostics are not
         // return-None by themselves but we abort to avoid a partially-valid
@@ -6787,6 +7130,7 @@ impl LowerCtx {
                 HirDiagnosticKind::MachineSelfTransitionNeedsReenter { machine_name, .. }
                 | HirDiagnosticKind::MachineEffectParityViolation { machine_name, .. }
                 | HirDiagnosticKind::MachineEmitCycle { machine_name, .. }
+                | HirDiagnosticKind::MachineEmitNotInManifest { machine_name, .. }
                 if machine_name == &decl.name
             )
         });
@@ -7161,6 +7505,15 @@ impl LowerCtx {
     }
 
     fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
+        // Nested control-flow bodies (while, loop, if, match) must not
+        // inherit the parent's `scope_depth`. The `scope_depth > 0` guard
+        // in `lower_expression_stmt_kind` is intended to intercept only the
+        // DIRECT statement-expressions of a `scope { }` body (handled by
+        // `lower_scope_block`). Resetting to 0 here ensures that a call
+        // inside `scope { while { call() } }` is NOT treated as a spawned
+        // task — only the top-level scope statements are spawn candidates.
+        let saved_scope_depth = self.scope_depth;
+        self.scope_depth = 0;
         self.push_scope();
         let scope = self.ids.scope();
         let prev_scope_id = std::mem::replace(&mut self.current_scope_id, scope);
@@ -7177,6 +7530,7 @@ impl LowerCtx {
             .map_or(ResolvedTy::Unit, |expr| expr.ty.clone());
         self.current_scope_id = prev_scope_id;
         self.pop_scope();
+        self.scope_depth = saved_scope_depth;
 
         HirBlock {
             node: self.ids.node(),
@@ -8125,14 +8479,37 @@ impl LowerCtx {
                 };
                 HirStmtKind::Expr(continue_expr)
             }
-            Stmt::IfLet { .. } => {
-                // `if let` in statement position is not yet lowered; fail closed
-                // with a structured diagnostic. Named explicitly (rather than a
-                // `_` wildcard) so a future `Stmt` variant forces a conscious
-                // lowering decision at compile time instead of silently routing
-                // here.
-                self.unsupported(span.clone(), "statement", "slice-2");
-                HirStmtKind::Expr(self.unsupported_expr(span.clone(), "unsupported statement"))
+            Stmt::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                // `if let PAT = scrutinee { then } else { else }` in statement
+                // position — result type is always Unit. Delegates to the shared
+                // `lower_if_let_inner` helper (same one used by expression position).
+                let kind = match self.lower_if_let_inner(
+                    pattern,
+                    expr,
+                    body,
+                    else_body.as_ref(),
+                    &ResolvedTy::Unit,
+                    &span,
+                ) {
+                    Some(k) => k,
+                    None => HirExprKind::Unsupported("if-let lowering failed".into()),
+                };
+                let if_let_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: ResolvedTy::Unit,
+                    value_class: ValueClass::BitCopy,
+                    intent: IntentKind::Read,
+                    kind,
+                    span: span.clone(),
+                };
+                HirStmtKind::Expr(if_let_expr)
             }
         };
         HirStmt {
@@ -8140,6 +8517,160 @@ impl LowerCtx {
             kind,
             span,
         }
+    }
+
+    /// Shared core of `if let PAT = scrutinee { body } else { else_body }`.
+    ///
+    /// Used by both statement position (`Stmt::IfLet`, `result_ty` = Unit) and
+    /// expression position (`Expr::IfLet`, `result_ty` = unified branch type).
+    /// Returns `Some(HirExprKind::IfLet { ... })` on success, `None` on a
+    /// fail-closed error (diagnostics already pushed). The `else_body` block
+    /// is lowered with `result_ty` so that expression-position branches are
+    /// type-consistent.
+    ///
+    /// Pattern scope (v0.5 substrate): only single payload-bearing enum-variant
+    /// constructor patterns (e.g. `Some(x)`) are accepted — the same restriction
+    /// as `WhileLet`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "mirrors lower_while_let in structure; splitting would obscure the \
+                  parallel error-handling paths"
+    )]
+    fn lower_if_let_inner(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        scrutinee_expr: &Spanned<Expr>,
+        body: &Block,
+        else_body: Option<&Block>,
+        result_ty: &ResolvedTy,
+        _span: &Span,
+    ) -> Option<HirExprKind> {
+        let scrutinee_hir = self.lower_expr(scrutinee_expr, IntentKind::Read);
+        // Register a generic-enum instantiation so MIR/codegen find the
+        // mangled layout — matches the WhileLet/Match path.
+        self.try_register_enum_instantiation(&scrutinee_expr.1);
+
+        let pattern_span = &pattern.1;
+        let key = SpanKey::from(pattern_span);
+        let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
+            self.unsupported(
+                pattern_span.clone(),
+                "if-let pattern has no resolution; \
+                 only single payload-bearing enum-variant patterns are supported",
+                "if-let-substrate",
+            );
+            self.push_scope();
+            let _ = self.lower_block(body, &ResolvedTy::Unit);
+            self.pop_scope();
+            if let Some(eb) = else_body {
+                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+            }
+            return None;
+        };
+
+        let (PatternKind::VariantCtor, Some(variant_match)) =
+            (resolution.pattern_kind, resolution.variant_match)
+        else {
+            self.unsupported(
+                pattern_span.clone(),
+                "if-let supports only payload-bearing enum-variant patterns \
+                 (e.g. `Some(x)`); unit variants, wildcards, literals, \
+                 plain bindings, and or-patterns are reserved for a future lane",
+                "if-let-substrate",
+            );
+            self.push_scope();
+            let _ = self.lower_block(body, &ResolvedTy::Unit);
+            self.pop_scope();
+            if let Some(eb) = else_body {
+                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+            }
+            return None;
+        };
+
+        let qualified = format!(
+            "{}::{}",
+            variant_match.type_name, variant_match.variant_name
+        );
+        let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned() else {
+            self.unsupported(
+                pattern_span.clone(),
+                "if-let variant not registered in machine/enum ctor registry",
+                "if-let-substrate",
+            );
+            self.push_scope();
+            let _ = self.lower_block(body, &ResolvedTy::Unit);
+            self.pop_scope();
+            if let Some(eb) = else_body {
+                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+            }
+            return None;
+        };
+        let variant_idx =
+            u32::try_from(idx_usize).expect("variant index exceeds u32::MAX — impossible in Hew");
+
+        // Build per-arm bindings (same shape as Match / WhileLet).
+        let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
+        let mut binding_error = false;
+        for payload in &resolution.payload_bindings {
+            let ty = match ResolvedTy::from_ty(&payload.ty) {
+                Ok(ty) => ty,
+                Err(err) => {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        format!("unresolved payload binding type in if-let ({err:?})"),
+                        "if-let-substrate",
+                    );
+                    binding_error = true;
+                    continue;
+                }
+            };
+            let Ok(field_idx) = u32::try_from(payload.field_idx) else {
+                self.unsupported(
+                    pattern_span.clone(),
+                    "if-let payload binding field index exceeds u32::MAX",
+                    "if-let-substrate",
+                );
+                binding_error = true;
+                continue;
+            };
+            binding_specs.push((field_idx, payload.binding_name.clone(), ty));
+        }
+
+        self.push_scope();
+        let bindings: Vec<HirMatchArmBinding> = if binding_error {
+            Vec::new()
+        } else {
+            binding_specs
+                .into_iter()
+                .map(|(field_idx, name, ty)| {
+                    let bound = self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
+                    HirMatchArmBinding {
+                        binding: bound.id,
+                        field_idx,
+                        name,
+                        ty,
+                    }
+                })
+                .collect()
+        };
+        let body_block = self.lower_block(body, result_ty);
+        self.pop_scope();
+
+        let else_block = else_body.as_ref().map(|eb| self.lower_block(eb, result_ty));
+
+        if binding_error {
+            return None;
+        }
+
+        Some(HirExprKind::IfLet {
+            scrutinee: Box::new(scrutinee_hir),
+            variant_match,
+            variant_idx,
+            bindings,
+            body: body_block,
+            else_body: else_block,
+            result_ty: result_ty.clone(),
+        })
     }
 
     fn lower_compound_assignment(
@@ -9038,6 +9569,47 @@ impl LowerCtx {
                         };
                     }
 
+                    // `m[k]` over a `HashMap<K, V>` reuses the `.get(k)` runtime
+                    // ABI in READ position. The checker recorded a `ResolvedCall`
+                    // to `hew_hashmap_get_layout` at this span (result type
+                    // `Option<V>`); emit the same `ResolvedImplCall` that
+                    // `m.get(k)` produces so MIR/codegen consume the existing
+                    // Option-projecting get path verbatim.
+                    //
+                    // An assignment target (`m[k] = v`, `IntentKind::Modify`)
+                    // must NOT take the read path — it falls through to the plain
+                    // `HirExprKind::Index` node below, which the MIR `assign`
+                    // arm recognises and lowers to `hew_hashmap_insert_layout`.
+                    if intent != IntentKind::Modify
+                        && matches!(&container.ty, ResolvedTy::Named { name, .. } if name == "HashMap")
+                    {
+                        if let Some(resolved) =
+                            self.resolved_calls.get(&SpanKey::from(&span)).cloned()
+                        {
+                            // Register the `Option<V>` instantiation so the
+                            // module enum-layout table carries the matching key
+                            // (mirrors the `HashMap::get` method-call path).
+                            self.try_register_enum_instantiation(&span);
+                            return HirExpr {
+                                node: self.ids.node(),
+                                site,
+                                value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                                ty: result_ty.clone(),
+                                intent,
+                                kind: HirExprKind::ResolvedImplCall {
+                                    receiver: Box::new(container),
+                                    impl_id: resolved.impl_id,
+                                    method_name: resolved.method_name,
+                                    target_symbol: resolved.target.symbol_name,
+                                    type_args: resolved.type_args,
+                                    args: vec![index_expr],
+                                    ret_ty: result_ty.clone(),
+                                },
+                                span: span.clone(),
+                            };
+                        }
+                    }
+
                     if let ResolvedTy::Named { name, .. } = &container.ty {
                         let callee_name = format!("{name}::at");
                         if name != "Vec" && self.fn_registry.contains_key(&callee_name) {
@@ -9348,6 +9920,35 @@ impl LowerCtx {
             Expr::Tuple(elems) => self.lower_tuple_literal(elems, &span),
             Expr::Array(elems) => self.lower_array_literal(elems, &span),
             Expr::Cast { expr: value, ty } => self.lower_numeric_cast_expr(value, ty, &span),
+            Expr::IfLet {
+                pattern,
+                expr: scrutinee_expr,
+                body,
+                else_body,
+            } => {
+                // Expression-position `if let` — delegates to the shared helper.
+                // The result type is looked up from the checker's `resolved_expr_types`
+                // side-table, mirroring `Expr::If` (same authority path).
+                let result_ty = self
+                    .resolved_expr_types
+                    .get(&SpanKey::from(&span))
+                    .cloned()
+                    .unwrap_or(ResolvedTy::Unit);
+                match self.lower_if_let_inner(
+                    pattern,
+                    scrutinee_expr,
+                    body,
+                    else_body.as_ref(),
+                    &result_ty,
+                    &span,
+                ) {
+                    Some(kind) => (kind, result_ty),
+                    None => (
+                        HirExprKind::Unsupported("if-let lowering failed".into()),
+                        ResolvedTy::Unit,
+                    ),
+                }
+            }
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -12600,6 +13201,29 @@ impl LowerCtx {
                 }
                 // Lower receiver + args, then prepend receiver as first argument.
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                // Slice 2: a by-value direct-dot call to a generic impl method
+                // on a concrete generic receiver (e.g. `p.first()` where
+                // `impl<T> Pair<T> { fn first(self) -> T }` and `p: Pair<i64>`)
+                // needs the impl-method monomorphisation registered so MIR has a
+                // concrete body to dispatch to. The var-self (mutable-receiver)
+                // branch above already does this via
+                // `record_var_self_direct_monomorphisation`; the by-value branch
+                // omitted it, so the call lowered to a `Call` whose mangled
+                // callee (`Pair::first$$i64`) had no MIR body and failed closed
+                // at the MIR boundary ("resolved callee has no MIR body").
+                // `record_var_self_direct_monomorphisation` is a no-op for
+                // non-generic / non-named-receiver / builtin callees, so this is
+                // safe to call unconditionally for every RewriteToFunction by-value
+                // method dispatch: it derives the concrete type-args from the
+                // receiver type's args, registers the monomorphisation, and seeds
+                // `call_site_type_args[site]` so MIR's `Call` arm mangles to the
+                // same per-instantiation symbol.
+                self.record_var_self_direct_monomorphisation(
+                    &c_symbol,
+                    &lowered_receiver.ty,
+                    &span,
+                    site,
+                );
                 let mut lowered_args = vec![lowered_receiver];
                 for arg in args {
                     lowered_args.push(self.lower_expr(arg.expr(), IntentKind::Read));
@@ -14951,6 +15575,18 @@ fn collect_captures_walk(
             collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
             collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
+            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
+            if let Some(eb) = else_body {
+                collect_captures_walk_block(eb, param_ids, seen, captures, self_id);
+            }
+        }
         HirExprKind::Loop { body } => {
             collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
@@ -15211,6 +15847,18 @@ fn collect_general_closure_captures_walk(
         } => {
             collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
+        }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
+            if let Some(eb) = else_body {
+                collect_general_closure_captures_walk_block(eb, outer_bindings, seen, captures);
+            }
         }
         HirExprKind::Loop { body } => {
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
@@ -15834,6 +16482,35 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             }
             if let Some(tail) = &body.tail {
                 collect_hir_emitted_events_walk(tail, event_names, out);
+            }
+        }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_hir_emitted_events_walk(scrutinee, event_names, out);
+            for block in std::iter::once(body).chain(else_body.as_ref()) {
+                for stmt in &block.statements {
+                    match &stmt.kind {
+                        HirStmtKind::Expr(e)
+                        | HirStmtKind::Let(_, Some(e))
+                        | HirStmtKind::Return(Some(e)) => {
+                            collect_hir_emitted_events_walk(e, event_names, out);
+                        }
+                        HirStmtKind::Assign { value, .. } => {
+                            collect_hir_emitted_events_walk(value, event_names, out);
+                        }
+                        HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+                        HirStmtKind::Defer { body, .. } => {
+                            collect_hir_emitted_events_walk(body, event_names, out);
+                        }
+                    }
+                }
+                if let Some(tail) = &block.tail {
+                    collect_hir_emitted_events_walk(tail, event_names, out);
+                }
             }
         }
         HirExprKind::Break { value, .. } => {
@@ -18256,6 +18933,10 @@ fn build_callable_set(
     // `user_name_to_c_symbol` (`hew_actor_link` / `hew_actor_monitor`).
     set.insert("link".to_string());
     set.insert("monitor".to_string());
+    // User-facing `duplex_pair` constructor — seeded into `fn_registry` by
+    // `seed_stdlib_fn_registry` and bridged in MIR via
+    // `user_name_to_c_symbol("duplex_pair")` → `hew_duplex_pair`.
+    set.insert("duplex_pair".to_string());
     for name in [
         "hew_duplex_send",
         "hew_duplex_try_send",
@@ -18723,6 +19404,18 @@ fn scan_expr_for_call_shape(
         } => {
             scan_expr_for_call_shape(scrutinee, callable, diagnostics);
             scan_block_for_call_shape(body, callable, diagnostics);
+        }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            scan_expr_for_call_shape(scrutinee, callable, diagnostics);
+            scan_block_for_call_shape(body, callable, diagnostics);
+            if let Some(eb) = else_body {
+                scan_block_for_call_shape(eb, callable, diagnostics);
+            }
         }
         HirExprKind::Break { value, .. } => {
             if let Some(value) = value {

@@ -26,7 +26,9 @@ use crate::routing::{self, HewRoutingTable};
 use crate::transport::{self, HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
 const NODE_STATE_STARTING: u8 = 0;
-const NODE_STATE_RUNNING: u8 = 1;
+/// Node is started and serving traffic. `pub(crate)` so the SWIM driver only
+/// drives a fully-running node.
+pub(crate) const NODE_STATE_RUNNING: u8 = 1;
 const NODE_STATE_STOPPING: u8 = 2;
 const NODE_STATE_STOPPED: u8 = 3;
 const _: () = assert!(
@@ -70,6 +72,41 @@ fn normalize_transport_name(name: &str) -> Result<&'static str, String> {
     Err(format!(
         "unknown transport '{name}'; supported values: tcp, quic, quic-mesh"
     ))
+}
+
+/// Read an optional `u32` SWIM-timing override from the environment.
+///
+/// Returns `None` if the variable is unset or does not parse as a non-zero
+/// `u32`, so a malformed value falls back to the compiled default rather than
+/// silently disabling failure detection.
+fn swim_timing_env_u32(key: &str) -> Option<u32> {
+    let raw = crate::env::ENV_LOCK.read_access(|()| std::env::var(key).ok())?;
+    raw.parse::<u32>().ok().filter(|v| *v > 0)
+}
+
+/// Build the cluster config for `local_node_id`, applying any SWIM-timing
+/// overrides from the environment.
+///
+/// `HEW_SWIM_PROTOCOL_PERIOD_MS`, `HEW_SWIM_PING_TIMEOUT_MS`, and
+/// `HEW_SWIM_SUSPECT_TIMEOUT_MS` tune the failure detector's cadence and
+/// thresholds — an operator knob for deployments with non-default network
+/// characteristics, and the mechanism tests use to drive detection on a short
+/// horizon. Each falls back to the [`ClusterConfig`] default when unset.
+fn cluster_config_from_env(local_node_id: u16) -> ClusterConfig {
+    let mut cfg = ClusterConfig {
+        local_node_id,
+        ..ClusterConfig::default()
+    };
+    if let Some(v) = swim_timing_env_u32("HEW_SWIM_PROTOCOL_PERIOD_MS") {
+        cfg.protocol_period_ms = v;
+    }
+    if let Some(v) = swim_timing_env_u32("HEW_SWIM_PING_TIMEOUT_MS") {
+        cfg.ping_timeout_ms = v;
+    }
+    if let Some(v) = swim_timing_env_u32("HEW_SWIM_SUSPECT_TIMEOUT_MS") {
+        cfg.suspect_timeout_ms = v;
+    }
+    cfg
 }
 
 fn transport_selection_from_env() -> Result<TransportSelection, String> {
@@ -1423,10 +1460,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     if node.cluster.is_null() {
-        let cfg = ClusterConfig {
-            local_node_id: node.node_id,
-            ..ClusterConfig::default()
-        };
+        let cfg = cluster_config_from_env(node.node_id);
         // SAFETY: config pointer is valid for this call.
         node.cluster = unsafe { cluster::hew_cluster_new(&raw const cfg) };
         if node.cluster.is_null() {
@@ -1511,6 +1545,19 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     // Start the profiler with distributed runtime context if HEW_PPROF is set.
     crate::profiler::maybe_start_with_context(node.cluster, node.conn_mgr, node.routing_table);
 
+    // Drive the SWIM failure detector: a periodic ticker that calls
+    // hew_cluster_tick every protocol period, issuing PING/PING_REQ probes and
+    // escalating ALIVE→SUSPECT→DEAD. Without it, failure detection is inert.
+    // The ticker is stopped and joined in hew_node_stop before the cluster /
+    // conn_mgr it touches are freed (see the teardown ordering below).
+    // SAFETY: node is RUNNING with a live cluster + conn_mgr at this point.
+    if !unsafe { crate::swim_driver::start_swim_driver(ptr::from_mut(node)) } {
+        // A failed ticker spawn is not fatal to the node (gossip + the
+        // connection-event SUSPECT path still work), but it means active
+        // failure detection is degraded. Record it; do not fail the start.
+        set_last_error("hew_node_start: SWIM failure-detector ticker failed to start");
+    }
+
     0
 }
 
@@ -1564,6 +1611,14 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
                 let _ = handle.join();
             }
         }
+
+        // Stop and JOIN the SWIM ticker before freeing the cluster / conn_mgr
+        // it dereferences each period. The join is the lifetime barrier: once
+        // it returns, the ticker thread has fully exited and cannot race the
+        // teardown of node resources below (LESSONS: cleanup-all-exits, the
+        // reactor's ticker-joined-before-free ordering).
+        // SAFETY: node pointer is used only as the driver registry key.
+        unsafe { crate::swim_driver::stop_swim_driver(ptr::from_mut(node)) };
 
         // Shutdown profiler threads before freeing node resources they might access.
         crate::profiler::shutdown();
@@ -6140,6 +6195,179 @@ mod tests {
         unsafe {
             let _ = crate::actor::hew_actor_free(actor);
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    // ── SWIM failure-detection (driven detector) integration tests ──────
+
+    /// RAII helper that sets the fast SWIM-timing env vars for a test and
+    /// removes them on drop, all under `ENV_LOCK` exclusive access.
+    struct SwimTimingEnv;
+
+    impl SwimTimingEnv {
+        fn fast() -> Self {
+            crate::env::ENV_LOCK.access(|()| {
+                // SAFETY: ENV_LOCK provides exclusive access to the environ.
+                unsafe {
+                    std::env::set_var("HEW_SWIM_PROTOCOL_PERIOD_MS", "40");
+                    std::env::set_var("HEW_SWIM_PING_TIMEOUT_MS", "40");
+                    std::env::set_var("HEW_SWIM_SUSPECT_TIMEOUT_MS", "120");
+                }
+            });
+            Self
+        }
+    }
+
+    impl Drop for SwimTimingEnv {
+        fn drop(&mut self) {
+            crate::env::ENV_LOCK.access(|()| {
+                // SAFETY: ENV_LOCK provides exclusive access to the environ.
+                unsafe {
+                    std::env::remove_var("HEW_SWIM_PROTOCOL_PERIOD_MS");
+                    std::env::remove_var("HEW_SWIM_PING_TIMEOUT_MS");
+                    std::env::remove_var("HEW_SWIM_SUSPECT_TIMEOUT_MS");
+                }
+            });
+        }
+    }
+
+    /// A dead node is detected by a survivor via the now-driven SWIM detector:
+    /// SUSPECT→DEAD escalation fires and `on_member_dead` fans out a partition
+    /// signal — within a bounded number of protocol periods.
+    ///
+    /// This is the C1 proof. SUSPECT→DEAD escalation and the `on_member_dead`
+    /// fan-out happen ONLY inside `hew_cluster_tick`, which had zero production
+    /// call sites before the driver. Without the driver, node B would stay
+    /// SUSPECT forever (the connection-event path only reaches SUSPECT) and the
+    /// partition recv below would block until the test's deadline.
+    #[test]
+    fn dead_node_is_detected_by_survivor_via_driven_swim() {
+        use crate::cluster::{hew_cluster_member_state, hew_cluster_set_partition_registry};
+        use crate::duplex::{HewDuplex, RecvError};
+        use std::sync::Arc;
+        const NODE_A: u16 = 340;
+        const NODE_B: u16 = 341;
+        let _guard = crate::runtime_test_guard();
+        let _swim_env = SwimTimingEnv::fast();
+        crate::registry::hew_registry_clear();
+
+        let node_a_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: bind is a valid C string for the test scope.
+        let node_a = unsafe { TestNode::new(NODE_A, &node_a_bind) };
+        assert!(!node_a.as_ptr().is_null());
+        // SAFETY: node_a is valid.
+        unsafe { assert_eq!(hew_node_start(node_a.as_ptr()), 0) };
+        thread::sleep(Duration::from_millis(50));
+
+        let (node_b, node_b_port) = start_tcp_test_listener_node(NODE_B);
+
+        // Install a partition registry on A so on_member_dead is observable,
+        // and bind a duplex recv to NODE_B.
+        let registry = Arc::new(crate::cluster::PartitionRegistry::new());
+        // SAFETY: A's cluster is live after a successful start.
+        unsafe {
+            assert!(!(*node_a.as_ptr()).cluster.is_null());
+            hew_cluster_set_partition_registry((*node_a.as_ptr()).cluster, Arc::clone(&registry));
+        }
+        let (dx, peer) = HewDuplex::new_pair(8, 8);
+        dx.register_recv_with_partition_registry(&registry, NODE_B);
+        let recv_handle = {
+            let handle = dx.clone_handle();
+            thread::spawn(move || handle.recv())
+        };
+
+        // Connect A → B and wait for the handshake so A knows B is ALIVE.
+        let connect_addr = CString::new(format!("{NODE_B}@127.0.0.1:{node_b_port}")).unwrap();
+        // SAFETY: node_a and the connect addr are valid for this call.
+        unsafe { connect_with_retry(node_a.as_ptr(), &connect_addr) };
+        // SAFETY: both nodes are valid here.
+        unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
+
+        // Kill node B: stopping it drops the mesh connection, so A's view of B
+        // is no longer refreshed. The driver must escalate it to DEAD.
+        // SAFETY: node_b is valid.
+        unsafe { assert_eq!(hew_node_stop(node_b.as_ptr()), 0) };
+
+        // The blocked recv must resolve to PartitionDetected once the driver
+        // declares B DEAD and on_member_dead fans out. Generous deadline (the
+        // suspect timeout is 120 ms; allow for scheduler jitter under load).
+        let result = recv_handle.join().expect("recv thread panicked");
+        assert!(
+            matches!(result, Err(RecvError::PartitionDetected)),
+            "survivor must detect the dead node via on_member_dead, got: {result:?}"
+        );
+
+        // And A's membership view must record B as DEAD.
+        // SAFETY: A's cluster is still live.
+        let state = unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
+        assert_eq!(
+            state,
+            crate::cluster::MEMBER_DEAD,
+            "A's membership view must record node B as DEAD"
+        );
+
+        drop(peer);
+        // SAFETY: nodes were allocated in this test and remain valid.
+        unsafe { assert_eq!(hew_node_stop(node_a.as_ptr()), 0) };
+        crate::registry::hew_registry_clear();
+    }
+
+    /// No false positive: two connected, both-alive nodes run the driven SWIM
+    /// detector for many protocol periods and neither is wrongly declared DEAD.
+    ///
+    /// This proves the detector does not kill a slow-but-reachable peer: as
+    /// long as the mesh connection stays up (refreshing last-seen and feeding
+    /// the phi-accrual detector), the tick never escalates either node.
+    #[test]
+    fn alive_node_is_not_falsely_killed_by_driven_swim() {
+        use crate::cluster::hew_cluster_member_state;
+        const NODE_A: u16 = 342;
+        const NODE_B: u16 = 343;
+        let _guard = crate::runtime_test_guard();
+        let _swim_env = SwimTimingEnv::fast();
+        crate::registry::hew_registry_clear();
+
+        let node_a_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: bind is a valid C string for the test scope.
+        let node_a = unsafe { TestNode::new(NODE_A, &node_a_bind) };
+        assert!(!node_a.as_ptr().is_null());
+        // SAFETY: node_a is valid.
+        unsafe { assert_eq!(hew_node_start(node_a.as_ptr()), 0) };
+        thread::sleep(Duration::from_millis(50));
+
+        let (node_b, node_b_port) = start_tcp_test_listener_node(NODE_B);
+
+        let connect_addr = CString::new(format!("{NODE_B}@127.0.0.1:{node_b_port}")).unwrap();
+        // SAFETY: node_a and the connect addr are valid for this call.
+        unsafe { connect_with_retry(node_a.as_ptr(), &connect_addr) };
+        // SAFETY: both nodes are valid here.
+        unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
+
+        // Let the driver run for well beyond the suspect timeout (120 ms) while
+        // both nodes stay up. ~25 protocol periods at 40 ms each.
+        thread::sleep(Duration::from_secs(1));
+
+        // Neither node may have been declared DEAD on the other's view.
+        // SAFETY: A's cluster is live (node still running).
+        let a_view_of_b = unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
+        // SAFETY: B's cluster is live (node still running).
+        let b_view_of_a = unsafe { hew_cluster_member_state((*node_b.as_ptr()).cluster, NODE_A) };
+        assert_ne!(
+            a_view_of_b,
+            crate::cluster::MEMBER_DEAD,
+            "A must not declare a still-alive B as DEAD (state={a_view_of_b})"
+        );
+        assert_ne!(
+            b_view_of_a,
+            crate::cluster::MEMBER_DEAD,
+            "B must not declare a still-alive A as DEAD (state={b_view_of_a})"
+        );
+
+        // SAFETY: nodes were allocated in this test and remain valid.
+        unsafe {
+            assert_eq!(hew_node_stop(node_a.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node_b.as_ptr()), 0);
         }
         crate::registry::hew_registry_clear();
     }

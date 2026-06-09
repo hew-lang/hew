@@ -1,30 +1,30 @@
 machine Traffic {
-    event Start;
-    event Stop;
-    event Started;
-    event Stopped;
+    events {
+        Start;
+        Stop;
+        Started;
+        Stopped;
+    }
 
     state Idle {
         entry {
-            emit Stopped;
+            emit Stopped {};
         }
     }
-
     state Running {
         entry {
-            emit Started;
+            emit Started {};
         }
         exit {
-            emit Stopped;
+            emit Stopped {};
         }
     }
 
-    on Start: Idle -> Running {
-        emit Started;
+    on Start: Idle => Running {
+        emit Started {};
     }
-
-    on Stop: Running -> Idle {
-        emit Stopped;
+    on Stop: Running => Idle {
+        emit Stopped {};
     }
 }
 

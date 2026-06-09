@@ -82,7 +82,7 @@ trait ExprMethods {
 impl ExprMethods for Expr {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
     fn next(expr: Expr, after_epoch_secs: i64) -> i64 {
-        match try_next(expr, after_epoch_secs) {
+        match expr.try_next(after_epoch_secs) {
             Ok(epoch_secs) => epoch_secs,
             Err(err) => {
                 panic(f"cron.next failed: {cron_error_message(err)}");

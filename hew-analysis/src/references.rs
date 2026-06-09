@@ -1345,10 +1345,12 @@ mod tests {
         let source = concat!(
             "fn compute() -> Int { 0 }\n",
             "machine Counter {\n",
+            "    events {\n",
+            "        Start;\n",
+            "    }\n",
             "    state Idle;\n",
             "    state Running;\n",
-            "    event Start;\n",
-            "    on Start: Idle -> Running { compute() }\n",
+            "    on Start: Idle => Running { compute() }\n",
             "}",
         );
         let pr = parse(source);
@@ -1381,10 +1383,12 @@ mod tests {
         let source = concat!(
             "const flag: Bool = true;\n",
             "machine Gate {\n",
+            "    events {\n",
+            "        Try;\n",
+            "    }\n",
             "    state Locked;\n",
             "    state Open;\n",
-            "    event Try;\n",
-            "    on Try: Locked -> Open when flag { Open }\n",
+            "    on Try: Locked => Open when flag { Open }\n",
             "}",
         );
         let pr = parse(source);

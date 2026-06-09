@@ -12,6 +12,10 @@ struct MachineFixture {
     stem: &'static str,
     machine: &'static str,
     states: usize,
+    /// When true the machine has a `default { state }` arm, so its dispatch
+    /// fall-through returns `self` (no LLVM `unreachable` trap). The IR-shape
+    /// assertions invert the trap/return check for these fixtures.
+    has_default: bool,
 }
 
 const FIXTURES: &[MachineFixture] = &[
@@ -19,11 +23,33 @@ const FIXTURES: &[MachineFixture] = &[
         stem: "run_traffic_light",
         machine: "TrafficLight",
         states: 3,
+        has_default: false,
     },
     MachineFixture {
         stem: "run_tcp_handshake",
         machine: "TcpHandshake",
         states: 3,
+        has_default: false,
+    },
+    MachineFixture {
+        // `default { state }` machine: unhandled cells stay in the current
+        // state. Exercises the `has_default` step-dispatch fall-through that
+        // returns `self` unchanged instead of trapping.
+        stem: "run_default_stay",
+        machine: "Tank",
+        states: 2,
+        has_default: true,
+    },
+    MachineFixture {
+        // Depth-1 composite: `Connected` groups three substates which desugar
+        // to flat states + concrete-source transitions. The flat machine has
+        // four states (Disconnected + the three substates); the composite name
+        // is dropped. Exercises the Harel entry/exit ordering at runtime via
+        // the `.expected` oracle.
+        stem: "run_connection_lifecycle",
+        machine: "ConnectionLifecycle",
+        states: 4,
+        has_default: false,
     },
 ];
 
@@ -176,12 +202,24 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
             fixture.stem,
             step_body
         );
-        assert!(
-            step_body.contains("unreachable"),
-            "{} step dispatch fallthrough must lower to LLVM unreachable:\n{}",
-            fixture.stem,
-            step_body
-        );
+        if fixture.has_default {
+            // `default { state }` machines stay on unhandled cells: the
+            // fall-through returns `self` instead of trapping, so the step
+            // body has no `unreachable` terminator.
+            assert!(
+                !step_body.contains("unreachable"),
+                "{} default-arm step dispatch must NOT trap (stays in current state):\n{}",
+                fixture.stem,
+                step_body
+            );
+        } else {
+            assert!(
+                step_body.contains("unreachable"),
+                "{} step dispatch fallthrough must lower to LLVM unreachable:\n{}",
+                fixture.stem,
+                step_body
+            );
+        }
         assert!(
             !step_body.contains("@hew_trap_with_code(i32 207)"),
             "{} step dispatch fallthrough must not lower to MachineDispatchUnreachable trap:\n{}",

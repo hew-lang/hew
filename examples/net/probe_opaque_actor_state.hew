@@ -1,0 +1,15 @@
+import std::encoding::json;
+
+actor Holder {
+    let val: json.Value;
+
+    receive fn ping(unused: i64) {
+        println("holder-ping");
+    }
+}
+
+fn main() {
+    let val = json.from_int(1);
+    let holder = spawn Holder(val: val);
+    holder.ping(0);
+}

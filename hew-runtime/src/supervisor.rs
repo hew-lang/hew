@@ -3029,6 +3029,122 @@ mod tests {
         }
     }
 
+    const FORCED_BYTECOPY_FREED_SPEC_ENV: &str = "HEW_SUPERVISOR_FORCED_BYTECOPY_FREED_SPEC_PROBE";
+
+    #[cfg(target_os = "macos")]
+    const GUARD_MALLOC_DYLIB: &str = "/usr/lib/libgmalloc.dylib";
+
+    unsafe fn free_spec_template_payload(sup: *mut HewSupervisor) -> *mut u8 {
+        let spec_template = (&mut (*sup).child_specs)[0].init_state.cast::<HeapState>();
+        assert!(!spec_template.is_null());
+        let payload = (*spec_template).payload;
+        assert!(!payload.is_null());
+        libc::free(payload.cast::<c_void>());
+        payload
+    }
+
+    unsafe fn run_forced_bytecopy_freed_spec_payload_probe() -> ! {
+        let (sup, _template) = make_supervisor_with_heap_child(false);
+        let dangling_payload = free_spec_template_payload(sup);
+
+        let restarted = restart_child_from_spec(&mut *sup, 0);
+        assert!(
+            !restarted.is_null(),
+            "legacy byte-copy restart must produce an actor"
+        );
+        let restarted_state = &mut *(*restarted).state.cast::<HeapState>();
+        assert_eq!(
+            restarted_state.payload, dangling_payload,
+            "legacy byte-copy restart must preserve the freed payload alias"
+        );
+
+        *restarted_state.payload = 0xCC;
+        std::process::exit(0);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_forced_bytecopy_freed_spec_faults_under_guard_malloc(test_name: &str) {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        if !std::path::Path::new(GUARD_MALLOC_DYLIB).exists() {
+            eprintln!("skipping GuardMalloc alias-fault probe: {GUARD_MALLOC_DYLIB} not found");
+            return;
+        }
+
+        let status = std::process::Command::new(std::env::current_exe().expect("current_exe"))
+            .args(["--exact", test_name, "--nocapture"])
+            .env("RUST_TEST_THREADS", "1")
+            .env(FORCED_BYTECOPY_FREED_SPEC_ENV, "1")
+            .env("DYLD_INSERT_LIBRARIES", GUARD_MALLOC_DYLIB)
+            .env("MallocGuardEdges", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("spawn GuardMalloc alias-fault helper");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGSEGV),
+            "forced byte-copy of freed spec.init_state payload must SIGSEGV under GuardMalloc; status={status:?}"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn assert_forced_bytecopy_freed_spec_faults_under_guard_malloc(_test_name: &str) {}
+
+    #[test]
+    fn null_clone_restart_blocks_freed_spec_payload_alias_probe() {
+        if std::env::var_os(FORCED_BYTECOPY_FREED_SPEC_ENV).is_some() {
+            // SAFETY: helper runs in a subprocess and intentionally faults
+            // under GuardMalloc after constructing the legacy byte-copy alias.
+            unsafe { run_forced_bytecopy_freed_spec_payload_probe() };
+        }
+
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+        // SAFETY: test owns the supervisor tree and mutates only its test state.
+        unsafe {
+            let (sup, _template) = make_supervisor_with_heap_child(true);
+            let child = (&(*sup).children)[0];
+            assert!(!child.is_null());
+
+            // Poison the source every restart path actually reads:
+            // spec.init_state, not the current child actor's state.
+            let dangling_payload = free_spec_template_payload(sup);
+            let baseline_clones = CLONE_CALL_COUNT.load(Ordering::SeqCst);
+
+            CLONE_FORCE_NULL.store(true, Ordering::SeqCst);
+            let restarted = restart_child_from_spec(&mut *sup, 0);
+            assert!(
+                restarted.is_null(),
+                "null-clone policy must block the restart instead of byte-copying a freed spec payload"
+            );
+            assert_eq!(
+                CLONE_CALL_COUNT.load(Ordering::SeqCst),
+                baseline_clones + 1,
+                "restart must call clone_fn once before the null-return short-circuit"
+            );
+            assert!(
+                (&(*sup).children)[0].is_null(),
+                "blocked restart must leave the child slot null"
+            );
+            assert_eq!(
+                (&*(&(*sup).child_specs)[0].init_state.cast::<HeapState>()).payload,
+                dangling_payload,
+                "test setup must leave the freed spec payload in place as the byte-copy falsifier"
+            );
+
+            CLONE_FORCE_NULL.store(false, Ordering::SeqCst);
+            assert_eq!(actor::hew_actor_free(child), 0);
+            hew_supervisor_stop(sup);
+        }
+
+        assert_forced_bytecopy_freed_spec_faults_under_guard_malloc(
+            "supervisor::tests::null_clone_restart_blocks_freed_spec_payload_alias_probe",
+        );
+    }
+
     #[test]
     fn hew_supervisor_set_child_state_clone_back_fills() {
         // Setting the clone fn after add_child_spec must back-fill it onto

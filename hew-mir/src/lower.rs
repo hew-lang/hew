@@ -14938,6 +14938,21 @@ impl Builder {
         to_string: bool,
         expr: &HirExpr,
     ) -> Option<Place> {
+        if self.current_function_call_conv == crate::model::FunctionCallConv::ClosureInvoke
+            && self.conn_await_reads_captured_binding(conn)
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "await on a captured Connection inside a closure".to_string(),
+                    site: expr.site,
+                },
+                note: "await on a captured Connection inside a closure is not yet supported; \
+                       perform the await in the actor handler body"
+                    .to_string(),
+            });
+            return None;
+        }
+
         let conn_place = self.lower_value(conn)?;
         let bytes_ty = ResolvedTy::Bytes;
 
@@ -14958,7 +14973,9 @@ impl Builder {
             });
             self.start_block(next);
         } else {
-            // Default caller: the blocking read FFI (no parkable continuation).
+            // Default callers use the blocking read FFI: they run on a foreign/main
+            // thread with no parkable continuation. Closure shims above fail closed
+            // for captured Connection awaits until closure invocations can suspend.
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_tcp_read".to_string(),
@@ -14983,6 +15000,16 @@ impl Builder {
         });
         self.start_block(next);
         Some(string_dest)
+    }
+
+    fn conn_await_reads_captured_binding(&self, conn: &HirExpr) -> bool {
+        matches!(
+            &conn.kind,
+            HirExprKind::BindingRef {
+                resolved: hew_hir::ResolvedRef::Binding(binding),
+                ..
+            } if self.capture_env_sources.contains_key(binding)
+        )
     }
 
     fn remote_actor_method_info(

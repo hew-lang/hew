@@ -762,6 +762,40 @@ fn classify_named(
     opaque_handle_names: &[String],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
+    // Non-opaque user records/enums still shadow builtin names. Keep that
+    // boundary before the `Connection` resource-handle exception below so a
+    // user `type Connection { ... }` does not become a socket handle.
+    if !is_opaque {
+        if let Some(layout) = lookup_record_layout(name, args, record_layouts) {
+            return classify_user_record(
+                &layout.name,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            );
+        }
+        if let Some(layout) = lookup_enum_layout(name, args, enum_layouts) {
+            return classify_enum(
+                layout,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            );
+        }
+    }
+
+    // `net.Connection` is a stdlib opaque handle, but unlike generic opaque
+    // blobs it has actor-owned fd teardown semantics. Route it through the
+    // existing IO-handle discriminator before the generic opaque fail-closed arm
+    // so codegen can apply the restart-safe null-clone policy.
+    if args.is_empty() && name == "Connection" {
+        return Ok(StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        });
+    }
+
     // ── opaque-handle discriminator (authoritative, checked FIRST) ──────
     //
     // `is_opaque` is the type-identity discriminator stamped on
@@ -792,7 +826,7 @@ fn classify_named(
         });
     }
 
-    // ── record-layouts-first lookup (cross-eco review fix) ──────────
+    // ── record/enum-layout lookup provenance (handled above) ─────────
     //
     // `ResolvedTy::Named { name, args }` does not carry the checker's
     // builtin discriminator across this boundary: a user-declared `type
@@ -804,10 +838,11 @@ fn classify_named(
     // owned-heap drop helpers, which would leak (Stage 3) or UAF
     // (post-Q185(c) lift, plan §8.8).
     //
-    // Therefore: if `record_layouts` carries a user record under this
-    // name, classify as `UserRecord` and recurse through the record's
-    // fields. Only when the name is NOT a user record do we fall
-    // through to the builtin-name arms below. This is the local
+    // Therefore: when `is_opaque == false`, the top of this function first
+    // checks whether `record_layouts` or `enum_layouts` carries a user type
+    // under this name and recurses through that layout. Only when the name is
+    // not a user record/enum do we fall through to the builtin-name arms below.
+    // This is the local
     // mitigation of dispatch-invariant #10 (`string-identifier-
     // fragility`); the structural fix — propagating a typed builtin
     // discriminator past the checker boundary — is tracked as W4.011
@@ -815,22 +850,12 @@ fn classify_named(
     // discriminator"). Until W4.011 lands, every non-opaque `Named { name }`
     // arm in this module MUST honour record_layouts-first.
     //
-    // The lookup is keyed via `lookup_record_layout`, which resolves BOTH a
-    // bare-name monomorphic record AND a generic INSTANTIATION mangled by
+    // The record lookup is keyed via `lookup_record_layout`, which resolves BOTH
+    // a bare-name monomorphic record AND a generic INSTANTIATION mangled by
     // `hew_hir::mangle` (`Pair<i64, string>` → `Pair$$i64$string`). For the
-    // generic case the resolved layout's `field_tys` are already SUBSTITUTED,
-    // so `classify_user_record` recurses concrete types and carries the mangled
-    // key in `UserRecord { name }` (the key codegen re-resolves the thunk by).
-    if let Some(layout) = lookup_record_layout(name, args, record_layouts) {
-        return classify_user_record(
-            &layout.name,
-            record_layouts,
-            enum_layouts,
-            opaque_handle_names,
-            visited,
-        );
-    }
-
+    // generic case the resolved layout's `field_tys` are already SUBSTITUTED, so
+    // `classify_user_record` recurses concrete types and carries the mangled key
+    // in `UserRecord { name }` (the key codegen re-resolves the thunk by).
     // ── enum-layouts check ──────────────────────────────────────────
     //
     // `indirect enum` types are added to `opaque_handle_names` by
@@ -843,15 +868,7 @@ fn classify_named(
     // handles above (they returned `OpaqueHandle`), so any `Named` reaching
     // here with an `EnumLayout` is a genuine enum (monomorphic, generic, or
     // indirect) and classifies as `Enum`.
-    if let Some(layout) = lookup_enum_layout(name, args, enum_layouts) {
-        return classify_enum(
-            layout,
-            record_layouts,
-            enum_layouts,
-            opaque_handle_names,
-            visited,
-        );
-    }
+    // Non-opaque enum layouts were handled before the `Connection` exception.
 
     // ── opaque-handle name fallback (defence-in-depth) ──────────────────
     //
@@ -881,16 +898,6 @@ fn classify_named(
     // nil for this arm.
     if matches!(name, "ActorRef" | "Actor" | "LocalPid") {
         return Ok(StateFieldCloneKind::BitCopy { size_bytes: 0 });
-    }
-
-    // `Connection` IO handle. Plan §4.5 B. No `hew_connection_dup` in
-    // the runtime today; the classifier records the kind and Stage 2
-    // emits a codegen-time `CodegenError::FailClosed` at the
-    // supervisor-restart site. Direct-spawn byte-copy is sound.
-    if name == "Connection" {
-        return Ok(StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        });
     }
 
     // `Stream<T>` / `Sink<T>` pointer-backed IO handles (W5.021 — owned-tuple
@@ -1335,6 +1342,24 @@ mod tests {
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
             StateFieldCloneKind::Vec {
                 elem: Box::new(StateFieldCloneKind::String),
+            },
+        );
+    }
+
+    #[test]
+    fn opaque_connection_classifies_as_iohandle() {
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::Named {
+            name: "Connection".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: true,
+        };
+        assert_eq!(
+            classify_state_field_full(&ty, &no_records(), &[], &["Connection".to_string()], &mut v)
+                .unwrap(),
+            StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Connection,
             },
         );
     }

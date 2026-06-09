@@ -34877,6 +34877,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn connection_actor_state_clone_returns_null() {
+        let conn_ty = ResolvedTy::named_opaque("Connection", vec![]);
+        let actor = ActorLayout {
+            name: "ConnActor".to_string(),
+            state_field_names: vec!["conn".to_string()],
+            state_field_tys: vec![conn_ty.clone()],
+            state_field_defaults: vec![None],
+            init_param_names: vec![],
+            init_param_tys: vec![],
+            init_symbol: None,
+            on_start_symbol: None,
+            on_stop_symbols: vec![],
+            on_crash_symbol: None,
+            max_heap_bytes: None,
+            cycle_capable: false,
+            handlers: vec![],
+            state_clone_fn_symbol: Some("__hew_state_clone_ConnActor".to_string()),
+            state_drop_fn_symbol: Some("__hew_state_drop_ConnActor".to_string()),
+            state_field_clone_kinds: Some(vec![StateFieldCloneKind::IoHandle {
+                kind: hew_mir::IoHandleKind::Connection,
+            }]),
+        };
+        let mut pipeline = minimal_pipeline_with_unit_main(false);
+        pipeline.opaque_handle_names = vec!["Connection".to_string()];
+        pipeline.record_layouts = vec![RecordLayout {
+            name: "ConnActor".to_string(),
+            field_tys: vec![conn_ty],
+        }];
+        pipeline.actor_layouts = vec![actor];
+
+        let ctx = Context::create();
+        let module = build_module(&ctx, &pipeline, "connection_state_clone")
+            .expect("Connection actor-state clone module must build");
+        module
+            .verify()
+            .unwrap_or_else(|e| panic!("Connection actor-state clone module failed verify: {e}"));
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("define ptr @__hew_state_clone_ConnActor(ptr")
+                && ir.contains("ret ptr null"),
+            "Connection actor state clone body must reset the restart template by returning null:\n{ir}"
+        );
+    }
+
     // ── Stackless suspend substrate (R326/R327, W6.007) ──────────────────────
     //
     // SYNTHETIC validation: a function whose MIR carries a `Terminator::Suspend`

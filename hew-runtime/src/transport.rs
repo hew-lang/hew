@@ -851,6 +851,11 @@ pub fn tcp_listener_local_port(handle: c_int) -> Option<u16> {
     })
 }
 
+#[no_mangle]
+pub extern "C" fn hew_tcp_listener_local_port(listener: c_int) -> c_int {
+    tcp_listener_local_port(listener).map_or(-1, c_int::from)
+}
+
 pub(crate) fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
     TCP_API_STATE.access(|state| state.streams.get(&handle)?.try_clone().ok())
 }

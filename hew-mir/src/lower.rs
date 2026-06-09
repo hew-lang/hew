@@ -13748,6 +13748,9 @@ impl Builder {
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
             "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
             "hew_bytes_index" => self.lower_bytes_get_i32(hir_args, site, context),
+            "hew_observe_read_u64" | "hew_observe_scrape" | "hew_observe_series" => {
+                self.lower_observe_runtime_call(symbol, hir_args, site, context)
+            }
             "hew_option_is_none"
             | "hew_option_is_some"
             | "hew_option_unwrap_f64"
@@ -13891,6 +13894,42 @@ impl Builder {
         let dest =
             (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::I32));
         self.push_runtime_call("hew_bytes_index", vec![buf, idx], dest);
+        dest
+    }
+
+    fn lower_observe_runtime_call(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        let (expected_arity, return_ty) = match symbol {
+            "hew_observe_read_u64" => (1, ResolvedTy::I64),
+            "hew_observe_scrape" | "hew_observe_series" => (0, ResolvedTy::String),
+            _ => unreachable!("observe lowering called for non-observe symbol"),
+        };
+        if hir_args.len() != expected_arity {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` arity"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` expects {expected_arity} argument(s), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+
+        let mut args = Vec::with_capacity(hir_args.len());
+        for arg in hir_args {
+            args.push(self.lower_value(arg)?);
+        }
+        let dest =
+            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(return_ty));
+        self.push_runtime_call(symbol, args, dest);
         dest
     }
 

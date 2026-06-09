@@ -194,7 +194,57 @@ pub mod profiler;
 #[cfg(any(not(feature = "profiler"), target_arch = "wasm32"))]
 pub mod profiler {
     //! Profiler stubs when the `profiler` feature is disabled.
+    pub mod actor_registry {
+        /// Stub actor snapshots when profiler registry is unavailable.
+        #[must_use]
+        pub fn snapshot_all() -> Vec<()> {
+            Vec::new()
+        }
+
+        /// Stub live-state count when profiler registry is unavailable.
+        #[must_use]
+        pub fn state_count(_state: i32) -> u64 {
+            0
+        }
+
+        /// Stub runnable-coroutine count when profiler registry is unavailable.
+        #[must_use]
+        pub fn runnable_coroutine_count() -> u64 {
+            0
+        }
+    }
+
     pub mod allocator {
+        /// Zeroed allocator statistics when profiler counters are unavailable.
+        #[derive(Debug, Clone, Copy)]
+        pub struct AllocStats {
+            /// Total allocation calls.
+            pub alloc_count: u64,
+            /// Total deallocation calls.
+            pub dealloc_count: u64,
+            /// Cumulative bytes allocated.
+            pub bytes_allocated: u64,
+            /// Cumulative bytes freed.
+            pub bytes_freed: u64,
+            /// Approximate bytes currently live.
+            pub bytes_live: u64,
+            /// Peak bytes live.
+            pub peak_bytes_live: u64,
+        }
+
+        /// Capture zeroed allocator stats when profiler is disabled.
+        #[must_use]
+        pub fn snapshot() -> AllocStats {
+            AllocStats {
+                alloc_count: 0,
+                dealloc_count: 0,
+                bytes_allocated: 0,
+                bytes_freed: 0,
+                bytes_live: 0,
+                peak_bytes_live: 0,
+            }
+        }
+
         /// No-op allocator pass-through when profiler is disabled.
         #[derive(Debug)]
         pub struct ProfilingAllocator;
@@ -528,6 +578,7 @@ pub mod generator;
 pub mod link;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod monitor;
+pub mod observe;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod phi_accrual;
 #[cfg(not(target_arch = "wasm32"))]

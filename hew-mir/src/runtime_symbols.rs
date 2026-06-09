@@ -214,6 +214,10 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_lambda_actor_weak_clone",
     "hew_lambda_actor_weak_drop",
     "hew_lambda_actor_weak_send",
+    // --- Observe read surface ------------------------------------------------
+    "hew_observe_read_u64",
+    "hew_observe_scrape",
+    "hew_observe_series",
     // --- Option<T> runtime helpers ------------------------------------------
     "hew_option_is_none",
     "hew_option_is_some",

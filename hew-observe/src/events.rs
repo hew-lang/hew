@@ -280,14 +280,75 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         group: TraceEventGroup::Internal,
         actionable: false,
     },
-    // SHIM: pending native-M3 producer-side emission. WHY: supervisor
-    // restart/circuit, partition detection, max_heap enforcement, and
-    // link/monitor substrates have no runtime trace spans yet
-    // (SPAN_SUPERVISOR*, SPAN_PARTITION, SPAN_MAX_HEAP, SPAN_LINK, or
-    // SPAN_MONITOR). WHEN obsolete: after the native-M3 supervisor runtime
-    // emission milestone lands canonical substrate trace events. WHAT: add
-    // concrete TraceEventMeta rows only for runtime-emitted event names, keeping
-    // them non-actionable until the observe UI has deliberate handling.
+    // Native supervisor lifecycle events (producer-side emission landed in the
+    // runtime: see `hew-runtime/src/supervisor.rs` + `tracing.rs`
+    // `SPAN_SUPERVISOR_*`). Kept non-actionable until the observe UI has
+    // deliberate supervisor drill-down; they render as point spans on the
+    // existing trace surface. Partition / max-heap / link / monitor families
+    // remain deferred shims below pending their own native emission.
+    TraceEventMeta {
+        name: "supervisor_restart",
+        label: "supervisor restart",
+        glyph: '\u{21BB}',
+        tone: TraceEventTone::Warning,
+        group: TraceEventGroup::Lifecycle,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "supervisor_escalate",
+        label: "supervisor escalate",
+        glyph: '\u{2191}',
+        tone: TraceEventTone::Error,
+        group: TraceEventGroup::Lifecycle,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "supervisor_circuit_open",
+        label: "supervisor circuit open",
+        glyph: '\u{26A0}',
+        tone: TraceEventTone::Error,
+        group: TraceEventGroup::Lifecycle,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "supervisor_circuit_half_open",
+        label: "supervisor circuit half-open",
+        glyph: '\u{26A1}',
+        tone: TraceEventTone::Warning,
+        group: TraceEventGroup::Lifecycle,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "supervisor_circuit_close",
+        label: "supervisor circuit close",
+        glyph: '\u{2713}',
+        tone: TraceEventTone::Healthy,
+        group: TraceEventGroup::Lifecycle,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "supervisor_max_restarts",
+        label: "supervisor max restarts",
+        glyph: '\u{2716}',
+        tone: TraceEventTone::Error,
+        group: TraceEventGroup::Lifecycle,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "supervisor_backoff",
+        label: "supervisor backoff",
+        glyph: '\u{23F3}',
+        tone: TraceEventTone::Warning,
+        group: TraceEventGroup::Lifecycle,
+        actionable: false,
+    },
+    // SHIM: pending native-M3 producer-side emission. WHY: partition
+    // detection, max_heap enforcement, and link/monitor substrates have no
+    // runtime trace spans yet (SPAN_PARTITION, SPAN_MAX_HEAP, SPAN_LINK, or
+    // SPAN_MONITOR). WHEN obsolete: after the native-M3 milestone lands
+    // canonical substrate trace events for them. WHAT: add concrete
+    // TraceEventMeta rows only for runtime-emitted event names, keeping them
+    // non-actionable until the observe UI has deliberate handling.
 ];
 
 pub const UNKNOWN_TRACE_EVENT_META: TraceEventMeta = TraceEventMeta {
@@ -364,6 +425,31 @@ mod tests {
             assert!(
                 !meta.is_actionable(),
                 "{event_type} must remain non-actionable until producer emission lands"
+            );
+        }
+    }
+
+    #[test]
+    fn native_supervisor_events_are_present_but_not_actionable() {
+        for event_type in [
+            "supervisor_restart",
+            "supervisor_escalate",
+            "supervisor_circuit_open",
+            "supervisor_circuit_half_open",
+            "supervisor_circuit_close",
+            "supervisor_max_restarts",
+            "supervisor_backoff",
+        ] {
+            let meta = trace_event_meta(event_type);
+            assert_eq!(
+                meta.name, event_type,
+                "{event_type} must resolve to its concrete row, not the unknown fallback"
+            );
+            assert_ne!(meta.label, UNKNOWN_TRACE_EVENT_META.label);
+            assert_eq!(meta.group, TraceEventGroup::Lifecycle);
+            assert!(
+                !meta.is_actionable(),
+                "{event_type} stays non-actionable until the observe UI has supervisor drill-down"
             );
         }
     }

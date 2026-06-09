@@ -362,6 +362,9 @@ pub extern "C" fn hew_sched_init() -> c_int {
     // Install crash signal handlers for the entire process.
     crate::signal::init_crash_handling();
 
+    crate::observe::configure_from_env();
+    crate::observe::register_reset_hooks();
+
     // Install SIGTERM/SIGINT handlers for graceful shutdown.
     // SAFETY: Called from main thread during initialization.
     unsafe { crate::shutdown::install_shutdown_signal_handlers() };
@@ -683,6 +686,7 @@ pub fn sched_try_wake() {
         )]
         let idx =
             (WAKE_COUNTER.fetch_add(1, Ordering::Relaxed) % sched.worker_count as u64) as usize;
+        crate::observe::record_scheduler_unpark();
         sched.parkers[idx].cond.notify_one();
     }
 }
@@ -693,6 +697,7 @@ pub fn sched_try_wake() {
 fn worker_loop(id: usize, local: &WorkDeque) {
     let sched = get_scheduler().expect("scheduler not initialized");
     let mut rng = Xorshift64::new(crate::deterministic::effective_worker_seed(id as u64));
+    crate::observe::set_current_worker_shard(id);
 
     // Install per-worker signal stack, recovery context, and block async signals.
     #[expect(
@@ -729,6 +734,7 @@ fn worker_loop(id: usize, local: &WorkDeque) {
         if sched.shutdown.load(Ordering::Acquire) {
             break;
         }
+        crate::observe::record_scheduler_park();
         let _ = parker.cond.wait_timeout(guard, PARK_TIMEOUT);
     }
 }
@@ -853,6 +859,11 @@ unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut c_void) -> 
     {
         sched_enqueue(actor);
     }
+    crate::observe::record_coroutine_suspend();
+    crate::observe::hew_observe_probe_suspend(
+        a.dispatch
+            .map_or(std::ptr::null(), |f| f as *const std::ffi::c_void),
+    );
     true
 }
 
@@ -905,6 +916,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     let installed_prev = crate::execution_context::set_current_context(&raw mut resume_context);
     debug_assert_eq!(installed_prev, prev_context);
 
+    crate::observe::record_coroutine_resume();
     // SAFETY: the parked handle is the executor-owned frame; `resume_park`
     // enforces FG2/FG4 internally (refuses a null slot or non-Parked tag).
     let poll = unsafe { crate::coro_exec::resume_park(a) };
@@ -933,6 +945,11 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
                 )
                 .is_ok()
             {
+                crate::observe::record_coroutine_suspend();
+                crate::observe::hew_observe_probe_suspend(
+                    a.dispatch
+                        .map_or(std::ptr::null(), |f| f as *const std::ffi::c_void),
+                );
                 // FG3: a wake during the resume window must not be lost.
                 if crate::coro_exec::take_pending_wake(a)
                     && a.actor_state
@@ -1481,6 +1498,13 @@ fn activate_actor(actor: *mut HewActor) {
                     a.prof_messages_processed.fetch_add(1, Ordering::Relaxed);
                     a.prof_processing_time_ns
                         .fetch_add(elapsed_ns, Ordering::Relaxed);
+                    crate::observe::record_actor_turn(elapsed_ns);
+                    crate::observe::hew_observe_probe_turn(
+                        a.dispatch
+                            .map_or(std::ptr::null(), |f| f as *const std::ffi::c_void),
+                        msg_ref.msg_type,
+                        elapsed_ns,
+                    );
 
                     // SAFETY: `msg` was returned by `hew_mailbox_try_recv` and is
                     // now exclusively owned by this worker.
@@ -2019,6 +2043,7 @@ pub extern "C" fn hew_sched_metrics_reset() {
     MESSAGES_SENT.store(0, Ordering::Relaxed);
     MESSAGES_RECEIVED.store(0, Ordering::Relaxed);
     ACTIVE_WORKERS.store(0, Ordering::Relaxed);
+    crate::observe::reset_all();
 }
 
 /// Return the total number of worker threads.
@@ -2031,6 +2056,44 @@ pub extern "C" fn hew_sched_metrics_worker_count() -> u64 {
 #[no_mangle]
 pub extern "C" fn hew_sched_metrics_global_queue_len() -> u64 {
     get_scheduler().map_or(0, |s| s.global_queue.len() as u64)
+}
+
+/// Return the aggregate approximate depth across global and per-worker queues.
+#[no_mangle]
+pub extern "C" fn hew_sched_metrics_queue_depth() -> u64 {
+    scheduler_queue_depth()
+}
+
+/// Return the number of actors observed in the Runnable state.
+#[no_mangle]
+pub extern "C" fn hew_sched_metrics_runnable_actors() -> u64 {
+    crate::profiler::actor_registry::state_count(HewActorState::Runnable as i32)
+}
+
+/// Return the number of runnable coroutine continuations.
+#[no_mangle]
+pub extern "C" fn hew_sched_metrics_runnable_coroutines() -> u64 {
+    crate::profiler::actor_registry::runnable_coroutine_count()
+}
+
+/// Return worker-thread park events; coroutine suspends are counted separately.
+#[no_mangle]
+pub extern "C" fn hew_sched_metrics_parks_total() -> u64 {
+    crate::observe::scheduler_parks_total()
+}
+
+/// Return worker wake notifications.
+#[no_mangle]
+pub extern "C" fn hew_sched_metrics_unparks_total() -> u64 {
+    crate::observe::scheduler_unparks_total()
+}
+
+#[must_use]
+pub(crate) fn scheduler_queue_depth() -> u64 {
+    get_scheduler().map_or(0, |s| {
+        let local_depth: usize = s.stealers.iter().map(crate::deque::WorkStealer::len).sum();
+        (s.global_queue.len() + local_depth) as u64
+    })
 }
 
 /// Consolidated scheduler metrics snapshot.
@@ -2055,6 +2118,16 @@ pub struct HewSchedMetrics {
     pub worker_count: u64,
     /// Approximate global run queue depth.
     pub global_queue_len: u64,
+    /// Approximate aggregate run queue depth.
+    pub queue_depth: u64,
+    /// Runnable actor count.
+    pub runnable_actors: u64,
+    /// Runnable coroutine count.
+    pub runnable_coroutines: u64,
+    /// Worker-thread park events.
+    pub parks_total: u64,
+    /// Worker wake notifications.
+    pub unparks_total: u64,
 }
 
 /// Fill a [`HewSchedMetrics`] snapshot struct.
@@ -2082,6 +2155,12 @@ pub unsafe extern "C" fn hew_sched_metrics_snapshot(out: *mut HewSchedMetrics) {
         m.worker_count = 0;
         m.global_queue_len = 0;
     }
+    m.queue_depth = scheduler_queue_depth();
+    m.runnable_actors =
+        crate::profiler::actor_registry::state_count(HewActorState::Runnable as i32);
+    m.runnable_coroutines = crate::profiler::actor_registry::runnable_coroutine_count();
+    m.parks_total = crate::observe::scheduler_parks_total();
+    m.unparks_total = crate::observe::scheduler_unparks_total();
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────

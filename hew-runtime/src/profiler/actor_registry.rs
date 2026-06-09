@@ -259,6 +259,13 @@ pub struct ActorSnapshot {
     pub mailbox_hwm: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MailboxAggregate {
+    pub sum_depth: u64,
+    pub max_depth: u64,
+    pub p99_depth: u64,
+}
+
 /// Enumerate all live actors and return a snapshot of their stats.
 pub fn snapshot_all() -> Vec<ActorSnapshot> {
     REGISTRY.access(|guard| {
@@ -325,6 +332,82 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
         // Sort by ID for stable ordering.
         result.sort_by_key(|s| s.id);
         result
+    })
+}
+
+/// Count live actors currently in a specific scheduler state.
+#[must_use]
+pub fn state_count(state: i32) -> u64 {
+    REGISTRY.access(|guard| {
+        guard.as_ref().map_or(0, |map| {
+            map.values()
+                .filter(|entry| {
+                    let actor_ptr = entry.as_ptr();
+                    // SAFETY: Actor is registered and not yet freed.
+                    unsafe { (*actor_ptr).actor_state.load(Ordering::Relaxed) == state }
+                })
+                .count() as u64
+        })
+    })
+}
+
+/// Count runnable actors that have a parked continuation ready to resume.
+#[must_use]
+pub fn runnable_coroutine_count() -> u64 {
+    REGISTRY.access(|guard| {
+        guard.as_ref().map_or(0, |map| {
+            map.values()
+                .filter(|entry| {
+                    let actor_ptr = entry.as_ptr();
+                    // SAFETY: Actor is registered and not yet freed.
+                    unsafe {
+                        (*actor_ptr).actor_state.load(Ordering::Relaxed)
+                            == HewActorState::Runnable as i32
+                            && !(*actor_ptr)
+                                .suspended_cont
+                                .load(Ordering::Relaxed)
+                                .is_null()
+                    }
+                })
+                .count() as u64
+        })
+    })
+}
+
+#[must_use]
+pub fn mailbox_aggregate() -> MailboxAggregate {
+    REGISTRY.access(|guard| {
+        let Some(map) = guard.as_ref() else {
+            return MailboxAggregate::default();
+        };
+        let mut depths = Vec::with_capacity(map.len());
+        for entry in map.values() {
+            let actor_ptr = entry.as_ptr();
+            // SAFETY: Actor is registered and not yet freed.
+            let actor = unsafe { &*actor_ptr };
+            if actor.mailbox.is_null() {
+                depths.push(0_u64);
+                continue;
+            }
+            let mailbox = actor.mailbox.cast::<HewMailbox>();
+            // SAFETY: Mailbox is valid while actor is registered.
+            let depth = unsafe { (*mailbox).count.load(Ordering::Relaxed) }
+                .max(0)
+                .cast_unsigned();
+            depths.push(depth);
+        }
+        if depths.is_empty() {
+            return MailboxAggregate::default();
+        }
+        depths.sort_unstable();
+        let sum_depth = depths.iter().copied().sum();
+        let max_depth = *depths.last().unwrap_or(&0);
+        let p99_index = ((depths.len() * 99).saturating_add(99) / 100).saturating_sub(1);
+        MailboxAggregate {
+            sum_depth,
+            max_depth,
+            p99_depth: depths[p99_index.min(depths.len() - 1)],
+        }
     })
 }
 

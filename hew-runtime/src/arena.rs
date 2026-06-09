@@ -426,6 +426,7 @@ pub unsafe extern "C" fn hew_arena_reset(arena: *mut ActorArena) {
         // SAFETY: caller guarantees arena is valid
         let arena = unsafe { &mut *arena };
         arena.reset();
+        crate::observe::record_arena_reset();
     }
 }
 

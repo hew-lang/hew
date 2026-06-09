@@ -722,6 +722,19 @@ fn record_restart(sup: &mut HewSupervisor) {
     }
 }
 
+/// Resolve the supervisor's own actor id for trace attribution. Returns `0`
+/// when the supervisor has no backing actor yet (pre-start). Read-only; used
+/// only to tag emitted supervisor lifecycle events.
+fn supervisor_actor_id(sup: &HewSupervisor) -> u64 {
+    if sup.self_actor.is_null() {
+        0
+    } else {
+        // SAFETY: self_actor belongs to the live supervisor for the duration
+        // of this dispatch.
+        unsafe { (*sup.self_actor).id }
+    }
+}
+
 /// Escalate a failure to the parent supervisor.
 ///
 /// Sends a `SYS_MSG_CHILD_CRASHED` system message with `child_index = -1`
@@ -772,6 +785,15 @@ fn escalate_to_parent(sup: &HewSupervisor) {
             scheduler::sched_enqueue(parent.self_actor);
         }
     }
+
+    // Observability (read-only side effect, AFTER the escalation decision and
+    // dispatch): record that this supervisor escalated to its parent. Never
+    // gates control flow.
+    crate::tracing::record_supervisor_event(
+        supervisor_actor_id(sup),
+        crate::tracing::SPAN_SUPERVISOR_ESCALATE,
+        i32::try_from(sup.index_in_parent).unwrap_or(i32::MAX),
+    );
 }
 
 /// Check if circuit breaker allows restart for a child.
@@ -779,7 +801,7 @@ fn escalate_to_parent(sup: &HewSupervisor) {
     clippy::match_same_arms,
     reason = "CLOSED and HALF_OPEN have same logic but different semantic meaning"
 )]
-fn circuit_breaker_should_restart(spec: &mut InternalChildSpec) -> bool {
+fn circuit_breaker_should_restart(spec: &mut InternalChildSpec, sup_actor_id: u64) -> bool {
     // If circuit breaker is not configured (max_crashes == 0), always allow restart
     if spec.circuit_breaker.max_crashes == 0 {
         return true;
@@ -801,6 +823,12 @@ fn circuit_breaker_should_restart(spec: &mut InternalChildSpec) -> bool {
             if now_ns.wrapping_sub(spec.circuit_breaker.opened_at_ns) >= cooldown_ns {
                 // Transition to half-open for probe restart
                 spec.circuit_breaker.state = 2; // HEW_CIRCUIT_BREAKER_HALF_OPEN
+                                                // Observability (AFTER the OPEN → HALF_OPEN transition).
+                crate::tracing::record_supervisor_event(
+                    sup_actor_id,
+                    crate::tracing::SPAN_SUPERVISOR_CIRCUIT_HALF_OPEN,
+                    0,
+                );
                 true
             } else {
                 false
@@ -816,7 +844,7 @@ fn circuit_breaker_should_restart(spec: &mut InternalChildSpec) -> bool {
 }
 
 /// Update circuit breaker state after a crash.
-fn circuit_breaker_record_crash(spec: &mut InternalChildSpec, signal: i32) {
+fn circuit_breaker_record_crash(spec: &mut InternalChildSpec, signal: i32, sup_actor_id: u64) {
     let now_ns = monotonic_time_ns();
 
     // Record crash in statistics
@@ -848,6 +876,12 @@ fn circuit_breaker_record_crash(spec: &mut InternalChildSpec, signal: i32) {
                 if recent_count >= spec.circuit_breaker.max_crashes {
                     spec.circuit_breaker.state = 1; // HEW_CIRCUIT_BREAKER_OPEN
                     spec.circuit_breaker.opened_at_ns = now_ns;
+                    // Observability (AFTER the CLOSED → OPEN transition).
+                    crate::tracing::record_supervisor_event(
+                        sup_actor_id,
+                        crate::tracing::SPAN_SUPERVISOR_CIRCUIT_OPEN,
+                        i32::try_from(recent_count).unwrap_or(i32::MAX),
+                    );
                 }
             }
         }
@@ -856,6 +890,12 @@ fn circuit_breaker_record_crash(spec: &mut InternalChildSpec, signal: i32) {
             // Probe restart failed, go back to open
             spec.circuit_breaker.state = 1; // HEW_CIRCUIT_BREAKER_OPEN
             spec.circuit_breaker.opened_at_ns = now_ns;
+            // Observability (AFTER the HALF_OPEN → OPEN transition).
+            crate::tracing::record_supervisor_event(
+                sup_actor_id,
+                crate::tracing::SPAN_SUPERVISOR_CIRCUIT_OPEN,
+                0,
+            );
         }
         _ => {
             // Already open, no state change needed
@@ -864,11 +904,17 @@ fn circuit_breaker_record_crash(spec: &mut InternalChildSpec, signal: i32) {
 }
 
 /// Update circuit breaker state after a successful restart.
-fn circuit_breaker_record_success(spec: &mut InternalChildSpec) {
+fn circuit_breaker_record_success(spec: &mut InternalChildSpec, sup_actor_id: u64) {
     if spec.circuit_breaker.state == 2 {
         // HEW_CIRCUIT_BREAKER_HALF_OPEN
         // Probe restart succeeded, close the circuit
         spec.circuit_breaker.state = 0; // HEW_CIRCUIT_BREAKER_CLOSED
+                                        // Observability (AFTER the HALF_OPEN → CLOSED transition).
+        crate::tracing::record_supervisor_event(
+            sup_actor_id,
+            crate::tracing::SPAN_SUPERVISOR_CIRCUIT_CLOSE,
+            0,
+        );
     }
 }
 
@@ -1301,7 +1347,8 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
         }
 
         // Record successful restart for circuit breaker.
-        circuit_breaker_record_success(&mut sup.child_specs[index]);
+        let sup_actor_id = supervisor_actor_id(sup);
+        circuit_breaker_record_success(&mut sup.child_specs[index], sup_actor_id);
     }
 
     // Update existing slot (restarts). For initial spawns, the caller
@@ -1363,11 +1410,28 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
 
     let recent = restart_within_window(sup);
     if recent >= sup.max_restarts {
+        // Observability (AFTER the max-restart-intensity decision, BEFORE the
+        // escalate): record that the budget was exhausted, carrying the
+        // within-window restart count.
+        crate::tracing::record_supervisor_event(
+            supervisor_actor_id(sup),
+            crate::tracing::SPAN_SUPERVISOR_MAX_RESTARTS,
+            recent,
+        );
         stop_and_maybe_escalate(sup);
         return;
     }
 
     record_restart(sup);
+    crate::observe::record_actor_restart();
+    // Observability (AFTER the restart decision is taken): record the restart,
+    // carrying the restart strategy in the discriminator. Read-only side
+    // effect; never gates control flow.
+    crate::tracing::record_supervisor_event(
+        supervisor_actor_id(sup),
+        crate::tracing::SPAN_SUPERVISOR_RESTART,
+        sup.strategy,
+    );
 
     match sup.strategy {
         STRATEGY_ONE_FOR_ONE => {
@@ -1496,11 +1560,26 @@ unsafe fn restart_child_supervisor_with_budget(sup: &mut HewSupervisor, failed_i
 
     let recent = restart_within_window(sup);
     if recent >= sup.max_restarts {
+        // Observability (AFTER the max-restart-intensity decision): record
+        // budget exhaustion on the child-supervisor recovery path too.
+        crate::tracing::record_supervisor_event(
+            supervisor_actor_id(sup),
+            crate::tracing::SPAN_SUPERVISOR_MAX_RESTARTS,
+            recent,
+        );
         stop_and_maybe_escalate(sup);
         return;
     }
 
     record_restart(sup);
+    crate::observe::record_actor_restart();
+    // Observability (AFTER the restart decision): record the child-supervisor
+    // subtree restart, carrying the strategy discriminator.
+    crate::tracing::record_supervisor_event(
+        supervisor_actor_id(sup),
+        crate::tracing::SPAN_SUPERVISOR_RESTART,
+        sup.strategy,
+    );
 
     // SAFETY: `failed_index` is validated above and `sup` is the live parent
     // supervisor whose child-supervisor slot we are replacing.
@@ -1524,6 +1603,9 @@ unsafe fn apply_restart(
     crash_code: c_int,
     ctx: *mut crate::execution_context::HewExecutionContext,
 ) {
+    // Capture the supervisor's actor id before borrowing `child_specs` so the
+    // emission helpers can attribute events without re-borrowing `sup`.
+    let sup_actor_id = supervisor_actor_id(sup);
     let spec = &mut sup.child_specs[failed_index];
 
     // Record crash if it was a crash (not a normal stop). `crash_code` is the
@@ -1533,7 +1615,7 @@ unsafe fn apply_restart(
     // literal `11` (a SIGSEGV stand-in) which made crash-stats lie about why
     // the actor died — we plumb the real value through now.
     if exit_state == HewActorState::Crashed as c_int {
-        circuit_breaker_record_crash(spec, crash_code);
+        circuit_breaker_record_crash(spec, crash_code, sup_actor_id);
 
         // ── on(crash) handler invocation ─────────────────────────────────
         //
@@ -1627,7 +1709,7 @@ unsafe fn apply_restart(
     }
 
     // Check circuit breaker
-    if !circuit_breaker_should_restart(spec) {
+    if !circuit_breaker_should_restart(spec, sup_actor_id) {
         store_child_slot(sup, failed_index, ptr::null_mut());
         return;
     }
@@ -1642,6 +1724,14 @@ unsafe fn apply_restart(
             .next_restart_time_ns
             .saturating_sub(monotonic_time_ns());
         let delay_ms = (delay_remaining_ns / 1_000_000).max(1);
+        // Observability (AFTER the backoff-schedule decision, BEFORE spawning
+        // the timer): record that a delayed restart was scheduled, carrying the
+        // delay in ms (saturated to i32). Read-only; never gates control flow.
+        crate::tracing::record_supervisor_event(
+            sup_actor_id,
+            crate::tracing::SPAN_SUPERVISOR_BACKOFF,
+            i32::try_from(delay_ms).unwrap_or(i32::MAX),
+        );
         let sup_addr = std::ptr::from_mut::<HewSupervisor>(sup) as usize;
         let idx = failed_index;
         sup.pending_restart_timers.fetch_add(1, Ordering::AcqRel);
@@ -1744,6 +1834,15 @@ unsafe fn supervisor_dispatch_impl(
             // SAFETY: data is valid for at least sizeof(ChildEvent).
             let event = unsafe { &*data.cast::<ChildEvent>() };
 
+            // TRACE-CONTEXT COMPLETENESS (S3, crash-recovery seam): a crash is
+            // reported from `hew_actor_trap` (signal-handler context), so the
+            // sys-message that woke this dispatch may carry an all-zero trace
+            // context. Establish a sampled root HERE — in normal
+            // supervisor-dispatch context, never in the trap — so the restart /
+            // escalate / circuit spans emitted below (S2) parent under a real,
+            // sampled trace id instead of an unsampled zero-parent fallback.
+            crate::tracing::ensure_supervisor_trace_root();
+
             // child_index == -1 signals a child supervisor escalation.
             if event.child_index < 0 {
                 let Ok(idx) = usize::try_from(event.child_id) else {
@@ -1800,6 +1899,10 @@ unsafe fn supervisor_dispatch_impl(
             let event = unsafe { &*data.cast::<DelayedRestartEvent>() };
             let idx = event.child_index;
             if idx < sup.child_count {
+                // S3: establish a sampled root for the delayed-restart span too
+                // (this dispatch was woken by a timer-thread sys-send, which may
+                // carry a zero trace context).
+                crate::tracing::ensure_supervisor_trace_root();
                 // SAFETY: sup is valid, idx is within bounds.
                 unsafe { restart_with_budget_and_strategy(sup, idx) };
             }

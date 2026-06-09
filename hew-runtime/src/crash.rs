@@ -144,6 +144,7 @@ const MAX_CRASH_LOG_SIZE: usize = 64;
 /// discarded; the data protected by this lock is append-only and safe to use
 /// after poison recovery.
 pub(crate) fn push_crash_report(report: CrashReport) {
+    crate::observe::record_actor_crash();
     push_crash_report_to(&RECENT_CRASHES, report);
 }
 

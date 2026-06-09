@@ -92,6 +92,38 @@ pub const SPAN_LAMBDA_SPAWNED: i32 = 13;
 /// `actor_id` holds the pointer address.
 pub const SPAN_LAMBDA_RELEASED: i32 = 14;
 
+// ── Supervisor lifecycle spans ─────────────────────────────────────────
+//
+// Emitted by `hew-runtime/src/supervisor.rs` at the core supervision
+// decision points so that restart/escalate/circuit/backoff policy is
+// self-describing on the export surface without any programmer-written
+// observability. `actor_id` carries the supervisor's own actor id; the
+// per-event `msg_type` carries a decision-specific discriminator
+// (e.g. the restart strategy, the within-window restart count, or the
+// scheduled backoff delay in ms).
+
+/// Supervisor restarted a failed child (after the budget check passed).
+/// `msg_type` carries the restart strategy (`STRATEGY_*`).
+pub const SPAN_SUPERVISOR_RESTART: i32 = 15;
+/// Supervisor escalated a failure to its parent supervisor.
+pub const SPAN_SUPERVISOR_ESCALATE: i32 = 16;
+/// Child circuit breaker transitioned `CLOSED`/`HALF_OPEN` → `OPEN` (restarts
+/// suppressed for the cooldown window).
+pub const SPAN_SUPERVISOR_CIRCUIT_OPEN: i32 = 17;
+/// Child circuit breaker transitioned `OPEN` → `HALF_OPEN` (one probe restart
+/// allowed).
+pub const SPAN_SUPERVISOR_CIRCUIT_HALF_OPEN: i32 = 18;
+/// Child circuit breaker transitioned `HALF_OPEN` → `CLOSED` (probe restart
+/// succeeded; normal restarts resume).
+pub const SPAN_SUPERVISOR_CIRCUIT_CLOSE: i32 = 19;
+/// Supervisor hit max-restart-intensity (`recent >= max_restarts`) and is
+/// stopping/escalating instead of restarting. `msg_type` carries the
+/// within-window restart count.
+pub const SPAN_SUPERVISOR_MAX_RESTARTS: i32 = 20;
+/// Supervisor scheduled a delayed (backoff-window) restart. `msg_type`
+/// carries the scheduled delay in milliseconds (saturated to `i32`).
+pub const SPAN_SUPERVISOR_BACKOFF: i32 = 21;
+
 /// Closed taxonomy of v0.5 concurrency trace event names emitted by this
 /// runtime. The entries pair each `SPAN_*` constant with the canonical
 /// `event_type` string that appears in the JSON drained by
@@ -123,6 +155,16 @@ pub const EVENT_TYPE_NAMES: &[(i32, &str)] = &[
     (SPAN_STREAM_CLOSED, "stream_closed"),
     (SPAN_LAMBDA_SPAWNED, "lambda_spawned"),
     (SPAN_LAMBDA_RELEASED, "lambda_released"),
+    (SPAN_SUPERVISOR_RESTART, "supervisor_restart"),
+    (SPAN_SUPERVISOR_ESCALATE, "supervisor_escalate"),
+    (SPAN_SUPERVISOR_CIRCUIT_OPEN, "supervisor_circuit_open"),
+    (
+        SPAN_SUPERVISOR_CIRCUIT_HALF_OPEN,
+        "supervisor_circuit_half_open",
+    ),
+    (SPAN_SUPERVISOR_CIRCUIT_CLOSE, "supervisor_circuit_close"),
+    (SPAN_SUPERVISOR_MAX_RESTARTS, "supervisor_max_restarts"),
+    (SPAN_SUPERVISOR_BACKOFF, "supervisor_backoff"),
 ];
 
 /// Resolve a span code to its canonical taxonomy name. Returns `None` for
@@ -368,6 +410,24 @@ fn record_lifecycle_event(actor_id: u64, event_type: i32, msg_type: i32) {
     });
 }
 
+/// Record a supervisor lifecycle decision (restart, escalate, circuit
+/// transition, max-restart-intensity, backoff) as a trace event on the same
+/// ring buffer the export surface drains.
+///
+/// Modelled on [`record_lifecycle_event`]: it is a read-only side effect that
+/// honours the `TRACING_ENABLED` fast-path guard (via [`record_event`]) and
+/// emits under the supervisor's live execution context — supervisor decisions
+/// run inside the supervisor's own actor dispatch, so a context is present on
+/// the restart path. It early-returns (emitting nothing) when no context is
+/// installed, so it can never gate or perturb supervisor control flow.
+///
+/// `discriminator` is carried in the event's `msg_type` slot and is
+/// decision-specific (restart strategy, within-window restart count, or
+/// scheduled backoff delay in ms).
+pub(crate) fn record_supervisor_event(actor_id: u64, event_type: i32, discriminator: i32) {
+    record_lifecycle_event(actor_id, event_type, discriminator);
+}
+
 // ── C ABI ──────────────────────────────────────────────────────────────
 
 /// Generate a new 128-bit trace ID (returned as two u64 values).
@@ -506,10 +566,94 @@ pub unsafe extern "C" fn hew_trace_get_context(out: *mut HewTraceContext) {
     unsafe { *out = ctx };
 }
 
-// live on not(wasm32) — mailbox.rs:msg_node_alloc (active on native; wasm path is mailbox_wasm.rs); caller mailbox.rs:517,589
+// live on not(wasm32) — mailbox.rs:msg_node_alloc external-send seam (active on native; wasm path is mailbox_wasm.rs)
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn current_context() -> HewTraceContext {
+    if let Some(ctx) = trace_context() {
+        return ctx;
+    }
+
+    // TRACE-CONTEXT COMPLETENESS (S3, external-send seam): no execution context
+    // is installed, so this `msg_node_alloc` is an external send originating
+    // OUTSIDE any actor dispatch (e.g. `hew_actor_send` from `main`). Returning
+    // the all-zero default here would sever the causal chain: the receiving
+    // dispatch would synthesise a fresh, UNSAMPLED trace from a zero parent,
+    // and the message node would carry an orphan zero-id context.
+    //
+    // Instead mint a fresh SAMPLED root (same id source + flags convention as
+    // `io_accept_span_begin`) so the message node carries a real trace root and
+    // the receiver parents its dispatch span under a valid, sampled trace id.
+    // Each external send is its own trace root, which is the correct causal
+    // shape for an unsolicited boundary-crossing message.
+    //
+    // Fast path preserved: when tracing is disabled this returns the cheap
+    // all-zero default without minting (the receiver never traces anyway).
+    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+        return HewTraceContext::default();
+    }
+    HewTraceContext {
+        trace_id_hi: next_random_id(),
+        trace_id_lo: next_random_id(),
+        span_id: next_random_id(),
+        parent_span_id: 0,
+        flags: 1, // sampled
+    }
+}
+
+// live on not(wasm32) — mailbox.rs:msg_node_alloc_sys (native system-send path)
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Capture the installed execution-context trace for a SYSTEM/control-plane
+/// send WITHOUT minting a fresh root.
+///
+/// TRACE-CONTEXT COMPLETENESS (S3, crash-recovery seam): system sends
+/// (supervisor child-event notifications, link/monitor signals) reach
+/// `hew_mailbox_send_sys`, and the crash notification originates from
+/// `hew_actor_trap` — signal-handler-adjacent context where minting a trace
+/// root is forbidden. Unlike [`current_context`] (the external-user-send seam),
+/// this helper NEVER mints: it returns the already-installed context when one
+/// is present, otherwise the all-zero default. Minting the crash-recovery root
+/// is therefore deferred to [`ensure_supervisor_trace_root`], which runs in
+/// normal supervisor-dispatch context.
+pub(crate) fn system_context() -> HewTraceContext {
     trace_context().unwrap_or_default()
+}
+
+/// Ensure the current (supervisor-dispatch) execution context carries a
+/// non-zero, SAMPLED trace root, minting a fresh crash-origin root when the
+/// installed context is absent or all-zero.
+///
+/// TRACE-CONTEXT COMPLETENESS (S3, crash-recovery seam): a child crash is
+/// reported from `hew_actor_trap`, which runs in **signal-handler context**
+/// where minting/allocating a context is not async-signal-safe. So the root is
+/// established HERE — on the supervisor-dispatch side, which runs in normal
+/// context — NOT inside the trap. The supervisor's restart/escalate spans (S2)
+/// then parent under a real, sampled trace id instead of the unsampled
+/// zero-parent fallback that `hew_trace_begin` would otherwise synthesise from
+/// the trap's zero-context sys-message.
+///
+/// Read-only side effect: no-op when tracing is disabled or no context slot is
+/// installed; never gates supervisor control flow.
+pub(crate) fn ensure_supervisor_trace_root() {
+    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    match trace_context() {
+        // A real (non-zero) trace is already installed — inherit it so the
+        // crash-recovery spans join the existing trace rather than starting a
+        // disconnected root.
+        Some(ctx) if ctx.trace_id_hi != 0 || ctx.trace_id_lo != 0 => {}
+        // Absent or all-zero context: mint a fresh sampled crash-origin root.
+        _ => {
+            let root = HewTraceContext {
+                trace_id_hi: next_random_id(),
+                trace_id_lo: next_random_id(),
+                span_id: next_random_id(),
+                parent_span_id: 0,
+                flags: 1, // sampled
+            };
+            let _ = write_trace_context(root);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -617,6 +761,19 @@ pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
 
     // Look up the accept span context.  NOT consumed — many envelopes arrive
     // per connection, each parented under the same accept span.
+    //
+    // INTENTIONAL DEFAULT (not fail-open): a missing entry yields the all-zero
+    // context, but the child-span construction immediately below treats a zero
+    // trace id as "no parent" and MINTS a fresh root via `next_random_id`
+    // (mirroring `io_accept_span_begin`). So the span is never an orphan with
+    // zero ids — it becomes a new trace root.
+    //   WHY  — tracing can be enabled mid-connection, after the accept span
+    //          for `conn_id` was already emitted/evicted; the recv still
+    //          deserves a valid (root) span rather than being dropped.
+    //   WHEN — revisit if accept-span stashing becomes guaranteed-before-recv
+    //          (e.g. tracing can only toggle at startup), making the miss a bug.
+    //   WHAT — promote to fail-closed (skip + count) once the miss is provably
+    //          a producer error rather than a benign late-enable.
     let parent_ctx = IO_SPAN_TABLE
         .lock_or_recover()
         .get(&conn_id)
@@ -827,6 +984,23 @@ pub extern "C" fn hew_trace_reset() {
 /// `handler_name` is non-null on native builds when `hew_register_handler_name`
 /// has been called for the `(dispatch_fn, msg_type)` pair (requires codegen
 /// emission — see #1259).  On WASM builds the bridge metadata registry is used.
+/// Resolve the drained `event_type` string, FAIL-CLOSED for codes outside the
+/// closed [`EVENT_TYPE_NAMES`] taxonomy.
+///
+/// For a mapped code this returns the canonical taxonomy name. For an *unmapped*
+/// code it returns a distinguishable `invalid:<code>` token — never the
+/// `"unknown"` sentinel, which `hew-observe` reserves for valid-but-future event
+/// names. This is the producer-side fail-closed guarantee: an out-of-taxonomy
+/// integer surfaces as detectable corruption rather than masquerading as a known
+/// event type. See the `event_type_name` contract for the caller obligation.
+#[cfg(feature = "profiler")]
+fn drain_event_type_label(event_type: i32) -> std::borrow::Cow<'static, str> {
+    match event_type_name(event_type) {
+        Some(name) => std::borrow::Cow::Borrowed(name),
+        None => std::borrow::Cow::Owned(format!("invalid:{event_type}")),
+    }
+}
+
 #[cfg(feature = "profiler")]
 pub fn drain_events_json() -> String {
     use std::fmt::Write as _;
@@ -839,7 +1013,25 @@ pub fn drain_events_json() -> String {
             if i > 0 {
                 json.push(',');
             }
-            let event_type_str = event_type_name(ev.event_type).unwrap_or("unknown");
+            // FAIL-CLOSED: an `event_type` integer outside the closed
+            // `EVENT_TYPE_NAMES` taxonomy is a producer bug (a `SPAN_*`
+            // constant emitted without its taxonomy row). It must NOT be
+            // laundered into the valid-looking `"unknown"` sentinel that
+            // `hew-observe` reserves for genuinely-future-but-valid names —
+            // doing so would let trace corruption masquerade as a known
+            // event type, contradicting the `event_type_name` contract
+            // documented at its definition. `drain_event_type_label` returns a
+            // distinguishable `invalid:<code>` token instead; the `debug_assert`
+            // is a dev-time tripwire so the offending producer surfaces loudly.
+            let event_type_label = drain_event_type_label(ev.event_type);
+            debug_assert!(
+                !event_type_label.starts_with("invalid:"),
+                "drain_events_json: event_type {} is outside the closed \
+                 EVENT_TYPE_NAMES taxonomy; a SPAN_* constant was emitted \
+                 without its taxonomy row (fail-closed)",
+                ev.event_type
+            );
+            let event_type_str: &str = event_type_label.as_ref();
 
             // Resolve actor_type_id and actor_type via the profiler actor registry.
             // Option B from #1260: drain-time lookup avoids adding a dispatch-fn
@@ -853,6 +1045,22 @@ pub fn drain_events_json() -> String {
             //       REAL: Store dispatch_fn in HewTraceEvent when the C ABI is versioned.
             #[cfg(not(any(target_arch = "wasm32", test)))]
             let (actor_type_id, actor_type_str, handler_name) = {
+                // INTENTIONAL DEFAULT (not fail-open): a `None` from the
+                // registry means the actor was freed before this drain ran (or
+                // its type was never registered). Unlike the event_type case
+                // above, `0` here is NOT a corruption sentinel — it is the
+                // documented #1260 contract: `actor_type_id == 0` pairs with
+                // `actor_type == null` (handled below) to mean "attribution
+                // unavailable", a legitimate and detectable state distinct from
+                // a valid non-zero dispatch pointer.
+                //   WHY  — actor lifetime is shorter than the drain window; the
+                //          event itself (ids, type) is still valid and worth
+                //          emitting unattributed rather than dropped.
+                //   WHEN — revisit if event records ever carry the dispatch ptr
+                //          inline (ABI-versioned HewTraceEvent), removing the
+                //          lookup race entirely.
+                //   WHAT — consumers read (0, null) as "unattributed", never as
+                //          a real actor type.
                 let dispatch_ptr =
                     crate::profiler::actor_registry::lookup_dispatch_for_actor_id(ev.actor_id)
                         .unwrap_or(0);
@@ -995,6 +1203,13 @@ mod tests {
             SPAN_STREAM_CLOSED,
             SPAN_LAMBDA_SPAWNED,
             SPAN_LAMBDA_RELEASED,
+            SPAN_SUPERVISOR_RESTART,
+            SPAN_SUPERVISOR_ESCALATE,
+            SPAN_SUPERVISOR_CIRCUIT_OPEN,
+            SPAN_SUPERVISOR_CIRCUIT_HALF_OPEN,
+            SPAN_SUPERVISOR_CIRCUIT_CLOSE,
+            SPAN_SUPERVISOR_MAX_RESTARTS,
+            SPAN_SUPERVISOR_BACKOFF,
         ];
         for code in all_spans {
             assert!(
@@ -1016,7 +1231,31 @@ mod tests {
         assert!(event_type_name(i32::MAX).is_none());
         assert!(event_type_name(-1).is_none());
         // Any code beyond the last assigned SPAN_* must not resolve.
-        assert!(event_type_name(SPAN_LAMBDA_RELEASED + 1).is_none());
+        assert!(event_type_name(SPAN_SUPERVISOR_BACKOFF + 1).is_none());
+    }
+
+    /// S1 fail-closed: the producer drain must NEVER serialise an `event_type`
+    /// integer outside the closed taxonomy as the valid-looking `"unknown"`
+    /// sentinel. An out-of-range code must surface as a distinguishable
+    /// `invalid:<code>` corruption token so consumers can DETECT it rather than
+    /// be deceived. This test FAILS against the pre-S1 `.unwrap_or("unknown")`
+    /// drain code.
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn drain_label_for_invalid_event_type_is_not_unknown() {
+        // A mapped code resolves to its canonical name.
+        assert_eq!(drain_event_type_label(SPAN_SPAWN).as_ref(), "spawn");
+
+        // An out-of-taxonomy code must NOT launder into "unknown".
+        let bogus = i32::MAX;
+        let label = drain_event_type_label(bogus);
+        assert_ne!(
+            label.as_ref(),
+            "unknown",
+            "out-of-range event_type must not masquerade as the valid \"unknown\" sentinel"
+        );
+        assert_eq!(label.as_ref(), format!("invalid:{bogus}"));
+        assert!(label.starts_with("invalid:"));
     }
 
     #[test]
@@ -1083,6 +1322,135 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(b, c);
         assert_ne!(a, c);
+    }
+
+    /// S2: a supervisor decision emitted via `record_supervisor_event` lands on
+    /// the ring buffer with the canonical taxonomy name and a non-zero span id
+    /// (inherited from the supervisor's live dispatch context), and drains
+    /// through `drain_events_json` as a `supervisor_restart` event carrying the
+    /// strategy discriminator in `msg_type`.
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn supervisor_event_drains_with_name_and_span() {
+        let _guard = setup();
+
+        // Establish a non-zero span context as the supervisor dispatch would.
+        hew_trace_begin(7, 0);
+        let mut ctx = HewTraceContext::default();
+        // SAFETY: valid pointer.
+        unsafe { hew_trace_get_context(&raw mut ctx) };
+        assert_ne!(ctx.span_id, 0);
+
+        // Emit a restart decision carrying strategy discriminator 2.
+        record_supervisor_event(7, SPAN_SUPERVISOR_RESTART, 2);
+
+        let json = drain_events_json();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("drain_events_json must produce valid JSON");
+        let arr = parsed.as_array().expect("drain JSON is an array");
+        let restart = arr
+            .iter()
+            .find(|e| e["event_type"] == "supervisor_restart")
+            .expect("supervisor_restart event must be present on the export surface");
+        assert_eq!(restart["msg_type"], 2);
+        assert_eq!(restart["actor_id"], 7);
+        assert_ne!(
+            restart["span_id"].as_u64().unwrap(),
+            0,
+            "supervisor event must inherit the live dispatch span, not a zero id"
+        );
+
+        hew_trace_reset();
+    }
+
+    /// S2: every supervisor taxonomy name resolves (no `invalid:` token) and is
+    /// distinct from the `"unknown"` sentinel.
+    #[test]
+    fn supervisor_event_names_resolve() {
+        for code in [
+            SPAN_SUPERVISOR_RESTART,
+            SPAN_SUPERVISOR_ESCALATE,
+            SPAN_SUPERVISOR_CIRCUIT_OPEN,
+            SPAN_SUPERVISOR_CIRCUIT_HALF_OPEN,
+            SPAN_SUPERVISOR_CIRCUIT_CLOSE,
+            SPAN_SUPERVISOR_MAX_RESTARTS,
+            SPAN_SUPERVISOR_BACKOFF,
+        ] {
+            let name = event_type_name(code).expect("supervisor span must map");
+            assert!(name.starts_with("supervisor_"));
+            assert_ne!(name, "unknown");
+        }
+    }
+
+    /// S3 (external-send seam): with tracing enabled and NO execution context
+    /// installed (a send originating outside any actor dispatch), the captured
+    /// context is a fresh SAMPLED root with a non-zero trace id and a zero
+    /// parent — not an all-zero orphan. With tracing disabled it stays the cheap
+    /// zero default.
+    #[test]
+    fn current_context_mints_sampled_root_on_external_send() {
+        let _guard = tracing_test_guard();
+        hew_trace_reset();
+        hew_trace_enable(1);
+
+        // No execution context installed: external-send seam.
+        let ctx = current_context();
+        assert!(
+            ctx.trace_id_hi != 0 || ctx.trace_id_lo != 0,
+            "external send must mint a non-zero trace root, not a zero orphan"
+        );
+        assert_ne!(ctx.span_id, 0);
+        assert_eq!(ctx.parent_span_id, 0, "external send is a trace root");
+        assert_eq!(ctx.flags, 1, "minted root must be sampled");
+
+        // Each external send is its own root.
+        let ctx2 = current_context();
+        assert_ne!(
+            (ctx.trace_id_hi, ctx.trace_id_lo),
+            (ctx2.trace_id_hi, ctx2.trace_id_lo)
+        );
+
+        // Disabled tracing returns the cheap zero default (no minting).
+        hew_trace_enable(0);
+        let off = current_context();
+        assert_eq!(off.trace_id_hi, 0);
+        assert_eq!(off.trace_id_lo, 0);
+        assert_eq!(off.span_id, 0);
+
+        hew_trace_reset();
+    }
+
+    /// S3 (crash-recovery seam): `ensure_supervisor_trace_root` mints a sampled
+    /// root when the installed context is all-zero (the crash sys-message came
+    /// from the signal-context trap), then INHERITS an already-non-zero context
+    /// on a subsequent call (joins the live trace rather than re-rooting).
+    #[test]
+    fn ensure_supervisor_trace_root_mints_then_inherits() {
+        let _guard = tracing_test_guard();
+        let _ctx = TestExecutionContext::install(HewExecutionContext::default());
+        hew_trace_reset();
+        hew_trace_enable(1);
+
+        // All-zero installed context → mint a sampled crash-origin root.
+        ensure_supervisor_trace_root();
+        let minted = trace_context().expect("context is installed");
+        assert!(
+            minted.trace_id_hi != 0 || minted.trace_id_lo != 0,
+            "crash-recovery must parent under a real trace id"
+        );
+        assert_ne!(minted.span_id, 0);
+        assert_eq!(minted.parent_span_id, 0);
+        assert_eq!(minted.flags, 1, "minted crash-origin root must be sampled");
+
+        // Already-non-zero context → inherited unchanged.
+        ensure_supervisor_trace_root();
+        let after = trace_context().expect("context is installed");
+        assert_eq!(after.trace_id_hi, minted.trace_id_hi);
+        assert_eq!(after.trace_id_lo, minted.trace_id_lo);
+        assert_eq!(after.span_id, minted.span_id);
+
+        hew_trace_enable(0);
+        hew_trace_reset();
     }
 
     #[test]

@@ -1,29 +1,32 @@
 //! Profiling allocator that tracks allocation statistics.
 //!
-//! Wraps the system allocator to count allocations, deallocations, and
-//! bytes in flight. The counters are always active (one atomic fetch-add
-//! per alloc/dealloc) but the HTTP dashboard only starts when `HEW_PPROF`
-//! is set.
+//! Wraps the system allocator to track cheap live/peak gauges at all times.
+//! The legacy profiler cumulative counters stay live at all times; observe's
+//! hot cumulative counters are routed through the observe tier and only counted
+//! when `HEW_OBSERVE` enables them.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── Counters ────────────────────────────────────────────────────────────
 
-/// Total number of allocation calls since startup.
-static ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Total number of deallocation calls since startup.
-static DEALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Cumulative bytes allocated (monotonically increasing).
-static BYTES_ALLOCATED: AtomicU64 = AtomicU64::new(0);
-
-/// Cumulative bytes freed (monotonically increasing).
-static BYTES_FREED: AtomicU64 = AtomicU64::new(0);
+/// Approximate bytes currently live.
+static BYTES_LIVE: AtomicU64 = AtomicU64::new(0);
 
 /// Peak concurrent bytes live (high-water mark).
 static PEAK_BYTES_LIVE: AtomicU64 = AtomicU64::new(0);
+
+/// Total allocation calls since startup.
+static ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Total deallocation calls since startup.
+static DEALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Cumulative bytes allocated since startup.
+static BYTES_ALLOCATED: AtomicU64 = AtomicU64::new(0);
+
+/// Cumulative bytes freed since startup.
+static BYTES_FREED: AtomicU64 = AtomicU64::new(0);
 
 // ── Allocator wrapper ───────────────────────────────────────────────────
 
@@ -42,9 +45,11 @@ unsafe impl GlobalAlloc for ProfilingAllocator {
         if !ptr.is_null() {
             let size = layout.size() as u64;
             ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-            let prev_allocated = BYTES_ALLOCATED.fetch_add(size, Ordering::Relaxed);
-            let freed = BYTES_FREED.load(Ordering::Relaxed);
-            let live = (prev_allocated + size).saturating_sub(freed);
+            BYTES_ALLOCATED.fetch_add(size, Ordering::Relaxed);
+            let live = BYTES_LIVE
+                .fetch_add(size, Ordering::Relaxed)
+                .saturating_add(size);
+            crate::observe::record_heap_alloc(size);
             // Update peak with a CAS loop (only grows).
             let mut peak = PEAK_BYTES_LIVE.load(Ordering::Relaxed);
             while live > peak {
@@ -63,8 +68,11 @@ unsafe impl GlobalAlloc for ProfilingAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let size = layout.size() as u64;
         DEALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        BYTES_FREED.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        BYTES_FREED.fetch_add(size, Ordering::Relaxed);
+        BYTES_LIVE.fetch_sub(size, Ordering::Relaxed);
+        crate::observe::record_heap_free(size);
         // SAFETY: Caller upholds `GlobalAlloc::dealloc` safety contract;
         // we forward directly to `System`.
         unsafe { System.dealloc(ptr, layout) };
@@ -92,14 +100,12 @@ pub struct AllocStats {
 
 /// Capture a snapshot of allocator statistics.
 pub fn snapshot() -> AllocStats {
-    let bytes_allocated = BYTES_ALLOCATED.load(Ordering::Relaxed);
-    let bytes_freed = BYTES_FREED.load(Ordering::Relaxed);
     AllocStats {
         alloc_count: ALLOC_COUNT.load(Ordering::Relaxed),
         dealloc_count: DEALLOC_COUNT.load(Ordering::Relaxed),
-        bytes_allocated,
-        bytes_freed,
-        bytes_live: bytes_allocated.saturating_sub(bytes_freed),
+        bytes_allocated: BYTES_ALLOCATED.load(Ordering::Relaxed),
+        bytes_freed: BYTES_FREED.load(Ordering::Relaxed),
+        bytes_live: BYTES_LIVE.load(Ordering::Relaxed),
         peak_bytes_live: PEAK_BYTES_LIVE.load(Ordering::Relaxed),
     }
 }
@@ -121,9 +127,7 @@ pub extern "C" fn hew_memory_dealloc_count() -> u64 {
 /// Return the approximate number of bytes currently live.
 #[no_mangle]
 pub extern "C" fn hew_memory_bytes_live() -> u64 {
-    let allocated = BYTES_ALLOCATED.load(Ordering::Relaxed);
-    let freed = BYTES_FREED.load(Ordering::Relaxed);
-    allocated.saturating_sub(freed)
+    BYTES_LIVE.load(Ordering::Relaxed)
 }
 
 /// Return the peak number of bytes that were live at any point.

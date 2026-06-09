@@ -1181,6 +1181,15 @@ fn intern_runtime_decl<'ctx>(
         // hew_string_concat(a: *const c_char, b: *const c_char) -> *mut c_char
         // (`hew-runtime/src/string.rs`). Returns a fresh owned string.
         "hew_string_concat" => ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_actor_register_type" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_register_handler_name" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
+        "hew_observe_read_u64" => i64_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_observe_scrape" => ptr_ty.fn_type(&[], false),
+        "hew_observe_series" => ptr_ty.fn_type(&[], false),
         // hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
         // (`hew-runtime/src/reply_channel.rs:296`). Blocks until a reply
         // is deposited; returns the malloc'd reply pointer (caller frees
@@ -4929,6 +4938,87 @@ fn emit_wasm_actor_metadata_registration<'ctx>(
     Ok(())
 }
 
+fn emit_native_actor_metadata_registration<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+    dispatch: FunctionValue<'ctx>,
+) -> CodegenResult<()> {
+    let layout = fn_ctx
+        .actor_layouts
+        .iter()
+        .find(|layout| layout.name == actor_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "spawn `{actor_name}` has no ActorLayout for native trace metadata registration"
+            ))
+        })?;
+
+    let actor_fragment = llvm_global_name_fragment(actor_name);
+    let actor_name_ptr = intern_global_string_ptr(
+        fn_ctx,
+        actor_name,
+        &format!("str_actor_type_name_{actor_fragment}"),
+    )?;
+    let dispatch_ptr = dispatch.as_global_value().as_pointer_value();
+
+    let register_type = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_register_type",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            register_type,
+            &[dispatch_ptr.into(), actor_name_ptr.into()],
+            "hew_actor_register_type_call",
+        )
+        .llvm_ctx("hew_actor_register_type call")?;
+
+    if layout.handlers.is_empty() {
+        return Ok(());
+    }
+
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let register_handler = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_register_handler_name",
+    )?;
+    for (idx, handler) in layout.handlers.iter().enumerate() {
+        let handler_idx = u32::try_from(idx).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "actor `{actor_name}` handler index exceeds u32::MAX"
+            ))
+        })?;
+        let handler_name = format!("{actor_name}::{}", handler.name);
+        let handler_name_fragment = llvm_global_name_fragment(&handler.name);
+        let handler_name_ptr = intern_global_string_ptr(
+            fn_ctx,
+            &handler_name,
+            &format!(
+                "str_actor_handler_name_{actor_fragment}_{handler_idx}_{handler_name_fragment}"
+            ),
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                register_handler,
+                &[
+                    dispatch_ptr.into(),
+                    i32_ty.const_int(handler.msg_type as u64, true).into(),
+                    handler_name_ptr.into(),
+                ],
+                "hew_register_handler_name_call",
+            )
+            .llvm_ctx("hew_register_handler_name call")?;
+    }
+
+    Ok(())
+}
+
 // ─── W2.002 Stage 2: state_clone / state_drop registration helpers ──────────
 //
 // Stage 2 emits CALLS to per-actor `__hew_state_clone_<Actor>` /
@@ -5113,6 +5203,7 @@ fn emit_spawn_actor(
         .build_call(sched_init, &[], "hew_sched_init_call")
         .llvm_ctx("hew_sched_init call")?;
     emit_wasm_actor_metadata_registration(fn_ctx, actor_name)?;
+    emit_native_actor_metadata_registration(fn_ctx, actor_name, dispatch)?;
 
     let spawned = if max_heap_bytes.is_some() || cycle_capable {
         // `#[max_heap(N)]` and/or `cycle_capable` is set — route through
@@ -17142,6 +17233,81 @@ fn lower_call_runtime_abi(
                 .builder
                 .build_store(dest_ptr, result_val)
                 .llvm_ctx("hew_string_concat store")?;
+            let _ = i32_ty;
+        }
+        "hew_observe_read_u64" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_observe_read_u64): expected 1 arg (name), got {}",
+                    args.len()
+                )));
+            }
+            let name_ptr = load_duplex_handle(fn_ctx, args[0], "hew_observe_read_u64 arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[name_ptr.into()], "hew_observe_read_u64_call")
+                .llvm_ctx("hew_observe_read_u64 call")?;
+            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_observe_read_u64 returned void".into())
+            })?;
+            if let Some(dest_place) = dest {
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, result_val)
+                    .llvm_ctx("hew_observe_read_u64 store")?;
+            }
+            let _ = i32_ty;
+        }
+        "hew_observe_scrape" | "hew_observe_series" => {
+            let (call_name, call_ctx, returned_void_ctx, store_ctx) = match symbol {
+                "hew_observe_scrape" => (
+                    "hew_observe_scrape_call",
+                    "hew_observe_scrape call",
+                    "hew_observe_scrape returned void",
+                    "hew_observe_scrape store",
+                ),
+                "hew_observe_series" => (
+                    "hew_observe_series_call",
+                    "hew_observe_series call",
+                    "hew_observe_series returned void",
+                    "hew_observe_series store",
+                ),
+                _ => unreachable!("observe ABI branch only matches scrape/series"),
+            };
+            if !args.is_empty() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 0 args, got {}",
+                    args.len()
+                )));
+            }
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[], call_name)
+                .llvm_ctx(call_ctx)?;
+            let result_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed(returned_void_ctx.into()))?;
+            if let Some(dest_place) = dest {
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, result_val)
+                    .llvm_ctx(store_ctx)?;
+            }
             let _ = i32_ty;
         }
         "hew_string_index" => {

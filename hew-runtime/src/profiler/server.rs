@@ -221,6 +221,7 @@ fn handle_request(
             static_text_response(DASHBOARD_JS, "application/javascript; charset=utf-8")
         }
         "/api/metrics" => serve_current_metrics(&ctx.ring),
+        "/api/observe/scrape" => serve_observe_scrape(),
         "/api/memory" => serve_memory(),
         "/api/actors" => serve_actors(),
         "/api/metrics/history" => serve_history(&ctx.ring),
@@ -311,6 +312,11 @@ fn serve_current_metrics(ring: &Arc<Mutex<MetricsRing>>) -> Response<Full<Bytes>
     drop(ring_guard);
 
     json_response(&current_metrics_json(&snap))
+}
+
+/// `GET /api/observe/scrape` — current observe registry in scrape text format.
+fn serve_observe_scrape() -> Response<Full<Bytes>> {
+    text_response(crate::observe::scrape_text(), "text/plain; charset=utf-8")
 }
 
 fn current_metrics_json(snap: &crate::profiler::metrics::MetricsSnapshot) -> String {
@@ -572,6 +578,7 @@ mod tests {
             tcp_accept_count: 16,
             tcp_connect_count: 17,
             tcp_error_count: 18,
+            ..Default::default()
         }]);
         let parsed: serde_json::Value =
             serde_json::from_str(&json).expect("history must be valid json");
@@ -647,6 +654,7 @@ mod tests {
             tcp_accept_count: 16,
             tcp_connect_count: 17,
             tcp_error_count: 18,
+            ..Default::default()
         });
         let parsed: serde_json::Value =
             serde_json::from_str(&json).expect("current metrics must be valid json");

@@ -159,6 +159,7 @@ pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
     // SAFETY: base points to at least FRAME_HEADER (>= 8) writable bytes that
     // hew_alloc just handed out.
     unsafe { ptr::write_unaligned(base.cast::<u64>(), total as u64) };
+    crate::observe::record_coroutine_frame_alloc(size as u64);
     // SAFETY: the allocation is total = FRAME_HEADER + size bytes, so advancing
     // by FRAME_HEADER lands within the block with `size` usable bytes ahead.
     unsafe { base.add(FRAME_HEADER).cast::<c_void>() }
@@ -191,6 +192,7 @@ pub unsafe extern "C" fn hew_cont_frame_free(frame: *mut c_void) {
     // SAFETY: the header at base holds the u64 block size written at alloc.
     // `read_unaligned` matches the `write_unaligned` at alloc time.
     let total = unsafe { ptr::read_unaligned(base.cast::<u64>()) };
+    crate::observe::record_coroutine_frame_free(total.saturating_sub(FRAME_HEADER as u64));
     // SAFETY: base/total/FRAME_ALIGN are exactly the (ptr, size, align) triple
     // hew_alloc returned, so this is the symmetric free hew_dealloc requires.
     unsafe { hew_dealloc(base, total, FRAME_ALIGN as u64) };

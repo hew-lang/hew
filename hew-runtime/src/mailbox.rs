@@ -499,6 +499,70 @@ unsafe fn msg_node_alloc(
     data_size: usize,
     reply_channel: *mut c_void,
 ) -> *mut HewMsgNode {
+    // External / user-send seam: capture (and, when no execution context is
+    // installed, MINT) a sampled trace root via `tracing::current_context` so
+    // boundary-crossing sends carry a real causal context.
+    // SAFETY: forwards the caller's `data`/`data_size`/`reply_channel` contract.
+    unsafe {
+        msg_node_alloc_with_trace(
+            msg_type,
+            data,
+            data_size,
+            reply_channel,
+            crate::tracing::current_context(),
+        )
+    }
+}
+
+/// Allocate a [`HewMsgNode`] for a SYSTEM/control-plane send WITHOUT minting a
+/// trace root.
+///
+/// System sends (supervisor child-event notifications, link/monitor signals)
+/// must never mint a trace context. The crash notification reaches this path
+/// from `hew_actor_trap`, which runs in signal-handler-adjacent context where
+/// minting a root is forbidden. So this path captures only an already-installed
+/// context (via `tracing::system_context`) and otherwise carries zero/absent
+/// context, deferring the crash-recovery mint to
+/// `tracing::ensure_supervisor_trace_root` on the supervisor-dispatch side.
+///
+/// # Safety
+///
+/// Same requirements as [`msg_node_alloc`].
+unsafe fn msg_node_alloc_sys(
+    msg_type: i32,
+    data: *const c_void,
+    data_size: usize,
+    reply_channel: *mut c_void,
+) -> *mut HewMsgNode {
+    // SAFETY: forwards the caller's `data`/`data_size`/`reply_channel` contract.
+    unsafe {
+        msg_node_alloc_with_trace(
+            msg_type,
+            data,
+            data_size,
+            reply_channel,
+            crate::tracing::system_context(),
+        )
+    }
+}
+
+/// Allocate a [`HewMsgNode`], deep-copying `data` and stamping the provided
+/// `trace_context` onto the node.
+///
+/// The trace-context capture policy is chosen by the caller: [`msg_node_alloc`]
+/// passes the minting external-send seam, while [`msg_node_alloc_sys`] passes
+/// the non-minting system-send seam.
+///
+/// # Safety
+///
+/// Same requirements as [`msg_node_alloc`].
+unsafe fn msg_node_alloc_with_trace(
+    msg_type: i32,
+    data: *const c_void,
+    data_size: usize,
+    reply_channel: *mut c_void,
+    trace_context: HewTraceContext,
+) -> *mut HewMsgNode {
     // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
     let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
     if node.is_null() {
@@ -514,7 +578,7 @@ unsafe fn msg_node_alloc(
         // Phase-α: legacy copy path nodes hold no envelope. Codegen
         // flips selected sites to `msg_node_alloc_aliased` later.
         (*node).envelope = ptr::null_mut();
-        (*node).trace_context = crate::tracing::current_context();
+        (*node).trace_context = trace_context;
         // Explicit zero-init for the mailbox-envelope ABI fields.
         // These fields are NEW; mailbox_malloc uses libc::malloc (not calloc)
         // so they are NOT zero-initialized by the allocator. An uninitialized
@@ -1985,7 +2049,11 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
     let mb = unsafe { &*mb };
 
     // SAFETY: `data` validity guaranteed by caller.
-    let node = unsafe { msg_node_alloc(msg_type, data, size, ptr::null_mut()) };
+    // System sends use the NON-minting node allocator: the crash-recovery trace
+    // root must be minted only on the supervisor-dispatch side (via
+    // `ensure_supervisor_trace_root`), never in or under the `hew_actor_trap`
+    // signal-handler context that originates child-crash notifications.
+    let node = unsafe { msg_node_alloc_sys(msg_type, data, size, ptr::null_mut()) };
     if node.is_null() {
         set_last_error(format!(
             "hew_mailbox_send_sys: failed to deliver system message (msg_type={msg_type}, size={size})"

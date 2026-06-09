@@ -395,6 +395,7 @@ fn apply_add(poller: *mut HewIoPoller, fd: c_int, reg: Registration) {
         state.conn_to_fd.insert(conn, fd);
         state.registry.insert(fd, reg);
     });
+    crate::observe::record_reactor_registration();
     // Registration is now in the registry where `reactor_detach_actor` phase 1
     // can find it; release the promotion guard.
     PROMOTING_ACTOR.store(0, Ordering::SeqCst);
@@ -424,10 +425,14 @@ fn unregister_fd(poller: *mut HewIoPoller, fd: c_int) {
     unsafe {
         hew_io_poller_unregister(poller, fd);
     }
-    REACTOR_STATE.access(|state| {
-        state.registry.remove(&fd);
+    let removed = REACTOR_STATE.access(|state| {
+        let removed = state.registry.remove(&fd).is_some();
         state.conn_to_fd.retain(|_, mapped| *mapped != fd);
+        removed
     });
+    if removed {
+        crate::observe::record_reactor_unregistration(1);
+    }
 }
 
 /// The mode-specific fields `handle_ready_fd` needs after the registry lock is
@@ -573,6 +578,7 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
         unregister_fd(poller, fd);
         return;
     };
+    crate::observe::record_reactor_ready_event();
 
     // Bind the in-flight slot ref to an RAII guard so it is released on EVERY
     // exit from here on (the retain was taken under the lock in the snapshot
@@ -1256,6 +1262,9 @@ fn evict_actor_state(actor_key: usize) -> Vec<c_int> {
         for fd in &owned {
             state.registry.remove(fd);
             state.conn_to_fd.retain(|_, mapped| mapped != fd);
+        }
+        if !owned.is_empty() {
+            crate::observe::record_reactor_unregistration(owned.len() as u64);
         }
         // Drop any still-queued attach requests for this actor so they are never
         // promoted into a dangling registration after the actor is freed. Their

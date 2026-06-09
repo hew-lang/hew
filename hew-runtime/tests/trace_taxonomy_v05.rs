@@ -75,6 +75,13 @@ const KNOWN_EVENT_NAMES: &[&str] = &[
     "stream_closed",
     "lambda_spawned",
     "lambda_released",
+    "supervisor_restart",
+    "supervisor_escalate",
+    "supervisor_circuit_open",
+    "supervisor_circuit_half_open",
+    "supervisor_circuit_close",
+    "supervisor_max_restarts",
+    "supervisor_backoff",
 ];
 
 /// Process-global lock — `RECENT_CRASHES`, fault-injection table, the

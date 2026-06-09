@@ -371,10 +371,12 @@ fn worker_loop(inner: &PoolInner) {
         };
         match task {
             Some(t) => {
+                crate::observe::record_blocking_start();
                 // SAFETY: the submitter guarantees `func` and `arg` are valid.
                 unsafe {
                     (t.func)(t.arg);
                 }
+                crate::observe::record_blocking_finish();
             }
             None => return,
         }

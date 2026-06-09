@@ -120,6 +120,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "hashmap_layout_kernel"
 harness = false
 
+[[bench]]
+name = "observe_overhead"
+harness = false
+
 # Property-based testing for the deterministic SimTransport (HEW-DIST-SPEC §14
 # invariants). Dev-only — never linked into release runtime builds. Scoped to
 # non-wasm targets because `proptest` transitively depends on `wait-timeout`,

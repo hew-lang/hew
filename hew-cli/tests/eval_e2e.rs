@@ -88,6 +88,112 @@ fn eval_inline_expression_succeeds() {
 }
 
 #[test]
+fn eval_std_observe_reads_runtime_metric() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("observe_eval.hew");
+    std::fs::write(
+        &path,
+        "import std::observe;\n\nobserve.read(\"heap.live_bytes\") >= 0\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "true\n");
+}
+
+#[test]
+fn eval_std_observe_scrape_and_series_include_actor_attribution() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("observe_attribution_eval.hew");
+    std::fs::write(
+        &path,
+        r"import std::observe;
+
+actor Counter {
+    let count: i64;
+
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+let counter = spawn Counter(count: 0);
+counter.increment(1);
+counter.increment(2);
+let _total = await counter.total();
+println(observe.series());
+observe.scrape()
+",
+    )
+    .unwrap();
+
+    let mut command = Command::new(hew_binary());
+    command
+        .args(["eval", "--timeout", "30", "-f"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .env("HEW_OBSERVE", "hot");
+
+    // `run_bounded_command` contains the compiled-Hew process tree with a
+    // wall-clock timeout; Darwin has no portable per-child data cap here, so
+    // this test uses the timeout-only fallback requested for macOS.
+    let output = support::run_bounded_command(command, format!("hew eval {}", path.display()));
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("actors.attributed_turns_by_handler_total"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("actors_attributed_turns_by_handler_total"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("actors_attributed_turn_duration_ns_by_handler_total"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("Counter::total"), "stdout: {stdout}");
+    assert!(
+        stdout.lines().any(
+            |line| line.starts_with("actors_attributed_turns_by_handler_total{")
+                && !line.ends_with(" 0")
+        ),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.lines().any(|line| line
+            .starts_with("actors_attributed_turn_duration_ns_by_handler_total{")
+            && !line.ends_with(" 0")),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
 fn eval_inline_unit_expression_is_not_auto_printed() {
     require_codegen();
 

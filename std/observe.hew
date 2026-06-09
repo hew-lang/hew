@@ -1,0 +1,30 @@
+//! Runtime observability reads.
+
+/// Read one canonical metric by name.
+///
+/// Returns -1 when the metric name is unknown.
+pub fn read(name: string) -> i64 {
+    unsafe {
+        hew_observe_read_u64(name)
+    }
+}
+
+/// Render the current metric registry in scrape text format.
+pub fn scrape() -> string {
+    unsafe {
+        hew_observe_scrape()
+    }
+}
+
+/// Render the canonical metric series names, one per line.
+pub fn series() -> string {
+    unsafe {
+        hew_observe_series()
+    }
+}
+
+extern "C" {
+    fn hew_observe_read_u64(name: string) -> i64;
+    fn hew_observe_scrape() -> string;
+    fn hew_observe_series() -> string;
+}

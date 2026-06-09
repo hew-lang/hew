@@ -3647,7 +3647,7 @@ The contract frozen in this stage is intentionally small:
 
 - `Stream<bytes>` / `Sink<bytes>` are the canonical first-class streaming foundation.
 - `Stream<string>` / `Sink<string>` are convenience text ABI wrappers over the same bounded channel contract.
-- Core `.next()` / `.write()` operations are blocking and backpressured; this section makes no nonblocking promises.
+- Core `.recv()` / `.write()` operations are blocking and backpressured; this section makes no nonblocking promises.
 - EOF means **end-of-stream only**. Zero-length `bytes` values and empty `string` values are valid data items.
 - `sink.close()` or dropping a sink produces graceful EOF after buffered items drain.
 - `stream.close()` or dropping a stream is local cancel/discard of unread items.
@@ -3684,7 +3684,7 @@ by this contract freeze.
 
 ```hew
 // Pull items
-match bytes_stream.next() {
+match bytes_stream.recv() {
     Some(chunk) => { ... },
     None => { /* EOF only */ },
 }

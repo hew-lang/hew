@@ -1,6 +1,6 @@
 //! Worker-free `await rx.recv()` over a std/channel `Receiver<T>` (NEW-4).
 //!
-//! An actor lifecycle hook `await`s `rx.recv()`: from an execution-context caller the
+//! An actor receive handler `await`s `rx.recv()`: from an execution-context caller the
 //! recv flips to `Terminator::SuspendingChannelRecv` and SUSPENDS the worker
 //! when empty, resuming on a sender deposit / close. Here the value is already
 //! queued (immediate-ready bind), then a second recv on the closed channel
@@ -10,8 +10,7 @@
 import std::channel::channel;
 
 actor Worker {
-    #[on(start)]
-    fn start() {
+    receive fn run() {
         let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
         tx.send("ping");
         tx.close();
@@ -28,6 +27,7 @@ actor Worker {
 }
 
 fn main() {
-    let _w = spawn Worker;
+    let w = spawn Worker;
+    w.run();
     sleep_ms(100);
 }

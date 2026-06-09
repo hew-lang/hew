@@ -261,8 +261,8 @@ pub fn collect_method_sigs_for_named_type(
         name: type_name.to_string(),
         args: type_args.to_vec(),
     };
-    let receiver_type_params = lookup_user_type_def(type_defs, type_name)
-        .map(|type_def| type_def.type_params.clone())
+    let receiver_type_params = lookup_type_def(type_defs, type_name)
+        .map(|type_def| type_def.type_params)
         .unwrap_or_default();
 
     if let Some(sig) = lookup_collection_clone_method_sig(&receiver_ty, "clone") {

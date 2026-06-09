@@ -574,6 +574,7 @@ impl Checker {
 
     /// Emit a `BlockingCallInReceiveFn` warning when a known blocking operation
     /// is called from inside an actor receive function.
+    /// Await-suspending forms must be filtered before calling this helper.
     ///
     /// Actor receive functions run synchronously on scheduler worker threads.
     /// A blocking call (e.g. `recv`, `read`, `accept`) will stall that thread

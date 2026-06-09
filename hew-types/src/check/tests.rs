@@ -16408,6 +16408,81 @@ mod wasm_rejects {
     }
 
     #[test]
+    fn receive_fn_await_channel_recv_does_not_warn_blocking() {
+        let source = concat!(
+            "import std::channel::channel;\n",
+            "actor Worker {\n",
+            "    receive fn run() {\n",
+            "        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n",
+            "        tx.send(\"hello\");\n",
+            "        tx.close();\n",
+            "        let _ = await rx.recv();\n",
+            "        rx.close();\n",
+            "    }\n",
+            "}\n",
+            "fn main() {\n",
+            "    let w = spawn Worker;\n",
+            "    w.run();\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "awaited receive-fn recv fixture should type-check cleanly: {:?}",
+            output.errors
+        );
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn),
+            "await rx.recv() suspends and must not warn as blocking: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn receive_fn_bare_channel_recv_still_warns_blocking() {
+        let source = concat!(
+            "import std::channel::channel;\n",
+            "actor Worker {\n",
+            "    receive fn run() {\n",
+            "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n",
+            "        let _ = rx.recv();\n",
+            "        rx.close();\n",
+            "    }\n",
+            "}\n",
+            "fn main() {\n",
+            "    let w = spawn Worker;\n",
+            "    w.run();\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            output
+                .warnings
+                .iter()
+                .any(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn),
+            "bare rx.recv() in a receive fn must still warn as blocking: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
     fn wasm_rejects_blocking_channel_recv() {
         let source = concat!(
             "import std::channel::channel;\n",

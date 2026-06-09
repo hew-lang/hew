@@ -1210,6 +1210,10 @@ mod tests {
             "expected `tell` in actor-handle completions, got: {labels:?}"
         );
         assert!(
+            labels.contains(&"to_remote_via"),
+            "expected `to_remote_via` in actor-handle completions, got: {labels:?}"
+        );
+        assert!(
             labels.contains(&"increment"),
             "expected `increment` (receive handler) in actor-handle completions, got: {labels:?}"
         );

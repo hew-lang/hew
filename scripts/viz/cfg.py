@@ -2,17 +2,29 @@
 """Generate control flow graphs from Hew MLIR IR output.
 
 Usage:
-    hew build --emit-mlir prog.hew | python scripts/viz/cfg.py --function main
-    hew build --emit-mlir prog.hew | python scripts/viz/cfg.py --list
-    hew build --emit-mlir prog.hew | python scripts/viz/cfg.py --all -f svg -o all-cfg.svg
+    python scripts/viz/cfg.py input.mlir --function main
+    python scripts/viz/cfg.py input.mlir --list
+    python scripts/viz/cfg.py input.mlir --all -f svg -o all-cfg.svg
+
+The v0.5 CLI no longer exposes ``hew build --emit-mlir``. Current inspection
+entry points are ``hew compile --dump-mir raw|checked|elab`` and
+``hew machine diagram/list``; this script remains only for previously captured
+Hew dialect MLIR streams.
 """
 
 from __future__ import annotations
 
+import os
+import sys
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path = [
+    path for path in sys.path if os.path.abspath(path or os.getcwd()) != _SCRIPT_DIR
+]
+
 import argparse
 import re
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
@@ -1035,9 +1047,9 @@ def main() -> None:
         description="Generate control flow graphs from Hew MLIR IR.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  hew build --emit-mlir prog.hew | python scripts/viz/cfg.py --list
-  hew build --emit-mlir prog.hew | python scripts/viz/cfg.py -fn main
-  hew build --emit-mlir prog.hew | python scripts/viz/cfg.py --all -f svg -o all.svg
+  %(prog)s input.mlir --list
+  %(prog)s input.mlir -fn main
+  %(prog)s input.mlir --all -f svg -o all.svg
 """,
     )
     parser.add_argument("input", nargs="?", help="MLIR input file (default: stdin)")

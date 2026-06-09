@@ -3,32 +3,35 @@ use std::collections::{HashMap, HashSet};
 use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, CompoundAssignOp, Expr, FnDecl, Item, LambdaParam,
     Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
-    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
+    ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt,
+    SupervisorDecl, SupervisorStrategy, TimeoutClause, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, VariantKind,
 };
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
     ClosureCaptureFact, ExecutionContextReader, LoweringFact, MethodCallReceiverKind,
-    MethodCallRewrite, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
+    MethodCallRewrite, PatternKind, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef, SiteId};
 use crate::monomorph::{
-    contains_recursive_polymorphic_self, substitute_type_params, MonoKey, MonoRegistry,
-    RecordLayoutRegistry, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
+    contains_recursive_polymorphic_self, substitute_type_params, EnumLayoutRegistry, EnumMonoKey,
+    EnumVariantLayout, MonoKey, MonoRegistry, RecordLayoutRegistry, RecordMonoKey,
+    MONOMORPHISATION_REGISTRY_CAP,
 };
 use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
     HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineEvent, HirMachineState, HirMachineTransition, HirModule, HirRecordDecl,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
-    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding,
+    HirMatchArmPredicate, HirModule, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
-use crate::{IntentKind, ValueClass};
+use crate::{IntentKind, ResourceMarker, ValueClass};
 
 type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
 type ScopeMap = HashMap<String, ScopeBinding>;
@@ -203,10 +206,10 @@ pub fn lower_program_with_mono_cap(
                         // Register pub type declarations from imported modules
                         // into `record_registry` so `Expr::StructInit` and
                         // `Expr::FieldAccess` lowering can resolve their field
-                        // layouts. Without this, `PanicInfo.code` in an
+                        // layouts. Without this, crash-info field access in an
                         // `#[on(crash)]` body fails with `NotYetImplemented`
-                        // because the layout is missing from `record_field_orders`
-                        // at MIR time.
+                        // because the layout is missing from
+                        // `record_field_orders` at MIR time.
                         //
                         // All pub TypeDecls from non-root modules are registered,
                         // not just monomorphic ones; the generic case is filtered
@@ -296,6 +299,101 @@ pub fn lower_program_with_mono_cap(
             _ => {}
         }
     }
+    // Pre-pass: register module-scope tagged-union constructors so
+    // `lower_identifier` can lower variant references to `MachineVariantCtor`
+    // regardless of declaration order relative to the function that uses them.
+    //
+    // Three surface forms share one tagged-union substrate:
+    //   1. Machine states: `TrafficLight::Red`, bare `Red`.
+    //   2. Machine event companions: `TrafficLightEvent::Tick`, bare `Tick`.
+    //   3. User-defined enum unit variants: `Colour::Red`, bare `Red`.
+    //
+    // Bare names are registered only when unambiguous across ALL three forms
+    // (machines + events + user enums). The qualified form (always prefixed
+    // with the tagged-union typename) is always registered. See the doc on
+    // `LowerCtx::machine_ctor_registry` for the consumer contract.
+    {
+        // First scan: count bare-name occurrences across machines' states,
+        // machine events, and user enum unit variants. A bare name with
+        // count > 1 is ambiguous and only the qualified form is registered.
+        let mut bare_counts: HashMap<String, usize> = HashMap::new();
+        for (item, _) in &program.items {
+            match item {
+                Item::Machine(md) => {
+                    for state in &md.states {
+                        *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                    }
+                    for event in &md.events {
+                        *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                    }
+                }
+                Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
+                    // Count every variant — unit, tuple, struct — so the
+                    // ambiguity guard fires across all surface forms (e.g. a
+                    // bare `Line` is ambiguous with a `Line(i64)` variant on
+                    // another enum just as it is with a unit variant).
+                    for body_item in &td.body {
+                        if let TypeBodyItem::Variant(v) = body_item {
+                            *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (item, _) in &program.items {
+            match item {
+                Item::Machine(md) => {
+                    let event_type_name = format!("{}Event", md.name);
+                    for (idx, state) in md.states.iter().enumerate() {
+                        let qualified = format!("{}::{}", md.name, state.name);
+                        ctx.machine_ctor_registry
+                            .insert(qualified, (md.name.clone(), idx));
+                        if bare_counts.get(&state.name).copied().unwrap_or(0) == 1 {
+                            ctx.machine_ctor_registry
+                                .insert(state.name.clone(), (md.name.clone(), idx));
+                        }
+                    }
+                    for (idx, event) in md.events.iter().enumerate() {
+                        let qualified = format!("{}::{}", event_type_name, event.name);
+                        ctx.machine_ctor_registry
+                            .insert(qualified, (event_type_name.clone(), idx));
+                        if bare_counts.get(&event.name).copied().unwrap_or(0) == 1 {
+                            ctx.machine_ctor_registry
+                                .insert(event.name.clone(), (event_type_name.clone(), idx));
+                        }
+                    }
+                }
+                Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
+                    // Register every variant — unit, tuple, struct — under
+                    // the qualified `Type::Variant` key. The variant index is
+                    // the ordinal in declaration order across all shapes; it
+                    // matches the order `EnumLayout.variants` uses in
+                    // MIR/codegen (see lane-plan D2 — variant-index ordering
+                    // is HIR-pre-pass authoritative). Tuple variants are
+                    // resolved by `Expr::Call` lowering; struct variants by
+                    // `Expr::StructInit` lowering; unit variants by
+                    // identifier-resolution. All three paths consult this
+                    // registry and dispatch on the variant's `HirVariantKind`.
+                    let mut variant_idx: usize = 0;
+                    for body_item in &td.body {
+                        if let TypeBodyItem::Variant(v) = body_item {
+                            let qualified = format!("{}::{}", td.name, v.name);
+                            ctx.machine_ctor_registry
+                                .insert(qualified, (td.name.clone(), variant_idx));
+                            if bare_counts.get(&v.name).copied().unwrap_or(0) == 1 {
+                                ctx.machine_ctor_registry
+                                    .insert(v.name.clone(), (td.name.clone(), variant_idx));
+                            }
+                            variant_idx += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     // Discard pre-pass diagnostics from `lower_type`; the third pass re-emits
     // any real ones when it produces the canonical HirTypeDecl/HirRecordDecl.
     ctx.diagnostics.clear();
@@ -311,17 +409,43 @@ pub fn lower_program_with_mono_cap(
     for (item, span) in &program.items {
         if let Item::TypeDecl(decl) = item {
             let hir_decl = ctx.lower_type_decl(decl, span.clone());
-            let close_method = if hir_decl.marker == ResourceMarker::Resource {
-                hir_decl
-                    .consuming_methods
-                    .iter()
-                    .find(|m| m.as_str() == "close")
-                    .cloned()
+            let builtin_registration =
+                crate::builtin_type_classes::builtin_type_registration(&hir_decl.name);
+            let marker = builtin_or_hir_marker(&hir_decl.name, hir_decl.marker);
+            let close_method = if marker == ResourceMarker::Resource {
+                builtin_registration
+                    .and_then(|registration| registration.close_method.map(str::to_string))
+                    .or_else(|| {
+                        hir_decl
+                            .consuming_methods
+                            .iter()
+                            .find(|m| m.as_str() == "close")
+                            .cloned()
+                    })
             } else {
                 None
             };
-            ctx.type_classes
-                .insert(hir_decl.name.clone(), (hir_decl.marker, close_method));
+            ctx.type_classes.insert(
+                hir_decl.name.clone(),
+                (
+                    marker.to_ast_marker().unwrap_or(AstResourceMarker::None),
+                    close_method,
+                ),
+            );
+            // Snapshot the enum's variant descriptors so call/struct-init
+            // lowering can resolve payload ctors to `MachineVariantCtor`
+            // without re-walking the parser AST.
+            if !hir_decl.variants.is_empty() {
+                ctx.enum_variants_by_name
+                    .insert(hir_decl.name.clone(), hir_decl.variants.clone());
+            }
+            // Snapshot type-params and ItemId for the enum-layout discovery
+            // pass (slice 2). Needed to substitute variant payload types and
+            // to build EnumMonoKey.origin. Stored even for non-generic enums
+            // (empty type_params) so discovery can safely skip them.
+            ctx.enum_type_params
+                .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
+            ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
             type_decl_cache.insert(decl as *const _, hir_decl);
         }
     }
@@ -423,12 +547,12 @@ pub fn lower_program_with_mono_cap(
     // imported user module contributes exactly one `HirFn` per pub fn,
     // keyed by the same mangled name registered in the pre-pass above.
     //
-    // Pub TypeDecls are emitted here for the same reason: `PanicInfo` (and any
-    // other pub type from an imported module) must appear as `HirItem::TypeDecl`
-    // so that `hew-mir`'s layout pass (which walks `module.items`) can populate
-    // `record_field_orders` and emit a `RecordLayout`.  Without this, field
-    // accesses like `info.code` in `#[on(crash)]` bodies fail at MIR time
-    // because `PanicInfo` is absent from `record_field_orders`.
+    // Pub TypeDecls are emitted here for the same reason: imported stdlib
+    // record types must appear as `HirItem::TypeDecl` so that `hew-mir`'s layout
+    // pass (which walks `module.items`) can populate `record_field_orders` and
+    // emit a `RecordLayout`. Without this, field accesses like `info.code` in
+    // `#[on(crash)]` bodies fail at MIR time because the payload record layout
+    // is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
@@ -460,6 +584,7 @@ pub fn lower_program_with_mono_cap(
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
     let record_layouts = ctx.record_layout_registry.into_vec();
+    let enum_layouts = ctx.enum_layout_registry.into_vec();
     let supervisor_child_slots = ctx.supervisor_child_slots;
 
     // Closure under substitution: walk every monomorphisation's origin
@@ -482,7 +607,9 @@ pub fn lower_program_with_mono_cap(
             monomorphisations,
             call_site_type_args,
             record_layouts,
+            enum_layouts,
             supervisor_child_slots,
+            regex_literals: ctx.regex_literals,
         },
         diagnostics: ctx.diagnostics,
     }
@@ -688,6 +815,23 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
         HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
             collect_call_sites_in_expr(body, out);
         }
+        HirExprKind::While { condition, body } => {
+            collect_call_sites_in_expr(condition, out);
+            collect_call_sites_in_block(body, out);
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            collect_call_sites_in_expr(start, out);
+            collect_call_sites_in_expr(end, out);
+            collect_call_sites_in_block(body, out);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_call_sites_in_expr(scrutinee, out);
+            for arm in arms {
+                collect_call_sites_in_expr(&arm.body, out);
+            }
+        }
         _ => {}
     }
 }
@@ -737,6 +881,15 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
         ResolvedTy::Task(inner) => ResolvedTy::Task(Box::new(substitute_ty(inner, subst))),
         _ => ty.clone(),
     }
+}
+
+fn builtin_or_hir_marker(name: &str, fallback: ResourceMarker) -> ResourceMarker {
+    crate::builtin_type_classes::builtin_type_registration(name)
+        .map_or(fallback, |registration| registration.marker)
+}
+
+fn builtin_or_decl_marker(name: &str, fallback: AstResourceMarker) -> ResourceMarker {
+    builtin_or_hir_marker(name, ResourceMarker::from(fallback))
 }
 
 fn contains_abstract_symbol(
@@ -804,6 +957,10 @@ struct LowerCtx {
     /// HIR consumes these to choose `ActorSend` / `ActorAsk` without reclassifying
     /// receiver types.
     actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    /// Checker-owned machine method dispatch decisions keyed by method-call span.
+    /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
+    /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.
+    machine_method_dispatch: HashMap<SpanKey, hew_types::MachineMethodKind>,
     /// Checker-owned method-call receiver classifications. Used only to fail
     /// closed when the checker classified a receiver as actor-dispatchable but
     /// omitted the corresponding `actor_method_dispatch` discriminator.
@@ -969,6 +1126,22 @@ struct LowerCtx {
     /// Tracks whether the `RecordLayoutCapExceeded` diagnostic has
     /// already been emitted for this lowering invocation.
     record_layout_cap_diag_emitted: bool,
+    /// Per-enum type-parameter names, keyed by enum type name. Populated
+    /// during the type-decl second pass alongside `enum_variants_by_name`.
+    /// Consumed by the enum-layout discovery pass to know which names in a
+    /// variant's field types are type-parameter symbols vs. concrete named
+    /// types, so `substitute_type_params` can substitute correctly.
+    enum_type_params: HashMap<String, Vec<String>>,
+    /// Per-enum `ItemId`, keyed by enum type name. Populated alongside
+    /// `enum_type_params` so the `EnumMonoKey.origin` field can be set to
+    /// the HIR-allocated `ItemId` of the originating enum declaration rather
+    /// than a synthetic value.
+    enum_item_ids: HashMap<String, ItemId>,
+    /// Distinct user-enum instantiations observed at enum-ctor sites and
+    /// match scrutinees, accumulated during HIR lowering. Drained into
+    /// `HirModule.enum_layouts` at the end of `lower_program`. Cap is
+    /// shared with the fn and record registries.
+    enum_layout_registry: EnumLayoutRegistry,
     /// Checker-authoritative mapping from qualified function name to the
     /// intrinsic catalog key declared via `#[intrinsic("key")]`. Functions
     /// present here must be validated against `stdlib_catalog` and must have
@@ -987,6 +1160,17 @@ struct LowerCtx {
     /// span. Drained into `HirModule.supervisor_child_slots` at the end of
     /// `lower_program` (mirrors the `call_site_type_args` pattern).
     supervisor_child_slots: HashMap<SiteId, ChildSlot>,
+    /// Module-level regex literal table. Accumulates distinct compiled
+    /// patterns observed in match arms (and standalone `re"..."` expressions).
+    /// Deduplicated by raw pattern string equality (no flags in v0.5).
+    /// Each entry's `literal_id` matches its 0-based index in this `Vec`.
+    ///
+    /// Drained into `HirModule.regex_literals` at the end of `lower_program`.
+    regex_literals: Vec<HirRegexLiteral>,
+    /// Deduplication index for `regex_literals`: maps pattern string to its
+    /// allocated `literal_id`. Lookups via `alloc_regex_literal` avoid
+    /// scanning the `Vec` linearly.
+    regex_literal_index: HashMap<String, u32>,
     /// Event names of the machine currently being lowered, set only while
     /// lowering a machine body (transition bodies, entry/exit blocks). The
     /// index position corresponds to `HirMachineDecl::events` ordering so
@@ -995,6 +1179,66 @@ struct LowerCtx {
     /// `None` outside of any machine body; `Some(names)` inside. Restored
     /// via `mem::replace` at the end of each machine-body lowering.
     current_machine_events: Option<Vec<String>>,
+    /// Name of the machine currently being lowered, set at the same boundaries
+    /// as `current_machine_events`. Used by `MachineVariantCtor` and
+    /// `MachineFieldAccess` resolution to carry the machine type name.
+    current_machine_name: Option<String>,
+    /// Ordered state descriptors for the machine currently being lowered.
+    /// Each entry is `(state_name, fields)` in declaration order, matching
+    /// `HirMachineDecl.states` indices. Used by bare state-name resolution
+    /// (`MachineVariantCtor`) and `self.field` resolution (`MachineFieldAccess`).
+    ///
+    /// `None` outside a machine body. Set alongside `current_machine_events`.
+    current_machine_states: Option<Vec<(String, Vec<HirField>)>>,
+    /// Source-state index for the transition currently being lowered.
+    /// `Some(idx)` inside a transition body; `None` inside entry/exit blocks
+    /// (where `self.field` reads are not valid surface syntax today).
+    ///
+    /// Used by `MachineFieldAccess` to identify which variant's payload fields
+    /// are in scope. Set per-transition inside `lower_machine`; restored after
+    /// each `lower_machine_expr_filtered` call.
+    current_machine_source_state: Option<usize>,
+    /// Module-scope registry of tagged-union unit constructors, keyed by the
+    /// surface identifier the user writes at the construction site. Covers
+    /// three surface forms that share one tagged-union substrate:
+    ///   1. Machine states (`TrafficLight::Red`, bare `Red`).
+    ///   2. Machine event companions (`TrafficLightEvent::Tick`, bare `Tick`).
+    ///   3. User-defined enum unit variants (`Colour::Red`, bare `Red`).
+    ///
+    /// Built by a pre-pass over `program.items` before any function body is
+    /// lowered so declaration order does not constrain resolution.
+    ///
+    /// Two key shapes are stored for every unit constructor:
+    ///   - **Qualified**: `"<TaggedUnionType>::<Variant>"` (always registered).
+    ///   - **Bare**: `"<Variant>"`, registered only when the variant name is
+    ///     **unambiguous** across all three surface forms in the module.
+    ///     Ambiguous bare names are omitted so the lexical/`fn_registry`
+    ///     fall-through preserves user-binding precedence.
+    ///
+    /// Each value is `(tagged_union_typename, variant_idx)`. `variant_idx` is
+    /// the declaration-order index among all variants of that type (including
+    /// payload-bearing ones, which are not registered here but occupy slots).
+    ///
+    /// Consumed by `lower_identifier` to produce `HirExprKind::MachineVariantCtor`
+    /// instead of an unresolved `BindingRef` when the user names a unit
+    /// constructor at module scope (`var light = Red;`, `light.step(Tick);`,
+    /// `let next = TrafficLight::Green;`, `let c = Colour::Red;`).
+    machine_ctor_registry: HashMap<String, (String, usize)>,
+    /// Per-enum variant descriptors keyed by the enum's type name. Populated
+    /// between the type-decl second pass and the source-order third pass so
+    /// `Expr::Call` (tuple variant ctors like `Shape::Line(5)`) and
+    /// `Expr::StructInit` (struct variant ctors like `Shape::Box { w, h }`)
+    /// lowering can dispatch on the variant's `HirVariantKind` without
+    /// re-walking the parser AST. The vec is in declaration order, so
+    /// `machine_ctor_registry`'s `(type_name, variant_idx)` indexes directly
+    /// into it.
+    enum_variants_by_name: HashMap<String, Vec<HirVariant>>,
+    /// Checker-resolved per-arm pattern classifications. Cloned from
+    /// `tc_output.pattern_resolutions` at construction. Keyed by the
+    /// `SpanKey` of each match arm's pattern span. Consumed by
+    /// `Expr::Match` lowering to map arms to their resolved enum variant
+    /// (or wildcard) without re-resolving names against the type registry.
+    pattern_resolutions: HashMap<SpanKey, hew_types::ArmResolution>,
 }
 
 impl LowerCtx {
@@ -1012,6 +1256,7 @@ impl LowerCtx {
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
+            machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -1034,11 +1279,42 @@ impl LowerCtx {
             record_init_type_args: tc_output.record_init_type_args.clone(),
             record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
             record_layout_cap_diag_emitted: false,
+            enum_type_params: HashMap::new(),
+            enum_item_ids: HashMap::new(),
+            enum_layout_registry: EnumLayoutRegistry::with_cap(mono_cap),
             intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
             supervisor_child_slots_checker: tc_output.supervisor_child_slots.clone(),
             supervisor_child_slots: HashMap::new(),
+            regex_literals: Vec::new(),
+            regex_literal_index: HashMap::new(),
             current_machine_events: None,
+            current_machine_name: None,
+            current_machine_states: None,
+            current_machine_source_state: None,
+            machine_ctor_registry: HashMap::new(),
+            enum_variants_by_name: HashMap::new(),
+            pattern_resolutions: tc_output.pattern_resolutions.clone(),
         }
+    }
+
+    /// Allocate (or look up an existing) regex literal in the module table.
+    ///
+    /// Deduplicates by raw pattern string equality. Returns the stable
+    /// `literal_id` (0-based index into `HirModule::regex_literals`) for
+    /// use in `HirMatchArmPredicate::Regex` and `HirExprKind::RegexLiteralRef`.
+    fn alloc_regex_literal(&mut self, pattern: &str, captures: &[(String, u32)]) -> u32 {
+        if let Some(&id) = self.regex_literal_index.get(pattern) {
+            return id;
+        }
+        let id = u32::try_from(self.regex_literals.len())
+            .expect("regex literal count exceeds u32::MAX — impossible in practice");
+        self.regex_literal_index.insert(pattern.to_string(), id);
+        self.regex_literals.push(HirRegexLiteral {
+            literal_id: id,
+            pattern: pattern.to_string(),
+            captures: captures.to_vec(),
+        });
+        id
     }
 
     /// Try to record a generic-fn callsite in the monomorphisation
@@ -1631,7 +1907,7 @@ impl LowerCtx {
         // keyed by name, not by instantiation. This rule belongs at the
         // checker boundary (LESSONS `checker-output-boundary`); HIR is the
         // first place the marker is durable, so the check lands here.
-        if decl.resource_marker != ResourceMarker::None && decl.type_params.is_some() {
+        if decl.resource_marker != AstResourceMarker::None && decl.type_params.is_some() {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ResourceGenericUnsupported {
                     name: decl.name.clone(),
@@ -1642,7 +1918,7 @@ impl LowerCtx {
         }
 
         match decl.resource_marker {
-            ResourceMarker::Resource => {
+            AstResourceMarker::Resource => {
                 // `#[resource]` must declare `close(consuming self)`.
                 let has_close = decl
                     .consuming_methods
@@ -1659,7 +1935,7 @@ impl LowerCtx {
                     ));
                 }
             }
-            ResourceMarker::Linear => {
+            AstResourceMarker::Linear => {
                 // `#[linear]` must declare at least one consuming method.
                 if decl.consuming_methods.is_empty() {
                     self.diagnostics.push(HirDiagnostic::new(
@@ -1672,7 +1948,7 @@ impl LowerCtx {
                     ));
                 }
             }
-            ResourceMarker::None => {}
+            AstResourceMarker::None => {}
         }
 
         // Carry the field set so dump-hir and future analysis have something
@@ -1697,8 +1973,38 @@ impl LowerCtx {
             // method-call expression form has no HIR/MIR lowering yet, so
             // method bodies cannot be exercised. Their *declared names* are
             // captured upstream as `TypeDecl.consuming_methods` and travel
-            // on `HirTypeDecl.consuming_methods`. `TypeBodyItem::Variant`
-            // belongs to enum bodies and is similarly out of slice scope.
+            // on `HirTypeDecl.consuming_methods`.
+        }
+
+        // For enum-kind type decls, lower every variant (unit, tuple, struct)
+        // into `HirVariant` carrying fully resolved payload types. MIR
+        // consumes the resulting `variants` vec to populate `EnumLayout`
+        // including per-variant `field_tys`. The index assigned here matches
+        // the order the ctor pre-pass walks `TypeBodyItem::Variant` entries,
+        // so the HIR registry key and MIR layout index agree (see lane plan
+        // D2 — variant-index ordering is HIR-pre-pass authoritative).
+        let mut variants: Vec<HirVariant> = Vec::new();
+        if decl.kind == TypeDeclKind::Enum {
+            for body_item in &decl.body {
+                if let TypeBodyItem::Variant(v) = body_item {
+                    let kind = match &v.kind {
+                        VariantKind::Unit => HirVariantKind::Unit,
+                        VariantKind::Tuple(tys) => HirVariantKind::Tuple(
+                            tys.iter().map(|ty| self.lower_type(ty)).collect(),
+                        ),
+                        VariantKind::Struct(fields) => HirVariantKind::Struct(
+                            fields
+                                .iter()
+                                .map(|(name, ty)| (name.clone(), self.lower_type(ty)))
+                                .collect(),
+                        ),
+                    };
+                    variants.push(HirVariant {
+                        name: v.name.clone(),
+                        kind,
+                    });
+                }
+            }
         }
 
         // Reuse the stable ItemId pre-allocated during the record/
@@ -1716,10 +2022,11 @@ impl LowerCtx {
             id,
             node: self.ids.node(),
             name: decl.name.clone(),
-            marker: decl.resource_marker,
+            marker: builtin_or_decl_marker(&decl.name, decl.resource_marker),
             consuming_methods: decl.consuming_methods.clone(),
             type_params,
             fields,
+            variants,
             span,
         }
     }
@@ -1850,18 +2157,49 @@ impl LowerCtx {
         // resolve its event_idx by position lookup during body lowering.
         let event_names: Vec<String> = decl.events.iter().map(|ev| ev.name.clone()).collect();
 
+        // Pre-lower state field types and build the `current_machine_states`
+        // descriptor table. This is used during transition-body and entry/exit-block
+        // lowering to resolve bare state-name identifiers (`MachineVariantCtor`)
+        // and `self.field` accesses (`MachineFieldAccess`) without re-reading the
+        // AST during expression lowering.
+        //
+        // WHY HIR-side authority: the type checker does not produce side-table
+        // entries for machine state-name identifier references or self-field
+        // accesses inside transition bodies. HIR derives these types from the
+        // machine declaration itself, which is local to this pass.
+        let machine_state_descriptors: Vec<(String, Vec<HirField>)> = decl
+            .states
+            .iter()
+            .map(|s| {
+                let fields: Vec<HirField> = s
+                    .fields
+                    .iter()
+                    .map(|(name, ty)| HirField {
+                        name: name.clone(),
+                        ty: self.lower_type(ty),
+                        span: ty.1.clone(),
+                    })
+                    .collect();
+                (s.name.clone(), fields)
+            })
+            .collect();
+
+        // Install machine context so nested `lower_expr` calls can resolve
+        // state-name references and self-field accesses. Restored at the end
+        // of `lower_machine` via `mem::replace`.
+        let prev_machine_name = self.current_machine_name.replace(decl.name.clone());
+        let prev_machine_states = self
+            .current_machine_states
+            .replace(machine_state_descriptors.clone());
+
         // Lower states.
         let mut hir_states = Vec::new();
         for state in &decl.states {
-            let fields: Vec<HirField> = state
-                .fields
+            let fields: Vec<HirField> = machine_state_descriptors
                 .iter()
-                .map(|(name, ty)| HirField {
-                    name: name.clone(),
-                    ty: self.lower_type(ty),
-                    span: ty.1.clone(),
-                })
-                .collect();
+                .find(|(name, _)| name == &state.name)
+                .map(|(_, fields)| fields.clone())
+                .unwrap_or_default();
 
             // Shallow-scan the entry and exit blocks for field-assignment targets.
             // Body-level effect-parity checking still uses the AST summary
@@ -1933,8 +2271,18 @@ impl LowerCtx {
         for tr in &decl.transitions {
             let is_self_transition = tr.source_state == tr.target_state && tr.source_state != "_";
             let body_writes = collect_assigned_field_names_expr(&tr.body.0);
+            // Set the source-state index so `lower_expr` can resolve `self.field`
+            // accesses to `MachineFieldAccess` nodes. Wildcard source `_` has no
+            // concrete state index, so leave it as `None` — `self.field` access
+            // inside a wildcard transition body cannot resolve to a specific
+            // variant's fields and will be rejected by the `MachineFieldAccess`
+            // producer with a diagnostic.
+            let src_state_idx = decl.states.iter().position(|s| s.name == tr.source_state);
+            let prev_source_state = self.current_machine_source_state;
+            self.current_machine_source_state = src_state_idx;
             let body =
                 self.lower_machine_expr_filtered(&tr.body, &state_names, event_names.clone());
+            self.current_machine_source_state = prev_source_state;
             // body_emits is now derived from the lowered HIR body rather than
             // the AST summary walk so that emit expressions nested inside
             // conditionals or match arms are correctly detected.
@@ -1984,6 +2332,10 @@ impl LowerCtx {
                         decl.name
                     ),
                 ));
+                // Restore machine context before early return so the next
+                // top-level item lowers in a clean context.
+                self.current_machine_name = prev_machine_name;
+                self.current_machine_states = prev_machine_states;
                 return None;
             }
         }
@@ -2126,8 +2478,15 @@ impl LowerCtx {
             )
         });
         if has_machine_errors {
+            // Restore machine context before early return.
+            self.current_machine_name = prev_machine_name;
+            self.current_machine_states = prev_machine_states;
             return None;
         }
+
+        // Restore machine context before returning.
+        self.current_machine_name = prev_machine_name;
+        self.current_machine_states = prev_machine_states;
 
         Some(HirMachineDecl {
             id: self.ids.item(),
@@ -2720,7 +3079,10 @@ impl LowerCtx {
                 } else {
                     let target = self.lower_expr(target, IntentKind::Modify);
                     let value = self.lower_expr(value, IntentKind::Consume);
-                    HirStmtKind::Assign { target, value }
+                    HirStmtKind::Assign {
+                        target,
+                        value: Box::new(value),
+                    }
                 }
             }
             Stmt::Expression(expr) => {
@@ -2850,6 +3212,130 @@ impl LowerCtx {
                 };
                 HirStmtKind::Expr(if_expr)
             }
+            Stmt::While {
+                label: _,
+                condition,
+                body,
+            } => {
+                // `while cond { body }` — lowered to a HIR `While` expression
+                // so that MIR can build the header/body/exit CFG shape.
+                // Labels and `break`/`continue` are out of scope for this slice;
+                // the label is dropped here because MIR does not yet wire
+                // break/continue targets.
+                let cond_hir = self.lower_expr(condition, IntentKind::Read);
+                let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                let while_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: ResolvedTy::Unit,
+                    value_class: ValueClass::BitCopy,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::While {
+                        condition: Box::new(cond_hir),
+                        body: body_block,
+                    },
+                    span: span.clone(),
+                };
+                HirStmtKind::Expr(while_expr)
+            }
+            Stmt::For {
+                label: _,
+                pattern,
+                iterable,
+                body,
+                is_await: _,
+            } => {
+                // Lower `for pat in iterable { body }`.
+                // Only `Range`-typed iterables are supported in this slice:
+                // `Expr::Range { start, end, inclusive }` where the iterable
+                // expression is syntactically a range literal.  For all other
+                // iterable shapes (Vec, Stream, HashMap, trait-Iterator, etc.)
+                // a `NotYetImplemented` diagnostic is emitted and the statement
+                // is replaced with an `Unsupported` placeholder so the pipeline
+                // fails closed without fabricating a value.
+                //
+                // Only simple identifier patterns (`for i in …`) are supported;
+                // tuple or struct patterns over a range are rejected the same
+                // way.
+                let kind = match (&iterable.0, &pattern.0) {
+                    (
+                        Expr::Binary {
+                            op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
+                            left: range_start,
+                            right: range_end,
+                        },
+                        Pattern::Identifier(var_name),
+                    ) => {
+                        // `for i in a..b` / `for i in a..=b` — the parser
+                        // represents range literals as `Expr::Binary` with
+                        // `BinaryOp::Range` or `BinaryOp::RangeInclusive`,
+                        // NOT as `Expr::Range` (which is the slice-index form
+                        // `xs[a..b]` inside bracket expressions only).
+                        let inclusive = *op == BinaryOp::RangeInclusive;
+
+                        // Range element type is always `i64` for integer ranges.
+                        let elem_ty = ResolvedTy::I64;
+
+                        // Lower start and end expressions.
+                        let start_hir = self.lower_expr(range_start, IntentKind::Read);
+                        let end_hir = self.lower_expr(range_end, IntentKind::Read);
+
+                        // Bind the loop variable inside a fresh scope so it is
+                        // scoped to the body but visible during body lowering.
+                        self.push_scope();
+                        let binding =
+                            self.bind(var_name.clone(), elem_ty, false, pattern.1.clone());
+                        let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                        self.pop_scope();
+
+                        HirExprKind::ForRange {
+                            binding,
+                            start: Box::new(start_hir),
+                            end: Box::new(end_hir),
+                            inclusive,
+                            body: body_block,
+                        }
+                    }
+                    (_, Pattern::Identifier(_)) => {
+                        // Non-Range iterable with a valid pattern: emit a typed
+                        // diagnostic and produce an Unsupported placeholder so
+                        // the pipeline fails closed (no fabricated value).
+                        self.unsupported(
+                            iterable.1.clone(),
+                            "for-in over non-Range iterable; only integer Range (a..b) is supported in this version",
+                            "for-while-lowering",
+                        );
+                        // Lower the body for checker-stream coverage.
+                        self.push_scope();
+                        let _ = self.lower_block(body, &ResolvedTy::Unit);
+                        self.pop_scope();
+                        HirExprKind::Unsupported("for-in over unsupported iterable type".into())
+                    }
+                    _ => {
+                        // Non-identifier pattern: not supported in this slice.
+                        self.unsupported(
+                            pattern.1.clone(),
+                            "for-in with non-identifier binding pattern",
+                            "for-while-lowering",
+                        );
+                        self.push_scope();
+                        let _ = self.lower_block(body, &ResolvedTy::Unit);
+                        self.pop_scope();
+                        HirExprKind::Unsupported("for-in with non-identifier pattern".into())
+                    }
+                };
+
+                let for_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: ResolvedTy::Unit,
+                    value_class: ValueClass::BitCopy,
+                    intent: IntentKind::Read,
+                    kind,
+                    span: span.clone(),
+                };
+                HirStmtKind::Expr(for_expr)
+            }
             _ => {
                 self.unsupported(span.clone(), "statement", "slice-2");
                 HirStmtKind::Expr(self.unsupported_expr(span.clone(), "unsupported statement"))
@@ -2888,7 +3374,7 @@ impl LowerCtx {
         };
         HirStmtKind::Assign {
             target: target_write,
-            value,
+            value: Box::new(value),
         }
     }
 
@@ -2927,7 +3413,66 @@ impl LowerCtx {
         let site = self.ids.site();
         let (kind, ty) = match &expr.0 {
             Expr::Literal(lit) => Self::lower_literal(lit),
-            Expr::Identifier(name) => self.lower_identifier(name, span.clone()),
+            Expr::RegexLiteral(pattern) => {
+                // A standalone `re"..."` expression. Allocate (or reuse) the
+                // module-level literal-table entry. The checker-assigned type is
+                // `regex.Pattern`; read it from `expr_types` if present (it is
+                // set by `synthesize_inner` for `Expr::RegexLiteral`), otherwise
+                // fall back to the canonical `Named` form. Using the checker's
+                // resolved type rather than hard-coding keeps capture / generic
+                // resolution consistent with the rest of the pipeline.
+                let checker_key = SpanKey::from(&span);
+                let resolved_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                    ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::Named {
+                        name: "regex.Pattern".to_string(),
+                        args: Vec::new(),
+                    })
+                } else {
+                    ResolvedTy::Named {
+                        name: "regex.Pattern".to_string(),
+                        args: Vec::new(),
+                    }
+                };
+                // No named captures from a standalone literal — captures are
+                // resolved per-arm in the match-arm context. Pass an empty
+                // capture list; the table deduplicates by pattern only.
+                let literal_id = self.alloc_regex_literal(pattern, &[]);
+                (
+                    HirExprKind::RegexLiteralRef {
+                        literal_id,
+                        pattern: pattern.clone(),
+                        captures: Vec::new(),
+                    },
+                    resolved_ty,
+                )
+            }
+            Expr::Identifier(name) => {
+                // Inside a machine body, check if the identifier names one of the
+                // enclosing machine's states (unit state ctor, e.g. `Green`).
+                // If so, produce `MachineVariantCtor` rather than going through
+                // `lower_identifier` (which would emit `UnresolvedSymbol` because
+                // state names are not in the HIR scope).
+                //
+                // HIR-side authority: the type checker does not record a side-table
+                // entry for this expression; the result type is derived from the
+                // machine declaration context held in `current_machine_states`.
+                if let Some((machine_name, state_idx)) = self.resolve_machine_state_name(name) {
+                    let machine_ty = ResolvedTy::Named {
+                        name: machine_name.clone(),
+                        args: Vec::new(),
+                    };
+                    (
+                        HirExprKind::MachineVariantCtor {
+                            machine_name,
+                            state_idx,
+                            payload: None,
+                        },
+                        machine_ty,
+                    )
+                } else {
+                    self.lower_identifier(name, span.clone())
+                }
+            }
             Expr::Binary { left, op, right } => {
                 let left = self.lower_expr(left, IntentKind::Read);
                 let right = self.lower_expr(right, IntentKind::Read);
@@ -2942,12 +3487,32 @@ impl LowerCtx {
                 )
             }
             Expr::Call { function, args, .. } => {
-                let args = args
+                let mut args = args
                     .iter()
                     .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
                     .collect::<Vec<_>>();
                 if let Expr::Identifier(name) = &function.0 {
-                    if stdlib_catalog::is_overloaded_builtin(name) {
+                    // Intercept payload-bearing variant constructors written
+                    // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
+                    // identifier path produces `MachineVariantCtor { payload:
+                    // None }`; the call form must capture the args into
+                    // `payload: Some(...)`. Mismatched ctor shape (calling a
+                    // unit variant with args, or calling a struct variant
+                    // positionally) emits a structured diagnostic and falls
+                    // through to the regular-call path so checker-stream
+                    // coverage is preserved.
+                    let variant_kind_for_call = self
+                        .lookup_variant_ctor(name)
+                        .map(|(_, _, kind)| kind.clone());
+                    if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
+                        let taken = std::mem::take(&mut args);
+                        self.lower_variant_ctor_tuple_call(name, taken, &span)
+                    } else if let Some(kind) = &variant_kind_for_call {
+                        self.report_variant_ctor_call_shape_mismatch(name, kind, &span);
+                        // Fall through to regular-call to keep checker-stream
+                        // coverage for the malformed source.
+                        self.lower_regular_call(function, args, &span, site)
+                    } else if stdlib_catalog::is_overloaded_builtin(name) {
                         let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
                         if let Some(entry) = stdlib_catalog::resolve_overload(name, &arg_tys) {
                             let result_ty = entry.return_ty.to_resolved();
@@ -3067,37 +3632,234 @@ impl LowerCtx {
                 type_args: _,
                 base,
             } => {
-                // Record the per-instantiation `RecordLayout` for
-                // generic user records and capture the concrete type-args
-                // for propagation onto this expression's resolved type.
-                // `None` indicates a monomorphic record or builtin; for
-                // those, the resulting `Named` carries `args: []` as before.
-                let resolved_type_args = self.record_record_layout(name, &span).unwrap_or_default();
-                let hir_fields = fields
-                    .iter()
-                    .map(|(fname, expr)| (fname.clone(), self.lower_expr(expr, IntentKind::Read)))
-                    .collect();
-                // Lower the functional-update base if present. The checker has
-                // already validated type-compatibility and field coverage; HIR
-                // carries it verbatim so MIR lowering (A-7) can read the
-                // un-overridden fields from the base value.
-                let hir_base = base.as_deref().map(|(base_expr, base_span)| {
-                    Box::new(
-                        self.lower_expr(&(base_expr.clone(), base_span.clone()), IntentKind::Read),
+                // Inside a machine body, check if the struct-init name is a state
+                // with payload fields (e.g. `SynReceived { remote_port: remote_port }`).
+                // Resolve to `MachineVariantCtor` before the record-layout path.
+                //
+                // HIR-side authority: same deviation as `MachineVariantCtor` for bare
+                // identifiers — the checker has no side-table for state-ctor sites.
+                // Payload fields are validated structurally (field names matched against
+                // the state's declared fields). The `base` functional-update form is not
+                // supported for machine state ctors and is rejected below if present.
+                // Enum struct-variant ctor (`Shape::Box { w: 3, h: 4 }`).
+                // Looks like a struct literal but resolves to a registered
+                // enum variant in `enum_variants_by_name`. Resolved before
+                // the machine-state path so a qualified `Shape::Box` is
+                // routed correctly even outside any machine body.
+                let enum_struct_variant = if let Some((type_name, variant_idx, kind)) =
+                    self.lookup_variant_ctor(name)
+                {
+                    match kind {
+                        HirVariantKind::Struct(_) => Some((type_name, variant_idx, kind.clone())),
+                        // Unit / tuple variants written with struct-literal
+                        // syntax are a shape mismatch; report and let the
+                        // regular-record path handle the fallthrough so
+                        // downstream diagnostics still surface.
+                        HirVariantKind::Unit | HirVariantKind::Tuple(_) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "variant `{name}` initialised with struct-literal syntax"
+                                    ),
+                                    owning_pass: "variant ctor shape".to_string(),
+                                },
+                                span.clone(),
+                                "this variant has no named fields; use the matching call or identifier form",
+                            ));
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                if let Some((type_name, variant_idx, HirVariantKind::Struct(field_decls))) =
+                    enum_struct_variant
+                {
+                    if base.is_some() {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::NotYetImplemented {
+                                construct: "functional-update syntax on enum variant constructors"
+                                    .to_string(),
+                                owning_pass: "variant ctor validation".to_string(),
+                            },
+                            span.clone(),
+                            "enum variant constructors do not support `..base` syntax",
+                        ));
+                    }
+                    // Validate source-declared field names against the
+                    // variant's declared field set (mirrors the
+                    // assignment-target-authority LESSONS row: HIR does not
+                    // re-derive type identity from the AST, but it does
+                    // validate field-name coverage against the lowered
+                    // descriptor). MIR stores by `field_idx`, so we reorder
+                    // source fields into declaration order.
+                    let mut hir_payload: Vec<(String, HirExpr)> =
+                        Vec::with_capacity(field_decls.len());
+                    for (field_name, _field_ty) in &field_decls {
+                        if let Some((_, src_expr)) = fields.iter().find(|(n, _)| n == field_name) {
+                            hir_payload.push((
+                                field_name.clone(),
+                                self.lower_expr(src_expr, IntentKind::Read),
+                            ));
+                        } else {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "variant `{name}` missing field `{field_name}`"
+                                    ),
+                                    owning_pass: "variant ctor field coverage".to_string(),
+                                },
+                                span.clone(),
+                                "enum struct-variant constructor must initialise every declared field",
+                            ));
+                        }
+                    }
+                    // Flag unknown field names for checker-stream coverage;
+                    // the canonical struct-init expr's checker entry covers
+                    // most cases but the variant-ctor branch is HIR-side.
+                    for (fname, src_expr) in fields {
+                        if !field_decls.iter().any(|(n, _)| n == fname) {
+                            // Lower the expression for coverage even though
+                            // we discard it.
+                            let _ = self.lower_expr(src_expr, IntentKind::Read);
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::NotYetImplemented {
+                                    construct: format!("variant `{name}` has no field `{fname}`"),
+                                    owning_pass: "variant ctor field coverage".to_string(),
+                                },
+                                span.clone(),
+                                "extra field in enum struct-variant constructor",
+                            ));
+                        }
+                    }
+                    // Register the generic-enum instantiation before building
+                    // result_ty so codegen's mangled-key lookup finds the entry.
+                    self.try_register_enum_instantiation(&span);
+                    // Checker-authoritative result type: the checker records the
+                    // full `Named { name: "Maybe", args: [I64] }` at the
+                    // struct-init expression span. Using it preserves type args
+                    // so codegen computes the mangled registry key.
+                    // Fall back to bare-name with a diagnostic if expr_types
+                    // has no entry or boundary conversion fails.
+                    let checker_key = SpanKey::from(&span);
+                    let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                        match ResolvedTy::from_ty(&ty) {
+                            Ok(resolved) => resolved,
+                            Err(err) => {
+                                self.diagnostics.push(HirDiagnostic::new(
+                                    HirDiagnosticKind::CheckerBoundaryViolation {
+                                        name: type_name.clone(),
+                                        reason: err.to_string(),
+                                    },
+                                    span.clone(),
+                                    "checker-authoritative struct-variant result type failed boundary conversion",
+                                ));
+                                ResolvedTy::Named {
+                                    name: type_name.clone(),
+                                    args: Vec::new(),
+                                }
+                            }
+                        }
+                    } else {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: type_name.clone(),
+                                reason: "expr_types has no entry for struct-variant ctor site".into(),
+                            },
+                            span.clone(),
+                            "checker did not record a result type for this struct-variant constructor",
+                        ));
+                        ResolvedTy::Named {
+                            name: type_name.clone(),
+                            args: Vec::new(),
+                        }
+                    };
+                    (
+                        HirExprKind::MachineVariantCtor {
+                            machine_name: type_name,
+                            state_idx: variant_idx,
+                            payload: Some(hir_payload),
+                        },
+                        result_ty,
                     )
-                });
-                (
-                    HirExprKind::StructInit {
-                        name: name.clone(),
-                        type_args: resolved_type_args.clone(),
-                        fields: hir_fields,
-                        base: hir_base,
-                    },
-                    ResolvedTy::Named {
-                        name: name.clone(),
-                        args: resolved_type_args,
-                    },
-                )
+                } else if let Some((machine_name, state_idx)) =
+                    self.resolve_machine_state_name(name)
+                {
+                    // Reject functional-update syntax (`SynReceived { ..base }`) on
+                    // machine state constructors — the semantics differ from records.
+                    if base.is_some() {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::NotYetImplemented {
+                                construct: "functional-update syntax on machine state constructors"
+                                    .to_string(),
+                                owning_pass: "machine state constructor validation".to_string(),
+                            },
+                            span.clone(),
+                            "machine state constructors do not support `..base` syntax",
+                        ));
+                    }
+                    // Resolve payload field expressions against the state's declared fields.
+                    // Field order follows source declaration; unknown field names are
+                    // carried through (MIR validates against the state schema at Slice 4b).
+                    let hir_payload: Vec<(String, HirExpr)> = fields
+                        .iter()
+                        .map(|(fname, expr)| {
+                            (fname.clone(), self.lower_expr(expr, IntentKind::Read))
+                        })
+                        .collect();
+                    let machine_ty = ResolvedTy::Named {
+                        name: machine_name.clone(),
+                        args: Vec::new(),
+                    };
+                    // Break out of the match to let the outer wrapper build the HirExpr.
+                    // We use a nested block that evaluates to `(kind, ty)`.
+                    (
+                        HirExprKind::MachineVariantCtor {
+                            machine_name,
+                            state_idx,
+                            payload: Some(hir_payload),
+                        },
+                        machine_ty,
+                    )
+                } else {
+                    // Not a machine state — regular record init path.
+                    // Record the per-instantiation `RecordLayout` for
+                    // generic user records and capture the concrete type-args
+                    // for propagation onto this expression's resolved type.
+                    // `None` indicates a monomorphic record or builtin; for
+                    // those, the resulting `Named` carries `args: []` as before.
+                    let resolved_type_args =
+                        self.record_record_layout(name, &span).unwrap_or_default();
+                    let hir_fields = fields
+                        .iter()
+                        .map(|(fname, expr)| {
+                            (fname.clone(), self.lower_expr(expr, IntentKind::Read))
+                        })
+                        .collect();
+                    // Lower the functional-update base if present. The checker has
+                    // already validated type-compatibility and field coverage; HIR
+                    // carries it verbatim so MIR lowering (A-7) can read the
+                    // un-overridden fields from the base value.
+                    let hir_base =
+                        base.as_deref().map(|(base_expr, base_span)| {
+                            Box::new(self.lower_expr(
+                                &(base_expr.clone(), base_span.clone()),
+                                IntentKind::Read,
+                            ))
+                        });
+                    (
+                        HirExprKind::StructInit {
+                            name: name.clone(),
+                            type_args: resolved_type_args.clone(),
+                            fields: hir_fields,
+                            base: hir_base,
+                        },
+                        ResolvedTy::Named {
+                            name: name.clone(),
+                            args: resolved_type_args,
+                        },
+                    )
+                }
             }
             Expr::Scope { body } => {
                 // A `scope{}` block lowers to `HirExprKind::Scope`. Inside the
@@ -3321,6 +4083,35 @@ impl LowerCtx {
                 body,
                 ..
             } => self.lower_closure(params, return_type.as_ref(), body, span.clone()),
+            Expr::GenBlock { .. } => {
+                // WHY: `gen { }` expression-position generator blocks are a
+                //      v0.5 surface that requires HIR/MIR coroutine support.
+                //      That support is not yet implemented.
+                // WHEN OBSOLETE: when generator lowering wires up
+                //      HirExprKind::GenResume and the coroutine scheduler.
+                // REAL SOLUTION: lower to HirExprKind::GenBlock carrying a
+                //      HirBlock body, yield points converted to
+                //      HirExprKind::GenYield nodes; the MIR scheduler then
+                //      desugars those into coroutine state machines.
+                //
+                // Fail-closed: emit a typed diagnostic and return Unit so
+                // the rest of the program continues to be lowered (diagnosing
+                // as many errors as possible in one pass).
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::UnresolvedSymbol {
+                        name: "E_GEN_BLOCK_PENDING: generator block lowering is not yet \
+                               implemented; generator blocks are parsed but cannot be compiled \
+                               in this version"
+                            .to_string(),
+                    },
+                    span.clone(),
+                    "gen {} blocks require coroutine lowering (not yet implemented)",
+                ));
+                (
+                    HirExprKind::Literal(crate::HirLiteral::Unit),
+                    ResolvedTy::Unit,
+                )
+            }
             Expr::MethodCall {
                 receiver,
                 method,
@@ -3484,6 +4275,31 @@ impl LowerCtx {
                 )
             }
             Expr::FieldAccess { object, field } => {
+                // Inside a machine transition body, `self.field` accesses are
+                // `Expr::FieldAccess { object: Expr::This, field }`. Resolve to
+                // `MachineFieldAccess` using the source state's declared payload fields.
+                //
+                // HIR-side authority: the checker does not produce `expr_types` entries
+                // for `self.field` inside machine bodies. The result type and field_idx
+                // are derived from `current_machine_states[source_state_idx].fields`.
+                // The parser emits `Expr::This` for the dedicated `this`
+                // keyword and `Expr::Identifier("self")` for the bare `self`
+                // identifier (the conventional machine-body receiver). Both
+                // forms route to the same machine-self-field resolver inside
+                // a machine transition body.
+                let is_self_receiver = matches!(&object.0, Expr::This)
+                    || matches!(&object.0, Expr::Identifier(name) if name == "self")
+                        && self.current_machine_name.is_some();
+                if is_self_receiver {
+                    if let Some(hir_expr) =
+                        self.try_lower_machine_self_field_access(field, &span, site, intent)
+                    {
+                        return hir_expr;
+                    }
+                    // If we're not in a machine body with a known source state, fall
+                    // through to the catch-all below (which will emit `NotYetImplemented`
+                    // because `Expr::This` is not otherwise handled).
+                }
                 let missing_import = if let Expr::Identifier(module_name) = &object.0 {
                     self.missing_stdlib_module_import(module_name)
                         .map(|module| (module_name, module))
@@ -3605,6 +4421,7 @@ impl LowerCtx {
                     )
                 }
             }
+            Expr::Match { scrutinee, arms } => self.lower_match_expr(scrutinee, arms, &span),
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -4445,6 +5262,13 @@ impl LowerCtx {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "multi-branch identifier resolution: context readers, bindings, fn_sigs, \
+                  unit-variant ctors with generic-arg preservation, and fn-item references \
+                  are each a short arm; extracting a helper gains nothing without a richer \
+                  identifier-resolution abstraction"
+    )]
     fn lower_identifier(
         &mut self,
         name: &str,
@@ -4462,14 +5286,92 @@ impl LowerCtx {
             }
         }
         if let Some((id, ty)) = self.lookup(name) {
-            (
+            return (
                 HirExprKind::BindingRef {
                     name: name.to_string(),
                     resolved: ResolvedRef::Binding(id),
                 },
                 ty,
-            )
-        } else if let Some(entry) = self.fn_registry.get(name) {
+            );
+        }
+        // Module-scope tagged-union unit constructor: machine states
+        // (`TrafficLight::Red`, bare `Red`), machine events
+        // (`TrafficLightEvent::Tick`, bare `Tick`), and user-defined enum
+        // unit variants (`Colour::Red`, bare `Red`). The pre-pass over
+        // `program.items` populated `machine_ctor_registry` with both
+        // qualified and unambiguous-bare entries (see registry doc).
+        // Consulted after lexical lookup so a user binding shadows a
+        // same-named ctor (preserves the usual lexical-scope rule).
+        //
+        // Checker-authority cross-check: when the type checker has recorded
+        // an `expr_types` entry for this span (which it does for any
+        // accepted unit-ctor reference via `resolve_identifier_variant`),
+        // the registered tagged-union name must match the type the checker
+        // selected. This guarantees HIR follows checker authority across
+        // bare-name collisions (e.g. an `enum Colour { Red }` plus a
+        // `machine M { state Red }` where the checker's `type_defs` map
+        // iteration order picked one of them). When the checker has no
+        // entry — pure HIR-side resolution at a span the checker did not
+        // type (rare; mostly synthesised code) — we accept the registry
+        // hit unconditionally.
+        if let Some((tagged_union_name, variant_idx)) =
+            self.machine_ctor_registry.get(name).cloned()
+        {
+            let key = SpanKey::from(&span);
+            let checker_agrees = match self.expr_types.get(&key) {
+                None => true,
+                Some(Ty::Named { name: n, .. }) => n == &tagged_union_name,
+                Some(_) => false,
+            };
+            if checker_agrees {
+                // Register the generic-enum instantiation before building
+                // result_ty so codegen's mangled-key lookup finds the entry.
+                self.try_register_enum_instantiation(&span);
+                // Checker-authoritative result type: the checker records the
+                // full `Named { name: "Option", args: [I64] }` at this
+                // identifier span. Using it preserves type args so codegen
+                // can compute the mangled registry key (e.g. `"Option$$i64"`).
+                // Fall back to bare-name with a diagnostic if expr_types has
+                // no entry — absence is a real signal; the checker should
+                // always populate accepted unit-ctor reference sites.
+                let result_ty = if let Some(ty) = self.expr_types.get(&key).cloned() {
+                    match ResolvedTy::from_ty(&ty) {
+                        Ok(resolved) => resolved,
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: tagged_union_name.clone(),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "checker-authoritative unit-variant result type failed boundary conversion",
+                            ));
+                            ResolvedTy::Named {
+                                name: tagged_union_name.clone(),
+                                args: Vec::new(),
+                            }
+                        }
+                    }
+                } else {
+                    // None means the checker had no entry at this span.
+                    // Treat as bare-name rather than a hard diagnostic so
+                    // synthesised/non-typed paths don't regress.
+                    ResolvedTy::Named {
+                        name: tagged_union_name.clone(),
+                        args: Vec::new(),
+                    }
+                };
+                return (
+                    HirExprKind::MachineVariantCtor {
+                        machine_name: tagged_union_name,
+                        state_idx: variant_idx,
+                        payload: None,
+                    },
+                    result_ty,
+                );
+            }
+        }
+        if let Some(entry) = self.fn_registry.get(name) {
             // Known function item — expose as a function-typed reference so
             // callers can extract the return type from the call expression.
             let fn_ty = ResolvedTy::Function {
@@ -4703,6 +5605,48 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
+        // Machine method dispatch: `.step()` / `.state_name()` recorded in the
+        // checker's `machine_method_dispatch` side-table. Checked before
+        // `method_call_rewrites` so these calls produce dedicated HIR nodes
+        // (`MachineStep` / `MachineStateName`) rather than falling through to
+        // `MethodCallNoRewrite`. MIR/codegen consumers wire this in slice 6.
+        if let Some(dispatch) = self.machine_method_dispatch.get(&key).cloned() {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let lowered_args: Vec<HirExpr> = args
+                .iter()
+                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                .collect();
+            return match dispatch {
+                hew_types::MachineMethodKind::Step { machine_name } => {
+                    let event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::PersistentShare,
+                        ty: ResolvedTy::Unit,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported(
+                            "machine step: missing event argument".into(),
+                        ),
+                        span: span.clone(),
+                    });
+                    (
+                        HirExprKind::MachineStep {
+                            machine_name,
+                            receiver: Box::new(lowered_receiver),
+                            event: Box::new(event),
+                        },
+                        ResolvedTy::Unit,
+                    )
+                }
+                hew_types::MachineMethodKind::StateName { machine_name } => (
+                    HirExprKind::MachineStateName {
+                        machine_name,
+                        receiver: Box::new(lowered_receiver),
+                    },
+                    ResolvedTy::String,
+                ),
+            };
+        }
         // `dyn Trait` receivers take precedence: the checker's
         // `dyn_trait_method_calls` side-table pins the trait/method/slot
         // resolution authoritatively, and these calls do NOT have a
@@ -4766,13 +5710,19 @@ impl LowerCtx {
                 for arg in args {
                     lowered_args.push(self.lower_expr(arg.expr(), IntentKind::Read));
                 }
-                // Synthetic callee: a runtime-symbol reference.  The function type
-                // uses `Unit` return (runtime send/recv return unit in the Rust MIR
-                // pipeline; future slices thread expr_types for richer return types).
+                // Read the actual return type from the checker's expr_types table.
+                // Unit-returning methods (e.g. channel send/recv) record Unit there,
+                // so the fallback is safe and this path remains correct for all callers.
                 // `params` is empty — the call arg list carries the real args.
+                let ret_ty = self
+                    .expr_types
+                    .get(&key)
+                    .cloned()
+                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+                    .unwrap_or(ResolvedTy::Unit);
                 let callee_ty = ResolvedTy::Function {
                     params: Vec::new(),
-                    ret: Box::new(ResolvedTy::Unit),
+                    ret: Box::new(ret_ty.clone()),
                 };
                 let callee = HirExpr {
                     node: self.ids.node(),
@@ -4791,7 +5741,7 @@ impl LowerCtx {
                         callee: Box::new(callee),
                         args: lowered_args,
                     },
-                    ResolvedTy::Unit,
+                    ret_ty,
                 )
             }
             Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }) => {
@@ -4946,6 +5896,363 @@ impl LowerCtx {
             .find_map(|scope| scope.get(name).map(|(id, ty, _)| (*id, ty.clone())))
     }
 
+    /// Look up an enum variant constructor by surface name (bare or
+    /// qualified). Returns `(type_name, variant_idx, &HirVariantKind)` when
+    /// `name` resolves to a registered enum variant. `None` for unknown
+    /// names, machine-state names (whose layout lives in machine descriptors
+    /// rather than `enum_variants_by_name`), and registry hits that point at
+    /// an enum which somehow has no recorded variant at that index (should
+    /// never happen — same-source ordering invariant).
+    fn lookup_variant_ctor(&self, name: &str) -> Option<(String, usize, &HirVariantKind)> {
+        let (type_name, idx) = self.machine_ctor_registry.get(name)?;
+        let variants = self.enum_variants_by_name.get(type_name)?;
+        let variant = variants.get(*idx)?;
+        Some((type_name.clone(), *idx, &variant.kind))
+    }
+
+    /// Register one concrete instantiation of a generic enum in the
+    /// `enum_layout_registry`.
+    ///
+    /// Called from every lowering site that establishes a concrete enum type:
+    /// tuple-variant ctor calls (`Option::Some(42)`) and match scrutinee
+    /// lowering. The span is the source span of the expression whose checker-
+    /// produced type carries the full `Named { name, args }` type.
+    ///
+    /// The method is a no-op when:
+    /// - The span has no `expr_types` entry (checker never assigned a type).
+    /// - The type is not `Named` — not an enum instantiation.
+    /// - The enum has no type params (monomorphic enum — skip).
+    /// - The registry already contains this `(origin, type_args)` key.
+    /// - The cap is exceeded (emits `EnumLayoutCapExceeded` diagnostic
+    ///   once per module lowering).
+    ///
+    /// Transitive expansion: after registering a key, this method recurses
+    /// into each type arg that is itself a generic enum, running to a fixed
+    /// point bounded by the registry cap.
+    fn try_register_enum_instantiation(&mut self, span: &std::ops::Range<usize>) {
+        // Collect concrete Named types reachable from the expression type at
+        // this span. Uses a worklist to avoid recursion depth issues.
+        let Some(checker_ty) = self.expr_types.get(&SpanKey::from(span)).cloned() else {
+            return;
+        };
+        let Ok(resolved) = ResolvedTy::from_ty(&checker_ty) else {
+            return;
+        };
+        // Flatten `resolved` into all Named types that could be generic-enum
+        // instantiations, including nested ones inside the type args.
+        let mut worklist: Vec<ResolvedTy> = vec![resolved];
+        while let Some(ty) = worklist.pop() {
+            let ResolvedTy::Named { ref name, ref args } = ty else {
+                continue;
+            };
+            // Only act if this enum has type params and this call provides args.
+            let Some(type_params) = self.enum_type_params.get(name).cloned() else {
+                continue;
+            };
+            if type_params.is_empty() || args.is_empty() {
+                // Enqueue nested Named types even if this one is monomorphic,
+                // in case a type arg contains a generic enum.
+                for arg in args {
+                    worklist.push(arg.clone());
+                }
+                continue;
+            }
+            // Enqueue type args for transitive expansion.
+            for arg in args {
+                worklist.push(arg.clone());
+            }
+            // Retrieve the origin ItemId for this enum.
+            let Some(&origin) = self.enum_item_ids.get(name) else {
+                continue;
+            };
+            let key = EnumMonoKey {
+                origin,
+                origin_name: name.clone(),
+                type_args: args.clone(),
+            };
+            // Build the substituted variant list from the unsubstituted HIR
+            // variant descriptors stored in `enum_variants_by_name`.
+            let Some(variants_proto) = self.enum_variants_by_name.get(name).cloned() else {
+                continue;
+            };
+            let variant_layouts: Vec<EnumVariantLayout> = variants_proto
+                .iter()
+                .map(|v| {
+                    let raw_field_tys = v.field_tys();
+                    let subst_field_tys = raw_field_tys
+                        .iter()
+                        .map(|ft| substitute_type_params(ft, &type_params, args))
+                        .collect();
+                    EnumVariantLayout {
+                        name: v.name.clone(),
+                        field_tys: subst_field_tys,
+                    }
+                })
+                .collect();
+            if self
+                .enum_layout_registry
+                .insert(key, variant_layouts)
+                .is_err()
+            {
+                // Cap exceeded — emit diagnostic and abort further expansion.
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::EnumLayoutCapExceeded {
+                        cap: self.enum_layout_registry.cap(),
+                    },
+                    span.clone(),
+                    "enum monomorphisation cap exceeded; increase `mono_cap` or reduce generic enum instantiation count",
+                ));
+                return;
+            }
+        }
+    }
+
+    /// Build the `HirExprKind::MachineVariantCtor` node for a tuple-variant
+    /// constructor call. Synthetic field names "0", "1", ... are used —
+    /// MIR/codegen discard names and index payload slots by position (lane
+    /// plan D1).
+    fn lower_variant_ctor_tuple_call(
+        &mut self,
+        name: &str,
+        args: Vec<HirExpr>,
+        span: &std::ops::Range<usize>,
+    ) -> (HirExprKind, ResolvedTy) {
+        let Some((type_name, variant_idx, variant_kind)) = self.lookup_variant_ctor(name) else {
+            unreachable!("lower_variant_ctor_tuple_call called without registry hit");
+        };
+        let HirVariantKind::Tuple(field_tys) = variant_kind else {
+            unreachable!("lower_variant_ctor_tuple_call called with non-tuple variant");
+        };
+        let field_count = field_tys.len();
+        let type_name_owned = type_name;
+        let variant_idx_owned = variant_idx;
+        if args.len() != field_count {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "variant ctor `{name}` arity mismatch: expected {field_count}, got {}",
+                        args.len()
+                    ),
+                    owning_pass: "variant ctor arity".to_string(),
+                },
+                span.clone(),
+                "tuple-variant constructor called with the wrong number of arguments",
+            ));
+        }
+        let payload: Vec<(String, HirExpr)> = args
+            .into_iter()
+            .enumerate()
+            .map(|(idx, expr)| (idx.to_string(), expr))
+            .collect();
+        // Register the generic-enum instantiation before building result_ty so
+        // the registry is populated when codegen performs its mangled lookup.
+        self.try_register_enum_instantiation(span);
+        // Checker-authoritative result type: the checker records the full
+        // `Named { name: "Option", args: [I64] }` at this call-expression span.
+        // Using it directly preserves type args so codegen can compute the
+        // mangled registry key (e.g. `"Option$$i64"`).  Fall back to bare-name
+        // with a diagnostic if expr_types has no entry — absence is a real
+        // signal (checker should always populate this site).
+        let checker_key = SpanKey::from(span);
+        let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+            match ResolvedTy::from_ty(&ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: type_name_owned.clone(),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "checker-authoritative variant-ctor result type failed boundary conversion",
+                    ));
+                    ResolvedTy::Named {
+                        name: type_name_owned.clone(),
+                        args: Vec::new(),
+                    }
+                }
+            }
+        } else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: type_name_owned.clone(),
+                    reason: "expr_types has no entry for variant-ctor site".into(),
+                },
+                span.clone(),
+                "checker did not record a result type for this variant constructor call",
+            ));
+            ResolvedTy::Named {
+                name: type_name_owned.clone(),
+                args: Vec::new(),
+            }
+        };
+        (
+            HirExprKind::MachineVariantCtor {
+                machine_name: type_name_owned,
+                state_idx: variant_idx_owned,
+                payload: Some(payload),
+            },
+            result_ty,
+        )
+    }
+
+    /// Emit a structured diagnostic when a variant constructor is called in
+    /// the wrong shape (unit variant invoked positionally, or struct variant
+    /// invoked positionally). Caller falls through to the regular-call path
+    /// to preserve checker-stream coverage.
+    fn report_variant_ctor_call_shape_mismatch(
+        &mut self,
+        name: &str,
+        kind: &HirVariantKind,
+        span: &std::ops::Range<usize>,
+    ) {
+        match kind {
+            HirVariantKind::Unit => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: format!("unit variant `{name}` called as a function"),
+                        owning_pass: "variant ctor arity".to_string(),
+                    },
+                    span.clone(),
+                    "unit-variant constructors are referenced as identifiers, not called",
+                ));
+            }
+            HirVariantKind::Struct(_) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: format!("struct variant `{name}` called positionally"),
+                        owning_pass: "variant ctor arity".to_string(),
+                    },
+                    span.clone(),
+                    "struct-variant constructors require named-field syntax (e.g. `Shape::Box { w: ..., h: ... }`)",
+                ));
+            }
+            HirVariantKind::Tuple(_) => {
+                // Tuple shape is the happy path handled by
+                // `lower_variant_ctor_tuple_call`; this arm is unreachable in
+                // production but kept exhaustive for the match.
+            }
+        }
+    }
+
+    /// Resolve an identifier to a machine state constructor if `name` is a
+    /// declared state of the currently-enclosing machine.
+    ///
+    /// Returns `Some((machine_name, state_idx))` when both conditions hold:
+    /// - `current_machine_name` / `current_machine_states` are set (inside a
+    ///   machine lowering), AND
+    /// - `name` matches one of the state names in declaration order.
+    ///
+    /// Returns `None` otherwise; the caller falls through to `lower_identifier`.
+    fn resolve_machine_state_name(&self, name: &str) -> Option<(String, usize)> {
+        let machine_name = self.current_machine_name.as_ref()?;
+        let states = self.current_machine_states.as_ref()?;
+        let idx = states.iter().position(|(n, _)| n == name)?;
+        Some((machine_name.clone(), idx))
+    }
+
+    /// Attempt to lower a `self.<field>` access inside a machine transition body.
+    ///
+    /// Called when the `Expr::FieldAccess` arm detects `object == Expr::This`.
+    ///
+    /// Returns `Some(HirExpr)` on both the happy path (resolved to
+    /// `HirExprKind::MachineFieldAccess`) and the error paths (diagnostic pushed,
+    /// `HirExprKind::Unsupported` returned wrapped in `Some`). Returns `None` only
+    /// when `self` is outside a machine body entirely, signalling the caller to
+    /// fall through to the generic `Expr::This` handler (which will emit
+    /// `NotYetImplemented`).
+    fn try_lower_machine_self_field_access(
+        &mut self,
+        field: &str,
+        span: &std::ops::Range<usize>,
+        site: SiteId,
+        intent: IntentKind,
+    ) -> Option<HirExpr> {
+        let machine_name = self.current_machine_name.as_ref()?.clone();
+
+        // We are in a machine body.  Now check whether the source state is known.
+        let Some(src_state_idx) = self.current_machine_source_state else {
+            // Wildcard (`_`) transition body — no concrete source state.
+            // `self.field` access has no unique variant to read from.
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::NotYetImplemented {
+                    construct: format!("`self.{field}` inside a wildcard (`_`) transition body"),
+                    owning_pass: "machine typed self-field access in wildcard transitions"
+                        .to_string(),
+                },
+                span.clone(),
+                "self-field reads inside wildcard transitions have no concrete source \
+                 state; refactor to use a named source state or match on the state first",
+            ));
+            return Some(HirExpr {
+                node: self.ids.node(),
+                site,
+                ty: ResolvedTy::Unit,
+                value_class: ValueClass::BitCopy,
+                intent,
+                kind: HirExprKind::Unsupported(format!(
+                    "self.{field} in wildcard transition (no source state)"
+                )),
+                span: span.clone(),
+            });
+        };
+
+        // Look up the field by name in the source state's payload.
+        let states = self.current_machine_states.as_ref()?;
+        let state_fields = &states[src_state_idx].1;
+        let state_name = states[src_state_idx].0.clone();
+        if let Some((field_idx, hir_field)) = state_fields
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.name == field)
+        {
+            let field_ty = hir_field.ty.clone();
+            let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
+            Some(HirExpr {
+                node: self.ids.node(),
+                site,
+                ty: field_ty,
+                value_class: vc,
+                intent,
+                kind: HirExprKind::MachineFieldAccess {
+                    machine_name,
+                    state_idx: src_state_idx,
+                    field_idx,
+                    field_name: field.to_string(),
+                },
+                span: span.clone(),
+            })
+        } else {
+            // Field name not declared on this state.
+            let available: Vec<String> = state_fields.iter().map(|f| f.name.clone()).collect();
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "`self.{field}` — field not declared on state `{state_name}` \
+                         of machine `{machine_name}`"
+                    ),
+                    owning_pass: "machine state payload field validation".to_string(),
+                },
+                span.clone(),
+                format!(
+                    "state `{state_name}` has fields: [{}]; `{field}` is not one of them",
+                    available.join(", ")
+                ),
+            ));
+            Some(HirExpr {
+                node: self.ids.node(),
+                site,
+                ty: ResolvedTy::Unit,
+                value_class: ValueClass::BitCopy,
+                intent,
+                kind: HirExprKind::Unsupported(format!(
+                    "self.{field} not found on state {state_name}"
+                )),
+                span: span.clone(),
+            })
+        }
+    }
+
     fn missing_stdlib_module_import(&self, name: &str) -> Option<&'static str> {
         if self.lookup(name).is_none() && !self.fn_registry.contains_key(name) {
             stdlib_catalog::missing_import_module(name)
@@ -5000,6 +6307,271 @@ impl LowerCtx {
             kind: HirExprKind::Unsupported(note.into()),
             span,
         }
+    }
+
+    /// Lower a surface `match` expression to `HirExprKind::Match`.
+    ///
+    /// **Substrate scope (v0.5 match-expression slice)**: this lane lowers
+    /// variant constructor arms (unit, tuple-payload, and struct-payload with
+    /// plain binding / wildcard subpatterns) plus wildcard arms (`_`). The
+    /// following are rejected with a structured `NotYetImplemented` diagnostic
+    /// and lower to `HirExprKind::Unsupported`, per LESSONS
+    /// `match-fail-closed` (P0) and `exhaustive-traversal-and-lowering` (P1):
+    ///
+    /// - Pattern guards (`Red if cond => ...`).
+    /// - Literal patterns (`1`, `"hello"`). Different lowering shape
+    ///   (chained equality), separate plan.
+    /// - Plain bindings (`n => ...`) and struct/tuple patterns. Substrate
+    ///   for these is also future work.
+    /// - Or-patterns (`Red | Blue => ...`). The pattern-resolutions
+    ///   side-table intentionally omits or-pattern arms; a missing entry
+    ///   here is treated as a fail-closed reject, never a silent
+    ///   fallthrough.
+    ///
+    /// The type checker has already enforced exhaustiveness for enum
+    /// scrutinees (`hew-types/src/check/diagnostics.rs::check_exhaustiveness`).
+    /// MIR adds a runtime `Terminator::Trap { ExhaustivenessFallthrough }`
+    /// as belt-and-braces; this HIR producer assumes the checker pre-gate
+    /// holds.
+    ///
+    /// Returns `(HirExprKind, ResolvedTy)`. The expression type is the
+    /// first-arm body type (all arms must share a type — the type checker
+    /// has already verified this; a mismatch would be a checker bug).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one reject branch per unsupported pattern shape; splitting would scatter the fail-closed audit"
+    )]
+    fn lower_match_expr(
+        &mut self,
+        scrutinee: &Spanned<Expr>,
+        arms: &[hew_parser::ast::MatchArm],
+        span: &std::ops::Range<usize>,
+    ) -> (HirExprKind, ResolvedTy) {
+        let scrutinee_hir = self.lower_expr(scrutinee, IntentKind::Read);
+        // Register a generic-enum instantiation if the scrutinee's type is
+        // a parameterised enum. The checker-authoritative type at the scrutinee
+        // span carries the full `Named { name, args }` including concrete type
+        // args; `try_register_enum_instantiation` is a no-op for monomorphic enums.
+        self.try_register_enum_instantiation(&scrutinee.1);
+
+        // Track whether any arm has been rejected; if so we still walk the
+        // arm bodies (for checker-stream coverage) but produce
+        // `HirExprKind::Unsupported` rather than a partial `Match` node.
+        // A fail-closed shape keeps MIR lowering simple and prevents a
+        // half-built Match from reaching codegen.
+        let mut rejected = false;
+        let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len());
+        let mut result_ty: Option<ResolvedTy> = None;
+
+        for arm in arms {
+            // Guard expression: walked for coverage, then rejected. v0.5
+            // does not lower pattern guards.
+            if let Some(guard) = &arm.guard {
+                let _ = self.lower_expr(guard, IntentKind::Read);
+                // Also walk the body so checker-stream coverage stays full.
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.unsupported(
+                    arm.pattern.1.clone(),
+                    "pattern guards in match arms",
+                    "match-expression-substrate",
+                );
+                rejected = true;
+                continue;
+            }
+
+            let pattern_span = &arm.pattern.1;
+            let key = SpanKey::from(pattern_span);
+            let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
+                // Missing resolution: either an or-pattern arm (the checker
+                // intentionally omits these) or a checker-rejected arm that
+                // still reached HIR. Fail closed — the only correct shape
+                // here is to reject and let the user fix the source.
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.unsupported(
+                    pattern_span.clone(),
+                    "or-pattern / unsupported pattern in match arm",
+                    "match-expression-substrate",
+                );
+                rejected = true;
+                continue;
+            };
+
+            let predicate = match resolution.pattern_kind {
+                PatternKind::Wildcard => HirMatchArmPredicate::Wildcard,
+                PatternKind::VariantCtor => {
+                    let Some(vm) = resolution.variant_match.clone() else {
+                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.unsupported(
+                            pattern_span.clone(),
+                            "variant pattern missing variant-match resolution",
+                            "match-expression-substrate",
+                        );
+                        rejected = true;
+                        continue;
+                    };
+                    // Resolve variant_idx via `machine_ctor_registry`
+                    // (qualified key) — the HIR-side registry populated
+                    // from `Item::TypeDecl` body order. The index matches
+                    // `EnumLayout.variants` ordering so MIR/codegen don't
+                    // re-derive it.
+                    let qualified = format!("{}::{}", vm.type_name, vm.variant_name);
+                    let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned()
+                    else {
+                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.unsupported(
+                            pattern_span.clone(),
+                            "match arm variant not registered in machine/enum ctor registry",
+                            "match-expression-substrate",
+                        );
+                        rejected = true;
+                        continue;
+                    };
+                    let idx = u32::try_from(idx_usize)
+                        .expect("variant index exceeds u32::MAX — impossible in Hew");
+                    HirMatchArmPredicate::EnumVariant {
+                        variant_match: vm,
+                        variant_idx: idx,
+                    }
+                }
+                PatternKind::Literal
+                | PatternKind::Binding
+                | PatternKind::StructPattern
+                | PatternKind::TuplePattern => {
+                    let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                    self.unsupported(
+                        pattern_span.clone(),
+                        "literal / binding / struct / tuple pattern in match arm",
+                        "match-expression-substrate",
+                    );
+                    rejected = true;
+                    continue;
+                }
+                // Regex literal pattern in a string-scrutinee match arm.
+                // Allocate (or reuse) the literal-table entry and build the
+                // `HirMatchArmPredicate::Regex` predicate.
+                PatternKind::Regex { captures } => {
+                    // Extract the raw pattern string from the AST pattern node.
+                    // The pattern must be `Pattern::Regex { pattern, .. }`; any
+                    // other shape is a checker contract violation — fail closed.
+                    let raw_pattern = match &arm.pattern.0 {
+                        Pattern::Regex { pattern, .. } => pattern.clone(),
+                        other => {
+                            self.unsupported(
+                                pattern_span.clone(),
+                                format!(
+                                    "regex arm pattern resolved to PatternKind::Regex but AST \
+                                     pattern node is {:?} — checker contract violation",
+                                    std::mem::discriminant(other)
+                                ),
+                                "regex-match-arm-substrate",
+                            );
+                            rejected = true;
+                            continue;
+                        }
+                    };
+                    let literal_id = self.alloc_regex_literal(&raw_pattern, &captures);
+                    HirMatchArmPredicate::Regex {
+                        literal_id,
+                        pattern: raw_pattern,
+                        captures,
+                    }
+                }
+            };
+
+            let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
+            let mut binding_error = false;
+            for payload in &resolution.payload_bindings {
+                let ty = match ResolvedTy::from_ty(&payload.ty) {
+                    Ok(ty) => ty,
+                    Err(err) => {
+                        self.unsupported(
+                            pattern_span.clone(),
+                            format!("unresolved payload binding type in match arm ({err:?})"),
+                            "match-expression-substrate",
+                        );
+                        binding_error = true;
+                        continue;
+                    }
+                };
+                let Ok(field_idx) = u32::try_from(payload.field_idx) else {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        "payload binding field index exceeds u32::MAX",
+                        "match-expression-substrate",
+                    );
+                    binding_error = true;
+                    continue;
+                };
+                binding_specs.push((field_idx, payload.binding_name.clone(), ty));
+            }
+            if binding_error {
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                rejected = true;
+                continue;
+            }
+
+            let (bindings, body_hir) = if binding_specs.is_empty() {
+                (Vec::new(), self.lower_expr(&arm.body, IntentKind::Read))
+            } else {
+                self.push_scope();
+                let mut bindings = Vec::with_capacity(binding_specs.len());
+                for (field_idx, name, ty) in binding_specs {
+                    let bound = self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
+                    bindings.push(HirMatchArmBinding {
+                        binding: bound.id,
+                        field_idx,
+                        name,
+                        ty,
+                    });
+                }
+                let body_hir = self.lower_expr(&arm.body, IntentKind::Read);
+                self.pop_scope();
+                (bindings, body_hir)
+            };
+
+            if result_ty.is_none() {
+                result_ty = Some(body_hir.ty.clone());
+            }
+
+            hir_arms.push(HirMatchArm {
+                predicate,
+                bindings,
+                body: body_hir,
+                span: arm.pattern.1.start..arm.body.1.end,
+            });
+        }
+
+        if rejected {
+            return (
+                HirExprKind::Unsupported(
+                    "match expression contains an unsupported arm shape".into(),
+                ),
+                ResolvedTy::Unit,
+            );
+        }
+
+        // Empty arms list is rejected by the parser/checker before reaching
+        // here; treat the unexpected case as fail-closed.
+        if hir_arms.is_empty() {
+            self.unsupported(
+                span.clone(),
+                "match expression with no arms",
+                "match-expression-substrate",
+            );
+            return (
+                HirExprKind::Unsupported("match expression with no arms".into()),
+                ResolvedTy::Unit,
+            );
+        }
+
+        let ty = result_ty.unwrap_or(ResolvedTy::Unit);
+        (
+            HirExprKind::Match {
+                scrutinee: Box::new(scrutinee_hir),
+                arms: hir_arms,
+            },
+            ty,
+        )
     }
 
     /// Lower the body block of a `scope{}` expression. This is separate from
@@ -5259,11 +6831,14 @@ fn collect_captures_walk(
         //   - SpawnLambdaActor (nested): its captures belong to its own
         //     frame and were classified when the inner lambda lowered.
         //   - Unsupported: nothing to walk.
+        //   - MachineFieldAccess: implicit `self` receiver, no sub-expressions.
         HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Closure { .. }
+        | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_captures_walk(left, param_ids, seen, captures, self_id);
@@ -5394,6 +6969,43 @@ fn collect_captures_walk(
                 collect_captures_walk(field_val, param_ids, seen, captures, self_id);
             }
         }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            // Machine method calls are not expected inside lambda/closure
+            // bodies in v0.5. Walk defensively for exhaustiveness.
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+            collect_captures_walk(event, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::MachineStateName { receiver, .. } => {
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            // Machine state constructors are not expected inside lambda bodies.
+            // Walk payload fields defensively for exhaustiveness.
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    collect_captures_walk(val, param_ids, seen, captures, self_id);
+                }
+            }
+        }
+        HirExprKind::While { condition, body } => {
+            collect_captures_walk(condition, param_ids, seen, captures, self_id);
+            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            collect_captures_walk(start, param_ids, seen, captures, self_id);
+            collect_captures_walk(end, param_ids, seen, captures, self_id);
+            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
+            for arm in arms {
+                collect_captures_walk(&arm.body, param_ids, seen, captures, self_id);
+            }
+        }
     }
 }
 
@@ -5436,7 +7048,9 @@ fn collect_general_closure_captures_walk(
         HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::SpawnLambdaActor { .. }
+        | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
@@ -5570,6 +7184,41 @@ fn collect_general_closure_captures_walk(
             // not closures); walk fields defensively for exhaustiveness.
             for (_, field_val) in fields {
                 collect_general_closure_captures_walk(field_val, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(event, outer_bindings, seen, captures);
+        }
+        HirExprKind::MachineStateName { receiver, .. } => {
+            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            // Machine state constructors cannot appear inside closure bodies.
+            // Walk payload fields defensively for exhaustiveness.
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    collect_general_closure_captures_walk(val, outer_bindings, seen, captures);
+                }
+            }
+        }
+        HirExprKind::While { condition, body } => {
+            collect_general_closure_captures_walk(condition, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            collect_general_closure_captures_walk(start, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(end, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
+            for arm in arms {
+                collect_general_closure_captures_walk(&arm.body, outer_bindings, seen, captures);
             }
         }
     }
@@ -5978,6 +7627,12 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             collect_hir_emitted_events_walk(callee, event_names, out);
             for a in args {
                 collect_hir_emitted_events_walk(a, event_names, out);
+            }
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_hir_emitted_events_walk(scrutinee, event_names, out);
+            for arm in arms {
+                collect_hir_emitted_events_walk(&arm.body, event_names, out);
             }
         }
         _ => {}
@@ -6510,6 +8165,157 @@ mod tests {
         assert_ne!(
             reply_id, verdict_id,
             "distinct arm bindings must have distinct BindingIds"
+        );
+    }
+
+    // ── Enum-layout discovery tests ──────────────────────────────────────────
+
+    /// Lower the §0 probe (`Option<i64>` instantiated at a call site and
+    /// matched) and assert that the HIR enum-layout registry contains exactly
+    /// the expected entry. The `Some` variant's payload field must be
+    /// `ResolvedTy::I64` (not `ResolvedTy::Named { name: "T", args: [] }` —
+    /// the raw type-param symbol). This pins the substitution contract.
+    ///
+    /// LESSONS: `type-info-survival` (P0) — read type from `expr_types`,
+    /// not the un-substituted HIR node type. `checker-authority` (P0).
+    #[test]
+    fn generic_enum_option_i64_registered_in_enum_layouts() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            enum Option<T> { Some(T); None }
+            fn main() -> i64 {
+                let x: Option<i64> = Option::Some(42);
+                match x {
+                    Option::Some(v) => v,
+                    Option::None => 0,
+                }
+            }
+            ",
+        );
+
+        let layouts = &lowered.module.enum_layouts;
+        assert_eq!(
+            layouts.len(),
+            1,
+            "exactly one enum-layout entry expected for Option<i64>; got {layouts:#?}"
+        );
+
+        let layout = &layouts[0];
+        assert_eq!(
+            layout.key.origin_name, "Option",
+            "enum origin name must be 'Option'"
+        );
+        assert_eq!(
+            layout.key.type_args,
+            vec![ResolvedTy::I64],
+            "type_args must be [I64]"
+        );
+        assert_eq!(
+            layout.mangled_name, "Option$$i64",
+            "mangled name must follow shared scheme"
+        );
+
+        // Two variants: Some(T→i64) and None.
+        assert_eq!(layout.variants.len(), 2, "Option has two variants");
+        let some_variant = layout
+            .variants
+            .iter()
+            .find(|v| v.name == "Some")
+            .expect("Some variant must be present");
+        assert_eq!(
+            some_variant.field_tys,
+            vec![ResolvedTy::I64],
+            "Some variant payload must be substituted to I64, not a type-param symbol"
+        );
+        let none_variant = layout
+            .variants
+            .iter()
+            .find(|v| v.name == "None")
+            .expect("None variant must be present");
+        assert!(
+            none_variant.field_tys.is_empty(),
+            "None variant must have no payload fields"
+        );
+    }
+
+    /// A plain monomorphic enum must NOT appear in `enum_layouts` — the
+    /// registry is only for generic-enum instantiations.
+    #[test]
+    fn monomorphic_enum_does_not_appear_in_enum_layouts() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            enum Colour { Red; Green; Blue }
+            fn main() -> i64 {
+                let c: Colour = Colour::Red;
+                match c {
+                    Colour::Red => 1,
+                    Colour::Green => 2,
+                    Colour::Blue => 3,
+                }
+            }
+            ",
+        );
+
+        assert!(
+            lowered.module.enum_layouts.is_empty(),
+            "monomorphic enums must not appear in enum_layouts; got {:#?}",
+            lowered.module.enum_layouts
+        );
+    }
+
+    /// Nested generic instantiation: `Option<Option<i64>>` must produce two
+    /// registry entries — one for `Option<Option<i64>>` and one for
+    /// `Option<i64>`. The worklist transitively expands type args so that the
+    /// inner instantiation is discovered even though only the outer type
+    /// appears at the call site.
+    ///
+    /// This exercises the fixpoint path in `try_register_enum_instantiation`.
+    #[test]
+    fn nested_generic_enum_option_option_i64_registers_both_instantiations() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            enum Option<T> { Some(T); None }
+            fn main() -> i64 {
+                let inner: Option<i64> = Option::Some(5);
+                let outer: Option<Option<i64>> = Option::Some(inner);
+                match outer {
+                    Option::Some(v) => match v {
+                        Option::Some(n) => n,
+                        Option::None => 0,
+                    },
+                    Option::None => -1,
+                }
+            }
+            ",
+        );
+
+        let layouts = &lowered.module.enum_layouts;
+        // Both Option<i64> and Option<Option<i64>> must be registered.
+        assert!(
+            layouts.len() >= 2,
+            "expected at least two enum-layout entries for Option<i64> and \
+             Option<Option<i64>>; got {layouts:#?}"
+        );
+
+        let has_option_i64 = layouts
+            .iter()
+            .any(|l| l.key.origin_name == "Option" && l.key.type_args == vec![ResolvedTy::I64]);
+        let has_option_option_i64 = layouts.iter().any(|l| {
+            l.key.origin_name == "Option"
+                && l.key.type_args
+                    == vec![ResolvedTy::Named {
+                        name: "Option".to_string(),
+                        args: vec![ResolvedTy::I64],
+                    }]
+        });
+
+        assert!(
+            has_option_i64,
+            "registry must contain Option<i64>; got {layouts:#?}"
+        );
+        assert!(
+            has_option_option_i64,
+            "registry must contain Option<Option<i64>>; got {layouts:#?}"
         );
     }
 }

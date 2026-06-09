@@ -27,10 +27,11 @@ pub use actor_protocol::{
 };
 pub use check::{
     builtin_function_names, ActorMethodKind, ActorSendAliasing, ActorSendCopyReason,
-    ActorStateGuard, AssignTargetKind, AssignTargetShape, Checker, ChildKind, ChildSlot,
-    ClosureCaptureFact, ClosureCaptureMode, DynAssocBinding, DynCoercion, DynMethodCall,
-    DynVtableEntry, DynVtableKey, ExecutionContextReader, MethodCallReceiverKind,
-    MethodCallRewrite, SpanKey, TypeCheckOutput, VariantDef,
+    ActorStateGuard, ArmResolution, AssignTargetKind, AssignTargetShape, Checker, ChildKind,
+    ChildSlot, ClosureCaptureFact, ClosureCaptureMode, DynAssocBinding, DynCoercion, DynMethodCall,
+    DynVtableEntry, DynVtableKey, ExecutionContextReader, MachineMethodKind,
+    MethodCallReceiverKind, MethodCallRewrite, PatternKind, SpanKey, TypeCheckOutput, VariantDef,
+    VariantMatch,
 };
 pub use error::TypeError;
 pub use lowering_facts::{

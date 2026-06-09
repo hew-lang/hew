@@ -596,14 +596,36 @@ impl Checker {
             .first()
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
-        let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
-        if !is_supported {
+        // Unresolved type variables and error sentinels pass through so that
+        // type inference can complete without generating a cascade of spurious
+        // "not Wire" diagnostics on partially-inferred programs.
+        if matches!(&inner, Ty::Var(_) | Ty::Error) {
+            return Some(inner);
+        }
+        // A type is a valid Sink/Stream payload if and only if it implements
+        // both the Encode and Decode marker traits (the "Wire capability").
+        // implements_marker performs structural derivation — closures, raw
+        // pointers, dyn-Trait, LocalPid, and other non-serialisable types
+        // naturally fall out here without any explicit allowlist entry.
+        let has_encode = self.registry.implements_marker(&inner, MarkerTrait::Encode);
+        let has_decode = self.registry.implements_marker(&inner, MarkerTrait::Decode);
+        if !has_encode || !has_decode {
+            let mut missing = Vec::new();
+            if !has_encode {
+                missing.push("Encode".to_owned());
+            }
+            if !has_decode {
+                missing.push("Decode".to_owned());
+            }
             self.report_error(
-                TypeErrorKind::InvalidOperation,
+                TypeErrorKind::SinkPayloadNotWire {
+                    payload_ty: inner.user_facing().to_string(),
+                    missing_traits: missing,
+                },
                 span,
                 format!(
-                    "`{type_name}<{}>` is not supported; \
-                     {type_name}<T> is currently only implemented for string and bytes",
+                    "`{type_name}<{}>` payload must implement Wire (Encode + Decode); \
+                     the type does not satisfy the required marker traits",
                     inner.user_facing()
                 ),
             );

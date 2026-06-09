@@ -75,6 +75,18 @@ fn hew_main() {
 // Sub-commands
 // ---------------------------------------------------------------------------
 
+/// Map an HIR diagnostic kind to a user-visible prefix string.
+/// `NotYetImplemented` uses `E_NOT_YET_IMPLEMENTED` to mirror the MIR
+/// mapping (see `diagnostic_prefix` below). All other HIR diagnostics
+/// use `E_HIR` so the user sees a structured family prefix rather than a
+/// raw `{:?}` dump.
+fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
+    match kind {
+        hew_hir::HirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
+        _ => "E_HIR",
+    }
+}
+
 /// Surface the diagnostic family in the CLI prefix so users see what
 /// gate tripped at a glance. `MirCheck` findings (move/init/aliasing
 /// legality) are a distinct family from spine-subset rejections; the
@@ -147,10 +159,22 @@ fn lower_file_to_mir(
 
     let lower_output = hew_hir::lower_program(&state.program, &tco, &hew_hir::ResolutionCtx);
     let mut hir_diagnostics = lower_output.diagnostics;
-    hir_diagnostics.extend(hew_hir::verify_hir(&lower_output.module));
+    // Defense-in-depth: the verifier may emit a second `NotYetImplemented`
+    // for any `Unsupported` placeholder that lacked a prior lowerer
+    // diagnostic. Dedup by (kind, span) so the user sees each problem
+    // once, not twice.
+    let verifier_diags = hew_hir::verify_hir(&lower_output.module);
+    for diag in verifier_diags {
+        let already_present = hir_diagnostics
+            .iter()
+            .any(|d| d.kind == diag.kind && d.span == diag.span);
+        if !already_present {
+            hir_diagnostics.push(diag);
+        }
+    }
     if !hir_diagnostics.is_empty() {
-        for diagnostic in hir_diagnostics {
-            eprintln!("{diagnostic:?}");
+        for diagnostic in &hir_diagnostics {
+            eprintln!("{} {diagnostic:?}", hir_diagnostic_prefix(&diagnostic.kind));
         }
         return Err(());
     }
@@ -263,10 +287,18 @@ pub(crate) fn compile_native_from_program(
 
     let lower_output = hew_hir::lower_program(&state.program, &tco, &hew_hir::ResolutionCtx);
     let mut hir_diagnostics = lower_output.diagnostics;
-    hir_diagnostics.extend(hew_hir::verify_hir(&lower_output.module));
+    let verifier_diags = hew_hir::verify_hir(&lower_output.module);
+    for diag in verifier_diags {
+        let already_present = hir_diagnostics
+            .iter()
+            .any(|d| d.kind == diag.kind && d.span == diag.span);
+        if !already_present {
+            hir_diagnostics.push(diag);
+        }
+    }
     if !hir_diagnostics.is_empty() {
-        for diagnostic in hir_diagnostics {
-            eprintln!("{diagnostic:?}");
+        for diagnostic in &hir_diagnostics {
+            eprintln!("{} {diagnostic:?}", hir_diagnostic_prefix(&diagnostic.kind));
         }
         return Err(());
     }

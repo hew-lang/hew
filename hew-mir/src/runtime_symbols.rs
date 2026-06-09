@@ -51,8 +51,8 @@
 /// the substrate subset that MIR producers can emit today is the
 /// list below.
 // Lexicographically sorted: `hew_actor_*` < `hew_duplex_*` < `hew_lambda_actor_*`
-// < `hew_recv_half_*` < `hew_send_half_*`. Section comments mark
-// the substrate-grouping for readability; the binary-search
+// < `hew_recv_half_*` < `hew_regex_*` < `hew_reply_channel_*` < `hew_send_half_*`.
+// Section comments mark the substrate-grouping for readability; the binary-search
 // invariant is over the flat ordering.
 const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // --- Actor cooperate/link/monitor surface -------------------------------
@@ -93,6 +93,7 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_duplex_try_recv",
     "hew_duplex_try_send",
     // --- Lambda-actor surface (overlays Duplex<Msg, Reply>) -----
+    "hew_lambda_actor_ask",
     "hew_lambda_actor_clone",
     "hew_lambda_actor_downgrade",
     "hew_lambda_actor_new",
@@ -106,6 +107,54 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // --- RecvHalf<T> ---------------------------------------------
     "hew_recv_half_recv",
     "hew_recv_half_try_recv",
+    // --- Regex runtime ABI (slice 4 allowlist; codegen/FFI wired in slice 5) -
+    // `hew_regex_capture(scrutinee: *const u8, literal_id: i64, capture_idx: i64)
+    //   -> *mut u8` — returns a heap-allocated (strdup-style) NUL-terminated
+    //   C string for the capture group at `capture_idx`, or null if the group
+    //   did not participate in the match. MIR lowering emits this for each named
+    //   capture in a regex arm; the null check drives a branch to the next arm
+    //   (fail-closed: missing capture ≠ empty string).
+    //   WHY not `hew_regex_match` returns captures: keeping match and extraction
+    //   separate lets codegen materialise only the captures the arm body actually
+    //   reads. WHEN-OBSOLETE: if the runtime gains a single-call
+    //   match-and-capture-all API the producer would switch; the MIR shape
+    //   (one CallRuntimeAbi per capture + null check) would still be correct.
+    //   WHAT: `hew-runtime/src/regex.rs` `extern "C" fn hew_regex_capture` (slice 5).
+    "hew_regex_capture",
+    // `hew_regex_compile(pattern: *const u8, len: i64) -> *mut HewRegex` — called
+    //   from module-init (slice 5) to compile each pattern and store the handle
+    //   in the corresponding global slot. Allowlisted here (slice 4) so the MIR
+    //   module-init emission in slice 5 can validate the symbol at construction.
+    //   MIR lowering in `lower_match` does NOT emit this call; the lit-id i64
+    //   constant is the indirection that slice 5 resolves to the global handle.
+    //   WHY separate from `hew_regex_match`: compile once at module init, match
+    //   many times at call sites. WHEN-OBSOLETE: never for the compile/match
+    //   split — the split is substrate-correct.
+    "hew_regex_compile",
+    // `hew_regex_free_capture(ptr: *mut u8) -> void` — frees a capture string
+    //   returned by `hew_regex_capture`. MIR lowering emits this call at arm-body
+    //   exit (for each non-null capture that was extracted on the success path) and
+    //   on the null-fail paths when earlier captures were already allocated before a
+    //   later capture returned null. Mirrors `libc::free` but isolates the alloc ABI.
+    //   WHY a wrapper: if the runtime's string allocator changes, only this wrapper
+    //   needs updating, not codegen. WHEN-OBSOLETE: if MIR gains a typed
+    //   `Instr::CStringDrop` the producer switches to that and this symbol is retired.
+    //   SHIM: body-exit free only covers straight-line arm bodies; bodies with early
+    //   returns or trap paths would leak. Real fix requires scope-exit cleanup
+    //   primitives in MIR (v0.6 substrate lane).
+    "hew_regex_free_capture",
+    // `hew_regex_match(scrutinee: *const u8, literal_id: i64) -> i32` — returns
+    //   1 if the pattern for `literal_id` matches, 0 otherwise. `literal_id`
+    //   is the 0-based index into the module's regex-literal global array; the
+    //   runtime resolves it to the compiled `*HewRegex` handle and calls
+    //   `regex_is_match`. Returning i32 (not bool/i1) to match the C ABI
+    //   convention used by other predicate-returning runtime entries.
+    //   WHY id-keyed not handle-keyed: MIR does not yet have a `Place::RegexHandle`
+    //   primitive; the id-to-handle resolution inside the runtime is the slice-5
+    //   concern (module-init global array). WHEN-OBSOLETE: if MIR gains a global
+    //   slot place the producer would pass the handle directly and the id indirection
+    //   would be removed. WHAT: `hew-runtime/src/regex.rs` (slice 5).
+    "hew_regex_match",
     // --- Reply channel surface (select{} actor-ask arm) ----------
     // `hew_reply_channel_cancel(ch) -> void`
     // (`hew-runtime/src/reply_channel.rs:440`). Marks a reply channel

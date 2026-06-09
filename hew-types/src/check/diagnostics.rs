@@ -582,6 +582,7 @@ impl Checker {
     ) -> bool {
         let kind_name = match pattern {
             Pattern::Literal(_) => "literal",
+            Pattern::Regex { .. } => "regex",
             Pattern::Wildcard
             | Pattern::Identifier(_)
             | Pattern::Constructor { .. }

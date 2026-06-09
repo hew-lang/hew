@@ -1704,8 +1704,25 @@ impl Checker {
         reason = "machine registration covers states, events, and generated methods"
     )]
     pub(super) fn register_machine_decl(&mut self, md: &MachineDecl) {
-        let machine_ty = Ty::normalize_named(md.name.clone(), vec![]);
+        // Build the machine's self-type: `Machine` or `Machine<T, U, …>`.
+        // MachineDecl.type_params is Vec<String> (bare identifiers), unlike
+        // RecordDecl which uses Option<Vec<TypeParam>>. We treat each param
+        // name as a Ty::Named with no further args, matching how record
+        // constructors thread type params into their return type.
+        let type_param_names: Vec<String> = md.type_params.clone();
+        let machine_generic_args: Vec<Ty> = type_param_names
+            .iter()
+            .map(|name| Ty::Named {
+                name: name.clone(),
+                args: vec![],
+            })
+            .collect();
+        let machine_ty = Ty::normalize_named(md.name.clone(), machine_generic_args);
+
         let event_type_name = format!("{}Event", md.name);
+        // The companion event enum is always non-generic: v0.5 generic machine
+        // values are not codegen-supported (see MachineDecl.type_params doc
+        // comment). Events carry concrete payload fields only.
         let event_ty = Ty::Named {
             name: event_type_name.clone(),
             args: vec![],
@@ -1717,10 +1734,13 @@ impl Checker {
         for state in &md.states {
             if state.fields.is_empty() {
                 variants.insert(state.name.clone(), VariantDef::Unit);
-                // Register unit state constructor as a function
+                // Register unit state constructor as a function. For generic
+                // machines (e.g. `machine Worker<T>`), the constructor returns
+                // `Worker<T>` so callers can instantiate with concrete args.
                 self.fn_sigs.insert(
                     state.name.clone(),
                     FnSig {
+                        type_params: type_param_names.clone(),
                         return_type: machine_ty.clone(),
                         is_pure: true,
                         ..FnSig::default()
@@ -1747,7 +1767,7 @@ impl Checker {
         let type_def = TypeDef {
             kind: TypeDefKind::Machine,
             name: md.name.clone(),
-            type_params: vec![],
+            type_params: type_param_names,
             fields: HashMap::new(),
             variants,
             methods: HashMap::new(),
@@ -1933,9 +1953,19 @@ impl Checker {
             // that `state.field` access resolves correctly for payload states.
             // (`state` rather than `self` to avoid confusion with actor self)
             self.env.push_scope();
+            // Bind `state` as the machine self-type, preserving generic args
+            // so that field access on generic machines resolves correctly.
+            let transition_machine_args: Vec<Ty> = md
+                .type_params
+                .iter()
+                .map(|name| Ty::Named {
+                    name: name.clone(),
+                    args: vec![],
+                })
+                .collect();
             self.env.define(
                 "state".to_string(),
-                Ty::normalize_named(md.name.clone(), vec![]),
+                Ty::normalize_named(md.name.clone(), transition_machine_args),
                 false,
             );
             // Bind `event` as the event companion enum type so that
@@ -3157,8 +3187,9 @@ impl Checker {
     /// trait impls cannot be hung off `type_defs`:
     ///
     /// * Primitives — keyed by `Ty::canonical_lowering_name()`.  This collapses
-    ///   the user-facing alias set (`int`/`Int`/`isize` → `i64`) so registration
-    ///   and dispatch agree on a single key.
+    ///   the user-facing alias set (`isize` → `i64`) so registration and
+    ///   dispatch agree on a single key.  `int` and `Int` are no longer
+    ///   accepted; the resolver hard-errors at the type-position lookup.
     /// * Compiler-builtin generics `Vec`, `HashMap`, `HashSet` — keyed by their
     ///   bare name; these already lack a `type_defs` entry that user impls can
     ///   attach methods to.
@@ -3611,7 +3642,17 @@ impl Checker {
                         (span.clone(), self.current_module.clone()),
                     );
                 }
-                self.register_user_module(&short, resolved_items, &decl.spec);
+                // Dedup pure-Hew modules (e.g. `std::fs`) that may be transitively
+                // imported by multiple stdlib sub-modules.  Without this guard,
+                // each referring module's `ImportDecl` carries its own
+                // `resolved_items` copy and `register_user_module` would register
+                // types like `IoError` once per importer, triggering duplicate-
+                // definition errors.  The `registered_stdlib_hew_sources` set tracks
+                // by canonical `module_path` so all `import std::fs` ImportDecls
+                // collapse to the same key.
+                if !self.stdlib_hew_source_already_registered(decl, &module_path) {
+                    self.register_user_module(&short, resolved_items, &decl.spec);
+                }
             }
         } else if let Some(error) =
             Self::unresolved_import_error(decl, import_span, &module_path, load_error_detail)
@@ -3621,10 +3662,21 @@ impl Checker {
     }
 
     fn stdlib_hew_source_identity(decl: &ImportDecl, module_path: &str) -> String {
-        decl.resolved_source_paths.first().map_or_else(
-            || format!("module:{module_path}"),
-            |path| format!("path:{}", path.display()),
-        )
+        // Always prefer the canonical module-path key when available so that
+        // multiple ImportDecl objects for the same stdlib module (e.g. `import
+        // std::fs` appearing in quic.hew, tls.hew, and the user file) all hash
+        // to the same identity string even when only some of them have a
+        // resolved_source_paths populated.  Using the file path as the primary
+        // key produces two different strings for the same logical module and
+        // defeats the registered_stdlib_hew_sources dedup guard.
+        if module_path.is_empty() {
+            decl.resolved_source_paths.first().map_or_else(
+                || String::from("module:"),
+                |p| format!("path:{}", p.display()),
+            )
+        } else {
+            format!("module:{module_path}")
+        }
     }
 
     fn unresolved_import_error(

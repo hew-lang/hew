@@ -6,6 +6,8 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::events::{trace_event_meta, TraceEventTone};
+
 // ---------------------------------------------------------------------------
 // Named colour constants
 // ---------------------------------------------------------------------------
@@ -166,13 +168,19 @@ pub fn connection_state_colour(state: &str) -> Color {
     }
 }
 
+pub fn trace_event_tone_colour(tone: TraceEventTone) -> Color {
+    match tone {
+        TraceEventTone::Accent => ACCENT,
+        TraceEventTone::Healthy => STATE_HEALTHY,
+        TraceEventTone::Warning => STATE_WARNING,
+        TraceEventTone::Error => STATE_ERROR,
+        TraceEventTone::Stopped => STATE_STOPPED,
+        TraceEventTone::Primary => TEXT_PRIMARY,
+    }
+}
+
 /// Map a trace event type to its (glyph, colour) pair for the timeline chart.
 pub fn timeline_event_glyph(event_type: &str) -> (char, Color) {
-    match event_type {
-        "spawn" => ('\u{25C6}', STATE_HEALTHY), // diamond
-        "crash" => ('\u{2715}', STATE_ERROR),   // multiply sign
-        "send" => ('\u{25CF}', ACCENT),         // filled circle
-        "stop" => ('\u{25C7}', STATE_STOPPED),  // open diamond
-        _ => ('\u{00B7}', TEXT_PRIMARY),        // middle dot
-    }
+    let meta = trace_event_meta(event_type);
+    (meta.glyph, trace_event_tone_colour(meta.tone))
 }

@@ -328,7 +328,7 @@ fn method_call_receiver_kinds_record_string_stream_dispatch() {
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<string>) {
-    let _ = s.map((item) => item);
+    let _ = s.map(|item| item);
 }
 ",
     );
@@ -356,7 +356,7 @@ fn method_call_receiver_kinds_record_bytes_stream_dispatch() {
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<bytes>) {
-    let _ = s.filter((item) => item.len() > 0);
+    let _ = s.filter(|item| item.len() > 0);
 }
 ",
     );
@@ -1687,14 +1687,18 @@ fn rc_generic_wrapper_payload_rejected() {
 
 #[test]
 fn rc_generic_lambda_payload_rejected() {
+    // Generic lambda `<T>(val: T) -> Rc<T> => ...` was removed in v0.5.
+    // The Rc<non-Copy> restriction is still enforced: use a named generic
+    // function, which is the correct post-v0.5 spelling.
     let output = typecheck_inline(
         r#"
         type Labelled {
             name: string
         }
 
+        fn wrap<T>(val: T) -> Rc<T> { Rc::new(val) }
+
         fn main() {
-            let wrap = <T>(val: T) -> Rc<T> => Rc::new(val);
             let _ = wrap(Labelled { name: "hello" });
         }
         "#,
@@ -1704,7 +1708,7 @@ fn rc_generic_lambda_payload_rejected() {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("Rc only accepts Copy payloads")
         }),
-        "generic Rc<T> lambdas should fail closed until payload support is proven, got: {:#?}",
+        "Rc<non-Copy> must be rejected via generic fn (fail-closed), got: {:#?}",
         output.errors
     );
 }
@@ -3362,7 +3366,7 @@ fn rc_vec_map_rejected() {
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Vec<Rc<i64>> {
-            h.v.map((x: Rc<i64>) => x)
+            h.v.map(|x: Rc<i64>| x)
         }",
         "Vec.map(_) on Vec<Rc<i64>>",
     );
@@ -3374,7 +3378,7 @@ fn rc_vec_filter_rejected() {
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Vec<Rc<i64>> {
-            h.v.filter((x: Rc<i64>) => x.get() > 0)
+            h.v.filter(|x: Rc<i64>| x.get() > 0)
         }",
         "Vec.filter(_) on Vec<Rc<i64>>",
     );
@@ -3386,7 +3390,7 @@ fn rc_vec_fold_rejected() {
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Rc<i64> {
-            h.v.fold(Rc::new(0), (acc: Rc<i64>, x: Rc<i64>) => x)
+            h.v.fold(Rc::new(0), |acc: Rc<i64>, x: Rc<i64>| x)
         }",
         "Vec.fold(_, _) on Vec<Rc<i64>>",
     );
@@ -5012,7 +5016,7 @@ fn lambda_unknown_return_annotation_single_error() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let _f = () -> UnknownType => 1;
+            let _f = || -> UnknownType { 1 };
         }
         ",
     );

@@ -1,0 +1,15 @@
+// Accept: two-type-parameter generic enum Result<T, E> — end-to-end lowering.
+// Result::Ok(7) must lower through HIR EnumLayoutRegistry → MIR → codegen
+// and exit 7.
+enum Result<T, E> {
+    Ok(T);
+    Err(E);
+}
+
+fn main() -> i64 {
+    let x: Result<i64, bool> = Result::Ok(7);
+    match x {
+        Result::Ok(v) => v,
+        Result::Err(e) => 0,
+    }
+}

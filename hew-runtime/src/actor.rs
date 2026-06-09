@@ -28,6 +28,44 @@ use crate::reply_channel::{self, HewReplyChannel};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::scheduler;
 
+// ── Crash teardown ordering hook ─────────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+type CrashTeardownOrderHook = Option<fn(c_int)>;
+
+#[cfg(not(target_arch = "wasm32"))]
+static CRASH_TEARDOWN_ORDER_HOOK: Mutex<CrashTeardownOrderHook> = Mutex::new(None);
+
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub const HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION: c_int = 1;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub const HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION: c_int = 2;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub fn hew_actor_set_crash_teardown_order_hook(hook: Option<fn(c_int)>) {
+    let mut guard = CRASH_TEARDOWN_ORDER_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = hook;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_crash_teardown_order_hook(event: c_int) {
+    let hook = {
+        let guard = CRASH_TEARDOWN_ORDER_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard
+    };
+    if let Some(hook) = hook {
+        hook(event);
+    }
+}
+
 // ── Thread-local local ask error ────────────────────────────────────────
 
 thread_local! {
@@ -3457,7 +3495,9 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
 
     // Propagate exit to linked actors and notify monitors.
     // Do this BEFORE notifying supervisor to ensure proper ordering.
+    run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION);
     crate::link::propagate_exit_to_links(actor_id, error_code);
+    run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION);
     crate::monitor::notify_monitors_on_death(actor_id, terminal);
 
     // Wake any actor group condvars waiting on this actor.

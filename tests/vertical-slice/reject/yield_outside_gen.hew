@@ -1,0 +1,5 @@
+// Reject fixture: bare `yield` at function scope (not inside gen{}).
+// Expected: YieldOutsideGenerator diagnostic.
+fn main() {
+    yield 1;
+}

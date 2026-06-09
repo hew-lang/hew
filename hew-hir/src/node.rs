@@ -1,25 +1,27 @@
 use std::collections::HashMap;
 
-use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
-use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy};
+use hew_parser::ast::{BinaryOp, OverflowPolicy, Span};
+use hew_types::{ChildSlot, ExecutionContextReader, ResolvedTy, VariantMatch};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
-use crate::monomorph::{MonomorphizedFn, RecordLayout};
-use crate::value_class::TypeClassTable;
+use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
+use crate::value_class::{ResourceMarker, TypeClassTable};
 use crate::{IntentKind, ValueClass};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
     pub items: Vec<HirItem>,
     /// Per-named-type classification table populated during HIR lowering from
-    /// each `Item::TypeDecl` carrying a `#[resource]` or `#[linear]` marker.
+    /// each `Item::TypeDecl` carrying a user marker and from compiler-known
+    /// substrate registrations.
     /// Keyed by type name; value is `(marker, close_method_name)` where
     /// `close_method_name` is `Some(name)` for `@resource` types (the
     /// consuming method named `close`) and `None` for `@linear` and `None`-
-    /// marked types.
+    /// marked types. `BitCopy` substrate registrations are resolved through
+    /// `lookup_type_marker`.
     ///
     /// This is the single authority for downstream phases asking "is this
-    /// Named type a resource/linear?" — `ValueClass::of_ty(ty, &type_classes)`
+    /// Named type resource/linear/`BitCopy`?" — `ValueClass::of_ty(ty, &type_classes)`
     /// reads from here. No phase re-derives the answer by walking the parser
     /// AST. LESSONS: `type-info-survival`.
     pub type_classes: TypeClassTable,
@@ -72,6 +74,22 @@ pub struct HirModule {
     /// LESSONS: `producer-bridge-before-codegen` (P1),
     /// `checker-authority` (P0).
     pub record_layouts: Vec<RecordLayout>,
+    /// Distinct generic-enum instantiations observed at enum-ctor sites
+    /// and match scrutinees in this module. Populated from the HIR mono
+    /// pass discovery walker during HIR lowering. Each entry pairs a
+    /// generic origin `ItemId` with concrete `Vec<ResolvedTy>` args, a
+    /// mangled symbol name, and the variant shape after type-parameter
+    /// substitution. Insertion-ordered for deterministic codegen.
+    ///
+    /// Empty when no user generic enum instantiation sites exist. Downstream
+    /// MIR and codegen consumers iterate this list to emit one `EnumLayout`
+    /// per entry under the mangled name. The registry is the substrate that
+    /// consumed by MIR layout-gather and codegen to emit one `EnumLayout`
+    /// per instantiation under the mangled name.
+    ///
+    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// `checker-authority` (P0).
+    pub enum_layouts: Vec<EnumLayout>,
     /// Per-field-access `SiteId` → `ChildSlot` for supervisor child accessor
     /// expressions. Populated during HIR lowering from the checker's
     /// `supervisor_child_slots` side-table (keyed by span) by translating each
@@ -85,6 +103,18 @@ pub struct HirModule {
     ///
     /// LESSONS: `checker-authority` (P0), `producer-bridge-before-codegen` (P1).
     pub supervisor_child_slots: HashMap<SiteId, ChildSlot>,
+    /// Module-level regex literal table. Each distinct compiled pattern
+    /// observed in match arms (keyed by normalized pattern string — no flags
+    /// in v0.5) is allocated one entry here, deduplicated by string equality.
+    ///
+    /// Each `HirRegexLiteral` carries the 0-based index (its own position in
+    /// this `Vec`) as `literal_id`, so MIR/codegen can use the index directly
+    /// as the global-slot reference without scanning the table.
+    ///
+    /// MIR lowering (slice 4) will emit a module-init call that compiles
+    /// each entry and stores the `*HewRegex` handle in a global slot indexed
+    /// by `literal_id`. Codegen (slice 5) wires the global-slot reference.
+    pub regex_literals: Vec<HirRegexLiteral>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -197,6 +227,17 @@ pub struct HirActorReceiveFn {
 }
 
 /// Actor-state guard policy carried by dispatchable actor HIR nodes.
+///
+/// This enum is intentionally closed at one variant.  The checker is the only
+/// producer of `HirActorStateGuard` values; MIR lowers the variant to a
+/// `requires_state_guard: bool` field on `ActorHandlerLayout` via an
+/// exhaustive `match` that is a compile error if a new variant is added.
+///
+/// Adding a variant (e.g. `Shared` for read-only handlers) requires:
+/// 1. A corresponding `match` arm in `hew_mir::lower::lower_actor_handler_layouts`
+///    that maps the new policy to the correct `requires_state_guard` value.
+/// 2. Checker logic to produce the new variant for the appropriate handler forms.
+/// 3. A MIR acceptance test that verifies the layout propagation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HirActorStateGuard {
     /// Generated dispatch acquires exclusive actor-state access for the body.
@@ -239,8 +280,8 @@ pub enum HirLifecycleHookKind {
     /// `#[on(stop)]` — runs during actor shutdown. May appear multiple
     /// times per actor; runs in lexical declaration order.
     Stop,
-    /// `#[on(crash)]` — runs when the actor body traps. Takes a
-    /// `PanicInfo` parameter and returns `CrashAction`.
+    /// `#[on(crash)]` — runs when the actor body traps. Takes the stdlib
+    /// crash-info payload parameter and returns the stdlib crash action enum.
     Crash,
     /// `#[on(upgrade)]` — reserved marker for hot-upgrade flows. No
     /// runtime invocation in v0.5.
@@ -440,8 +481,75 @@ pub struct HirTypeDecl {
     /// per-instantiation layout and (b) substitute field types when
     /// constructing one.
     pub type_params: Vec<String>,
+    /// Struct-form field types in declaration order. Empty for enum-kind
+    /// type decls (enums have no struct fields; their variants are in
+    /// `variants`).
     pub fields: Vec<HirField>,
+    /// All enum variants in declaration order — unit, tuple, and struct shapes.
+    /// Empty for struct-kind type decls. The tag ordinal for each variant is
+    /// its position within this vec (0-based) and matches the index assigned
+    /// in `LowerCtx::machine_ctor_registry` for the qualified `Type::Variant`
+    /// key, so MIR's `EnumLayout.variants` lines up 1:1 with this list.
+    ///
+    /// MIR consumes this to populate `EnumLayout.variants` (including
+    /// `field_tys` per variant) without re-reading the parser AST. Generic
+    /// enums (those with non-empty `type_params`) are fail-closed at MIR
+    /// lowering — they require monomorphisation-keyed layouts which the
+    /// next-stage `EnumLayoutRegistry` lane will land.
+    pub variants: Vec<HirVariant>,
     pub span: Span,
+}
+
+/// One variant of an enum-kind `HirTypeDecl`. Mirrors the shape distinctions
+/// in `hew_parser::ast::VariantKind` but with payload types fully resolved
+/// against the module's type scope so MIR/codegen never re-walk the parser AST.
+///
+/// `tag_idx` is implicit: it is this variant's position within
+/// `HirTypeDecl.variants` and matches the MIR/codegen `EnumLayout.variants`
+/// ordering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirVariant {
+    pub name: String,
+    pub kind: HirVariantKind,
+}
+
+/// Payload shape of an `HirVariant`. Unit variants carry no payload (tag
+/// only); tuple variants carry positional payload types in declaration order;
+/// struct variants carry `(name, ty)` pairs in declaration order.
+///
+/// MIR's `EnumLayout` builder flattens both `Tuple` and `Struct` into a single
+/// positional `field_tys` list — variant field NAMES are MIR-irrelevant (see
+/// D1 in the lane plan). Names are retained here for diagnostics and for the
+/// `Expr::StructInit` lowering path which validates source-declared field
+/// names against the variant's declared field set before emitting payload
+/// store instructions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirVariantKind {
+    Unit,
+    Tuple(Vec<ResolvedTy>),
+    Struct(Vec<(String, ResolvedTy)>),
+}
+
+impl HirVariant {
+    /// Positional payload types in declaration order. Empty for `Unit`,
+    /// returns the tuple element types directly for `Tuple`, and projects
+    /// `(_, ty)` from each struct field for `Struct`. MIR's `EnumLayout`
+    /// builder consumes this to populate `MachineVariantLayout.field_tys`.
+    #[must_use]
+    pub fn field_tys(&self) -> Vec<ResolvedTy> {
+        match &self.kind {
+            HirVariantKind::Unit => Vec::new(),
+            HirVariantKind::Tuple(tys) => tys.clone(),
+            HirVariantKind::Struct(fields) => fields.iter().map(|(_, ty)| ty.clone()).collect(),
+        }
+    }
+
+    /// True for `Unit` variants. Used by the ctor-arity gate in the call /
+    /// struct-init lowering paths.
+    #[must_use]
+    pub fn is_unit(&self) -> bool {
+        matches!(self.kind, HirVariantKind::Unit)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -492,7 +600,10 @@ pub struct HirStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmtKind {
     Let(HirBinding, Option<HirExpr>),
-    Assign { target: HirExpr, value: HirExpr },
+    Assign {
+        target: HirExpr,
+        value: Box<HirExpr>,
+    },
     Expr(HirExpr),
     Return(Option<HirExpr>),
 }
@@ -511,6 +622,24 @@ pub struct HirExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirExprKind {
     Literal(HirLiteral),
+    /// A reference to a compiled regex literal in the module's literal table.
+    ///
+    /// Produced from `Expr::RegexLiteral` when the pattern appears as a
+    /// standalone expression (e.g. `let r = re"hello";`). Match-arm patterns
+    /// `re"..."` are lowered directly into `HirMatchArmPredicate::Regex`
+    /// without emitting a `RegexLiteralRef` node for the pattern itself;
+    /// the literal table entry is still allocated via `alloc_regex_literal`.
+    ///
+    /// `literal_id` is the 0-based index into `HirModule::regex_literals`.
+    /// MIR lowering (slice 4) will load the compiled handle from the
+    /// corresponding global slot. Codegen (slice 5) wires the global.
+    ///
+    /// Type: `ResolvedTy::Regex` (the opaque regex handle type).
+    RegexLiteralRef {
+        literal_id: u32,
+        pattern: String,
+        captures: Vec<String>,
+    },
     BindingRef {
         name: String,
         resolved: ResolvedRef,
@@ -795,7 +924,275 @@ pub enum HirExprKind {
         event_idx: usize,
         fields: Vec<(String, HirExpr)>,
     },
+    /// `m.step(event) -> ()` — advance the machine one step.
+    ///
+    /// The checker has verified that `receiver` is a mutable binding and that
+    /// `event` matches the `NameEvent` companion enum.  MIR/codegen consumers
+    /// lower this to a call to the internal `<machine_name>__step` helper
+    /// followed by a store-back into the receiver's binding slot (slice 6).
+    ///
+    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
+    MachineStep {
+        machine_name: String,
+        receiver: Box<HirExpr>,
+        event: Box<HirExpr>,
+    },
+    /// `m.state_name() -> String` — current state tag as a string.
+    ///
+    /// MIR/codegen consumers lower this to a static string-table lookup on
+    /// the tag field of the machine value (slice 6).
+    ///
+    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
+    MachineStateName {
+        machine_name: String,
+        receiver: Box<HirExpr>,
+    },
+    /// Tagged-union variant constructor — shared by machine states and user-defined
+    /// enum unit variants.
+    ///
+    /// **Machine states**: produced by HIR lowering when an `Expr::Identifier` or
+    /// `Expr::StructInit` names a declared state of the enclosing machine — either
+    /// a bare state reference like `Green` (unit state, no payload) or a struct-init
+    /// form like `SynReceived { remote_port: remote_port }` (state with payload).
+    ///
+    /// **User-defined enum unit variants**: produced by HIR lowering when an
+    /// `Expr::Identifier` resolves to a unit variant of an enum type declared with
+    /// `type Colour { enum Red; Green; Blue; }`. The same tagged-union substrate
+    /// (`Place::MachineTag` / `EnumLayout`) handles both surface forms.
+    ///
+    /// Unlike a record `StructInit`, this is HIR-side-resolved: the checker did
+    /// not assign a side-table type for this site (machine state names and user
+    /// enum variant names are not in the checker's record or type scope). HIR
+    /// derives the result type as `ResolvedTy::Named { name: machine_name, args: [] }`
+    /// because a state/variant constructor IS the tagged-union value at that variant.
+    /// This is intentional deviation from the `checker-authority` pattern and is
+    /// documented here to make it findable.
+    ///
+    /// `machine_name`: the unqualified tagged-union type name. For machine states
+    ///   this is the machine type (e.g. `"TrafficLight"`). For user enum variants
+    ///   this is the enum type (e.g. `"Colour"`). The MIR consumer looks up the
+    ///   layout in the shared `MachineLayoutMap` / `EnumLayout` registry by this name.
+    /// `state_idx`: zero-based ordinal of this variant within the tagged union.
+    ///   For machine states: index into `HirMachineDecl.states` (declaration order).
+    ///   For user enum variants: position within `HirTypeDecl.variants` (declaration
+    ///   order across unit + tuple + struct shapes — same index the
+    ///   ctor-registry pre-pass assigns).
+    /// `payload`: `None` for unit states/variants; `Some(fields)` for states
+    ///   and variants with payload. For tuple variants the field NAMES are
+    ///   synthetic `"0"`, `"1"`, ... — MIR discards them and indexes by
+    ///   position (see lane-plan D1).
+    ///
+    /// MIR consumers: build a tagged-union value with the given tag and store payload
+    /// fields via `Place::MachineTag` / `Place::MachineVariant` primitives.
+    MachineVariantCtor {
+        machine_name: String,
+        state_idx: usize,
+        payload: Option<Vec<(String, HirExpr)>>,
+    },
+    /// Read a payload field from the machine value bound to `self` inside a
+    /// transition body. Resolved when `Expr::FieldAccess { object: Expr::This, field }`
+    /// appears inside a machine transition body.
+    ///
+    /// `machine_name`: enclosing machine type name.
+    /// `state_idx`: source state index (the transition's `from` state), which
+    ///   determines which variant's payload fields are in scope. Tag dominance
+    ///   is guaranteed by the transition dispatch context (Slice 4b).
+    /// `field_idx`: zero-based index into that state's `HirMachineState.fields`.
+    /// `field_name`: the field name for diagnostics and dump output.
+    ///
+    /// HIR derives the result type from `HirMachineState.fields[field_idx].ty`
+    /// (same HIR-side-authority deviation as `MachineVariantCtor`).
+    ///
+    /// MIR consumers: load via `Place::MachineVariant { binding: <self-binding>,
+    /// variant_idx: state_idx, field_idx }` (Slice 4b).
+    MachineFieldAccess {
+        machine_name: String,
+        state_idx: usize,
+        field_idx: usize,
+        field_name: String,
+    },
+    /// `while cond { body }` — loops until `cond` evaluates to false.
+    ///
+    /// The expression type is always `Unit`; a while loop never produces
+    /// a value.  MIR lowering emits a header block (condition test) and
+    /// a body block with a back-edge to the header.
+    While {
+        condition: Box<HirExpr>,
+        body: HirBlock,
+    },
+    /// `for binding in start..end { body }` — Range iteration
+    /// (exclusive or inclusive) over an integer range.
+    ///
+    /// This node is produced only for `Range`-typed iterables; other
+    /// iterable types (Vec, Stream, etc.) are not yet implemented and
+    /// cause HIR lowering to emit `NotYetImplemented`.
+    ///
+    /// The expression type is always `Unit`.  MIR lowering emits a
+    /// counter local (typed `i64`), a header block (bounds check), a
+    /// body block, and a back-edge.
+    ForRange {
+        /// The loop-variable binding.  Immutable, scoped to each
+        /// iteration; MIR lowering overwrites the backing local on every
+        /// iteration rather than allocating a new one each time.
+        binding: HirBinding,
+        /// Resolved start expression (the left side of `..`).
+        start: Box<HirExpr>,
+        /// Resolved end expression (the right side of `..` / `..=`).
+        end: Box<HirExpr>,
+        /// `true` for `..=` (inclusive upper bound).
+        inclusive: bool,
+        /// Loop body.
+        body: HirBlock,
+    },
+    /// `match scrutinee { arm; arm; ... }` — tag-dispatch over an enum-typed
+    /// scrutinee. Produced exclusively from `Expr::Match` when the type
+    /// checker has resolved each accepted arm's pattern via the
+    /// `pattern_resolutions` side table.
+    ///
+    /// **Scope (v0.5 monomorphic enum substrate)**: unit-variant patterns
+    /// (`Colour::Red`), payload-bearing constructor patterns over monomorphic
+    /// enums (`Shape::Line(x)`, `Shape::Box { w, h }`), and wildcard arms
+    /// (`_`) are lowered here. Pattern guards, literal patterns,
+    /// tuple-without-ctor patterns, and or-patterns are still rejected at HIR
+    /// lowering with a structured `NotYetImplemented` diagnostic. Generic
+    /// Generic enums (`Option<T>`, `Result<T,E>`) are fully supported
+    /// via the `EnumLayoutRegistry` substrate introduced in the
+    /// generic-enum-monomorphisation lane.
+    ///
+    /// **Exhaustiveness**: enforced by the type checker at
+    /// `hew-types/src/check/diagnostics.rs::check_exhaustiveness`. A
+    /// non-exhaustive enum match is a hard error before HIR lowering
+    /// produces this node. The MIR producer additionally emits a
+    /// `Terminator::Trap { kind: ExhaustivenessFallthrough }` block at the
+    /// chain's tail as a fail-closed runtime guard
+    /// (LESSONS `match-fail-closed`).
+    Match {
+        /// The matched expression. Its `ty` is the resolved enum type.
+        scrutinee: Box<HirExpr>,
+        /// Arms in source order. Each arm's `variant_match` is `None` for
+        /// a wildcard arm or `Some(VariantMatch)` for a unit-variant arm.
+        arms: Vec<HirMatchArm>,
+    },
     Unsupported(String),
+}
+
+/// A compiled regex literal observed in a match arm.
+///
+/// Each distinct pattern (by string equality — no flags in v0.5) gets one
+/// entry in `HirModule::regex_literals`. The `literal_id` field is the
+/// 0-based index of this entry in that `Vec`; it matches the global-slot
+/// number that MIR (slice 4) and codegen (slice 5) will use to reference the
+/// compiled `*HewRegex` handle at runtime.
+///
+/// LESSONS: `checker-authority` (P0) — the `captures` list comes from the
+/// `PatternKind::Regex { captures }` resolver output in the type checker;
+/// HIR lowering never re-derives it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirRegexLiteral {
+    /// 0-based position of this entry in `HirModule::regex_literals`. Stable
+    /// across the HIR→MIR→codegen pipeline; used as the global-slot index.
+    pub literal_id: u32,
+    /// The raw pattern string as written in source. No normalisation is
+    /// applied in v0.5 — deduplication is by string equality on the raw
+    /// pattern. Future flag support will key on `(pattern, flags)`.
+    pub pattern: String,
+    /// Named capture groups derived from `PatternKind::Regex { captures }`
+    /// after the checker compiled and validated the pattern. Positional groups
+    /// participate in matching but are not listed here. Each entry is
+    /// `(name, group_index)` where `group_index` is the 1-based regex group
+    /// position (group 0 is the whole match). This preserves the real group
+    /// position across the HIR→MIR boundary so MIR can pass the correct index
+    /// to `hew_regex_capture` even when unnamed groups precede named ones.
+    pub captures: Vec<(String, u32)>,
+}
+
+/// The predicate of one `HirMatchArm`.
+///
+/// `Wildcard` replaces the `None` dual in the old two-field encoding.
+/// `EnumVariant` carries the data that was previously split across
+/// `variant_match: Option<VariantMatch>` and `variant_idx: Option<u32>`.
+/// `Regex` is the new regex-pattern arm added for string-scrutinee matches.
+///
+/// MIR lowering (slice 4) dispatches on this enum; codegen (slice 5) drives
+/// the predicate to the runtime ABI. Paths that are not yet wired must
+/// `todo!("MIR regex predicate — slice 4")` — never silently no-op.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirMatchArmPredicate {
+    /// `_` wildcard — matches any scrutinee value. At most one per match
+    /// expression; the checker enforces this.
+    Wildcard,
+    /// A unit-variant constructor arm (e.g. `Colour::Red`).
+    ///
+    /// `variant_match` is the checker-resolved `(type_name, variant_name)`
+    /// identity. `variant_idx` is the zero-based declaration-order index
+    /// within `HirTypeDecl.unit_variants`; MIR emits the tag-comparison
+    /// constant directly from this field.
+    EnumVariant {
+        variant_match: VariantMatch,
+        variant_idx: u32,
+    },
+    /// A regex literal pattern `re"..."` in a string-scrutinee match arm.
+    ///
+    /// `literal_id` is the index into `HirModule::regex_literals` for the
+    /// compiled pattern. `captures` lists the named capture groups (empty
+    /// when the pattern has none). Each entry is `(name, group_index)` where
+    /// `group_index` is the 1-based regex group position. MIR lowering uses
+    /// these to emit capture-extraction instructions before the arm body,
+    /// passing the real group index to `hew_regex_capture`.
+    Regex {
+        literal_id: u32,
+        pattern: String,
+        captures: Vec<(String, u32)>,
+    },
+}
+
+/// One arm of an `HirExprKind::Match` expression.
+///
+/// `predicate` encodes the arm's matching condition as an explicit enum,
+/// replacing the old two-field `(variant_match, variant_idx)` encoding.
+/// Wildcard arms (`_`) use `HirMatchArmPredicate::Wildcard`; unit-variant
+/// constructor arms use `HirMatchArmPredicate::EnumVariant`; regex-literal
+/// arms use `HirMatchArmPredicate::Regex`.
+///
+/// Payload-bearing constructor patterns carry their per-field bindings in
+/// `bindings`; guards still never produce a `HirMatchArm` and are rejected at
+/// HIR lowering with a structured diagnostic.
+///
+/// `body` is the arm's right-hand-side expression. The arm's source span
+/// is preserved for diagnostics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMatchArm {
+    /// The matching predicate for this arm.
+    pub predicate: HirMatchArmPredicate,
+    /// Payload bindings introduced by this arm's constructor pattern.
+    pub bindings: Vec<HirMatchArmBinding>,
+    /// Arm body expression. Evaluates only when this arm's predicate wins.
+    pub body: HirExpr,
+    /// Source span of the arm (pattern through body).
+    pub span: std::ops::Range<usize>,
+}
+
+/// One named payload binding introduced by a constructor-pattern match arm.
+///
+/// MIR's `lower_match` walks these per arm and emits
+/// `Move { dest: <binding_local>, src: Place::EnumVariant { local:
+/// scrutinee, variant_idx, field_idx } }` at arm-body entry, registering the
+/// `binding_id → local` pair in `binding_locals` so the arm body's identifier
+/// reads resolve correctly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMatchArmBinding {
+    /// Fresh binding id allocated for this slot. Same shape as a `let`
+    /// binding's id — references in the arm body resolve to it via
+    /// `lookup`/`BindingRef`.
+    pub binding: BindingId,
+    /// 0-based index of the payload slot within the variant's `field_tys`
+    /// list. Matches the checker's `PayloadBinding.field_idx`.
+    pub field_idx: u32,
+    /// Surface binding name. Retained for diagnostics and HIR dumps; MIR
+    /// does not look bindings up by name.
+    pub name: String,
+    /// Fully resolved type of the payload slot.
+    pub ty: ResolvedTy,
 }
 
 /// One captured binding inside an `HirExprKind::SpawnLambdaActor`

@@ -52,3 +52,62 @@ pub enum CrashAction {
     Escalate;
     Kill;
 }
+
+/// Identity + class of a crash that propagated to a linked actor.
+///
+/// Delivered (in a future v0.5.x / v0.6 lane) to a linked-actor exit
+/// hook when an actor this one is linked to crashes.  Carries the
+/// crashed actor's identity and the class of crash — nothing else.
+///
+/// WHY (shape): the linked actor must not gain access to the crashed
+/// actor's `PanicInfo` payload (signal number, fault address); cross-
+/// actor visibility into another actor's fault details would couple
+/// linked actors to each other's failure internals.  Identity + class
+/// is sufficient for supervisor-style decisions ("the upstream link
+/// died, drop this work item and re-establish").
+///
+/// WHEN: the runtime substrate is already in place
+/// (`hew-runtime/src/link.rs::propagate_exit_to_links` enqueues
+/// `SYS_MSG_EXIT` in the linked actor's mailbox at the crashed actor's
+/// teardown phase, before any supervisor restart decision).  The user-
+/// facing hook attribute that surfaces this delivery is reserved for a
+/// future lane; this type is the stable name that lane will use.
+///
+/// WHAT (v0.5 shape, integer-tag only per Q45/A22): `actor_id` carries the
+/// crashed actor's id as a raw `u64`.  Future widening to a typed
+/// `LocalPid<A>` requires the linked actor to know A's static type — a
+/// generics-and-trait-bound enhancement deferred until the spine
+/// supports it.
+pub type CrashNotification {
+    /// Numeric identity of the actor that crashed.  Raw `u64` rather
+    /// than `LocalPid<A>` because the linked actor does not in general
+    /// know the crashed actor's static type at the hook site.
+    actor_id: u64;
+    /// Class of the originating crash.  Mirrors the runtime
+    /// `ExitReason` discriminator the supervisor receives.
+    kind: CrashKind;
+}
+
+/// Class of a crash propagated to a linked actor.
+///
+/// Mirrors the runtime `ExitReason` discriminator
+/// (`hew-runtime/src/internal/types.rs::ExitReason`) at the integer-tag
+/// level.  Adding a variant here requires a matching variant on the
+/// runtime side; the converse is not true — the runtime may carry
+/// reason discriminators that are not surfaced to linked actors when
+/// the conservative-default tenet says they should remain private to
+/// the crashed actor and its supervisor.
+///
+/// v0.5 enumerates only the classes the runtime currently distinguishes
+/// at the link-cascade boundary.  Future v0.5.x / v0.6 expansions are
+/// additive.
+pub enum CrashKind {
+    /// Generic crash from `panic(...)`, `hew_panic()`, or an
+    /// unclassified trap (SEGV / BUS / FPE / ILL / TRAP).
+    Crashed;
+    /// Per-actor arena cap exceeded.
+    HeapExceeded;
+    /// A duplex / mailbox partition was observed on a recv path the
+    /// crashed actor was awaiting.
+    PartitionDetected;
+}

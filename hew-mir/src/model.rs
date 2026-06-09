@@ -51,6 +51,68 @@ pub struct IrPipeline {
     /// Codegen (S-D) consumes this to emit the per-supervisor registration
     /// table that the runtime supervisor substrate dispatches against.
     pub supervisor_layouts: Vec<SupervisorLayout>,
+    /// Layout descriptors for every `machine` declaration in the module.
+    /// Populated by `lower_hir_module` from `HirItem::Machine` declarations
+    /// in source order. One entry per machine, in declaration order.
+    ///
+    /// Codegen (Slice 5) consumes this to emit the tagged-union LLVM type
+    /// for each machine: the outer struct carries an integer tag of width
+    /// `tag_width` bits followed by a union payload that covers all variant
+    /// structs. The `variants` vector (populated in Slice 5 from the machine's
+    /// `HirMachineState.fields`) provides the per-variant field type list.
+    ///
+    /// `Place::MachineTag(local)` and `Place::MachineVariant { local, .. }`
+    /// address into this layout; the drop-elaborator (Slice 4c) reads
+    /// `tag_width` and `variants` to emit tag-dominant field drops at
+    /// transition sites.
+    pub machine_layouts: Vec<MachineLayout>,
+    /// Layout descriptors for every user-defined `enum` declaration in the
+    /// module. Populated by `lower_hir_module` from `HirItem::TypeDecl` items
+    /// with `TypeDeclKind::Enum`, in declaration order.
+    ///
+    /// User enums share the same tagged-union substrate as machines.
+    /// `Place::MachineTag` / `Place::MachineVariant` address both forms;
+    /// codegen registers enum layouts via `register_enum_layouts` alongside
+    /// `register_machine_layouts`.
+    ///
+    /// Only unit variants appear in `EnumLayout.variants` for this slice.
+    /// Payload-bearing variants (`VariantKind::Tuple` / `VariantKind::Struct`)
+    /// are not yet supported and will emit a `CodegenError::FailClosed`.
+    pub enum_layouts: Vec<EnumLayout>,
+    /// Regex literals collected from `HirModule::regex_literals`. Each entry
+    /// carries a `literal_id` (0-based index) and the compiled pattern string.
+    /// Codegen uses this to emit a module-level `[N x ptr]` global handle
+    /// array populated by a `@llvm.global_ctors` init function that calls
+    /// `hew_regex_compile` once per pattern before `main` runs.
+    ///
+    /// `literal_id` is the index into this Vec AND the index into the global
+    /// array emitted by codegen, so `literal_id → handle` resolution is a
+    /// direct GEP. The array is populated by the module-init constructor; any
+    /// null result (invalid pattern) traps fail-closed.
+    ///
+    /// WHY not in codegen directly from HIR: `IrPipeline` is the codegen
+    /// substrate boundary; codegen does not re-read HIR. WHEN-OBSOLETE: never
+    /// — the pipeline-field pattern is established for all layout descriptors.
+    pub regex_literals: Vec<RegexLiteral>,
+}
+
+/// A regex literal compiled at module-init time.
+///
+/// One entry per unique pattern in `HirModule::regex_literals`. The
+/// `literal_id` is the 0-based index into `IrPipeline::regex_literals`
+/// AND the index into the global handle array emitted by codegen. Pattern
+/// string validity has already been checked by the type-checker
+/// (`hew-types`), so the compile call at module-init must not fail — if
+/// it does, the module-init trap fires (fail-closed, not null-propagation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegexLiteral {
+    /// 0-based index into `IrPipeline::regex_literals`. Stable across
+    /// the MIR → codegen boundary; MIR producers embed it as `ConstI64`
+    /// arguments to `hew_regex_match` and `hew_regex_capture` calls.
+    pub literal_id: u32,
+    /// The validated regex pattern string. Embedded in the module as a
+    /// NUL-terminated i8 constant; passed to `hew_regex_compile` at init.
+    pub pattern: String,
 }
 
 /// Layout descriptor for a named-form `record` declaration. The codegen
@@ -112,6 +174,29 @@ pub struct ActorHandlerLayout {
     pub msg_type: i32,
     pub param_tys: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
+    /// Whether dispatch of this handler must be bracketed by an exclusive
+    /// actor-state-lock acquire/release pair.
+    ///
+    /// Set to `true` when the checker determined (via `HirActorStateGuard::Exclusive`)
+    /// that the handler body requires exclusive access to the actor's state.
+    /// The acquire/release calls are currently emitted by the runtime scheduler
+    /// (`hew-runtime/src/scheduler.rs:810,870`); this field exists so MIR
+    /// analysis passes (e.g. closures' lock-guard-live-across-yield check)
+    /// and future generated-code bracketing can read the contract without
+    /// re-deriving it from HIR.
+    ///
+    /// `false` is reserved for future pure/read-only handler variants that
+    /// the checker explicitly marks no-mutate.  All handlers produced by the
+    /// current checker carry `HirActorStateGuard::Exclusive`, so this field
+    /// is always `true` today.
+    ///
+    /// Carrying the lock contract as layout metadata (rather than emitted
+    /// instructions) lets MIR analysis and codegen bracketing consume the
+    /// fact without re-examining HIR. Codegen reads this field to decide
+    /// whether to bracket a trampoline dispatch with lock ABI calls. The
+    /// field becomes redundant once codegen emits lock calls inline rather
+    /// than relying on the scheduler acquire/release path.
+    pub requires_state_guard: bool,
 }
 
 /// Layout descriptor for a `supervisor` declaration.
@@ -211,6 +296,105 @@ pub struct SupervisorChildLayout {
     /// Codegen populates `HewChildSpec.arena_cap_bytes` from this field so
     /// the supervisor restart path preserves the cap across crashes.
     pub max_heap_bytes: Option<u64>,
+}
+
+/// Layout descriptor for one state variant in a `machine` declaration.
+///
+/// Each variant corresponds to one `state` declared in the machine's body.
+/// The `field_tys` list carries the payload field types in declaration order
+/// (`HirMachineState.fields` order). For zero-field states (the common case
+/// in v0.5) this vector is empty.
+///
+/// Populated in Slice 5 (`lower_hir_module`'s machine arm) from
+/// `HirMachineState.fields`. Slice 4a declares the struct with an empty
+/// `field_tys` as the metadata anchor; Slice 5 fills the field lists in.
+///
+/// Codegen (Slice 5) uses `field_tys` to emit the per-variant inner
+/// struct body inside the tagged-union LLVM representation. The
+/// `Place::MachineVariant { variant_idx, field_idx, .. }` addressing
+/// primitive indexes into this list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineVariantLayout {
+    /// State name (e.g. `"Red"`, `"Idle"`). Matches `HirMachineState.name`.
+    pub name: String,
+    /// Payload field types in declaration order. Empty for zero-field states.
+    pub field_tys: Vec<ResolvedTy>,
+}
+
+/// Layout descriptor for a `machine` declaration.
+///
+/// Pairs the machine's name and tag-bit-width with its per-state variant
+/// list so codegen (Slice 5) can emit the tagged-union LLVM type and the
+/// `Place::MachineTag` / `Place::MachineVariant` addressing primitives can
+/// be validated without re-reading HIR.
+///
+/// The `variants` vector is in state declaration order — `variants[i]`
+/// corresponds to the i-th `state` in `HirMachineDecl.states` and to
+/// `variant_idx == i` in any `Place::MachineVariant` that names this
+/// machine.
+///
+/// **Slice 4a invariant**: `variants` entries have empty `field_tys`
+/// vectors. Slice 5 populates them when it walks `HirMachineState.fields`
+/// for each state. The layout entry itself (name + `tag_width` + empty
+/// variants) is the metadata anchor that Slice 4b and 4c need to
+/// correctly size the switch and dominance checks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineLayout {
+    /// Machine type name (e.g. `"TrafficLight"`). Matches `HirMachineDecl.name`.
+    pub name: String,
+    /// Bit width of the discriminant tag field. Computed as
+    /// `u32::max(1, (state_count as f64).log2().ceil() as u32)` —
+    /// the minimum number of bits needed to enumerate all states.
+    /// A one-state machine uses a 1-bit tag (two encodings; only 0 is valid)
+    /// rather than zero bits to keep the tag field present in the LLVM struct
+    /// at all times. Codegen selects `iN` where `N = tag_width`.
+    pub tag_width: u32,
+    /// Per-state variant layouts in declaration order.
+    pub variants: Vec<MachineVariantLayout>,
+    /// Event-companion variant layouts in `HirMachineDecl.events`
+    /// declaration order.
+    ///
+    /// The companion enum's tag bit width is
+    /// `max(1, (events.len() as f64).log2().ceil() as u32)` — computed
+    /// on the fly by codegen from `events.len()` so a separate
+    /// `event_tag_width` field is unnecessary. Each entry carries the
+    /// event variant name and its payload field type list (empty for
+    /// unit events like `event Tick;`).
+    ///
+    /// WHY here (not as a free-standing `EventLayout`): the event
+    /// companion enum is constructed 1:1 with its parent machine —
+    /// every machine declaration produces exactly one
+    /// `<Name>Event` enum, registered by `register_machine_decl` in
+    /// `hew-types`. Carrying the event layout alongside the machine
+    /// layout keeps both halves of the step-fn surface together for
+    /// codegen consumption.
+    pub events: Vec<MachineVariantLayout>,
+}
+
+/// Layout descriptor for a user-defined `enum` declaration.
+///
+/// User enums share the tagged-union substrate (`{ tag: iW, payload: [N x i8] }`)
+/// with machine states and event companions. `EnumLayout` is a distinct type
+/// (not a sub-case of `MachineLayout`) to avoid carrying the `events` field,
+/// which has no meaning for user-declared enums.
+///
+/// `variants` lists all variants in declaration order (matching the index
+/// `machine_ctor_registry` assigned as `variant_idx`). Each `MachineVariantLayout`
+/// entry carries the variant name and its payload field types; only unit variants
+/// have empty `field_tys` in the current slice. Payload-bearing variants are
+/// allowed in the layout but their construction is not yet lowered — an attempt
+/// to construct them produces `CodegenError::FailClosed`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumLayout {
+    /// Enum type name. Matches `ResolvedTy::Named { name, .. }` for
+    /// an enum-typed local.
+    pub name: String,
+    /// Bit width of the discriminant tag. Computed as
+    /// `u32::max(1, (variant_count as f64).log2().ceil() as u32)`.
+    pub tag_width: u32,
+    /// Per-variant layouts in declaration order. Index `i` matches the
+    /// `variant_idx` stored in `machine_ctor_registry` for this enum's ctors.
+    pub variants: Vec<MachineVariantLayout>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -540,6 +724,23 @@ pub enum TrapKind {
     /// must stay in lock-step with `HEW_TRAP_SUPERVISOR_CHILD_UNAVAILABLE` in
     /// `hew-runtime/src/supervisor.rs`. Producer: S2 (`FieldAccess` intercept).
     SupervisorChildUnavailable,
+    /// Machine `<Name>__step` dispatch reached a state×event combination that
+    /// has no transition. Per LESSONS `fail-closed-not-pretend` (P0), MIR
+    /// surfaces a typed trap rather than silently returning the receiver
+    /// unchanged or fabricating a target state. HIR exhaustiveness checks
+    /// already guarantee this trap is dead code in well-typed programs; the
+    /// trap proves the property at runtime and is the fail-closed surface
+    /// that future codegen grows into when the state×event dispatch tree
+    /// replaces the synthesised step function's single-block stub.
+    MachineDispatchUnreachable,
+    /// `match` expression dispatch fell through every arm at runtime. Per
+    /// LESSONS `match-fail-closed` (P0), MIR emits a belt-and-braces trap
+    /// after the last arm's check even though the type checker already
+    /// rejects non-exhaustive enum matches at compile time. The trap is
+    /// dead code in well-typed programs; it proves the property at runtime
+    /// and absorbs any future producer bug that lets an unreached value
+    /// reach the dispatch chain. Producer: match-expression substrate.
+    ExhaustivenessFallthrough,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -742,6 +943,108 @@ pub enum Place {
     /// R-direction only; the S-direction stays open until the
     /// matching `SendHalf` (or last surviving `DuplexHandle`) drops.
     RecvHalf(u32),
+    /// Discriminant tag of a machine value held in `local` (an MIR local
+    /// register id, matching `Place::Local(local)`).
+    ///
+    /// Addresses the integer tag field of the tagged-union representation
+    /// of a machine instance. The tag encodes the active state variant as
+    /// a zero-based ordinal matching the declaration order in the machine's
+    /// `states` list.
+    ///
+    /// **Tag-dominance authority**: the drop-elaborator (Slice 4c) reads
+    /// `MachineTag` places to determine which variant is live before
+    /// emitting entry/exit hooks and field drops. Any `Place::MachineVariant`
+    /// access is only legal when the corresponding `MachineTag` dominates
+    /// the use site.
+    ///
+    /// **Drop semantics**: machine values are `BitCopy` by value-class
+    /// (the tag itself carries no heap resources). Dropping a machine
+    /// binding releases no resources via this place; entry/exit hooks are
+    /// separately emitted by the drop-elaborator at transition sites.
+    ///
+    /// WHY `u32` (not `BindingId`): codegen has no `BindingId → local`
+    /// map; the `BindingId` was always producer-supplied as a name for an
+    /// MIR local. Keying the place on the local id directly mirrors the
+    /// existing handle places (`DuplexHandle(u32)`, `SendHalf(u32)`, …)
+    /// and makes codegen consume it the same way as `Place::Local(u32)`.
+    /// WHY declared here: Slice 4b (transition body lowering) emits
+    /// `MachineTag` stores to update the discriminant after a transition.
+    /// Slice 4c (drop-elaboration) reads `MachineTag` to drive
+    /// tag-dominant drop. Neither can express machine dispatch in MIR
+    /// without this place primitive.
+    /// WHEN-OBSOLETE: never — permanent MIR primitive once tagged-union
+    /// machine layout lands in Slice 5.
+    MachineTag(u32),
+    /// Active variant payload field of a machine value held in `local`,
+    /// dominated by `Place::MachineTag(local)`.
+    ///
+    /// Addresses a single field within the active variant's payload.
+    /// `local` identifies the machine MIR-local (same `u32` id as the
+    /// corresponding `MachineTag`). `variant_idx` is the zero-based state
+    /// ordinal (declaration order in `HirMachineDecl.states`). `field_idx`
+    /// is the zero-based field ordinal within that state's payload
+    /// (declaration order in `HirMachineState.fields`).
+    ///
+    /// **Dominance invariant**: a `MachineVariant` load or store is only
+    /// legal when `Place::MachineTag(local)` is known to carry
+    /// `variant_idx` at the use site (i.e. the tag-dominance CFG
+    /// property holds). Slice 4c enforces this during drop-elaboration;
+    /// Slice 4b enforces it during transition body lowering.
+    ///
+    /// WHY declared here: Slice 4b needs to materialise next-state field
+    /// values without going through codegen-specific layout. Storing into
+    /// `MachineVariant` at transition sites is the substrate-correct seam.
+    /// WHEN-OBSOLETE: never — permanent MIR primitive paired with
+    /// `MachineTag`.
+    MachineVariant {
+        local: u32,
+        variant_idx: u32,
+        field_idx: u32,
+    },
+    /// Discriminant tag of a user-defined enum value held in `local`.
+    ///
+    /// Addresses the integer tag field of the tagged-union representation
+    /// of a user enum (declared via `type T { enum A; B; ... }`). The tag
+    /// encodes the active variant as a zero-based ordinal matching the
+    /// declaration order in the enum's `unit_variants` list (and the
+    /// `MachineVariantLayout` entries inside the corresponding `EnumLayout`).
+    ///
+    /// Substrate-distinct from `MachineTag` so future enum-specific drop
+    /// and lifecycle policies (which differ from machine entry/exit hooks)
+    /// have a typed surface to attach to. The codegen seam delegates to
+    /// the same outer-struct field-0 GEP that `MachineTag` uses today —
+    /// both enums and machines share the
+    /// `{ tag: iW, payload: [N x i8] }` layout — but the MIR primitive
+    /// keeps the producer authority typed.
+    ///
+    /// **Tag-dominance authority**: any `Place::EnumVariant` access is
+    /// only legal when the corresponding `EnumTag` value has been
+    /// compared and the matching branch has been taken. Slice 2 of the
+    /// match-expression substrate enforces this structurally — branch
+    /// chains over `EqI32(tag, k)` dominate every load of a payload
+    /// projected through `EnumVariant`.
+    ///
+    /// WHEN-OBSOLETE: never — permanent MIR primitive for user enum
+    /// tag-dispatch lowering.
+    EnumTag(u32),
+    /// Active variant payload field of a user enum value held in `local`,
+    /// dominated by `Place::EnumTag(local)`.
+    ///
+    /// `variant_idx` is the zero-based variant ordinal (declaration order
+    /// in the enum's `unit_variants` / `EnumLayout.variants`). `field_idx`
+    /// is the zero-based field ordinal within that variant's payload.
+    ///
+    /// This lane's substrate slice introduces the primitive but does not
+    /// emit loads through it — only unit-variant matching is supported
+    /// here. Payload-bearing variant destructuring (e.g. `Some(x)`,
+    /// `Ok(v)`) lands as a follow-on consumer of this primitive (Option<T>
+    /// substrate slice 2), so the dominance contract is documented once
+    /// and reused unchanged.
+    EnumVariant {
+        local: u32,
+        variant_idx: u32,
+        field_idx: u32,
+    },
 }
 
 /// Integer comparison predicate. Maps 1:1 to LLVM `IntPredicate`. The
@@ -1437,6 +1740,79 @@ pub enum Instr {
         /// Argument Places in source order (the implicit receiver is
         /// `fat_pointer.data` and is NOT included here).
         args: Vec<Place>,
+    },
+    /// Typed placeholder for a machine `emit(Event { ... })` expression
+    /// inside a transition body.
+    ///
+    /// WHY this placeholder exists: the emit-queue runtime ABI (async event
+    /// delivery from a state-machine transition to its own event queue) is
+    /// wired in a later slice. Recording the intent here preserves
+    /// type-correct MIR through pipeline stages that would otherwise skip the
+    /// expression.
+    ///
+    /// WHEN-OBSOLETE: replaced by a real runtime-call sequence when the
+    /// emit-queue ABI lands. This variant must be searched and replaced at
+    /// that time — its presence in final codegen-input MIR is an error.
+    ///
+    /// WHAT the real solution looks like: `Instr::CallRuntimeAbi` to
+    /// `hew_machine_emit` with the machine binding, event-index constant,
+    /// and serialised payload — wired when the emit-queue ABI is finalised.
+    MachineEmitPlaceholder {
+        /// Zero-based index into `HirMachineDecl.events` (declaration order).
+        event_idx: usize,
+        /// Lowered payload field places in source-declaration order.
+        /// Empty for unit events (no payload).
+        payload: Vec<Place>,
+    },
+    /// Load the discriminant tag of an enum-typed value into an integer dest.
+    ///
+    /// `src` must reference a local whose `ResolvedTy` is a `Named` enum
+    /// (e.g. the machine event companion `TrafficLightEvent`). The tag is
+    /// the zero-based variant ordinal in declaration order — for the
+    /// machine event companion, this matches `HirMachineDecl.events`
+    /// declaration order.
+    ///
+    /// `dest` is an integer-typed local (`ResolvedTy::I64` in Slice 4b);
+    /// codegen widens the LLVM enum tag to the dest's width via `zext`.
+    ///
+    /// # Why declared here
+    ///
+    /// Slice 4b's machine step function dispatches on `(state_tag, event_tag)`
+    /// pairs and needs an event-tag-load primitive symmetric with
+    /// `Place::MachineTag`. The event companion is a `TypeDefKind::Enum`
+    /// with no MIR-side tag-load surface prior to this slice, so the
+    /// dispatch tree would otherwise have no way to compare the event
+    /// parameter against a constant event index.
+    ///
+    /// Codegen lowering lands alongside the Slice 5 tagged-union work that
+    /// wires the LLVM enum layout. Until then, codegen fails closed if
+    /// this instruction reaches it — matching the existing fail-closed
+    /// stub for `Place::MachineTag` / `Place::MachineVariant`.
+    EnumTagLoad {
+        /// Local holding an enum value (`Ty::Named { name, .. }` where
+        /// the named type is a `TypeDefKind::Enum`).
+        src: Place,
+        /// Integer-typed destination for the tag ordinal.
+        dest: Place,
+    },
+    /// `dest = state-name-table[<tag of src>]`.
+    ///
+    /// Lowers the user-visible `m.state_name()` surface for a machine
+    /// receiver. Codegen reads `Place::MachineTag(src_local)` and uses it
+    /// to index a per-machine static string table populated alongside the
+    /// machine's tagged-union layout in `register_machine_layouts`. Each
+    /// table entry is the address of a private read-only NUL-terminated
+    /// global string. `hew_string_drop` skips static-segment pointers via
+    /// `is_static_string`, so no clone or heap allocation is needed —
+    /// matches `Instr::StringLit`.
+    ///
+    /// `machine_name` carries the unqualified machine type name so codegen
+    /// can look up the layout (which owns the state-name globals) without
+    /// re-deriving it from the local's resolved type.
+    MachineStateName {
+        machine_name: String,
+        src_local: u32,
+        dest: Place,
     },
 }
 

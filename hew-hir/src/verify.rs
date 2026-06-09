@@ -179,7 +179,10 @@ impl Verifier {
             HirExprKind::FieldAccess { object, .. } => {
                 self.expr(object);
             }
-            HirExprKind::ContextReader { .. } | HirExprKind::Literal(_) => {}
+            HirExprKind::ContextReader { .. }
+            | HirExprKind::Literal(_)
+            | HirExprKind::RegexLiteralRef { .. }
+            | HirExprKind::MachineFieldAccess { .. } => {}
             HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => self.block(body),
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.expr(duration);
@@ -292,6 +295,47 @@ impl Verifier {
                 for (_, field_val) in fields {
                     self.expr(field_val);
                 }
+            }
+            HirExprKind::MachineStep {
+                receiver, event, ..
+            } => {
+                self.expr(receiver);
+                self.expr(event);
+            }
+            HirExprKind::MachineStateName { receiver, .. } => {
+                self.expr(receiver);
+            }
+            HirExprKind::MachineVariantCtor { payload, .. } => {
+                if let Some(fields) = payload {
+                    for (_, val) in fields {
+                        self.expr(val);
+                    }
+                }
+            }
+            HirExprKind::While { condition, body } => {
+                self.expr(condition);
+                self.block(body);
+            }
+            HirExprKind::Match { scrutinee, arms } => {
+                self.expr(scrutinee);
+                for arm in arms {
+                    for binding in &arm.bindings {
+                        self.binding(binding.binding, arm.span.clone());
+                    }
+                    self.expr(&arm.body);
+                }
+            }
+            HirExprKind::ForRange {
+                binding,
+                start,
+                end,
+                body,
+                ..
+            } => {
+                self.binding(binding.id, binding.span.clone());
+                self.expr(start);
+                self.expr(end);
+                self.block(body);
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive

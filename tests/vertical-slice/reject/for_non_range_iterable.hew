@@ -1,0 +1,25 @@
+// Reject fixture: for_non_range_iterable — `for x in vec_expr` over a non-Range iterable.
+//
+// Only integer Range iterables (a..b, a..=b) are supported in the current
+// vertical slice. A `for` loop over any other iterable (Vec, array, etc.)
+// fails closed in HIR lowering with a NotYetImplemented diagnostic.
+//
+// This fixture pins the fail-closed boundary at:
+//   hew-hir/src/lower.rs (non-range iterable arm in lower_for)
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - E_NOT_YET_IMPLEMENTED
+//   - "non-Range iterable"
+fn make_vec() -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
+    return v;
+}
+
+fn main() -> i64 {
+    let items = make_vec();
+    for x in items {
+        println(x);
+    }
+    return 0;
+}

@@ -1,0 +1,27 @@
+// Minimal payload-bearing machine — zero emits, simple state transitions
+// with payload fields that exercise the Place::MachineVariant codegen
+// surface (state field read in a transition body, state field write in
+// a variant constructor).
+//
+// Drives `Place::MachineTag`, `Place::MachineVariant`, and the
+// event-companion `Instr::EnumTagLoad` end-to-end through codegen.
+machine Counter {
+    state Zero;
+    state NonZero { value: i64; }
+
+    event Inc;
+    event Reset;
+
+    on Inc: Zero -> NonZero {
+        NonZero { value: 1 }
+    }
+    on Inc: NonZero -> NonZero @reenter {
+        NonZero { value: self.value + 1 }
+    }
+    on Reset: NonZero -> Zero {
+        Zero
+    }
+    on Reset: Zero -> Zero @reenter {
+        Zero
+    }
+}

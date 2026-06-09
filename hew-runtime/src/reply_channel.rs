@@ -312,12 +312,40 @@ pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
     }
 }
 
+// ── Reply payload free ────────────────────────────────────────────────────
+
+/// Free a reply payload returned by [`hew_reply_wait`], [`hew_reply_wait_timeout`],
+/// or [`hew_lambda_actor_ask`].
+///
+/// Reply payloads are allocated via `libc::malloc` inside the reply channel.
+/// They MUST be freed with this function (which calls `libc::free`) — NOT with
+/// `hew_duplex_payload_free`, which uses Rust's global allocator and would
+/// produce undefined behaviour on any platform where `GlobalAlloc != libc malloc`.
+///
+/// Passing `ptr = null` or `len = 0` is safe and a no-op.
+///
+/// # Safety
+///
+/// `ptr` must be a pointer previously returned by a successful reply wait call
+/// (or `hew_lambda_actor_ask`). `len` must match the reported payload length.
+/// The pointer is invalid after this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_payload_free(ptr: *mut u8, _len: usize) {
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: ptr was allocated by alloc_reply_buffer → libc::malloc.
+    // Symmetric deallocation via libc::free preserves allocator pairing on
+    // every platform regardless of Rust's GlobalAlloc configuration.
+    unsafe { libc::free(ptr.cast()) };
+}
+
 // ── Wait (receiver side) ────────────────────────────────────────────────
 
 /// Block until a reply is available, then return the value.
 ///
 /// The caller owns the returned pointer and must free it with
-/// [`libc::free`].
+/// [`hew_reply_payload_free`].
 ///
 /// # Safety
 ///

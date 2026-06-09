@@ -53,12 +53,14 @@ sequenceDiagram
     Note over Linker: native executable
 ```
 
-**Historical compiler flags for that pipeline:**
+**Current v0.5 inspection commands:**
 
-- `--no-typecheck` — skip type checking
-- `--emit-mlir` — stop after MLIR generation
-- `--emit-llvm` — stop after LLVM IR translation
-- `--emit-obj` — stop after object file emission
+- `hew compile --dump-mir raw|checked|elab <file.hew>` — inspect the MIR ladder without LLVM emission
+- `hew compile --emit-dir <dir> <file.hew>` — write LLVM/object/WASM artefacts for the Rust codegen path
+- `hew machine diagram [--format mermaid|graphviz|json] <file.hew>` — render machine declarations
+- `hew machine list <file.hew>` — list machines, states, and events
+
+The retired C++/MLIR flags (`--emit-mlir`, `--emit-llvm`, `--emit-obj`) are not available in v0.5.
 
 ---
 

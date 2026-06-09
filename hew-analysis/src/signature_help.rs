@@ -225,6 +225,8 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         }
     }
 
@@ -379,6 +381,8 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -457,6 +461,8 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());

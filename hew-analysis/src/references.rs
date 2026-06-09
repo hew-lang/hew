@@ -429,6 +429,7 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
         Pattern::Or(left, right) => {
             pattern_binds_name(&left.0, name) || pattern_binds_name(&right.0, name)
         }
+        Pattern::Regex { captures, .. } => captures.iter().any(|c| c == name),
         Pattern::Wildcard | Pattern::Literal(_) => false,
     }
 }
@@ -482,6 +483,13 @@ impl RefsVisitor<'_> {
             Pattern::Or(left, right) => {
                 self.push_pattern_matches(&left.0, &left.1);
                 self.push_pattern_matches(&right.0, &right.1);
+            }
+            Pattern::Regex { captures, .. } => {
+                for capture_name in captures {
+                    if capture_name == self.name {
+                        self.spans.push(span.clone());
+                    }
+                }
             }
             Pattern::Wildcard | Pattern::Literal(_) => {}
         }

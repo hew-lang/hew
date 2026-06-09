@@ -513,6 +513,9 @@ fn collect_inlay_hints_from_expr(
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
         | Expr::Yield(None) => {}
+        Expr::GenBlock { body } => {
+            collect_inlay_hints_from_block(source, body, tc, hints);
+        }
     }
 }
 
@@ -672,6 +675,8 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         }
     }
 
@@ -874,7 +879,7 @@ fn main() {
 
     #[test]
     fn lambda_in_call_argument_gets_return_hint() {
-        let source = "fn main() { foo((x) => x + 1); }";
+        let source = "fn main() { foo(|x| x + 1); }";
         let pr = parse(source);
 
         let lambda_body = match &pr.program.items[0].0 {
@@ -904,7 +909,7 @@ fn main() {
 
     #[test]
     fn lambda_in_trait_default_body_gets_return_hint() {
-        let source = "trait Mapper { fn map() { foo((x) => x + 1); } }";
+        let source = "trait Mapper { fn map() { foo(|x| x + 1); } }";
         let pr = parse(source);
 
         let lambda_body = match &pr.program.items[0].0 {
@@ -942,7 +947,7 @@ fn main() {
 
     #[test]
     fn lambda_in_trailing_block_expression_gets_return_hint() {
-        let source = "fn main() { { foo((x) => x + 1) } }";
+        let source = "fn main() { { foo(|x| x + 1) } }";
         let pr = parse(source);
 
         let lambda_body = match &pr.program.items[0].0 {

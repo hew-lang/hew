@@ -287,6 +287,16 @@ pub enum HirDiagnosticKind {
         /// Origin record name.
         name: String,
     },
+    /// HIR lowering produced more distinct enum-layout monomorphisations
+    /// than the configured cap admits. Almost always the symptom of
+    /// polymorphic-recursive generic enum types whose layout expansion
+    /// would not converge (each layer introduces a fresh arg). Surfaced
+    /// at the registry seam so codegen never sees an unbounded layout set.
+    EnumLayoutCapExceeded {
+        /// The configured cap (typically `MONOMORPHISATION_REGISTRY_CAP`,
+        /// shared with the fn and record registries).
+        cap: usize,
+    },
     /// A function declared with `#[intrinsic("key")]` names an intrinsic
     /// key that does not appear in `stdlib_catalog`. Fail-closed: the
     /// compiler never silently drops a typed declaration — if the key is

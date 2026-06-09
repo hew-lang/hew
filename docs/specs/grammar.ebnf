@@ -323,6 +323,7 @@ TypeArgs       = "<" Type { "," Type } ">" ;
 (* Pattern matching *)
 Pattern        = "_"
                | LiteralPattern
+               | RegexLiteral                          (* Regex pattern in match arm: re"..." *)
                | Ident
                | Ident ( "::" Ident )+ ( "(" PatternList? ")" )?  (* Qualified constructor pattern *)
                | Ident "(" PatternList? ")"           (* Constructor pattern *)

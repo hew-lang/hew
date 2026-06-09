@@ -744,7 +744,9 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&value.0, &value.1, body);
                 }
             }
-            Expr::Scope { body: inner_body } | Expr::ForkBlock { body: inner_body } => {
+            Expr::Scope { body: inner_body }
+            | Expr::ForkBlock { body: inner_body }
+            | Expr::GenBlock { body: inner_body } => {
                 self.walk_block(inner_body, body);
             }
             Expr::ScopeDeadline {
@@ -999,6 +1001,12 @@ fn collect_pattern_bindings<'ast>(
         Pattern::Or(left, right) => {
             collect_pattern_bindings(source, &left.0, &left.1, bindings);
             collect_pattern_bindings(source, &right.0, &right.1, bindings);
+        }
+        // Regex captures are named bindings in scope for the arm body.
+        Pattern::Regex { captures, .. } => {
+            for name in captures {
+                bindings.push(binding_from_name(source, name, span, BindingKind::Local));
+            }
         }
         Pattern::Wildcard | Pattern::Literal(_) => {}
     }

@@ -26,6 +26,93 @@ fn pipeline(source: &str) -> IrPipeline {
     lower_hir_module(&lowered.module)
 }
 
+// ─── Generic enum variant constructor tests ────────────────────────────────
+
+/// `Option::None` written as a qualified unit-variant constructor with an
+/// explicit `Option<i64>` annotation reaches MIR without type errors or
+/// blocking diagnostics.  The HIR `MachineVariantCtor` for the `None` arm
+/// must carry `Named { "Option", [I64] }`, not the bare `Named { "Option",
+/// [] }` that the pre-fix path produced.
+#[test]
+fn unit_variant_ctor_qualified_none_carries_concrete_type_args() {
+    let pipeline = pipeline(
+        r"
+        enum Option<T> { Some(T); None }
+        fn main() -> i64 {
+            let x: Option<i64> = Option::None;
+            match x {
+                Option::Some(v) => v,
+                Option::None => 99,
+            }
+        }
+        ",
+    );
+    let bad: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                MirDiagnosticKind::NotYetImplemented { .. }
+                    | MirDiagnosticKind::UnresolvedPlace { .. }
+                    | MirDiagnosticKind::UnsupportedNode { .. }
+            )
+        })
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "blocking MIR diagnostics for Option::None: {bad:#?}"
+    );
+    // The enum instantiation registry must contain Option$$i64.
+    let names: Vec<String> = pipeline.raw_mir.iter().map(|f| f.name.clone()).collect();
+    assert!(
+        names.contains(&"main".to_string()),
+        "`main` must be emitted; got: {names:?}"
+    );
+}
+
+/// `Maybe::Just { value: 42 }` struct-variant constructor with `Maybe<i64>`
+/// annotation reaches MIR without blocking diagnostics.  The result type on
+/// the `MachineVariantCtor` HIR node must be `Named { "Maybe", [I64] }`.
+#[test]
+fn struct_variant_ctor_carries_concrete_type_args() {
+    let pipeline = pipeline(
+        r"
+        enum Maybe<T> { Just { value: T }; Nothing }
+        fn main() -> i64 {
+            let x: Maybe<i64> = Maybe::Just { value: 42 };
+            match x {
+                Maybe::Just { value } => value,
+                Maybe::Nothing => 0,
+            }
+        }
+        ",
+    );
+    let bad: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                MirDiagnosticKind::NotYetImplemented { .. }
+                    | MirDiagnosticKind::UnresolvedPlace { .. }
+                    | MirDiagnosticKind::UnsupportedNode { .. }
+            )
+        })
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "blocking MIR diagnostics for Maybe::Just: {bad:#?}"
+    );
+    let names: Vec<String> = pipeline.raw_mir.iter().map(|f| f.name.clone()).collect();
+    assert!(
+        names.contains(&"main".to_string()),
+        "`main` must be emitted; got: {names:?}"
+    );
+}
+
+// ─── Generic function monomorphisation tests ──────────────────────────────
+
 /// Two distinct instantiations of `id<T>` produce two MIR functions
 /// with distinct mangled names; the unspecialised `id` is not emitted.
 #[test]

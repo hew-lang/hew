@@ -1,0 +1,20 @@
+actor SeedChild {
+    receive fn ping(n: i64) -> i64 {
+        n
+    }
+}
+
+supervisor SeedSupervisor {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+    child worker: SeedChild;
+}
+
+fn background_task() {}
+
+fn seed_scope_fork() {
+    scope {
+        fork child_task = background_task();
+    };
+}

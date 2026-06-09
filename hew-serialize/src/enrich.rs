@@ -1132,6 +1132,7 @@ fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
         | Expr::Lambda { .. }
         | Expr::Cast { .. }
         | Expr::MachineEmit { .. } => {}
+        Expr::GenBlock { body } => v.visit_block(body),
     }
 }
 
@@ -4434,7 +4435,7 @@ mod tests {
     fn test_enrich_lambda_params_from_contextual_function_type() {
         let source = concat!(
             "fn main() {\n",
-            "    let f: fn(i64) -> i64 = (x) => x + 1;\n",
+            "    let f: fn(i64) -> i64 = |x| x + 1;\n",
             "    let y = f(5);\n",
             "}\n",
         );
@@ -4476,7 +4477,7 @@ mod tests {
         let source = concat!(
             "fn main() {\n",
             "    let offset = 1;\n",
-            "    let f = (x) => x + offset;\n",
+            "    let f = |x| x + offset;\n",
             "    let y = f(5);\n",
             "}\n",
         );
@@ -4520,7 +4521,7 @@ mod tests {
 
     #[test]
     fn test_enrich_lambda_params_report_unresolved_types() {
-        let source = "fn main() { let f = (x) => x; }";
+        let source = "fn main() { let f = |x| x; }";
         let (mut expr, tco) = parse_and_typecheck_main_lambda(source);
 
         assert!(

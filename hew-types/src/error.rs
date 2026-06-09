@@ -536,6 +536,89 @@ pub enum TypeErrorKind {
         /// Actionable hint for the user.
         hint: String,
     },
+    /// A `gen { }` generator block appeared inside an actor receive handler.
+    ///
+    /// The scheduler holds the actor-state lock for the entire handler
+    /// invocation; a mid-handler yield cannot release it, so generator blocks
+    /// are statically forbidden inside actor receive handlers.
+    ///
+    /// Envelope code: `E_GENBLOCK_IN_ACTOR_RECEIVE`.
+    GenBlockInActorReceive,
+    /// A `gen { }` generator block whose body contains no `yield` expression.
+    ///
+    /// The checker infers the yield type from `yield` expressions inside the
+    /// body via unification.  When no `yield` is present the yield type-variable
+    /// remains unbound, so the generator's element type cannot be determined.
+    ///
+    /// Envelope code: `E_EMPTY_GENERATOR`.
+    EmptyGenerator,
+    /// A closure referenced its own let-binding name inside its body.
+    ///
+    /// By-value capture cannot capture a value before construction without
+    /// cycles. Recursive closures require a fixed-point surface that v0.5
+    /// intentionally does not expose; use a named function instead.
+    ///
+    /// Envelope code: `E_CLOSURE_RECURSIVE`.
+    ClosureRecursive {
+        /// The name of the binding the closure attempted to capture recursively.
+        name: String,
+    },
+    /// `Sink<T>` or `Stream<T>` payload type does not implement both `Encode`
+    /// and `Decode` marker traits, which are required for wire transport.
+    ///
+    /// Closures, raw pointers, `dyn Trait` objects, and other non-serialisable
+    /// types cannot cross actor message boundaries via a channel.
+    ///
+    /// Envelope code: `E_SINK_PAYLOAD_NOT_WIRE`.
+    SinkPayloadNotWire {
+        /// User-facing representation of the rejected payload type.
+        payload_ty: String,
+        /// Marker trait names that the payload type is missing (`"Encode"`,
+        /// `"Decode"`, or both).
+        missing_traits: Vec<String>,
+    },
+    /// A constructor or struct-variant match arm contains a payload subpattern
+    /// that is not a plain binding (`x`) or wildcard (`_`).
+    ///
+    /// The v0.5 payload subpattern surface is binding/wildcard-only.  Literal
+    /// tests (`Shape::Line(1)`), nested constructors (`Shape::Line(Other::Foo)`),
+    /// tuple/struct destructures inside a payload, and or-patterns inside a
+    /// payload are not yet lowered.  Accepting them silently would produce an
+    /// incorrect wildcard match; the checker rejects them with this diagnostic
+    /// until the substrate lane adds full nested-predicate support.
+    ///
+    /// Envelope code: `E_UNSUPPORTED_PAYLOAD_SUBPATTERN`.
+    UnsupportedPayloadSubpattern {
+        /// Variant constructor whose payload subpattern was rejected.
+        variant_name: String,
+        /// Short human-readable label for the rejected subpattern kind,
+        /// e.g. `"literal"`, `"nested constructor"`, `"tuple"`, `"struct"`,
+        /// or `"or-pattern"`.
+        kind_label: String,
+    },
+    /// A `re"..."` regex literal (in expression or pattern position) contains
+    /// an invalid regex pattern rejected by the `regex` crate.
+    ///
+    /// The checker validates every regex literal at compile time using the
+    /// same engine the runtime uses, so syntactically invalid patterns are
+    /// a hard error before any code is emitted.
+    ///
+    /// Envelope code: `E_INVALID_REGEX_LITERAL`.
+    InvalidRegexLiteral {
+        /// The offending pattern string (as it appears in source, after
+        /// delimiter normalisation).
+        pattern: String,
+        /// The error message from `regex::Regex::new`.
+        error: String,
+    },
+    /// A regex pattern in a match arm is used against a non-`string`
+    /// scrutinee.  Regex matching is defined only over `string` values.
+    ///
+    /// Envelope code: `E_REGEX_PATTERN_NOT_STRING`.
+    RegexPatternNotString {
+        /// User-facing representation of the actual scrutinee type.
+        actual_ty: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -592,6 +675,13 @@ impl TypeErrorKind {
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
             Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
+            Self::GenBlockInActorReceive => "GenBlockInActorReceive",
+            Self::EmptyGenerator => "EmptyGenerator",
+            Self::ClosureRecursive { .. } => "ClosureRecursive",
+            Self::SinkPayloadNotWire { .. } => "SinkPayloadNotWire",
+            Self::UnsupportedPayloadSubpattern { .. } => "UnsupportedPayloadSubpattern",
+            Self::InvalidRegexLiteral { .. } => "InvalidRegexLiteral",
+            Self::RegexPatternNotString { .. } => "RegexPatternNotString",
         }
     }
 }

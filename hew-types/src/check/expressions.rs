@@ -129,13 +129,25 @@ impl Checker {
             // Literals
             Expr::Literal(Literal::Float(_)) => Ty::FloatLiteral,
             Expr::Literal(Literal::String(_)) => Ty::String,
-            Expr::RegexLiteral(_) => {
+            Expr::RegexLiteral(pattern) => {
                 // The implicit `use std::text::regex` injected by the CLI is the
                 // provider of this type; mark it as used so the unused-import
                 // check doesn't fire a false-positive warning.
                 self.used_modules
                     .borrow_mut()
                     .insert(ImportKey::new(self.current_module.clone(), "regex"));
+                // Validate the pattern using the same regex engine the runtime
+                // uses. An invalid pattern is a compile-time hard error.
+                if let Err(err) = regex::Regex::new(pattern) {
+                    self.report_error(
+                        TypeErrorKind::InvalidRegexLiteral {
+                            pattern: pattern.clone(),
+                            error: err.to_string(),
+                        },
+                        span,
+                        format!("invalid regex literal `re\"{pattern}\"`: {err}"),
+                    );
+                }
                 Ty::Named {
                     name: "regex.Pattern".to_string(),
                     args: vec![],
@@ -898,6 +910,10 @@ impl Checker {
     }
 
     /// Look up an identifier as a unit enum variant or qualified variant name.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "multi-branch variant resolution: unqualified, qualified-in-type_defs, and qualified-in-fn_sigs each need distinct handling"
+    )]
     pub(super) fn resolve_identifier_variant(&mut self, name: &str, span: &Span) -> Ty {
         let mut found = None;
         for (type_name, td) in &self.type_defs {
@@ -917,7 +933,36 @@ impl Checker {
                 if let Some(td) = self.type_defs.get(type_prefix) {
                     if let Some(variant) = td.variants.get(variant_name) {
                         if matches!(variant, VariantDef::Unit) {
-                            let ty = Ty::normalize_named(type_prefix.to_string(), vec![]);
+                            // Instantiate type params with fresh inference variables
+                            // so that `Option::None` in `let x: Option<i64> = Option::None`
+                            // unifies correctly with the annotation.  Bare `Named { "Option",
+                            // [] }` fails arity unification against `Named { "Option", [I64] }`.
+                            //
+                            // Guard: only use fn_sig when its return type names the same enum as
+                            // type_prefix.  Two enums sharing a bare variant name (e.g. both
+                            // declaring `None`) would collide in fn_sigs because the key is the
+                            // bare variant name; without the guard, `A::None` could return
+                            // `Named { B, [?] }`.
+                            let ty = if let Some(sig) = self.fn_sigs.get(variant_name).cloned() {
+                                let sig_names_correct_enum = sig
+                                    .return_type
+                                    .type_name()
+                                    .is_some_and(|n| n == type_prefix);
+                                if sig_names_correct_enum {
+                                    let mut ret = sig.return_type.clone();
+                                    for tp in &sig.type_params {
+                                        ret = ret
+                                            .substitute_named_param(tp, &Ty::Var(TypeVar::fresh()));
+                                    }
+                                    ret
+                                } else {
+                                    // fn_sig belongs to a different enum; bare name is correct.
+                                    Ty::normalize_named(type_prefix.to_string(), vec![])
+                                }
+                            } else {
+                                // No fn_sig (monomorphic or machine variant) — bare name is correct.
+                                Ty::normalize_named(type_prefix.to_string(), vec![])
+                            };
                             found = Some(ty);
                         }
                     }
@@ -940,6 +985,30 @@ impl Checker {
         if let Some(ty) = found {
             ty
         } else {
+            // Detect recursive closure self-reference: if we are inside a lambda
+            // body (capture depth is set) and the name matches the let-binding
+            // being defined, emit ClosureRecursive rather than UndefinedVariable.
+            // By-value capture cannot capture a value before construction, so
+            // recursive closures are forbidden in v0.5.
+            if self.lambda_capture_depth.is_some()
+                && self
+                    .pending_let_closure_name
+                    .as_deref()
+                    .is_some_and(|pending| pending == name)
+            {
+                self.report_error(
+                    TypeErrorKind::ClosureRecursive {
+                        name: name.to_string(),
+                    },
+                    span,
+                    format!(
+                        "E_CLOSURE_RECURSIVE: closure cannot refer to its own binding \
+                         `{name}` — recursive closures require a fixed-point surface that \
+                         is not available in this version; use a named function instead"
+                    ),
+                );
+                return Ty::Error;
+            }
             if name == "self" {
                 let message = if self.current_actor_type.is_some() {
                     "`self` is not used in Hew actor bodies; access actor state with bare field names like `count` (not `self.count`), or use `this` when you need the actor handle".to_string()
@@ -1421,6 +1490,99 @@ impl Checker {
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);
                 Ty::option(inner_ty)
+            }
+            Expr::GenBlock { body } => {
+                // WHY: `gen { }` expression-position generator blocks are part
+                //      of the v0.5 surface (parser support present).
+                //      HIR/MIR coroutine lowering is not yet wired; fail closed here.
+                // WHEN OBSOLETE: when generator lowering wires
+                //      HirExprKind::GenBlock and the coroutine scheduler.
+                // REAL SOLUTION: synthesize the yield type from the block,
+                //      return Ty::Named { name: "Iterator", args: [yield_ty] }.
+                //
+                // A98 / Q98: generator blocks inside actor receive handlers are
+                // permanently forbidden.  The scheduler holds the actor-state lock
+                // for the entire handler invocation; there is no safe point to
+                // yield mid-handler.  This is a typed compile error, not a runtime
+                // trap.
+                if self.in_actor_handler_context {
+                    self.report_error(
+                        TypeErrorKind::GenBlockInActorReceive,
+                        span,
+                        "E_GENBLOCK_IN_ACTOR_RECEIVE: `gen { }` blocks are forbidden inside \
+                         actor receive handlers — the scheduler holds the actor-state lock for \
+                         the entire handler invocation; use a named generator function outside \
+                         the handler instead"
+                            .to_string(),
+                    );
+                    return Ty::Error;
+                }
+                // Typed gen{} checking.
+                //
+                // Two fresh type-variables seed independent inference:
+                //   yield_var — unified by each `yield <expr>` site in the body.
+                //   return_var — unified with the body's tail expression type
+                //                (and by explicit `return <expr>` statements when
+                //                 Stmt::Return extracts the Return component from
+                //                 the enclosing Generator type).
+                //
+                // After the body, EmptyGenerator fires only when the body is
+                // genuinely empty of generator-relevant content: yield_var is
+                // still unbound AND the Return component is Unit or Never (i.e.
+                // no tail expression or explicit `return <value>` provided a
+                // useful return type).  `gen { return 1; }` and `gen { 1 }` are
+                // both valid generators with inferred Return=i64.
+                //
+                // The HIR lowerer is still fail-closed on GenBlock; this gates
+                // only the type checker so that type errors surface early.
+                let yield_var = TypeVar::fresh();
+                let return_var = TypeVar::fresh();
+                let gen_ty = Ty::generator(Ty::Var(yield_var), Ty::Var(return_var));
+
+                let prev_in_generator = self.in_generator;
+                let prev_return_type = self.current_return_type.take();
+                self.in_generator = true;
+                self.current_return_type = Some(gen_ty.clone());
+
+                let body_ty = self.check_block(body, None);
+
+                self.in_generator = prev_in_generator;
+                self.current_return_type = prev_return_type;
+
+                // Unify the tail-expression type with the Return type-variable.
+                // Never / Error propagate vacuously (unify is a no-op for Error).
+                self.expect_type(&Ty::Var(return_var), &body_ty, span);
+
+                let resolved_yield = self.subst.resolve(&Ty::Var(yield_var));
+                let resolved_return = self.subst.resolve(&Ty::Var(return_var));
+
+                // EmptyGenerator: no yield AND no useful return path.
+                // A resolved return_var (from a tail expr or `return <expr>`)
+                // means the body is doing real work even without a yield site.
+                let yield_unresolved = matches!(resolved_yield, Ty::Var(_));
+                let return_trivial = matches!(resolved_return, Ty::Var(_) | Ty::Unit | Ty::Never);
+
+                if yield_unresolved && return_trivial {
+                    self.report_error(
+                        TypeErrorKind::EmptyGenerator,
+                        span,
+                        "E_EMPTY_GENERATOR: `gen { }` body contains no `yield` expression \
+                         and no value-producing tail expression or `return`; \
+                         the yield type cannot be inferred — add at least one \
+                         `yield <value>` statement"
+                            .to_string(),
+                    );
+                    Ty::Error
+                } else {
+                    // If yield_var is still unresolved (body has a return but no
+                    // yield), the generator never yields — represent that as Never.
+                    let final_yield = if yield_unresolved {
+                        Ty::Never
+                    } else {
+                        resolved_yield
+                    };
+                    Ty::generator(final_yield, resolved_return)
+                }
             }
             _ => Ty::Unit,
         }
@@ -2486,6 +2648,41 @@ impl Checker {
                     self.check_expr_is_rc_param_return(e, s, scopes);
                 }
             }
+            // Promoted tail-position if/if-let/match: each branch can return an Rc
+            // param.  Scan each arm's body the same way scan_stmts_for_rc_param_return
+            // does for the Stmt::If / Stmt::IfLet / Stmt::Match variants.
+            Expr::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                // then_block is Box<Spanned<Expr>> wrapping Expr::Block
+                self.check_expr_is_rc_param_return(&then_block.0, &then_block.1, scopes);
+                if let Some(else_expr) = else_block {
+                    self.check_expr_is_rc_param_return(&else_expr.0, &else_expr.1, scopes);
+                }
+            }
+            Expr::IfLet {
+                pattern,
+                body,
+                else_body,
+                ..
+            } => {
+                let mut then_scopes = scopes.to_vec();
+                Self::shadow_pattern_bindings(&pattern.0, &mut then_scopes);
+                self.scan_block_for_rc_param_return(body, &mut then_scopes);
+                if let Some(else_blk) = else_body {
+                    let mut else_scopes = scopes.to_vec();
+                    self.scan_block_for_rc_param_return(else_blk, &mut else_scopes);
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for arm in arms {
+                    let mut arm_scopes = scopes.to_vec();
+                    Self::shadow_pattern_bindings(&arm.pattern.0, &mut arm_scopes);
+                    self.check_expr_is_rc_param_return(&arm.body.0, &arm.body.1, &arm_scopes);
+                }
+            }
             _ => {}
         }
     }
@@ -2571,7 +2768,7 @@ impl Checker {
                 Self::shadow_pattern_bindings(&left.0, scopes);
                 Self::shadow_pattern_bindings(&right.0, scopes);
             }
-            Pattern::Wildcard | Pattern::Literal(_) => {}
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Regex { .. } => {}
         }
     }
 
@@ -3182,7 +3379,8 @@ impl Checker {
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
             | Expr::MachineEmit { .. }
-            | Expr::Is { .. } => {}
+            | Expr::Is { .. }
+            | Expr::GenBlock { .. } => {}
         }
     }
 
@@ -3467,6 +3665,7 @@ impl Checker {
         for arm in arms {
             self.env.push_scope();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
+            self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
             // Check guard if present
             if let Some((guard, gs)) = &arm.guard {
@@ -4230,6 +4429,21 @@ impl Checker {
                 self.scan_expr_for_stack_hints(&then_block.0);
                 if let Some(eb) = else_block {
                     self.scan_expr_for_stack_hints(&eb.0);
+                }
+            }
+            Expr::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                // Mirrors the `Stmt::IfLet` arm in `scan_stmt_for_stack_hints`.
+                // `body` and `else_body` are bare `Block` values (not `Spanned<Expr>`),
+                // so we call `scan_block_for_stack_hints` directly.
+                self.scan_expr_for_stack_hints(&expr.0);
+                self.scan_block_for_stack_hints(body);
+                if let Some(b) = else_body {
+                    self.scan_block_for_stack_hints(b);
                 }
             }
             Expr::Match { scrutinee, arms } => {

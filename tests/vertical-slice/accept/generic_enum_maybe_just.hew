@@ -1,0 +1,15 @@
+// Accept: generic enum with named-field struct variant — end-to-end lowering.
+// Maybe::Just { value: 42 } must lower through HIR EnumLayoutRegistry → MIR
+// → codegen and exit 42.
+enum Maybe<T> {
+    Just { value: T };
+    Nothing;
+}
+
+fn main() -> i64 {
+    let x: Maybe<i64> = Maybe::Just { value: 42 };
+    match x {
+        Maybe::Just { value: v } => v,
+        Maybe::Nothing => 0,
+    }
+}

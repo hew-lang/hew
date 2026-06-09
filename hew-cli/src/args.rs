@@ -450,8 +450,8 @@ pub struct MachineDiagramArgs {
     /// Only render the named machine (useful for multi-machine files).
     #[arg(long = "machine", value_name = "NAME")]
     pub machine_name: Option<String>,
-    /// Run HIR static checks before rendering and exit with an error if any
-    /// check fails. Enabled by default.
+    /// Skip HIR static checks before rendering. Checks run by default and fail
+    /// closed on invalid machine declarations.
     #[arg(long = "no-check", action = clap::ArgAction::SetFalse)]
     pub check: bool,
 }

@@ -261,22 +261,36 @@ impl Checker {
             Stmt::Expression((expr, es)) => self.synthesize(expr, es),
             Stmt::Return(value) => {
                 if let Some(expected) = self.current_return_type.clone() {
+                    // Inside a gen{} body, `current_return_type` is shaped as
+                    // `Generator<Y, R>`.  A `return <expr>` targets the Return
+                    // component R, not the full Generator type.  Extract R when
+                    // in a generator context so that `return 1` inside gen{}
+                    // unifies against i64 rather than Generator<Y, i64>.
+                    let effective_expected = if self.in_generator {
+                        let resolved = self.subst.resolve(&expected);
+                        match resolved.as_generator() {
+                            Some((_, ret)) => ret.clone(),
+                            None => expected,
+                        }
+                    } else {
+                        expected
+                    };
                     // Guard: do not check against Ty::Error — it would silently
                     // suppress mismatch diagnostics in the returned expression.
                     // Synthesize the value instead so its own errors are still caught.
-                    if matches!(self.subst.resolve(&expected), Ty::Error) {
+                    if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
                         if let Some((val, vs)) = value {
                             self.synthesize(val, vs);
                         }
                     } else {
                         match value {
                             Some((val, vs)) => {
-                                self.check_against(val, vs, &expected);
+                                self.check_against(val, vs, &effective_expected);
                             }
-                            None if expected != Ty::Unit => {
+                            None if effective_expected != Ty::Unit => {
                                 self.errors.push(TypeError::return_type_mismatch(
                                     span.clone(),
-                                    &expected,
+                                    &effective_expected,
                                     &Ty::Unit,
                                 ));
                             }
@@ -358,6 +372,15 @@ impl Checker {
                         self.env.define(bind_name.clone(), duplex_ty, false);
                     }
                 }
+                // Set pending_let_closure_name so synthesize_identifier can
+                // detect recursive self-reference inside a closure body and emit
+                // ClosureRecursive instead of UndefinedVariable.
+                let prev_pending = self.pending_let_closure_name.take();
+                if let (Pattern::Identifier(name), Some((Expr::Lambda { .. }, _))) =
+                    (&pattern.0, &value)
+                {
+                    self.pending_let_closure_name = Some(name.clone());
+                }
                 let val_ty = if let Some((val, vs)) = value {
                     if let Some(annotation) = ty {
                         let expected =
@@ -372,6 +395,7 @@ impl Checker {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
                 };
+                self.pending_let_closure_name = prev_pending;
                 // Consume the scratch field unconditionally so stale state
                 // never accumulates across statements.  Only register the
                 // generic call signature in lambda_poly_sig_map when the binding value is
@@ -671,21 +695,35 @@ impl Checker {
             }
             Stmt::Return(value) => {
                 if let Some(expected) = self.current_return_type.clone() {
+                    // Inside a gen{} body, `current_return_type` is shaped as
+                    // `Generator<Y, R>`.  A `return <expr>` targets the Return
+                    // component R, not the full Generator type.  Extract R when
+                    // in a generator context so that `return 1` inside gen{}
+                    // unifies against i64 rather than Generator<Y, i64>.
+                    let effective_expected = if self.in_generator {
+                        let resolved = self.subst.resolve(&expected);
+                        match resolved.as_generator() {
+                            Some((_, ret)) => ret.clone(),
+                            None => expected,
+                        }
+                    } else {
+                        expected
+                    };
                     // Guard: do not check against Ty::Error — same as in
                     // check_stmt_as_expr; synthesize instead to preserve body errors.
-                    if matches!(self.subst.resolve(&expected), Ty::Error) {
+                    if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
                         if let Some((val, vs)) = value {
                             self.synthesize(val, vs);
                         }
                     } else {
                         match value {
                             Some((val, vs)) => {
-                                self.check_against(val, vs, &expected);
+                                self.check_against(val, vs, &effective_expected);
                             }
-                            None if expected != Ty::Unit => {
+                            None if effective_expected != Ty::Unit => {
                                 self.errors.push(TypeError::return_type_mismatch(
                                     span.clone(),
-                                    &expected,
+                                    &effective_expected,
                                     &Ty::Unit,
                                 ));
                             }
@@ -787,7 +825,25 @@ impl Checker {
                                     "next",
                                     &iterable.1,
                                 ) {
-                                    Some(validated_inner) => validated_inner,
+                                    Some(validated_inner) => {
+                                        let resolved = self.subst.resolve(&validated_inner);
+                                        if Self::runtime_stream_element_name(&resolved).is_none() {
+                                            self.report_error(
+                                                TypeErrorKind::InvalidOperation,
+                                                &iterable.1,
+                                                format!(
+                                                    "`Stream<{}>` is not supported in \
+                                                     `for await`; runtime lowering is \
+                                                     currently implemented only for \
+                                                     string and bytes",
+                                                    validated_inner.user_facing()
+                                                ),
+                                            );
+                                            Ty::Error
+                                        } else {
+                                            validated_inner
+                                        }
+                                    }
                                     None => Ty::Error,
                                 }
                             }
@@ -987,6 +1043,7 @@ impl Checker {
         for arm in arms {
             self.env.push_scope();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
+            self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
             if let Some((guard, gs)) = &arm.guard {
                 self.check_against(guard, gs, &Ty::Bool);

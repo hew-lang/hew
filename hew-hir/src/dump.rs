@@ -284,6 +284,14 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::Literal(lit) => {
             writeln!(out, "{pad}  literal {lit:?}").expect("write to string");
         }
+        HirExprKind::RegexLiteralRef {
+            literal_id,
+            pattern,
+            ..
+        } => {
+            writeln!(out, "{pad}  regex-literal #{literal_id} {pattern:?}")
+                .expect("write to string");
+        }
         HirExprKind::BindingRef { name, resolved } => {
             writeln!(out, "{pad}  ref {name} -> {resolved:?}").expect("write to string");
         }
@@ -635,6 +643,95 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             for (field_name, field_val) in fields {
                 writeln!(out, "{pad}    field {field_name}:").expect("write to string");
                 dump_expr(out, field_val, indent + 6);
+            }
+        }
+        HirExprKind::MachineStep {
+            machine_name,
+            receiver,
+            event,
+        } => {
+            writeln!(out, "{pad}  machine-step {machine_name}").expect("write to string");
+            writeln!(out, "{pad}    receiver:").expect("write to string");
+            dump_expr(out, receiver, indent + 6);
+            writeln!(out, "{pad}    event:").expect("write to string");
+            dump_expr(out, event, indent + 6);
+        }
+        HirExprKind::MachineStateName {
+            machine_name,
+            receiver,
+        } => {
+            writeln!(out, "{pad}  machine-state-name {machine_name}").expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+        }
+        HirExprKind::MachineVariantCtor {
+            machine_name,
+            state_idx,
+            payload,
+        } => {
+            writeln!(
+                out,
+                "{pad}  machine-variant-ctor {machine_name}[{state_idx}]"
+            )
+            .expect("write to string");
+            if let Some(fields) = payload {
+                for (name, val) in fields {
+                    writeln!(out, "{pad}    field {name}:").expect("write to string");
+                    dump_expr(out, val, indent + 6);
+                }
+            }
+        }
+        HirExprKind::MachineFieldAccess {
+            machine_name,
+            state_idx,
+            field_idx,
+            field_name,
+        } => {
+            writeln!(
+                out,
+                "{pad}  machine-field-access {machine_name}[{state_idx}].{field_name}[{field_idx}]"
+            )
+            .expect("write to string");
+        }
+        HirExprKind::While { condition, body } => {
+            writeln!(out, "{pad}  while").expect("write to string");
+            dump_expr(out, condition, indent + 4);
+            dump_block(out, body, indent + 4);
+        }
+        HirExprKind::ForRange {
+            binding,
+            start,
+            end,
+            inclusive,
+            body,
+        } => {
+            writeln!(
+                out,
+                "{pad}  for-range {} (inclusive={inclusive})",
+                binding.name
+            )
+            .expect("write to string");
+            dump_expr(out, start, indent + 4);
+            dump_expr(out, end, indent + 4);
+            dump_block(out, body, indent + 4);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            writeln!(out, "{pad}  match ({} arms)", arms.len()).expect("write to string");
+            dump_expr(out, scrutinee, indent + 4);
+            for arm in arms {
+                let label = match &arm.predicate {
+                    crate::node::HirMatchArmPredicate::Wildcard => "_".to_string(),
+                    crate::node::HirMatchArmPredicate::EnumVariant { variant_match, .. } => {
+                        format!(
+                            "{}::{}",
+                            variant_match.type_name, variant_match.variant_name
+                        )
+                    }
+                    crate::node::HirMatchArmPredicate::Regex { pattern, .. } => {
+                        format!("re{pattern:?}")
+                    }
+                };
+                writeln!(out, "{pad}    arm {label}").expect("write to string");
+                dump_expr(out, &arm.body, indent + 6);
             }
         }
         HirExprKind::Unsupported(reason) => {

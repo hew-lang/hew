@@ -1,0 +1,26 @@
+// Exercises monomorphic struct-payload variant construction and match
+// destructuring end-to-end.
+//
+// This fixture verifies:
+//   1. `Shape::Box { w: 3, h: 4 }` constructs a tagged-union value at the
+//      variant index with two payload fields ordered by source declaration.
+//   2. A `match` arm `Shape::Box { w, h } => ...` binds both `w` and `h`
+//      from declaration-order payload slots.
+//   3. The arm body uses both bound payload values in a single expression.
+enum Shape {
+    Box { w: i64, h: i64 };
+    Origin;
+}
+
+fn area(s: Shape) -> i64 {
+    match s {
+        Shape::Box { w, h } => w * h,
+        _ => 0,
+    }
+}
+
+fn main() {
+    let b = Shape::Box { w: 3, h: 4 };
+    println(area(b));
+    println("done");
+}

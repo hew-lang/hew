@@ -256,6 +256,7 @@ pub mod vecdeque;
 pub mod bytes;
 mod channel_common;
 pub mod duration;
+pub mod machine_emit;
 pub mod parse_error_slot;
 
 pub mod internal;

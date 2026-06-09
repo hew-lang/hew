@@ -12,6 +12,16 @@
 //!   strong handle; if the external strong refcount has reached zero,
 //!   the upgrade fails and the send surfaces as
 //!   [`SendError::ActorStopped`] instead of resurrecting the actor.
+//! - **Body dispatch**: the constructor spawns a dedicated OS thread
+//!   that drains the mailbox and invokes the body callback
+//!   (`HewLambdaActorBody`) behind `std::panic::catch_unwind`. A body
+//!   panic marks the actor stopped, reclaims any in-flight message
+//!   and reply-channel ownership, and causes all subsequent sends/asks
+//!   to surface `ActorStopped`.
+//! - **Ask reply correlation**: ask-shaped actors accept `hew_lambda_actor_ask`
+//!   calls. The reply channel is framed into the mailbox envelope; the
+//!   body callback writes a reply payload; the runtime delivers it to
+//!   the waiter via `HewReplyChannel`.
 //!
 //! ## Refcount layering
 //!
@@ -22,13 +32,34 @@
 //! hold `Weak<LambdaActorInner>` and try `upgrade` on every use; that
 //! upgrade is the §5.9 ratification 2 stop-guarantee.
 //!
-//! ## Body invocation
+//! ## ABI contract (frozen at slice 1)
 //!
-//! This module carries the data structures + ABI entries. Body
-//! dispatch (deserialising a `Msg` envelope, running the lambda's
-//! statements, posting a Reply for ask-shape) is consumed by the
-//! codegen lowering. Tests prove the upgrade discipline without
-//! invoking a body.
+//! ```c
+//! typedef int32_t (*HewLambdaActorBody)(
+//!     void*          state,
+//!     const uint8_t* msg,
+//!     size_t         msg_len,
+//!     uint8_t**      reply_out,
+//!     size_t*        reply_len_out
+//! );
+//! typedef void (*HewLambdaActorStateDrop)(void* state);
+//! ```
+//!
+//! - `state`: per-instance capture record; runtime owns after construction.
+//! - `msg` / `msg_len`: borrowed only for the duration of the call; body
+//!   must not retain the pointer.
+//! - `reply_out` / `reply_len_out`: must be set to null/0 on tell-shape bodies;
+//!   on ask-shape, body allocates via `hew_duplex_payload_free`-compatible
+//!   allocator (`Box::into_raw(bytes.into_boxed_slice())`).
+//! - Return `0` = success; non-zero = body error, actor marked stopped.
+//! - `catch_unwind` wraps every invocation; panic = stopped + payload reclaim.
+//!
+//! ## Ask mailbox framing
+//!
+//! Ask-shaped message envelopes are framed as:
+//!   `[reply_ch_ptr: 8 bytes LE][msg_bytes...]`
+//! The dispatch loop extracts the pointer, calls the body, and posts the
+//! reply to the `HewReplyChannel`. Tell envelopes are raw msg bytes.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(
@@ -46,10 +77,54 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use crate::duplex::{HewDuplex, HewRecvHalf, HewSendHalf, RecvError, SendError};
+use crate::reply_channel::{
+    hew_reply, hew_reply_channel_free, hew_reply_channel_new, hew_reply_channel_retain,
+    hew_reply_channel_retire_orphaned_ask_sender_ref, hew_reply_wait_with_size, HewReplyChannel,
+};
+
+// ── ABI callback types ─────────────────────────────────────────────────────
+
+/// Body-dispatch callback.
+///
+/// Invoked by the dispatch thread for each message. `state` is the
+/// per-instance capture record. `msg`/`msg_len` are the raw message bytes
+/// (borrowed; do not retain). For ask-shape, write the reply payload
+/// pointer + length into `reply_out` / `reply_len_out`; the runtime takes
+/// ownership and delivers it to the waiter. For tell-shape, set both to
+/// null/0. Return `0` on success; any non-zero value marks the actor stopped.
+///
+/// The `"C-unwind"` ABI allows Rust panics to propagate through the
+/// boundary and be caught by the `std::panic::catch_unwind` in the
+/// dispatch loop. This is intentional: LLVM-emitted body stubs are Rust
+/// closures lowered to standalone `extern "C-unwind" fn` symbols, and a
+/// panic in user code must be containable without aborting the process.
+///
+/// SAFETY: invoked from a Rust thread behind `std::panic::catch_unwind`;
+/// the pointer arguments are valid for the duration of the call.
+pub type HewLambdaActorBody = unsafe extern "C-unwind" fn(
+    state: *mut core::ffi::c_void,
+    msg: *const u8,
+    msg_len: usize,
+    reply_out: *mut *mut u8,
+    reply_len_out: *mut usize,
+) -> i32;
+
+/// State-drop callback.
+///
+/// Called exactly once when the dispatch loop stops (after the last message
+/// or after a panic) before `LambdaActorInner` is released. If the
+/// constructor failed before handing ownership to the runtime, the caller
+/// (codegen) must invoke this or otherwise free the capture record.
+///
+/// SAFETY: `state` is the same pointer passed to `hew_lambda_actor_new`;
+/// called at most once.
+pub type HewLambdaActorStateDrop = unsafe extern "C" fn(state: *mut core::ffi::c_void);
+
+// ── Body-shape discriminant ────────────────────────────────────────────────
 
 /// Body-shape discriminator. Recorded at construction so the runtime
-/// knows whether to provision a reply correlator; codegen (slice 5)
-/// will read this to decide whether `hew_lambda_actor_send` (tell) or
+/// knows whether to provision a reply correlator; codegen reads this to
+/// decide whether `hew_lambda_actor_send` (tell) or
 /// `hew_lambda_actor_ask` (ask) is the correct dispatch.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,55 +137,135 @@ pub enum LambdaShape {
     Ask = 1,
 }
 
-/// Internal shared state. The Arc's strong count is the external
-/// lambda-actor refcount.
+// ── Ask envelope framing ───────────────────────────────────────────────────
+
+/// Byte size of the reply-channel pointer prefix in ask envelopes.
+const ASK_REPLY_CH_PREFIX_LEN: usize = 8;
+
+/// Frame an ask message: `[reply_ch_ptr: 8 LE bytes][msg_bytes...]`.
+fn frame_ask_envelope(reply_ch: *mut HewReplyChannel, msg: &[u8]) -> Vec<u8> {
+    let ptr_bytes = (reply_ch as u64).to_le_bytes();
+    let mut env = Vec::with_capacity(ASK_REPLY_CH_PREFIX_LEN + msg.len());
+    env.extend_from_slice(&ptr_bytes);
+    env.extend_from_slice(msg);
+    env
+}
+
+/// Extract the reply channel pointer and message slice from an ask envelope.
 ///
-/// The mailbox is constructed by pairing two `HewDuplex` handles and
-/// immediately splitting each — the lambda-actor is one end of the
-/// pair (clients write into `mailbox_in`; the body dispatch loop drains
-/// from `mailbox_out`). The opposite-direction queue of each pair-side
-/// is auto-released when the half-conversions drop their unused caps,
-/// so only the client-write-to-body-read direction stays open.
-#[derive(Debug)]
+/// # Safety
+///
+/// `env` must have been produced by `frame_ask_envelope` and the embedded
+/// pointer must be a live `*mut HewReplyChannel`.
+unsafe fn unframe_ask_envelope(env: &[u8]) -> (*mut HewReplyChannel, &[u8]) {
+    debug_assert!(
+        env.len() >= ASK_REPLY_CH_PREFIX_LEN,
+        "ask envelope too short: {} bytes",
+        env.len()
+    );
+    let mut ptr_bytes = [0u8; 8];
+    ptr_bytes.copy_from_slice(&env[..ASK_REPLY_CH_PREFIX_LEN]);
+    let ch = u64::from_le_bytes(ptr_bytes) as *mut HewReplyChannel;
+    (ch, &env[ASK_REPLY_CH_PREFIX_LEN..])
+}
+
+// ── Internal shared state ──────────────────────────────────────────────────
+
+/// Internal shared state. Shared between the dispatch thread (via
+/// `Arc`) and the weak-ref upgrade path.
+///
+/// `mailbox_in` (the send half) lives in `HewLambdaActor` wrapped in
+/// `Arc<HewSendHalf>`. When the last `HewLambdaActor` clone drops, the
+/// `Arc<HewSendHalf>` drops, `HewSendHalf::drop` calls `release_sender`,
+/// closing the send side of the queue. The dispatch thread's `recv` then
+/// returns `RecvError::Closed` and the loop exits naturally.
+///
+/// Separating `mailbox_in` from `LambdaActorInner` is the key invariant
+/// that allows the dispatch thread to hold `Arc<LambdaActorInner>` without
+/// preventing the mailbox from closing when external handles are released.
 pub struct LambdaActorInner {
-    /// Send-half retained from the client-side pair endpoint. Sends
-    /// from `HewLambdaActor::send` write here.
-    mailbox_in: HewSendHalf,
     /// Recv-half retained from the body-side pair endpoint. The
     /// body-dispatch loop drains messages here.
     mailbox_out: HewRecvHalf,
     /// Body-shape discriminator.
     shape: LambdaShape,
+    /// Set to `true` when the actor has stopped (body panic, non-zero
+    /// body return, or all senders gone). Checked by `send` / `ask` to
+    /// return `ActorStopped` without touching the mailbox.
+    stopped: AtomicBool,
+    /// Body dispatch callback. Called once per message by the dispatch
+    /// thread. Raw function pointer — no lifetime; valid for the full
+    /// lifetime of the actor (codegen ensures this by keeping the
+    /// function symbol alive via static linkage).
+    body_fn: HewLambdaActorBody,
+    /// Per-instance capture/state record. Owned by the runtime after
+    /// construction; freed via `state_drop` when the dispatch loop exits.
+    ///
+    /// SAFETY: must be `Send` — the dispatch thread reads it from a
+    /// different OS thread than the constructor. Codegen's capture record
+    /// is always heap-allocated with no thread-local interior state.
+    state: *mut core::ffi::c_void,
+    /// Destructor for `state`. Called exactly once after the dispatch
+    /// loop stops.
+    state_drop: HewLambdaActorStateDrop,
+}
+
+// SAFETY: `LambdaActorInner` is sent to the dispatch thread. The
+// `state` pointer is a heap-allocated capture record with no
+// thread-local interior state (codegen invariant). `mailbox_out`
+// (HewRecvHalf) is accessed only by the single dispatch thread.
+// The `stopped` AtomicBool and `body_fn`/`state_drop` fn ptrs are
+// Send/Sync-compatible.
+unsafe impl Send for LambdaActorInner {}
+// SAFETY: `stopped` is Sync via AtomicBool. `body_fn` / `state_drop`
+// are read-only after construction. `state` is only accessed by the
+// single dispatch thread (never by multiple threads concurrently).
+// `mailbox_out` is accessed only by the single dispatch thread.
+unsafe impl Sync for LambdaActorInner {}
+
+impl std::fmt::Debug for LambdaActorInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LambdaActorInner")
+            .field("shape", &self.shape)
+            .field("stopped", &self.stopped)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LambdaActorInner {
-    fn new(mailbox_capacity: usize, shape: LambdaShape) -> Self {
+    /// Construct the inner state and return it together with the send half.
+    ///
+    /// The `HewSendHalf` is returned separately so that `HewLambdaActor`
+    /// can own it wrapped in an `Arc`; when the last external strong handle
+    /// drops, the Arc releases the send half and the queue closes, causing
+    /// the dispatch thread's `recv` to return `Closed`.
+    fn new(
+        mailbox_capacity: usize,
+        shape: LambdaShape,
+        body_fn: HewLambdaActorBody,
+        state: *mut core::ffi::c_void,
+        state_drop: HewLambdaActorStateDrop,
+    ) -> (Self, HewSendHalf) {
         // Construct a cross-wired pair and immediately split each side
         // into the half it needs. `client` retains the send capability
         // toward the body; `body` retains the recv capability draining
-        // those messages. The reverse-direction queue (body → client)
-        // has no use today (tell-shape and the not-yet-wired ask-shape
-        // reply path will introduce it when the runtime carries
-        // correlator state); each split releases its unused cap and
-        // the unused queue is freed within the constructor.
+        // those messages.
         let (client, body) = HewDuplex::new_pair(mailbox_capacity, mailbox_capacity);
         let mailbox_in = client.into_send_half();
         let mailbox_out = body.into_recv_half();
-        Self {
-            mailbox_in,
+        let inner = Self {
             mailbox_out,
             shape,
-        }
-    }
-
-    /// Send a message envelope on the actor's mailbox. Blocks if the
-    /// mailbox is full and at least one receiver remains.
-    pub fn send(&self, msg: Vec<u8>) -> SendError {
-        self.mailbox_in.send(msg)
+            stopped: AtomicBool::new(false),
+            body_fn,
+            state,
+            state_drop,
+        };
+        (inner, mailbox_in)
     }
 
     /// Drain the next message envelope from the mailbox. Used by the
-    /// body-dispatch loop (not exposed via C-ABI yet).
+    /// body-dispatch loop.
     pub fn recv(&self) -> Result<Vec<u8>, RecvError> {
         self.mailbox_out.recv()
     }
@@ -119,36 +274,104 @@ impl LambdaActorInner {
     pub fn shape(&self) -> LambdaShape {
         self.shape
     }
+
+    /// Mark the actor as stopped. Subsequent `send` / `ask` return
+    /// `ActorStopped`. Called by the dispatch thread on panic or
+    /// non-zero body return.
+    fn mark_stopped(&self) {
+        self.stopped.store(true, Ordering::Release);
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for LambdaActorInner {
+    fn drop(&mut self) {
+        // `state_drop` is called here — after the Arc strong count reaches
+        // zero — which happens either: (a) the dispatch thread finished and
+        // dropped the Arc it holds, or (b) the dispatch thread panicked and
+        // the thread's stack unwinding dropped its Arc. Either way, the
+        // dispatch thread is no longer accessing `state` at this point,
+        // satisfying the exclusive-access requirement.
+        //
+        // SAFETY: `state_drop` is a valid function pointer (set at
+        // construction, never mutated). `state` is the same pointer
+        // passed to `hew_lambda_actor_new`; called exactly once here.
+        unsafe {
+            (self.state_drop)(self.state);
+        }
+    }
 }
 
 // ── Strong / Weak handles ──────────────────────────────────────────────────
 
 /// Strong lambda-actor handle. Holding a `HewLambdaActor` keeps the
-/// actor alive. When the last strong handle drops, the inner state
-/// (including the embedded `HewDuplex`) is freed and any body-side
-/// weak handle's `upgrade` will fail thereafter.
+/// actor alive. When the last strong handle drops:
+/// 1. The `Arc<HewSendHalf>` drops → `HewSendHalf::drop` releases the
+///    sender-cap → the queue's send side closes.
+/// 2. The dispatch thread's next `recv` returns `RecvError::Closed`.
+/// 3. The dispatch thread exits, dropping its `Arc<LambdaActorInner>`.
+/// 4. `LambdaActorInner::drop` calls `state_drop(state)`.
+/// 5. Any `HewLambdaActorWeak::upgrade` returns `None` from this point.
 #[derive(Debug, Clone)]
 pub struct HewLambdaActor {
+    /// Shared send half. `Arc` ownership so that all clones of this
+    /// handle share a single `HewSendHalf` that closes when the last
+    /// clone drops.
+    mailbox_in: Arc<HewSendHalf>,
+    /// Shared inner state. Used for the stopped-flag and weak-ref
+    /// upgrade target.
     inner: Arc<LambdaActorInner>,
 }
 
 impl HewLambdaActor {
-    /// Construct a new lambda-actor instance with the given mailbox
-    /// capacity and body shape (tell or ask).
+    /// Construct a new lambda-actor instance. The constructor spawns a
+    /// dedicated dispatch thread that drains the mailbox and invokes
+    /// `body_fn(state, ...)` for each message.
+    ///
+    /// Returns `None` if the dispatch thread could not be spawned.
+    ///
+    /// `state` is owned by the runtime after this call. If `new` returns
+    /// `None`, the caller is responsible for calling `state_drop(state)`.
     #[must_use]
-    pub fn new(mailbox_capacity: usize, shape: LambdaShape) -> Self {
-        Self {
-            inner: Arc::new(LambdaActorInner::new(mailbox_capacity, shape)),
-        }
+    pub fn new(
+        mailbox_capacity: usize,
+        shape: LambdaShape,
+        body_fn: HewLambdaActorBody,
+        state: *mut core::ffi::c_void,
+        state_drop: HewLambdaActorStateDrop,
+    ) -> Option<Self> {
+        let (inner_val, mailbox_in) =
+            LambdaActorInner::new(mailbox_capacity, shape, body_fn, state, state_drop);
+        let inner = Arc::new(inner_val);
+        // Wrap mailbox_in in Arc so all clones share one send-half.
+        // When the Arc's strong count drops to zero, HewSendHalf::drop
+        // closes the queue and the dispatch thread's recv returns Closed.
+        let mailbox_in = Arc::new(mailbox_in);
+        // Spawn the dispatch thread. It holds a strong Arc reference to
+        // keep LambdaActorInner alive while the loop runs. The thread
+        // exits when recv returns Closed (i.e., when all external
+        // Arc<HewSendHalf> clones drop).
+        let dispatch_inner = Arc::clone(&inner);
+        std::thread::Builder::new()
+            .name("hew-lambda-dispatch".to_string())
+            .spawn(move || dispatch_loop(&dispatch_inner))
+            .ok()?;
+        Some(Self { mailbox_in, inner })
     }
 
     /// Send a message envelope. Failure modes:
     ///
-    /// - `SendError::Closed` if the inner Duplex was closed (the body
-    ///   side dropped its receiver), or
+    /// - `SendError::Closed` if the send half was already closed, or
+    /// - `SendError::ActorStopped` if the body panicked / returned non-zero, or
     /// - `SendError::Ok` on success.
     pub fn send(&self, msg: Vec<u8>) -> SendError {
-        self.inner.send(msg)
+        if self.inner.is_stopped() {
+            return SendError::ActorStopped;
+        }
+        self.mailbox_in.send(msg)
     }
 
     /// Downgrade to a weak handle. The weak handle does NOT keep the
@@ -158,6 +381,7 @@ impl HewLambdaActor {
     pub fn downgrade(&self) -> HewLambdaActorWeak {
         HewLambdaActorWeak {
             inner: Arc::downgrade(&self.inner),
+            mailbox_in: Arc::downgrade(&self.mailbox_in),
         }
     }
 
@@ -165,12 +389,6 @@ impl HewLambdaActor {
     #[must_use = "the clone bumps the actor's external refcount; drop releases it"]
     pub fn clone_handle(&self) -> Self {
         self.clone()
-    }
-
-    /// Borrow the inner state (used by the body-dispatch loop).
-    #[must_use]
-    pub fn inner(&self) -> &LambdaActorInner {
-        &self.inner
     }
 }
 
@@ -180,15 +398,24 @@ impl HewLambdaActor {
 /// `SendError::ActorStopped` once the externals are gone.
 #[derive(Debug, Clone)]
 pub struct HewLambdaActorWeak {
+    /// Weak reference to the inner state.
     inner: Weak<LambdaActorInner>,
+    /// Weak reference to the shared send half. Upgrading both is
+    /// atomic from the perspective of the lifecycle invariant: if
+    /// `mailbox_in` can be upgraded, the actor is still alive.
+    mailbox_in: Weak<HewSendHalf>,
 }
 
 impl HewLambdaActorWeak {
     /// Try to upgrade to a strong handle. Returns `None` if the
-    /// external strong refcount has reached zero.
+    /// external strong refcount has reached zero (i.e., the
+    /// `Arc<HewSendHalf>` has been released).
     #[must_use]
     pub fn upgrade(&self) -> Option<HewLambdaActor> {
-        self.inner.upgrade().map(|inner| HewLambdaActor { inner })
+        // Both must succeed; if mailbox_in is gone the actor is stopped.
+        let mailbox_in = self.mailbox_in.upgrade()?;
+        let inner = self.inner.upgrade()?;
+        Some(HewLambdaActor { mailbox_in, inner })
     }
 
     /// Attempt a self-send through the weak handle. Upgrades just
@@ -204,6 +431,246 @@ impl HewLambdaActorWeak {
     #[must_use = "the weak clone bumps only the weak count; drop releases it"]
     pub fn clone_handle(&self) -> Self {
         self.clone()
+    }
+}
+
+// ── Dispatch loop ──────────────────────────────────────────────────────────
+
+/// Body-dispatch loop. Runs on a dedicated OS thread. Drains
+/// `mailbox_out`, invokes `body_fn` behind `catch_unwind`, and routes
+/// reply payloads (ask shape) to the caller's `HewReplyChannel`.
+///
+/// Loop exits when `recv` returns `Closed` (all external strong handles
+/// dropped, mailbox drained). The Arc held by this loop is the last
+/// reference; when this function returns, `LambdaActorInner::drop` runs
+/// and calls `state_drop`.
+fn dispatch_loop(inner: &Arc<LambdaActorInner>) {
+    loop {
+        let envelope = match inner.recv() {
+            Ok(env) => env,
+            Err(RecvError::Ok) => {
+                // RecvError::Ok is the success discriminant (recv returned a
+                // value in the Ok(_) arm above); this arm is unreachable via
+                // recv() but must be listed for exhaustiveness.
+                continue;
+            }
+            Err(RecvError::Closed) => break,
+            Err(RecvError::Empty) => {
+                // `try_recv` semantics surfaced — should not happen on
+                // blocking `recv`, but handle defensively.
+                continue;
+            }
+            Err(RecvError::PartitionDetected) => {
+                // Partition in v0.5 single-node: treat as stopped.
+                inner.mark_stopped();
+                break;
+            }
+        };
+
+        match inner.shape() {
+            LambdaShape::Tell => {
+                dispatch_tell(inner, &envelope);
+            }
+            LambdaShape::Ask => {
+                dispatch_ask(inner, &envelope);
+            }
+        }
+
+        if inner.is_stopped() {
+            // Drain remaining ask messages, orphaning their reply channels.
+            drain_stopped(inner);
+            break;
+        }
+    }
+}
+
+/// Invoke the body callback for a tell-shaped message.
+fn dispatch_tell(inner: &LambdaActorInner, msg: &[u8]) {
+    let body_fn = inner.body_fn;
+    let state = inner.state;
+    let msg_ptr = if msg.is_empty() {
+        ptr::null()
+    } else {
+        msg.as_ptr()
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut reply_out: *mut u8 = ptr::null_mut();
+        let mut reply_len_out: usize = 0;
+        // SAFETY: body_fn is a valid extern "C" fn pointer; msg_ptr valid for
+        // msg.len() bytes; reply_out/reply_len_out are local stack variables.
+        // SAFETY: body_fn valid; reply_out/reply_len_out are local stack
+        // variables; raw ptrs avoid implicit-borrow lint.
+        let rc = unsafe {
+            body_fn(
+                state,
+                msg_ptr,
+                msg.len(),
+                &raw mut reply_out,
+                &raw mut reply_len_out,
+            )
+        };
+        // Tell-shape contract: reply_out must be null. If the body sets
+        // it (contract violation), free it and mark stopped.
+        if !reply_out.is_null() {
+            // SAFETY: body_fn allocated this via Box/hew_duplex_payload_free
+            // compatible allocator; reclaim it before marking stopped.
+            unsafe {
+                let slice = std::slice::from_raw_parts_mut(reply_out, reply_len_out);
+                drop(Box::from_raw(slice as *mut [u8]));
+            }
+            crate::set_last_error(
+                "hew_lambda_actor: tell-shape body set reply_out (contract violation); actor stopped"
+                    .to_string(),
+            );
+            return i32::MIN; // force stopped
+        }
+        rc
+    }));
+    match result {
+        Ok(0) => {} // success
+        Ok(_) => {
+            // Non-zero return: mark stopped.
+            inner.mark_stopped();
+        }
+        Err(_) => {
+            // Panic: mark stopped.
+            inner.mark_stopped();
+        }
+    }
+}
+
+/// Invoke the body callback for an ask-shaped message.
+fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
+    if envelope.len() < ASK_REPLY_CH_PREFIX_LEN {
+        // Malformed envelope — should never happen from our own framing.
+        // Mark stopped and let the reply channel dangle (it will be
+        // orphaned when the waiter times out).
+        crate::set_last_error(
+            "hew_lambda_actor: ask envelope too short; actor stopped".to_string(),
+        );
+        inner.mark_stopped();
+        return;
+    }
+    // SAFETY: envelope was produced by `frame_ask_envelope`; the
+    // reply-channel pointer was valid at send time and the channel is
+    // ref-counted so it stays valid until `hew_reply` or
+    // `hew_reply_channel_free` releases it.
+    let (reply_ch, msg) = unsafe { unframe_ask_envelope(envelope) };
+
+    let body_fn = inner.body_fn;
+    let state = inner.state;
+    let msg_ptr = if msg.is_empty() {
+        ptr::null()
+    } else {
+        msg.as_ptr()
+    };
+
+    // Hoist reply_out / reply_len_out OUTSIDE the catch_unwind closure so
+    // that the Err (panic) branch can observe and reclaim any partial reply
+    // the body allocated before panicking. Without this, a body that sets
+    // *reply_out then panics would leak that allocation because catch_unwind
+    // discards the closure locals.
+    //
+    // Contract for body implementations: bodies that panic forfeit ownership
+    // of any reply allocation they wrote to *reply_out — the dispatch layer
+    // reclaims it here. Bodies that return non-zero with a non-null *reply_out
+    // also forfeit that allocation.
+    let mut reply_out: *mut u8 = ptr::null_mut();
+    let mut reply_len_out: usize = 0;
+    // Take raw pointers before the AssertUnwindSafe closure captures the env.
+    // SAFETY: reply_out/len_out are live for the duration of the closure call;
+    // the closure returns before they are moved or dropped.
+    let reply_out_p = &raw mut reply_out;
+    let reply_len_out_p = &raw mut reply_len_out;
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: body_fn/state/msg_ptr as in dispatch_tell; reply_out/len are
+        // outer stack slots passed as out-params via raw pointers.
+        unsafe { body_fn(state, msg_ptr, msg.len(), reply_out_p, reply_len_out_p) }
+    }));
+
+    // After catch_unwind returns, reply_out / reply_len_out reflect whatever
+    // the body wrote (or null/0 if it wrote nothing / panicked early).
+    let reply_ptr = reply_out;
+    let reply_len = reply_len_out;
+
+    match result {
+        Ok(0) => {
+            // Success: deliver reply to the waiter.
+            // SAFETY: reply_ch is a live HewReplyChannel pointer (see above);
+            // reply_ptr/reply_len from body callback — ownership transfers to
+            // the reply channel which makes a copy; then we free the body's
+            // allocation below.
+            let delivered = unsafe { hew_reply(reply_ch, reply_ptr.cast(), reply_len) };
+            // Free the body-allocated reply buffer now that hew_reply has
+            // (optionally) copied it. If the channel was cancelled (`delivered
+            // == false`), the waiter already abandoned this reply and the
+            // runtime must reclaim the memory.
+            if !reply_ptr.is_null() {
+                // SAFETY: body allocated this via Box<[u8]> compatible allocator;
+                // hew_reply took a copy, so original buffer is ours to free.
+                unsafe {
+                    let slice = std::slice::from_raw_parts_mut(reply_ptr, reply_len);
+                    drop(Box::from_raw(slice as *mut [u8]));
+                }
+            }
+            let _ = delivered;
+        }
+        Ok(_) => {
+            // Non-zero return: actor stopped. Free any partial reply and
+            // orphan the reply channel.
+            if !reply_ptr.is_null() {
+                // SAFETY: body allocated this via Box<[u8]>-compatible
+                // allocator; body returned non-zero so the channel is orphaned
+                // and we must reclaim the buffer.
+                unsafe {
+                    let slice = std::slice::from_raw_parts_mut(reply_ptr, reply_len);
+                    drop(Box::from_raw(slice as *mut [u8]));
+                }
+            }
+            // Signal the waiter with a null reply (orphaned path).
+            // SAFETY: reply_ch is alive; orphan_ask_sender_ref takes the
+            // ref we're carrying.
+            unsafe {
+                hew_reply_channel_retire_orphaned_ask_sender_ref(reply_ch);
+            }
+            inner.mark_stopped();
+        }
+        Err(_) => {
+            // Panic: actor stopped. Reclaim any partial reply the body wrote
+            // before panicking (hoisted reply_out captures it), then orphan
+            // the reply channel so the waiter unblocks.
+            if !reply_ptr.is_null() {
+                // SAFETY: body allocated this via Box<[u8]>-compatible
+                // allocator and then panicked; we are the sole owner.
+                unsafe {
+                    let slice = std::slice::from_raw_parts_mut(reply_ptr, reply_len);
+                    drop(Box::from_raw(slice as *mut [u8]));
+                }
+            }
+            // SAFETY: same as non-zero path above.
+            unsafe {
+                hew_reply_channel_retire_orphaned_ask_sender_ref(reply_ch);
+            }
+            inner.mark_stopped();
+        }
+    }
+}
+
+/// Drain residual messages from a stopped actor. Ask envelopes are
+/// orphaned so waiters unblock; tell envelopes are discarded.
+fn drain_stopped(inner: &LambdaActorInner) {
+    while let Ok(envelope) = inner.recv() {
+        if inner.shape() == LambdaShape::Ask && envelope.len() >= ASK_REPLY_CH_PREFIX_LEN {
+            // SAFETY: envelope from frame_ask_envelope; reply_ch pointer valid
+            // (still ref-counted by the sending side).
+            let (reply_ch, _msg) = unsafe { unframe_ask_envelope(&envelope) };
+            // SAFETY: retire_orphaned_ask_sender_ref consumes the ref.
+            unsafe {
+                hew_reply_channel_retire_orphaned_ask_sender_ref(reply_ch);
+            }
+        }
+        // Tell envelopes are simply dropped.
     }
 }
 
@@ -254,24 +721,47 @@ impl HewLambdaActorWeakHandle {
 // shape and the `DropKind::LambdaActorRelease` drop-elaboration
 // target.
 
-/// Allocate a new lambda-actor instance with the given mailbox capacity
-/// and shape discriminant. `shape` must be `0` (Tell) or `1` (Ask);
-/// any other value sets a last-error and returns null.
+/// Allocate a new lambda-actor instance with the given mailbox capacity,
+/// shape discriminant, body callback, per-instance state, and state
+/// destructor. The constructor spawns a dispatch thread immediately.
+///
+/// `shape` must be `0` (Tell) or `1` (Ask); any other value sets a
+/// last-error and returns null without invoking `state_drop`.
+///
+/// On a null return due to invalid arguments, the caller remains
+/// responsible for calling `state_drop(state)` if `state` is non-null.
 ///
 /// # Safety
 ///
-/// The returned pointer is owned by the runtime and must be released
-/// with [`hew_lambda_actor_release`].
+/// - `body_fn` must be a valid `extern "C" fn` pointer for the lifetime
+///   of the returned handle.
+/// - `state` is passed to `body_fn` on every dispatch; must be valid for
+///   the lifetime of the actor. `state_drop(state)` is called once after
+///   the dispatch loop stops.
+/// - `state_drop` must be a valid `extern "C" fn` pointer.
+/// - The returned pointer is owned by the runtime and must be released
+///   with [`hew_lambda_actor_release`].
 #[no_mangle]
-pub extern "C" fn hew_lambda_actor_new(
+pub unsafe extern "C" fn hew_lambda_actor_new(
     mailbox_capacity: usize,
     shape: i32,
+    body_fn: Option<HewLambdaActorBody>,
+    state: *mut core::ffi::c_void,
+    state_drop: Option<HewLambdaActorStateDrop>,
 ) -> *mut HewLambdaActorHandle {
     if mailbox_capacity == 0 {
         crate::set_last_error("hew_lambda_actor_new: mailbox_capacity must be > 0".to_string());
         return ptr::null_mut();
     }
-    let shape = match shape {
+    let Some(body_fn) = body_fn else {
+        crate::set_last_error("hew_lambda_actor_new: body_fn is null".to_string());
+        return ptr::null_mut();
+    };
+    let Some(state_drop) = state_drop else {
+        crate::set_last_error("hew_lambda_actor_new: state_drop is null".to_string());
+        return ptr::null_mut();
+    };
+    let lambda_shape = match shape {
         0 => LambdaShape::Tell,
         1 => LambdaShape::Ask,
         other => {
@@ -281,10 +771,13 @@ pub extern "C" fn hew_lambda_actor_new(
             return ptr::null_mut();
         }
     };
-    let ptr = Box::into_raw(Box::new(HewLambdaActorHandle::new(HewLambdaActor::new(
-        mailbox_capacity,
-        shape,
-    ))));
+    let Some(actor) =
+        HewLambdaActor::new(mailbox_capacity, lambda_shape, body_fn, state, state_drop)
+    else {
+        crate::set_last_error("hew_lambda_actor_new: could not spawn dispatch thread".to_string());
+        return ptr::null_mut();
+    };
+    let ptr = Box::into_raw(Box::new(HewLambdaActorHandle::new(actor)));
     crate::tracing::record_channel_event(ptr as u64, crate::tracing::SPAN_LAMBDA_SPAWNED);
     ptr
 }
@@ -338,6 +831,8 @@ pub unsafe extern "C" fn hew_lambda_actor_clone(
 /// `SendError` discriminant as `i32`.
 ///
 /// Returns `SendError::DoubleClose` (4) if the handle has already been released.
+/// Returns `SendError::ActorStopped` (3) if the body has panicked or
+/// returned a non-zero exit code.
 ///
 /// # Safety
 ///
@@ -388,8 +883,173 @@ pub unsafe extern "C" fn hew_lambda_actor_send(
     // SAFETY: see hew_lambda_actor_clone for the dereference axes;
     // identical (caller-supplied valid pointer, shared borrow of inner only,
     // Arc-protected internal state is Sync).
-    let res = unsafe { (*actor).inner.send(payload) };
+    // `(*actor).inner` = ManuallyDrop<HewLambdaActor> (deref → HewLambdaActor);
+    // `.inner` = Arc<LambdaActorInner>; `.mailbox_in` = Arc<HewSendHalf>.
+    // SAFETY: (*actor).inner is ManuallyDrop<HewLambdaActor>; take an
+    // explicit shared ref to avoid the implicit-autoref lint.
+    let actor_ref = unsafe { &(*actor).inner };
+    let stopped = actor_ref.inner.is_stopped();
+    if stopped {
+        return SendError::ActorStopped as i32;
+    }
+    let res = actor_ref.mailbox_in.send(payload);
     res as i32
+}
+
+/// Send a message envelope and await a reply (ask-shaped dispatch).
+///
+/// The reply payload is written to `*reply_out` / `*reply_len_out` on
+/// success; the caller must free it with `hew_reply_payload_free`
+/// (NOT `hew_duplex_payload_free` — reply payloads are malloc-allocated
+/// while duplex payloads are Box-allocated; mixing them is UB).
+/// On failure or actor stopped, `*reply_out` is set to null and
+/// `*reply_len_out` to 0.
+///
+/// Returns `0` (`SendError::Ok`) on success.
+/// Returns `SendError::ActorStopped` (3) if the actor was already stopped
+/// before the send (pre-send check failed).
+/// Returns `SendError::OrphanedAsk` (5) if the ask was sent but the actor's
+/// body panicked or returned non-zero before delivering a reply; `*reply_out`
+/// is null. Distinct from `ActorStopped` so callers know the message was
+/// received but the actor died during handling.
+/// Returns `SendError::Closed` (1) if the mailbox was closed.
+/// Returns `SendError::DoubleClose` (4) if the handle has already been released.
+///
+/// # Safety
+///
+/// `actor` must be a valid, open `HewLambdaActorHandle` pointer.
+/// `msg` must be valid for `len` bytes (may be null when `len == 0`).
+/// `reply_out` and `reply_len_out` must be valid writable pointers.
+#[no_mangle]
+pub unsafe extern "C" fn hew_lambda_actor_ask(
+    actor: *mut HewLambdaActorHandle,
+    msg: *const u8,
+    len: usize,
+    reply_out: *mut *mut u8,
+    reply_len_out: *mut usize,
+) -> i32 {
+    // Zero out-params so callers observe a safe default on any early return.
+    if !reply_out.is_null() {
+        // SAFETY: caller guarantees reply_out is a valid writable pointer.
+        unsafe { ptr::write(reply_out, ptr::null_mut()) };
+    }
+    if !reply_len_out.is_null() {
+        // SAFETY: caller guarantees reply_len_out is a valid writable pointer.
+        unsafe { ptr::write(reply_len_out, 0usize) };
+    }
+
+    if actor.is_null() {
+        crate::set_last_error("hew_lambda_actor_ask: null handle".to_string());
+        return SendError::Closed as i32;
+    }
+    if reply_out.is_null() || reply_len_out.is_null() {
+        crate::set_last_error("hew_lambda_actor_ask: null reply_out / reply_len_out".to_string());
+        return SendError::Closed as i32;
+    }
+
+    // Released-flag guard.
+    // SAFETY: addr_of! projection; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*actor).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_lambda_actor_ask: handle already released".to_string());
+        return SendError::DoubleClose as i32;
+    }
+
+    // Allocate a one-shot reply channel. The channel carries one reference
+    // for the waiter (this thread) and one for the dispatch thread (framed
+    // in the envelope). `hew_reply` releases the dispatch-side ref;
+    // `hew_reply_wait` returns the waiter's payload and the waiter must
+    // then call `hew_reply_channel_free` to release the waiter ref.
+    let reply_ch = hew_reply_channel_new();
+    if reply_ch.is_null() {
+        crate::set_last_error("hew_lambda_actor_ask: could not allocate reply channel".to_string());
+        return SendError::Closed as i32;
+    }
+    // Retain one extra reference for the dispatch thread (total = 2: one for
+    // the dispatch side framed in the envelope, one for the waiter below).
+    // SAFETY: reply_ch is a fresh, live channel.
+    unsafe { hew_reply_channel_retain(reply_ch) };
+
+    let msg_bytes = if len == 0 {
+        &[][..]
+    } else if msg.is_null() {
+        crate::set_last_error("hew_lambda_actor_ask: null msg with non-zero len".to_string());
+        // Release both refs before returning.
+        // SAFETY: two refs allocated above; free both.
+        unsafe {
+            hew_reply_channel_free(reply_ch);
+            hew_reply_channel_free(reply_ch);
+        }
+        return SendError::Closed as i32;
+    } else {
+        // SAFETY: caller guarantees msg is valid for len bytes.
+        unsafe { std::slice::from_raw_parts(msg, len) }
+    };
+
+    let envelope = frame_ask_envelope(reply_ch, msg_bytes);
+
+    // SAFETY: (*actor).inner is ManuallyDrop<HewLambdaActor>; take an
+    // explicit shared ref to avoid the implicit-autoref lint.
+    let actor_ref = unsafe { &(*actor).inner };
+    let stopped = actor_ref.inner.is_stopped();
+    if stopped {
+        // SAFETY: reply_ch is a live HewReplyChannel pointer; each call
+        // releases one ref (one sender ref + one waiter ref allocated above).
+        unsafe {
+            hew_reply_channel_free(reply_ch);
+            hew_reply_channel_free(reply_ch);
+        }
+        return SendError::ActorStopped as i32;
+    }
+    let send_res = actor_ref.mailbox_in.send(envelope);
+    if send_res != SendError::Ok {
+        // Send failed; release both refs.
+        // SAFETY: envelope was not consumed (send failed); two refs remain.
+        unsafe {
+            hew_reply_channel_free(reply_ch);
+            hew_reply_channel_free(reply_ch);
+        }
+        return send_res as i32;
+    }
+
+    // Wait for the reply. `hew_reply_wait_with_size` blocks until `hew_reply`
+    // (or orphan/cancel) signals the condvar. It returns the payload pointer
+    // (caller frees with `hew_reply_payload_free`) or null on orphan.
+    // `hew_reply_wait_with_size` does NOT consume the waiter's ref — we must
+    // call `hew_reply_channel_free` after.
+    let mut out_size: usize = 0;
+    // SAFETY: reply_ch is a live channel with one waiter ref; we hold it.
+    let payload_ptr = unsafe { hew_reply_wait_with_size(reply_ch, &raw mut out_size) };
+
+    // Check the orphaned flag before releasing the waiter ref.
+    // The orphaned store (in hew_reply_channel_retire_orphaned_ask_sender_ref)
+    // uses Release ordering; we load with Acquire to pair with it.
+    // SAFETY: reply_ch is still live; we hold the waiter ref.
+    let is_orphaned = unsafe {
+        (*reply_ch)
+            .orphaned
+            .load(std::sync::atomic::Ordering::Acquire)
+    };
+
+    // Release the waiter ref.
+    // SAFETY: reply_ch is still live; this is the last (waiter) ref.
+    unsafe { hew_reply_channel_free(reply_ch) };
+
+    if is_orphaned {
+        // Body panicked or returned non-zero — reply is null, actor stopped.
+        // Return OrphanedAsk (5) rather than Ok so callers can distinguish
+        // "died during our ask" from "not stopped" or "stopped before send".
+        return SendError::OrphanedAsk as i32;
+    }
+
+    // Write results to caller's out-params.
+    // SAFETY: reply_out / reply_len_out are non-null (checked above).
+    unsafe {
+        ptr::write(reply_out, payload_ptr.cast());
+        ptr::write(reply_len_out, out_size);
+    }
+
+    SendError::Ok as i32
 }
 
 /// Release a strong lambda-actor handle. If this is the last strong
@@ -598,72 +1258,311 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_drop(weak: *mut HewLambdaActorWea
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(
+    clippy::undocumented_unsafe_blocks,
+    reason = "Test module: every unsafe block calls the C-ABI we own; \
+              invariants are documented by test names and helper fn doc-comments."
+)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering as Ord};
+
     use super::*;
 
+    // ── Shared test helpers ────────────────────────────────────────────────
+
+    /// No-op state-drop callback for tests that don't need cleanup.
+    unsafe extern "C" fn noop_state_drop(_state: *mut core::ffi::c_void) {}
+
+    /// Body for `tell_shape_dispatch_roundtrip`: appends received bytes to an
+    /// `Arc<Mutex<Vec<Vec<u8>>>>` passed via state.
+    unsafe extern "C-unwind" fn arc_mutex_body(
+        state: *mut core::ffi::c_void,
+        msg: *const u8,
+        msg_len: usize,
+        reply_out: *mut *mut u8,
+        reply_len_out: *mut usize,
+    ) -> i32 {
+        use std::sync::Mutex;
+        // SAFETY: state is `*mut Arc<Mutex<Vec<Vec<u8>>>>` allocated by the
+        // test via Box::into_raw; valid for the actor lifetime.
+        let arc = unsafe { &*(state as *const Arc<Mutex<Vec<Vec<u8>>>>) };
+        let bytes = if msg_len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: msg valid for msg_len bytes per body-fn contract.
+            unsafe { std::slice::from_raw_parts(msg, msg_len) }.to_vec()
+        };
+        arc.lock().unwrap().push(bytes);
+        // SAFETY: reply_out / reply_len_out are out-params supplied by the
+        // dispatch layer; non-null per body-fn contract.
+        unsafe {
+            *reply_out = ptr::null_mut();
+            *reply_len_out = 0;
+        }
+        0
+    }
+
+    /// State-drop for `tell_shape_dispatch_roundtrip`: frees the Box wrapping
+    /// the `Arc<Mutex<...>>`.
+    unsafe extern "C" fn arc_mutex_state_drop(state: *mut core::ffi::c_void) {
+        use std::sync::Mutex;
+        // SAFETY: state is a Box<Arc<Mutex<Vec<Vec<u8>>>>> pointer from
+        // Box::into_raw; freed exactly once here.
+        unsafe { drop(Box::from_raw(state.cast::<Arc<Mutex<Vec<Vec<u8>>>>>())) };
+    }
+
+    /// Body for `tell_body_receives_message_bytes`: same collect-to-Arc pattern
+    /// but used via the C-ABI entry point rather than the Rust API.
+    unsafe extern "C-unwind" fn collect_body(
+        state: *mut core::ffi::c_void,
+        msg: *const u8,
+        msg_len: usize,
+        reply_out: *mut *mut u8,
+        reply_len_out: *mut usize,
+    ) -> i32 {
+        use std::sync::Mutex;
+        // SAFETY: state is `*mut Arc<Mutex<Vec<Vec<u8>>>>` from Box::into_raw.
+        let arc = unsafe { &*(state as *const Arc<Mutex<Vec<Vec<u8>>>>) };
+        // SAFETY: msg valid for msg_len bytes; msg_len > 0 guaranteed by caller.
+        let bytes = unsafe { std::slice::from_raw_parts(msg, msg_len) }.to_vec();
+        arc.lock().unwrap().push(bytes);
+        // SAFETY: reply_out/reply_len_out are dispatch-layer out-params.
+        unsafe {
+            *reply_out = ptr::null_mut();
+            *reply_len_out = 0;
+        }
+        0
+    }
+
+    /// State-drop for `tell_body_receives_message_bytes`.
+    unsafe extern "C" fn collect_state_drop(state: *mut core::ffi::c_void) {
+        use std::sync::Mutex;
+        // SAFETY: same Box<Arc<Mutex<...>>> provenance as arc_mutex_state_drop.
+        unsafe { drop(Box::from_raw(state.cast::<Arc<Mutex<Vec<Vec<u8>>>>>())) };
+    }
+
+    /// Body callback that doubles an i64 message and writes it as reply bytes.
+    ///
+    /// `state` is ignored (null).
+    unsafe extern "C-unwind" fn double_i64_body(
+        _state: *mut core::ffi::c_void,
+        msg: *const u8,
+        msg_len: usize,
+        reply_out: *mut *mut u8,
+        reply_len_out: *mut usize,
+    ) -> i32 {
+        assert_eq!(msg_len, 8, "double_i64_body expects 8-byte i64 payload");
+        let n = unsafe {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(std::slice::from_raw_parts(msg, 8));
+            i64::from_le_bytes(buf)
+        };
+        let doubled = n * 2;
+        let reply_bytes = doubled.to_le_bytes().to_vec().into_boxed_slice();
+        let reply_len = reply_bytes.len();
+        let reply_ptr = Box::into_raw(reply_bytes).cast::<u8>();
+        unsafe {
+            *reply_out = reply_ptr;
+            *reply_len_out = reply_len;
+        }
+        0
+    }
+
+    /// Body callback that panics. Used to test panic-isolation.
+    unsafe extern "C-unwind" fn panicking_body(
+        _state: *mut core::ffi::c_void,
+        _msg: *const u8,
+        _msg_len: usize,
+        reply_out: *mut *mut u8,
+        reply_len_out: *mut usize,
+    ) -> i32 {
+        unsafe {
+            *reply_out = ptr::null_mut();
+            *reply_len_out = 0;
+        }
+        panic!("intentional test panic from body callback");
+    }
+
+    /// Body callback that returns a non-zero exit code.
+    unsafe extern "C-unwind" fn failing_body(
+        _state: *mut core::ffi::c_void,
+        _msg: *const u8,
+        _msg_len: usize,
+        reply_out: *mut *mut u8,
+        reply_len_out: *mut usize,
+    ) -> i32 {
+        unsafe {
+            *reply_out = ptr::null_mut();
+            *reply_len_out = 0;
+        }
+        42 // non-zero → actor stops
+    }
+
+    /// State-drop callback that increments a shared counter. Cast
+    /// `Arc<AtomicUsize>` pointer to `*mut c_void` via `Arc::into_raw`.
+    unsafe extern "C" fn counting_state_drop(state: *mut core::ffi::c_void) {
+        // SAFETY: state is `*const AtomicUsize` from Arc::into_raw; we
+        // reconstruct the Arc and drop it (decrement refcount).
+        let arc = unsafe { Arc::from_raw(state as *const AtomicUsize) };
+        arc.fetch_add(1, Ord::SeqCst);
+        // Arc drops here, decrementing refcount.
+    }
+
+    // ── Existing Rust-API tests (updated for new constructor) ──────────────
+
+    /// Tell-shape send → recv round-trip at the Rust API level.
+    ///
+    /// Uses a Mutex<Vec<u8>> as state to collect received messages;
+    /// reads them back after a brief wait. This test doesn't interact
+    /// with the C-ABI entry but verifies the Rust dispatch path.
     #[test]
-    fn tell_shape_send_then_recv_roundtrips() {
-        let a = HewLambdaActor::new(4, LambdaShape::Tell);
-        assert_eq!(a.send(b"msg".to_vec()), SendError::Ok);
-        let inner = a.inner();
-        let got = inner.recv().expect("recv");
-        assert_eq!(got, b"msg");
+    fn tell_shape_dispatch_roundtrip() {
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        let received: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = Arc::clone(&received);
+
+        // Box the Arc<Mutex<...>> and leak it as a state pointer.
+        let state_ptr = Box::into_raw(Box::new(received_clone)).cast::<core::ffi::c_void>();
+
+        let actor = HewLambdaActor::new(
+            4,
+            LambdaShape::Tell,
+            arc_mutex_body,
+            state_ptr,
+            arc_mutex_state_drop,
+        )
+        .expect("spawn dispatch thread");
+
+        assert_eq!(actor.send(b"hello".to_vec()), SendError::Ok);
+        assert_eq!(actor.send(b"world".to_vec()), SendError::Ok);
+        drop(actor);
+
+        // Give the dispatch thread time to process.
+        std::thread::sleep(Duration::from_millis(50));
+
+        let guard = received.lock().unwrap();
+        assert_eq!(guard.len(), 2);
+        assert_eq!(guard[0], b"hello");
+        assert_eq!(guard[1], b"world");
     }
 
     #[test]
     fn weak_upgrade_succeeds_while_strong_alive() {
-        let a = HewLambdaActor::new(2, LambdaShape::Tell);
+        let a = HewLambdaActor::new(
+            2,
+            LambdaShape::Tell,
+            noop_tell_body,
+            ptr::null_mut(),
+            noop_state_drop,
+        )
+        .expect("spawn");
         let w = a.downgrade();
-        // Strong is alive — upgrade gives Some.
         let upgraded = w.upgrade().expect("upgrade while alive");
         assert_eq!(upgraded.send(b"via-weak".to_vec()), SendError::Ok);
         drop(upgraded);
         drop(a);
     }
 
+    unsafe extern "C-unwind" fn noop_tell_body(
+        _state: *mut core::ffi::c_void,
+        _msg: *const u8,
+        _msg_len: usize,
+        reply_out: *mut *mut u8,
+        reply_len_out: *mut usize,
+    ) -> i32 {
+        unsafe {
+            *reply_out = ptr::null_mut();
+            *reply_len_out = 0;
+        }
+        0
+    }
+
     #[test]
     fn weak_upgrade_fails_after_strong_drops() {
-        let a = HewLambdaActor::new(2, LambdaShape::Tell);
+        let a = HewLambdaActor::new(
+            2,
+            LambdaShape::Tell,
+            noop_tell_body,
+            ptr::null_mut(),
+            noop_state_drop,
+        )
+        .expect("spawn");
         let w = a.downgrade();
         drop(a);
+        // Give dispatch thread a moment to drain.
+        std::thread::sleep(std::time::Duration::from_millis(20));
         assert!(w.upgrade().is_none());
-        // Self-send through weak should surface ActorStopped, not block.
         assert_eq!(w.send(b"stopped".to_vec()), SendError::ActorStopped);
     }
 
     #[test]
     fn weak_does_not_keep_actor_alive() {
-        // §5.9 ratification 2: body-side weak self-ref must NOT keep
-        // the actor alive past external refcount zero. Demonstrate
-        // by checking that strong_count drops to zero even with a
-        // live weak handle.
-        let a = HewLambdaActor::new(2, LambdaShape::Tell);
+        let a = HewLambdaActor::new(
+            2,
+            LambdaShape::Tell,
+            noop_tell_body,
+            ptr::null_mut(),
+            noop_state_drop,
+        )
+        .expect("spawn");
         let w = a.downgrade();
-        assert_eq!(Arc::strong_count(&a.inner), 1);
+        // `inner` Arc: external handle + dispatch thread = 2 strong refs.
+        // `mailbox_in` Arc: only the external handle = 1 strong ref.
+        // (The dispatch thread does NOT hold a mailbox_in reference —
+        // that's the key invariant ensuring the queue closes when the
+        // external handle drops.)
+        assert_eq!(Arc::strong_count(&a.mailbox_in), 1);
+        assert_eq!(Arc::strong_count(&a.inner), 2);
         drop(a);
-        // Weak still exists, but the inner was freed because no
-        // strong remained.
+        // When `a` drops: Arc<HewSendHalf> strong count → 0 → queue closes
+        // → dispatch thread's recv returns Closed → thread exits.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(w.upgrade().is_none());
     }
 
     #[test]
     fn multiple_strong_handles_keep_actor_alive() {
-        let a = HewLambdaActor::new(2, LambdaShape::Tell);
+        let a = HewLambdaActor::new(
+            2,
+            LambdaShape::Tell,
+            noop_tell_body,
+            ptr::null_mut(),
+            noop_state_drop,
+        )
+        .expect("spawn");
         let b = a.clone_handle();
         let w = a.downgrade();
         drop(a);
-        // b still strong: upgrade should succeed.
         let up = w.upgrade().expect("upgrade while sibling strong alive");
         assert_eq!(up.send(b"x".to_vec()), SendError::Ok);
         drop(up);
         drop(b);
-        // Now no strong remains.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(w.upgrade().is_none());
+    }
+
+    // ── C-ABI tests ────────────────────────────────────────────────────────
+
+    /// Helper: construct a noop-tell actor via C-ABI.
+    fn new_tell_cabi(capacity: usize) -> *mut HewLambdaActorHandle {
+        // SAFETY: all args are valid; noop_tell_body / noop_state_drop are
+        // valid extern "C" function pointers.
+        unsafe {
+            hew_lambda_actor_new(
+                capacity,
+                LambdaShape::Tell as i32,
+                Some(noop_tell_body),
+                ptr::null_mut(),
+                Some(noop_state_drop),
+            )
+        }
     }
 
     #[test]
     fn cabi_new_send_release_tell() {
-        let a = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+        let a = new_tell_cabi(4);
         assert!(!a.is_null());
         let msg = b"abi";
         // SAFETY: a non-null per assertion; msg valid for its length.
@@ -675,8 +1574,53 @@ mod tests {
     }
 
     #[test]
+    fn cabi_new_rejects_invalid_shape() {
+        // SAFETY: args valid except shape discriminant.
+        let a = unsafe {
+            hew_lambda_actor_new(
+                4,
+                42,
+                Some(noop_tell_body),
+                ptr::null_mut(),
+                Some(noop_state_drop),
+            )
+        };
+        assert!(a.is_null());
+    }
+
+    #[test]
+    fn cabi_new_rejects_zero_capacity() {
+        // SAFETY: args valid except capacity.
+        let a = unsafe {
+            hew_lambda_actor_new(
+                0,
+                LambdaShape::Tell as i32,
+                Some(noop_tell_body),
+                ptr::null_mut(),
+                Some(noop_state_drop),
+            )
+        };
+        assert!(a.is_null());
+    }
+
+    #[test]
+    fn cabi_new_rejects_null_body_fn() {
+        // SAFETY: body_fn is None (null).
+        let a = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Tell as i32,
+                None,
+                ptr::null_mut(),
+                Some(noop_state_drop),
+            )
+        };
+        assert!(a.is_null());
+    }
+
+    #[test]
     fn cabi_weak_send_returns_actor_stopped_after_release() {
-        let a = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+        let a = new_tell_cabi(4);
         // SAFETY: a non-null.
         let w = unsafe { hew_lambda_actor_downgrade(a) };
         assert!(!w.is_null());
@@ -684,6 +1628,8 @@ mod tests {
         unsafe { assert_eq!(hew_lambda_actor_release(a), SendError::Ok as i32) };
         // After release the weak's upgrade fails; send surfaces ActorStopped.
         let payload = b"recurse";
+        // Wait for dispatch thread to drain.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         // SAFETY: w is still a valid weak-handle wrapper; payload valid.
         let rc = unsafe { hew_lambda_actor_weak_send(w, payload.as_ptr(), payload.len()) };
         assert_eq!(rc, SendError::ActorStopped as i32);
@@ -693,7 +1639,7 @@ mod tests {
 
     #[test]
     fn cabi_weak_send_succeeds_while_strong_alive() {
-        let a = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+        let a = new_tell_cabi(4);
         // SAFETY: a non-null.
         let w = unsafe { hew_lambda_actor_downgrade(a) };
         let payload = b"alive";
@@ -707,42 +1653,20 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cabi_new_rejects_invalid_shape() {
-        let a = hew_lambda_actor_new(4, 42);
-        assert!(a.is_null());
-    }
-
-    #[test]
-    fn cabi_new_rejects_zero_capacity() {
-        let a = hew_lambda_actor_new(0, LambdaShape::Tell as i32);
-        assert!(a.is_null());
-    }
-
     // ── Double-release guard test ──────────────────────────────────────────
 
     #[test]
     fn cabi_double_release_lambda_actor_returns_already_closed() {
-        // Verify that calling hew_lambda_actor_release twice on the same
-        // handle returns DoubleClose on the second call rather than UB.
-        let a = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+        let a = new_tell_cabi(4);
         assert!(!a.is_null());
         // SAFETY: `a` came from hew_lambda_actor_new (non-null per assertion).
         unsafe {
-            // First release: normal.
             assert_eq!(hew_lambda_actor_release(a), SendError::Ok as i32);
-            // Second release: double-release guard fires.
             assert_eq!(hew_lambda_actor_release(a), SendError::DoubleClose as i32);
         }
     }
 
     // ── Concurrent release stress ──────────────────────────────────────────
-    //
-    // Same shape as `cabi_concurrent_close_duplex_returns_single_winner`
-    // in duplex.rs, applied to `hew_lambda_actor_release`. The
-    // raw-pointer flag-read in that entry is what makes concurrent calls
-    // sound — a regression to `&mut *actor` before the swap would alias
-    // multiple winners' `&mut`s simultaneously (formal Rust UB).
 
     #[test]
     fn cabi_concurrent_release_lambda_actor_returns_single_winner() {
@@ -752,7 +1676,7 @@ mod tests {
         const ITERS: usize = 100;
 
         for iter in 0..ITERS {
-            let actor = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+            let actor = new_tell_cabi(4);
             assert!(!actor.is_null());
             let actor_addr = actor as usize;
             let barrier = Arc::new(Barrier::new(THREADS));
@@ -791,23 +1715,14 @@ mod tests {
     }
 
     // ── Released-flag guard tests ──────────────────────────────────────────
-    //
-    // After hew_lambda_actor_release / hew_lambda_actor_weak_drop, every
-    // non-close entry must return a typed error rather than touching the
-    // freed inner ManuallyDrop. These tests prove the flag is consulted
-    // before the inner borrow.
 
     #[test]
     fn cabi_send_after_release_returns_double_close() {
-        // Allocate, release, then try to send — must not SIGSEGV.
-        let actor = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+        let actor = new_tell_cabi(4);
         assert!(!actor.is_null());
-        // SAFETY: actor came from hew_lambda_actor_new; first release returns Ok.
         let rc_release = unsafe { hew_lambda_actor_release(actor) };
         assert_eq!(rc_release, SendError::Ok as i32);
         let msg = b"post-release";
-        // SAFETY: wrapper persists (intentional leak); released flag is readable;
-        // inner NOT dereferenced.
         let rc = unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) };
         assert_eq!(
             rc,
@@ -818,26 +1733,224 @@ mod tests {
 
     #[test]
     fn cabi_weak_send_after_drop_returns_double_close() {
-        // Allocate a strong handle, downgrade to weak, drop the weak, then
-        // try to send through the dropped weak — must not SIGSEGV.
-        let actor = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+        let actor = new_tell_cabi(4);
         assert!(!actor.is_null());
-        // SAFETY: actor is valid.
         let weak = unsafe { hew_lambda_actor_downgrade(actor) };
         assert!(!weak.is_null());
-        // SAFETY: weak came from hew_lambda_actor_downgrade; first drop returns Ok.
         let rc_drop = unsafe { hew_lambda_actor_weak_drop(weak) };
         assert_eq!(rc_drop, SendError::Ok as i32);
         let msg = b"post-weak-drop";
-        // SAFETY: wrapper persists (intentional leak); released flag is readable;
-        // inner NOT dereferenced.
         let rc = unsafe { hew_lambda_actor_weak_send(weak, msg.as_ptr(), msg.len()) };
         assert_eq!(
             rc,
             SendError::DoubleClose as i32,
             "weak_send after drop must be DoubleClose"
         );
-        // SAFETY: actor is still valid; release it.
         unsafe { hew_lambda_actor_release(actor) };
+    }
+
+    // ── Body dispatch tests ────────────────────────────────────────────────
+
+    /// Tell-shape body dispatch: body receives correct message bytes.
+    #[test]
+    fn tell_body_receives_message_bytes() {
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        let received: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = Arc::clone(&received);
+        let state_ptr = Box::into_raw(Box::new(received_clone)).cast::<core::ffi::c_void>();
+
+        // SAFETY: hew_lambda_actor_new contract; state_ptr valid; body
+        // collect_body and collect_state_drop defined at module level.
+        let actor = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Tell as i32,
+                Some(collect_body),
+                state_ptr,
+                Some(collect_state_drop),
+            )
+        };
+        assert!(!actor.is_null());
+        let msg = b"dispatch-test";
+        unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) };
+        unsafe { hew_lambda_actor_release(actor) };
+
+        std::thread::sleep(Duration::from_millis(100));
+        let guard = received.lock().unwrap();
+        assert_eq!(guard.len(), 1);
+        assert_eq!(guard[0], b"dispatch-test");
+    }
+
+    /// Ask-shape body dispatch: body writes reply, caller observes it.
+    #[test]
+    fn ask_body_reply_roundtrip() {
+        use std::time::Duration;
+
+        let actor = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Ask as i32,
+                Some(double_i64_body),
+                ptr::null_mut(),
+                Some(noop_state_drop),
+            )
+        };
+        assert!(!actor.is_null());
+
+        let n: i64 = 21;
+        let msg_bytes = n.to_le_bytes();
+        let mut reply_ptr: *mut u8 = ptr::null_mut();
+        let mut reply_len: usize = 0;
+        let rc = unsafe {
+            hew_lambda_actor_ask(
+                actor,
+                msg_bytes.as_ptr(),
+                msg_bytes.len(),
+                &raw mut reply_ptr,
+                &raw mut reply_len,
+            )
+        };
+        assert_eq!(rc, SendError::Ok as i32, "ask should succeed");
+        assert!(!reply_ptr.is_null(), "reply payload must be non-null");
+        assert_eq!(reply_len, 8, "i64 reply is 8 bytes");
+        let result = unsafe {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(std::slice::from_raw_parts(reply_ptr, reply_len));
+            i64::from_le_bytes(buf)
+        };
+        assert_eq!(result, 42, "double(21) == 42");
+
+        // Free reply payload via hew_reply_payload_free (libc::free) — NOT
+        // hew_duplex_payload_free which uses Rust GlobalAlloc. Reply payloads
+        // are malloc-allocated inside the reply channel.
+        unsafe { crate::reply_channel::hew_reply_payload_free(reply_ptr, reply_len) };
+        unsafe { hew_lambda_actor_release(actor) };
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    /// Body panic marks actor stopped; subsequent send returns `ActorStopped`.
+    #[test]
+    fn body_panic_marks_actor_stopped() {
+        use std::time::Duration;
+
+        let actor = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Tell as i32,
+                Some(panicking_body),
+                ptr::null_mut(),
+                Some(noop_state_drop),
+            )
+        };
+        assert!(!actor.is_null());
+        let msg = b"trigger-panic";
+        unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) };
+        // Give the dispatch thread time to catch the panic.
+        std::thread::sleep(Duration::from_millis(100));
+        // Subsequent send must return ActorStopped.
+        let rc = unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) };
+        assert_eq!(rc, SendError::ActorStopped as i32, "panic must stop actor");
+        unsafe { hew_lambda_actor_release(actor) };
+    }
+
+    /// Non-zero body return marks actor stopped.
+    #[test]
+    fn nonzero_body_return_marks_actor_stopped() {
+        let actor = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Tell as i32,
+                Some(failing_body),
+                ptr::null_mut(),
+                Some(noop_state_drop),
+            )
+        };
+        assert!(!actor.is_null());
+        let msg = b"trigger-fail";
+        unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let rc = unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) };
+        assert_eq!(
+            rc,
+            SendError::ActorStopped as i32,
+            "non-zero return must stop actor"
+        );
+        unsafe { hew_lambda_actor_release(actor) };
+    }
+
+    /// Ask-shape: body panic orphans the reply channel; ask returns `OrphanedAsk`.
+    #[test]
+    fn ask_body_panic_orphans_reply_channel() {
+        use std::time::Duration;
+
+        let actor = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Ask as i32,
+                Some(panicking_body),
+                ptr::null_mut(),
+                Some(noop_state_drop),
+            )
+        };
+        assert!(!actor.is_null());
+
+        let msg = b"trigger-ask-panic";
+        let mut reply_ptr: *mut u8 = ptr::null_mut();
+        let mut reply_len: usize = 0;
+        // The ask must unblock (not deadlock) even though the body panics.
+        let rc = unsafe {
+            hew_lambda_actor_ask(
+                actor,
+                msg.as_ptr(),
+                msg.len(),
+                &raw mut reply_ptr,
+                &raw mut reply_len,
+            )
+        };
+        // Ask unblocked and returns OrphanedAsk (5), NOT Ok — the actor's body
+        // panicked after receiving the message, so the reply was orphaned.
+        // This distinguishes "died during handling" from a pre-send stop check.
+        assert_eq!(
+            rc,
+            SendError::OrphanedAsk as i32,
+            "body-panic ask must return OrphanedAsk; got rc={rc}"
+        );
+        // Orphaned ask delivers null reply; payload pointer must be null.
+        assert!(reply_ptr.is_null(), "orphaned ask must deliver null reply");
+        unsafe { hew_lambda_actor_release(actor) };
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    /// `state_drop` is called exactly once when the actor stops.
+    #[test]
+    fn state_drop_called_exactly_once() {
+        use std::time::Duration;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        // Arc::into_raw keeps one reference; counting_state_drop reconstructs
+        // and drops the Arc (decrement), which is fine because the test also
+        // holds its own clone.
+        let state_raw = Arc::into_raw(Arc::clone(&counter)) as *mut core::ffi::c_void;
+
+        let actor = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Tell as i32,
+                Some(noop_tell_body),
+                state_raw.cast::<core::ffi::c_void>(),
+                Some(counting_state_drop),
+            )
+        };
+        assert!(!actor.is_null());
+        unsafe { hew_lambda_actor_release(actor) };
+        // Give the dispatch thread time to exit and call state_drop.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            counter.load(Ord::SeqCst),
+            1,
+            "state_drop must be called exactly once"
+        );
     }
 }

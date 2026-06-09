@@ -1402,6 +1402,48 @@ fn removed_alias_uint_emits_suggestion_for_u64_or_usize() {
 }
 
 #[test]
+fn removed_alias_int_capital_is_hard_error_with_i64_suggestion() {
+    let result = hew_parser::parse("fn main() { let x: Int = 5; }");
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    // `Int` is no longer accepted; it must produce a hard type error.
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedType && e.message.contains("Int")),
+        "expected UndefinedType error for removed alias `Int`; got errors: {:?}",
+        output.errors
+    );
+    // No warning about Int should be emitted — this is a hard error, not a
+    // deprecation.  Other warnings (e.g. UnusedVariable for `x`) are fine.
+    assert!(
+        output
+            .warnings
+            .iter()
+            .all(|w| !w.message.contains("Int") && !w.message.contains("deprecated")),
+        "unexpected Int-related warning; got: {:?}",
+        output.warnings
+    );
+    // The error message should suggest i64.
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::UndefinedType && e.message.contains("Int"))
+        .unwrap();
+    assert!(
+        err.message.contains("i64") || err.message.contains("isize"),
+        "diagnostic should suggest i64 or isize; got: {}",
+        err.message
+    );
+}
+
+#[test]
 fn typecheck_error_type_mismatch() {
     let source = concat!(
         "fn add(a: i32, b: i32) -> i32 {\n",
@@ -1856,7 +1898,7 @@ fn context_reader_in_non_actor_lambda_is_typed_diagnostic() {
     let source = "\
         actor Worker {
             receive fn ping() {
-                let f = () => @actor_id;
+                let f = || @actor_id;
             }
         }";
     let output = check_source(source);
@@ -6265,41 +6307,22 @@ fn test_file_import_private_items_not_visible() {
 }
 
 #[test]
-fn check_generic_lambda() {
+fn check_generic_lambda_removed_emits_typed_diagnostic() {
+    // Generic lambda `<T>(params) => body` was removed in v0.5.
+    // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic.
     let source = r"
-        fn apply<T>(f: fn(T) -> T, x: T) -> T {
-            f(x)
-        }
-
         fn main() {
-            // Identity generic lambda
             let id = <T>(x: T) => x;
-            // Instantiation happens when calling `apply`
-            // apply takes fn(T) -> T. `id` matches that.
-            // However, `id` is a generic closure.
-            // We need to make sure generic instantiation works.
-            // Currently, `check_lambda` creates fresh type variables for T.
-            // So id has type ?0 -> ?0.
-            // When passed to apply(id, 5), T inferred as i64.
-            // apply expects fn(i64) -> i64.
-            // id matches fn(?0) -> ?0 where ?0=i64.
-            let res = apply(id, 5);
         }
     ";
-
     let result = hew_parser::parse(source);
     assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
+        result.errors.iter().any(|e| {
+            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
+                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+        }),
+        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
         result.errors
-    );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "type check errors: {:?}",
-        output.errors
     );
 }
 
@@ -6311,8 +6334,12 @@ fn check_generic_lambda() {
 ///    return type correctly.
 /// 3. `call_type_args` is populated for the call so the enricher can
 ///    fill in explicit type arguments before serialisation to MLIR.
+// Generic lambda `<T>(params) => body` was removed in v0.5.
+// The tests below confirm the parser emits typed diagnostics instead.
+// Equivalent named-function generics continue to work (tested elsewhere).
+
 #[test]
-fn generic_lambda_slice1_type_inference() {
+fn generic_lambda_slice1_removed_emits_diagnostic() {
     let source = r"
         fn main() {
             let v: i64 = 30;
@@ -6320,83 +6347,36 @@ fn generic_lambda_slice1_type_inference() {
             let q = r(v, v);
         }
     ";
-
     let result = hew_parser::parse(source);
     assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
+        result.errors.iter().any(|e| {
+            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
+                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+        }),
+        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
         result.errors
-    );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "type check errors: {:?}",
-        output.errors
-    );
-
-    // The call r(v, v) must have produced a call_type_args entry (T→i64).
-    assert!(
-        !output.call_type_args.is_empty(),
-        "call_type_args should contain the inferred type for r(v,v)"
-    );
-    // The single entry should map to [i64 / i64].
-    let type_args: Vec<_> = output.call_type_args.values().collect();
-    assert_eq!(type_args.len(), 1);
-    assert_eq!(
-        type_args[0],
-        &vec![crate::ty::Ty::I64],
-        "T should be inferred as i64 (i64)"
     );
 }
 
-/// Slice-1: two-type-param generic lambda, verify both params inferred.
 #[test]
-fn generic_lambda_slice1_two_type_params() {
-    let source = concat!(
-        "fn main() {\n",
-        r#"    let combine = <A, B>(a: A, b: B) -> A => a;"#,
-        "\n",
-        r#"    let x: i64 = 1;"#,
-        "\n",
-        r#"    let y: string = "hello";"#,
-        "\n",
-        r#"    let z = combine(x, y);"#,
-        "\n",
-        "}\n",
-    );
-
+fn generic_lambda_two_type_params_removed_emits_diagnostic() {
+    let source = "fn main() { let combine = <A, B>(a: A, b: B) -> A => a; combine(1, 2); }";
     let result = hew_parser::parse(source);
     assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
+        result.errors.iter().any(|e| {
+            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
+                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+        }),
+        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
         result.errors
     );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "type check errors: {:?}",
-        output.errors
-    );
-
-    // Should have one call_type_args entry with two type args.
-    assert_eq!(
-        output.call_type_args.len(),
-        1,
-        "expected one call_type_args entry"
-    );
-    let args = output.call_type_args.values().next().unwrap();
-    assert_eq!(args.len(), 2, "expected two type args (A and B)");
 }
 
 #[test]
 fn contextual_lambda_binding_records_lambda_expr_type() {
     let source = concat!(
         "fn main() {\n",
-        "    let f: fn(i64) -> i64 = (x) => x + 1;\n",
+        "    let f: fn(i64) -> i64 = |x| x + 1;\n",
         "    let y = f(5);\n",
         "}\n",
     );
@@ -6701,60 +6681,25 @@ fn trait_method_type_params_do_not_unify_across_calls() {
     );
 }
 
-/// Regression: a generic lambda passed as a function *argument* (not
-/// directly bound to `let`) must not leak its `TypeVar` pairs into the
-/// scratch field and then be picked up by the *next* unrelated let-binding.
-///
-/// Before the fix, `last_lambda_generic_vars` was set by `check_lambda`
-/// any time a generic lambda was type-checked, so the following sequence
-/// would falsely register `q` as having a generic lambda type:
-///
-/// ```text
-///   fn apply<T>(f: fn(T) -> T, x: T) -> T { f(x) }
-///   fn main() {
-///       apply(<T>(x: T) => x, 5);  // generic lambda in arg position
-///       let q = 42;                 // should NOT be in lambda_poly_type_var_map
-///   }
-/// ```
+/// Generic lambda `<T>(params) => body` was removed in v0.5.
+/// The parser must emit a typed `E_CLOSURE_PIPE_SYNTAX` diagnostic even when
+/// the generic lambda appears as a call argument rather than a let binding.
 #[test]
-fn generic_lambda_scratch_state_no_leak() {
-    let source = r"
-        fn apply<T>(f: fn(T) -> T, x: T) -> T {
-            f(x)
-        }
-
-        fn main() {
-            apply(<T>(x: T) => x, 5);
-            let q = 42;
-            let z = q + 1;
-        }
-    ";
-
+fn generic_lambda_in_arg_position_rejected() {
+    // Replaces `generic_lambda_scratch_state_no_leak`: the old test verified
+    // that scratch state didn't leak between a generic lambda argument and a
+    // subsequent let-binding. The scenario is now moot because generic lambdas
+    // are rejected at the parse stage. This assertion verifies the removal
+    // diagnostic fires in argument position.
+    let source = r"fn main() { apply(<T>(x: T) => x, 5); }";
     let result = hew_parser::parse(source);
     assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
+        result.errors.iter().any(|e| {
+            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
+                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+        }),
+        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda in arg position, got: {:?}",
         result.errors
-    );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "type check errors: {:?}",
-        output.errors
-    );
-
-    // call_type_args may have an entry for the `apply(...)` call, but q
-    // must not appear in lambda_poly_type_var_map.  We verify indirectly:
-    // the number of call_type_args entries must be exactly 1 (for `apply`)
-    // and must not grow due to a spurious phantom call on `q` or `z`.
-    // (There is no call through q, so any extra entry would signal a leak.)
-    assert!(
-        output.call_type_args.len() <= 1,
-        "expected at most 1 call_type_args entry (for apply), got {}; \
-         stale lambda scratch state likely leaked into a later let-binding",
-        output.call_type_args.len()
     );
 }
 
@@ -11432,7 +11377,7 @@ mod non_root_module_inference_scope {
 
     #[test]
     fn inferred_binding_without_annotation_fails_closed() {
-        let source = "fn main() { let f = (x) => x; }";
+        let source = "fn main() { let f = |x| x; }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -11453,26 +11398,18 @@ mod non_root_module_inference_scope {
     }
 
     #[test]
-    fn explicit_generic_lambda_binding_stays_valid() {
+    fn explicit_generic_lambda_binding_rejected() {
+        // Generic lambda `<T>(params) => body` was removed in v0.5.
+        // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic.
         let source = "fn main() { let id = <T>(x: T) => x; }";
         let result = hew_parser::parse(source);
         assert!(
-            result.errors.is_empty(),
-            "parse errors: {:?}",
+            result.errors.iter().any(|e| {
+                matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
+                    && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+            }),
+            "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
             result.errors
-        );
-
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&result.program);
-        let errs = inference_failed_errors(&output);
-        assert!(
-            errs.is_empty(),
-            "explicit generic lambda binding should not produce InferenceFailed: {errs:?}"
-        );
-        assert!(
-            output.errors.is_empty(),
-            "explicit generic lambda binding should type-check cleanly: {:?}",
-            output.errors
         );
     }
 
@@ -11724,7 +11661,7 @@ mod non_root_module_inference_scope {
 
     #[test]
     fn inferred_binding_does_not_duplicate_lambda_hole_error() {
-        let source = "fn main() { let f = (x: _) => x; }";
+        let source = "fn main() { let f = |x: _| x; }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -13568,8 +13505,7 @@ actor MyActor {
         // Lambda with annotated (unresolvable) return type:
         //   let f = (x: i32) -> UnknownType => { let y: i32 = "bad"; y };
         // The let-binding mismatch inside the lambda body must still be reported.
-        let source =
-            r#"fn foo() { let f = (x: i32) -> UnknownType => { let y: i32 = "bad"; y }; }"#;
+        let source = r#"fn foo() { let f = |x: i32| -> UnknownType { let y: i32 = "bad"; y }; }"#;
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -13677,13 +13613,13 @@ actor MyActor {
 
     #[test]
     fn error_return_type_question_mark_in_lambda_no_false_context_error() {
-        // fn foo() { let r: Result<i64, string> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }
+        // fn foo() { let r: Result<i64, string> = Ok(1); let f = |x: i64| -> UnknownType { r? }; }
         //
         // Same invariant as the plain-function case but inside a lambda whose
         // return annotation is Ty::Error.  The `?` context check sees the
         // lambda's own `current_return_type` (Ty::Error), so the Ty::Error
         // bypass must apply there too.
-        let source = r"fn foo() { let r: Result<i64, string> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }";
+        let source = r"fn foo() { let r: Result<i64, string> = Ok(1); let f = |x: i64| -> UnknownType { r? }; }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -15708,13 +15644,22 @@ mod for_loop_iterable_fail_closed {
 
     #[test]
     fn generator_blocks_are_deferred_to_generator_surface_slice() {
-        // TODO(D24-position-3): when `gen { ... }` blocks parse, add the
-        // Iterator trait smoke for generator block values here. Today only
-        // `gen fn` / `async gen fn` are accepted by the parser.
+        // `gen { yield 1; yield 2; }` type-checks as Generator<i32, Unit>.
+        // The checker synthesizes the yield type from yield expressions; HIR/MIR
+        // lowering is still fail-closed on GenBlock but that is a compile-phase
+        // boundary, not a type-check boundary.
         let result = hew_parser::parse("fn main() { let g = gen { yield 1; yield 2; }; }");
         assert!(
-            !result.errors.is_empty(),
-            "gen blocks are not expected to parse until the generator surface slice"
+            result.errors.is_empty(),
+            "gen {{ ... }} expression blocks should parse cleanly: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "gen block with yield expressions must type-check cleanly: {:?}",
+            output.errors
         );
     }
 
@@ -17686,6 +17631,263 @@ mod assoc_types_slice2 {
         );
     }
 
+    // ── gen{} in actor receive handler (A98 / Q98) ─────────────────────────
+
+    /// A `gen { }` block inside an actor receive handler must produce
+    /// `GenBlockInActorReceive`, not a generic `InvalidOperation`.
+    #[test]
+    fn genblock_inside_actor_receive_handler_is_rejected() {
+        let output = check_source(
+            r"
+            actor Counter {
+                count: i32;
+                receive fn tick() {
+                    let _g = gen { count = count + 1; };
+                }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::GenBlockInActorReceive),
+            "gen{{}} inside actor receive handler must emit GenBlockInActorReceive; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// A `gen { }` block in a plain function (not an actor handler) must emit
+    /// `EmptyGenerator` — never `GenBlockInActorReceive`.
+    #[test]
+    fn genblock_outside_actor_receive_handler_is_not_rejected_with_actor_error() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { };
+            }
+            ",
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::GenBlockInActorReceive),
+            "gen{{}} outside actor handler must not emit GenBlockInActorReceive; got: {:?}",
+            output.errors
+        );
+        // Empty gen{} fails with EmptyGenerator (no yield expressions to infer from).
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::EmptyGenerator),
+            "empty gen{{}} must emit EmptyGenerator; got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── gen{} typed checking ────────────────────────────────────────────────
+
+    /// A `gen { yield 1; yield 2; }` in a plain function type-checks cleanly
+    /// and produces no errors.  The yield type is inferred as `i32`.
+    #[test]
+    fn gen_block_outside_receive_type_checks_cleanly() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { yield 1; yield 2; };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "gen block with yield expressions outside actor receive must type-check cleanly: {:?}",
+            output.errors
+        );
+    }
+
+    /// An empty `gen { }` block must emit `EmptyGenerator` because the yield
+    /// type-variable cannot be resolved without any `yield` expressions.
+    #[test]
+    fn gen_block_empty_emits_empty_generator() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { };
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::EmptyGenerator),
+            "empty gen{{}} must emit EmptyGenerator; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// `gen { }` inside an actor receive handler must emit `GenBlockInActorReceive`
+    /// and must NOT emit `EmptyGenerator` — the actor guard fires first.
+    #[test]
+    fn genblock_in_actor_receive_is_rejected_not_empty_generator() {
+        let output = check_source(
+            r"
+            actor Counter {
+                count: i32;
+                receive fn tick() {
+                    let _g = gen { };
+                }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::GenBlockInActorReceive),
+            "gen{{}} inside actor receive must emit GenBlockInActorReceive; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::EmptyGenerator),
+            "gen{{}} inside actor receive must not emit EmptyGenerator (actor guard fires first); got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── gen{} Return-component inference ───────────────────────────────────
+
+    /// `gen { 1 }` has a tail expression but no yield.  The Return component
+    /// must be inferred as i64 (not Unit), and no `EmptyGenerator` is emitted.
+    #[test]
+    fn gen_block_tail_expr_infers_return_component() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { 1 };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "gen block with tail expression but no yield must type-check cleanly: {:?}",
+            output.errors
+        );
+    }
+
+    /// `gen { return 1; }` has an explicit return but no yield.  The Return
+    /// component is i64, and the body never yields (Yield=Never).  No error.
+    #[test]
+    fn gen_block_explicit_return_infers_return_component() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { return 1; };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "gen block with explicit return but no yield must type-check cleanly: {:?}",
+            output.errors
+        );
+    }
+
+    /// `gen { yield 1; 2 }` has both yield and a tail expression.
+    /// Both Yield and Return must be inferred (i64 each); no error.
+    #[test]
+    fn gen_block_yield_and_tail_both_infer() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { yield 1; 2 };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "gen block with yield and tail expression must type-check cleanly: {:?}",
+            output.errors
+        );
+    }
+
+    /// `return 1` inside gen{} must NOT produce a return-type mismatch against
+    /// the full Generator<Y, R> shape; the checker extracts the Return component
+    /// for `Stmt::Return` when `in_generator` is set.
+    #[test]
+    fn gen_block_return_does_not_mismatch_full_generator_type() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _g = gen { return 42; };
+            }
+            ",
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::Mismatch { .. })),
+            "`return <expr>` inside gen{{}} must not produce a Mismatch against the Generator \
+             wrapper; got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── recursive closure self-reference (E_CLOSURE_RECURSIVE) ─────────────
+
+    /// A closure that references its own let-binding by name must produce
+    /// `ClosureRecursive`, not `UndefinedVariable`.
+    #[test]
+    fn recursive_closure_self_reference_is_rejected() {
+        let output = check_source(
+            r"
+            fn main() {
+                let f = |x: i32| -> i32 { f(x) };
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::ClosureRecursive { .. })),
+            "recursive closure self-reference must emit ClosureRecursive; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// A non-recursive closure that references a binding of the same name
+    /// from an outer scope is fine — the binding exists at capture depth.
+    #[test]
+    fn closure_referencing_outer_binding_same_name_is_not_recursive_error() {
+        let output = check_source(
+            r"
+            fn apply(f: fn(i32) -> i32, x: i32) -> i32 { f(x) }
+            fn main() {
+                let k: i32 = 10;
+                let f = |x: i32| -> i32 { x + k };
+                let _result = apply(f, 5);
+            }
+            ",
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::ClosureRecursive { .. })),
+            "non-recursive closure should not emit ClosureRecursive; got: {:?}",
+            output.errors
+        );
+    }
+
     /// The hint in the diagnostic must direct the user to add the symbol to
     /// the classification toml.
     #[test]
@@ -17710,4 +17912,560 @@ mod assoc_types_slice2 {
             err.suggestions
         );
     }
+}
+
+// ── stack-hint scanner coverage for tail-promoted if-let ─────────────────
+//
+// `Expr::IfLet` is produced when `if let … { … }` appears in tail position
+// inside a block (the parser promotes `Stmt::IfLet` → `Expr::IfLet` and
+// places it in `Block::trailing_expr`).  The scan_expr_for_stack_hints walker
+// must handle `Expr::IfLet` bodies so that heap bindings declared inside them
+// are reported.
+#[cfg(test)]
+mod iflet_tail_stack_hint_coverage {
+    use super::*;
+
+    fn stack_hint_names(source: &str) -> Vec<String> {
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        output
+            .stack_hints
+            .into_iter()
+            .map(|h| h.binding_name)
+            .collect()
+    }
+
+    /// A `Vec` binding inside a tail-promoted `if let` body must be reported.
+    #[test]
+    fn tail_promoted_iflet_body_bindings_are_stack_hint_scanned() {
+        let names = stack_hint_names(
+            r"fn foo(opt: (i64, i64)) {
+    if let (a, _b) = opt {
+        let v: Vec<i64> = Vec::new();
+        v
+    }
+}",
+        );
+        assert!(
+            names.iter().any(|n| n == "v"),
+            "expected stack hint for `v` inside tail-promoted if-let body; got: {names:?}",
+        );
+    }
+
+    /// A `Vec` binding inside the `else` block of a tail-promoted `if let`
+    /// must also be reported.
+    #[test]
+    fn tail_promoted_iflet_else_body_bindings_are_stack_hint_scanned() {
+        let names = stack_hint_names(
+            r"fn foo(opt: (i64, i64)) {
+    if let (a, _b) = opt {
+        a
+    } else {
+        let w: Vec<i64> = Vec::new();
+        0
+    }
+}",
+        );
+        assert!(
+            names.iter().any(|n| n == "w"),
+            "expected stack hint for `w` inside tail-promoted if-let else-body; got: {names:?}",
+        );
+    }
+}
+
+// ── pattern_resolution side-table tests ──────────────────────────────────────
+
+#[cfg(test)]
+mod pattern_resolution {
+    use super::*;
+
+    /// Helper: type-check `source` and return the `pattern_resolutions` map.
+    fn pattern_resolutions(source: &str) -> HashMap<SpanKey, ArmResolution> {
+        let output = check_source(source);
+        assert!(
+            output.errors.is_empty(),
+            "pattern_resolutions test must parse and check cleanly; errors: {:#?}",
+            output.errors
+        );
+        output.pattern_resolutions
+    }
+
+    // ── wildcard arm ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn wildcard_arm_records_wildcard_kind() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) {
+    match x {
+        _ => {}
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 1, "expected one resolution");
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(arm.pattern_kind, PatternKind::Wildcard);
+        assert!(arm.variant_match.is_none());
+        assert!(arm.payload_bindings.is_empty());
+    }
+
+    // ── literal arm ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn literal_arm_records_literal_kind() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) -> i64 {
+    match x {
+        1 => 10,
+        _ => 0,
+    }
+}",
+        );
+        // Two arms: literal + wildcard
+        assert_eq!(resolutions.len(), 2, "expected two resolutions");
+        let literal_arm = resolutions
+            .values()
+            .find(|r| r.pattern_kind == PatternKind::Literal)
+            .expect("expected a Literal arm");
+        assert!(literal_arm.variant_match.is_none());
+        assert!(literal_arm.payload_bindings.is_empty());
+    }
+
+    // ── plain binding arm ─────────────────────────────────────────────────────
+
+    #[test]
+    fn binding_arm_records_binding_kind_no_variant_match() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) -> i64 {
+    match x {
+        n => n,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 1);
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(arm.pattern_kind, PatternKind::Binding);
+        assert!(arm.variant_match.is_none());
+        assert!(arm.payload_bindings.is_empty());
+    }
+
+    // ── Option<T> arms ───────────────────────────────────────────────────────
+
+    #[test]
+    fn option_some_arm_records_variant_ctor_and_payload() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    match opt {
+        Some(v) => v,
+        None => 0,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 2, "expected two arms");
+
+        let some_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Some")
+            })
+            .expect("expected a Some arm");
+        assert_eq!(some_arm.pattern_kind, PatternKind::VariantCtor);
+        let vm = some_arm.variant_match.as_ref().unwrap();
+        assert_eq!(vm.type_name, "Option");
+        assert_eq!(vm.variant_name, "Some");
+        assert_eq!(some_arm.payload_bindings.len(), 1);
+        assert_eq!(some_arm.payload_bindings[0].binding_name, "v");
+        assert_eq!(some_arm.payload_bindings[0].field_idx, 0);
+        assert_eq!(some_arm.payload_bindings[0].ty, Ty::I64);
+
+        let none_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "None")
+            })
+            .expect("expected a None arm");
+        assert_eq!(none_arm.pattern_kind, PatternKind::VariantCtor);
+        assert!(none_arm.payload_bindings.is_empty());
+    }
+
+    #[test]
+    fn option_some_wildcard_payload_emits_no_binding() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) {
+    match opt {
+        Some(_) => {},
+        None => {},
+    }
+}",
+        );
+        let some_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Some")
+            })
+            .expect("expected a Some arm");
+        // Wildcard sub-pattern emits no PayloadBinding
+        assert!(
+            some_arm.payload_bindings.is_empty(),
+            "wildcard payload should not emit a PayloadBinding"
+        );
+    }
+
+    // ── Result<T, E> arms ────────────────────────────────────────────────────
+
+    #[test]
+    fn result_ok_err_arms_record_variant_match() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(r: Result<i64, string>) -> i64 {
+    match r {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 2);
+
+        let ok_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Ok")
+            })
+            .expect("expected an Ok arm");
+        let vm = ok_arm.variant_match.as_ref().unwrap();
+        assert_eq!(vm.type_name, "Result");
+        assert_eq!(vm.variant_name, "Ok");
+        assert_eq!(ok_arm.payload_bindings.len(), 1);
+        assert_eq!(ok_arm.payload_bindings[0].binding_name, "v");
+        assert_eq!(ok_arm.payload_bindings[0].ty, Ty::I64);
+
+        let err_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Err")
+            })
+            .expect("expected an Err arm");
+        // Wildcard payload — no binding recorded
+        assert!(err_arm.payload_bindings.is_empty());
+    }
+
+    // ── user enum arms ───────────────────────────────────────────────────────
+
+    #[test]
+    fn user_enum_unit_variant_records_variant_ctor_no_payload() {
+        let resolutions = pattern_resolutions(
+            r"
+enum Color { Red; Green; Blue }
+fn foo(c: Color) {
+    match c {
+        Red => {},
+        Green => {},
+        Blue => {},
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 3);
+        for arm in resolutions.values() {
+            assert_eq!(arm.pattern_kind, PatternKind::VariantCtor);
+            assert!(arm.variant_match.is_some());
+            assert_eq!(arm.variant_match.as_ref().unwrap().type_name, "Color");
+            assert!(arm.payload_bindings.is_empty());
+        }
+    }
+
+    #[test]
+    fn user_enum_tuple_variant_records_payload_bindings() {
+        let resolutions = pattern_resolutions(
+            r"
+enum Shape { Circle(i64); Square(i64) }
+fn foo(s: Shape) -> i64 {
+    match s {
+        Circle(r) => r,
+        Square(side) => side,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 2);
+
+        let circle_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Circle")
+            })
+            .expect("expected Circle arm");
+        assert_eq!(circle_arm.payload_bindings.len(), 1);
+        assert_eq!(circle_arm.payload_bindings[0].binding_name, "r");
+        assert_eq!(circle_arm.payload_bindings[0].field_idx, 0);
+        assert_eq!(circle_arm.payload_bindings[0].ty, Ty::I64);
+    }
+
+    // ── match expression (not statement) ────────────────────────────────────
+
+    #[test]
+    fn match_expression_arm_records_resolution() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    let v = match opt {
+        Some(x) => x,
+        None => 0,
+    };
+    v
+}",
+        );
+        assert_eq!(resolutions.len(), 2);
+        let some_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Some")
+            })
+            .expect("match expression must also record Some arm");
+        assert_eq!(some_arm.payload_bindings.len(), 1);
+        assert_eq!(some_arm.payload_bindings[0].binding_name, "x");
+    }
+
+    // ── tuple pattern ────────────────────────────────────────────────────────
+
+    #[test]
+    fn tuple_pattern_records_tuple_kind_and_bindings() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(pair: (i64, i64)) -> i64 {
+    match pair {
+        (a, b) => a + b,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 1);
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(arm.pattern_kind, PatternKind::TuplePattern);
+        assert!(arm.variant_match.is_none());
+        assert_eq!(arm.payload_bindings.len(), 2);
+        assert_eq!(arm.payload_bindings[0].binding_name, "a");
+        assert_eq!(arm.payload_bindings[0].field_idx, 0);
+        assert_eq!(arm.payload_bindings[1].binding_name, "b");
+        assert_eq!(arm.payload_bindings[1].field_idx, 1);
+    }
+
+    // ── or-pattern is absent ─────────────────────────────────────────────────
+
+    #[test]
+    fn or_pattern_arm_absent_from_side_table() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) {
+    match x {
+        1 | 2 => {},
+        _ => {},
+    }
+}",
+        );
+        // The or-pattern arm must be absent; only the wildcard arm is recorded.
+        assert_eq!(
+            resolutions.len(),
+            1,
+            "or-pattern arm must not appear in pattern_resolutions"
+        );
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(arm.pattern_kind, PatternKind::Wildcard);
+    }
+
+    // ── payload types resolved at output boundary ────────────────────────────
+
+    #[test]
+    fn payload_binding_type_is_concrete_not_inferred() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    match opt {
+        Some(v) => v,
+        None => 0,
+    }
+}",
+        );
+        let some_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Some")
+            })
+            .unwrap();
+        // Ty::Var must not survive the output boundary
+        assert!(
+            !matches!(some_arm.payload_bindings[0].ty, Ty::Var(_)),
+            "payload binding type must be concrete, not Ty::Var"
+        );
+        assert_eq!(some_arm.payload_bindings[0].ty, Ty::I64);
+    }
+
+    #[test]
+    fn struct_variant_records_source_order_field_idx() {
+        // Variant declared with fields in order: c, a, b.
+        // A pattern matching only `a` must record field_idx == 1
+        // (the declaration position), not field_idx == 0 (alphabetical
+        // position of "a" among ["a","b","c"]).
+        let resolutions = pattern_resolutions(
+            r"
+enum Tri { Bar { c: i64; a: i64; b: i64 } }
+fn foo(t: Tri) -> i64 {
+    match t {
+        Tri::Bar { a } => a,
+    }
+}",
+        );
+        let bar_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Bar")
+            })
+            .expect("Bar arm must be recorded");
+        assert_eq!(bar_arm.payload_bindings.len(), 1);
+        assert_eq!(bar_arm.payload_bindings[0].binding_name, "a");
+        // Declaration order: c=0, a=1, b=2 — so field_idx for 'a' must be 1.
+        assert_eq!(
+            bar_arm.payload_bindings[0].field_idx, 1,
+            "field_idx must reflect declaration order, not alphabetical order"
+        );
+    }
+}
+
+// ── Unsupported payload subpatterns (fail-closed gate) ──────────────────────
+//
+// These tests verify that the checker emits `UnsupportedPayloadSubpattern`
+// rather than silently lowering unsupported payload subpatterns as wildcards.
+
+/// Literal in tuple-variant payload position must emit
+/// `UnsupportedPayloadSubpattern` rather than silently matching as wildcard.
+/// This covers the reviewer's exact probe: `Shape::Line(1)` must not match
+/// `Shape::Line(2)` via wildcard fallthrough.
+#[test]
+fn constructor_payload_literal_emits_unsupported_diagnostic() {
+    let output = check_source(
+        r"
+enum Shape { Line(i64); Square(i64) }
+fn main() -> i64 {
+    let s = Shape::Line(2);
+    match s {
+        Shape::Line(1) => 999,
+        Shape::Line(x) => x,
+        Shape::Square(_) => 0,
+    }
+}",
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                kind_label,
+                ..
+            } if kind_label == "literal"
+        )),
+        "expected UnsupportedPayloadSubpattern(literal) error; got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Nested constructor in tuple-variant payload must be rejected.
+#[test]
+fn constructor_payload_nested_ctor_emits_unsupported_diagnostic() {
+    let output = check_source(
+        r"
+enum Color { Red; Green }
+enum Shape { Line(Color); Square(i64) }
+fn main() -> i64 {
+    let s = Shape::Line(Color::Red);
+    match s {
+        Shape::Line(Color::Red) => 1,
+        Shape::Line(_) => 0,
+        Shape::Square(_) => 0,
+    }
+}",
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                kind_label,
+                ..
+            } if kind_label == "nested constructor"
+        )),
+        "expected UnsupportedPayloadSubpattern(nested constructor) error; got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Tuple destructure inside tuple-variant payload position must be rejected.
+#[test]
+fn constructor_payload_tuple_destructure_emits_unsupported_diagnostic() {
+    let output = check_source(
+        r"
+enum Pair { Both((i64, i64)); None }
+fn main() -> i64 {
+    let p = Pair::Both((1, 2));
+    match p {
+        Pair::Both((a, b)) => a,
+        Pair::None => 0,
+    }
+}",
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
+        )),
+        "expected UnsupportedPayloadSubpattern error for tuple-in-payload; got errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Binding and wildcard payload subpatterns must remain accepted.
+/// Guards against the rejection being too broad.
+#[test]
+fn constructor_payload_binding_and_wildcard_are_accepted() {
+    let output = check_source(
+        r"
+enum Shape { Line(i64); Square(i64) }
+fn foo(s: Shape) -> i64 {
+    match s {
+        Shape::Line(x) => x,
+        Shape::Square(_) => 0,
+    }
+}",
+    );
+    assert!(
+        !output.errors.iter().any(|e| matches!(
+            &e.kind,
+            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
+        )),
+        "binding and wildcard payload subpatterns must not emit UnsupportedPayloadSubpattern; \
+         got errors: {:#?}",
+        output.errors
+    );
 }

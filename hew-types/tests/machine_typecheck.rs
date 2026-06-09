@@ -586,3 +586,83 @@ fn transition_count_equals_states_times_events() {
         output.errors
     );
 }
+
+// ── Test: generic machine preserves type params in TypeDef ──────────
+
+fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
+    MachineDecl {
+        visibility: Visibility::Pub,
+        name: name.to_string(),
+        type_params: type_params.iter().map(ToString::to_string).collect(),
+        has_default: false,
+        states: vec![unit_state("Idle"), unit_state("Active")],
+        events: vec![unit_event("Start"), unit_event("Stop")],
+        transitions: vec![
+            transition("Start", "Idle", "Active"),
+            transition("Stop", "Active", "Idle"),
+            wildcard_transition("Start"),
+            wildcard_transition("Stop"),
+        ],
+    }
+}
+
+#[test]
+fn generic_machine_type_params_survive_registration() {
+    let md = make_generic_machine("Worker", &["T"]);
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(
+        output.errors.is_empty(),
+        "generic machine should type-check without errors, got: {:?}",
+        output.errors
+    );
+    let td = output
+        .type_defs
+        .get("Worker")
+        .expect("Worker should be registered as a type");
+    assert_eq!(
+        td.type_params,
+        vec!["T".to_string()],
+        "generic machine type param T must survive into TypeDef"
+    );
+}
+
+#[test]
+fn generic_machine_multi_params_survive_registration() {
+    let md = make_generic_machine("Pipeline", &["In", "Out"]);
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(
+        output.errors.is_empty(),
+        "multi-param generic machine should type-check, got: {:?}",
+        output.errors
+    );
+    let td = output
+        .type_defs
+        .get("Pipeline")
+        .expect("Pipeline should be registered as a type");
+    assert_eq!(
+        td.type_params,
+        vec!["In".to_string(), "Out".to_string()],
+        "multi-param generic machine type params must survive into TypeDef"
+    );
+}
+
+#[test]
+fn non_generic_machine_type_params_empty() {
+    // Regression: non-generic machines must still register with empty type_params.
+    let md = make_generic_machine("Light", &[]);
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(
+        output.errors.is_empty(),
+        "non-generic machine should type-check, got: {:?}",
+        output.errors
+    );
+    let td = output
+        .type_defs
+        .get("Light")
+        .expect("Light should be registered as a type");
+    assert!(
+        td.type_params.is_empty(),
+        "non-generic machine must have empty type_params, got: {:?}",
+        td.type_params
+    );
+}

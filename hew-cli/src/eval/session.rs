@@ -457,6 +457,11 @@ fn collect_pattern_identifiers(pattern: &Pattern, names: &mut Vec<String>) {
             collect_pattern_identifiers(&left.0, names);
             collect_pattern_identifiers(&right.0, names);
         }
+        Pattern::Regex { captures, .. } => {
+            for capture_name in captures {
+                push_unique(names, capture_name);
+            }
+        }
     }
 }
 

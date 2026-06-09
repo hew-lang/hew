@@ -18,6 +18,10 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
     lower_program(&parsed.program, &tc_output, &ResolutionCtx)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "single exhaustive walker over HirExprKind variants; splitting risks traversal gaps"
+)]
 fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
     out.push(expr);
     match &expr.kind {
@@ -99,11 +103,46 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(field_val, out);
             }
         }
-        HirExprKind::Select(_)
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            visit_expr(receiver, out);
+            visit_expr(event, out);
+        }
+        HirExprKind::MachineStateName { receiver, .. } => {
+            visit_expr(receiver, out);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    visit_expr(val, out);
+                }
+            }
+        }
+        HirExprKind::While { condition, body } => {
+            visit_expr(condition, out);
+            visit_block(body, out);
+        }
+        HirExprKind::ForRange {
+            start, end, body, ..
+        } => {
+            visit_expr(start, out);
+            visit_expr(end, out);
+            visit_block(body, out);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            visit_expr(scrutinee, out);
+            for arm in arms {
+                visit_expr(&arm.body, out);
+            }
+        }
+        HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::Select(_)
         | HirExprKind::AwaitTask { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::Unsupported(_) => {}
     }
 }

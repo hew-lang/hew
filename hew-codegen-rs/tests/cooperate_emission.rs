@@ -77,6 +77,9 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
         record_layouts: Vec::new(),
         actor_layouts: Vec::new(),
         supervisor_layouts: Vec::new(),
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
     }
 }
 

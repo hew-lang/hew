@@ -1,0 +1,34 @@
+// Exercises match-as-expression in a `let` binding.
+//
+// Verifies that the match expression's result type flows correctly
+// through `let` and that the result local is initialised on every arm
+// path. The `pick` helper isolates the match site inside a function so
+// the value-producing path is observable through the return convention.
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn pick(c: Colour) -> i64 {
+    let n: i64 = match c {
+        Colour::Red => 10,
+        Colour::Green => 20,
+        Colour::Blue => 30,
+    };
+    n
+}
+
+fn report(c: Colour) {
+    match c {
+        Colour::Green => println("green-twenty"),
+        _ => println("not-green"),
+    }
+}
+
+fn main() {
+    let _n: i64 = pick(Colour::Green);
+    report(Colour::Green);
+    report(Colour::Red);
+    println("done");
+}

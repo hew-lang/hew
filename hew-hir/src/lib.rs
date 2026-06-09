@@ -22,18 +22,22 @@ pub use ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 pub use intent::IntentKind;
 pub use lower::{lower_program, lower_program_with_mono_cap, LowerOutput, ResolutionCtx};
 pub use monomorph::{
-    mangle, substitute_type_params, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
-    MONOMORPHISATION_REGISTRY_CAP,
+    mangle, substitute_type_params, EnumLayout, EnumMonoKey, EnumVariantLayout, MonoKey,
+    MonomorphizedFn, RecordLayout, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
 };
 pub use node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
     HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineEvent, HirMachineState, HirMachineTransition, HirModule, HirRestartPolicy, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl,
+    HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmPredicate,
+    HirModule, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
+    HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy,
+    HirTypeDecl, HirVariant, HirVariantKind,
 };
-pub use value_class::{contains_named_type, named_type_names, TypeClassTable, ValueClass};
+pub use value_class::{
+    contains_named_type, lookup_type_marker, named_type_names, ResourceMarker, TypeClassTable,
+    ValueClass,
+};
 pub use verify::verify_hir;
 
 /// Convert a dotted module-qualified name to a native-object-safe symbol.

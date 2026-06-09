@@ -297,6 +297,23 @@ pub enum Expr {
         event_name: String,
         fields: Vec<(String, Spanned<Expr>)>,
     },
+
+    /// Generator block expression: `gen { yield ...; }`.
+    ///
+    /// The block body is lazy — it does not run until `Iterator::next` is
+    /// called on the produced generator value.  Each `yield expr;` statement
+    /// emits one `Some(expr)` from `next`.  When the body falls off the end
+    /// the generator transitions to `Ended`; a subsequent `next` call traps.
+    ///
+    /// HIR/MIR/codegen lowering is not yet implemented.  The type checker
+    /// infers `Generator<Yield, Return>` from yield-expression sites and the
+    /// body's tail expression; an actor-receive boundary emits
+    /// `E_GENBLOCK_IN_ACTOR_RECEIVE` early.  HIR lowering remains fail-closed
+    /// on `GenBlock` (no coroutine state-machine variant yet), surfacing a real
+    /// diagnostic instead of silently fabricating a value.
+    GenBlock {
+        body: Block,
+    },
 }
 
 // ── Statements ───────────────────────────────────────────────────────
@@ -415,6 +432,16 @@ pub enum Pattern {
     },
     Tuple(Vec<Spanned<Pattern>>),
     Or(Box<Spanned<Pattern>>, Box<Spanned<Pattern>>),
+    /// A regex literal pattern in a match arm: `re"^Bearer\s+(.+)$"`.
+    ///
+    /// `pattern` is the normalised regex string (delimiter escapes decoded,
+    /// regex backslashes preserved verbatim — see `normalize_regex_literal`).
+    /// `captures` is populated by the checker from `regex::Regex::capture_names()`
+    /// and is empty when produced by the parser.
+    Regex {
+        pattern: String,
+        captures: Vec<String>,
+    },
 }
 
 // ── Supporting types ─────────────────────────────────────────────────

@@ -56,8 +56,8 @@ A `machine` is a strict superset of an `enum` at the type level — it defines a
 machine TcpState {
     // States with optional per-state data
     state Closed;
-    state Listen { backlog: Int; }
-    state Established { local_seq: Int; remote_seq: Int; }
+    state Listen { backlog: i64; }
+    state Established { local_seq: i64; remote_seq: i64; }
     state FinWait;
     state TimeWait;
 
@@ -152,7 +152,7 @@ Inside a transition body, `state` is bound to the source state's data:
 
 ```hew
 // state.local_seq and state.remote_seq are accessible because
-// the source state is Established { local_seq: Int; remote_seq: Int; }
+// the source state is Established { local_seq: i64; remote_seq: i64; }
 on Data: Established -> Established {
     Established { local_seq: state.local_seq + 1, remote_seq: state.remote_seq }
 }
@@ -575,7 +575,7 @@ The machine declaration serializes to MessagePack as:
   "type_params": [],
   "states": [
     { "name": "Closed", "fields": [] },
-    { "name": "Listen", "fields": [{ "name": "backlog", "type": "Int" }] },
+    { "name": "Listen", "fields": [{ "name": "backlog", "type": "i64" }] },
     ...
   ],
   "events": [
@@ -597,13 +597,13 @@ The machine declaration serializes to MessagePack as:
 
 ```hew
 machine CircuitBreaker {
-    state Closed { failures: Int; }
-    state Open { expires_at: Int; }
-    state HalfOpen { successes: Int; }
+    state Closed { failures: i64; }
+    state Open { expires_at: i64; }
+    state HalfOpen { successes: i64; }
 
     event Success;
-    event Failure { timestamp: Int; }
-    event Tick { now: Int; }
+    event Failure { timestamp: i64; }
+    event Tick { now: i64; }
 
     // --- Success transitions ---
     on Success: Closed -> Closed {

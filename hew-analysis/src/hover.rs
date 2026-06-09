@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    Block, FnDecl, Item, Param, Pattern, Span, Stmt, TraitBound, TraitItem, TypeBodyItem, TypeExpr,
+    Block, Expr, FnDecl, Item, Param, Pattern, Span, Stmt, TraitBound, TraitItem, TypeBodyItem,
+    TypeExpr,
 };
 use hew_parser::ParseResult;
 use hew_types::builtin_names::{builtin_named_type, BuiltinNamedType};
@@ -374,7 +375,112 @@ fn hover_binding_in_block(
             return Some(result);
         }
     }
+    // Also walk the trailing expression — an `if`/`match` in tail position is
+    // value-bearing and may contain pattern bindings (if let, match arms).
+    if let Some(trailing) = &block.trailing_expr {
+        if let Some(result) =
+            hover_binding_in_expr(&trailing.0, type_output, word, word_span, offset)
+        {
+            return Some(result);
+        }
+    }
     None
+}
+
+/// Walk pattern-binding-introducing expression forms that may appear as
+/// `block.trailing_expr` after the parser fix that classifies tail-position
+/// `if` / `match` as expressions rather than statements.
+///
+/// Only `Expr::If`, `Expr::IfLet`, and `Expr::Match` introduce pattern
+/// bindings; all other expression forms are handled by the caller's
+/// expression-type fallback and do not need recursive descent here.
+fn hover_binding_in_expr(
+    expr: &Expr,
+    type_output: &TypeCheckOutput,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    match expr {
+        Expr::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            // then_block / else_block are `Box<Spanned<Expr>>` whose inner
+            // expression is `Expr::Block(Block)` when the parser emits a
+            // braced body.
+            if let Expr::Block(block) = &then_block.0 {
+                if let Some(result) =
+                    hover_binding_in_block(block, type_output, word, word_span, offset)
+                {
+                    return Some(result);
+                }
+            }
+            if let Some(else_expr) = else_block {
+                match &else_expr.0 {
+                    Expr::Block(block) => {
+                        return hover_binding_in_block(block, type_output, word, word_span, offset);
+                    }
+                    // `else if` — recurse into the nested if expression.
+                    nested_if @ Expr::If { .. } => {
+                        return hover_binding_in_expr(
+                            nested_if,
+                            type_output,
+                            word,
+                            word_span,
+                            offset,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        Expr::IfLet {
+            pattern,
+            expr: scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            if let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&scrutinee.1)) {
+                if let Some(result) = hover_pattern_binding(
+                    pattern,
+                    source_ty,
+                    &type_output.type_defs,
+                    word,
+                    word_span,
+                    offset,
+                ) {
+                    return Some(result);
+                }
+            }
+            if let Some(result) = hover_binding_in_block(body, type_output, word, word_span, offset)
+            {
+                return Some(result);
+            }
+            else_body.as_ref().and_then(|block| {
+                hover_binding_in_block(block, type_output, word, word_span, offset)
+            })
+        }
+        Expr::Match { scrutinee, arms } => type_output
+            .expr_types
+            .get(&SpanKey::from(&scrutinee.1))
+            .and_then(|scrutinee_ty| {
+                arms.iter().find_map(|arm| {
+                    hover_pattern_binding(
+                        &arm.pattern,
+                        scrutinee_ty,
+                        &type_output.type_defs,
+                        word,
+                        word_span,
+                        offset,
+                    )
+                })
+            }),
+        _ => None,
+    }
 }
 
 #[allow(
@@ -623,6 +729,16 @@ fn find_pattern_binding_type(
             find_pattern_binding_type(left, source_ty, type_defs, word, offset)
                 .or_else(|| find_pattern_binding_type(right, source_ty, type_defs, word, offset))
         }
+        Pattern::Regex { captures, .. } => {
+            // Named captures are bound as `string` in the arm body.
+            captures
+                .iter()
+                .find(|c| c.as_str() == word)
+                .map(|_| Ty::Named {
+                    name: "string".to_string(),
+                    args: vec![],
+                })
+        }
         Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
@@ -645,6 +761,7 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
         Pattern::Or(left, right) => {
             find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
         }
+        Pattern::Regex { captures, .. } => captures.iter().find(|c| c.as_str() == word).map(|_| ()),
         Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
@@ -1137,6 +1254,8 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         }
     }
 
@@ -1403,6 +1522,8 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         };
         let offset = source.find("Point").unwrap();
         let result = hover(source, &pr, Some(&tc), offset);
@@ -1491,6 +1612,8 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
         assert!(result.is_some(), "should find hover via expr_types");
@@ -1539,6 +1662,8 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
@@ -1641,6 +1766,8 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), use_offset).unwrap();
@@ -1793,6 +1920,8 @@ mod tests {
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset).unwrap();
         // Goes through ResolvedTy::from_ty(materialize_literal_defaults)

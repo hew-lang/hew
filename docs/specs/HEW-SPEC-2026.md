@@ -1232,7 +1232,7 @@ Enum types cannot normally reference themselves because inline storage would req
 
 ```hew
 indirect enum Expr {
-    Lit(Int);
+    Lit(i64);
     Add(Expr, Expr);
     Neg(Expr);
 }
@@ -1255,7 +1255,7 @@ let e = Expr::Add(Expr::Lit(1), Expr::Neg(Expr::Lit(2)));
 **Pattern matching** works identically to regular enums:
 
 ```hew
-fn eval(e: Expr) -> Int {
+fn eval(e: Expr) -> i64 {
     match e {
         Lit(n) => n,
         Add(l, r) => eval(l) + eval(r),
@@ -2445,10 +2445,10 @@ Inside a transition body the compiler binds two implicit names:
 
 ```hew
 machine Elevator {
-    state Stopped { floor: Int; }
-    state Moving  { from: Int; to: Int; }
+    state Stopped { floor: i64; }
+    state Moving  { from: i64; to: i64; }
 
-    event GoTo  { floor: Int; }
+    event GoTo  { floor: i64; }
     event Arrive;
 
     on GoTo: Stopped -> Moving {

@@ -363,7 +363,7 @@ fn test_lambda_arity_mismatch() {
     let output = typecheck(
         r"
         fn main() {
-            let f: fn(i64, i64) -> i64 = (x: i64) => x + 1; // Error: lambda has 1 param, expected 2
+            let f: fn(i64, i64) -> i64 = |x: i64| x + 1; // Error: lambda has 1 param, expected 2
         }
     ",
     );

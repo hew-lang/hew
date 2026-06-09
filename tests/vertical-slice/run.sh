@@ -375,3 +375,164 @@ fi
 grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
 grep -qF 'scope deadline body' "${reject_output}"
 grep -qF 'non-empty timeout bodies remain fail-closed' "${reject_output}"
+
+# Reject: `for x in non_range_iterable` — only integer Range (a..b, a..=b) is
+# supported in the current vertical slice.  Pins the fail-closed boundary at
+# hew-hir/src/lower.rs non-range iterable arm.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/for_non_range_iterable.hew" >"${reject_output}" 2>&1; then
+  echo "expected for-non-range-iterable fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'non-Range iterable' "${reject_output}"
+
+# ---------------------------------------------------------------------------
+# gen{} checker — typed generator blocks
+# ---------------------------------------------------------------------------
+
+# Accept: gen{} with yield expressions outside actor receive type-checks cleanly.
+# HIR/MIR lowering is still fail-closed (no coroutine scheduler); hew check
+# exercises the type-checker accept path.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_outside_receive.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-outside-receive fixture to pass hew check; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: empty gen{} has no yield expressions; yield type cannot be inferred.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/gen_block_empty.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-empty fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_EMPTY_GENERATOR' "${reject_output}"
+
+# Reject: gen{} inside an actor receive handler is permanently forbidden.
+# Pins GenBlockInActorReceive from fa8e8c64.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/genblock_in_actor_receive.hew" >"${reject_output}" 2>&1; then
+  echo "expected genblock-in-actor-receive fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_GENBLOCK_IN_ACTOR_RECEIVE' "${reject_output}"
+
+# Accept: gen{} with a tail expression but no yield — Return component inferred as i64.
+# Exercises the return_var inference path; E_EMPTY_GENERATOR must NOT fire.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_final_expr_returns.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-final-expr-returns fixture to pass; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Accept: gen{} with explicit `return` but no yield — Return component inferred.
+# Exercises Stmt::Return extraction of the R component from Generator<Y, R>.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_explicit_return.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-explicit-return fixture to pass; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Accept: gen{} with both yield expressions and a tail-expression return.
+# Both Yield and Return are inferred independently; no error.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_block_yields_and_returns.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-yields-and-returns fixture to pass; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: yield expressions with incompatible types — type mismatch (not EmptyGenerator).
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/gen_block_yield_type_mismatch.hew" >"${reject_output}" 2>&1; then
+  echo "expected gen-block-yield-type-mismatch fixture to fail" >&2
+  exit 1
+fi
+grep -q 'type mismatch' "${reject_output}"
+
+# Reject: bare yield at function scope (not inside gen{}) — YieldOutsideGenerator.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/yield_outside_gen.hew" >"${reject_output}" 2>&1; then
+  echo "expected yield-outside-gen fixture to fail" >&2
+  exit 1
+fi
+grep -q 'outside of generator' "${reject_output}"
+
+# ---------------------------------------------------------------------------
+# Sink<T> / Stream<T> Wire-capability admissibility gate
+# ---------------------------------------------------------------------------
+
+# Accept: Sink<i64> and Stream<i64> pass the Wire-capability checker.
+# i64 derives Encode + Decode (primitive Wire type); the admissibility gate
+# must not reject these declarations.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/sink_i64_typed.hew" >"${reject_output}" 2>&1; then
+  echo "expected sink_i64_typed fixture to pass hew check; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: Sink<LocalPid<Foo>> payload does not implement Encode + Decode.
+# LocalPid derives Send + Sync + Copy + Clone but is not Wire-serialisable.
+# The Wire-capability admissibility gate must emit SinkPayloadNotWire.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/sink_non_wire_payload.hew" >"${reject_output}" 2>&1; then
+  echo "expected sink_non_wire_payload fixture to fail" >&2
+  exit 1
+fi
+grep -qF 'Encode + Decode' "${reject_output}"
+
+# Reject: literal payload subpattern in a constructor match arm.
+# Shape::Line(1) must be rejected at check time with UnsupportedPayloadSubpattern
+# rather than silently lowered as a wildcard that matches any payload value.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/enum_payload_literal_subpattern.hew" >"${reject_output}" 2>&1; then
+  echo "expected enum-payload-literal-subpattern fixture to fail" >&2
+  exit 1
+fi
+grep -q 'payload subpattern' "${reject_output}"
+grep -q 'literal' "${reject_output}"
+if grep -q 'panicked at' "${reject_output}"; then
+  echo "enum-payload-literal-subpattern fixture panicked instead of reporting a diagnostic" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Regex literal match-arm patterns
+# ---------------------------------------------------------------------------
+
+# Accept: `re"..."` in match-arm predicate position type-checks cleanly.
+# The pattern syntax is validated at check time via the regex-syntax crate.
+# End-to-end compilation requires HIR ExternBlock support for the
+# auto-imported std::text::regex module (tracked as a follow-on lane).
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/regex_match_arm.hew" >"${reject_output}" 2>&1; then
+  echo "expected regex_match_arm fixture to pass hew check; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: malformed regex literal in match-arm position (E_INVALID_REGEX_LITERAL).
+# The type checker validates regex syntax before HIR lowering.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_invalid_pattern.hew" >"${reject_output}" 2>&1; then
+  echo "expected regex_invalid_pattern fixture to fail" >&2
+  exit 1
+fi
+grep -qF 'invalid regex pattern' "${reject_output}"
+
+# ---------------------------------------------------------------------------
+# Generic enum monomorphisation — end-to-end acceptance fixtures
+# ---------------------------------------------------------------------------
+
+# Accept: Option<i64>::Some(42) — tuple-variant generic enum lowers end-to-end.
+# Exercises HIR EnumLayoutRegistry → MIR layout-gather → codegen mangled-name
+# lookup → link. Exit 42 proves the Some arm was matched and the payload read.
+run_accept_expect_status "generic_enum_option_some" 42
+
+# Accept: Option<i64>::None — unit arm of the same generic enum.
+# Exit 99 proves the None arm matched (no payload confusion with Some).
+run_accept_expect_status "generic_enum_option_none" 99
+
+# Accept: Maybe<i64>::Just { value: 42 } — struct-variant (named-field) generic enum.
+# Exit 42 proves named-field variant payloads lower through the generic path.
+run_accept_expect_status "generic_enum_maybe_just" 42
+
+# Accept: Result<i64, bool>::Ok(7) — two-type-parameter generic enum.
+# Exit 7 proves the Ok arm matched and the i64 payload was read correctly.
+run_accept_expect_status "generic_enum_result_ok" 7
+
+# Accept: Option<Option<i64>>::Some(Some(5)) — nested generic instantiation.
+# The HIR mono-pass must register both Option<i64> and Option<Option<i64>>
+# layouts. Exit 5 proves both layouts lower and the nested match dispatched
+# correctly.
+run_accept_expect_status "generic_enum_nested_option" 5

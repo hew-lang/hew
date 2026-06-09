@@ -113,6 +113,16 @@ pub struct TypeCheckOutput {
     /// HIR lowering consumes this side table before the generic method-call
     /// rewrite bridge and never reclassifies the receiver type downstream.
     pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    /// Checker-owned machine method dispatch decisions keyed by the method call span.
+    ///
+    /// Populated for every accepted `.step()` / `.state_name()` call on a
+    /// machine-typed receiver.  HIR lowering checks this table before
+    /// `method_call_rewrites` so machine method calls produce dedicated HIR
+    /// nodes (`MachineStep` / `MachineStateName`) instead of falling through
+    /// to the generic rewrite path (which would emit `MethodCallNoRewrite`).
+    ///
+    /// MIR/codegen consumers: wired in slice 6.
+    pub machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
@@ -273,6 +283,22 @@ pub struct TypeCheckOutput {
     /// to `#[intrinsic]` declarations (slices 4–7); the table then becomes the
     /// complete intrinsic registry and the catalog rows can be removed.
     pub intrinsic_declarations: HashMap<String, String>,
+    /// Per-arm pattern resolution keyed by the arm's pattern span.
+    ///
+    /// Populated by the checker during `check_match_stmt` and `check_match_expr`
+    /// for every arm whose top-level pattern is accepted.  HIR lowering must
+    /// consult this table fail-closed: a match arm that is present in the AST
+    /// but absent from this map means the checker accepted it without recording
+    /// resolution context, which is a HIR diagnostic (analogous to
+    /// `MethodCallNoRewrite`).
+    ///
+    /// `Pattern::Or` arms are intentionally absent from this table; or-pattern
+    /// lowering is a future lane.  A missing entry for an or-pattern arm must
+    /// surface a typed diagnostic, not a silent fallthrough.
+    ///
+    /// WHEN-OBSOLETE: never; this table is the checker's authoritative
+    /// output for match semantics downstream.
+    pub pattern_resolutions: HashMap<SpanKey, ArmResolution>,
 }
 
 /// By-value capture mode selected for one closure environment field.
@@ -456,6 +482,107 @@ pub(crate) struct SupervisorChildren {
     pub(crate) pools: Vec<(String, String)>,
 }
 
+// ── Pattern-resolution side table ────────────────────────────────────────────
+
+/// Checker-resolved classification of one match arm's top-level pattern.
+///
+/// Populated by the checker during `check_match_stmt` / `check_match_expr` for
+/// every arm whose pattern is accepted.  `Pattern::Or` arms are absent by
+/// design: or-pattern lowering is a follow-on lane; HIR lowering must treat a
+/// missing entry for an or-pattern arm as a fail-closed diagnostic, not a
+/// silent fallthrough.
+///
+/// This is the top-level kind only — sub-patterns (e.g. the inner pattern of
+/// `Some(x)`) are not recorded separately; per-arm is the granularity the
+/// match-arm HIR lowering lane will consume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternKind {
+    /// `_`
+    Wildcard,
+    /// A literal value (`1`, `"hello"`, `true`, …).
+    Literal,
+    /// A plain lowercase identifier that introduces a binding (e.g. `x`).
+    Binding,
+    /// An uppercase or path-qualified identifier or `Constructor(…)` form that
+    /// resolves to a variant/constructor (e.g. `None`, `Some(x)`, `Err(e)`,
+    /// `Shape::Circle { r }`).  Includes built-in `Option`/`Result` variants.
+    VariantCtor,
+    /// A struct-pattern with named fields that is NOT an enum struct-variant
+    /// (i.e. the matched type is a plain struct/record, not an enum).
+    StructPattern,
+    /// A tuple pattern `(a, b, …)` including the empty-tuple unit pattern `()`.
+    TuplePattern,
+    /// A regex literal pattern `re"..."` in a match arm.
+    ///
+    /// `captures` lists the named capture groups derived from
+    /// `regex::Regex::capture_names()` after the checker validated the
+    /// pattern. Each entry is `(name, group_index)` where `group_index` is
+    /// the 1-based regex group position (group 0 is the whole match; named
+    /// groups start at 1). Positional-only groups are skipped. Storing the
+    /// real group index rather than the named-capture-only position ensures
+    /// correct lookup when unnamed groups precede named ones.
+    ///
+    /// HIR lowering reads this to populate `HirMatchArm::kind` for the
+    /// regex arm and to know which capture names (and indices) to bind before the body.
+    Regex { captures: Vec<(String, u32)> },
+}
+
+/// Checker-resolved identity of the matched enum variant.
+///
+/// Keyed by the arm's pattern span and consumed by match-arm HIR lowering to
+/// emit `MachineVariantCtor` / `EnumVariantCtor` etc. without re-resolving.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantMatch {
+    /// Canonical name of the type definition that owns this variant.
+    /// For built-in `Option`/`Result` this is `"Option"` / `"Result"`.
+    pub type_name: String,
+    /// Unqualified variant name (e.g. `"Some"`, `"None"`, `"Ok"`, `"Err"`,
+    /// `"Counting"` for a user enum).
+    pub variant_name: String,
+}
+
+/// Checker-resolved payload binding for one positional or named payload slot
+/// within a constructor or struct pattern.
+///
+/// For `Some(x)`: one entry, `field_idx = 0`, `binding_name = "x"`.
+/// For `Counter::Counting { value }`: one entry, `field_idx = 0` (position in
+/// the variant's field list), `binding_name = "value"`.
+/// For `_` sub-patterns inside a constructor: no entry is emitted for that
+/// slot (the binder doesn't introduce a name into scope).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PayloadBinding {
+    /// 0-based index of this payload slot within the variant's field list.
+    pub field_idx: usize,
+    /// Surface name the binding introduces in the arm body scope.
+    pub binding_name: String,
+    /// Fully resolved type of the payload at this position.
+    ///
+    /// Carries a `Ty::Var` while inference is in flight; resolved to a
+    /// concrete type at the `check_program` output boundary via
+    /// `Substitution::resolve`.
+    pub ty: Ty,
+}
+
+/// Checker-resolved summary of one match arm's pattern.
+///
+/// Keyed by `SpanKey::from(&arm.pattern.1)` in the
+/// `TypeCheckOutput::pattern_resolutions` side table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArmResolution {
+    /// High-level pattern classification.
+    pub pattern_kind: PatternKind,
+    /// For constructor / variant patterns: which type-def the ctor belongs to
+    /// and which variant.  `None` for `Wildcard`, `Literal`, `Binding`,
+    /// `StructPattern` on a plain record, and `TuplePattern`.
+    pub variant_match: Option<VariantMatch>,
+    /// Ordered payload bindings introduced by this arm's pattern.
+    ///
+    /// Empty for `Wildcard`, `Literal`, identifier `Binding` (the binding
+    /// itself is expressed via the environment, not here), `None` / unit
+    /// variants, and struct/tuple patterns that destructure to wildcards only.
+    pub payload_bindings: Vec<PayloadBinding>,
+}
+
 impl Default for TypeCheckOutput {
     /// Produce an empty `TypeCheckOutput` with no resolved types, rewrites, or
     /// diagnostics. Useful in tests that exercise HIR lowering without
@@ -485,11 +612,13 @@ impl Default for TypeCheckOutput {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
+            pattern_resolutions: HashMap::new(),
         }
     }
 }
@@ -694,6 +823,27 @@ pub enum ActorMethodKind {
     Fire(String),
     /// Request/reply dispatch to an actor receive handler with a non-unit reply.
     Ask(String, Ty),
+}
+
+/// Checker-authoritative machine method dispatch discriminator.
+///
+/// Keyed by the method-call span in `machine_method_dispatch`.  HIR lowering
+/// checks this table before `method_call_rewrites` so that machine method
+/// calls produce dedicated HIR nodes rather than falling through to the generic
+/// rewrite path (which would emit `MethodCallNoRewrite`).
+///
+/// MIR/codegen consumers: `MachineStep` lowers in slice 6; `MachineStateName`
+/// lowers in slice 6 (string-table lookup on the tag).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineMethodKind {
+    /// `.step(event: NameEvent) -> ()` — mutates the machine value in place.
+    ///
+    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
+    Step { machine_name: String },
+    /// `.state_name() -> String` — returns the current state tag as a string.
+    ///
+    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
+    StateName { machine_name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -1151,6 +1301,8 @@ pub struct Checker {
     pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
+    pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     /// Diagnostic-only stack-allocation hints accumulated by `classify_stack_hints`.
@@ -1386,6 +1538,22 @@ pub struct Checker {
     /// Populated in `register_fn` for functions with `#[intrinsic("key")]`.
     /// Moved into `TypeCheckOutput::intrinsic_declarations` at `check_program` exit.
     pub(super) intrinsic_declarations: HashMap<String, String>,
+    /// Per-arm pattern resolutions accumulated during match checking.
+    ///
+    /// Mirrors [`TypeCheckOutput::pattern_resolutions`]; keyed by the arm's
+    /// pattern span.  `Ty` values may carry inference variables at insertion
+    /// time; `Substitution::resolve` is applied at the `check_program` output
+    /// boundary before the map is moved into `TypeCheckOutput`.
+    pub(super) pending_pattern_resolutions: HashMap<SpanKey, ArmResolution>,
+    /// When a `let name = |...| ...` is being synthesised, holds `name` so that
+    /// `synthesize_identifier` can detect a recursive self-reference inside the
+    /// closure body and emit `ClosureRecursive` instead of `UndefinedVariable`.
+    ///
+    /// WHY: by-value closure capture cannot capture a value before construction,
+    ///      so recursive self-reference via the let-binding is unsupported in v0.5.
+    /// WHEN OBSOLETE: if a `let rec` or fixed-point surface is ratified.
+    /// REAL SOLUTION: a proper `letrec`/`fix`-point binder in the type checker.
+    pub(super) pending_let_closure_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1430,6 +1598,7 @@ impl Checker {
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             stack_hints: Vec::new(),
@@ -1508,6 +1677,8 @@ impl Checker {
             last_lambda_generic_sig: None,
             deferred_range_bounds: Vec::new(),
             intrinsic_declarations: HashMap::new(),
+            pending_let_closure_name: None,
+            pending_pattern_resolutions: HashMap::new(),
         }
     }
 

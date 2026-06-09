@@ -32,9 +32,9 @@
 //!     v.push(2);
 //!     v.push(3);
 //!     println(iter.sum(v));                              // 6
-//!     println(iter.any(v, (x: i64) => x > 2));          // true
+//!     println(iter.any(v, |x: i64| x > 2));              // true
 //!     println(iter.take_int(v, 2).len());               // 2
-//!     println(iter.count_int(v, (x: i64) => x > 1));   // 2
+//!     println(iter.count_int(v, |x: i64| x > 1));      // 2
 //! }
 //! ```
 
@@ -46,7 +46,7 @@
 /// let v: Vec<i64> = Vec::new();
 /// v.push(1);
 /// v.push(2);
-/// let doubled = iter.map_int(v, (x: i64) => x * 2);
+/// let doubled = iter.map_int(v, |x: i64| x * 2);
 /// // doubled == [2, 4]
 /// ```
 pub fn map_int(v: Vec<i64>, f: fn(i64) -> i64) -> Vec<i64> {
@@ -66,7 +66,7 @@ pub fn map_int(v: Vec<i64>, f: fn(i64) -> i64) -> Vec<i64> {
 /// v.push(1);
 /// v.push(2);
 /// v.push(3);
-/// let evens = iter.filter_int(v, (x: i64) => x % 2 == 0);
+/// let evens = iter.filter_int(v, |x: i64| x % 2 == 0);
 /// // evens == [2]
 /// ```
 pub fn filter_int(v: Vec<i64>, f: fn(i64) -> bool) -> Vec<i64> {
@@ -89,7 +89,7 @@ pub fn filter_int(v: Vec<i64>, f: fn(i64) -> bool) -> Vec<i64> {
 /// v.push(1);
 /// v.push(2);
 /// v.push(3);
-/// let total = iter.fold_int(v, 0, (acc: i64, x: i64) => acc + x);
+/// let total = iter.fold_int(v, 0, |acc: i64, x: i64| acc + x);
 /// // total == 6
 /// ```
 pub fn fold_int(v: Vec<i64>, init: i64, f: fn(i64, i64) -> i64) -> i64 {
@@ -109,8 +109,8 @@ pub fn fold_int(v: Vec<i64>, init: i64, f: fn(i64, i64) -> i64) -> i64 {
 /// v.push(1);
 /// v.push(2);
 /// v.push(3);
-/// println(iter.any(v, (x: i64) => x > 2));  // true
-/// println(iter.any(v, (x: i64) => x > 9));  // false
+/// println(iter.any(v, |x: i64| x > 2));  // true
+/// println(iter.any(v, |x: i64| x > 9));  // false
 /// ```
 pub fn any(v: Vec<i64>, f: fn(i64) -> bool) -> bool {
     for i in 0 .. v.len() {
@@ -130,8 +130,8 @@ pub fn any(v: Vec<i64>, f: fn(i64) -> bool) -> bool {
 /// v.push(1);
 /// v.push(2);
 /// v.push(3);
-/// println(iter.all(v, (x: i64) => x > 0));  // true
-/// println(iter.all(v, (x: i64) => x > 2));  // false
+/// println(iter.all(v, |x: i64| x > 0));  // true
+/// println(iter.all(v, |x: i64| x > 2));  // false
 /// ```
 pub fn all(v: Vec<i64>, f: fn(i64) -> bool) -> bool {
     for i in 0 .. v.len() {
@@ -170,7 +170,7 @@ pub fn sum(v: Vec<i64>) -> i64 {
 /// let v: Vec<string> = Vec::new();
 /// v.push("hello");
 /// v.push("world");
-/// let shouted = iter.map_str(v, (s: string) => s + "!");
+/// let shouted = iter.map_str(v, |s: string| s + "!");
 /// // shouted == ["hello!", "world!"]
 /// ```
 pub fn map_str(v: Vec<string>, f: fn(string) -> string) -> Vec<string> {
@@ -190,7 +190,7 @@ pub fn map_str(v: Vec<string>, f: fn(string) -> string) -> Vec<string> {
 /// v.push("foo");
 /// v.push("bar");
 /// v.push("baz");
-/// let bs = iter.filter_str(v, (s: string) => s.starts_with("b"));
+/// let bs = iter.filter_str(v, |s: string| s.starts_with("b"));
 /// // bs == ["bar", "baz"]
 /// ```
 pub fn filter_str(v: Vec<string>, f: fn(string) -> bool) -> Vec<string> {
@@ -213,7 +213,7 @@ pub fn filter_str(v: Vec<string>, f: fn(string) -> bool) -> Vec<string> {
 /// v.push("a");
 /// v.push("b");
 /// v.push("c");
-/// let joined = iter.fold_str(v, "", (acc: string, s: string) => acc + s);
+/// let joined = iter.fold_str(v, "", |acc: string, s: string| acc + s);
 /// // joined == "abc"
 /// ```
 pub fn fold_str(v: Vec<string>, init: string, f: fn(string, string) -> string) -> string {
@@ -232,8 +232,8 @@ pub fn fold_str(v: Vec<string>, init: string, f: fn(string, string) -> string) -
 /// let v: Vec<string> = Vec::new();
 /// v.push("foo");
 /// v.push("bar");
-/// println(iter.any_str(v, (s: string) => s == "bar"));  // true
-/// println(iter.any_str(v, (s: string) => s == "baz"));  // false
+/// println(iter.any_str(v, |s: string| s == "bar"));  // true
+/// println(iter.any_str(v, |s: string| s == "baz"));  // false
 /// ```
 pub fn any_str(v: Vec<string>, f: fn(string) -> bool) -> bool {
     for i in 0 .. v.len() {
@@ -252,8 +252,8 @@ pub fn any_str(v: Vec<string>, f: fn(string) -> bool) -> bool {
 /// let v: Vec<string> = Vec::new();
 /// v.push("foo");
 /// v.push("bar");
-/// println(iter.all_str(v, (s: string) => s.len() == 3));  // true
-/// println(iter.all_str(v, (s: string) => s == "foo"));    // false
+/// println(iter.all_str(v, |s: string| s.len() == 3));  // true
+/// println(iter.all_str(v, |s: string| s == "foo"));    // false
 /// ```
 pub fn all_str(v: Vec<string>, f: fn(string) -> bool) -> bool {
     for i in 0 .. v.len() {
@@ -273,7 +273,7 @@ pub fn all_str(v: Vec<string>, f: fn(string) -> bool) -> bool {
 /// let v: Vec<f64> = Vec::new();
 /// v.push(1.0);
 /// v.push(2.0);
-/// let doubled = iter.map_f64(v, (x: f64) => x * 2.0);
+/// let doubled = iter.map_f64(v, |x: f64| x * 2.0);
 /// // doubled == [2.0, 4.0]
 /// ```
 pub fn map_f64(v: Vec<f64>, f: fn(f64) -> f64) -> Vec<f64> {
@@ -293,7 +293,7 @@ pub fn map_f64(v: Vec<f64>, f: fn(f64) -> f64) -> Vec<f64> {
 /// v.push(1.0);
 /// v.push(2.5);
 /// v.push(3.0);
-/// let big = iter.filter_f64(v, (x: f64) => x > 2.0);
+/// let big = iter.filter_f64(v, |x: f64| x > 2.0);
 /// // big == [2.5, 3.0]
 /// ```
 pub fn filter_f64(v: Vec<f64>, f: fn(f64) -> bool) -> Vec<f64> {
@@ -316,7 +316,7 @@ pub fn filter_f64(v: Vec<f64>, f: fn(f64) -> bool) -> Vec<f64> {
 /// v.push(1.0);
 /// v.push(2.0);
 /// v.push(3.0);
-/// let total = iter.fold_f64(v, 0.0, (acc: f64, x: f64) => acc + x);
+/// let total = iter.fold_f64(v, 0.0, |acc: f64, x: f64| acc + x);
 /// // total == 6.0
 /// ```
 pub fn fold_f64(v: Vec<f64>, init: f64, f: fn(f64, f64) -> f64) -> f64 {
@@ -336,8 +336,8 @@ pub fn fold_f64(v: Vec<f64>, init: f64, f: fn(f64, f64) -> f64) -> f64 {
 /// v.push(1.0);
 /// v.push(2.0);
 /// v.push(3.0);
-/// println(iter.any_f64(v, (x: f64) => x > 2.5));  // true
-/// println(iter.any_f64(v, (x: f64) => x > 9.0));  // false
+/// println(iter.any_f64(v, |x: f64| x > 2.5));  // true
+/// println(iter.any_f64(v, |x: f64| x > 9.0));  // false
 /// ```
 pub fn any_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
     for i in 0 .. v.len() {
@@ -357,8 +357,8 @@ pub fn any_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
 /// v.push(1.0);
 /// v.push(2.0);
 /// v.push(3.0);
-/// println(iter.all_f64(v, (x: f64) => x > 0.0));  // true
-/// println(iter.all_f64(v, (x: f64) => x > 2.0));  // false
+/// println(iter.all_f64(v, |x: f64| x > 0.0));  // true
+/// println(iter.all_f64(v, |x: f64| x > 2.0));  // false
 /// ```
 pub fn all_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
     for i in 0 .. v.len() {
@@ -448,7 +448,7 @@ pub fn skip_int(v: Vec<i64>, n: i64) -> Vec<i64> {
 /// ```
 /// let v: Vec<i64> = Vec::new();
 /// v.push(1); v.push(2); v.push(3); v.push(4);
-/// println(iter.count_int(v, (x: i64) => x % 2 == 0));  // 2
+/// println(iter.count_int(v, |x: i64| x % 2 == 0));  // 2
 /// ```
 pub fn count_int(v: Vec<i64>, f: fn(i64) -> bool) -> i64 {
     var n: i64 = 0;
@@ -519,7 +519,7 @@ pub fn skip_str(v: Vec<string>, n: i64) -> Vec<string> {
 /// ```
 /// let v: Vec<string> = Vec::new();
 /// v.push("foo"); v.push("bar"); v.push("baz");
-/// println(iter.count_str(v, (s: string) => s.starts_with("b")));  // 2
+/// println(iter.count_str(v, |s: string| s.starts_with("b")));  // 2
 /// ```
 pub fn count_str(v: Vec<string>, f: fn(string) -> bool) -> i64 {
     var n: i64 = 0;
@@ -590,7 +590,7 @@ pub fn skip_f64(v: Vec<f64>, n: i64) -> Vec<f64> {
 /// ```
 /// let v: Vec<f64> = Vec::new();
 /// v.push(1.0); v.push(2.5); v.push(-1.0);
-/// println(iter.count_f64(v, (x: f64) => x > 0.0));  // 2
+/// println(iter.count_f64(v, |x: f64| x > 0.0));  // 2
 /// ```
 pub fn count_f64(v: Vec<f64>, f: fn(f64) -> bool) -> i64 {
     var n: i64 = 0;

@@ -88,6 +88,7 @@ fn spawn_pipeline() -> IrPipeline {
             msg_type: 7,
             param_tys: vec![],
             return_ty: ResolvedTy::Unit,
+            requires_state_guard: true,
         }],
     };
 
@@ -100,6 +101,9 @@ fn spawn_pipeline() -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![actor_layout],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
     }
 }
 

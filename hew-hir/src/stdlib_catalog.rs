@@ -301,6 +301,71 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_vec_len",
         },
     ),
+    // Class A: string predicate overloads (ABI-safe: bool return, no i32/i64 conflict).
+    overload(
+        "starts_with_str",
+        "starts_with",
+        STRING_STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_starts_with",
+        },
+    ),
+    overload(
+        "ends_with_str",
+        "ends_with",
+        STRING_STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_ends_with",
+        },
+    ),
+    overload(
+        "contains_str",
+        "contains",
+        STRING_STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_contains",
+        },
+    ),
+    overload(
+        "is_empty_str",
+        "is_empty",
+        STRING,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_is_empty",
+        },
+    ),
+    // Class A: string transform overloads (return String via the C-string-clone path).
+    overload(
+        "trim_str",
+        "trim",
+        STRING,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_trim",
+        },
+    ),
+    overload(
+        "to_lowercase_str",
+        "to_lowercase",
+        STRING,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_to_lowercase",
+        },
+    ),
+    overload(
+        "to_uppercase_str",
+        "to_uppercase",
+        STRING,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_to_uppercase",
+        },
+    ),
     // Class B: math module intrinsics.
     direct(
         "math.exp",

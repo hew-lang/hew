@@ -475,6 +475,127 @@ pub fn substitute_type_params(
     }
 }
 
+// ── Enum-layout monomorphisation ────────────────────────────────────────────
+//
+// The enum-layout registry is the structural sibling of `RecordLayoutRegistry`:
+// it records every distinct `(enum_origin_id, Vec<ResolvedTy>)` pair observed
+// at enum-ctor sites and match scrutinees. Each entry becomes one `EnumLayout`
+// with concretely-substituted variant payload types and a mangled symbol name
+// that matches the function-mangling scheme (`mangle(origin_name, type_args)`).
+//
+// Producer: the HIR mono pass discovery walker in `hew-hir/src/lower.rs`,
+// which walks `HirExprKind::MachineVariantCtor` nodes and match scrutinees
+// and consults the checker's `expr_types` side-table for the resolved enum
+// type with its concrete type args. Downstream MIR and codegen consumers
+// iterate `HirModule.enum_layouts` to emit one layout per entry.
+//
+// LESSONS: `producer-bridge-before-codegen` (P1), `checker-authority` (P0).
+
+/// Stable identity for one enum-layout monomorphisation. Two ctor sites that
+/// instantiate the same generic enum with the same concrete type args produce
+/// equal `EnumMonoKey`s and collapse to one registry entry.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EnumMonoKey {
+    /// `ItemId` of the originating generic enum declaration, as allocated
+    /// in the HIR first pass. Pairing on `ItemId` rather than name defends
+    /// against module-qualified shadowing.
+    pub origin: ItemId,
+    /// Origin enum name as written in source. Retained for diagnostics
+    /// and the mangled-name scheme.
+    pub origin_name: String,
+    /// Concrete type arguments in source-declared order. Always `ResolvedTy`
+    /// (the boundary conversion `ResolvedTy::from_ty` rejects leaked inference
+    /// variables). The registry is fail-closed at the side-table seam.
+    pub type_args: Vec<ResolvedTy>,
+}
+
+/// The substituted payload type-list for one enum variant in a mono'd enum
+/// instantiation. `field_tys` has been substituted: every occurrence of
+/// a type-param symbol has been replaced with the corresponding concrete arg.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariantLayout {
+    /// Variant name as written in source. Retained for diagnostics; not
+    /// load-bearing for codegen (codegen addresses variants by index).
+    pub name: String,
+    /// Positional payload types after substituting the mono key's type args
+    /// into the variant's declared field types. Empty for unit variants.
+    pub field_tys: Vec<ResolvedTy>,
+}
+
+/// One specialised enum layout the downstream MIR/codegen stages must emit.
+/// Carries identity, a mangled symbol name, and the substituted variant list.
+/// Downstream consumers iterate `HirModule.enum_layouts` to emit one layout
+/// entry per enum instantiation under the mangled name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumLayout {
+    /// Identity of this monomorphisation.
+    pub key: EnumMonoKey,
+    /// Symbol name downstream codegen will emit for this layout. Built by
+    /// [`mangle`] from `key.origin_name` and `key.type_args`, sharing the
+    /// same `$$<args>` scheme as fn- and record-layout symbols.
+    pub mangled_name: String,
+    /// All variants in declaration order with substituted payload types.
+    pub variants: Vec<EnumVariantLayout>,
+}
+
+/// Insertion-ordered registry for enum-layout monomorphisations.
+/// Mirrors `RecordLayoutRegistry`'s shape exactly.
+///
+/// Deduplicates by `(origin ItemId, type_args)` key. Capped at the same
+/// `mono_cap` used for record and fn monomorphisation registries so the
+/// module-level cap is uniform. `insert` returns `Ok(true)` for a new
+/// entry, `Ok(false)` for a duplicate, and `Err(())` when the cap is
+/// exceeded (caller emits `EnumLayoutCapExceeded` diagnostic).
+#[derive(Debug, Default)]
+pub(crate) struct EnumLayoutRegistry {
+    seen: HashMap<EnumMonoKey, usize>,
+    order: Vec<EnumLayout>,
+    cap: usize,
+}
+
+impl EnumLayoutRegistry {
+    pub(crate) fn with_cap(cap: usize) -> Self {
+        Self {
+            seen: HashMap::new(),
+            order: Vec::new(),
+            cap,
+        }
+    }
+
+    /// Attempt to insert a new layout. Returns `Ok(true)` if a fresh entry
+    /// landed, `Ok(false)` if the key was already present, and `Err(())` if
+    /// the cap was exceeded (uniform with `RecordLayoutRegistry`).
+    pub(crate) fn insert(
+        &mut self,
+        key: EnumMonoKey,
+        variants: Vec<EnumVariantLayout>,
+    ) -> Result<bool, ()> {
+        if self.seen.contains_key(&key) {
+            return Ok(false);
+        }
+        if self.order.len() >= self.cap {
+            return Err(());
+        }
+        let mangled_name = mangle(&key.origin_name, &key.type_args);
+        let idx = self.order.len();
+        self.order.push(EnumLayout {
+            key: key.clone(),
+            mangled_name,
+            variants,
+        });
+        self.seen.insert(key, idx);
+        Ok(true)
+    }
+
+    pub(crate) fn cap(&self) -> usize {
+        self.cap
+    }
+
+    pub(crate) fn into_vec(self) -> Vec<EnumLayout> {
+        self.order
+    }
+}
+
 /// Detect whether `ty` contains a reference to `origin_name` with
 /// different concrete type args than `current_args`. Used to fail-closed
 /// on recursive polymorphic instantiations like
@@ -718,5 +839,107 @@ mod tests {
         }
         assert!(overflowed, "expected an insert to overflow the cap");
         assert_eq!(reg.into_vec().len(), 2);
+    }
+
+    // ── EnumLayoutRegistry tests ─────────────────────────────────────────────
+
+    fn option_key(type_arg: ResolvedTy) -> EnumMonoKey {
+        EnumMonoKey {
+            origin: ItemId(10),
+            origin_name: "Option".into(),
+            type_args: vec![type_arg],
+        }
+    }
+
+    fn some_variant(field_ty: ResolvedTy) -> EnumVariantLayout {
+        EnumVariantLayout {
+            name: "Some".into(),
+            field_tys: vec![field_ty],
+        }
+    }
+
+    fn none_variant() -> EnumVariantLayout {
+        EnumVariantLayout {
+            name: "None".into(),
+            field_tys: vec![],
+        }
+    }
+
+    #[test]
+    fn enum_layout_registry_dedupes_identical_keys() {
+        let mut reg = EnumLayoutRegistry::with_cap(8);
+        let key = option_key(ResolvedTy::I64);
+        let variants = vec![some_variant(ResolvedTy::I64), none_variant()];
+        assert_eq!(reg.insert(key.clone(), variants.clone()), Ok(true));
+        assert_eq!(reg.insert(key, variants), Ok(false));
+        assert_eq!(reg.into_vec().len(), 1);
+    }
+
+    #[test]
+    fn enum_layout_registry_two_distinct_keys_land_separately() {
+        let mut reg = EnumLayoutRegistry::with_cap(8);
+        assert_eq!(
+            reg.insert(
+                option_key(ResolvedTy::I64),
+                vec![some_variant(ResolvedTy::I64), none_variant()],
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            reg.insert(
+                option_key(ResolvedTy::String),
+                vec![some_variant(ResolvedTy::String), none_variant()],
+            ),
+            Ok(true)
+        );
+        let entries = reg.into_vec();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn enum_layout_registry_into_vec_preserves_insertion_order() {
+        let mut reg = EnumLayoutRegistry::with_cap(8);
+        // Insert string first, then i64 — into_vec must return them in
+        // insertion order (string at index 0, i64 at index 1).
+        reg.insert(
+            option_key(ResolvedTy::String),
+            vec![some_variant(ResolvedTy::String), none_variant()],
+        )
+        .unwrap();
+        reg.insert(
+            option_key(ResolvedTy::I64),
+            vec![some_variant(ResolvedTy::I64), none_variant()],
+        )
+        .unwrap();
+        let entries = reg.into_vec();
+        assert_eq!(entries[0].key.type_args[0], ResolvedTy::String);
+        assert_eq!(entries[1].key.type_args[0], ResolvedTy::I64);
+    }
+
+    #[test]
+    fn enum_layout_registry_cap_exceeded_emits_err() {
+        let mut reg = EnumLayoutRegistry::with_cap(2);
+        let mut overflowed = false;
+        for ty in [ResolvedTy::I64, ResolvedTy::I32, ResolvedTy::Bool] {
+            let key = option_key(ty.clone());
+            let variants = vec![some_variant(ty), none_variant()];
+            if reg.insert(key, variants).is_err() {
+                overflowed = true;
+            }
+        }
+        assert!(overflowed, "expected an insert to overflow the cap");
+        assert_eq!(reg.into_vec().len(), 2);
+    }
+
+    #[test]
+    fn enum_layout_mangled_name_uses_shared_scheme() {
+        // The EnumLayoutRegistry uses `mangle(origin_name, type_args)` so
+        // `Option<i64>` becomes `Option$$i64` — same scheme as fn/record.
+        let mut reg = EnumLayoutRegistry::with_cap(8);
+        let key = option_key(ResolvedTy::I64);
+        reg.insert(key, vec![some_variant(ResolvedTy::I64), none_variant()])
+            .unwrap();
+        let entries = reg.into_vec();
+        assert_eq!(entries[0].mangled_name, "Option$$i64");
     }
 }

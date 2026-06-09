@@ -1021,7 +1021,9 @@ impl Checker {
                 // Removed aliases: suggest the replacement before the
                 // general unknown-type path swallows the name.
                 match name.as_str() {
-                    "int" | "Int" => {
+                    "int" => {
+                        // Lowercase `int` was never a valid v0.3/v0.4 user-facing
+                        // spelling; treat it as an unknown type.
                         self.report_error(
                             TypeErrorKind::UndefinedType,
                             &te.1,
@@ -1029,6 +1031,19 @@ impl Checker {
                                 "unknown type `{name}`; use `i64` for fixed 64-bit integers \
                                  or `isize` for pointer-sized integers"
                             ),
+                        );
+                        return Ty::Error;
+                    }
+                    "Int" => {
+                        // `Int` was the v0.3/v0.4 spelling for i64; it is no
+                        // longer accepted.  Hard error pointing to the canonical
+                        // name so migrated source uses `i64` directly.
+                        self.report_error(
+                            TypeErrorKind::UndefinedType,
+                            &te.1,
+                            "unknown type `Int`; use `i64` for fixed 64-bit integers \
+                             or `isize` for pointer-sized integers"
+                                .to_string(),
                         );
                         return Ty::Error;
                     }

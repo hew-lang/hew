@@ -145,6 +145,9 @@ fn supervisor_pipeline() -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![worker_layout],
         supervisor_layouts: vec![supervisor_layout],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
     }
 }
 
@@ -337,6 +340,9 @@ fn on_crash_pipeline() -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![crasher_layout],
         supervisor_layouts: vec![supervisor_layout],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
     }
 }
 

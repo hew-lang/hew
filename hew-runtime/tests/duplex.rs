@@ -185,13 +185,43 @@ fn duplex_close_both_dirs() {
 // program) surfaces as SendError::ActorStopped instead of
 // resurrecting the actor.
 //
-// The fib body's running logic is slice 5 codegen; what slice 4
-// proves is that the runtime's upgrade-on-use discipline is wired
-// correctly.
+// This test exercises weak-refcount discipline only; it does not
+// exercise ask/reply semantics. The actor uses Tell shape with a
+// noop body so the test is self-contained.
+
+/// Noop tell-shape body callback for tests that only need refcount mechanics.
+unsafe extern "C-unwind" fn noop_tell_body(
+    _state: *mut std::ffi::c_void,
+    _msg: *const u8,
+    _msg_len: usize,
+    reply_out: *mut *mut u8,
+    reply_len_out: *mut usize,
+) -> i32 {
+    // SAFETY: reply_out / reply_len_out are non-null out-params supplied by
+    // the dispatch layer; writing null/0 is valid for tell-shape noop bodies.
+    unsafe {
+        *reply_out = ptr::null_mut();
+        *reply_len_out = 0;
+    }
+    0
+}
+
+/// Noop state-drop for tests that use a null state pointer.
+unsafe extern "C" fn noop_state_drop(_state: *mut std::ffi::c_void) {}
 
 #[test]
 fn lambda_self_send_fib_stop_after_external_release() {
-    let actor = hew_lambda_actor_new(8, LambdaShape::Ask as i32);
+    // SAFETY: noop_tell_body / noop_state_drop are valid extern "C" fn ptrs;
+    // state is null (noop body ignores it); capacity > 0.
+    let actor = unsafe {
+        hew_lambda_actor_new(
+            8,
+            LambdaShape::Tell as i32,
+            Some(noop_tell_body),
+            ptr::null_mut(),
+            Some(noop_state_drop),
+        )
+    };
     assert!(!actor.is_null());
     // SAFETY: actor non-null.
     let weak = unsafe { hew_lambda_actor_downgrade(actor) };

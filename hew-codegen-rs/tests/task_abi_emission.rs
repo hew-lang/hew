@@ -88,6 +88,9 @@ fn pipeline_with_task_abi_call(
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
     }
 }
 
@@ -167,6 +170,9 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
     }
 }
 
@@ -237,6 +243,9 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         record_layouts: vec![],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
     }
 }
 
@@ -329,6 +338,9 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         }],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
     }
 }
 

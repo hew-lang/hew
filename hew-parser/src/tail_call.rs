@@ -155,7 +155,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
         | Expr::ForkChild { .. } => false,
-        Expr::ForkBlock { body } => block_contains_defer(body),
+        Expr::ForkBlock { body } | Expr::GenBlock { body } => block_contains_defer(body),
         Expr::ScopeDeadline { duration, body } => {
             expr_contains_defer(&duration.0) || block_contains_defer(body)
         }
@@ -343,7 +343,9 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
         | Expr::ForkChild { .. } => {}
-        Expr::ForkBlock { body } => {
+        // Generator blocks are not tail-call candidates; mark the body
+        // so any inner call expressions can still be identified.
+        Expr::ForkBlock { body } | Expr::GenBlock { body } => {
             mark_block(body, false);
         }
         Expr::ScopeDeadline { duration, body } => {
@@ -532,8 +534,9 @@ mod tests {
             "fn example(cond: bool) -> int { match cond { true => { return expensive_call(); }, false => { return other_call(); } } }",
         );
 
-        let Stmt::Match { arms, .. } = &function.body.stmts[0].0 else {
-            panic!("expected match statement");
+        // A bare `match` as the last item in a block is a trailing expression.
+        let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
+            panic!("expected trailing match expression");
         };
 
         for arm in arms {

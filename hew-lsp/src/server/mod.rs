@@ -2221,6 +2221,33 @@ machine Traffic {
         assert_eq!(symbols[0].name, "hidden_worker");
     }
 
+    #[test]
+    fn workspace_symbols_scan_repository_style_std_and_examples() {
+        let test_dir = TestDir::new("workspace-symbols-repo-layout");
+        let root = test_dir.path();
+        let std_dir = root.join("std").join("demo");
+        let examples_dir = root.join("examples");
+        std::fs::create_dir_all(&std_dir).unwrap();
+        std::fs::create_dir_all(&examples_dir).unwrap();
+        std::fs::write(
+            std_dir.join("stdlib_probe.hew"),
+            "fn stdlib_probe() -> i32 { 0 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            examples_dir.join("example_probe.hew"),
+            "fn example_probe() -> i32 { 0 }\n",
+        )
+        .unwrap();
+
+        let documents = DashMap::new();
+        let symbols = collect_project_workspace_symbols(&documents, &[root.to_path_buf()], "probe");
+        let names: Vec<&str> = symbols.iter().map(|symbol| symbol.name.as_str()).collect();
+
+        assert!(names.contains(&"stdlib_probe"), "symbols: {names:?}");
+        assert!(names.contains(&"example_probe"), "symbols: {names:?}");
+    }
+
     // ── Diagnostic data tests ───────────────────────────────────────
 
     #[test]
@@ -6018,6 +6045,42 @@ machine Traffic {
             include_str!("../../tests/fixtures/v05_record_literals.hew"),
             "record_probe",
             &["Point", "record_probe", "record_literals"],
+        );
+    }
+
+    #[test]
+    fn v05_regex_literal_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_regex_literal",
+            include_str!("../../tests/fixtures/v05_regex_literal.hew"),
+            "regex_literal_probe",
+            &["regex_literal_probe", "regex_literal_use"],
+        );
+    }
+
+    #[test]
+    fn v05_regex_literal_hover_reports_pattern_type() {
+        let source = include_str!("../../tests/fixtures/v05_regex_literal.hew");
+        let doc = make_typed_doc(source);
+        assert!(
+            doc.parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            doc.parse_result.errors
+        );
+        let offset = source
+            .find("re\"")
+            .expect("regex literal fixture should contain re\"");
+        let hover = hew_analysis::hover::hover(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        )
+        .expect("hover should resolve regex literal expression");
+        assert!(
+            hover.contents.contains("regex.Pattern"),
+            "regex literal hover should mention regex.Pattern, got: {}",
+            hover.contents
         );
     }
 

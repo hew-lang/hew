@@ -1,0 +1,3 @@
+fn seed_gen_block() {
+    let _g = gen { yield 1; 2 };
+}

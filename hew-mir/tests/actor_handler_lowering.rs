@@ -15,7 +15,9 @@ fn empty_module(items: Vec<HirItem>) -> HirModule {
         monomorphisations: vec![],
         call_site_type_args: HashMap::default(),
         record_layouts: vec![],
+        enum_layouts: vec![],
         supervisor_child_slots: HashMap::default(),
+        regex_literals: vec![],
     }
 }
 

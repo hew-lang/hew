@@ -3,20 +3,28 @@
 hew-ir-viz — Visualize Hew MLIR dialect IR as a Graphviz diagram.
 
 Usage:
-    hew build --emit-mlir program.hew | python scripts/viz/ir.py > out.dot
-    hew build --emit-mlir program.hew | python scripts/viz/ir.py -f svg -o out.svg
     python scripts/viz/ir.py input.mlir -o out.png
 
-The tool reads Hew dialect MLIR from a file or stdin and produces a diagram
-showing functions, actors, message flows, and key operations.
+The v0.5 CLI no longer exposes ``hew build --emit-mlir``. Current inspection
+entry points are ``hew compile --dump-mir raw|checked|elab`` and
+``hew machine diagram/list``; this script remains only for previously captured
+Hew dialect MLIR streams. It reads Hew dialect MLIR from a file or stdin and
+produces a diagram showing functions, actors, message flows, and key operations.
 """
 
 from __future__ import annotations
 
+import os
+import sys
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path = [
+    path for path in sys.path if os.path.abspath(path or os.getcwd()) != _SCRIPT_DIR
+]
+
 import argparse
 import re
 import subprocess
-import sys
 from dataclasses import dataclass, field
 
 
@@ -721,7 +729,7 @@ def main():
     parser = argparse.ArgumentParser(
         prog="hew-ir-viz",
         description="Visualize Hew MLIR dialect IR as a Graphviz diagram.",
-        epilog="Example: hew build --emit-mlir prog.hew | %(prog)s -f svg -o prog.svg",
+        epilog="Example: %(prog)s input.mlir -f svg -o prog.svg",
     )
     parser.add_argument(
         "input",

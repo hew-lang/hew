@@ -1,0 +1,58 @@
+//! Runnable oracle for encrypt.try_open fail-closed behaviour.
+
+import std::crypto::encrypt;
+
+import std::testing;
+
+fn test_key() -> bytes {
+    "0123456789abcdef0123456789abcdef".to_bytes()
+}
+
+fn tamper_last_byte(ciphertext: bytes) -> bytes {
+    let last_index = ciphertext.len() - 1;
+    let tampered: bytes = bytes::new();
+    var i = 0;
+    while i < ciphertext.len() {
+        let byte = ciphertext.get(i);
+        if i == last_index {
+            if byte == 0 {
+                tampered.push(1);
+            } else {
+                tampered.push(byte - 1);
+            }
+        } else {
+            tampered.push(byte);
+        }
+        i = i + 1;
+    }
+    tampered
+}
+
+fn main() {
+    let roundtrip_seal_key = test_key();
+    let roundtrip_open_key = test_key();
+    let roundtrip_ciphertext = encrypt.seal(roundtrip_seal_key, "hew survives");
+    match encrypt.try_open(roundtrip_open_key, roundtrip_ciphertext) {
+        Ok(plaintext) => testing.assert_eq_str(plaintext, "hew survives"),
+        Err(err) => panic(f"try_open unexpectedly failed: {encrypt.error_message(err)}"),
+    }
+    let tamper_seal_key = test_key();
+    let tamper_open_key = test_key();
+    let tamper_ciphertext = encrypt.seal(tamper_seal_key, "hew survives tamper");
+    let tampered = tamper_last_byte(tamper_ciphertext);
+    var survived = false;
+    match encrypt.try_open(tamper_open_key, tampered) {
+        Ok(_) => panic("try_open accepted tampered ciphertext"),
+        Err(err) => {
+            match err {
+                CryptoError::AuthFailed => {
+                    survived = true;
+                },
+                _ => panic(f"expected AuthFailed, got {encrypt.error_message(err)}"),
+            }
+        },
+    }
+    testing.assert_true(survived);
+    testing.assert_eq(40 + 2, 42);
+    println("encrypt.try_open oracle survived tamper");
+}

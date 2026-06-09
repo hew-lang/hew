@@ -1835,6 +1835,7 @@ dependencies = [
 name = "hew-std-crypto-encrypt"
 version = "0.5.0-pre"
 dependencies = [
+ "base64",
  "hew-cabi",
  "hew-runtime",
  "libc",

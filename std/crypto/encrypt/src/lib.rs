@@ -9,15 +9,13 @@
 
 extern crate hew_runtime;
 
-use hew_cabi::{
-    cabi::{cstr_to_str, str_to_malloc},
-    vec::{hwvec_to_u8, u8_to_hwvec, HewVec},
-};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use ring::{
     aead::{self, Aad, LessSafeKey, Nonce, UnboundKey},
     rand::{SecureRandom, SystemRandom},
 };
-use std::{ffi::c_char, ptr};
+use std::{cell::Cell, ffi::c_char, ptr};
 
 const AES_256_KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
@@ -29,6 +27,17 @@ const OPEN_FAILURE_MSG: &[u8] =
     b"encrypt.open failed: authentication failed or ciphertext was malformed\0";
 const OPEN_ALLOC_FAILURE_MSG: &[u8] = b"encrypt.open failed: native string allocation failed\0";
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HewEncryptError {
+    None = 0,
+    InvalidKey = 1,
+    ShortCiphertext = 2,
+    AuthFailed = 3,
+    InvalidUtf8 = 4,
+    AllocationFailure = 5,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EncryptError {
     InvalidKeyLength,
@@ -36,6 +45,36 @@ enum EncryptError {
     ShortCiphertext,
     AuthFailed,
     InvalidUtf8,
+}
+
+impl From<EncryptError> for HewEncryptError {
+    fn from(err: EncryptError) -> Self {
+        match err {
+            EncryptError::InvalidKeyLength => HewEncryptError::InvalidKey,
+            EncryptError::ShortCiphertext => HewEncryptError::ShortCiphertext,
+            EncryptError::AuthFailed | EncryptError::RngFailure => HewEncryptError::AuthFailed,
+            EncryptError::InvalidUtf8 => HewEncryptError::InvalidUtf8,
+        }
+    }
+}
+
+thread_local! {
+    static LAST_OPEN_ERROR: Cell<HewEncryptError> = const { Cell::new(HewEncryptError::None) };
+}
+
+fn set_last_open_error(err: HewEncryptError) {
+    LAST_OPEN_ERROR.with(|slot| slot.set(err));
+}
+
+fn last_open_error() -> HewEncryptError {
+    LAST_OPEN_ERROR.with(Cell::get)
+}
+
+unsafe fn write_encrypt_err_out(err_out: *mut HewEncryptError, err: HewEncryptError) {
+    if !err_out.is_null() {
+        // SAFETY: caller provided a valid out-pointer when non-null.
+        unsafe { *err_out = err };
+    }
 }
 
 fn panic_with_message(message: &'static [u8]) -> ! {
@@ -105,6 +144,27 @@ unsafe fn copy_bytes_to_out(out: *mut u8, out_len: usize, bytes: &[u8]) -> usize
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), out, required) };
     }
     required
+}
+
+unsafe fn bytes_parts_to_vec(ptr: *mut u8, offset: u32, len: u32) -> Option<Vec<u8>> {
+    let len = usize::try_from(len).ok()?;
+    if len == 0 {
+        return Some(Vec::new());
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    let offset = usize::try_from(offset).ok()?;
+    // SAFETY: caller guarantees the parts represent a valid Hew `bytes` value.
+    let ptr = unsafe { ptr.add(offset) };
+    // SAFETY: caller guarantees the active `bytes` region is valid for `len` bytes.
+    Some(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec())
+}
+
+/// Return the last `try_open` error observed through the Hew wrapper.
+#[no_mangle]
+pub extern "C" fn hew_encrypt_last_open_error_code() -> i32 {
+    last_open_error() as i32
 }
 
 /// Encrypt `plaintext` with AES-256-GCM, writing `nonce || ciphertext || tag`
@@ -180,59 +240,140 @@ pub unsafe extern "C" fn hew_encrypt_open(
     }
 }
 
-/// Hew-facing compatibility wrapper for [`hew_encrypt_seal`].
+/// Decrypt an AES-256-GCM `ciphertext` and return a malloc-owned plaintext.
 ///
-/// The returned `HewVec` is owned by the Hew caller and must follow the
-/// standard runtime vec drop path. No custom free entrypoint is introduced.
+/// Returns null on failure and writes a structured error discriminator to
+/// `err_out` when non-null.
 ///
 /// # Safety
 ///
-/// `key` must be a valid `bytes` `HewVec` and `plaintext` must be a valid
-/// NUL-terminated string pointer.
+/// - `key` must be valid for reading `key_len` bytes when non-null.
+/// - `ciphertext` must be valid for reading `ciphertext_len` bytes when non-null.
+/// - `err_out` must be valid for writing when non-null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_encrypt_seal_hew(
-    key: *mut HewVec,
-    plaintext: *const c_char,
-) -> *mut HewVec {
-    // SAFETY: Hew caller provides a valid bytes HewVec.
-    let key_bytes = unsafe { hwvec_to_u8(key) };
-    // SAFETY: arguments satisfy `hew_encrypt_seal`.
-    let required = unsafe {
-        hew_encrypt_seal(
-            key_bytes.as_ptr(),
-            key_bytes.len(),
-            plaintext,
-            ptr::null_mut(),
-            0,
-        )
-    };
-    if required == 0 {
-        panic_with_message(SEAL_FAILURE_MSG);
-    }
+pub unsafe extern "C" fn hew_encrypt_try_open(
+    key: *const u8,
+    key_len: usize,
+    ciphertext: *const u8,
+    ciphertext_len: usize,
+    err_out: *mut HewEncryptError,
+) -> *mut c_char {
+    // SAFETY: `err_out` is an optional caller-provided out-pointer.
+    unsafe { write_encrypt_err_out(err_out, HewEncryptError::None) };
 
-    let mut out = vec![0u8; required];
-    // SAFETY: `out` is allocated with the required capacity.
-    let written = unsafe {
-        hew_encrypt_seal(
-            key_bytes.as_ptr(),
-            key_bytes.len(),
-            plaintext,
-            out.as_mut_ptr(),
-            out.len(),
-        )
+    // SAFETY: validity is required by this function's FFI contract.
+    let Some(key_bytes) = (unsafe { input_bytes(key, key_len) }) else {
+        // SAFETY: `err_out` is an optional caller-provided out-pointer.
+        unsafe { write_encrypt_err_out(err_out, HewEncryptError::InvalidKey) };
+        return ptr::null_mut();
     };
-    if written != required {
-        panic_with_message(SEAL_FAILURE_MSG);
-    }
+    // SAFETY: validity is required by this function's FFI contract.
+    let Some(ciphertext_bytes) = (unsafe { input_bytes(ciphertext, ciphertext_len) }) else {
+        // SAFETY: `err_out` is an optional caller-provided out-pointer.
+        unsafe { write_encrypt_err_out(err_out, HewEncryptError::AuthFailed) };
+        return ptr::null_mut();
+    };
 
-    // SAFETY: `out` is a valid byte slice copied into the runtime-owned HewVec.
-    unsafe { u8_to_hwvec(&out) }
+    match open_impl(key_bytes, ciphertext_bytes) {
+        Ok(plaintext) => {
+            let ptr = str_to_malloc(&plaintext);
+            if ptr.is_null() {
+                // SAFETY: `err_out` is an optional caller-provided out-pointer.
+                unsafe { write_encrypt_err_out(err_out, HewEncryptError::AllocationFailure) };
+            }
+            ptr
+        }
+        Err(err) => {
+            // SAFETY: `err_out` is an optional caller-provided out-pointer.
+            unsafe { write_encrypt_err_out(err_out, err.into()) };
+            ptr::null_mut()
+        }
+    }
 }
 
-// JUSTIFIED: the public Hew API exposes `open(...) -> String` without a
-// structured error channel. This wrapper traps loudly on invalid key or
-// ciphertext instead of inventing a partial `last_error` protocol here;
-// a `try_open` surface is deferred by plan.
+/// Hew-facing seal wrapper that returns base64 text.
+///
+/// The Hew surface decodes this back to `bytes` using the canonical pure-Hew
+/// bytes builder, avoiding the platform-specific aggregate return ABI mismatch
+/// for module-level externs returning `bytes`.
+///
+/// # Safety
+///
+/// `key` must be a valid `bytes` value and `plaintext` must be a valid
+/// NUL-terminated string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_encrypt_seal_base64_hew(
+    key_ptr: *mut u8,
+    key_offset: u32,
+    key_len: u32,
+    plaintext: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Hew caller provides a valid bytes value.
+    let Some(key_bytes) = (unsafe { bytes_parts_to_vec(key_ptr, key_offset, key_len) }) else {
+        panic_with_message(SEAL_FAILURE_MSG);
+    };
+    // SAFETY: Hew caller provides a valid string pointer.
+    let Some(plaintext_str) = (unsafe { cstr_to_str(plaintext) }) else {
+        panic_with_message(SEAL_FAILURE_MSG);
+    };
+
+    let Ok(ciphertext) = seal_impl(&key_bytes, plaintext_str) else {
+        panic_with_message(SEAL_FAILURE_MSG);
+    };
+    let encoded = BASE64_STANDARD.encode(ciphertext);
+    let ptr = str_to_malloc(&encoded);
+    if ptr.is_null() {
+        panic_with_message(SEAL_FAILURE_MSG);
+    }
+    ptr
+}
+
+/// Hew-facing fallible wrapper for [`hew_encrypt_try_open`].
+///
+/// Authentication failure and malformed ciphertext return a null string pointer
+/// plus an error tag observable through [`hew_encrypt_last_open_error_code`];
+/// no process abort is triggered on the fallible path.
+///
+/// # Safety
+///
+/// `key` and `ciphertext` must be valid `bytes` values.
+#[no_mangle]
+pub unsafe extern "C" fn hew_encrypt_try_open_hew(
+    key_ptr: *mut u8,
+    key_offset: u32,
+    key_len: u32,
+    ciphertext_ptr: *mut u8,
+    ciphertext_offset: u32,
+    ciphertext_len: u32,
+) -> *mut c_char {
+    // SAFETY: Hew caller provides valid bytes values.
+    let Some(key_bytes) = (unsafe { bytes_parts_to_vec(key_ptr, key_offset, key_len) }) else {
+        set_last_open_error(HewEncryptError::InvalidKey);
+        return ptr::null_mut();
+    };
+    // SAFETY: Hew caller provides valid bytes values.
+    let Some(ciphertext_bytes) =
+        (unsafe { bytes_parts_to_vec(ciphertext_ptr, ciphertext_offset, ciphertext_len) })
+    else {
+        set_last_open_error(HewEncryptError::AuthFailed);
+        return ptr::null_mut();
+    };
+
+    let mut err = HewEncryptError::None;
+    // SAFETY: arguments satisfy the contract inherited from `hew_encrypt_try_open`.
+    let result = unsafe {
+        hew_encrypt_try_open(
+            key_bytes.as_ptr(),
+            key_bytes.len(),
+            ciphertext_bytes.as_ptr(),
+            ciphertext_bytes.len(),
+            &raw mut err,
+        )
+    };
+    set_last_open_error(err);
+    result
+}
+
 ///
 /// Hew-facing compatibility wrapper for [`hew_encrypt_open`].
 ///
@@ -242,60 +383,65 @@ pub unsafe extern "C" fn hew_encrypt_seal_hew(
 /// empty string on authentication failure.
 /// # Safety
 ///
-/// `key` and `ciphertext` must be valid `bytes` `HewVec` pointers.
+/// `key` and `ciphertext` must be valid `bytes` values.
 #[no_mangle]
 pub unsafe extern "C" fn hew_encrypt_open_hew(
-    key: *mut HewVec,
-    ciphertext: *mut HewVec,
+    key_ptr: *mut u8,
+    key_offset: u32,
+    key_len: u32,
+    ciphertext_ptr: *mut u8,
+    ciphertext_offset: u32,
+    ciphertext_len: u32,
 ) -> *mut c_char {
-    // SAFETY: Hew caller provides valid bytes HewVec pointers.
-    let key_bytes = unsafe { hwvec_to_u8(key) };
-    // SAFETY: Hew caller provides valid bytes HewVec pointers.
-    let ciphertext_bytes = unsafe { hwvec_to_u8(ciphertext) };
-    // SAFETY: arguments satisfy `hew_encrypt_open`.
-    let required = unsafe {
-        hew_encrypt_open(
-            key_bytes.as_ptr(),
-            key_bytes.len(),
-            ciphertext_bytes.as_ptr(),
-            ciphertext_bytes.len(),
-            ptr::null_mut(),
-            0,
+    // SAFETY: arguments satisfy `hew_encrypt_try_open_hew`.
+    let ptr = unsafe {
+        hew_encrypt_try_open_hew(
+            key_ptr,
+            key_offset,
+            key_len,
+            ciphertext_ptr,
+            ciphertext_offset,
+            ciphertext_len,
         )
     };
-    if required == 0 {
-        panic_with_message(OPEN_FAILURE_MSG);
+    match last_open_error() {
+        HewEncryptError::None if !ptr.is_null() => ptr,
+        HewEncryptError::AllocationFailure => panic_with_message(OPEN_ALLOC_FAILURE_MSG),
+        _ => panic_with_message(OPEN_FAILURE_MSG),
     }
+}
 
-    let mut out = vec![0u8; required];
-    // SAFETY: `out` is allocated with the required capacity.
-    let written = unsafe {
-        hew_encrypt_open(
-            key_bytes.as_ptr(),
-            key_bytes.len(),
-            ciphertext_bytes.as_ptr(),
-            ciphertext_bytes.len(),
-            out.as_mut_ptr(),
-            out.len(),
+/// Hew-facing explicit panicking wrapper for [`hew_encrypt_try_open_hew`].
+///
+/// # Safety
+///
+/// `key` and `ciphertext` must be valid `bytes` values.
+#[no_mangle]
+pub unsafe extern "C" fn hew_encrypt_must_open_hew(
+    key_ptr: *mut u8,
+    key_offset: u32,
+    key_len: u32,
+    ciphertext_ptr: *mut u8,
+    ciphertext_offset: u32,
+    ciphertext_len: u32,
+) -> *mut c_char {
+    // SAFETY: arguments satisfy `hew_encrypt_open_hew`.
+    unsafe {
+        hew_encrypt_open_hew(
+            key_ptr,
+            key_offset,
+            key_len,
+            ciphertext_ptr,
+            ciphertext_offset,
+            ciphertext_len,
         )
-    };
-    if written != required || out.last().copied() != Some(0) {
-        panic_with_message(OPEN_FAILURE_MSG);
     }
-
-    let Ok(plaintext) = std::str::from_utf8(&out[..out.len() - 1]) else {
-        panic_with_message(OPEN_FAILURE_MSG);
-    };
-    let ptr = str_to_malloc(plaintext);
-    if ptr.is_null() {
-        panic_with_message(OPEN_ALLOC_FAILURE_MSG);
-    }
-    ptr
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hew_cabi::cabi::free_cstring;
     use std::ffi::{CStr, CString};
 
     const TEST_KEY: [u8; AES_256_KEY_LEN] = [
@@ -341,6 +487,57 @@ mod tests {
     fn short_ciphertext_fails_without_ub() {
         let err = open_impl(&TEST_KEY, &[0x01, 0x02, 0x03]).expect_err("short input must fail");
         assert_eq!(err, EncryptError::ShortCiphertext);
+    }
+
+    #[test]
+    fn try_open_roundtrip_returns_plaintext() {
+        let ciphertext = seal_impl(&TEST_KEY, "hello").expect("seal should succeed");
+        let mut err = HewEncryptError::AuthFailed;
+        // SAFETY: pointers are valid for this test invocation.
+        let ptr = unsafe {
+            hew_encrypt_try_open(
+                TEST_KEY.as_ptr(),
+                TEST_KEY.len(),
+                ciphertext.as_ptr(),
+                ciphertext.len(),
+                &raw mut err,
+            )
+        };
+        assert_eq!(err, HewEncryptError::None);
+        assert!(!ptr.is_null());
+
+        // SAFETY: `ptr` is a non-null NUL-terminated C string allocated by the FFI.
+        let recovered = unsafe { CStr::from_ptr(ptr) }
+            .to_str()
+            .expect("plaintext must be UTF-8");
+        assert_eq!(recovered, "hello");
+        // SAFETY: `ptr` was allocated by `str_to_malloc` and is no longer used.
+        unsafe { free_cstring(ptr) };
+    }
+
+    #[test]
+    fn try_open_tampered_ciphertext_returns_err_without_aborting() {
+        let mut ciphertext = seal_impl(&TEST_KEY, "hello").expect("seal should succeed");
+        let last = ciphertext
+            .last_mut()
+            .expect("ciphertext must contain nonce and tag");
+        *last ^= 0x01;
+
+        let mut err = HewEncryptError::None;
+        // SAFETY: pointers are valid for this test invocation.
+        let ptr = unsafe {
+            hew_encrypt_try_open(
+                TEST_KEY.as_ptr(),
+                TEST_KEY.len(),
+                ciphertext.as_ptr(),
+                ciphertext.len(),
+                &raw mut err,
+            )
+        };
+
+        assert!(ptr.is_null());
+        assert_eq!(err, HewEncryptError::AuthFailed);
+        assert_eq!(2 + 2, 4, "process must continue after auth failure");
     }
 
     #[test]

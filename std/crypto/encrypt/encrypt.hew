@@ -10,31 +10,114 @@
 //! fn main() {
 //!     let key = crypto.random_bytes(32);
 //!     let ciphertext = encrypt.seal(key, "hello world");
-//!     let plaintext = encrypt.open(key, ciphertext);
-//!     println(plaintext);
+//!     match encrypt.try_open(key, ciphertext) {
+//!         Ok(plaintext) => println(plaintext),
+//!         Err(err) => println(encrypt.error_message(err)),
+//!     }
 //! }
 //! ```
+
+import std::encoding::base64;
+
+/// Structured errors returned by `try_open`.
+pub enum CryptoError {
+    /// No error was observed.
+    None;
+    /// The key input was not a valid AES-256 key.
+    InvalidKey;
+    /// The ciphertext was too short to contain a nonce and GCM tag.
+    ShortCiphertext;
+    /// AES-GCM authentication failed.
+    AuthFailed;
+    /// The decrypted plaintext was not valid UTF-8.
+    InvalidUtf8;
+    /// Native string allocation failed.
+    AllocationFailure;
+}
+
+fn crypto_error_from_i32(code: i32) -> CryptoError { // INTERNAL-ABI: C ABI error tag is i32 repr(C)
+    match code {
+        0 => CryptoError::None,
+        1 => CryptoError::InvalidKey,
+        2 => CryptoError::ShortCiphertext,
+        3 => CryptoError::AuthFailed,
+        4 => CryptoError::InvalidUtf8,
+        5 => CryptoError::AllocationFailure,
+        _ => CryptoError::AuthFailed,
+    }
+}
+
+/// Return a human-readable message for a [`CryptoError`].
+pub fn error_message(err: CryptoError) -> string {
+    match err {
+        CryptoError::None => "no error",
+        CryptoError::InvalidKey => "encrypt key must be 32 bytes",
+        CryptoError::ShortCiphertext => "encrypt ciphertext is too short",
+        CryptoError::AuthFailed => "encrypt authentication failed",
+        CryptoError::InvalidUtf8 => "encrypt plaintext was not valid UTF-8",
+        CryptoError::AllocationFailure => "encrypt native allocation failed",
+    }
+}
+
+/// Return the last `try_open` error observed on this thread.
+pub fn last_open_error() -> CryptoError {
+    crypto_error_from_i32(unsafe {
+        hew_encrypt_last_open_error_code()
+    })
+}
 
 /// Encrypt plaintext using AES-256-GCM with the given key.
 ///
 /// Returns the ciphertext (nonce + encrypted data) as bytes.
 pub fn seal(key: bytes, plaintext: string) -> bytes {
-    unsafe {
-        hew_encrypt_seal_hew(key, plaintext)
+    base64.decode(unsafe {
+        hew_encrypt_seal_base64_hew(key, plaintext)
+    })
+}
+
+/// Decrypt ciphertext using AES-256-GCM with the given key.
+///
+/// Returns `Err(CryptoError)` when the key or ciphertext is invalid, AES-GCM
+/// authentication fails, or the decrypted bytes are not valid UTF-8.
+pub fn try_open(key: bytes, ciphertext: bytes) -> Result<string, CryptoError> {
+    let plaintext = unsafe {
+        hew_encrypt_try_open_hew(key, ciphertext)
+    };
+    match last_open_error() {
+        CryptoError::None => Ok(plaintext),
+        err => Err(err),
     }
 }
 
 /// Decrypt ciphertext using AES-256-GCM with the given key.
 ///
-/// Returns the decrypted plaintext string.
+/// Panics on invalid input or authentication failure. Use `try_open` for
+/// structured error handling of attacker-controlled ciphertext.
 pub fn open(key: bytes, ciphertext: bytes) -> string {
+    match try_open(key, ciphertext) {
+        Ok(plaintext) => plaintext,
+        Err(err) => {
+            panic(f"encrypt.open failed: {error_message(err)}");
+            ""
+        },
+    }
+}
+
+/// Decrypt ciphertext and panic on failure.
+///
+/// Alias for `open`, provided for callers that prefer an explicit must-style
+/// name at the call site.
+pub fn must_open(key: bytes, ciphertext: bytes) -> string {
     unsafe {
-        hew_encrypt_open_hew(key, ciphertext)
+        hew_encrypt_must_open_hew(key, ciphertext)
     }
 }
 
 // -- FFI bindings --
 extern "C" {
-    fn hew_encrypt_seal_hew(key: bytes, plaintext: string) -> bytes;
+    fn hew_encrypt_seal_base64_hew(key: bytes, plaintext: string) -> string;
     fn hew_encrypt_open_hew(key: bytes, ciphertext: bytes) -> string;
+    fn hew_encrypt_try_open_hew(key: bytes, ciphertext: bytes) -> string;
+    fn hew_encrypt_must_open_hew(key: bytes, ciphertext: bytes) -> string;
+    fn hew_encrypt_last_open_error_code() -> i32;
 }

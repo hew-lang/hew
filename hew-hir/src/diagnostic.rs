@@ -36,12 +36,12 @@ impl HirDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirDiagnosticKind {
     /// A syntactic construct that is outside the current vertical slice.
-    /// The `construct` names the unsupported form; `slice_target` says which
+    /// The `construct` names the unsupported form; `owning_pass` says which
     /// slice is planned to add support.  Fail-closed: the driver must stop on
-    /// the first `CutoverUnsupported` diagnostic.
-    CutoverUnsupported {
+    /// the first `NotYetImplemented` diagnostic.
+    NotYetImplemented {
         construct: String,
-        slice_target: String,
+        owning_pass: String,
     },
     UnresolvedSymbol {
         name: String,

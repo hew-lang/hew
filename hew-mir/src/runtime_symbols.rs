@@ -54,7 +54,7 @@
 // < `hew_recv_half_*` < `hew_send_half_*`. Section comments mark
 // the substrate-grouping for readability; the binary-search
 // invariant is over the flat ordering.
-const M2_RUNTIME_SYMBOLS: &[&str] = &[
+const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // --- Actor cooperate/link/monitor surface -------------------------------
     "hew_actor_ask",
     // `hew_actor_ask_with_channel(actor, msg_type, data, size, ch) -> i32`
@@ -174,6 +174,8 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // result). Needed for `await task` (row 4).
     "hew_task_await_blocking",
     "hew_task_complete_threaded",
+    "hew_task_completion_observe",
+    "hew_task_completion_unobserve",
     // `hew_task_free(task: *mut HewTask) -> void`
     // (`hew-runtime/src/task_scope.rs:237`). Frees a Box-allocated HewTask
     // and its result buffer. Called by the scope teardown path and by the
@@ -253,7 +255,7 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
 /// is not in the M2 runtime-ABI allowlist.
 ///
 /// Carrying the rejected symbol string lets callers emit diagnostics that
-/// name the exact offender (`MirDiagnosticKind::CutoverUnsupported`,
+/// name the exact offender (`MirDiagnosticKind::NotYetImplemented`,
 /// codegen assertions, unit-test assertions).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownRuntimeSymbol(pub String);
@@ -263,7 +265,7 @@ impl std::fmt::Display for UnknownRuntimeSymbol {
         write!(
             f,
             "symbol `{}` is not in the M2 runtime-ABI allowlist \
-             (see `runtime_symbols::M2_RUNTIME_SYMBOLS`)",
+             (see `runtime_symbols::MIR_EMITTER_RUNTIME_SYMBOLS`)",
             self.0
         )
     }
@@ -271,17 +273,17 @@ impl std::fmt::Display for UnknownRuntimeSymbol {
 
 /// Return `true` if `symbol` is a recognised runtime-ABI entry
 /// `Instr::CallRuntimeAbi` may name. Binary search; the static
-/// list is sorted in `M2_RUNTIME_SYMBOLS`.
+/// list is sorted in `MIR_EMITTER_RUNTIME_SYMBOLS`.
 #[must_use]
 pub fn is_known_runtime_symbol(symbol: &str) -> bool {
-    M2_RUNTIME_SYMBOLS.binary_search(&symbol).is_ok()
+    MIR_EMITTER_RUNTIME_SYMBOLS.binary_search(&symbol).is_ok()
 }
 
 /// Borrow the full static allowlist. Useful for tests and dump
 /// surfaces that want to enumerate the recognised symbols.
 #[must_use]
 pub fn known_runtime_symbols() -> &'static [&'static str] {
-    M2_RUNTIME_SYMBOLS
+    MIR_EMITTER_RUNTIME_SYMBOLS
 }
 
 /// Map a user-facing builtin name to its C-ABI runtime symbol, if one
@@ -339,10 +341,10 @@ mod tests {
         // A future contributor adding an entry out of order would
         // silently break membership for some symbols; pin the
         // invariant.
-        for window in M2_RUNTIME_SYMBOLS.windows(2) {
+        for window in MIR_EMITTER_RUNTIME_SYMBOLS.windows(2) {
             assert!(
                 window[0] < window[1],
-                "M2_RUNTIME_SYMBOLS is not lexicographically sorted: \
+                "MIR_EMITTER_RUNTIME_SYMBOLS is not lexicographically sorted: \
                  {} >= {}",
                 window[0],
                 window[1],
@@ -353,7 +355,7 @@ mod tests {
     #[test]
     fn known_substrate_symbols_recognised() {
         // Every entry in the allowlist must round-trip.
-        for sym in M2_RUNTIME_SYMBOLS {
+        for sym in MIR_EMITTER_RUNTIME_SYMBOLS {
             assert!(
                 is_known_runtime_symbol(sym),
                 "allowlist entry {sym} should be recognised",

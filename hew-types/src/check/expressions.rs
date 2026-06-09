@@ -470,6 +470,40 @@ impl Checker {
                 }
                 ty
             }
+            UnaryOp::RawDeref => {
+                // Raw-pointer dereference is fail-closed.
+                //
+                // - Outside `unsafe { ... }` we emit
+                //   `UnsafeOperationRequiresBlock` so the user is told to
+                //   wrap the operation, matching the diagnostic that
+                //   extern fn calls already produce.
+                // - Inside `unsafe { ... }` we still reject with
+                //   `RawPointerOpNotLowered` because the compiler has no
+                //   HIR/MIR/codegen lowering for raw-pointer operations.
+                //   Envelope code: `E_M5_RAW_POINTER_OP_NOT_LOWERED`.
+                //
+                // We still synthesize the operand so a malformed
+                // sub-expression still produces a useful diagnostic.
+                let _ = self.synthesize(&operand.0, &operand.1);
+                if self.in_unsafe {
+                    self.report_error(
+                        TypeErrorKind::RawPointerOpNotLowered {
+                            operation: "raw pointer dereference".to_string(),
+                        },
+                        span,
+                        "raw pointer dereference is not lowered to HIR/MIR/codegen".to_string(),
+                    );
+                } else {
+                    self.report_error(
+                        TypeErrorKind::UnsafeOperationRequiresBlock {
+                            operation: "raw pointer dereference".to_string(),
+                        },
+                        span,
+                        "raw pointer dereference requires an `unsafe { ... }` block".to_string(),
+                    );
+                }
+                Ty::Error
+            }
         }
     }
 

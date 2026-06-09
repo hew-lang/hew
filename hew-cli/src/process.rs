@@ -1,12 +1,5 @@
 //! Bounded child-process execution helpers for native Hew binaries.
 
-#![allow(
-    dead_code,
-    reason = "the dispatcher short-circuits `hew run` with a cutover error before \
-              reaching this module; its helpers are dormant until the C++ codegen \
-              subtree is removed in a later stage of the v0.5 cutover"
-)]
-
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -247,9 +240,12 @@ impl BoundedChild {
         }
     }
 
-    /// Return the child's process ID.
-    pub(crate) fn id(&self) -> u32 {
-        self.child.id()
+    /// Wait without a deadline while preserving the same process-isolation
+    /// setup used by timed runs.
+    pub(crate) fn wait_unbounded(&mut self) -> Result<ExitStatus, String> {
+        self.child
+            .wait()
+            .map_err(|e| format!("cannot wait for child process: {e}"))
     }
 }
 
@@ -738,11 +734,14 @@ mod tests {
         let pid_file = dir.path().join("grandchild.pid");
         let pid_file_str = pid_file.to_str().unwrap();
 
-        // Shell script: start a grandchild sleep, record its PID, then spin.
+        // Shell script: start a grandchild sleep, record its PID, then wait.
+        // `wait` blocks with zero CPU until the backgrounded sleep exits (when
+        // killpg fires), avoiding CPU saturation that can delay the echo under
+        // nextest parallel load and cause the PID-file poll to time out.
         let script = dir.path().join("tree_spinner.sh");
         std::fs::write(
             &script,
-            format!("#!/bin/sh\nsleep 999 & echo $! > {pid_file_str}\nwhile true; do :; done\n"),
+            format!("#!/bin/sh\nsleep 999 & echo $! > {pid_file_str}\nwait\n"),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();

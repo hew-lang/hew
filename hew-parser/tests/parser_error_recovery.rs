@@ -233,7 +233,7 @@ fn left_arrow_cascade_is_suppressed() {
 }
 
 /// The legacy `spawn (params) => body` lambda-actor syntax was removed in v0.5.
-/// The parser now emits `E_LEGACY_SPAWN_LAMBDA_SYNTAX` with a fixit pointing
+/// The parser now emits `E_SPAWN_LAMBDA_SYNTAX_REMOVED` with a fixit pointing
 /// at `actor |params| { body }`.
 #[test]
 fn legacy_spawn_lambda_syntax_is_rejected() {
@@ -247,8 +247,8 @@ fn legacy_spawn_lambda_syntax_is_rejected() {
         result
             .errors
             .iter()
-            .any(|e| e.message.contains("E_LEGACY_SPAWN_LAMBDA_SYNTAX")),
-        "expected E_LEGACY_SPAWN_LAMBDA_SYNTAX in error messages, got: {:?}",
+            .any(|e| e.message.contains("E_SPAWN_LAMBDA_SYNTAX_REMOVED")),
+        "expected E_SPAWN_LAMBDA_SYNTAX_REMOVED in error messages, got: {:?}",
         result.errors
     );
 }

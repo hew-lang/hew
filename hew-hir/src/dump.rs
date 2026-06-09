@@ -630,6 +630,13 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
+        HirExprKind::MachineEmit { event_idx, fields } => {
+            writeln!(out, "{pad}  machine-emit event_idx={event_idx}").expect("write to string");
+            for (field_name, field_val) in fields {
+                writeln!(out, "{pad}    field {field_name}:").expect("write to string");
+                dump_expr(out, field_val, indent + 6);
+            }
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

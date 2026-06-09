@@ -159,6 +159,42 @@ pub unsafe extern "C" fn hew_reply(
     }
 }
 
+/// Mark a retained WASM reply-channel reference ready without depositing a payload.
+///
+/// WASM parity: this is the single-threaded counterpart of the native
+/// readiness-proxy ABI. It is callback-compatible with `void (*)(void*)`,
+/// consumes one retained producer/observer reference, and publishes no reply
+/// payload. If cancellation already won, it fail-closes by releasing the
+/// retained reference without marking the channel ready.
+///
+/// # Safety
+///
+/// `ch` must be either null or a retained `WasmReplyChannel*` reference. When
+/// non-null, this function consumes exactly one reference. It must be called
+/// at most once for that retained reference.
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
+    let ch = ch.cast::<WasmReplyChannel>();
+    if ch.is_null() {
+        return;
+    }
+
+    // SAFETY: caller provides a retained producer/observer reference; the
+    // function consumes it on both the cancellation and ready paths.
+    unsafe {
+        if (*ch).cancelled {
+            hew_reply_channel_free(ch);
+            return;
+        }
+        debug_assert!(
+            !(*ch).replied,
+            "WASM reply channels must not be signalled ready more than once"
+        );
+        (*ch).replied = true;
+        hew_reply_channel_free(ch);
+    }
+}
+
 /// Whether a reply has already been deposited on the channel.
 ///
 /// # Safety
@@ -532,6 +568,54 @@ mod tests {
 
             hew_reply_channel_free(ch);
         }
+    }
+
+    #[test]
+    fn signal_ready_marks_channel_ready_without_payload() {
+        let _guard = crate::runtime_test_guard();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: the test retains an observer-side reference that
+        // `hew_reply_channel_signal_ready` consumes, leaving the original
+        // waiter reference live for select/wait/free.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_signal_ready(ch.cast());
+
+            assert!(reply_ready(ch));
+            assert!(test_replied(ch));
+            let mut channels = [ch];
+            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), 0);
+            assert!(
+                reply_take(ch).is_null(),
+                "readiness proxy must not fabricate a reply payload"
+            );
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn signal_ready_after_cancel_consumes_observer_reference() {
+        let _guard = crate::runtime_test_guard();
+        let pre_new = active_channel_count();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: the retained observer reference keeps `ch` live after the
+        // waiter cancels and releases its own reference.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_cancel(ch);
+            hew_reply_channel_free(ch);
+            assert_eq!(active_channel_count(), pre_new + 1);
+
+            hew_reply_channel_signal_ready(ch.cast());
+        }
+
+        assert_eq!(
+            active_channel_count(),
+            pre_new,
+            "late readiness callback must release its retained channel reference"
+        );
     }
 
     // ── hew_reply_wait tests ────────────────────────────────────────────

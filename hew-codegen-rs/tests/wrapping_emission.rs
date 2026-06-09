@@ -43,7 +43,7 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         wasm: false,
     };
     let artefacts =
-        emit_module(&pipeline, &options).expect("B-4 wrapping pipeline must emit successfully");
+        emit_module(&pipeline, &options).expect("wrapping pipeline must emit successfully");
     let ll_path: &Path = artefacts
         .ll_path
         .as_deref()

@@ -1,0 +1,24 @@
+// Reject fixture: fork_multi_stmt — `fork { ... }` block body with multiple statements.
+//
+// The `fork { ... }` block form currently supports exactly one statement (a
+// single no-argument unit function call).  Two or more statements in the block
+// body fail closed in MIR lowering.
+//
+// This fixture pins the fail-closed boundary at:
+//   hew-mir/src/lower.rs:lower_fork_block_task (multi-statement guard)
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - E_NOT_YET_IMPLEMENTED
+//   - "fork block cancellation child"
+//   - "exactly one statement"
+
+fn _foo() {}
+fn _bar() {}
+
+fn main() -> i64 {
+    scope {
+        fork { _foo(); _bar(); }
+    };
+    0
+}

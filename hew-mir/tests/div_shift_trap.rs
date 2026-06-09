@@ -386,39 +386,39 @@ fn div_continuation_block_is_branch_else_target() {
 }
 
 // ---------------------------------------------------------------------------
-// isize / usize: shift emits CutoverUnsupported (platform-sized width unknown)
+// isize / usize: shift emits NotYetImplemented (platform-sized width unknown)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn shl_isize_emits_cutover_unsupported() {
+fn shl_isize_emits_not_yet_implemented() {
     let p = pipeline("fn main() -> isize { let a: isize = 1; let b: isize = 2; a << b }");
-    // Must have a CutoverUnsupported diagnostic — not a clean pipeline.
+    // Must have a NotYetImplemented diagnostic — not a clean pipeline.
     assert!(
         !p.diagnostics.is_empty(),
-        "shl on isize should emit a CutoverUnsupported diagnostic \
+        "shl on isize should emit a NotYetImplemented diagnostic \
          (platform-sized shift range not knowable at MIR time)"
     );
 }
 
 #[test]
-fn shr_usize_emits_cutover_unsupported() {
+fn shr_usize_emits_not_yet_implemented() {
     let p = pipeline("fn main() -> usize { let a: usize = 8; let b: usize = 1; a >> b }");
     assert!(
         !p.diagnostics.is_empty(),
-        "shr on usize should emit a CutoverUnsupported diagnostic"
+        "shr on usize should emit a NotYetImplemented diagnostic"
     );
 }
 
 // ---------------------------------------------------------------------------
-// isize: signed div emits CutoverUnsupported (MIN not knowable)
+// isize: signed div emits NotYetImplemented (MIN not knowable)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn div_isize_emits_cutover_unsupported() {
+fn div_isize_emits_not_yet_implemented() {
     let p = pipeline("fn main() -> isize { let a: isize = 10; let b: isize = 2; a / b }");
     assert!(
         !p.diagnostics.is_empty(),
-        "div on isize should emit a CutoverUnsupported diagnostic \
+        "div on isize should emit a NotYetImplemented diagnostic \
          (signed MIN/-1 check requires known bit-width)"
     );
 }

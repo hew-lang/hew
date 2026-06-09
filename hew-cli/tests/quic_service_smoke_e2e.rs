@@ -184,8 +184,8 @@ impl Drop for RunningChild {
     }
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn quic_service_example_round_trip_succeeds() {
     require_codegen();

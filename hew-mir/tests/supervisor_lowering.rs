@@ -8,7 +8,7 @@
 //!
 //! S-D.1 routing tests: `spawn Sup` in user code routes to a
 //! `Terminator::Call { App__bootstrap }` with a `LocalPid<Sup>`-typed
-//! destination, and init-args are rejected with `CutoverUnsupported`.
+//! destination, and init-args are rejected with `NotYetImplemented`.
 
 use std::collections::HashMap;
 
@@ -323,10 +323,10 @@ fn spawn_supervisor_routes_to_bootstrap_call_with_local_pid_return() {
     );
 }
 
-/// S-D.1 negative: `spawn App(x: 1)` emits `CutoverUnsupported` with the
+/// S-D.1 negative: `spawn App(x: 1)` emits `NotYetImplemented` with the
 /// "supervisor spawn with init args" construct string.
 #[test]
-fn spawn_supervisor_with_init_args_emits_cutover_unsupported() {
+fn spawn_supervisor_with_init_args_emits_not_yet_implemented() {
     // Build the pipeline without asserting HIR or MIR diagnostics clean —
     // the MIR diagnostic we want is exactly what this test asserts.
     let parsed = hew_parser::parse(
@@ -353,16 +353,16 @@ fn spawn_supervisor_with_init_args_emits_cutover_unsupported() {
     let hir = hew_hir::lower_program(&parsed.program, &tc_output, &hew_hir::ResolutionCtx);
     let pipeline = hew_mir::lower_hir_module(&hir.module);
 
-    let cutover = pipeline.diagnostics.iter().find(|d| {
+    let nyi_diag = pipeline.diagnostics.iter().find(|d| {
         matches!(
             &d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
                 if construct.contains("supervisor spawn with init args")
         )
     });
     assert!(
-        cutover.is_some(),
-        "expected CutoverUnsupported for supervisor spawn with init args; \
+        nyi_diag.is_some(),
+        "expected NotYetImplemented for supervisor spawn with init args; \
          got diagnostics: {:#?}",
         pipeline.diagnostics
     );

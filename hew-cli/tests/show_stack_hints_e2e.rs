@@ -183,8 +183,8 @@ fn show_stack_hints_check_failure_renders_span_diagnostics() {
 /// it calls `hew_compile::check_file` for hints first, then separately compiles
 /// and runs the artifact. Both steps must succeed and the two output streams
 /// must not interfere.
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// Disabled during v0.5 cutover: command execution is not yet routed through the Rust MIR/codegen-rs substrate.
+#[ignore = "v0.5: execution awaits Rust MIR/codegen-rs routing"]
 #[test]
 fn show_stack_hints_run_emits_hints_and_executes_program() {
     require_codegen();

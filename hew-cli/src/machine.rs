@@ -76,7 +76,7 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
 
     let lowered = lower_program(&result.program, &TypeCheckOutput::default(), &ResolutionCtx);
 
-    // Filter out CutoverUnsupported diagnostics from non-machine items —
+    // Filter out NotYetImplemented diagnostics from non-machine items —
     // Lane A only lowers machines; functions are also lowered if present.
     let machine_errors: Vec<_> = lowered
         .diagnostics
@@ -84,7 +84,7 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
         .filter(|d| {
             !matches!(
                 &d.kind,
-                HirDiagnosticKind::CutoverUnsupported { .. }
+                HirDiagnosticKind::NotYetImplemented { .. }
                     | HirDiagnosticKind::UnresolvedSymbol { .. }
                     | HirDiagnosticKind::ImportMissing { .. }
             )
@@ -223,6 +223,19 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
 // ── HIR-backed renderers (used when --check is active) ──────────────────────
 
 fn print_mermaid_hir(machine: &HirMachineDecl) {
+    // Mermaid YAML frontmatter title carries the generic-params signature
+    // when present (e.g. `Lifecycle<T>`). Omitted entirely for monomorphic
+    // machines so existing snapshot tests and consumer pipelines are
+    // unaffected.
+    if !machine.type_params.is_empty() {
+        println!("---");
+        println!(
+            "title: {}<{}>",
+            machine.name,
+            machine.type_params.join(", ")
+        );
+        println!("---");
+    }
     println!("stateDiagram-v2");
 
     if let Some(first) = machine.states.first() {

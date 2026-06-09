@@ -11,13 +11,6 @@
 //! state (prior items and bindings) plus the new input, runs the in-process
 //! compile pipeline to produce a native binary, and captures its stdout output.
 
-#![allow(
-    dead_code,
-    reason = "the dispatcher short-circuits `hew eval` with a cutover error before \
-              reaching this module; its internals are dormant until the C++ codegen \
-              subtree is removed in a later stage of the v0.5 cutover"
-)]
-
 pub mod classify;
 pub mod repl;
 pub mod session;

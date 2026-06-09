@@ -257,6 +257,12 @@ pub struct HirMachineDecl {
     pub id: ItemId,
     pub node: HirNodeId,
     pub name: String,
+    /// Generic type parameters declared on the machine (e.g. `Lifecycle<T>`).
+    ///
+    /// Names only — see `MachineDecl::type_params`. Threaded verbatim from
+    /// the parser AST; subsequent layers (type checker, MIR, codegen) are
+    /// responsible for interpreting these names.
+    pub type_params: Vec<String>,
     pub states: Vec<HirMachineState>,
     pub events: Vec<HirMachineEvent>,
     pub transitions: Vec<HirMachineTransition>,
@@ -283,6 +289,17 @@ pub struct HirMachineState {
     /// Field names written by the `exit` block, each paired with the span of
     /// the specific `self.field = ...` assignment.
     pub exit_writes: Vec<(String, Span)>,
+    /// Best-effort lowered `entry { ... }` block, populated when the source
+    /// state carries an entry block. Slice 1 substrate — downstream consumers
+    /// (MIR/codegen) are wired in later slices. Constructs that depend on
+    /// later-slice HIR forms (e.g. `emit`, `this`, bare state-name expressions)
+    /// lower to `HirExprKind::Unsupported` placeholders; the canonical
+    /// machine-body diagnostics still come from the AST-walking summary checks
+    /// driven by `entry_writes` / `body_emits`.
+    pub entry: Option<HirBlock>,
+    /// Best-effort lowered `exit { ... }` block. See `entry` for the
+    /// best-effort lowering contract.
+    pub exit: Option<HirBlock>,
     pub span: Span,
 }
 
@@ -311,6 +328,12 @@ pub struct HirMachineTransition {
     pub body_writes: Vec<String>,
     /// Event names emitted directly from the transition body (used for emit-cycle checking).
     pub body_emits: Vec<String>,
+    /// Lowered transition body. Constructs that depend on later-slice HIR
+    /// forms (notably `Expr::This` and bare state-name references) lower to
+    /// `HirExprKind::Unsupported` placeholders. `emit` expressions lower to
+    /// `HirExprKind::MachineEmit` (Slice 2). Downstream MIR/codegen consumers
+    /// are wired in later slices.
+    pub body: HirExpr,
     pub span: Span,
 }
 
@@ -556,7 +579,7 @@ pub enum HirExprKind {
     ///
     /// MIR lowering (slice A-7) will emit the field-read instruction. For
     /// A-6 the MIR producer walks the `object` sub-expression for
-    /// checker-stream coverage and defers via `CutoverUnsupported`.
+    /// checker-stream coverage and defers via `NotYetImplemented`.
     FieldAccess {
         object: Box<HirExpr>,
         field: String,
@@ -755,6 +778,22 @@ pub enum HirExprKind {
         slot: u32,
         args: Vec<HirExpr>,
         ret_ty: ResolvedTy,
+    },
+    /// `emit EventName { field: value, ... }` inside a machine transition body,
+    /// entry block, or exit block.
+    ///
+    /// `event_idx` is the zero-based index of the emitted event in the enclosing
+    /// machine's event list (`HirMachineDecl::events`). Resolved at HIR lowering
+    /// time from the `Expr::MachineEmit { event_name }` surface form; an unknown
+    /// event name emits `UnresolvedSymbol` and the HIR body is not produced.
+    ///
+    /// `fields` are the named field initialisers for the event payload. Unit
+    /// events (no declared fields) have an empty `fields` vec.
+    ///
+    /// MIR/codegen consumers: wired in Lane B Slices 4b and 7.
+    MachineEmit {
+        event_idx: usize,
+        fields: Vec<(String, HirExpr)>,
     },
     Unsupported(String),
 }

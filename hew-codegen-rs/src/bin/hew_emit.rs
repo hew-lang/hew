@@ -1,4 +1,4 @@
-//! `hew-emit-v05` — out-of-process LLVM object emitter for the v0.5 backend.
+//! `hew-emit` — out-of-process LLVM object emitter for the backend.
 //!
 //! ## Why a separate process
 //!
@@ -24,12 +24,12 @@
 //! ## Protocol
 //!
 //! ```text
-//! hew-emit-v05 --triple <triple> --in <input.ll> --out <output.o>
+//! hew-emit --triple <triple> --in <input.ll> --out <output.o>
 //! ```
 //!
 //! Exit 0 on success. On failure: a one-line error to stderr and a non-zero
 //! exit code. The CLI surfaces stderr verbatim under its
-//! `E_CUTOVER_UNSUPPORTED` channel so the original LLVM message reaches the
+//! `E_NOT_YET_IMPLEMENTED` channel so the original LLVM message reaches the
 //! user.
 
 use std::path::PathBuf;
@@ -55,7 +55,7 @@ fn parse_args() -> Result<(String, PathBuf, PathBuf), String> {
                 out_path = Some(PathBuf::from(args.next().ok_or("missing value for --out")?))
             }
             "-h" | "--help" => {
-                eprintln!("usage: hew-emit-v05 --triple <T> --in <path.ll> --out <path.o>");
+                eprintln!("usage: hew-emit --triple <T> --in <path.ll> --out <path.o>");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument: {other}")),
@@ -112,7 +112,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("hew-emit-v05: {e}");
+            eprintln!("hew-emit: {e}");
             ExitCode::FAILURE
         }
     }

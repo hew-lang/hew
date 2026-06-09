@@ -1,0 +1,23 @@
+// Reject fixture: scope_deadline_body — non-empty `after(duration) { ... }` body.
+//
+// The `after(duration) { ... }` deadline clause inside a `scope {}` body
+// currently only supports empty bodies.  A non-empty body fails closed in MIR
+// lowering.  This is the fail-closed boundary until select/arm dispatch lands.
+//
+// This fixture pins the fail-closed boundary at:
+//   hew-mir/src/lower.rs:lower_scope_deadline (non-empty body guard)
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - E_NOT_YET_IMPLEMENTED
+//   - "scope deadline body"
+//   - "non-empty timeout bodies remain fail-closed"
+
+fn _cleanup() {}
+
+fn main() -> i64 {
+    scope {
+        after(5s) { _cleanup(); }
+    };
+    0
+}

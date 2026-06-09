@@ -26,6 +26,7 @@ fn make_machine(
     MachineDecl {
         visibility: Visibility::Pub,
         name: name.to_string(),
+        type_params: vec![],
         has_default: false,
         states,
         events,

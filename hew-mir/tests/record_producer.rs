@@ -75,14 +75,14 @@ fn struct_init_emits_record_init_with_two_fields() {
              0
          }",
     );
-    // `CutoverUnsupported` for the Point type is expected from existing MIR
+    // `NotYetImplemented` for the Point type is expected from existing MIR
     // slice limitations. We assert only that no such diagnostic was produced
     // *by our new code* (i.e., no "not registered in field-order table" error).
     let unexpected: Vec<_> = pl
         .diagnostics
         .iter()
         .filter(|d| {
-            matches!(&d.kind, MirDiagnosticKind::CutoverUnsupported { construct, .. }
+            matches!(&d.kind, MirDiagnosticKind::NotYetImplemented { construct, .. }
                 if construct.contains("not registered in field-order table"))
         })
         .collect();
@@ -132,7 +132,7 @@ fn field_access_emits_record_field_load_at_correct_offset() {
         .diagnostics
         .iter()
         .filter(|d| {
-            matches!(&d.kind, MirDiagnosticKind::CutoverUnsupported { construct, .. }
+            matches!(&d.kind, MirDiagnosticKind::NotYetImplemented { construct, .. }
                 if construct.contains("not registered in field-order table")
                     || construct.contains("unknown field"))
         })
@@ -179,7 +179,7 @@ fn struct_init_functional_update_loads_base_fields_and_emits_record_init() {
         .diagnostics
         .iter()
         .filter(|d| {
-            matches!(&d.kind, MirDiagnosticKind::CutoverUnsupported { construct, .. }
+            matches!(&d.kind, MirDiagnosticKind::NotYetImplemented { construct, .. }
                 if construct.contains("not registered in field-order table")
                     || construct.contains("missing field"))
         })

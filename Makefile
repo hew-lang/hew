@@ -87,7 +87,7 @@ NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES)
 SANITIZER_RUST_TARGET ?= x86_64-unknown-linux-gnu
 RUNTIME_ASAN_TARGET_DIR := target/sanitizer-runtime-asan
 RUNTIME_TSAN_TARGET_DIR := target/sanitizer-runtime-tsan
-FUZZ_TARGETS := fuzz_parse fuzz_lex fuzz_structured fuzz_machine fuzz_check fuzz_mir fuzz_msgpack
+FUZZ_TARGETS := fuzz_parse fuzz_lex fuzz_structured fuzz_machine fuzz_check fuzz_mir
 FUZZ_SMOKE_SECONDS ?= 45
 
 # ── Default target ──────────────────────────────────────────────────────────
@@ -97,11 +97,11 @@ all: hew adze runtime stdlib assemble
 # ── Rust targets ────────────────────────────────────────────────────────────
 
 # Build the hew compiler driver (debug).
-# hew-emit-v05 is the out-of-process LLVM object emitter required by
+# hew-emit is the out-of-process LLVM object emitter required by
 # `hew compile`; it must sit alongside the hew binary at runtime.
 hew:
 	cargo build -p hew-cli
-	cargo build -p hew-codegen-rs --bin hew-emit-v05
+	cargo build -p hew-codegen-rs --bin hew-emit
 
 # Build the adze package manager (debug)
 adze:
@@ -319,7 +319,7 @@ endif
 release:
 	$(RELEASE_PREP)
 	$(RELEASE_ENV) cargo build -p hew-cli --release
-	$(RELEASE_ENV) cargo build -p hew-codegen-rs --bin hew-emit-v05 --release
+	$(RELEASE_ENV) cargo build -p hew-codegen-rs --bin hew-emit --release
 	$(RELEASE_ENV) cargo build -p adze-cli --release
 	$(RELEASE_ENV) cargo build -p hew-lib --release
 	$(RELEASE_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release

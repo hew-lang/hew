@@ -1,0 +1,10 @@
+type Pair(i32, i32);
+
+fn record_tuple_probe() -> i32 {
+    7
+}
+
+fn record_tuple_literal() -> i32 {
+    let tuple = Pair(record_tuple_probe(), 3);
+    record_tuple_probe()
+}

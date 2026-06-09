@@ -4,22 +4,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HEW="${ROOT}/target/debug/hew"
 
-# hew-emit-v05 is the out-of-process object emitter required by `hew compile`.
+# hew-emit is the out-of-process object emitter required by `hew compile`.
 # libhew.a is the combined runtime+stdlib static library linked into native outputs.
-cargo build -q -p hew-codegen-rs --bin hew-emit-v05
+cargo build -q -p hew-codegen-rs --bin hew-emit
 cargo build -q -p hew-lib
 cargo build -q -p hew-cli
 
 mkdir -p "${ROOT}/.tmp"
-accept_output="${ROOT}/.tmp/v05-vertical-slice-accept-output.txt"
-reject_output="${ROOT}/.tmp/v05-vertical-slice-reject-output.txt"
-stdout_output="${ROOT}/.tmp/v05-vertical-slice.stdout"
-stderr_output="${ROOT}/.tmp/v05-vertical-slice.stderr"
+accept_output="${ROOT}/.tmp/vertical-slice-accept-output.txt"
+reject_output="${ROOT}/.tmp/vertical-slice-reject-output.txt"
+stdout_output="${ROOT}/.tmp/vertical-slice.stdout"
+stderr_output="${ROOT}/.tmp/vertical-slice.stderr"
 trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}"' EXIT
 
 compile_accept() {
   local fixture="$1"
-  "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1
+  "${HEW}" compile "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1
 }
 
 run_accept_expect_status() {
@@ -45,16 +45,16 @@ run_accept_expect_status() {
 run_accept_expect_stdout() {
   local fixture="$1"
   run_accept_expect_status "${fixture}" 0
-  diff -u "${ROOT}/tests/v05-vertical-slice/accept/${fixture}.expected" "${stdout_output}"
+  diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
 }
 
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/string_return.hew" >"${accept_output}"
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/string_return.hew" >"${accept_output}"
 grep -q 'return_ty: String' "${accept_output}"
 
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/01-arith.hew" >"${accept_output}"
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/01-arith.hew" >"${accept_output}"
 grep -q 'return_ty: I64' "${accept_output}"
 
-"${HEW}" compile "${ROOT}/tests/v05-vertical-slice/accept/arith_call.hew" >"${accept_output}" 2>&1
+"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/arith_call.hew" >"${accept_output}" 2>&1
 arith_bin="${ROOT}/.tmp/compile-out/arith_call"
 if "${arith_bin}" >>"${accept_output}" 2>&1; then
   arith_status=0
@@ -67,12 +67,12 @@ if [[ "${arith_status}" -ne 5 ]]; then
   exit 1
 fi
 
-"${HEW}" compile "${ROOT}/tests/v05-vertical-slice/accept/hello_println.hew" >"${accept_output}" 2>&1
+"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/hello_println.hew" >"${accept_output}" 2>&1
 hello_println_bin="${ROOT}/.tmp/compile-out/hello_println"
 hello_stdout="${ROOT}/.tmp/hello_println.stdout"
 trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${hello_stdout}"' EXIT
 "${hello_println_bin}" >"${hello_stdout}"
-diff -u "${ROOT}/tests/v05-vertical-slice/accept/hello_println.expected" "${hello_stdout}"
+diff -u "${ROOT}/tests/vertical-slice/accept/hello_println.expected" "${hello_stdout}"
 
 run_accept_expect_status "assert" 0
 run_accept_expect_status "assert_eq" 0
@@ -148,7 +148,7 @@ run_accept_expect_status "on_crash_info_code" 42
 #   2. Binary exits 42, proving codegen routed the spawn through
 #      hew_actor_spawn_opts (arena_cap_bytes=65536) without breaking
 #      actor functionality.
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/actor_max_heap_basic.hew" >"${accept_output}" 2>&1
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/actor_max_heap_basic.hew" >"${accept_output}" 2>&1
 grep -q 'max_heap_bytes: Some(' "${accept_output}"
 grep -q '65536' "${accept_output}"
 run_accept_expect_status "actor_max_heap_basic" 42
@@ -160,7 +160,7 @@ run_accept_expect_status "actor_max_heap_basic" 42
 #      codegen emitted it into HewChildSpec.arena_cap_bytes.
 #   2. Binary exits 42, proving the supervisor bootstrap path is
 #      unaffected.
-"${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/supervisor_max_heap.hew" >"${accept_output}" 2>&1
+"${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/supervisor_max_heap.hew" >"${accept_output}" 2>&1
 grep -q 'max_heap_bytes: Some(' "${accept_output}"
 grep -q '131072' "${accept_output}"
 run_accept_expect_status "supervisor_max_heap" 42
@@ -168,7 +168,7 @@ run_accept_expect_status "supervisor_max_heap" 42
 # Reject: accessing a non-existent child name on a supervisor LHS.
 # `app.w2` does not exist — App declares only `w1`.  The checker emits
 # UndefinedField with a fuzzy suggestion for `w1`.
-if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/supervisor_unknown_child.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/supervisor_unknown_child.hew" >"${reject_output}" 2>&1; then
   echo "expected supervisor-unknown-child fixture to fail" >&2
   exit 1
 fi
@@ -178,7 +178,7 @@ grep -q 'w1' "${reject_output}"
 # Reject: field access on a plain actor LocalPid, not a supervisor.
 # `w.child` on LocalPid<Worker> — the checker emits UndefinedField because
 # LocalPid has no user-visible fields and is not in the supervisor_children map.
-if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/supervisor_child_on_plain_actor.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/supervisor_child_on_plain_actor.hew" >"${reject_output}" 2>&1; then
   echo "expected supervisor-child-on-plain-actor fixture to fail" >&2
   exit 1
 fi
@@ -194,31 +194,31 @@ grep -q 'panic fixture' "${stderr_output}"
 
 run_accept_expect_status "directory_module_call" 7
 
-if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved symbol fixture to fail" >&2
   exit 1
 fi
 grep -q 'undefined variable' "${reject_output}"
 
-if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
   echo "expected use-after-consume fixture to fail" >&2
   exit 1
 fi
 grep -q 'UseAfterConsume' "${reject_output}"
 
-if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_inference.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unresolved_inference.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved-inference fixture to fail" >&2
   exit 1
 fi
 grep -q 'UnresolvedInferenceVar' "${reject_output}"
 
-if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_type.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unknown_named_type.hew" >"${reject_output}" 2>&1; then
   echo "expected unknown-named-type fixture to fail" >&2
   exit 1
 fi
 grep -q 'UnknownType' "${reject_output}"
 
-if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_tuple_type.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unknown_named_tuple_type.hew" >"${reject_output}" 2>&1; then
   echo "expected unknown-named-tuple-type fixture to fail" >&2
   exit 1
 fi
@@ -228,7 +228,7 @@ if grep -q 'panicked at' "${reject_output}"; then
   exit 1
 fi
 
-if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_array_type.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unknown_named_array_type.hew" >"${reject_output}" 2>&1; then
   echo "expected unknown-named-array-type fixture to fail" >&2
   exit 1
 fi
@@ -243,23 +243,23 @@ fi
 # path does not yet support actor expressions (slice 4 concern).
 
 # Accept: tell-shaped lambda actor call dispatch.
-"${HEW}" check "${ROOT}/tests/v05-vertical-slice/accept/lambda_callable_tell.hew"
+"${HEW}" check "${ROOT}/tests/vertical-slice/accept/lambda_callable_tell.hew"
 
 # Accept: ask-shaped lambda actor call dispatch.
-"${HEW}" check "${ROOT}/tests/v05-vertical-slice/accept/lambda_callable_ask.hew"
+"${HEW}" check "${ROOT}/tests/vertical-slice/accept/lambda_callable_ask.hew"
 
 # Accept: lambda actor recursive self-call via let-binding name (§5.9 ratification 2).
-"${HEW}" check "${ROOT}/tests/v05-vertical-slice/accept/lambda_self_recursion.hew"
+"${HEW}" check "${ROOT}/tests/vertical-slice/accept/lambda_self_recursion.hew"
 
 # Reject: non-Send message type (E_DUPLEX_NON_SEND).
-if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/duplex_non_send.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/duplex_non_send.hew" >"${reject_output}" 2>&1; then
   echo "expected duplex-non-send fixture to fail" >&2
   exit 1
 fi
 grep -q 'E_DUPLEX_NON_SEND' "${reject_output}"
 
 # Reject: removed <- operator (E_OPERATOR_REMOVED).
-if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/lambda_arrow_operator.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_arrow_operator.hew" >"${reject_output}" 2>&1; then
   echo "expected lambda-arrow-operator fixture to fail" >&2
   exit 1
 fi
@@ -269,44 +269,109 @@ grep -q 'E_OPERATOR_REMOVED' "${reject_output}"
 # Lambda-actor handles are Duplex<Msg, Reply> underneath; `.send()` routes to
 # hew_duplex_send, the same symbol as call-syntax.  The old reject/lambda_method_send.hew
 # file is kept for reference but now passes hew check.
-if ! "${HEW}" check "${ROOT}/tests/v05-vertical-slice/accept/lambda_method_send.hew" >"${reject_output}" 2>&1; then
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/lambda_method_send.hew" >"${reject_output}" 2>&1; then
   echo "expected lambda-method-send fixture to pass; got:" >&2
   cat "${reject_output}" >&2
   exit 1
 fi
 
 # Reject: ask-shaped actor body return type mismatch (E_LAMBDA_RETURN_TYPE_MISMATCH).
-if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/lambda_return_mismatch.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_return_mismatch.hew" >"${reject_output}" 2>&1; then
   echo "expected lambda-return-mismatch fixture to fail" >&2
   exit 1
 fi
 grep -q 'E_LAMBDA_RETURN_TYPE_MISMATCH' "${reject_output}"
 
 # Reject: actor body returns Duplex handle (E_LAMBDA_SELF_ESCAPE).
-if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/lambda_self_escape.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_self_escape.hew" >"${reject_output}" 2>&1; then
   echo "expected lambda-self-escape fixture to fail" >&2
   exit 1
 fi
 grep -q 'E_LAMBDA_SELF_ESCAPE' "${reject_output}"
 
-# Reject: removed spawn-lambda syntax (E_LEGACY_SPAWN_LAMBDA_SYNTAX).
-if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/spawn_lambda_legacy.hew" >"${reject_output}" 2>&1; then
-  echo "expected spawn-lambda-legacy fixture to fail" >&2
+# Reject: removed spawn-lambda syntax (E_SPAWN_LAMBDA_SYNTAX_REMOVED).
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/spawn_lambda_removed.hew" >"${reject_output}" 2>&1; then
+  echo "expected spawn-lambda-removed fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_LEGACY_SPAWN_LAMBDA_SYNTAX' "${reject_output}"
+grep -q 'E_SPAWN_LAMBDA_SYNTAX_REMOVED' "${reject_output}"
 
-# Reject: link/monitor/unlink pending Cluster 2 composite-return spine.
+# Reject: link/monitor/unlink pending cluster-runtime composite-return spine.
 # Runtime symbols (hew_actor_link, hew_actor_monitor) and codegen arms exist,
-# but Result<(),LinkError> / MonitorRef construction requires Cluster 2.
-# The diagnostic must be CutoverUnsupported with slice_target "Cluster-2",
+# but Result<(),LinkError> / MonitorRef construction requires cluster-runtime.
+# The diagnostic must be NotYetImplemented with owning_pass "cluster-runtime",
 # NOT UnresolvedSymbol (which would look like a user typo).
-if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/link_monitor_pending_cluster2.hew" >"${reject_output}" 2>&1; then
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/link_monitor_pending_cluster2.hew" >"${reject_output}" 2>&1; then
   echo "expected link/monitor fixture to fail" >&2
   exit 1
 fi
-grep -q 'CutoverUnsupported' "${reject_output}"
-grep -q 'Cluster-2' "${reject_output}"
+grep -q 'NotYetImplemented' "${reject_output}"
+grep -q 'cluster-runtime' "${reject_output}"
 # The verifier emits a secondary UnresolvedSymbol for the unresolved callee
 # (consistent with all unresolved-builtin-callee paths); the primary and
-# informative diagnostic is CutoverUnsupported — verified above.
+# informative diagnostic is NotYetImplemented — verified above.
+
+# ---------------------------------------------------------------------------
+# scope{} / fork — fail-closed surface pins
+# ---------------------------------------------------------------------------
+
+# Reject: `fork name = expr` outside any scope{} body.
+# The type checker rejects this before HIR lowering — the construct is
+# parser-only in the current build.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/fork_outside_scope.hew" >"${reject_output}" 2>&1; then
+  echo "expected fork-outside-scope fixture to fail" >&2
+  exit 1
+fi
+grep -qF 'parser-only in this build' "${reject_output}"
+
+# Reject: removed `scope |s| { s.launch / s.spawn / s.cancel }` surface.
+# Pins LESSONS row reject-scope-fork-collapse: the handle-based scope API was
+# removed; the parser emits a targeted diagnostic directing users to the new
+# `scope { fork name = call(...); }` form.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/scope_handle_legacy_launch.hew" >"${reject_output}" 2>&1; then
+  echo "expected scope-handle-legacy-launch fixture to fail" >&2
+  exit 1
+fi
+grep -qF "scope |s| { s.launch / s.spawn / s.cancel }' has been removed" "${reject_output}"
+
+# Reject: fork-spawned callee returns a non-Unit value (here i64).
+# Pins the fail-closed boundary at hew-mir/src/lower.rs direct_no_arg_unit_callee gate.
+# Moves to accept/ when S2 lands value-bearing task propagation.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_non_unit_return.hew" >"${reject_output}" 2>&1; then
+  echo "expected fork-non-unit-return fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'spawned call' "${reject_output}"
+grep -qF 'no-argument functions returning unit' "${reject_output}"
+
+# Reject: fork-spawned callee takes arguments.
+# Same gate as fork_non_unit_return; pins the no-args boundary.
+# Moves to accept/ when S5 lands argument-bearing fork callees.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_with_args.hew" >"${reject_output}" 2>&1; then
+  echo "expected fork-with-args fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'spawned call' "${reject_output}"
+grep -qF 'no-argument functions returning unit' "${reject_output}"
+
+# Reject: `fork { ... }` block with multiple statements.
+# Pins the fail-closed boundary at hew-mir/src/lower.rs:lower_fork_block_task.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_multi_stmt.hew" >"${reject_output}" 2>&1; then
+  echo "expected fork-multi-stmt fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'fork block cancellation child' "${reject_output}"
+grep -qF 'exactly one statement' "${reject_output}"
+
+# Reject: `after(duration) { ... }` with a non-empty timeout body.
+# Pins the fail-closed boundary at hew-mir/src/lower.rs:lower_scope_deadline.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/scope_deadline_body.hew" >"${reject_output}" 2>&1; then
+  echo "expected scope-deadline-body fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'scope deadline body' "${reject_output}"
+grep -qF 'non-empty timeout bodies remain fail-closed' "${reject_output}"

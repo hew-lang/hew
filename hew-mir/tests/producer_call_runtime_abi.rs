@@ -34,7 +34,7 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
     // HIR may emit diagnostics for constructs outside the E1 bridge subset
-    // (e.g. CutoverUnsupported for features not yet wired). Filter-assert
+    // (e.g. NotYetImplemented for features not yet wired). Filter-assert
     // that only the expected kinds appear rather than asserting empty.
     let output = lower_program(&parsed.program, &tc_output, &ResolutionCtx);
     lower_hir_module(&output.module)
@@ -254,7 +254,7 @@ fn duplex_pair_no_move_of_duplex_handle() {
 // ---------------------------------------------------------------------------
 
 /// `hew_duplex_pair` is in the allowlist, so it must not produce a
-/// `CutoverUnsupported` MIR diagnostic about an unrecognised runtime symbol.
+/// `NotYetImplemented` MIR diagnostic about an unrecognised runtime symbol.
 /// This is distinct from the construction-side allowlist test in
 /// `runtime_abi_instr.rs` — here we exercise the allowlist via the
 /// full producer path.
@@ -273,7 +273,7 @@ fn duplex_pair_symbol_is_on_allowlist_no_unsupported_diagnostic() {
         .diagnostics
         .iter()
         .filter(|d| {
-            if let hew_mir::MirDiagnosticKind::CutoverUnsupported { construct, .. } = &d.kind {
+            if let hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. } = &d.kind {
                 construct.contains("unrecognised") || construct.contains("runtime symbol")
             } else {
                 false
@@ -283,6 +283,6 @@ fn duplex_pair_symbol_is_on_allowlist_no_unsupported_diagnostic() {
 
     assert!(
         bad.is_empty(),
-        "no CutoverUnsupported for unknown runtime symbol expected; got: {bad:?}"
+        "no NotYetImplemented for unknown runtime symbol expected; got: {bad:?}"
     );
 }

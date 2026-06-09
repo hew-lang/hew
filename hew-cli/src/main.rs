@@ -3,13 +3,13 @@
 //! ```text
 //! hew compile file.hew [--emit-dir DIR] [--dump-mir raw|elab] [--target wasm32-unknown-unknown]
 //!                                  # Run the v0.5 IR ladder and emit native or WASM
-//! hew run file.hew [-- args...]    # Compile and run
-//! hew debug file.hew [-- args...]  # Build with debug info + launch gdb/lldb
+//! hew run file.hew [-- args...]    # Compile through v0.5 native codegen and execute
+//! hew debug file.hew [-- args...]  # Compile through v0.5 native codegen and launch a debugger
 //! hew check file.hew               # Parse + typecheck only
 //! hew watch file_or_dir [options]  # Watch for changes and re-check
-//! hew eval                         # Interactive REPL
-//! hew eval "<expression>"          # Evaluate expression
-//! hew eval -f file.hew             # Execute file in REPL context
+//! hew eval                         # Interactive eval through the v0.5 native path
+//! hew eval "<expression>"          # Evaluate through the v0.5 native path
+//! hew eval -f file.hew             # Evaluate a file through the v0.5 native path
 //! hew wire check file.hew --against baseline.hew
 //!                                  # Validate wire compatibility
 //! hew fmt file.hew                 # Format source file in-place
@@ -20,25 +20,6 @@
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
 //! ```
-
-// Force Cargo to include hew-runtime's rlib archive members in the final link
-// step.  Without this, Cargo excludes the rlib because hew-cli has no
-// direct Rust-level call sites into hew-runtime — `extern "C"` declarations
-// alone do not count as usage.  `extern crate X as _` is the standard Rust
-// idiom for pulling in a dep's rlib without binding its name.
-//
-// The anchor static below (from runtime_export.rs) then holds a reference to
-// every kStableJitHostSymbols address, preventing LTO/DCE from discarding the
-// archive members after lazy resolution.
-#[cfg(hew_embedded_codegen)]
-extern crate hew_runtime as _;
-
-// Include the build-time generated anchor module that keeps every
-// kStableJitHostSymbols entry alive through LTO so dlsym can resolve them at
-// JIT session startup.  Only emitted when the embedded LLVM/MLIR codegen
-// backend is present (hew_embedded_codegen cfg).
-#[cfg(hew_embedded_codegen)]
-include!(concat!(env!("OUT_DIR"), "/runtime_export.rs"));
 
 mod args;
 mod compile;
@@ -107,7 +88,7 @@ fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "E_MIR_CHECK",
-        hew_mir::MirDiagnosticKind::CutoverUnsupported { .. } => "E_CUTOVER_UNSUPPORTED",
+        hew_mir::MirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { .. }
@@ -185,7 +166,7 @@ fn lower_file_to_mir(
     Ok(pipeline)
 }
 
-fn emit_v05_module(
+fn emit_module(
     pipeline: &hew_mir::IrPipeline,
     module_name: &str,
     emit_dir: &Path,
@@ -213,7 +194,7 @@ fn emit_v05_module(
             Err(())
         }
         Err(e) => {
-            eprintln!("E_CUTOVER_UNSUPPORTED: {e}");
+            eprintln!("E_NOT_YET_IMPLEMENTED: {e}");
             Err(())
         }
     }
@@ -241,11 +222,95 @@ pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(),
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("module");
-    let artefacts = emit_v05_module(&pipeline, module_name, emit_dir, CompileEmitTarget::Native)?;
+    let artefacts = emit_module(&pipeline, module_name, emit_dir, CompileEmitTarget::Native)?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
-        eprintln!("E_CUTOVER_UNSUPPORTED: native codegen did not produce an object");
+        eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
     })?;
     link_native_object(obj, bin_path)
+}
+
+pub(crate) fn compile_native_from_program(
+    program: hew_parser::ast::Program,
+    source: &str,
+    source_label: &str,
+    output_path: &Path,
+    options: &compile::CompileOptions,
+) -> Result<(), ()> {
+    let target = target::TargetSpec::from_requested(options.target.as_deref()).map_err(|e| {
+        eprintln!("Error: {e}");
+    })?;
+    let frontend_options = compile::frontend_options(&target, options);
+    let state = hew_compile::run_program_frontend_to_typecheck(
+        program,
+        source,
+        source_label,
+        &frontend_options,
+    )
+    .map_err(|failure| {
+        compile::render_frontend_diagnostics(&failure.diagnostics);
+        if failure.diagnostics.is_empty() {
+            eprintln!("Error: {}", failure.message);
+        }
+    })?;
+    compile::render_frontend_diagnostics(&state.diagnostics);
+
+    let tco = state.typecheck_result.tco.ok_or_else(|| {
+        eprintln!(
+            "error: eval compilation requires a type-checked program; \
+             this path should be unreachable (no_typecheck = false)"
+        );
+    })?;
+
+    let lower_output = hew_hir::lower_program(&state.program, &tco, &hew_hir::ResolutionCtx);
+    let mut hir_diagnostics = lower_output.diagnostics;
+    hir_diagnostics.extend(hew_hir::verify_hir(&lower_output.module));
+    if !hir_diagnostics.is_empty() {
+        for diagnostic in hir_diagnostics {
+            eprintln!("{diagnostic:?}");
+        }
+        return Err(());
+    }
+
+    let pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    if !pipeline.diagnostics.is_empty() {
+        for diagnostic in &pipeline.diagnostics {
+            eprintln!("{} {diagnostic:?}", diagnostic_prefix(&diagnostic.kind));
+        }
+        return Err(());
+    }
+
+    let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
+    let module_name = output_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("module");
+    let emit_target = if target.is_wasm() {
+        CompileEmitTarget::Wasm
+    } else {
+        if !target.can_link_with_host_tools() {
+            eprintln!("{}", target.unsupported_native_link_error());
+            return Err(());
+        }
+        CompileEmitTarget::Native
+    };
+    let artefacts = emit_module(&pipeline, module_name, emit_dir, emit_target)?;
+
+    match emit_target {
+        CompileEmitTarget::Native => {
+            let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
+                eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
+            })?;
+            link_native_object(obj, output_path)
+        }
+        CompileEmitTarget::Wasm => {
+            if artefacts.wasm_path.is_some() {
+                Ok(())
+            } else {
+                eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce a module");
+                Err(())
+            }
+        }
+    }
 }
 
 fn cmd_compile(a: &args::CompileArgs) {
@@ -296,7 +361,7 @@ fn cmd_compile(a: &args::CompileArgs) {
 
     let emit_target = resolve_compile_emit_target(a.target.as_deref());
     let artefacts =
-        emit_v05_module(&pipeline, module_name, emit_dir, emit_target).unwrap_or_else(|()| {
+        emit_module(&pipeline, module_name, emit_dir, emit_target).unwrap_or_else(|()| {
             std::process::exit(1);
         });
 
@@ -343,6 +408,14 @@ fn compile_temp_debug_artifact(
     compile_temp_artifact(input, create_debug_temp_artifact(target), options)
 }
 
+fn compile_temp_run_artifact(
+    input: &str,
+    options: &compile::CompileOptions,
+    target: &target::ExecutionTarget,
+) -> CompiledTempExecutable {
+    compile_temp_artifact(input, create_run_temp_artifact(target), options)
+}
+
 fn compile_temp_artifact(
     input: &str,
     artifact: CompiledTempExecutable,
@@ -371,6 +444,104 @@ fn create_debug_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempE
         path,
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     }
+}
+
+fn create_run_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExecutable {
+    let tmp_dir = tempfile::tempdir().unwrap_or_else(|e| {
+        eprintln!("Error: cannot create temp dir: {e}");
+        std::process::exit(1);
+    });
+    let path = tmp_dir
+        .path()
+        .join(format!("hew_run_bin{}", target.executable_suffix()));
+
+    CompiledTempExecutable {
+        path,
+        _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
+    }
+}
+
+fn cmd_run(a: &args::RunArgs) {
+    let input = a.input.display().to_string();
+    let options = a.to_compile_options();
+    let target = resolve_run_target(options.target.as_deref());
+    let timeout = a.timeout.as_deref().map(|raw| {
+        crate::util::parse_timeout(raw).unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        })
+    });
+    let artifact = compile_temp_run_artifact(&input, &options, &target);
+
+    let mut command = std::process::Command::new(artifact.path());
+    command.args(&a.program_args);
+    if a.profile && std::env::var_os("HEW_PPROF").is_none() {
+        command.env("HEW_PPROF", default_profile_endpoint());
+    }
+
+    let mut child = match crate::process::BoundedChild::spawn(&mut command) {
+        Ok(child) => child,
+        Err(e) => {
+            drop(artifact);
+            eprintln!("Error: cannot launch {input}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let status = match timeout {
+        Some(timeout) => match child.wait_with_timeout(timeout) {
+            Ok(crate::process::ChildWaitOutcome::Exited(status)) => status,
+            Ok(crate::process::ChildWaitOutcome::Timeout) => {
+                drop(artifact);
+                eprintln!(
+                    "Error: program timed out after {}",
+                    crate::process::format_timeout(timeout)
+                );
+                std::process::exit(124);
+            }
+            Err(e) => {
+                drop(artifact);
+                eprintln!("Error: cannot wait for {input}: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => match child.wait_unbounded() {
+            Ok(status) => status,
+            Err(e) => {
+                drop(artifact);
+                eprintln!("Error: cannot wait for {input}: {e}");
+                std::process::exit(1);
+            }
+        },
+    };
+
+    drop(artifact);
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+fn default_profile_endpoint() -> &'static str {
+    #[cfg(unix)]
+    {
+        "auto"
+    }
+    #[cfg(not(unix))]
+    {
+        ":6060"
+    }
+}
+
+fn resolve_run_target(requested: Option<&str>) -> target::ExecutionTarget {
+    let target = target::ExecutionTarget::from_requested(requested).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
+
+    if !target.can_run_on_host() {
+        eprintln!("{}", target.cross_target_run_error("run"));
+        std::process::exit(1);
+    }
+
+    target
 }
 
 fn cmd_check(a: &args::CheckArgs) {
@@ -436,13 +607,20 @@ fn cmd_check(a: &args::CheckArgs) {
     }
 }
 
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn cmd_debug(a: &args::DebugArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
     let target = resolve_debug_target(options.target.as_deref());
     let artifact = compile_temp_debug_artifact(&input, &options, &target);
-    let (debugger, debugger_args) = resolve_debugger_invocation(artifact.path(), &a.program_args);
+    let (debugger, debugger_args) =
+        match resolve_debugger_invocation(artifact.path(), &a.program_args) {
+            Ok(invocation) => invocation,
+            Err(message) => {
+                drop(artifact);
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        };
 
     eprintln!("Launching {debugger} with debug build of {input}...");
     exit_after_debugger_run(&debugger, &debugger_args, artifact);
@@ -465,7 +643,7 @@ fn resolve_debug_target(requested: Option<&str>) -> target::ExecutionTarget {
 fn resolve_debugger_invocation(
     program_path: &Path,
     program_args: &[String],
-) -> (String, Vec<String>) {
+) -> Result<(String, Vec<String>), String> {
     let program = program_path.display().to_string();
 
     if which_exists("gdb") {
@@ -479,7 +657,7 @@ fn resolve_debugger_invocation(
         gdb_args.push("--args".to_string());
         gdb_args.push(program);
         gdb_args.extend(program_args.iter().cloned());
-        ("gdb".to_string(), gdb_args)
+        Ok(("gdb".to_string(), gdb_args))
     } else if which_exists("lldb") {
         let lldb_script = find_debug_script("hew_lldb.py");
         let mut lldb_args = Vec::new();
@@ -490,10 +668,9 @@ fn resolve_debugger_invocation(
         lldb_args.push("--".to_string());
         lldb_args.push(program);
         lldb_args.extend(program_args.iter().cloned());
-        ("lldb".to_string(), lldb_args)
+        Ok(("lldb".to_string(), lldb_args))
     } else {
-        eprintln!("Error: no debugger found. Install gdb or lldb.");
-        std::process::exit(1);
+        Err("Error: no debugger found. Install gdb or lldb.".to_string())
     }
 }
 

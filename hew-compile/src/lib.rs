@@ -1598,6 +1598,17 @@ pub struct FileFrontendState {
     pub source: String,
 }
 
+#[allow(
+    missing_debug_implementations,
+    reason = "transient pipeline value; Debug not required by any current consumer"
+)]
+pub struct ProgramFrontendState {
+    pub program: Program,
+    pub diagnostics: Vec<FrontendDiagnostic>,
+    pub typecheck_result: TypeCheckResult,
+    pub source: String,
+}
+
 /// Shared frontend driver for on-disk source files.
 ///
 /// Runs load → parse → import-resolution → type-check and returns the
@@ -1647,6 +1658,54 @@ pub fn run_file_frontend_to_typecheck(
         diagnostics,
         typecheck_result,
         source: project.source,
+    })
+}
+
+/// Shared frontend driver for already-parsed in-memory programs.
+///
+/// Runs import-resolution → type-check and returns the resolved program plus
+/// checker output so non-msgpack backends can lower through HIR/MIR without
+/// duplicating the frontend pipeline.
+///
+/// # Errors
+///
+/// Returns [`FrontendFailure`] when manifest loading, import resolution, or
+/// type-checking fails.
+pub fn run_program_frontend_to_typecheck(
+    mut program: Program,
+    source: &str,
+    source_label: &str,
+    options: &FrontendOptions,
+) -> Result<ProgramFrontendState, FrontendFailure> {
+    let project = project_context_for_program(source, options)?;
+    let mut diagnostics = Vec::new();
+
+    if let Err(failure) = resolve_imports_internal(
+        &mut program,
+        source,
+        source_label,
+        &project,
+        options,
+        &mut diagnostics,
+    ) {
+        return Err(merge_prior_diagnostics(diagnostics, failure));
+    }
+
+    let typecheck_result =
+        match typecheck_program_with_diagnostics(&program, source, source_label, options) {
+            Ok((result, type_diagnostics)) => {
+                diagnostics.extend(type_diagnostics);
+                result
+            }
+            Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
+        };
+
+    let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
+    Ok(ProgramFrontendState {
+        program,
+        diagnostics,
+        typecheck_result,
+        source: source.to_string(),
     })
 }
 

@@ -472,10 +472,7 @@ mod tests {
 
     #[test]
     fn concurrent_producers() {
-        // Wrapper to send raw pointers across threads.
-        struct SendPtr(*mut MpscNode);
-        // SAFETY: Each pointer is exclusively owned by one producer thread.
-        unsafe impl Send for SendPtr {}
+        use crate::send_ptr::SendPtr;
 
         const NUM_PRODUCERS: usize = 8;
         const PER_PRODUCER: usize = 5_000;
@@ -493,13 +490,19 @@ mod tests {
         let mut handles = Vec::new();
         for chunk in all_nodes.chunks(PER_PRODUCER) {
             let q = Arc::clone(&q);
-            let ptrs: Vec<SendPtr> = chunk
+            let ptrs: Vec<SendPtr<MpscNode>> = chunk
                 .iter()
-                .map(|&p| SendPtr(p.cast::<MpscNode>()))
+                .map(|&p| {
+                    // SAFETY: Each pointer is exclusively owned by one
+                    // producer thread; no other thread has a reference to
+                    // the node until it is pushed onto the queue.
+                    unsafe { SendPtr::new(p.cast::<MpscNode>()) }
+                })
                 .collect();
 
             handles.push(thread::spawn(move || {
-                for SendPtr(node) in ptrs {
+                for sp in ptrs {
+                    let node = sp.as_ptr();
                     // SAFETY: push is safe for concurrent producers.
                     unsafe {
                         q.inner.push(node);

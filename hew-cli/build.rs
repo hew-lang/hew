@@ -5,15 +5,9 @@ const UNKNOWN_GIT_METADATA: &str = "unknown";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    // `hew_embedded_codegen` was set when the C++/MLIR codegen subtree was
-    // present and built via cmake from this build script. The subtree has
-    // been retired; the cfg is permanently unset, and the gated code paths
-    // in `compile.rs`, `jit/mod.rs`, `target.rs`, and `main.rs` fall back
-    // to the existing "embedded MLIR/LLVM codegen is unavailable" stubs.
-    // The check-cfg declaration is kept so future re-introductions or
-    // accidental `cfg(hew_embedded_codegen)` usage do not trip an unknown
-    // cfg warning under `-D warnings`.
-    println!("cargo:rustc-check-cfg=cfg(hew_embedded_codegen)");
+    // The retired C++/MLIR codegen subtree is no longer a selectable build
+    // substrate.  Keep this build script focused on version metadata only; the
+    // active compiler path is the Rust MIR/codegen-rs pipeline.
 
     let repo_dir = Path::new("..");
     emit_git_metadata(repo_dir);

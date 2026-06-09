@@ -990,6 +990,16 @@ impl<'a> Formatter<'a> {
         self.write_visibility(decl.visibility);
         self.write("machine ");
         self.write(&decl.name);
+        if !decl.type_params.is_empty() {
+            self.write("<");
+            for (i, name) in decl.type_params.iter().enumerate() {
+                if i > 0 {
+                    self.write(", ");
+                }
+                self.write(name);
+            }
+            self.write(">");
+        }
         self.write(" {\n");
         self.indent += 1;
 
@@ -1362,10 +1372,7 @@ impl<'a> Formatter<'a> {
                 is_mutable,
                 pointee,
             } => {
-                self.write("*");
-                if *is_mutable {
-                    self.write("var ");
-                }
+                self.write(if *is_mutable { "*mut " } else { "*const " });
                 self.format_type_expr(&pointee.0);
             }
             TypeExpr::TraitObject(bounds) => {
@@ -1943,6 +1950,7 @@ impl<'a> Formatter<'a> {
                     UnaryOp::Not => self.write("!"),
                     UnaryOp::Negate => self.write("-"),
                     UnaryOp::BitNot => self.write("~"),
+                    UnaryOp::RawDeref => self.write("*"),
                 }
                 let needs_parens = matches!(operand.0, Expr::Binary { .. });
                 if needs_parens {

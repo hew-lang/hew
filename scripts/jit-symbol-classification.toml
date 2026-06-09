@@ -421,6 +421,7 @@ stable = [
   "hew_reply_channel_free",
   "hew_reply_channel_new",
   "hew_reply_channel_retain",
+  "hew_reply_channel_signal_ready",
   "hew_reply_wait",
   "hew_reply_wait_timeout",
   "hew_result_err",
@@ -570,6 +571,8 @@ stable = [
   "hew_supervisor_wait_restart",
   "hew_task_await_blocking",
   "hew_task_complete_threaded",
+  "hew_task_completion_observe",
+  "hew_task_completion_unobserve",
   "hew_task_free",
   "hew_task_get_env",
   "hew_task_get_error",
@@ -755,6 +758,7 @@ codegen-stable = [
   "hew_require_execution_context",
   "hew_sched_init",
   "hew_task_scope_set_current",
+  "hew_wasm_register_actor_meta",
 ]
 
 # jit: internal — lifecycle, session/global-state, scheduler shutdown/reset/

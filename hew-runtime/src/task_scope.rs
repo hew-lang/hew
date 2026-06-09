@@ -298,11 +298,25 @@ struct HewTaskScopeDeadline {
     next: *mut HewTaskScopeDeadline,
 }
 
+type TaskCompletionCallback = unsafe extern "C" fn(*mut c_void);
+
+#[derive(Debug, Clone, Copy)]
+struct TaskDoneObserver {
+    callback: TaskCompletionCallback,
+    ctx: usize,
+}
+
+#[derive(Debug)]
+struct TaskDoneState {
+    done: bool,
+    observers: Vec<TaskDoneObserver>,
+}
+
 /// Thread-safe signal for task completion notification.
 #[derive(Debug)]
 pub struct TaskDoneSignal {
-    /// Guards the `done` flag.
-    lock: Mutex<bool>,
+    /// Guards completion state and one-shot observers.
+    lock: Mutex<TaskDoneState>,
     /// Notified when the task completes.
     cond: Condvar,
 }
@@ -310,21 +324,74 @@ pub struct TaskDoneSignal {
 impl TaskDoneSignal {
     fn new() -> Self {
         Self {
-            lock: Mutex::new(false),
+            lock: Mutex::new(TaskDoneState {
+                done: false,
+                observers: Vec::new(),
+            }),
             cond: Condvar::new(),
         }
     }
 
     fn notify_done(&self) {
-        let mut done = self.lock.lock_or_recover();
-        *done = true;
+        let observers = {
+            let mut state = self.lock.lock_or_recover();
+            if state.done {
+                Vec::new()
+            } else {
+                state.done = true;
+                std::mem::take(&mut state.observers)
+            }
+        };
+        self.cond.notify_all();
+        for observer in observers {
+            // SAFETY: `hew_task_completion_observe` accepts only non-null C ABI
+            // callbacks; callback-specific context validity is part of that
+            // callback's contract with its registrant.
+            unsafe { (observer.callback)(observer.ctx as *mut c_void) };
+        }
+    }
+
+    fn notify_waiters(&self) {
         self.cond.notify_all();
     }
 
+    fn observe(&self, callback: TaskCompletionCallback, ctx: *mut c_void) {
+        let fire_now = {
+            let mut state = self.lock.lock_or_recover();
+            if state.done {
+                true
+            } else {
+                state.observers.push(TaskDoneObserver {
+                    callback,
+                    ctx: ctx as usize,
+                });
+                false
+            }
+        };
+        if fire_now {
+            // SAFETY: see the deferred-callback invocation above.
+            unsafe { callback(ctx) };
+        }
+    }
+
+    fn unobserve(&self, callback: TaskCompletionCallback, ctx: *mut c_void) -> bool {
+        let mut state = self.lock.lock_or_recover();
+        if state.done {
+            return false;
+        }
+        let Some(pos) = state.observers.iter().position(|observer| {
+            observer.callback as usize == callback as usize && observer.ctx == ctx as usize
+        }) else {
+            return false;
+        };
+        state.observers.swap_remove(pos);
+        true
+    }
+
     fn wait_until_done(&self) {
-        let mut done = self.lock.lock_or_recover();
-        while !*done {
-            done = self.cond.wait_or_recover(done);
+        let mut state = self.lock.lock_or_recover();
+        while !state.done {
+            state = self.cond.wait_or_recover(state);
         }
     }
 
@@ -381,6 +448,12 @@ impl HewTask {
     fn notify_done_signal(&self) {
         if let Some(ref signal) = self.done_signal {
             signal.notify_done();
+        }
+    }
+
+    fn notify_done_waiters(&self) {
+        if let Some(ref signal) = self.done_signal {
+            signal.notify_waiters();
         }
     }
 
@@ -536,6 +609,80 @@ pub unsafe extern "C" fn hew_task_get_result(task: *mut HewTask) -> *mut c_void 
         return ptr::null_mut();
     }
     t.result
+}
+
+/// Register a one-shot callback fired when `task` reaches `Done`.
+///
+/// The callback is invoked outside the task completion lock. If the task is
+/// already done, the callback fires synchronously before this function returns.
+///
+/// # Safety
+///
+/// - `scope` must be a valid pointer returned by [`hew_task_scope_new`].
+/// - `task` must be a valid task pointer owned by `scope`.
+/// - `cb` must be a valid C ABI function pointer when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_completion_observe(
+    scope: *mut HewTaskScope,
+    task: *mut HewTask,
+    cb: Option<TaskCompletionCallback>,
+    ctx: *mut c_void,
+) -> i32 {
+    if scope.is_null() || task.is_null() {
+        crate::set_last_error("C-ABI guard failed: scope.is_null() || task.is_null()");
+        return -1;
+    }
+    let Some(callback) = cb else {
+        crate::set_last_error("C-ABI guard failed: cb.is_none()");
+        return -1;
+    };
+    // SAFETY: caller guarantees `task` is a live task owned by `scope`; null was
+    // rejected above. The scope pointer is part of the FFI contract and is not
+    // dereferenced here beyond the null guard.
+    let t = unsafe { &mut *task };
+    if t.load_state() == HewTaskState::Done {
+        // SAFETY: callback validity was checked above; context validity is the
+        // registrant/callback contract.
+        unsafe { callback(ctx) };
+        return 0;
+    }
+    let signal = t
+        .done_signal
+        .get_or_insert_with(|| Arc::new(TaskDoneSignal::new()));
+    signal.observe(callback, ctx);
+    0
+}
+
+/// Remove a previously registered task-completion observer.
+///
+/// # Safety
+///
+/// `task` must be a live task allocated by this runtime and owned by `scope`.
+/// `cb` and `ctx` must match the observer registration being removed; `ctx` is
+/// not dereferenced by this function.
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_completion_unobserve(
+    scope: *mut HewTaskScope,
+    task: *mut HewTask,
+    cb: Option<TaskCompletionCallback>,
+    ctx: *mut c_void,
+) -> i32 {
+    if scope.is_null() || task.is_null() {
+        crate::set_last_error("C-ABI guard failed: scope.is_null() || task.is_null()");
+        return -1;
+    }
+    let Some(callback) = cb else {
+        crate::set_last_error("C-ABI guard failed: cb.is_none()");
+        return -1;
+    };
+    // SAFETY: caller guarantees `task` is a live task owned by `scope`; null was
+    // rejected above. The scope pointer is part of the FFI contract and is not
+    // dereferenced here beyond the null guard.
+    let t = unsafe { &mut *task };
+    let Some(signal) = t.done_signal.as_ref() else {
+        return 0;
+    };
+    i32::from(signal.unobserve(callback, ctx))
 }
 
 /// Set the task's result by deep-copying `result`.
@@ -1176,10 +1323,8 @@ pub unsafe extern "C" fn hew_task_scope_cancel_after_ns(
 /// (`hew_task_scope_cancel`). Per-task cancel must not flip the scope flag.
 ///
 /// There is no observable cooperative-cancel flag on `HewTask` today; the
-/// `Running` branch notifies `done_signal` so any parked waiter is woken to
-/// re-check `Done` state. When the multiplex-await primitive
-/// (completion-observer / park / resume) lands, that branch will also set a
-/// task-level cancel flag that the worker checks at its next safepoint.
+/// `Running` branch notifies `done_signal` waiters so any parked waiter is woken
+/// to re-check `Done` state.
 ///
 /// # Safety
 ///
@@ -1231,7 +1376,7 @@ pub unsafe extern "C" fn hew_task_scope_cancel_one(
             // Best-effort cooperative cancel: wake any parked waiter so it
             // can observe the Done transition once the worker finishes its
             // quantum. Does not force completion.
-            t.notify_done_signal();
+            t.notify_done_waiters();
         }
         HewTaskState::Done => {
             // Already terminal; no-op.
@@ -2540,6 +2685,261 @@ mod tests {
         }
     }
 
+    extern "C" fn increment_observer(ctx: *mut c_void) {
+        // SAFETY: tests pass a live `AtomicUsize` pointer as callback context.
+        unsafe { (&*(ctx.cast::<AtomicUsize>())).fetch_add(1, Ordering::SeqCst) };
+    }
+
+    #[test]
+    fn completion_observe_ready_task_fires_on_done() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            let hits = AtomicUsize::new(0);
+
+            assert_eq!(
+                hew_task_completion_observe(
+                    scope,
+                    task,
+                    Some(increment_observer),
+                    (&raw const hits).cast_mut().cast(),
+                ),
+                0
+            );
+            assert_eq!(hits.load(Ordering::SeqCst), 0);
+            hew_task_scope_complete_task(scope, task);
+            assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn completion_observe_suspended_task_fires_on_done() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            (*task).store_state(HewTaskState::Suspended, Ordering::Relaxed);
+            let hits = AtomicUsize::new(0);
+
+            assert_eq!(
+                hew_task_completion_observe(
+                    scope,
+                    task,
+                    Some(increment_observer),
+                    (&raw const hits).cast_mut().cast(),
+                ),
+                0
+            );
+            hew_task_scope_complete_task(scope, task);
+            assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn completion_observe_running_task_fires_on_done() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            (*task).store_state(HewTaskState::Running, Ordering::Relaxed);
+            let hits = AtomicUsize::new(0);
+
+            assert_eq!(
+                hew_task_completion_observe(
+                    scope,
+                    task,
+                    Some(increment_observer),
+                    (&raw const hits).cast_mut().cast(),
+                ),
+                0
+            );
+            hew_task_complete_threaded(task);
+            assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn completion_observe_after_done_fires_synchronously() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            hew_task_scope_complete_task(scope, task);
+            let hits = AtomicUsize::new(0);
+
+            assert_eq!(
+                hew_task_completion_observe(
+                    scope,
+                    task,
+                    Some(increment_observer),
+                    (&raw const hits).cast_mut().cast(),
+                ),
+                0
+            );
+            assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn completion_observe_null_guards_return_minus_one() {
+        // SAFETY: null inputs are passed deliberately to verify C ABI sentinels.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            let hits = AtomicUsize::new(0);
+
+            assert_eq!(
+                hew_task_completion_observe(
+                    ptr::null_mut(),
+                    task,
+                    Some(increment_observer),
+                    (&raw const hits).cast_mut().cast(),
+                ),
+                -1
+            );
+            assert_eq!(
+                hew_task_completion_observe(
+                    scope,
+                    ptr::null_mut(),
+                    Some(increment_observer),
+                    (&raw const hits).cast_mut().cast(),
+                ),
+                -1
+            );
+            assert_eq!(
+                hew_task_completion_observe(scope, task, None, (&raw const hits).cast_mut().cast()),
+                -1
+            );
+            assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    static COMPLETION_OBSERVE_ORDER: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+    extern "C" fn record_observer_one(_: *mut c_void) {
+        COMPLETION_OBSERVE_ORDER.lock_or_recover().push(1);
+    }
+
+    extern "C" fn record_observer_two(_: *mut c_void) {
+        COMPLETION_OBSERVE_ORDER.lock_or_recover().push(2);
+    }
+
+    #[test]
+    fn completion_observe_two_observers_fire_in_registration_order() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            COMPLETION_OBSERVE_ORDER.lock_or_recover().clear();
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+
+            assert_eq!(
+                hew_task_completion_observe(
+                    scope,
+                    task,
+                    Some(record_observer_one),
+                    ptr::null_mut()
+                ),
+                0
+            );
+            assert_eq!(
+                hew_task_completion_observe(
+                    scope,
+                    task,
+                    Some(record_observer_two),
+                    ptr::null_mut()
+                ),
+                0
+            );
+            hew_task_scope_complete_task(scope, task);
+            assert_eq!(*COMPLETION_OBSERVE_ORDER.lock_or_recover(), vec![1, 2]);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    struct ReentrantObserveCtx {
+        scope: *mut HewTaskScope,
+        task: *mut HewTask,
+        outer_hits: AtomicUsize,
+        inner_hits: AtomicUsize,
+        inner_ret: AtomicI32,
+    }
+
+    extern "C" fn reentrant_inner_observer(ctx: *mut c_void) {
+        // SAFETY: tests pass a live `ReentrantObserveCtx`.
+        let ctx = unsafe { &*(ctx.cast::<ReentrantObserveCtx>()) };
+        ctx.inner_hits.fetch_add(1, Ordering::SeqCst);
+    }
+
+    extern "C" fn reentrant_outer_observer(ctx: *mut c_void) {
+        // SAFETY: tests pass a live `ReentrantObserveCtx`; the callback does
+        // not outlive the stack frame that owns it.
+        let ctx_ref = unsafe { &*(ctx.cast::<ReentrantObserveCtx>()) };
+        ctx_ref.outer_hits.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: the same task is already complete. This re-enters the
+        // observer registration path and would deadlock if callbacks fired
+        // while holding the `TaskDoneSignal` mutex.
+        let ret = unsafe {
+            hew_task_completion_observe(
+                ctx_ref.scope,
+                ctx_ref.task,
+                Some(reentrant_inner_observer),
+                ctx,
+            )
+        };
+        ctx_ref.inner_ret.store(ret, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn completion_observe_reentrant_callback_does_not_deadlock() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            let ctx = ReentrantObserveCtx {
+                scope,
+                task,
+                outer_hits: AtomicUsize::new(0),
+                inner_hits: AtomicUsize::new(0),
+                inner_ret: AtomicI32::new(i32::MIN),
+            };
+
+            assert_eq!(
+                hew_task_completion_observe(
+                    scope,
+                    task,
+                    Some(reentrant_outer_observer),
+                    (&raw const ctx).cast_mut().cast(),
+                ),
+                0
+            );
+            hew_task_scope_complete_task(scope, task);
+            assert_eq!(ctx.outer_hits.load(Ordering::SeqCst), 1);
+            assert_eq!(ctx.inner_ret.load(Ordering::SeqCst), 0);
+            assert_eq!(ctx.inner_hits.load(Ordering::SeqCst), 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
     /// Two or more running tasks are all cancelled-and-detached together.
     ///
     /// This exercises the multi-handle Vec path in `take_detached_task_handles`:
@@ -2825,9 +3225,7 @@ mod tests {
         // check for cancellation itself.
         //
         // There is no cooperative-cancel flag on HewTask today; observable
-        // effects are limited to the done_signal notification. When the
-        // multiplex-await primitive (completion-observer / park / resume) lands,
-        // a task-level cancel flag will be added and this test updated (§3.7).
+        // effects are limited to waking waiters so they can re-check state.
         //
         // This test verifies the call succeeds and does not alter state.
         // SAFETY: test owns all scope/task pointers exclusively; all are valid.

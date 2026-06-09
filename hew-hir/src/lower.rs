@@ -204,7 +204,7 @@ pub fn lower_program_with_mono_cap(
                         // into `record_registry` so `Expr::StructInit` and
                         // `Expr::FieldAccess` lowering can resolve their field
                         // layouts. Without this, `PanicInfo.code` in an
-                        // `#[on(crash)]` body fails with `CutoverUnsupported`
+                        // `#[on(crash)]` body fails with `NotYetImplemented`
                         // because the layout is missing from `record_field_orders`
                         // at MIR time.
                         //
@@ -987,6 +987,14 @@ struct LowerCtx {
     /// span. Drained into `HirModule.supervisor_child_slots` at the end of
     /// `lower_program` (mirrors the `call_site_type_args` pattern).
     supervisor_child_slots: HashMap<SiteId, ChildSlot>,
+    /// Event names of the machine currently being lowered, set only while
+    /// lowering a machine body (transition bodies, entry/exit blocks). The
+    /// index position corresponds to `HirMachineDecl::events` ordering so
+    /// `Expr::MachineEmit` can resolve `event_idx` by name lookup.
+    ///
+    /// `None` outside of any machine body; `Some(names)` inside. Restored
+    /// via `mem::replace` at the end of each machine-body lowering.
+    current_machine_events: Option<Vec<String>>,
 }
 
 impl LowerCtx {
@@ -1029,6 +1037,7 @@ impl LowerCtx {
             intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
             supervisor_child_slots_checker: tc_output.supervisor_child_slots.clone(),
             supervisor_child_slots: HashMap::new(),
+            current_machine_events: None,
         }
     }
 
@@ -1830,6 +1839,17 @@ impl LowerCtx {
         decl: &MachineDecl,
         span: std::ops::Range<usize>,
     ) -> Option<HirMachineDecl> {
+        // Collect declared state names up front; the machine-body diagnostic
+        // filter uses this to recognise the semicolon-shorthand transition
+        // body (`Expr::Identifier(target_state)`) and avoid leaking its
+        // expected `UnresolvedSymbol` diagnostic, while leaving every other
+        // unresolved identifier visible.
+        let state_names: HashSet<String> = decl.states.iter().map(|s| s.name.clone()).collect();
+
+        // Collect event names in declaration order so `Expr::MachineEmit` can
+        // resolve its event_idx by position lookup during body lowering.
+        let event_names: Vec<String> = decl.events.iter().map(|ev| ev.name.clone()).collect();
+
         // Lower states.
         let mut hir_states = Vec::new();
         for state in &decl.states {
@@ -1844,8 +1864,8 @@ impl LowerCtx {
                 .collect();
 
             // Shallow-scan the entry and exit blocks for field-assignment targets.
-            // Lane A does not fully lower block bodies; this is enough for
-            // effect-parity checking.
+            // Body-level effect-parity checking still uses the AST summary
+            // walk; the lowered HIR block below is structural substrate.
             let entry_writes = state
                 .entry
                 .as_ref()
@@ -1857,6 +1877,18 @@ impl LowerCtx {
                 .map(collect_assigned_field_names)
                 .unwrap_or_default();
 
+            // Lower entry/exit blocks. The filter drops only the explicitly
+            // expected diagnostics for the machine-body forms not yet wired
+            // through HIR (state-name identifier refs, `this`); emit now
+            // lowers to `HirExprKind::MachineEmit` so it no longer needs
+            // filtering here.
+            let entry = state.entry.as_ref().map(|block| {
+                self.lower_machine_block_filtered(block, &state_names, event_names.clone())
+            });
+            let exit = state.exit.as_ref().map(|block| {
+                self.lower_machine_block_filtered(block, &state_names, event_names.clone())
+            });
+
             hir_states.push(HirMachineState {
                 name: state.name.clone(),
                 fields,
@@ -1864,6 +1896,8 @@ impl LowerCtx {
                 has_exit: state.exit.is_some(),
                 entry_writes,
                 exit_writes,
+                entry,
+                exit,
                 span: span.clone(),
             });
         }
@@ -1890,30 +1924,34 @@ impl LowerCtx {
             })
             .collect();
 
-        // Lower transitions — shallow: record names, guard presence, body writes,
-        // and emitted event names (for static checks). Body expressions are not
-        // lowered to HirExpr in Lane A.
-        let hir_transitions: Vec<HirMachineTransition> = decl
-            .transitions
-            .iter()
-            .map(|tr| {
-                let is_self_transition =
-                    tr.source_state == tr.target_state && tr.source_state != "_";
-                let body_writes = collect_assigned_field_names_expr(&tr.body.0);
-                let body_emits = collect_emitted_events(&tr.body.0);
-                HirMachineTransition {
-                    event_name: tr.event_name.clone(),
-                    source_state: tr.source_state.clone(),
-                    target_state: tr.target_state.clone(),
-                    has_guard: tr.guard.is_some(),
-                    is_self_transition,
-                    reenter: tr.reenter,
-                    body_writes,
-                    body_emits,
-                    span: tr.body.1.clone(),
-                }
-            })
-            .collect();
+        // Lower transitions — record names, guard presence, body writes,
+        // and emitted event names (for static checks). The body is also
+        // lowered to `HirExpr`; see `lower_machine_expr_filtered` for the
+        // narrow diagnostic-filter contract.
+        let mut hir_transitions: Vec<HirMachineTransition> =
+            Vec::with_capacity(decl.transitions.len());
+        for tr in &decl.transitions {
+            let is_self_transition = tr.source_state == tr.target_state && tr.source_state != "_";
+            let body_writes = collect_assigned_field_names_expr(&tr.body.0);
+            let body =
+                self.lower_machine_expr_filtered(&tr.body, &state_names, event_names.clone());
+            // body_emits is now derived from the lowered HIR body rather than
+            // the AST summary walk so that emit expressions nested inside
+            // conditionals or match arms are correctly detected.
+            let body_emits = collect_hir_emitted_events(&body, &event_names);
+            hir_transitions.push(HirMachineTransition {
+                event_name: tr.event_name.clone(),
+                source_state: tr.source_state.clone(),
+                target_state: tr.target_state.clone(),
+                has_guard: tr.guard.is_some(),
+                is_self_transition,
+                reenter: tr.reenter,
+                body_writes,
+                body_emits,
+                body,
+                span: tr.body.1.clone(),
+            });
+        }
 
         // ── Static checks ────────────────────────────────────────────────────
 
@@ -2095,12 +2133,90 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             name: decl.name.clone(),
+            type_params: decl.type_params.clone(),
             states: hir_states,
             events: hir_events,
             transitions: hir_transitions,
             has_default: decl.has_default,
             span,
         })
+    }
+
+    /// Lower a machine transition body expression to `HirExpr` so MIR /
+    /// codegen has a typed-HIR tree to consume. The body's surface still
+    /// uses constructs that aren't yet wired through HIR — direct
+    /// state-name references (the semicolon-shorthand body
+    /// `Expr::Identifier(target_state)`) and `Expr::This`. Those produce
+    /// specific, expected diagnostics that the AST-summary walks
+    /// (`body_writes` / `body_emits`) and the per-machine static checks
+    /// (exhaustiveness, self-transition rules, effect-parity, emit-cycle)
+    /// already cover; this helper filters out *only those exact* diagnostics
+    /// whose span matches an allowlisted construct in the AST. Unrelated
+    /// diagnostics — unresolved user symbols, type mismatches, malformed
+    /// checker output, etc. — flow through unchanged so a buggy machine body
+    /// still fails closed.
+    ///
+    /// `event_names` is the ordered list of event names for the enclosing
+    /// machine (corresponding to `HirMachineDecl::events`). Set as
+    /// `current_machine_events` during lowering so `Expr::MachineEmit` can
+    /// resolve its `event_idx`.
+    fn lower_machine_expr_filtered(
+        &mut self,
+        body: &Spanned<Expr>,
+        state_names: &HashSet<String>,
+        event_names: Vec<String>,
+    ) -> HirExpr {
+        let mut allowlist = MachineBodyAllowlist::default();
+        walk_expr_for_machine_allowlist(body, state_names, &mut allowlist);
+        let diag_snapshot = self.diagnostics.len();
+        self.push_scope();
+        let prev_events = self.current_machine_events.replace(event_names);
+        let expr = self.lower_expr(body, IntentKind::Read);
+        self.current_machine_events = prev_events;
+        self.pop_scope();
+        self.retain_or_drop_machine_body_diags(diag_snapshot, &allowlist);
+        expr
+    }
+
+    /// Lower a machine state's `entry { ... }` / `exit { ... }` block,
+    /// applying the same allowlist filter as `lower_machine_expr_filtered`.
+    ///
+    /// `event_names` is the ordered list of event names for the enclosing
+    /// machine; see `lower_machine_expr_filtered` for details.
+    fn lower_machine_block_filtered(
+        &mut self,
+        block: &Block,
+        state_names: &HashSet<String>,
+        event_names: Vec<String>,
+    ) -> HirBlock {
+        let mut allowlist = MachineBodyAllowlist::default();
+        walk_block_for_machine_allowlist(block, state_names, &mut allowlist);
+        let diag_snapshot = self.diagnostics.len();
+        let prev_events = self.current_machine_events.replace(event_names);
+        let lowered = self.lower_block(block, &ResolvedTy::Unit);
+        self.current_machine_events = prev_events;
+        self.retain_or_drop_machine_body_diags(diag_snapshot, &allowlist);
+        lowered
+    }
+
+    /// Filter diagnostics produced since `snapshot_len`: drop only those
+    /// whose `(kind, span)` matches an entry in `allowlist`. Anything else
+    /// — including diagnostics with the same *kind* but a different span,
+    /// or with the same span but a different kind — is preserved.
+    fn retain_or_drop_machine_body_diags(
+        &mut self,
+        snapshot_len: usize,
+        allowlist: &MachineBodyAllowlist,
+    ) {
+        if snapshot_len >= self.diagnostics.len() {
+            return;
+        }
+        let tail: Vec<_> = self.diagnostics.drain(snapshot_len..).collect();
+        for diag in tail {
+            if !allowlist.permits(&diag) {
+                self.diagnostics.push(diag);
+            }
+        }
     }
 
     /// Lower an `actor` declaration into `HirActorDecl`, including executable
@@ -2348,13 +2464,13 @@ impl LowerCtx {
                 let element_tys: Vec<ResolvedTy> = if let ResolvedTy::Tuple(elems) = &tuple_ty {
                     if elems.len() != element_patterns.len() {
                         self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CutoverUnsupported {
+                            HirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
                                     "tuple pattern with {} elements for tuple with {} elements",
                                     element_patterns.len(),
                                     elems.len()
                                 ),
-                                slice_target: "type-checker".to_string(),
+                                owning_pass: "type-checker".to_string(),
                             },
                             span.clone(),
                             "tuple pattern element count does not match tuple value arity",
@@ -2374,9 +2490,9 @@ impl LowerCtx {
                     vec![ResolvedTy::Unit; element_patterns.len()]
                 } else {
                     self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CutoverUnsupported {
+                        HirDiagnosticKind::NotYetImplemented {
                             construct: "tuple pattern on non-tuple value".to_string(),
-                            slice_target: "type-checker".to_string(),
+                            owning_pass: "type-checker".to_string(),
                         },
                         span.clone(),
                         "tuple-let pattern requires the right-hand side to have a tuple type",
@@ -2418,9 +2534,9 @@ impl LowerCtx {
                         _ => {
                             // Nested tuple / constructor patterns are out of scope.
                             self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CutoverUnsupported {
+                                HirDiagnosticKind::NotYetImplemented {
                                     construct: "nested pattern in tuple-let".to_string(),
-                                    slice_target: "pattern-matching".to_string(),
+                                    owning_pass: "pattern-matching".to_string(),
                                 },
                                 elem_pat.1.clone(),
                                 "only identifier and wildcard patterns are supported \
@@ -2659,6 +2775,81 @@ impl LowerCtx {
                     HirStmtKind::Return(None)
                 }
             }
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                // Lower a statement-position `if` to `HirStmtKind::Expr` so
+                // that sub-expression walkers (e.g. emit-cycle detection) can
+                // descend into the branches.  `else if` chains are not yet
+                // wired; they fall through to Unsupported to stay fail-closed.
+                let lowered_condition = self.lower_expr(condition, IntentKind::Read);
+                let then_hir_block = self.lower_block(then_block, &ResolvedTy::Unit);
+                let then_ty = then_hir_block.ty.clone();
+                let then_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: then_ty.clone(),
+                    value_class: ValueClass::of_ty(&then_ty, &self.type_classes),
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::Block(then_hir_block),
+                    span: span.clone(),
+                };
+                let else_expr = else_block.as_ref().and_then(|eb| {
+                    if eb.is_if {
+                        // `else if` chain: lower the nested Stmt::If recursively
+                        // so the walker can descend into it. The inner stmt always
+                        // lowers to HirStmtKind::Expr; any other outcome means the
+                        // inner if hit an unsupported path and already emitted a
+                        // diagnostic, so we fall back to an unsupported placeholder.
+                        if let Some(inner) = &eb.if_stmt {
+                            let inner_hir =
+                                self.lower_stmt(&inner.0, inner.1.clone(), ResolvedTy::Unit);
+                            match inner_hir.kind {
+                                HirStmtKind::Expr(expr) => Some(Box::new(expr)),
+                                _ => Some(Box::new(self.unsupported_expr(
+                                    inner.1.clone(),
+                                    "else-if chain produced non-expression HIR",
+                                ))),
+                            }
+                        } else {
+                            None
+                        }
+                    } else if let Some(block) = &eb.block {
+                        let hir_block = self.lower_block(block, &ResolvedTy::Unit);
+                        let else_ty = hir_block.ty.clone();
+                        Some(Box::new(HirExpr {
+                            node: self.ids.node(),
+                            site: self.ids.site(),
+                            ty: else_ty.clone(),
+                            value_class: ValueClass::of_ty(&else_ty, &self.type_classes),
+                            intent: IntentKind::Read,
+                            kind: HirExprKind::Block(hir_block),
+                            span: span.clone(),
+                        }))
+                    } else {
+                        None
+                    }
+                });
+                let if_ty = else_expr
+                    .as_ref()
+                    .map_or(ResolvedTy::Unit, |e| e.ty.clone());
+                let if_expr = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: if_ty.clone(),
+                    value_class: ValueClass::of_ty(&if_ty, &self.type_classes),
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::If {
+                        condition: Box::new(lowered_condition),
+                        then_expr: Box::new(then_expr),
+                        else_expr,
+                    },
+                    span: span.clone(),
+                };
+                HirStmtKind::Expr(if_expr)
+            }
             _ => {
                 self.unsupported(span.clone(), "statement", "slice-2");
                 HirStmtKind::Expr(self.unsupported_expr(span.clone(), "unsupported statement"))
@@ -2812,9 +3003,9 @@ impl LowerCtx {
                         // WHAT: add `"hew_actor_link"` and `"hew_actor_monitor"`
                         // arms in `lower_runtime_call`; remove this block.
                         self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CutoverUnsupported {
+                            HirDiagnosticKind::NotYetImplemented {
                                 construct: format!("builtin call `{name}`"),
-                                slice_target: "Cluster-2".to_string(),
+                                owning_pass: "cluster-runtime".to_string(),
                             },
                             span.clone(),
                             "link/monitor/unlink require the Cluster 2 composite-return \
@@ -2921,7 +3112,7 @@ impl LowerCtx {
             }
             Expr::ForkChild { binding, expr } => {
                 // `fork name = expr` outside a `scope{}` body: no spawn context,
-                // so this is malformed. Emit CutoverUnsupported — the grammar
+                // so this is malformed. Emit NotYetImplemented — the grammar
                 // accepts this form but HIR-lowering requires scope context.
                 // (Inside scope{} bodies this variant is handled by lower_scope_block,
                 // not by lower_expr directly.)
@@ -3368,6 +3559,49 @@ impl LowerCtx {
                             field: field.clone(),
                         },
                         field_ty,
+                    )
+                }
+            }
+            Expr::MachineEmit { event_name, fields } => {
+                // Lower `emit EventName { field: value, ... }` to
+                // `HirExprKind::MachineEmit { event_idx, fields }`.
+                //
+                // Resolution: look up the event name in `current_machine_events`
+                // (set by `lower_machine_expr_filtered` / `lower_machine_block_filtered`).
+                // Outside a machine body (e.g. a bare `emit` in a function) the
+                // context is absent and we produce `UnresolvedSymbol` to fail
+                // closed — `emit` outside a machine body is already rejected by
+                // the parser / static checks.
+                let event_idx_opt = self
+                    .current_machine_events
+                    .as_ref()
+                    .and_then(|names| names.iter().position(|n| n == event_name));
+                if let Some(event_idx) = event_idx_opt {
+                    let lowered_fields: Vec<(String, HirExpr)> = fields
+                        .iter()
+                        .map(|(fname, fval)| {
+                            let hir_val = self.lower_expr(fval, IntentKind::Read);
+                            (fname.clone(), hir_val)
+                        })
+                        .collect();
+                    (
+                        HirExprKind::MachineEmit {
+                            event_idx,
+                            fields: lowered_fields,
+                        },
+                        ResolvedTy::Unit,
+                    )
+                } else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::UnresolvedSymbol {
+                            name: event_name.clone(),
+                        },
+                        span.clone(),
+                        format!("emitted event `{event_name}` is not declared in this machine"),
+                    ));
+                    (
+                        HirExprKind::Unsupported(format!("unresolved emit event `{event_name}`")),
+                        ResolvedTy::Unit,
                     )
                 }
             }
@@ -3920,9 +4154,9 @@ impl LowerCtx {
         };
         let Some(actor_name) = actor_name else {
             self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CutoverUnsupported {
+                HirDiagnosticKind::NotYetImplemented {
                     construct: "spawn target expression".to_string(),
-                    slice_target: "actor-body-slice3".to_string(),
+                    owning_pass: "actor-body-lowering".to_string(),
                 },
                 span,
                 "`spawn` currently requires a named actor target",
@@ -4618,9 +4852,9 @@ impl LowerCtx {
                 // `DeferToLowering` targets the C++/MLIR pipeline and is not
                 // consumed by the Rust MIR pipeline.  Fail-closed.
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CutoverUnsupported {
+                    HirDiagnosticKind::NotYetImplemented {
                         construct: format!("method-call rewrite variant for `.{method}`"),
-                        slice_target: "mir-pipeline".to_string(),
+                        owning_pass: "mir-pipeline".to_string(),
                     },
                     span,
                     "this method-call rewrite variant is not supported in the Rust MIR pipeline",
@@ -4740,12 +4974,12 @@ impl LowerCtx {
         &mut self,
         span: std::ops::Range<usize>,
         construct: impl Into<String>,
-        slice_target: impl Into<String>,
+        owning_pass: impl Into<String>,
     ) {
         self.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::CutoverUnsupported {
+            HirDiagnosticKind::NotYetImplemented {
                 construct: construct.into(),
-                slice_target: slice_target.into(),
+                owning_pass: owning_pass.into(),
             },
             span,
             "",
@@ -5151,6 +5385,15 @@ fn collect_captures_walk(
         HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
+        HirExprKind::MachineEmit { fields, .. } => {
+            // `emit` is only valid inside a machine body, which is never
+            // inside a lambda/closure — so this arm should be unreachable in
+            // practice.  Walk fields defensively to keep the traversal
+            // exhaustive.
+            for (_, field_val) in fields {
+                collect_captures_walk(field_val, param_ids, seen, captures, self_id);
+            }
+        }
     }
 }
 
@@ -5322,6 +5565,13 @@ fn collect_general_closure_captures_walk(
         HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
         }
+        HirExprKind::MachineEmit { fields, .. } => {
+            // `emit` cannot appear inside a closure body (machine bodies are
+            // not closures); walk fields defensively for exhaustiveness.
+            for (_, field_val) in fields {
+                collect_general_closure_captures_walk(field_val, outer_bindings, seen, captures);
+            }
+        }
     }
 }
 
@@ -5380,6 +5630,213 @@ fn collect_captures_walk_block(
 
 // ── Machine static-check helpers ────────────────────────────────────────────
 
+/// Allowlist of AST spans that mark constructs in a machine transition body
+/// or entry/exit block which the HIR lowerer cannot resolve today but which
+/// are owned by the AST-summary static checks (exhaustiveness, self-
+/// transition rules, effect-parity, emit-cycle). When lowering a machine
+/// body produces a diagnostic whose `(kind, span)` matches one of these
+/// entries exactly, the diagnostic is dropped; every other diagnostic
+/// produced during the same lowering is preserved so unrelated unresolved
+/// symbols and type errors still fail closed.
+///
+/// Note: `Expr::MachineEmit` is no longer in the allowlist because it now
+/// lowers to `HirExprKind::MachineEmit` directly rather than falling through
+/// to `NotYetImplemented`.
+#[derive(Debug, Default)]
+struct MachineBodyAllowlist {
+    /// Spans of `Expr::Identifier(name)` where `name` is a declared state
+    /// name in the current machine — drops the matching `UnresolvedSymbol`.
+    state_name_refs: Vec<(Span, String)>,
+    /// Spans of `Expr::This` — drops the matching `NotYetImplemented`
+    /// raised by the catch-all expression arm.
+    this_spans: Vec<Span>,
+}
+
+impl MachineBodyAllowlist {
+    /// Return `true` iff the diagnostic's `(kind, span)` is one this
+    /// allowlist explicitly accounts for. Anything else flows through.
+    fn permits(&self, diag: &HirDiagnostic) -> bool {
+        match &diag.kind {
+            HirDiagnosticKind::UnresolvedSymbol { name } => self
+                .state_name_refs
+                .iter()
+                .any(|(span, allowed)| spans_equal(span, &diag.span) && allowed == name),
+            HirDiagnosticKind::NotYetImplemented { .. } => self
+                .this_spans
+                .iter()
+                .any(|span| spans_equal(span, &diag.span)),
+            _ => false,
+        }
+    }
+}
+
+fn spans_equal(a: &Span, b: &Span) -> bool {
+    a.start == b.start && a.end == b.end
+}
+
+/// Walk a machine transition body expression to populate
+/// `MachineBodyAllowlist`. Only the specific constructs that the HIR
+/// lowerer is known not to support yet (state-name identifier references,
+/// `this`, and `emit`) are recorded. All other sub-expressions are walked
+/// solely to descend into their children — they themselves are never
+/// allowlisted, so e.g. an unresolved user identifier inside a `Call`
+/// argument still produces a visible diagnostic.
+fn walk_expr_for_machine_allowlist(
+    expr: &Spanned<Expr>,
+    state_names: &HashSet<String>,
+    out: &mut MachineBodyAllowlist,
+) {
+    let (node, span) = expr;
+    match node {
+        Expr::This => out.this_spans.push(span.clone()),
+        Expr::MachineEmit { fields, .. } => {
+            // `emit` now lowers to `HirExprKind::MachineEmit` directly; no
+            // allowlist entry is needed.  Still descend into field values in
+            // case they contain state-name refs or `this` that do need entries.
+            for (_, value) in fields {
+                walk_expr_for_machine_allowlist(value, state_names, out);
+            }
+        }
+        Expr::Identifier(name) if state_names.contains(name) => {
+            out.state_name_refs.push((span.clone(), name.clone()));
+        }
+        Expr::Block(block) => walk_block_for_machine_allowlist(block, state_names, out),
+        Expr::Binary { left, right, .. } => {
+            walk_expr_for_machine_allowlist(left, state_names, out);
+            walk_expr_for_machine_allowlist(right, state_names, out);
+        }
+        Expr::Unary { operand, .. } => {
+            walk_expr_for_machine_allowlist(operand, state_names, out);
+        }
+        Expr::Call { function, args, .. } => {
+            walk_expr_for_machine_allowlist(function, state_names, out);
+            for arg in args {
+                walk_expr_for_machine_allowlist(arg.expr(), state_names, out);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            walk_expr_for_machine_allowlist(receiver, state_names, out);
+            for arg in args {
+                walk_expr_for_machine_allowlist(arg.expr(), state_names, out);
+            }
+        }
+        Expr::FieldAccess { object, .. } => {
+            walk_expr_for_machine_allowlist(object, state_names, out);
+        }
+        Expr::Index { object, index } => {
+            walk_expr_for_machine_allowlist(object, state_names, out);
+            walk_expr_for_machine_allowlist(index, state_names, out);
+        }
+        Expr::StructInit { fields, base, .. } => {
+            for (_, value) in fields {
+                walk_expr_for_machine_allowlist(value, state_names, out);
+            }
+            if let Some(base) = base {
+                walk_expr_for_machine_allowlist(base, state_names, out);
+            }
+        }
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            walk_expr_for_machine_allowlist(condition, state_names, out);
+            walk_expr_for_machine_allowlist(then_block, state_names, out);
+            if let Some(else_block) = else_block {
+                walk_expr_for_machine_allowlist(else_block, state_names, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            walk_expr_for_machine_allowlist(scrutinee, state_names, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    walk_expr_for_machine_allowlist(guard, state_names, out);
+                }
+                walk_expr_for_machine_allowlist(&arm.body, state_names, out);
+            }
+        }
+        Expr::Cast { expr, .. } => walk_expr_for_machine_allowlist(expr, state_names, out),
+        Expr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                walk_expr_for_machine_allowlist(start, state_names, out);
+            }
+            if let Some(end) = end {
+                walk_expr_for_machine_allowlist(end, state_names, out);
+            }
+        }
+        Expr::Is { lhs, rhs } => {
+            walk_expr_for_machine_allowlist(lhs, state_names, out);
+            walk_expr_for_machine_allowlist(rhs, state_names, out);
+        }
+        Expr::Tuple(items) | Expr::Array(items) => {
+            for item in items {
+                walk_expr_for_machine_allowlist(item, state_names, out);
+            }
+        }
+        // Other Expr variants (lambdas, spawn, select, scope, timeout,
+        // for-loops, ...) aren't expected to appear inside a machine
+        // transition body or entry/exit block in v0.5. They are
+        // intentionally not descended-into: the walker's contract is
+        // conservative, so any sub-expression we don't visit cannot
+        // mask an unresolved diagnostic — the diagnostic simply isn't
+        // allowlisted and surfaces normally.
+        _ => {}
+    }
+}
+
+/// Walk a machine entry/exit block to populate `MachineBodyAllowlist`.
+fn walk_block_for_machine_allowlist(
+    block: &Block,
+    state_names: &HashSet<String>,
+    out: &mut MachineBodyAllowlist,
+) {
+    for (stmt, _) in &block.stmts {
+        walk_stmt_for_machine_allowlist(stmt, state_names, out);
+    }
+    if let Some(tail) = &block.trailing_expr {
+        walk_expr_for_machine_allowlist(tail, state_names, out);
+    }
+}
+
+fn walk_stmt_for_machine_allowlist(
+    stmt: &Stmt,
+    state_names: &HashSet<String>,
+    out: &mut MachineBodyAllowlist,
+) {
+    match stmt {
+        Stmt::Expression(e) => walk_expr_for_machine_allowlist(e, state_names, out),
+        Stmt::Assign { target, value, .. } => {
+            walk_expr_for_machine_allowlist(target, state_names, out);
+            walk_expr_for_machine_allowlist(value, state_names, out);
+        }
+        Stmt::Let { value, .. } | Stmt::Var { value, .. } | Stmt::Return(value) => {
+            if let Some(value) = value {
+                walk_expr_for_machine_allowlist(value, state_names, out);
+            }
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            walk_expr_for_machine_allowlist(condition, state_names, out);
+            walk_block_for_machine_allowlist(then_block, state_names, out);
+            if let Some(else_block) = else_block {
+                if let Some(block) = &else_block.block {
+                    walk_block_for_machine_allowlist(block, state_names, out);
+                }
+                if let Some(if_stmt) = &else_block.if_stmt {
+                    walk_stmt_for_machine_allowlist(&if_stmt.0, state_names, out);
+                }
+            }
+        }
+        Stmt::Defer(inner) => walk_expr_for_machine_allowlist(inner, state_names, out),
+        // Other statement variants aren't expected inside an entry/exit
+        // block in v0.5; see the walker contract note on `walk_expr_for_machine_allowlist`.
+        _ => {}
+    }
+}
+
 /// Determine whether a self-transition body is "empty" for the `@reenter` rule.
 ///
 /// A body is considered empty when:
@@ -5429,6 +5886,14 @@ fn collect_assigned_field_names_expr(expr: &Expr) -> Vec<String> {
 /// Collect event names directly emitted by `emit EventName` expressions within
 /// an expression (transition body). Only direct emits are tracked; deeper nesting
 /// is deferred to runtime (per the plan's "direct cycles only" rule).
+///
+/// Kept for AST-surface use; lowering now calls `collect_hir_emitted_events`
+/// which walks the already-lowered `HirExpr` tree so that emit expressions
+/// nested inside `if` branches or `match` arms are correctly detected.
+#[allow(
+    dead_code,
+    reason = "retained for future AST-surface callers; active lowering uses collect_hir_emitted_events"
+)]
 fn collect_emitted_events(expr: &Expr) -> Vec<String> {
     let mut events = Vec::new();
     collect_emitted_events_inner(expr, &mut events);
@@ -5446,6 +5911,73 @@ fn collect_emitted_events_inner(expr: &Expr, out: &mut Vec<String>) {
             }
             if let Some(tail) = &block.trailing_expr {
                 collect_emitted_events_inner(&tail.0, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect event names emitted by `HirExprKind::MachineEmit` nodes within a
+/// lowered HIR expression tree, resolving `event_idx` back to names via
+/// `event_names` (the ordered event list of the enclosing machine declaration,
+/// matching `HirMachineDecl::events` order).
+///
+/// Descends into all sub-expressions including `if`/`else` branches so that a
+/// direct self-emit nested inside a conditional is detected by the emit-cycle
+/// check — unlike the old AST walker which only traversed top-level blocks.
+fn collect_hir_emitted_events(expr: &HirExpr, event_names: &[String]) -> Vec<String> {
+    let mut events = Vec::new();
+    collect_hir_emitted_events_walk(expr, event_names, &mut events);
+    events
+}
+
+fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: &mut Vec<String>) {
+    match &expr.kind {
+        HirExprKind::MachineEmit {
+            event_idx,
+            fields: _,
+        } => {
+            if let Some(name) = event_names.get(*event_idx) {
+                out.push(name.clone());
+            }
+        }
+        HirExprKind::Block(block) => {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    HirStmtKind::Expr(e)
+                    | HirStmtKind::Let(_, Some(e))
+                    | HirStmtKind::Return(Some(e)) => {
+                        collect_hir_emitted_events_walk(e, event_names, out);
+                    }
+                    HirStmtKind::Assign { value, .. } => {
+                        collect_hir_emitted_events_walk(value, event_names, out);
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(tail) = &block.tail {
+                collect_hir_emitted_events_walk(tail, event_names, out);
+            }
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_hir_emitted_events_walk(condition, event_names, out);
+            collect_hir_emitted_events_walk(then_expr, event_names, out);
+            if let Some(e) = else_expr {
+                collect_hir_emitted_events_walk(e, event_names, out);
+            }
+        }
+        HirExprKind::Binary { left, right, .. } => {
+            collect_hir_emitted_events_walk(left, event_names, out);
+            collect_hir_emitted_events_walk(right, event_names, out);
+        }
+        HirExprKind::Call { callee, args } => {
+            collect_hir_emitted_events_walk(callee, event_names, out);
+            for a in args {
+                collect_hir_emitted_events_walk(a, event_names, out);
             }
         }
         _ => {}

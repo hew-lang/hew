@@ -1315,7 +1315,7 @@ fn left_arrow_send_operator_is_rejected() {
 }
 
 /// The legacy `spawn (...) => body` syntax was removed in v0.5.
-/// The parser now emits `E_LEGACY_SPAWN_LAMBDA_SYNTAX`.  Accept path uses the
+/// The parser now emits `E_SPAWN_LAMBDA_SYNTAX_REMOVED`.  Accept path uses the
 /// new `actor |...| { ... }` form.
 #[test]
 fn legacy_spawn_lambda_syntax_is_rejected() {
@@ -1328,14 +1328,14 @@ fn legacy_spawn_lambda_syntax_is_rejected() {
     );
     assert!(
         !result.errors.is_empty(),
-        "`spawn (...) => ...` must be rejected by the parser (E_LEGACY_SPAWN_LAMBDA_SYNTAX)"
+        "`spawn (...) => ...` must be rejected by the parser (E_SPAWN_LAMBDA_SYNTAX_REMOVED)"
     );
     assert!(
         result
             .errors
             .iter()
-            .any(|e| e.message.contains("E_LEGACY_SPAWN_LAMBDA_SYNTAX")),
-        "expected E_LEGACY_SPAWN_LAMBDA_SYNTAX in error messages, got: {:#?}",
+            .any(|e| e.message.contains("E_SPAWN_LAMBDA_SYNTAX_REMOVED")),
+        "expected E_SPAWN_LAMBDA_SYNTAX_REMOVED in error messages, got: {:#?}",
         result.errors
     );
 }

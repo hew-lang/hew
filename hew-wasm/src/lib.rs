@@ -7,7 +7,7 @@
 //! Available source-code analysis capabilities:
 //!
 //! - **Diagnostics** — parse, type-check, and analyze Hew source code
-//!   (`analyze`, `hover`, `get_keywords`).
+//!   (`parse_source`, `type_check`, `analyze`, `hover`, `get_keywords`).
 //! - **Navigation** — go-to-definition, find references, rename.
 //! - **Editing** — completions, signature help, code actions.
 //! - **Presentation** — semantic tokens, document symbols, inlay hints, folding ranges.
@@ -45,6 +45,53 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub fn analyze(source: &str) -> Result<String, JsValue> {
     export_json("analyze", || Ok(run_analysis(source)))
+}
+
+/// Parse Hew source code and return JSON `{ ast, diagnostics }`.
+///
+/// `ast` is the parser AST for callers that want to inspect declarations or
+/// expressions directly. `diagnostics` contains parser diagnostics with stable
+/// `kind`, `span`, `message`, `notes`, and `suggestions` fields.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the parse result cannot be serialized.
+#[wasm_bindgen]
+pub fn parse_source(source: &str) -> Result<String, JsValue> {
+    export_json("parse_source", || {
+        let parse_result = hew_parser::parse(source);
+        Ok(ParseSourceResult {
+            ast: parse_result.program,
+            diagnostics: convert_parse_diagnostics(parse_result.errors),
+        })
+    })
+}
+
+/// Type-check Hew source code and return JSON `{ diagnostics, type_info }`.
+///
+/// `diagnostics` includes parser and checker diagnostics. `type_info` contains
+/// byte-span keyed, user-facing resolved types for hover/editor consumers; it is
+/// empty when parsing fails and the checker is skipped.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the type-check result cannot be serialized.
+#[wasm_bindgen]
+pub fn type_check(source: &str) -> Result<String, JsValue> {
+    export_json("type_check", || Ok(run_type_check(source)))
+}
+
+/// Format Hew source code and return JSON `{ formatted, diagnostics }`.
+///
+/// `formatted` is `null` when fatal parser diagnostics are present. Otherwise it
+/// contains canonical Hew source text produced by the parser formatter.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the format result cannot be serialized.
+#[wasm_bindgen]
+pub fn format_source(source: &str) -> Result<String, JsValue> {
+    export_json("format_source", || Ok(run_format(source)))
 }
 
 /// Get the list of Hew keywords for editor completion.
@@ -378,9 +425,26 @@ fn export_error_to_js_value(err: &WasmExportError) -> JsValue {
     }
 }
 
+/// A byte-offset span in source text.
+#[derive(Clone, Copy, Serialize)]
+struct WasmSpan {
+    start: usize,
+    end: usize,
+}
+
+impl WasmSpan {
+    fn from_span(span: &std::ops::Range<usize>) -> Self {
+        Self {
+            start: span.start,
+            end: span.end,
+        }
+    }
+}
+
 /// A secondary span attached to a diagnostic (e.g. "defined here").
 #[derive(Serialize)]
 struct WasmNote {
+    span: WasmSpan,
     start_offset: usize,
     end_offset: usize,
     message: String,
@@ -390,12 +454,46 @@ struct WasmNote {
 #[derive(Serialize)]
 struct WasmDiagnostic {
     severity: String,
+    phase: &'static str,
     message: String,
+    span: WasmSpan,
     start_offset: usize,
     end_offset: usize,
     kind: String,
     notes: Vec<WasmNote>,
     suggestions: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_module: Option<String>,
+}
+
+/// Resolved type attached to a source span.
+#[derive(Serialize)]
+struct WasmTypeInfo {
+    span: WasmSpan,
+    start_offset: usize,
+    end_offset: usize,
+    type_name: String,
+}
+
+/// Parse-only result returned by `parse_source()`.
+#[derive(Serialize)]
+struct ParseSourceResult {
+    ast: hew_parser::ast::Program,
+    diagnostics: Vec<WasmDiagnostic>,
+}
+
+/// Type-check result returned by `type_check()`.
+#[derive(Serialize)]
+struct TypeCheckResult {
+    diagnostics: Vec<WasmDiagnostic>,
+    type_info: Vec<WasmTypeInfo>,
+}
+
+/// Formatter result returned by `format_source()`.
+#[derive(Serialize)]
+struct FormatResult {
+    formatted: Option<String>,
+    diagnostics: Vec<WasmDiagnostic>,
 }
 
 /// Combined analysis result returned by `analyze()`.
@@ -404,6 +502,7 @@ struct AnalysisResult {
     diagnostics: Vec<WasmDiagnostic>,
     tokens: Vec<hew_analysis::SemanticToken>,
     symbols: Vec<hew_analysis::SymbolInfo>,
+    type_info: Vec<WasmTypeInfo>,
 }
 
 struct AnalyzedSource {
@@ -444,14 +543,18 @@ fn parse_error_to_wasm(err: hew_parser::ParseError) -> WasmDiagnostic {
         hew_parser::Severity::Warning => "warning",
         hew_parser::Severity::Error => "error",
     };
+    let span = WasmSpan::from_span(&err.span);
     WasmDiagnostic {
         severity: severity.to_string(),
+        phase: "parse",
         message: err.message,
-        start_offset: err.span.start,
-        end_offset: err.span.end,
+        span,
+        start_offset: span.start,
+        end_offset: span.end,
         kind: err.kind.as_kind_str().to_string(),
         notes: Vec::new(),
-        suggestions: Vec::new(),
+        suggestions: err.hint.into_iter().collect(),
+        source_module: None,
     }
 }
 
@@ -460,40 +563,116 @@ fn type_error_to_wasm(err: hew_types::error::TypeError) -> WasmDiagnostic {
         hew_types::error::Severity::Warning => "warning",
         hew_types::error::Severity::Error => "error",
     };
+    let span = WasmSpan::from_span(&err.span);
     WasmDiagnostic {
         severity: severity.to_string(),
+        phase: "typecheck",
         message: err.message,
-        start_offset: err.span.start,
-        end_offset: err.span.end,
+        span,
+        start_offset: span.start,
+        end_offset: span.end,
         kind: err.kind.as_kind_str().to_string(),
         notes: err
             .notes
             .into_iter()
             .map(|(span, msg)| WasmNote {
+                span: WasmSpan::from_span(&span),
                 start_offset: span.start,
                 end_offset: span.end,
                 message: msg,
             })
             .collect(),
         suggestions: err.suggestions,
+        source_module: err.source_module,
     }
+}
+
+fn convert_parse_diagnostics(parse_errors: Vec<hew_parser::ParseError>) -> Vec<WasmDiagnostic> {
+    parse_errors.into_iter().map(parse_error_to_wasm).collect()
 }
 
 fn convert_diagnostics(
     parse_errors: Vec<hew_parser::ParseError>,
     type_output: Option<hew_types::TypeCheckOutput>,
 ) -> Vec<WasmDiagnostic> {
-    let mut diagnostics: Vec<WasmDiagnostic> =
-        parse_errors.into_iter().map(parse_error_to_wasm).collect();
+    let mut diagnostics = convert_parse_diagnostics(parse_errors);
     if let Some(type_output) = type_output {
         diagnostics.extend(type_output.errors.into_iter().map(type_error_to_wasm));
+        diagnostics.extend(type_output.warnings.into_iter().map(type_error_to_wasm));
     }
     diagnostics
+}
+
+fn build_type_info(type_output: &hew_types::TypeCheckOutput) -> Vec<WasmTypeInfo> {
+    let mut entries: Vec<WasmTypeInfo> = type_output
+        .expr_types
+        .iter()
+        .map(|(span_key, ty)| {
+            let span = WasmSpan {
+                start: span_key.start,
+                end: span_key.end,
+            };
+            WasmTypeInfo {
+                span,
+                start_offset: span.start,
+                end_offset: span.end,
+                type_name: ty.materialize_literal_defaults().user_facing().to_string(),
+            }
+        })
+        .collect();
+    entries.sort_by_key(|entry| (entry.start_offset, entry.end_offset));
+    entries
+}
+
+fn run_type_check(source: &str) -> TypeCheckResult {
+    let analysis = parse_and_type_check(source);
+    let type_info = analysis
+        .type_output
+        .as_ref()
+        .map(build_type_info)
+        .unwrap_or_default();
+    let AnalyzedSource {
+        parse_result,
+        type_output,
+    } = analysis;
+    let diagnostics = convert_diagnostics(parse_result.errors, type_output);
+
+    TypeCheckResult {
+        diagnostics,
+        type_info,
+    }
+}
+
+fn run_format(source: &str) -> FormatResult {
+    let parse_result = hew_parser::parse(source);
+    let has_fatal_error = parse_result
+        .errors
+        .iter()
+        .any(|err| matches!(err.severity, hew_parser::Severity::Error));
+    let formatted = if has_fatal_error {
+        None
+    } else {
+        Some(hew_parser::fmt::format_source(
+            source,
+            &parse_result.program,
+        ))
+    };
+    let diagnostics = convert_parse_diagnostics(parse_result.errors);
+
+    FormatResult {
+        formatted,
+        diagnostics,
+    }
 }
 
 fn run_analysis(source: &str) -> AnalysisResult {
     let tokens = build_tokens(source);
     let analysis = parse_and_type_check(source);
+    let type_info = analysis
+        .type_output
+        .as_ref()
+        .map(build_type_info)
+        .unwrap_or_default();
     // Build symbols first while parse_result is still fully owned, then
     // destructure to pass errors and type_output by value to convert_diagnostics.
     let symbols = build_symbols(source, &analysis.parse_result);
@@ -507,6 +686,7 @@ fn run_analysis(source: &str) -> AnalysisResult {
         diagnostics,
         tokens,
         symbols,
+        type_info,
     }
 }
 
@@ -626,6 +806,104 @@ mod tests {
         let result = ok(analyze("fn {"));
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(!parsed["diagnostics"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_source_returns_ast_and_parse_diagnostics() {
+        let result = ok(parse_source("fn main() { let x = 1; }"));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed["ast"]["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()),
+            "parse_source must return a serialized AST: {result}"
+        );
+        assert!(
+            parsed["diagnostics"].as_array().unwrap().is_empty(),
+            "valid source should have no parse diagnostics: {result}"
+        );
+
+        let error_result = ok(parse_source("fn {"));
+        let error_parsed: serde_json::Value = serde_json::from_str(&error_result).unwrap();
+        let diagnostics = error_parsed["diagnostics"].as_array().unwrap();
+        assert!(
+            !diagnostics.is_empty(),
+            "invalid source should report parse diagnostics: {error_result}"
+        );
+        let first = &diagnostics[0];
+        assert_eq!(first["phase"].as_str(), Some("parse"));
+        assert!(first["kind"].as_str().is_some_and(|kind| !kind.is_empty()));
+        assert!(first["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()));
+        assert!(first["span"]["start"].as_u64().is_some());
+        assert!(first["span"]["end"].as_u64().is_some());
+        assert!(first["notes"].as_array().is_some());
+    }
+
+    #[test]
+    fn type_check_returns_diagnostics_with_spans_and_type_info() {
+        let result = ok(type_check("fn main() { let x: i64 = 42; let _y = x; }"));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            !parsed["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diag| diag["severity"].as_str() == Some("error")),
+            "valid source should not report error diagnostics: {result}"
+        );
+        let type_info = parsed["type_info"].as_array().unwrap();
+        assert!(
+            !type_info.is_empty(),
+            "valid source should expose resolved type spans for hover: {result}"
+        );
+        assert!(
+            type_info.iter().any(|entry| {
+                entry["type_name"].as_str() == Some("i64")
+                    && entry["span"]["start"].as_u64().is_some()
+                    && entry["span"]["end"].as_u64().is_some()
+            }),
+            "type_info should include user-facing i64 entries with spans: {result}"
+        );
+
+        let error_result = ok(type_check("fn main() { let x = 1; x = 2; }"));
+        let error_parsed: serde_json::Value = serde_json::from_str(&error_result).unwrap();
+        let diagnostics = error_parsed["diagnostics"].as_array().unwrap();
+        assert!(
+            diagnostics.iter().any(|diag| {
+                diag["phase"].as_str() == Some("typecheck")
+                    && diag["span"]["start"].as_u64().is_some()
+                    && diag["span"]["end"].as_u64().is_some()
+                    && diag["kind"].as_str().is_some_and(|kind| !kind.is_empty())
+                    && diag["notes"].as_array().is_some()
+            }),
+            "type errors must carry kind/span/message/notes: {error_result}"
+        );
+    }
+
+    #[test]
+    fn format_source_returns_formatted_source_or_parse_diagnostics() {
+        let result = ok(format_source("fn main(){let x=1;}"));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed["formatted"].as_str().is_some_and(|formatted| {
+                formatted.contains("fn main()") && formatted.contains("let x = 1;")
+            }),
+            "format_source must return canonical source: {result}"
+        );
+        assert!(parsed["diagnostics"].as_array().unwrap().is_empty());
+
+        let error_result = ok(format_source("fn {"));
+        let error_parsed: serde_json::Value = serde_json::from_str(&error_result).unwrap();
+        assert!(
+            error_parsed["formatted"].is_null(),
+            "format_source must not format fatal parse errors: {error_result}"
+        );
+        assert!(
+            !error_parsed["diagnostics"].as_array().unwrap().is_empty(),
+            "format_source must return parse diagnostics on invalid source: {error_result}"
+        );
     }
 
     #[test]
@@ -791,6 +1069,14 @@ mod tests {
         assert!(!diags.is_empty(), "expected at least one parse diagnostic");
         for d in diags {
             assert!(
+                d.get("span").and_then(|span| span.get("start")).is_some(),
+                "diagnostic missing nested `span.start`: {d}"
+            );
+            assert!(
+                d.get("span").and_then(|span| span.get("end")).is_some(),
+                "diagnostic missing nested `span.end`: {d}"
+            );
+            assert!(
                 d.get("notes").and_then(|n| n.as_array()).is_some(),
                 "parse-path diagnostic missing `notes` array: {d}"
             );
@@ -809,6 +1095,14 @@ mod tests {
         // matters, which is covered by analyze_valid_program.  If there are
         // diagnostics, every one must carry both fields.
         for d in diags {
+            assert!(
+                d.get("span").and_then(|span| span.get("start")).is_some(),
+                "type-path diagnostic missing nested `span.start`: {d}"
+            );
+            assert!(
+                d.get("span").and_then(|span| span.get("end")).is_some(),
+                "type-path diagnostic missing nested `span.end`: {d}"
+            );
             assert!(
                 d.get("notes").and_then(|n| n.as_array()).is_some(),
                 "type-path diagnostic missing `notes` array: {d}"
@@ -921,6 +1215,7 @@ mod tests {
             "InvalidLiteral",
             "MissingExpression",
             "InvalidPattern",
+            "ClosurePipeSyntax",
             "Other",
         ];
         let json = ok(analyze("fn {"));

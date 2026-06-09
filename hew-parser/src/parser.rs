@@ -2692,6 +2692,18 @@ impl<'src> Parser<'src> {
     fn parse_machine_decl(&mut self, visibility: Visibility) -> Option<MachineDecl> {
         let name = self.expect_ident()?;
 
+        // Optional generic type parameters: `machine Name<T, U> { ... }`.
+        //
+        // v0.5 accepts bare identifiers only. Trait bounds (`<T: Trait>`)
+        // and machine-over-machine generics are not supported per
+        // `docs/specs/HEW-SPEC-2026.md` §3.11.8; reject them here with a
+        // clear diagnostic instead of silently dropping the bound.
+        let type_params = if self.eat(&Token::Less) {
+            self.parse_machine_type_params()?
+        } else {
+            Vec::new()
+        };
+
         self.expect(&Token::LeftBrace)?;
 
         let mut states = Vec::new();
@@ -2882,11 +2894,61 @@ impl<'src> Parser<'src> {
         Some(MachineDecl {
             visibility,
             name,
+            type_params,
             states,
             events,
             transitions,
             has_default,
         })
+    }
+
+    /// Parse the body of a machine-decl type-parameter list — the tokens
+    /// between the opening `<` (already consumed) and the closing `>`.
+    ///
+    /// v0.5.0 accepts only bare identifiers separated by commas. Anything
+    /// else (trait bounds, defaults, lifetimes, variance markers) is
+    /// rejected with a span-pointed diagnostic so the user is not silently
+    /// dropped into a "the bound was ignored" cliff.
+    fn parse_machine_type_params(&mut self) -> Option<Vec<String>> {
+        let mut params = Vec::new();
+
+        if self.at_closing_angle() {
+            self.error(
+                "empty type parameter list on machine declaration: add at \
+                 least one type parameter, e.g. `machine Lifecycle<T> { ... }`"
+                    .to_string(),
+            );
+            self.eat_closing_angle();
+            return None;
+        }
+
+        while !self.at_end() && !self.at_closing_angle() {
+            let name = self.expect_ident()?;
+
+            // Reject trait bounds outright. v0.6+ may revisit; today we
+            // need every machine generic to be a plain name so the HIR /
+            // codegen substrate has a single shape to lower.
+            if self.peek() == Some(&Token::Colon) {
+                self.error(format!(
+                    "trait bounds on machine type parameters are not supported \
+                     in v0.5 (parameter `{name}`); declare the bound on the \
+                     using site instead"
+                ));
+                return None;
+            }
+
+            params.push(name);
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+
+        if !self.eat_closing_angle() {
+            self.error("expected `>` to close machine type parameter list".to_string());
+            return None;
+        }
+        Some(params)
     }
 
     /// Parse a state pattern: an identifier or `_` (wildcard).
@@ -3721,8 +3783,41 @@ impl<'src> Parser<'src> {
                 }
             }
             Some(Token::Star) => {
+                let star_span = self.peek_span();
                 self.advance();
-                let is_mutable = self.eat(&Token::Var);
+                // v0.5 canonical pointer spelling: `*const T` and `*mut T`.
+                // Bare `*T` and legacy `*var T` are explicitly rejected so
+                // callers cannot silently get one mutability and assume
+                // the other.
+                let is_mutable = match self.peek() {
+                    Some(Token::Mut) => {
+                        self.advance();
+                        true
+                    }
+                    Some(Token::Const) => {
+                        self.advance();
+                        false
+                    }
+                    Some(Token::Var) => {
+                        let span = self.peek_span();
+                        self.error_at(
+                            "pointer type uses canonical spelling `*mut T` — \
+                             `*var T` is no longer accepted"
+                                .to_string(),
+                            span,
+                        );
+                        return None;
+                    }
+                    _ => {
+                        self.error_at(
+                            "pointer type must specify mutability: write `*const T` \
+                             or `*mut T`"
+                                .to_string(),
+                            star_span,
+                        );
+                        return None;
+                    }
+                };
                 let pointee = self.parse_type()?;
                 TypeExpr::Pointer {
                     is_mutable,
@@ -4684,6 +4779,21 @@ impl<'src> Parser<'src> {
                     let end = operand.1.end;
                     (Expr::Await(Box::new(operand)), start..end)
                 }
+                Token::Star => {
+                    // Raw pointer dereference (`*expr`).  v0.5 parses but
+                    // the type checker rejects with either
+                    // `UnsafeOperationRequiresBlock` (outside unsafe) or a
+                    // "not lowered in v0.5" diagnostic (inside unsafe).
+                    let operand = self.parse_expr_bp(rbp)?;
+                    let end = operand.1.end;
+                    (
+                        Expr::Unary {
+                            op: UnaryOp::RawDeref,
+                            operand: Box::new(operand),
+                        },
+                        start..end,
+                    )
+                }
                 _ => unreachable!(),
             }
         } else {
@@ -5389,7 +5499,7 @@ impl<'src> Parser<'src> {
 
                 if self.peek() != Some(&Token::Pipe) {
                     self.error_with_hint(
-                        "E_LEGACY_SPAWN_LAMBDA_SYNTAX: expected `|` to begin actor parameter list"
+                        "E_SPAWN_LAMBDA_SYNTAX_REMOVED: expected `|` to begin actor parameter list"
                             .to_string(),
                         "use `actor |params| { body }` to declare a lambda actor".to_string(),
                     );
@@ -5406,7 +5516,7 @@ impl<'src> Parser<'src> {
                 // Lambda actor body must be a braced block; parse_block consumes the `{`.
                 if self.peek() != Some(&Token::LeftBrace) {
                     self.error_with_hint(
-                        "E_LEGACY_SPAWN_LAMBDA_SYNTAX: expected `{` to begin actor body"
+                        "E_SPAWN_LAMBDA_SYNTAX_REMOVED: expected `{` to begin actor body"
                             .to_string(),
                         "use `actor |params| { body }` — the body must be a braced block"
                             .to_string(),
@@ -5456,7 +5566,7 @@ impl<'src> Parser<'src> {
                             self.parse_expr();
                         }
                         self.error_at_with_hint(
-                            "E_LEGACY_SPAWN_LAMBDA_SYNTAX: `spawn (...) => ...` has been removed; \
+                            "E_SPAWN_LAMBDA_SYNTAX_REMOVED: `spawn (...) => ...` has been removed; \
                              use `actor |...| { ... }` instead (HEW-SPEC-2026 §4.x)"
                                 .to_string(),
                             start..self.peek_span().start,
@@ -6407,7 +6517,10 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
 
 fn prefix_bp(op: &Token) -> Option<u8> {
     match op {
-        Token::Bang | Token::Minus | Token::Tilde | Token::Await => Some(25),
+        // `*expr` is a raw-pointer dereference.  v0.5 parses it only so
+        // the type checker can reject it deterministically — no codegen
+        // path is reached.  Same binding power as the other unary prefixes.
+        Token::Bang | Token::Minus | Token::Tilde | Token::Await | Token::Star => Some(25),
         _ => None,
     }
 }

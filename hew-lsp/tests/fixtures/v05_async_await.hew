@@ -1,0 +1,11 @@
+async fn async_value() -> i32 {
+    7
+}
+
+async fn async_probe() -> i32 {
+    await async_value()
+}
+
+async fn async_await() -> i32 {
+    await async_probe()
+}

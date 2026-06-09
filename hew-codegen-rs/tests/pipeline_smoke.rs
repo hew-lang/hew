@@ -31,7 +31,7 @@ fn emit_ll_for_source(src: &str, module_name: &str) -> String {
         "mir diagnostics: {:?}",
         pipeline.diagnostics
     );
-    let tmp = std::env::temp_dir().join(format!("hew-v05-pipeline-{module_name}"));
+    let tmp = std::env::temp_dir().join(format!("hew-pipeline-{module_name}"));
     std::fs::create_dir_all(&tmp).expect("tmp dir");
     let options = EmitOptions {
         module_name,
@@ -48,7 +48,7 @@ fn emit_ll_for_source(src: &str, module_name: &str) -> String {
 }
 
 #[test]
-fn v05_pipeline_rejects_nested_named_type_before_codegen() {
+fn pipeline_rejects_nested_named_type_before_codegen() {
     let parsed = hew_parser::parse("fn f(x: (Foo, i64)) -> (Foo, i64) { return x; }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
@@ -73,10 +73,10 @@ fn v05_pipeline_rejects_nested_named_type_before_codegen() {
 /// stored width is whatever HIR resolved (`ResolvedTy::Bool`, mapped to
 /// i8 by `primitive_to_llvm`); `ConstI64`'s store truncates the value
 /// to the dest local's width. The MIR pipeline must accept `fn main()
-/// -> bool { true }` cleanly — no `CutoverUnsupported` for bool
+/// -> bool { true }` cleanly — no `NotYetImplemented` for bool
 /// literals, no `UnresolvedPlace`, nothing else.
 #[test]
-fn v05_pipeline_accepts_bool_literal_return() {
+fn pipeline_accepts_bool_literal_return() {
     let parsed = hew_parser::parse("fn main() -> bool { true }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
@@ -98,10 +98,10 @@ fn v05_pipeline_accepts_bool_literal_return() {
 }
 
 /// Float literals now lower to `Instr::FloatLit` in the MIR. The MIR
-/// diagnostic stream must be empty — no `CutoverUnsupported` — for a
+/// diagnostic stream must be empty — no `NotYetImplemented` — for a
 /// simple `fn main() -> f64 { 1.5 }` program.
 #[test]
-fn v05_pipeline_accepts_float_literal_in_mir() {
+fn pipeline_accepts_float_literal_in_mir() {
     let parsed = hew_parser::parse("fn main() -> f64 { 1.5 }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
@@ -124,10 +124,10 @@ fn v05_pipeline_accepts_float_literal_in_mir() {
 
 /// A direct call to a module function now lowers cleanly via
 /// `Terminator::Call`. `main` returns `add(10, 32)`; the MIR pipeline must
-/// accept the program without `CutoverUnsupported` or `UnresolvedPlace`
+/// accept the program without `NotYetImplemented` or `UnresolvedPlace`
 /// diagnostics, and codegen must emit valid LLVM IR.
 #[test]
-fn v05_pipeline_accepts_user_fn_call_via_call_terminator() {
+fn pipeline_accepts_user_fn_call_via_call_terminator() {
     let parsed = hew_parser::parse(
         "fn add(x: i64, y: i64) -> i64 { x + y }\n\
          fn main() -> i64 { add(10, 32) }\n",

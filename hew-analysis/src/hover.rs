@@ -796,8 +796,8 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             is_mutable,
             pointee,
         } => {
-            let mutability = if *is_mutable { "mut " } else { "" };
-            format!("*{mutability}{}", format_type_expr_hover(&pointee.0))
+            let mutability = if *is_mutable { "mut" } else { "const" };
+            format!("*{mutability} {}", format_type_expr_hover(&pointee.0))
         }
         TypeExpr::TraitObject(bounds) => bounds
             .iter()

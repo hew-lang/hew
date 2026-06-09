@@ -97,14 +97,11 @@ pub struct CommonBuildArgs {
 impl CommonBuildArgs {
     /// Build a base [`crate::compile::CompileOptions`] from the common flags.
     ///
-    /// Per-command fields (`target`, `extra_libs`, `debug`)
-    /// are left at their defaults; callers override with struct-update syntax:
+    /// Per-command fields such as `target` are left at their defaults; callers
+    /// override with struct-update syntax:
     ///
     /// ```ignore
-    /// crate::compile::CompileOptions {
-    ///     debug: self.debug,
-    ///     ..self.common.base_compile_options()
-    /// }
+    /// crate::compile::CompileOptions { target: self.target.clone(), ..self.common.base_compile_options() }
     /// ```
     pub fn base_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
@@ -159,13 +156,10 @@ pub struct RunArgs {
     pub program_args: Vec<String>,
 }
 
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
-            extra_libs: self.link_libs.clone(),
-            debug: self.debug,
             ..self.common.base_compile_options()
         }
     }
@@ -199,8 +193,6 @@ impl DebugArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
-            extra_libs: self.link_libs.clone(),
-            debug: true,
             ..self.common.base_compile_options()
         }
     }

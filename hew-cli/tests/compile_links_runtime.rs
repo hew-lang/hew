@@ -23,7 +23,7 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 /// error and produces a binary that runs to completion.
 ///
 /// This test exercises the full path:
-/// - Codegen emits a native `.o` object via `hew-emit-v05`.
+/// - Codegen emits a native `.o` object via `hew-emit`.
 /// - `cmd_compile` calls `link::link_executable` with the host
 ///   `TargetSpec`, which resolves `libhew.a` and applies the platform
 ///   link plan.
@@ -37,7 +37,7 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 fn compile_native_link_produces_runnable_binary() {
     require_codegen();
 
-    let fixture = repo_root().join("tests/v05-vertical-slice/accept/01-arith.hew");
+    let fixture = repo_root().join("tests/vertical-slice/accept/01-arith.hew");
     assert!(fixture.exists(), "fixture not found: {}", fixture.display());
 
     let emit_dir = tempfile::Builder::new()

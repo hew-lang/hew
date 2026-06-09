@@ -37,6 +37,7 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         Token::Let
         | Token::Var
         | Token::Const
+        | Token::Mut
         | Token::Fn
         | Token::If
         | Token::Else

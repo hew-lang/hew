@@ -1,10 +1,9 @@
-//! Bounded `wasmtime` wrapper for `hew run --target wasm32-wasi`.
+//! Bounded `wasmtime` wrapper for WASI eval and future WASI run support.
 
 #![allow(
     dead_code,
-    reason = "the dispatcher short-circuits `hew run` with a cutover error before \
-              reaching this module; its helpers are dormant until the C++ codegen \
-              subtree is removed in a later stage of the v0.5 cutover"
+    reason = "`hew eval --target wasm32-wasi` uses the captured runner; the \
+              interactive `run_module` path is retained for future WASI run support"
 )]
 
 use std::path::{Path, PathBuf};

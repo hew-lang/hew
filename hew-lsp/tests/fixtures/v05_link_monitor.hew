@@ -1,0 +1,16 @@
+actor LinkWorker {
+    receive fn ping(value: i32) -> i32 {
+        value
+    }
+}
+
+fn link_monitor_probe() -> i32 {
+    7
+}
+
+fn link_monitor() -> i32 {
+    let worker = spawn LinkWorker();
+    link(worker);
+    monitor(worker);
+    link_monitor_probe()
+}

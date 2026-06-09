@@ -126,6 +126,8 @@ pub enum Token<'src> {
     Var,
     #[token("const")]
     Const,
+    #[token("mut")]
+    Mut,
     #[token("fn")]
     Fn,
     #[token("if")]
@@ -596,6 +598,7 @@ define_keywords! {
     Let        => "let",
     Var        => "var",
     Const      => "const",
+    Mut        => "mut",
     Fn         => "fn",
     If         => "if",
     Else       => "else",
@@ -788,7 +791,7 @@ mod tests {
 
     #[test]
     fn all_keywords() {
-        let src = "let var const fn if else match loop for while break continue return \
+        let src = "let var const mut fn if else match loop for while break continue return \
                    import pub package super struct enum trait impl wire actor \
                    supervisor child restart budget strategy permanent transient temporary \
                    one_for_one one_for_all rest_for_one simple_one_for_one pool \
@@ -797,10 +800,11 @@ mod tests {
                    default unsafe extern foreign in select race join from after gen yield \
                    where cooperate catch defer is";
         let toks = tokens(src);
-        assert_eq!(toks.len(), 70);
+        assert_eq!(toks.len(), 71);
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
-        assert_eq!(toks[69], Token::Is);
+        assert_eq!(toks[3], Token::Mut);
+        assert_eq!(toks[70], Token::Is);
     }
 
     #[test]

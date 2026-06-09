@@ -241,14 +241,10 @@ mod wasm {
     use std::ffi::{c_char, c_void, CStr};
     use std::sync::Mutex;
 
+    use crate::send_ptr::SendPtr;
     use crate::util::MutexExt;
 
-    /// Wrapper around `*mut c_void` that implements Send.
-    /// SAFETY: WASM is single-threaded, no cross-thread sharing.
-    struct SendPtr(*mut c_void);
-    unsafe impl Send for SendPtr {}
-
-    static REGISTRY: Mutex<Option<HashMap<String, SendPtr>>> = Mutex::new(None);
+    static REGISTRY: Mutex<Option<HashMap<String, SendPtr<c_void>>>> = Mutex::new(None);
 
     unsafe fn cstr_key<'a>(name: *const c_char, context: &str) -> Option<&'a str> {
         if name.is_null() {
@@ -266,7 +262,7 @@ mod wasm {
 
     fn with_registry<F, R>(f: F) -> R
     where
-        F: FnOnce(&mut HashMap<String, SendPtr>) -> R,
+        F: FnOnce(&mut HashMap<String, SendPtr<c_void>>) -> R,
     {
         let mut guard = REGISTRY.lock_or_recover();
         f(guard.get_or_insert_with(HashMap::new))
@@ -290,7 +286,10 @@ mod wasm {
             if reg.contains_key(&key) {
                 return -1;
             }
-            reg.insert(key, SendPtr(actor));
+            // SAFETY: WASM is single-threaded; the registry never crosses
+            // threads, so the `Send` marker on `SendPtr` is trivially honoured.
+            let entry = unsafe { SendPtr::new(actor) };
+            reg.insert(key, entry);
             0
         })
     }
@@ -307,7 +306,11 @@ mod wasm {
         let Some(key) = (unsafe { cstr_key(name, "hew_registry_lookup") }) else {
             return std::ptr::null_mut();
         };
-        with_registry(|reg| reg.get(key).map(|p| p.0).unwrap_or(std::ptr::null_mut()))
+        with_registry(|reg| {
+            reg.get(key)
+                .map(SendPtr::as_ptr)
+                .unwrap_or(std::ptr::null_mut())
+        })
     }
 
     /// Remove an actor registration by name.

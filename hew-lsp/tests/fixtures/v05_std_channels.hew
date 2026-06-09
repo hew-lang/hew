@@ -1,0 +1,16 @@
+fn std_channels_probe() -> i32 {
+    7
+}
+
+fn std_channels(
+    stream: Stream<i32>,
+    sink: Sink<i32>,
+    duplex: Duplex<i32, string>,
+    channel: Channel<i32>,
+) -> i32 {
+    stream.recv();
+    sink.send(std_channels_probe());
+    duplex.send(1);
+    channel.close();
+    std_channels_probe()
+}

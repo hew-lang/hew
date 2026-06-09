@@ -15,7 +15,7 @@ use hew_mir::{lower_hir_module, CaptureKind, ElaboratedMirFunction, IrPipeline, 
 use hew_types::TypeCheckOutput;
 
 /// Run the full source → HIR → MIR pipeline. Asserts parser cleanliness
-/// and `verify_hir` cleanliness; tolerates `CutoverUnsupported` HIR
+/// and `verify_hir` cleanliness; tolerates `NotYetImplemented` HIR
 /// diagnostics because the spine subset does not lower every actor-body
 /// shape yet (calls inside actor bodies surface a cutover diagnostic
 /// from `hew-hir` slice-2 lowering). The lambda-capture ledger is
@@ -30,38 +30,28 @@ fn pipeline(source: &str) -> IrPipeline {
         parsed.errors
     );
     let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
-    // Allow CutoverUnsupported diagnostics — the actor-body call
+    // Allow NotYetImplemented diagnostics — the actor-body call
     // surface is deferred work in the spine. Reject everything else.
-    let non_cutover: Vec<_> = output
+    let non_nyi: Vec<_> = output
         .diagnostics
         .iter()
-        .filter(|d| {
-            !matches!(
-                d.kind,
-                hew_hir::HirDiagnosticKind::CutoverUnsupported { .. }
-            )
-        })
+        .filter(|d| !matches!(d.kind, hew_hir::HirDiagnosticKind::NotYetImplemented { .. }))
         .collect();
     assert!(
-        non_cutover.is_empty(),
-        "unexpected hir diagnostics: {non_cutover:?}"
+        non_nyi.is_empty(),
+        "unexpected hir diagnostics: {non_nyi:?}"
     );
     let verify = verify_hir(&output.module);
-    // Same tolerance: a CutoverUnsupported HIR node may surface a
+    // Same tolerance: a NotYetImplemented HIR node may surface a
     // verifier diagnostic (defense-in-depth from `verify.rs`); the
     // capture ledger is independent of that finding.
-    let non_cutover_verify: Vec<_> = verify
+    let non_nyi_verify: Vec<_> = verify
         .iter()
-        .filter(|d| {
-            !matches!(
-                d.kind,
-                hew_hir::HirDiagnosticKind::CutoverUnsupported { .. }
-            )
-        })
+        .filter(|d| !matches!(d.kind, hew_hir::HirDiagnosticKind::NotYetImplemented { .. }))
         .collect();
     assert!(
-        non_cutover_verify.is_empty(),
-        "unexpected verify diagnostics: {non_cutover_verify:?}"
+        non_nyi_verify.is_empty(),
+        "unexpected verify diagnostics: {non_nyi_verify:?}"
     );
     lower_hir_module(&output.module)
 }
@@ -97,7 +87,7 @@ fn make() {
 ";
     let p = pipeline(source);
     // Producer-driven path is fail-closed at the cutover seam (a
-    // `CutoverUnsupported` diagnostic surfaces because call-expression
+    // `NotYetImplemented` diagnostic surfaces because call-expression
     // lowering inside the actor body is not yet wired). The
     // lambda_captures ledger is still populated by the producer
     // BEFORE diagnostics short-circuit codegen — assert it directly

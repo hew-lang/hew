@@ -1,15 +1,15 @@
 //! Frontend helpers for check/eval paths that still need parser/typechecker
-//! diagnostics and `MessagePack` serialization.
+//! diagnostics while execution subcommands are cut over to Rust codegen.
 
 use std::fmt;
 #[cfg(test)]
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 #[cfg(test)]
 use std::collections::{HashMap, HashSet};
-#[cfg(hew_embedded_codegen)]
-use std::ffi::{CStr, CString};
 
 use hew_compile::{
     compile_program_to_msgpack as frontend_compile_program_to_msgpack, FrontendDiagnostic,
@@ -31,54 +31,13 @@ use hew_parser::ast::{ImportDecl, Item, Spanned};
 
 use crate::target::TargetSpec;
 
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    clippy::enum_variant_names,
-    reason = "variants match C API enum naming"
-)]
-enum EmbeddedCodegenMode {
-    EmitObject = 2,
-}
-
-#[cfg(hew_embedded_codegen)]
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct EmbeddedCodegenOptions {
-    mode: u32,
-    debug_info: u8,
-    output_path: *const std::ffi::c_char,
-    target_triple: *const std::ffi::c_char,
-}
-
-#[cfg(hew_embedded_codegen)]
-#[repr(C)]
-#[derive(Debug)]
-struct EmbeddedCodegenBuffer {
-    data: *mut std::ffi::c_char,
-    len: usize,
-}
-
-#[cfg(hew_embedded_codegen)]
-unsafe extern "C" {
-    fn hew_codegen_compile_msgpack(
-        data: *const u8,
-        size: usize,
-        options: *const EmbeddedCodegenOptions,
-        text_output: *mut EmbeddedCodegenBuffer,
-    ) -> std::ffi::c_int;
-    fn hew_codegen_buffer_free(buffer: EmbeddedCodegenBuffer);
-    fn hew_codegen_last_error() -> *const std::ffi::c_char;
-}
+const EXECUTION_SUBSTRATE_UNAVAILABLE: &str = "`hew run`, `hew eval`, `hew test`, and `hew debug` are unavailable during the v0.5 compiler cutover; only `hew compile` is currently backed by the Rust MIR/codegen-rs pipeline";
 
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
     pub no_typecheck: bool,
     pub werror: bool,
     pub target: Option<String>,
-    pub extra_libs: Vec<String>,
-    /// Build with debug info (no optimizations, no stripping).
-    pub debug: bool,
     /// Override the package search directory (default: `.adze/packages/`).
     pub pkg_path: Option<PathBuf>,
     /// Anchor an in-memory compile to a specific project directory so that
@@ -280,55 +239,6 @@ fn render_inferred_type_serialization_diagnostic(
     }
 }
 
-fn compile_and_link(
-    ast_data: &[u8],
-    input: &str,
-    output: Option<&str>,
-    target: &TargetSpec,
-    options: &CompileOptions,
-) -> Result<String, String> {
-    let obj_temp = tempfile::Builder::new()
-        .prefix("hew_")
-        .suffix(target.object_suffix())
-        .tempfile()
-        .map_err(|e| format!("Error: cannot create temp file: {e}"))?
-        .into_temp_path();
-    let obj_path = obj_temp.display().to_string();
-
-    run_embedded_codegen(
-        ast_data,
-        EmbeddedCodegenMode::EmitObject,
-        target,
-        options,
-        Some(&obj_path),
-    )?;
-
-    let default_output = default_output_name(input, target.executable_suffix(), "a.out");
-    let output_path = output.unwrap_or(&default_output);
-    crate::link::link_executable(
-        &obj_path,
-        output_path,
-        target,
-        &options.extra_libs,
-        options.debug,
-    )?;
-
-    Ok(output_path.to_string())
-}
-
-fn default_output_name(input: &str, suffix: &str, fallback: &str) -> String {
-    let name = Path::new(input)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or(fallback)
-        .to_string();
-    if !suffix.is_empty() && !name.ends_with(suffix) {
-        format!("{name}{suffix}")
-    } else {
-        name
-    }
-}
-
 /// Public wrapper for rendering frontend diagnostics; used by `cmd_check`
 /// when `--explain-cow` is set (which calls `check_file` directly instead of
 /// going through the normal `compile` path).
@@ -356,38 +266,10 @@ pub(crate) fn check_explain_cow(
     }
 }
 
-/// Compile a parsed program through the frontend pipeline only, yielding the
-/// MessagePack-encoded AST bytes ready for the JIT backend.
-///
-/// Renders frontend diagnostics as a side effect. Returns `Err` on compile
-/// failure with the same semantics as [`compile_from_source_checked`].
-pub(crate) fn frontend_to_msgpack(
-    program: hew_parser::ast::Program,
-    source: &str,
-    source_label: &str,
-    options: &CompileOptions,
-) -> Result<Vec<u8>, CompileFromSourceError> {
-    let target = TargetSpec::from_requested(options.target.as_deref())
-        .map_err(CompileFromSourceError::Message)?;
-    let frontend_options = frontend_options(&target, options);
-
-    let frontend =
-        match frontend_compile_program_to_msgpack(program, source, source_label, &frontend_options)
-        {
-            Ok(frontend) => frontend,
-            Err(failure) => {
-                render_frontend_diagnostics(&failure.diagnostics);
-                return Err(if failure.diagnostics.is_empty() {
-                    CompileFromSourceError::Message(failure.message)
-                } else {
-                    CompileFromSourceError::DiagnosticsRendered
-                });
-            }
-        };
-    render_frontend_diagnostics(&frontend.diagnostics);
-    Ok(frontend.data)
-}
-
+#[allow(
+    dead_code,
+    reason = "R42 owns the full legacy compile.rs removal; R30 has removed its call sites"
+)]
 pub(crate) fn compile_from_source_checked(
     program: hew_parser::ast::Program,
     source: &str,
@@ -395,6 +277,7 @@ pub(crate) fn compile_from_source_checked(
     output_path: &str,
     options: &CompileOptions,
 ) -> Result<(), CompileFromSourceError> {
+    let _ = output_path;
     let target = TargetSpec::from_requested(options.target.as_deref())
         .map_err(CompileFromSourceError::Message)?;
     let frontend_options = frontend_options(&target, options);
@@ -420,111 +303,9 @@ pub(crate) fn compile_from_source_checked(
         ));
     }
 
-    compile_and_link(
-        &frontend.data,
-        source_label,
-        Some(output_path),
-        &target,
-        options,
-    )
-    .map_err(CompileFromSourceError::Message)?;
-    Ok(())
-}
-
-#[cfg(not(hew_embedded_codegen))]
-fn run_embedded_codegen(
-    ast_data: &[u8],
-    mode: EmbeddedCodegenMode,
-    target: &TargetSpec,
-    options: &CompileOptions,
-    output_path: Option<&str>,
-) -> Result<Vec<u8>, String> {
-    let _ = (ast_data, mode, target, options, output_path);
-    Err(embedded_codegen_unavailable_error())
-}
-
-#[cfg(hew_embedded_codegen)]
-fn run_embedded_codegen(
-    ast_data: &[u8],
-    mode: EmbeddedCodegenMode,
-    target: &TargetSpec,
-    options: &CompileOptions,
-    output_path: Option<&str>,
-) -> Result<Vec<u8>, String> {
-    let output_path = output_path
-        .map(|path| {
-            CString::new(path).map_err(|_| format!("Error: output path contains NUL: {path}"))
-        })
-        .transpose()?;
-    let target_triple = target
-        .codegen_triple()
-        .map(|target| {
-            CString::new(target).map_err(|_| format!("Error: target triple contains NUL: {target}"))
-        })
-        .transpose()?;
-
-    let ffi_options = EmbeddedCodegenOptions {
-        mode: mode as u32,
-        debug_info: u8::from(options.debug),
-        output_path: output_path
-            .as_ref()
-            .map_or(std::ptr::null(), |path| path.as_ptr()),
-        target_triple: target_triple
-            .as_ref()
-            .map_or(std::ptr::null(), |target| target.as_ptr()),
-    };
-    let mut buffer = EmbeddedCodegenBuffer {
-        data: std::ptr::null_mut(),
-        len: 0,
-    };
-
-    // SAFETY: the msgpack buffer and option pointers remain valid for the
-    // duration of the FFI call, and `buffer` is an out-parameter.
-    let status = unsafe {
-        hew_codegen_compile_msgpack(
-            ast_data.as_ptr(),
-            ast_data.len(),
-            &raw const ffi_options,
-            &raw mut buffer,
-        )
-    };
-    if status != 0 {
-        return Err(last_embedded_codegen_error());
-    }
-
-    if buffer.data.is_null() || buffer.len == 0 {
-        return Ok(Vec::new());
-    }
-
-    // SAFETY: the codegen bridge populated `buffer` with a valid allocation
-    // that remains alive until freed with `hew_codegen_buffer_free`.
-    let bytes = unsafe {
-        let slice = std::slice::from_raw_parts(buffer.data.cast::<u8>(), buffer.len);
-        let owned = slice.to_vec();
-        hew_codegen_buffer_free(buffer);
-        owned
-    };
-    Ok(bytes)
-}
-
-#[cfg(not(hew_embedded_codegen))]
-fn embedded_codegen_unavailable_error() -> String {
-    "embedded MLIR/LLVM codegen is unavailable in this build of hew; rebuild with LLVM/MLIR configured (set LLVM_PREFIX or LLVM_DIR/MLIR_DIR, and use HEW_EMBED_STATIC=1 when only static LLVM/MLIR libraries are available)".into()
-}
-
-#[cfg(hew_embedded_codegen)]
-fn last_embedded_codegen_error() -> String {
-    // SAFETY: the codegen bridge returns either null or a valid C string until
-    // the next codegen call.
-    let error = unsafe { hew_codegen_last_error() };
-    if error.is_null() {
-        "embedded codegen failed".into()
-    } else {
-        // SAFETY: `error` is non-null and points to a NUL-terminated C string.
-        unsafe { CStr::from_ptr(error) }
-            .to_string_lossy()
-            .into_owned()
-    }
+    Err(CompileFromSourceError::Message(
+        EXECUTION_SUBSTRATE_UNAVAILABLE.to_owned(),
+    ))
 }
 
 #[cfg(test)]
@@ -824,28 +605,6 @@ fn main() {
     fn test_line_map_empty() {
         let map = line_map_from_source("");
         assert_eq!(map, vec![0]);
-    }
-
-    #[test]
-    fn default_output_name_uses_target_specific_object_suffixes() {
-        let darwin = TargetSpec::from_requested(Some("arm64-apple-darwin")).expect("darwin target");
-        let linux =
-            TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("linux target");
-        let windows =
-            TargetSpec::from_requested(Some("x86_64-pc-windows-gnu")).expect("windows target");
-
-        assert_eq!(
-            default_output_name("examples/main.hew", darwin.object_suffix(), "output"),
-            "main.o"
-        );
-        assert_eq!(
-            default_output_name("examples/main.hew", linux.object_suffix(), "output"),
-            "main.o"
-        );
-        assert_eq!(
-            default_output_name("examples/main.hew", windows.object_suffix(), "output"),
-            "main.obj"
-        );
     }
 
     #[test]

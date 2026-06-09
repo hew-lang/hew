@@ -152,7 +152,7 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
             is_mutable,
             pointee,
         } => {
-            let prefix = if *is_mutable { "&mut " } else { "&" };
+            let prefix = if *is_mutable { "*mut " } else { "*const " };
             format!("{prefix}{}", format_type(&pointee.0))
         }
         TypeExpr::Option(inner) => format!("{}?", format_type(&inner.0)),
@@ -193,6 +193,7 @@ fn format_literal(expr: &Expr) -> String {
                 UnaryOp::Negate => "-",
                 UnaryOp::Not => "!",
                 UnaryOp::BitNot => "~",
+                UnaryOp::RawDeref => "*",
             };
             if let Expr::Literal(lit) = &operand.0 {
                 format!("{prefix}{}", format_lit(lit))

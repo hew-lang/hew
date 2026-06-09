@@ -134,7 +134,7 @@ pub fn parse(expr: string) -> Expr {
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_cron_parse(expr: string) -> Expr;
-    fn hew_cron_next(expr: Expr, after_epoch_secs: i64, out_ts: *var i64) -> i32;
+    fn hew_cron_next(expr: Expr, after_epoch_secs: i64, out_ts: *mut i64) -> i32;
     fn hew_cron_next_hew(expr: Expr, after_epoch_secs: i64) -> CronNextResult;
     fn hew_cron_last_error() -> string;
     fn hew_cron_to_string(expr: Expr) -> string;

@@ -1496,6 +1496,7 @@ dependencies = [
  "hew-hir",
  "hew-mir",
  "hew-parser",
+ "hew-runtime",
  "hew-types",
  "inkwell",
  "libc",

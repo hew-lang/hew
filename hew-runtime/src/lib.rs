@@ -34,7 +34,7 @@
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::ffi::{c_char, CString};
+use std::ffi::{c_char, c_void, CString};
 use std::io::Write;
 
 thread_local! {
@@ -66,6 +66,22 @@ pub extern "C" fn hew_last_error() -> *const c_char {
 pub extern "C" fn hew_clear_error() {
     LAST_ERROR.with(|e| *e.borrow_mut() = None);
 }
+
+/// Native no-op for the target-neutral actor metadata registration call.
+///
+/// The v0.5 LLVM emitter builds one textual module before object emission, so
+/// actor spawn IR can contain the WASM host metadata registration call even
+/// when the same module is compiled to a native object. Native hosts do not
+/// query WASM actor metadata; they only need this symbol to link cleanly.
+/// NATIVE-TODO(#1259): replace this stub with real native metadata
+/// registration when native metadata consumers exist.
+///
+/// # Safety
+///
+/// The pointer is intentionally ignored on native targets.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_wasm_register_actor_meta(_meta: *const c_void) {}
 
 /// Terminate the current process with a Hew integer exit code.
 #[no_mangle]
@@ -243,6 +259,7 @@ pub mod duration;
 pub mod parse_error_slot;
 
 pub mod internal;
+mod send_ptr;
 mod tagged_union;
 mod trap_code;
 // On WASM, provide shims for runtime functions used by codegen but not

@@ -1,0 +1,9 @@
+fn unsafe_probe() -> i32 {
+    7
+}
+
+fn unsafe_block() -> i32 {
+    unsafe {
+        unsafe_probe()
+    }
+}

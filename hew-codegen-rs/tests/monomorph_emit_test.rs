@@ -61,7 +61,7 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         .filter(|d| {
             matches!(
                 d.kind,
-                MirDiagnosticKind::CutoverUnsupported { .. }
+                MirDiagnosticKind::NotYetImplemented { .. }
                     | MirDiagnosticKind::UnresolvedPlace { .. }
             )
         })

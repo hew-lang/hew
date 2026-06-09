@@ -10,7 +10,7 @@
 //! - The destination Place is typed `LocalPid<ChildActor>` (`ActorHandle`).
 //! - A `Terminator::Trap { kind: TrapKind::SupervisorChildUnavailable }` block
 //!   is reachable from the field-access site.
-//! - Pool child access emits `CutoverUnsupported` and does NOT emit a
+//! - Pool child access emits `NotYetImplemented` and does NOT emit a
 //!   `CallRuntimeAbi` or `RecordFieldLoad` for that site.
 //! - No supervisor field access reaches the `record_field_orders` path
 //!   (verified by absence of any "unregistered record type" diagnostic).
@@ -39,7 +39,7 @@ fn lower_module(source: &str) -> hew_mir::IrPipeline {
     lower_hir_module(&hir.module)
 }
 
-/// Lower a program where we expect MIR diagnostics (e.g., `CutoverUnsupported`).
+/// Lower a program where we expect MIR diagnostics (e.g., `NotYetImplemented`).
 fn lower_module_expect_mir_diagnostics(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);
     assert!(
@@ -245,13 +245,13 @@ fn static_child_access_emits_record_field_loads_for_tag_and_handle() {
 }
 
 #[test]
-fn static_child_access_does_not_emit_cutover_unsupported() {
+fn static_child_access_does_not_emit_not_yet_implemented() {
     let pipeline = lower_module(STATIC_CHILD_ACCESS_SOURCE);
 
     // No diagnostic about "unregistered record type" or pool/nested should appear.
     let bad_diag = pipeline.diagnostics.iter().find(|d| {
         matches!(&d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
             if construct.contains("unregistered record type")
                 || construct.contains("supervisor")
         )
@@ -263,9 +263,9 @@ fn static_child_access_does_not_emit_cutover_unsupported() {
     );
 }
 
-/// Pool child access should produce `CutoverUnsupported`, NOT a runtime call.
+/// Pool child access should produce `NotYetImplemented`, NOT a runtime call.
 #[test]
-fn pool_child_access_emits_cutover_unsupported() {
+fn pool_child_access_emits_not_yet_implemented() {
     let pipeline = lower_module_expect_mir_diagnostics(
         r"
         actor Worker { receive fn ping() {} }
@@ -297,15 +297,15 @@ fn pool_child_access_emits_cutover_unsupported() {
         "pool child access must NOT emit hew_supervisor_child_get"
     );
 
-    // A CutoverUnsupported diagnostic with "pool child accessor" must be present.
+    // A NotYetImplemented diagnostic with "pool child accessor" must be present.
     let pool_diag = pipeline.diagnostics.iter().find(|d| {
         matches!(&d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
             if construct.contains("pool child accessor")
         )
     });
     assert!(
         pool_diag.is_some(),
-        "pool child access must emit CutoverUnsupported with 'pool child accessor'"
+        "pool child access must emit NotYetImplemented with 'pool child accessor'"
     );
 }

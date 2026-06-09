@@ -91,7 +91,7 @@ fn integer_signedness(ty: &ResolvedTy) -> Option<IntSignedness> {
 /// native) — their width is NOT knowable at MIR construction time.
 /// Returns `None` for platform-sized types and all non-integer types.
 /// Callers that require a static width (shift-range check, signed-MIN
-/// constant emission) must fail-closed (`CutoverUnsupported`) when this
+/// constant emission) must fail-closed (`NotYetImplemented`) when this
 /// returns `None`.
 ///
 /// WHY-ISIZE-NONE: the shift-range bound `(count as unsigned) >= W`
@@ -1072,7 +1072,7 @@ fn lower_actor_lifecycle_handlers(
                 // CrashAction enum-variant construction.
                 //
                 // BODY-RETURN NOTE: enum-variant construction (`CrashAction::Restart`)
-                // is not yet wired in HIR lowering (CutoverUnsupported gate). Today
+                // is not yet wired in HIR lowering (NotYetImplemented gate). Today
                 // only `panic()`-diverging bodies compile, so no actual CrashAction
                 // value can appear in the MIR return slot.
                 //
@@ -1507,13 +1507,13 @@ fn lower_supervisor_bootstrap(
     let ordered = supervisor_children_in_spawn_order(sup)?;
 
     // Verify every child names an actor we know about. Unknown actor
-    // -> CutoverUnsupported, skip emission. The checker validates child
+    // -> NotYetImplemented, skip emission. The checker validates child
     // types but a stale stdlib/registry could in principle desync; this
     // is the MIR-side fail-closed boundary.
     for child in &ordered {
         if !actor_layouts.contains_key(&child.ty) {
             diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!(
                         "supervisor `{}` child `{}` references unknown actor `{}`",
                         sup.name, child.name, child.ty
@@ -1592,7 +1592,7 @@ fn lower_supervisor_bootstrap(
                     // the topo sort just forbade). Either way, refuse to
                     // emit.
                     diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::CutoverUnsupported {
+                        kind: MirDiagnosticKind::NotYetImplemented {
                             construct: format!(
                                 "supervisor `{}` child `{}` wired_to refers to sibling \
                                  `{sibling_name}` which is unresolved at spawn time",
@@ -1918,6 +1918,11 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
+        }
+        HirExprKind::MachineEmit { fields, .. } => {
+            for (_, field_val) in fields {
+                collect_unknown_self_fields_in_expr(field_val, state_fields, seen, unknown);
+            }
         }
     }
 }
@@ -2337,7 +2342,7 @@ struct Builder {
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
     /// (→ `Terminator::Call`) from runtime-ABI callees (→
     /// `Instr::CallRuntimeAbi`) and from indirect/closure callees
-    /// (→ `CutoverUnsupported`). Name-string matching is the reliable
+    /// (→ `NotYetImplemented`). Name-string matching is the reliable
     /// discriminator here because the HIR bridge does not yet emit
     /// `ResolvedRef::Item` for function-item callees (see the SHIM comment
     /// at the Call lowering arm). The set is populated once per module by
@@ -2896,7 +2901,7 @@ impl Builder {
                     }
                 ) {
                     self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::CutoverUnsupported {
+                        kind: MirDiagnosticKind::NotYetImplemented {
                             construct: "function call".to_string(),
                             site: expr.site,
                         },
@@ -2938,7 +2943,7 @@ impl Builder {
                     let _ = self.lower_value(arg);
                 }
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: "indirect or unresolved function call".to_string(),
                         site: expr.site,
                     },
@@ -3001,7 +3006,7 @@ impl Builder {
                             let _ = self.lower_value(base_expr);
                         }
                         self.diagnostics.push(MirDiagnostic {
-                            kind: MirDiagnosticKind::CutoverUnsupported {
+                            kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
                                     "record type `{name}` (not registered in field-order table)"
                                 ),
@@ -3054,7 +3059,7 @@ impl Builder {
                         // No explicit value and no base — checker should have
                         // rejected this; fail closed.
                         self.diagnostics.push(MirDiagnostic {
-                            kind: MirDiagnosticKind::CutoverUnsupported {
+                            kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
                                     "record `{name}` missing field `{fname}` with no functional-update base"
                                 ),
@@ -3116,7 +3121,7 @@ impl Builder {
                             // "unused value" diagnostics further up the chain.
                             let _ = self.lower_value(object);
                             self.diagnostics.push(MirDiagnostic {
-                                kind: MirDiagnosticKind::CutoverUnsupported {
+                                kind: MirDiagnosticKind::NotYetImplemented {
                                     construct: "pool child accessor (v0.6)".to_string(),
                                     site: expr.site,
                                 },
@@ -3146,7 +3151,7 @@ impl Builder {
                             if is_nested {
                                 let _ = self.lower_value(object);
                                 self.diagnostics.push(MirDiagnostic {
-                                    kind: MirDiagnosticKind::CutoverUnsupported {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
                                         construct: "nested supervisor child accessor (v0.6)"
                                             .to_string(),
                                         site: expr.site,
@@ -3179,7 +3184,7 @@ impl Builder {
                     other => {
                         let _ = self.lower_value(object);
                         self.diagnostics.push(MirDiagnostic {
-                            kind: MirDiagnosticKind::CutoverUnsupported {
+                            kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!("field access on non-named type `{other:?}`"),
                                 site: expr.site,
                             },
@@ -3195,7 +3200,7 @@ impl Builder {
                     } else {
                         let _ = self.lower_value(object);
                         self.diagnostics.push(MirDiagnostic {
-                            kind: MirDiagnosticKind::CutoverUnsupported {
+                            kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
                                     "field access on unregistered record type `{type_name}`"
                                 ),
@@ -3217,7 +3222,7 @@ impl Builder {
                 } else {
                     let _ = self.lower_value(object);
                     self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::CutoverUnsupported {
+                        kind: MirDiagnosticKind::NotYetImplemented {
                             construct: format!("unknown field `{field}` on record `{type_name}`"),
                             site: expr.site,
                         },
@@ -3404,9 +3409,23 @@ impl Builder {
                 });
                 dest
             }
+            HirExprKind::MachineEmit { .. } => {
+                // `emit` expressions are valid HIR (Slice 2), but MIR
+                // lowering for machine bodies is deferred to Lane B Slice 4b.
+                // Fail closed so that a machine body reaching MIR via an
+                // unanticipated path is rejected rather than silently
+                // producing no-op code.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: "MachineEmit (Lane B Slice 4b not yet wired)".to_string(),
+                    },
+                    note: "machine emit expressions are not yet lowered to MIR".to_string(),
+                });
+                None
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
-                // CutoverUnsupported and the driver should have stopped
+                // NotYetImplemented and the driver should have stopped
                 // before reaching MIR. Emit a MirDiagnostic so the pipeline
                 // is still rejected if somehow the gate was bypassed.
                 self.diagnostics.push(MirDiagnostic {
@@ -3414,7 +3433,7 @@ impl Builder {
                         reason: reason.clone(),
                     },
                     note: "HIR Unsupported node reached MIR lowering; \
-                           CutoverUnsupported should have been caught earlier"
+                           NotYetImplemented should have been caught earlier"
                         .to_string(),
                 });
                 None
@@ -3484,7 +3503,7 @@ impl Builder {
                         // type is a checker bug. Fail closed per LESSONS
                         // `boundary-fail-closed`.
                         self.diagnostics.push(MirDiagnostic {
-                            kind: MirDiagnosticKind::CutoverUnsupported {
+                            kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: "float literal with non-float resolved type".to_string(),
                                 site,
                             },
@@ -3656,13 +3675,13 @@ impl Builder {
             // `None`, letting the parent expression succeed with a missing
             // producer (quiet fail-soft — caller's `decide` ran,
             // `MirDiagnostic` did not). Fail closed now: drop the dest local,
-            // emit a `CutoverUnsupported` so the CLI rejection surface sees
+            // emit a `NotYetImplemented` so the CLI rejection surface sees
             // the offending construct, and return `None`.
             // LESSONS `boundary-fail-closed`.
             _ => {
                 self.locals.pop();
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!("binary operator `{op}`"),
                         site,
                     },
@@ -3720,11 +3739,11 @@ impl Builder {
             // Fail closed rather than emit unchecked arithmetic.
             self.locals.pop();
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("binary operator `{op}` on non-integer, non-float type"),
                     site,
                 },
-                note: "B-2 overflow-trap lowering requires an integer-typed result \
+                note: "overflow-trap lowering requires an integer-typed result \
                        (i8/i16/i32/i64/u8/u16/u32/u64/isize/usize)"
                     .to_string(),
             });
@@ -3846,11 +3865,11 @@ impl Builder {
             // Non-integer, non-float reaching `/` or `%` — B-1 violation upstream.
             self.locals.pop();
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("binary operator `{op}` on non-integer, non-float type"),
                     site,
                 },
-                note: "B-5 div/rem trap lowering requires an integer-typed result".to_string(),
+                note: "div/rem trap lowering requires an integer-typed result".to_string(),
             });
             return None;
         };
@@ -3890,11 +3909,11 @@ impl Builder {
                 // Fail closed rather than emit an incorrect guard.
                 self.locals.pop();
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!("binary operator `{op}` on `isize`"),
                         site,
                     },
-                    note: "B-5 signed-MIN/-1 trap for `isize` requires target-width \
+                    note: "signed-MIN/-1 trap for `isize` requires target-width \
                            information not available at MIR construction time. \
                            WHEN-OBSOLETE: when IrPipeline carries a TargetSpec, \
                            re-wire to emit the correct per-target MIN constant."
@@ -3978,7 +3997,7 @@ impl Builder {
     /// large unsigned values after reinterpretation) and counts ≥ the
     /// type's width.
     ///
-    /// `isize`/`usize` are rejected with `CutoverUnsupported` because
+    /// `isize`/`usize` are rejected with `NotYetImplemented` because
     /// the bit-width is not statically known at MIR time (see
     /// `integer_bit_width` for the documented why / when-obsolete).
     ///
@@ -4009,11 +4028,11 @@ impl Builder {
         let Some(signed) = integer_signedness(ty) else {
             self.locals.pop();
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("binary operator `{op}` on non-integer type"),
                     site,
                 },
-                note: "B-5 shift trap lowering requires an integer-typed operand".to_string(),
+                note: "shift trap lowering requires an integer-typed operand".to_string(),
             });
             return None;
         };
@@ -4022,11 +4041,11 @@ impl Builder {
             // isize / usize: width not knowable at MIR time.
             self.locals.pop();
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("binary operator `{op}` on `isize`/`usize`"),
                     site,
                 },
-                note: "B-5 shift-range trap for `isize`/`usize` requires target-width \
+                note: "shift-range trap for `isize`/`usize` requires target-width \
                        information not available at MIR construction time. \
                        WHEN-OBSOLETE: when IrPipeline carries a TargetSpec, \
                        re-wire to emit the correct per-target width constant."
@@ -4117,7 +4136,7 @@ impl Builder {
         // Lower the condition in the entry (current) block. Receive a
         // Place holding the truth value; codegen's `Terminator::Branch`
         // emitter loads it and compares non-zero.
-        // Condition lowering failed (CutoverUnsupported or similar) —
+        // Condition lowering failed (NotYetImplemented or similar) —
         // propagate by returning None via `?`. The diagnostic already
         // lives on `self.diagnostics`, so the CLI rejects the program;
         // the half-built If does not need to seal the current block.
@@ -4324,7 +4343,7 @@ impl Builder {
     /// - `f64` → `hew_vec_get_f64`
     /// - ptr-shaped (`Duplex`, `LambdaActorHandle`, Named heap types) → `hew_vec_get_ptr`
     ///
-    /// Unsupported element types emit `MirDiagnostic::CutoverUnsupported`
+    /// Unsupported element types emit `MirDiagnostic::NotYetImplemented`
     /// and return `None` (tracked gap, not silent shim).
     fn lower_vec_index(
         &mut self,
@@ -4386,7 +4405,7 @@ impl Builder {
             ResolvedTy::Named { .. } => "hew_vec_get_ptr",
             other => {
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!("Vec<{other:?}> element type for xs[i]"),
                         site,
                     },
@@ -4481,7 +4500,7 @@ impl Builder {
             }
             other => {
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!(
                             "Vec range-slice result type must be Vec<T>; got {other:?}"
                         ),
@@ -4505,7 +4524,7 @@ impl Builder {
             ResolvedTy::Named { .. } => "hew_vec_slice_range_ptr",
             other => {
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!("Vec<{other:?}> element type for xs[a..b]"),
                         site,
                     },
@@ -4744,7 +4763,7 @@ impl Builder {
                 let _ = self.lower_value(arg);
             }
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: construct.to_string(),
                     site,
                 },
@@ -4762,7 +4781,7 @@ impl Builder {
             _ => {
                 let _ = self.lower_value(callee);
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: construct.to_string(),
                         site,
                     },
@@ -4783,7 +4802,7 @@ impl Builder {
     ) -> Option<Place> {
         let Some(scope_place) = self.current_task_scope else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "spawned call without current task scope".to_string(),
                     site,
                 },
@@ -4795,7 +4814,7 @@ impl Builder {
         };
         let ResolvedTy::Task(inner) = task_ty else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "spawned call with non-Task type".to_string(),
                     site,
                 },
@@ -4853,7 +4872,7 @@ impl Builder {
                 let _ = self.lower_value(arg);
             }
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "spawned closure".to_string(),
                     site,
                 },
@@ -4865,7 +4884,7 @@ impl Builder {
         }
         if let Some(capture) = captures.iter().find(|capture| !capture.is_send) {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "spawned closure non-Send capture".to_string(),
                     site,
                 },
@@ -4895,7 +4914,7 @@ impl Builder {
         let expr = if body.statements.len() == 1 && body.tail.is_none() {
             let HirStmtKind::Expr(expr) = &body.statements[0].kind else {
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: "fork block cancellation child".to_string(),
                         site,
                     },
@@ -4908,7 +4927,7 @@ impl Builder {
         } else if body.statements.is_empty() {
             let Some(tail) = &body.tail else {
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: "fork block cancellation child".to_string(),
                         site,
                     },
@@ -4920,7 +4939,7 @@ impl Builder {
             tail
         } else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "fork block cancellation child".to_string(),
                     site,
                 },
@@ -4932,7 +4951,7 @@ impl Builder {
         };
         let HirExprKind::Call { callee, args } = &expr.kind else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "fork block cancellation child".to_string(),
                     site,
                 },
@@ -4953,7 +4972,7 @@ impl Builder {
     ) -> Option<Place> {
         let Some(scope_place) = self.current_task_scope else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "scope deadline cancellation edge".to_string(),
                     site,
                 },
@@ -4963,7 +4982,7 @@ impl Builder {
         };
         if !body.statements.is_empty() || body.tail.is_some() {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "scope deadline body".to_string(),
                     site,
                 },
@@ -4992,7 +5011,7 @@ impl Builder {
     ) -> Option<Place> {
         if !matches!(output_ty, ResolvedTy::Unit) {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "await task result".to_string(),
                     site,
                 },
@@ -5097,7 +5116,7 @@ impl Builder {
                 // Individual symbol producers land in follow-up slices (recv,
                 // half-handle split, close, lambda-actor lifecycle).
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!("runtime call `{symbol}`"),
                         site,
                     },
@@ -5144,7 +5163,7 @@ impl Builder {
             self.lower_value(&hir_args[0])
         } else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "hew_duplex_pair with zero args".to_string(),
                     site,
                 },
@@ -5233,7 +5252,7 @@ impl Builder {
     ) -> Option<Place> {
         if hir_args.len() != 1 {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "supervisor_stop".to_string(),
                     site,
                 },
@@ -5416,7 +5435,7 @@ impl Builder {
     ) -> Option<Place> {
         if hir_args.len() < 2 {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "hew_duplex_send with fewer than 2 args".to_string(),
                     site,
                 },
@@ -5475,7 +5494,7 @@ impl Builder {
             [arg] => self.lower_value(arg),
             _ => {
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: "actor receive call with more than one argument".to_string(),
                         site,
                     },
@@ -5497,7 +5516,7 @@ impl Builder {
         let method_name = method_name_from_id(method_id);
         let Some(layout) = self.actor_layouts.get(actor_name) else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("actor call on unknown actor `{actor_name}`"),
                     site,
                 },
@@ -5511,7 +5530,7 @@ impl Builder {
             .find(|handler| handler.name == method_name)
         else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("unknown actor handler `{method_id}` on `{actor_name}`"),
                     site,
                 },
@@ -5538,7 +5557,7 @@ impl Builder {
         let info = self.actor_method_info(&receiver.ty, method_id, site)?;
         if info.return_ty != ResolvedTy::Unit {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!(
                         "fire-and-forget actor send to non-unit handler `{method_id}`"
                     ),
@@ -5550,7 +5569,7 @@ impl Builder {
         }
         if info.param_tys.len() != args.len() {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("actor send arity mismatch for `{method_id}`"),
                     site,
                 },
@@ -5598,7 +5617,7 @@ impl Builder {
     /// ## Producer-bridge contract (consumed by codegen / slice 3)
     ///
     /// Codegen reads `Terminator::Select { arms, next }` and, for each
-    /// arm:
+    /// currently-supported arm:
     ///   * `SelectArmKind::ActorAsk { actor, method, args }` — emits
     ///     `hew_reply_channel_new` + `hew_actor_ask_with_channel` per
     ///     arm in the originating block; calls `hew_select_first` to
@@ -5609,12 +5628,11 @@ impl Builder {
     ///   * `SelectArmKind::AfterTimer { duration }` — wins when the
     ///     deadline elapses; jumps to `arm.body_block` with no binding.
     ///
-    /// ## Out-of-scope arm kinds (fail-closed)
+    /// ## Out-of-scope consumer arm kinds (fail-closed)
     ///
-    /// `StreamNext` and `TaskAwait` are rejected here with
-    /// `MirDiagnosticKind::SelectArmNotImplemented` naming the future
-    /// lane (`M3 select-widening`). The defence-in-depth fail-closed
-    /// at codegen's `Terminator::Select` arm-kind switch remains.
+    /// `StreamNext` and `TaskAwait` are produced in MIR so the producer
+    /// boundary carries the sealed HIR shape forward. Backend target-specific
+    /// fail-closed checks live in codegen, where the requested target is known.
     ///
     /// ## Cleanup-CFG composition (D24-2 / `ExitPath::Select`)
     ///
@@ -5639,44 +5657,6 @@ impl Builder {
         expected_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Reject out-of-scope arm kinds before allocating any blocks.
-        // The diagnostic names the arm kind and the future lane so a
-        // pipeline-rejection trace points the user (and future
-        // implementers) at the lane that closes the restriction.
-        for arm in &select.arms {
-            match &arm.kind {
-                HirSelectArmKind::ActorAsk { .. } | HirSelectArmKind::AfterTimer { .. } => {}
-                HirSelectArmKind::StreamNext { .. } => {
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::SelectArmNotImplemented {
-                            arm_kind: "StreamNext".to_string(),
-                            lane_pointer: "M3 select-widening".to_string(),
-                            site,
-                        },
-                        note: "select{} stream-next arms are not yet lowered; \
-                               only ActorAsk and AfterTimer arms emit Terminator::Select \
-                               in this lane"
-                            .to_string(),
-                    });
-                    return None;
-                }
-                HirSelectArmKind::TaskAwait { .. } => {
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::SelectArmNotImplemented {
-                            arm_kind: "TaskAwait".to_string(),
-                            lane_pointer: "M3 select-widening".to_string(),
-                            site,
-                        },
-                        note: "select{} task-await arms are not yet lowered; \
-                               only ActorAsk and AfterTimer arms emit Terminator::Select \
-                               in this lane"
-                            .to_string(),
-                    });
-                    return None;
-                }
-            }
-        }
-
         // Result local first so it dominates every arm-body's Move.
         // For Unit-typed selects the placeholder write is benign — no
         // load occurs in the join block. Mirrors the `lower_if` pattern.
@@ -5688,8 +5668,8 @@ impl Builder {
         let body_bbs: Vec<u32> = (0..select.arms.len()).map(|_| self.alloc_block()).collect();
         let join_bb = self.alloc_block();
 
-        // Lower per-arm operands (actor receiver + args, or duration)
-        // and allocate per-arm reply slots in the ORIGINATING block.
+        // Lower per-arm operands and allocate per-arm value slots in the
+        // ORIGINATING block.
         // Codegen consumes the SelectArm payload to emit the per-arm
         // setup (channel alloc + ask issue) in the same originating
         // block before the `hew_select_first` dispatch.
@@ -5709,7 +5689,7 @@ impl Builder {
                     let info = self.actor_method_info(&actor.ty, method, site)?;
                     if info.param_tys.len() != args.len() {
                         self.diagnostics.push(MirDiagnostic {
-                            kind: MirDiagnosticKind::CutoverUnsupported {
+                            kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
                                     "select actor-ask arm arity mismatch for `{method}`"
                                 ),
@@ -5752,6 +5732,44 @@ impl Builder {
                         Some(reply_dest),
                     )
                 }
+                HirSelectArmKind::StreamNext { stream } => {
+                    let stream_place = self.lower_value(stream)?;
+                    let stream_ty = self.subst_ty(&stream.ty);
+                    let item_ty = match stream_ty {
+                        ResolvedTy::Named { name, mut args }
+                            if name == "Stream" && args.len() == 1 =>
+                        {
+                            args.remove(0)
+                        }
+                        _ => ResolvedTy::Unit,
+                    };
+                    let item_dest = self.alloc_local(item_ty);
+                    if let Some(binding_id) = arm.binding_id {
+                        self.binding_locals.insert(binding_id, item_dest);
+                    }
+                    (
+                        SelectArmKind::StreamNext {
+                            stream: stream_place,
+                        },
+                        Some(item_dest),
+                    )
+                }
+                HirSelectArmKind::TaskAwait { task } => {
+                    let task_place = self.lower_value(task)?;
+                    let task_ty = self.subst_ty(&task.ty);
+                    let await_ty = match task_ty {
+                        ResolvedTy::Task(inner) => *inner,
+                        _ => ResolvedTy::Unit,
+                    };
+                    let await_dest = self.alloc_local(await_ty);
+                    if let Some(binding_id) = arm.binding_id {
+                        self.binding_locals.insert(binding_id, await_dest);
+                    }
+                    (
+                        SelectArmKind::TaskAwait { task: task_place },
+                        Some(await_dest),
+                    )
+                }
                 HirSelectArmKind::AfterTimer { duration } => {
                     let duration_place = self.lower_value(duration)?;
                     // AfterTimer arms bind no value — `binding_id` is
@@ -5769,13 +5787,6 @@ impl Builder {
                         },
                         None,
                     )
-                }
-                HirSelectArmKind::StreamNext { .. } | HirSelectArmKind::TaskAwait { .. } => {
-                    // Rejected above; defence-in-depth.
-                    unreachable!(
-                        "stream-next / task-await arms were rejected before \
-                         block allocation"
-                    );
                 }
             };
             mir_arms.push(SelectArm {
@@ -5862,7 +5873,7 @@ impl Builder {
         let info = self.actor_method_info(&receiver.ty, method_id, site)?;
         if info.return_ty != *reply_ty {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("actor ask reply type mismatch for `{method_id}`"),
                     site,
                 },
@@ -5876,7 +5887,7 @@ impl Builder {
         }
         if info.param_tys.len() != args.len() {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("actor ask arity mismatch for `{method_id}`"),
                     site,
                 },
@@ -5921,7 +5932,7 @@ impl Builder {
                 // this branch catches any future surface that reaches MIR
                 // before the checker guard does.
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!(
                             "supervisor spawn with init args (`spawn {actor_name}(…)`)"
                         ),
@@ -5946,7 +5957,7 @@ impl Builder {
         // ── Actor dispatch (existing path) ───────────────────────────────
         let Some(layout) = self.actor_layouts.get(actor_name).cloned() else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("spawn of unknown actor `{actor_name}`"),
                     site: expr.site,
                 },
@@ -5962,7 +5973,7 @@ impl Builder {
         };
         if args.len() != expected_arg_names.len() {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!(
                         "spawn `{actor_name}` {} arity mismatch",
                         if explicit_init { "init" } else { "state" }
@@ -6017,7 +6028,7 @@ impl Builder {
         for param_name in &layout.init_param_names {
             let Some(arg) = explicit.get(param_name.as_str()) else {
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!(
                             "spawn `{actor_name}` missing init parameter `{param_name}`"
                         ),
@@ -6088,7 +6099,7 @@ impl Builder {
     ) -> Option<Place> {
         let Some(arg) = explicit.get(field_name) else {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::CutoverUnsupported {
+                kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("spawn `{actor_name}` missing field `{field_name}`"),
                     site: expr.site,
                 },
@@ -6147,7 +6158,7 @@ impl Builder {
             }
             other => {
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
+                    kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!(
                             "actor init default state value for field `{actor_name}.{field_name}`"
                         ),

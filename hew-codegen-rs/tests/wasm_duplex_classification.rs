@@ -313,7 +313,7 @@ fn duplex_pair_native_only_succeeds_without_wasm_emit() {
     let options = EmitOptions {
         module_name: "duplex_native_only",
         out_dir: &dir,
-        native: false, // native object emission requires hew-emit-v05 helper binary
+        native: false, // native object emission requires hew-emit helper binary
         wasm: false,
     };
     // The .ll (textual IR) must be produced; wasm emission is skipped.
@@ -333,7 +333,7 @@ fn duplex_pair_native_only_succeeds_without_wasm_emit() {
 /// the duplex gate must not interfere with programs that don't use the duplex
 /// substrate.  This is the regression guard for the non-duplex smoke path.
 ///
-/// We skip native and object emission to avoid depending on `hew-emit-v05`
+/// We skip native and object emission to avoid depending on `hew-emit`
 /// being in PATH, but WASM-path detection runs before those helper invocations,
 /// so we can test the gate in isolation by checking the absence of the error.
 /// The full WASM link would require `wasm-ld`; use `native: false, wasm: false`

@@ -40,8 +40,6 @@ pub enum ExecutionTargetKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetSpec {
-    #[cfg(hew_embedded_codegen)]
-    requested_triple: Option<String>,
     normalized_triple: String,
     arch: TargetArch,
     os: TargetOs,
@@ -108,8 +106,6 @@ impl TargetSpec {
         let parsed = ParsedTarget::parse(&normalized_triple)?;
 
         Ok(Self {
-            #[cfg(hew_embedded_codegen)]
-            requested_triple: requested.map(str::to_owned),
             normalized_triple,
             arch: parsed.arch,
             os: parsed.os,
@@ -122,13 +118,6 @@ impl TargetSpec {
         &self.normalized_triple
     }
 
-    #[cfg(hew_embedded_codegen)]
-    pub fn codegen_triple(&self) -> Option<&str> {
-        self.requested_triple
-            .as_ref()
-            .map(|_| self.normalized_triple())
-    }
-
     pub fn executable_suffix(&self) -> &'static str {
         match self.os {
             TargetOs::Windows => ".exe",
@@ -137,6 +126,7 @@ impl TargetSpec {
         }
     }
 
+    #[cfg(test)]
     pub fn object_suffix(&self) -> &'static str {
         match self.object_format {
             ObjectFormat::Coff => ".obj",

@@ -8,7 +8,7 @@
 //   2. The compiled binary exits 42. This proves codegen emitted the cap into
 //      the `HewChildSpec` literal without breaking supervisor bootstrap.
 //
-// Runtime crash + restart-with-cap observability is deferred to Cluster-2.
+// Runtime crash + restart-with-cap observability is deferred to cluster-runtime.
 #[max_heap(128 kb)]
 actor Worker {
     receive fn ping(_n: i64) {

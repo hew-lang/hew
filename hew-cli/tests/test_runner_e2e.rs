@@ -23,8 +23,6 @@ fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Outpu
     run_hew_in(dir.path(), &args)
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn passing_suite_exits_zero() {
     require_codegen();
@@ -43,8 +41,6 @@ fn passing_suite_exits_zero() {
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn failing_suite_exits_non_zero() {
     require_codegen();
@@ -63,8 +59,6 @@ fn failing_suite_exits_non_zero() {
     assert!(stdout.contains("expected failure"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn mixed_suite_reports_each_test_and_exits_non_zero() {
     require_codegen();
@@ -90,9 +84,6 @@ fn mixed_suite_reports_each_test_and_exits_non_zero() {
     assert!(stdout.contains("1 passed; 1 failed; 0 ignored"));
 }
 
-// Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn ignored_test_is_skipped_and_counted() {
     require_codegen();
@@ -111,8 +102,6 @@ fn ignored_test_is_skipped_and_counted() {
     assert!(stdout.contains("0 passed; 0 failed; 1 ignored"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn include_ignored_flag_runs_skipped_tests() {
     require_codegen();
@@ -132,8 +121,6 @@ fn include_ignored_flag_runs_skipped_tests() {
     assert!(stdout.contains("0 passed; 1 failed; 0 ignored"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn filter_narrows_to_matching_tests() {
     require_codegen();
@@ -160,8 +147,6 @@ fn filter_narrows_to_matching_tests() {
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn should_panic_test_passes_when_it_panics() {
     require_codegen();
@@ -180,8 +165,6 @@ fn should_panic_test_passes_when_it_panics() {
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn should_panic_test_fails_when_it_does_not_panic() {
     require_codegen();
@@ -201,9 +184,6 @@ fn should_panic_test_fails_when_it_does_not_panic() {
     assert!(stdout.contains("0 passed; 1 failed; 0 ignored"));
 }
 
-// Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn no_test_files_in_directory_exits_zero() {
     let dir = support::tempdir();
@@ -229,9 +209,6 @@ fn no_test_files_in_directory_exits_zero() {
     assert!(stderr.contains("No test files found."), "stderr: {stderr}");
 }
 
-// Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn no_test_functions_found_exits_zero() {
     let output = run_suite(
@@ -254,8 +231,6 @@ fn no_test_functions_found_exits_zero() {
     );
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn multi_path_invocation_aggregates_results() {
     require_codegen();
@@ -294,9 +269,6 @@ fn multi_path_invocation_aggregates_results() {
     );
 }
 
-// Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn parse_errors_fail_the_suite() {
     let output = run_suite(
@@ -312,16 +284,15 @@ fn parse_errors_fail_the_suite() {
     assert!(stderr.contains("expected"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
+#[ignore = "v0.5 native codegen lacks a supported infinite-loop fixture for this timeout assertion"]
 fn timeout_exit_code_is_non_zero() {
     require_codegen();
 
     let output = run_suite(
         &[(
             "timeout_test.hew",
-            "#[test]\nfn forever() {\n    while true {\n        println(\"spin\");\n    }\n}\n",
+            "#[test]\nfn forever() {\n    loop {\n        println(\"spin\");\n    }\n}\n",
         )],
         &["--no-color", "--timeout", "1"],
     );
@@ -332,9 +303,6 @@ fn timeout_exit_code_is_non_zero() {
     assert!(stdout.contains("test timed out after 1s"));
 }
 
-// Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn missing_path_exits_non_zero() {
     let dir = support::tempdir();
@@ -350,8 +318,6 @@ fn missing_path_exits_non_zero() {
     assert!(stderr.contains("path not found"));
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn junit_passing_suite_emits_xml_on_stdout() {
     require_codegen();
@@ -390,8 +356,6 @@ fn junit_passing_suite_emits_xml_on_stdout() {
     assert!(stdout.contains("</testsuites>"), "stdout: {stdout}");
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn junit_failing_suite_emits_failure_element_and_exits_one() {
     require_codegen();
@@ -420,9 +384,6 @@ fn junit_failing_suite_emits_failure_element_and_exits_one() {
     assert!(stdout.contains("boom"), "stdout: {stdout}");
 }
 
-// Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn junit_ignored_suite_emits_skipped_element() {
     require_codegen();
@@ -450,9 +411,6 @@ fn junit_ignored_suite_emits_skipped_element() {
     assert!(stdout.contains("<skipped/>"), "stdout: {stdout}");
 }
 
-// Disabled during v0.5 cutover: `hew test` is short-circuited in router.rs before
-// reaching discovery or the runner. Re-enable once the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn filter_with_no_matching_tests_exits_zero_and_reports_zero_tests() {
     require_codegen();

@@ -621,10 +621,13 @@ fn await_recv_continue_loop_no_per_frame_leak_slope() {
 // FRESH refcounted triple on the consumer side, so per-iteration
 // allocation happens at pop time (the consumer side — what this oracle
 // covers). The producer holds a single function-scope `b` whose
-// function-scope drop is a separate concern (`cow_value_leaf_drop_
-// symbol` does not yet handle `Bytes`; deferred until the retain-on-
-// share spine lands — see comment on `cow_value_leaf_drop_symbol` in
-// `hew-mir/src/lower.rs`). That single producer leak is a CONSTANT
+// function-scope drop is a separate concern: bytes locals now have a
+// scope-exit drop authority (`derive_local_bytes_drop_allowed` in
+// `hew-mir/src/lower.rs`), but `b` is read by `await sink.send(b)` —
+// a terminator the fail-closed escape scan treats as an ownership
+// escape — so the prover excludes it (leak, never double-free) until
+// the suspending-send borrow contract is encoded in the allow-list.
+// That single producer leak is a CONSTANT
 // (one node, independent of frame count), so the slope check sees
 // the same 1-node baseline at LOW and HIGH probes; the slope tolerance
 // of 5 absorbs it with headroom.

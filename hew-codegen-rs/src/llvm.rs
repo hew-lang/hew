@@ -892,6 +892,16 @@ struct FnCtx<'a, 'ctx> {
     closure_call_fallback_context: Option<PointerValue<'ctx>>,
     execution_context_is_actor_handler: bool,
     actor_state_ty: Option<StructType<'ctx>>,
+    /// Per-field `StateFieldCloneKind`s for the actor whose handler this
+    /// function is, in state-field declaration order (parallel to
+    /// `actor_state_ty`'s fields). Populated for `ActorHandler` functions
+    /// whose `ActorLayout` carries clone kinds; `None` elsewhere (including
+    /// hand-built test fixtures). `lower_actor_state_field_store` consults
+    /// this to key the old-value release on the MIR-level classification —
+    /// never on the LLVM struct shape, which a user record with a
+    /// `{ ptr, i32, i32 }` layout could alias (LESSONS:
+    /// boundary-fail-closed, checker-authority).
+    actor_state_field_kinds: Option<&'a [StateFieldCloneKind]>,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
     locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
@@ -12599,10 +12609,197 @@ fn lower_actor_state_field_store(
         } else {
             src_val
         };
+    // Old-value release before overwrite (bytes / string state fields). The
+    // store below blindly replaces the field's previous value; without a
+    // preceding release its heap allocation leaks permanently on every
+    // re-store (the double-store probe's confirmed leak class). Keyed on the
+    // MIR-level `StateFieldCloneKind` — never the LLVM struct shape, which a
+    // user record with a `{ ptr, i32, i32 }` layout could alias. Emitted
+    // AFTER the borrow-gated clone above so the pointer-inequality guard
+    // inside `emit_state_field_old_value_release` compares against the value
+    // actually stored. `None` kinds (non-handler functions, hand-built test
+    // fixtures) keep the pre-fix posture.
+    //
+    // Per-kind coverage is deliberately partial (fail-closed: every uncovered
+    // kind leaks exactly as before this fix, never double-frees):
+    //   - `Bytes` / `String`: released here (refcount-aware `hew_bytes_drop` /
+    //     null-and-static-tolerant `hew_string_drop`).
+    //   - `Vec` / `HashMap` / `HashSet`: their state-level release is owned
+    //     solely by the `collection_layout_witness` spine
+    //     (`hew_*_managed` / `*_layout` family); wiring an overwrite release
+    //     needs that witness lookup here — a separate slice. Overwrite still
+    //     leaks the previous collection.
+    //   - `UserRecord` / `Enum`: need the synthesised in-place drop helpers
+    //     with tag dispatch; overwrite still leaks the previous payload.
+    //   - `IoHandle`: an overwrite release would CLOSE the old handle (a
+    //     behavioural decision about close-on-reassign, not just a leak fix);
+    //     deliberately untouched.
+    //   - `BitCopy` / `OpaqueHandle`: no owned heap / user-managed; nothing
+    //     to release.
+    if let Some(kinds) = fn_ctx.actor_state_field_kinds {
+        let kind = kinds.get(idx as usize).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "ActorStateFieldStore field offset {idx} has no StateFieldCloneKind \
+                 entry ({} kinds registered); the actor layout and the state struct \
+                 have drifted (LESSONS: boundary-fail-closed)",
+                kinds.len()
+            ))
+        })?;
+        match kind {
+            StateFieldCloneKind::Bytes => {
+                // The field slot holds the BytesTriple by value; its heap
+                // reference is the data pointer in triple field 0.
+                let triple_ty = bytes_triple_llvm_ty(fn_ctx.ctx);
+                let old_ptr_slot = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        triple_ty,
+                        field_ptr,
+                        0,
+                        &format!("actor_state_field_{idx}_old_data_slot"),
+                    )
+                    .llvm_ctx("ActorStateFieldStore old bytes data gep")?;
+                let old_ptr = fn_ctx
+                    .builder
+                    .build_load(
+                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                        old_ptr_slot,
+                        &format!("actor_state_field_{idx}_old_data"),
+                    )
+                    .llvm_ctx("ActorStateFieldStore old bytes data load")?
+                    .into_pointer_value();
+                let new_ptr = fn_ctx
+                    .builder
+                    .build_extract_value(
+                        src_val.into_struct_value(),
+                        0,
+                        &format!("actor_state_field_{idx}_new_data"),
+                    )
+                    .llvm_ctx("ActorStateFieldStore new bytes data extract")?
+                    .into_pointer_value();
+                emit_state_field_old_value_release(
+                    fn_ctx,
+                    old_ptr,
+                    new_ptr,
+                    "hew_bytes_drop",
+                    &format!("state_f{idx}_bytes"),
+                )?;
+            }
+            StateFieldCloneKind::String => {
+                let old_ptr = fn_ctx
+                    .builder
+                    .build_load(
+                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                        field_ptr,
+                        &format!("actor_state_field_{idx}_old_str"),
+                    )
+                    .llvm_ctx("ActorStateFieldStore old string load")?
+                    .into_pointer_value();
+                let new_ptr = src_val.into_pointer_value();
+                emit_state_field_old_value_release(
+                    fn_ctx,
+                    old_ptr,
+                    new_ptr,
+                    "hew_string_drop",
+                    &format!("state_f{idx}_str"),
+                )?;
+            }
+            StateFieldCloneKind::BitCopy { .. }
+            | StateFieldCloneKind::Vec { .. }
+            | StateFieldCloneKind::HashMap { .. }
+            | StateFieldCloneKind::HashSet { .. }
+            | StateFieldCloneKind::IoHandle { .. }
+            | StateFieldCloneKind::UserRecord { .. }
+            | StateFieldCloneKind::Enum { .. }
+            | StateFieldCloneKind::OpaqueHandle { .. } => {}
+        }
+    }
     fn_ctx
         .builder
         .build_store(field_ptr, src_val)
         .llvm_ctx("ActorStateFieldStore store")?;
+    Ok(())
+}
+
+/// The canonical `BytesTriple { ptr, i32, i32 }` LLVM struct shape — must
+/// agree with `primitive_to_llvm`'s Bytes arm and `emit_bytes_inplace_drop`'s
+/// re-derivation (the single byte-of-the-triple-that-owns-heap authority).
+fn bytes_triple_llvm_ty(ctx: &Context) -> StructType<'_> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false)
+}
+
+/// Release the OLD heap reference of an actor state field that is about to
+/// be overwritten, guarded by pointer inequality against the NEW value.
+///
+/// The guard exists for the self-store shapes: a stored value whose heap
+/// pointer EQUALS the old field pointer arrived without a refcount bump
+/// (`buf = buf` round-trips the triple through a local via
+/// `ActorStateFieldLoad`, which byte-copies at rc unchanged). Releasing the
+/// old reference there would free the very buffer the field is about to
+/// re-own — a use-after-free. Skipping the release merely preserves the
+/// pre-fix posture for that shape (and for the slice-of-self store, whose
+/// `hew_bytes_clone_ref` bump then leaks one reference): leak-over-UAF,
+/// always (LESSONS: boundary-fail-closed, raii-null-after-move).
+///
+/// Both release symbols are null-tolerant (`hew_bytes_drop` null guard,
+/// `hew_string_drop` null + static-string guard), so the spawn-time
+/// zero-initialised field needs no extra null check — null old vs non-null
+/// new takes the release edge and no-ops in the runtime.
+fn emit_state_field_old_value_release(
+    fn_ctx: &FnCtx<'_, '_>,
+    old_ptr: PointerValue<'_>,
+    new_ptr: PointerValue<'_>,
+    symbol: &'static str,
+    label: &str,
+) -> CodegenResult<()> {
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let old_int = fn_ctx
+        .builder
+        .build_ptr_to_int(old_ptr, i64_ty, &format!("{label}_old_int"))
+        .llvm_ctx_with(|| format!("{label} old ptr_to_int"))?;
+    let new_int = fn_ctx
+        .builder
+        .build_ptr_to_int(new_ptr, i64_ty, &format!("{label}_new_int"))
+        .llvm_ctx_with(|| format!("{label} new ptr_to_int"))?;
+    let differs = fn_ctx
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::NE,
+            old_int,
+            new_int,
+            &format!("{label}_old_differs"),
+        )
+        .llvm_ctx_with(|| format!("{label} old/new compare"))?;
+    let current = fn_ctx.builder.get_insert_block().ok_or_else(|| {
+        CodegenError::FailClosed(format!("{label} old-value release has no insertion block"))
+    })?;
+    let parent = current.get_parent().ok_or_else(|| {
+        CodegenError::FailClosed(format!("{label} old-value release block has no parent"))
+    })?;
+    let drop_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_old_drop"));
+    let cont_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_store_cont"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(differs, drop_bb, cont_bb)
+        .llvm_ctx_with(|| format!("{label} old-value release branch"))?;
+    fn_ctx.builder.position_at_end(drop_bb);
+    let helper =
+        get_or_declare_drop_helper(fn_ctx.ctx, fn_ctx.llvm_mod, &DropHelper { name: symbol });
+    fn_ctx
+        .builder
+        .build_call(helper, &[old_ptr.into()], &format!("{label}_old_release"))
+        .llvm_ctx_with(|| format!("{label} old-value {symbol} call"))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx_with(|| format!("{label} old-value release join"))?;
+    fn_ctx.builder.position_at_end(cont_bb);
     Ok(())
 }
 
@@ -20429,6 +20626,32 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                     place = drop.place,
                     df = drop.drop_fn,
                 )));
+            }
+            // Bytes ABI intercept: a native `bytes` value is a stack-resident
+            // `BytesTriple { ptr, i32, i32 }`, NOT a single owned pointer, so
+            // it does not fit the single-`ptr`-load shape the generic CowHeap
+            // path (and its `cow_heap_release_symbol` congruence table)
+            // describes. Route it through the triple-field-0 emitter — the
+            // SAME `emit_bytes_inplace_drop` the inline `Instr::Drop` bytes
+            // path uses (`lower_inline_drop`), so scope-exit and inline bytes
+            // drops cannot drift on which field of the triple owns the heap
+            // allocation. The MIR-side symbol authority is `drop_kind_for`'s
+            // Bytes arm; any other symbol on a Bytes drop is producer drift —
+            // refuse (LESSONS: boundary-fail-closed, dedup-semantic-boundary,
+            // lifecycle-symmetry).
+            if matches!(drop.ty, ResolvedTy::Bytes) {
+                if drop_fn != "hew_bytes_drop" {
+                    return Err(CodegenError::FailClosed(format!(
+                        "CowHeap ElabDrop @ {place:?} on type Bytes carries release \
+                         symbol {drop_fn:?}; the only admissible Bytes release is \
+                         `hew_bytes_drop` (the `drop_kind_for` Bytes-arm authority — \
+                         `hew-mir/src/lower.rs`). Refusing to route a BytesTriple \
+                         through the generic single-ptr-load CowHeap path \
+                         (LESSONS: boundary-fail-closed).",
+                        place = drop.place,
+                    )));
+                }
+                return emit_bytes_inplace_drop(fn_ctx, drop.place);
             }
             // Validate the kind-carried symbol against the closed release
             // table before emitting any call (Fix #2.3).
@@ -28657,6 +28880,23 @@ fn lower_terminator<'ctx>(
             msg_type,
             value,
             next,
+            // `alias_mode` is deliberately UNCONSUMED by codegen today. It is
+            // the checker-authoritative alias-vs-copy classification stamped
+            // by MIR lowering (P5.1 threading; contract pinned by
+            // `hew-mir/tests/send_alias_mode.rs`), reserved for the
+            // retain-on-share send spine (P5.2) — which will retain the
+            // payload's heap reference on an `Alias` send instead of the
+            // plain mailbox memcpy below. Every send today lowers to
+            // `hew_actor_send_by_id` regardless of this field: the only
+            // payload special-case is the `send_gated_string` borrow retain
+            // below, which rides the SEPARATE `borrow_mode`/`borrow_tainted`
+            // mechanism (string-only roots in `compute_borrow_taint`; bytes
+            // never enter that branch). `--explain-cow` renders from the
+            // checker's `actor_send_aliasing` map (`hew-cli/src/explain_cow.rs`),
+            // not from this field, so ignoring it here changes no diagnostic
+            // output. Consuming it without wiring the retain would either be
+            // a no-op or an unbalanced refcount — bind it `_` until P5.2
+            // lands (LESSONS: checker-authority / codegen-abi-authority).
             alias_mode: _,
         } => {
             let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
@@ -32023,6 +32263,20 @@ fn lower_function<'ctx>(
     } else {
         None
     };
+    // Per-field clone kinds for the same actor, resolved from the layout
+    // registry so `lower_actor_state_field_store` can key its old-value
+    // release on the MIR-level field classification (the single authority
+    // the state clone/drop synthesis also consumes).
+    let actor_state_field_kinds = if func.call_conv == FunctionCallConv::ActorHandler {
+        actor_name_from_handler_symbol(&func.name).and_then(|actor_name| {
+            actor_layouts
+                .iter()
+                .find(|a| a.name == actor_name)
+                .and_then(|a| a.state_field_clone_kinds.as_deref())
+        })
+    } else {
+        None
+    };
 
     // P5-RX Stage 2a (A625): for a receive handler, grab the trailing runtime
     // `borrow_mode` i32 LLVM parameter (threaded by Stage 1's dispatch
@@ -32126,6 +32380,7 @@ fn lower_function<'ctx>(
         closure_call_fallback_context,
         execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler,
         actor_state_ty,
+        actor_state_field_kinds,
         locals,
         local_tys,
         blocks: blocks.clone(),
@@ -39459,6 +39714,7 @@ mod tests {
             closure_call_fallback_context: None,
             execution_context_is_actor_handler: false,
             actor_state_ty: None,
+            actor_state_field_kinds: None,
             locals: HashMap::new(),
             local_tys: HashMap::new(),
             blocks: HashMap::new(),
@@ -39545,6 +39801,89 @@ mod tests {
             ir.matches("store ptr null,").count(),
             1,
             "expected EXACTLY ONE null-store after the drop call; got:\n{ir}"
+        );
+    }
+
+    /// A `DropKind::CowHeap { drop_fn: "hew_bytes_drop" }` ElabDrop on a
+    /// `bytes` local must route through the BytesTriple-aware emitter
+    /// (`emit_bytes_inplace_drop`): GEP field 0, load the data pointer, call
+    /// `hew_bytes_drop(data_ptr)`, null-store the field — NOT the generic
+    /// single-`ptr`-load CowHeap path (whose congruence table deliberately
+    /// excludes Bytes).
+    #[test]
+    fn cow_heap_bytes_drop_emits_triple_field0_release() {
+        use hew_mir::{DropKind, ElabDrop};
+        let ctx = Context::create();
+        let m = ctx.create_module("cow_heap_bytes_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::Bytes);
+        let drop = ElabDrop {
+            place: Place::Local(0),
+            ty: ResolvedTy::Bytes,
+            drop_fn: None,
+            kind: DropKind::CowHeap {
+                drop_fn: "hew_bytes_drop",
+            },
+        };
+        emit_one_elab_drop(&fn_ctx, &drop).expect("CowHeap bytes drop must emit");
+        finish_test_fn(&fn_ctx);
+        let ir = m.print_to_string().to_string();
+        assert_eq!(
+            ir.matches("call void @hew_bytes_drop(").count(),
+            1,
+            "expected EXACTLY ONE void call to hew_bytes_drop; got:\n{ir}"
+        );
+        assert!(
+            ir.contains("declare void @hew_bytes_drop(ptr)"),
+            "hew_bytes_drop must be declared as void(ptr); got:\n{ir}"
+        );
+        assert!(
+            ir.contains("getelementptr"),
+            "the bytes drop must address the triple's ptr field by GEP, not \
+             load the whole slot as a pointer; got:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("store ptr null,").count(),
+            1,
+            "expected EXACTLY ONE null-store of the data-ptr field after the \
+             drop call; got:\n{ir}"
+        );
+    }
+
+    /// A `DropKind::CowHeap` on a `bytes` local carrying any symbol other
+    /// than `hew_bytes_drop` is producer drift and must fail closed before
+    /// emitting any call (a wrong-ABI free of the triple's buffer).
+    #[test]
+    fn cow_heap_bytes_drop_wrong_symbol_fails_closed() {
+        use hew_mir::{DropKind, ElabDrop};
+        let ctx = Context::create();
+        let m = ctx.create_module("cow_heap_bytes_wrong_sym_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::Bytes);
+        let drop = ElabDrop {
+            place: Place::Local(0),
+            ty: ResolvedTy::Bytes,
+            drop_fn: None,
+            kind: DropKind::CowHeap {
+                // In the closed set, but the wrong release for Bytes.
+                drop_fn: "hew_string_drop",
+            },
+        };
+        let err = emit_one_elab_drop(&fn_ctx, &drop)
+            .expect_err("non-hew_bytes_drop symbol on a Bytes drop must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => assert!(
+                msg.contains("Bytes"),
+                "diagnostic must name the Bytes intercept; got: {msg}"
+            ),
+            other => panic!("expected FailClosed, got {other:?}"),
+        }
+        let ir = m.print_to_string().to_string();
+        assert!(
+            !ir.contains("call void @hew_string_drop("),
+            "no call must be emitted for a rejected Bytes symbol; got:\n{ir}"
         );
     }
 

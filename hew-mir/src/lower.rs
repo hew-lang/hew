@@ -19021,6 +19021,34 @@ fn elaborate(
         }
     }
 
+    // Local `bytes` scope-exit drop allow-set. A bytes binding earns its
+    // triple-field-0 `hew_bytes_drop` release UNLESS the fail-closed
+    // escape-scan proves it leaves this scope's sole ownership — most
+    // importantly a triple consumed by an actor `Send` (the mailbox `memcpy`
+    // hand-off the probe trace pins: the actor's state / receive handler owns
+    // the buffer from then on, and the synthesised `state_drop_fn` is its
+    // release) or loaded out of a still-live aggregate (projection taint).
+    // The escape-scan is the primary authority; the dataflow `Consumed` /
+    // `MaybeConsumed` removal below is the same belt-and-suspenders net the
+    // owned-Vec / collection arms use. Both directions only ever over-EXCLUDE
+    // (leak), never re-admit — a binding the prover did not clear is never
+    // double-freed (`boundary-fail-closed`, `cleanup-all-exits`).
+    let mut local_bytes_drop_allowed = derive_local_bytes_drop_allowed(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+    );
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) {
+                local_bytes_drop_allowed.remove(binding);
+            }
+        }
+    }
+
     // Value-class capstone — owned-aggregate-record scope-exit drop allow-set.
     // A by-value owned record (RC-4 bytes field / RC-6 string field / G12
     // Vec/HashMap/HashSet field) earns the tag-aware `DropKind::RecordInPlace`
@@ -19100,6 +19128,7 @@ fn elaborate(
         &enum_composite_drop_allowed,
         &owned_vec_drop_allowed,
         &local_collection_drop_allowed,
+        &local_bytes_drop_allowed,
         &tuple_composite_drop_allowed,
         &returned_aggregate_members,
         &consumed_local_aggregate_members,
@@ -22428,6 +22457,277 @@ fn derive_local_collection_drop_allowed(
     allowed
 }
 
+/// True when `callee` is a `bytes` runtime operation that BORROWS its receiver
+/// (arg[0]) — reads or CoW-mutates the `BytesTriple` in place without
+/// transferring ownership of the binding's heap reference. The receiver of
+/// such a call is a transient interior read, NOT an ownership escape, so
+/// `derive_local_bytes_drop_allowed` skips arg[0] when scanning these calls
+/// (it still scans arg[1..], which carry index/endpoint scalars today and
+/// would carry genuinely-escaping operands if a future op grew one).
+///
+/// This is an EXPLICIT allow-list, deliberately NOT a `hew_bytes_` prefix test
+/// (LESSONS: `boundary-fail-closed`). Every entry is verified against the
+/// runtime ownership contract in `hew-runtime/src/bytes.rs`:
+///   - `hew_bytes_len` / `hew_bytes_index` — pure reads (no refcount motion).
+///   - `hew_vec_len` — the polymorphic `.len()` MIR symbol; for a bytes-typed
+///     receiver codegen swaps in `hew_bytes_len` (the canonical bytes entry),
+///     a pure read. For a Vec receiver the place is never a member of this
+///     prover's bytes alias set, so the exemption is inert there.
+///   - `hew_bytes_to_string` — pure read; the result is a FRESH cstring
+///     allocation, never an alias of the buffer.
+///   - `hew_bytes_slice` — refcount-bumping share (`hew_bytes_clone_ref`
+///     before returning the derived triple), so the receiver KEEPS its own
+///     reference and both owners release independently through the
+///     refcount-aware `hew_bytes_drop`.
+///   - `hew_bytes_push` — in-place `CoW` mutate; on a shared buffer
+///     `ensure_unique` clones the active region and releases the receiver's
+///     old reference itself, so the binding still owns exactly one reference
+///     afterwards.
+///
+/// The consuming release `hew_bytes_drop` and the producers
+/// (`hew_bytes_from_str` / `hew_bytes_from_static` / `hew_bytes_concat` /
+/// `hew_bytes_new`) are intentionally absent: producers never read an existing
+/// triple as arg[0], and a future op left out of this list is treated as a
+/// receiver ESCAPE, which over-excludes the binding from its scope-exit drop —
+/// a leak, never a double-free.
+fn is_bytes_receiver_borrow_callee(callee: &str) -> bool {
+    matches!(
+        callee,
+        "hew_bytes_len"
+            | "hew_vec_len"
+            | "hew_bytes_index"
+            | "hew_bytes_slice"
+            | "hew_bytes_push"
+            | "hew_bytes_to_string"
+    )
+}
+
+/// Fail-closed sole-owner derivation for **local `bytes`** bindings. Returns
+/// the subset of `owned_locals` whose `BytesTriple` is proven to still solely
+/// own its refcounted data buffer at every exit, and therefore earns a
+/// `DropKind::CowHeap { drop_fn: "hew_bytes_drop" }` scope-exit drop (lowered
+/// by codegen's `emit_bytes_inplace_drop`: GEP field 0, load the data pointer,
+/// `hew_bytes_drop(data_ptr)`, null-store the field).
+///
+/// Structure mirrors `derive_local_collection_drop_allowed` (the default-deny
+/// escape-scan precedent): candidate collection, whole-value alias propagation
+/// through `Move`, then an escape scan where any read of an alias member that
+/// is not positively classified as a borrow EXCLUDES the whole alias group.
+/// A binding the prover does not positively clear LEAKS (as before this fix);
+/// it never double-frees. Two bytes-specific differences from the collection
+/// scanner:
+///
+/// 1. **Projection-alias taint exclusion.** A `bytes` value is a by-value
+///    `BytesTriple` struct; loading it out of a still-live aggregate
+///    (`RecordFieldLoad` / `TupleFieldLoad` / `ClosureEnvFieldLoad` /
+///    `ActorStateFieldLoad`, or a `Move` from an enum/machine variant
+///    projection) byte-copies the triple with NO refcount bump — the parent
+///    aggregate still owns the same buffer, and its own drop path releases it.
+///    Dropping the loaded-out binding too would double-free, so every
+///    candidate whose local is in `compute_projection_alias_taint` (with the
+///    conservative empty exemption set) is excluded. The string prover
+///    (`derive_cow_sole_owner`) applies the identical exclusion.
+///
+/// 2. **Bytes runtime ops are instruction-level.** Collection ops lower as
+///    `Terminator::Call`; the bytes surface ops (`len`/`index`/`slice`/`push`)
+///    lower as `Instr::CallRuntimeAbi`, and `to_string` reaches MIR as a
+///    `Terminator::Call`. The receiver-borrow exemption
+///    (`is_bytes_receiver_borrow_callee`) is therefore applied at BOTH scan
+///    sites; either way only arg[0] is exempt and arg[1..] are scanned.
+///
+/// A bytes value consumed by an actor `Terminator::Send` / `Ask` (the mailbox
+/// `memcpy` hand-off — the receive side / actor state owns the buffer from
+/// then on) is excluded twice over: the send terminator reads the place (an
+/// escape under this scan), and the move checker marks the binding `Consumed`,
+/// which the caller's dataflow filter removes as the belt-and-suspenders net.
+///
+/// SUBSTRATE INVARIANT: unlike the collection handles, the bytes buffer IS
+/// refcounted (`hew_bytes_drop` decrements and frees at zero), but the codegen
+/// share paths still never emit a retain — a `Move`, a mailbox send, and an
+/// aggregate ingress all byte-copy the triple at rc unchanged. Exactly one
+/// live owner per reference therefore still holds at every program point, and
+/// the only refcount-bumping producer (`hew_bytes_slice`) mints a reference
+/// for its RESULT, leaving the receiver's reference untouched. When the
+/// retain-on-share spine lands, shares stop consuming their source and this
+/// allow-set extends rather than inverts (the refcount-aware release already
+/// tolerates multiple owners).
+///
+/// LESSONS: `drop-allowset-from-value-flow`, `boundary-fail-closed`,
+/// `cleanup-all-exits`, `raii-null-after-move`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "three sequential single-purpose passes (candidate collection, \
+              whole-value alias propagation, escape scan) sharing fixpoint \
+              state, mirroring derive_local_collection_drop_allowed; splitting \
+              scatters the fail-closed ordering the escape scan depends on"
+)]
+fn derive_local_bytes_drop_allowed(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> HashSet<BindingId> {
+    // Candidate bytes locals: base locals of owned `bytes` bindings.
+    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !matches!(ty, ResolvedTy::Bytes) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        candidate_local_to_binding.insert(local, *binding);
+    }
+    if candidate_local_to_binding.is_empty() {
+        return HashSet::new();
+    }
+
+    // Projection-alias taint: a candidate whose local aliases interior storage
+    // of a still-live aggregate must never drop (the parent's drop path owns
+    // the release). Conservative empty exemption set — over-tainting only
+    // over-excludes (leak, never double-free).
+    let tainted = compute_projection_alias_taint(blocks, &HashSet::new());
+
+    // Whole-value alias set: each candidate plus every local reachable through
+    // forward-propagated whole-value `Move { dest: Local, src: Local }` copies.
+    let mut alias_of: HashMap<u32, u32> = HashMap::new();
+    for &local in candidate_local_to_binding.keys() {
+        alias_of.insert(local, local);
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if matches!(src, Place::Local(_) | Place::ReturnSlot)
+                            && matches!(dest, Place::Local(_))
+                        {
+                            if let Some(&root) = alias_of.get(&sl) {
+                                if alias_of.insert(dl, root) != Some(root) {
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut excluded_roots: HashSet<u32> = HashSet::new();
+    let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
+        if let Some(&root) = alias_of.get(&local) {
+            excluded.insert(root);
+        }
+    };
+    let scan_places = |places: &[Place],
+                       alias_of: &HashMap<u32, u32>,
+                       excluded: &mut HashSet<u32>| {
+        for p in places {
+            if let Some(l) = base_local(*p) {
+                if alias_of.contains_key(&l) && matches!(p, Place::Local(_) | Place::ReturnSlot) {
+                    if let Some(&root) = alias_of.get(&l) {
+                        excluded.insert(root);
+                    }
+                }
+            }
+        }
+    };
+
+    for block in blocks {
+        for instr in &block.instructions {
+            // A `Move` discriminates a benign whole-value hand-off (dest is
+            // another alias member — already folded into the alias set) from a
+            // real escape (dest is a non-member local or the `ReturnSlot`).
+            if let Instr::Move { dest, src } = instr {
+                if let Some(sl) = base_local(*src) {
+                    let src_is_member = alias_of.contains_key(&sl)
+                        && matches!(src, Place::Local(_) | Place::ReturnSlot);
+                    let dest_is_member = base_local(*dest).is_some_and(|dl| {
+                        alias_of.contains_key(&dl) && matches!(dest, Place::Local(_))
+                    });
+                    if src_is_member && !dest_is_member {
+                        note_escape(sl, &mut excluded_roots);
+                    }
+                }
+                continue;
+            }
+            // A `Drop` of the triple is its own release path (an inline
+            // per-iteration / destructure-discard release already emitted into
+            // the finalized MIR), never an escape.
+            if matches!(instr, Instr::Drop { .. }) {
+                continue;
+            }
+            // A receiver-borrowing bytes runtime op reads the triple as arg[0]
+            // but only borrows it (see `is_bytes_receiver_borrow_callee`); scan
+            // only arg[1..]. Every other instruction reading an alias member is
+            // an owning-sink escape (stored into a record field, captured into
+            // a closure env, moved into an aggregate, sent, …). Fail-closed: a
+            // bytes triple has no other benign interior instruction read.
+            if let Instr::CallRuntimeAbi(call) = instr {
+                if is_bytes_receiver_borrow_callee(call.symbol()) {
+                    scan_places(&call.args()[1..], &alias_of, &mut excluded_roots);
+                    continue;
+                }
+            }
+            for p in instr_source_places(instr) {
+                if let Some(l) = base_local(p) {
+                    if alias_of.contains_key(&l) && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                    {
+                        note_escape(l, &mut excluded_roots);
+                    }
+                }
+            }
+        }
+        // Terminator reads. The receiver-borrow exemption applies to a
+        // `Terminator::Call` on a listed bytes op (`hew_bytes_to_string`
+        // reaches MIR in this shape); every other terminator (an actor
+        // `Send` / `Ask`, a different `Call`, a return moving the triple to
+        // the `ReturnSlot`, …) is scanned in full: a member read there is an
+        // escape.
+        match &block.terminator {
+            Terminator::Call { callee, args, .. } if is_bytes_receiver_borrow_callee(callee) => {
+                scan_places(&args[1..], &alias_of, &mut excluded_roots);
+            }
+            other => {
+                for p in terminator_source_places(other) {
+                    if let Some(l) = base_local(p) {
+                        if alias_of.contains_key(&l)
+                            && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                        {
+                            note_escape(l, &mut excluded_roots);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut allowed = HashSet::new();
+    for (&local, &binding) in &candidate_local_to_binding {
+        // Projection-tainted candidates alias a still-live parent aggregate's
+        // buffer; the parent's drop owns the release (see the function doc).
+        if tainted.contains(&local) {
+            continue;
+        }
+        // Resolve to the whole-value alias ROOT before testing exclusion, so a
+        // candidate that is itself an alias member is excluded when any group
+        // member escaped (same fail-closed root resolution as the collection
+        // prover; see the rationale on `derive_local_collection_drop_allowed`).
+        let root = alias_of.get(&local).copied().unwrap_or(local);
+        if !excluded_roots.contains(&root) {
+            allowed.insert(binding);
+        }
+    }
+    allowed
+}
+
 /// W5.021 — fail-closed sole-owner derivation for owned-aggregate **tuple**
 /// bindings (the tuple/record-of-owned-handles drop spine). Returns the subset
 /// of `owned_locals` whose tuple binding still owns its heap members at scope
@@ -24091,6 +24391,24 @@ fn drop_kind_for(
                 drop_fn: "hew_string_drop",
             }
         }
+        // A `bytes` owned local is a by-value `BytesTriple { ptr, i32, i32 }`
+        // in its alloca (NOT a single owned pointer), so its release is the
+        // triple-field-0 shape: GEP field 0, load the data pointer,
+        // `hew_bytes_drop(data_ptr)` (refcount decrement, free at zero),
+        // null-store the field. Codegen's `emit_one_elab_drop` intercepts the
+        // `(ty == Bytes, drop_fn == "hew_bytes_drop")` pair BEFORE the generic
+        // single-`ptr`-load CowHeap path and routes it through
+        // `emit_bytes_inplace_drop` — the same emitter the inline
+        // `Instr::Drop` bytes path uses, so the two cannot drift on which
+        // field of the triple owns the heap allocation. This arm is the single
+        // source of truth the drop-plan validator re-derives against, so
+        // `build_lifo_drops` must emit the identical kind (admission authority:
+        // `derive_local_bytes_drop_allowed`).
+        Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::Bytes) => {
+            DropKind::CowHeap {
+                drop_fn: "hew_bytes_drop",
+            }
+        }
         // A `Generator<Y, R>` / `AsyncGenerator<Y>` owned local holds a
         // `*mut HewGenCtx` handle (shared `Place::Local` storage, discriminated
         // by the builtin type). Its sole release is `hew_gen_free`, which
@@ -24367,6 +24685,7 @@ fn build_lifo_drops(
     enum_composite_drop_allowed: &HashSet<BindingId>,
     owned_vec_drop_allowed: &HashSet<BindingId>,
     local_collection_drop_allowed: &HashSet<BindingId>,
+    local_bytes_drop_allowed: &HashSet<BindingId>,
     tuple_composite_drop_allowed: &HashSet<BindingId>,
     returned_aggregate_members: &HashSet<BindingId>,
     consumed_local_aggregate_members: &HashSet<BindingId>,
@@ -24448,6 +24767,44 @@ fn build_lifo_drops(
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(
                     "build_lifo_drops invariant: local collection binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: drop_kind_for(place, ty, None),
+            });
+            continue;
+        }
+        // Local `bytes` binding. A bytes value is `ValueClass::CowValue`, but
+        // `cow_value_leaf_drop_symbol` only handles the leaf `string` case, so
+        // a local bytes triple would otherwise fall through to the no-op
+        // CowValue arm and LEAK its refcounted data buffer on every exit path
+        // (the sender-local leak the bytes ownership probe pins). Intercept
+        // BEFORE the value-class match (mirroring the owned-Vec / collection
+        // arms) and emit the `DropKind::CowHeap { "hew_bytes_drop" }` release
+        // (lowered by codegen's BytesTriple-aware `emit_bytes_inplace_drop`)
+        // ONLY when the fail-closed sole-owner derivation proved the binding
+        // still solely owns its buffer at scope exit
+        // (`local_bytes_drop_allowed`). A triple consumed by an actor send
+        // (mailbox `memcpy` hand-off) or otherwise escaped is excluded by the
+        // escape-scan + dataflow `Consumed` filter, so the receive side /
+        // `state_drop_fn` remains the sole owner of that release — no
+        // double-drop. A binding the prover did not clear leaks (as before
+        // this fix); it never double-frees. The local guard here only confirms
+        // the binding's type is `bytes` so the triple-field-0 ABI is correct;
+        // route the kind through `drop_kind_for` (the single source of truth
+        // the drop-plan validator re-derives against) so the emitted kind
+        // cannot drift.
+        // LESSONS: cleanup-all-exits, raii-null-after-move,
+        // boundary-fail-closed.
+        if local_bytes_drop_allowed.contains(binding) && matches!(ty, ResolvedTy::Bytes) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: local bytes binding {binding:?} is in \
                      owned_locals but missing from binding_locals; lowering must wire a \
                      Place before the drop-elaboration pass observes the binding"
                 )
@@ -24692,11 +25049,20 @@ fn build_lifo_drops(
 ///
 /// Slice 2 is intentionally restricted to the single `string` leaf — the
 /// accumulating helper-local leak this lane targets. Aggregate and container
-/// `CowValue` leaves (`Vec`, `HashMap`, `HashSet`, `Bytes`, tuples, arrays)
-/// own nested heap that, without retain-on-share at element-ingress sites,
-/// cannot be released here without risking a double-free against the
-/// container's own element-release path; they stay `None` (leak-as-before,
-/// never double-free) until the retain-on-share spine lands.
+/// `CowValue` leaves (`Vec`, `HashMap`, `HashSet`, tuples, arrays) own nested
+/// heap that, without retain-on-share at element-ingress sites, cannot be
+/// released here without risking a double-free against the container's own
+/// element-release path; they stay `None` (leak-as-before, never double-free)
+/// until the retain-on-share spine lands.
+///
+/// `Bytes` is deliberately absent TOO, but for a different reason: its
+/// scope-exit drop is live, with its own dedicated admission authority
+/// (`derive_local_bytes_drop_allowed`) and its own `build_lifo_drops`
+/// interception arm — keeping it out of this table keeps exactly ONE prover
+/// in charge of bytes admission. Adding a `Bytes` arm here would make bytes
+/// bindings candidates of `derive_cow_sole_owner` as well, creating a second,
+/// union-admitting authority for the same drop (LESSONS:
+/// boundary-fail-closed — one admission authority per drop class).
 fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str> {
     match ty {
         ResolvedTy::String => Some("hew_string_drop"),
@@ -28439,6 +28805,180 @@ mod f1_suspending_escape_poison {
             allowed.contains(&binding_a) && allowed.contains(&binding_b),
             "a non-escaping alias group must stay admitted (root resolution must \
              not over-exclude); allowed: {allowed:?}"
+        );
+    }
+
+    // ---------- derive_local_bytes_drop_allowed: fail-closed admission ----------
+
+    /// Scaffolding: a single-candidate owned-locals fixture for the bytes
+    /// prover (`b` at `Place::Local(1)`).
+    #[allow(
+        clippy::type_complexity,
+        reason = "test-only fixture tuple mirroring the prover's three \
+                  parameters; a named struct would only add indirection"
+    )]
+    fn bytes_prover_fixture() -> (
+        Vec<(BindingId, String, ResolvedTy)>,
+        HashMap<BindingId, Place>,
+        BindingId,
+    ) {
+        let binding = BindingId(301);
+        let owned_locals = vec![(binding, "b".to_string(), ResolvedTy::Bytes)];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(binding, Place::Local(1))].into_iter().collect();
+        (owned_locals, binding_locals, binding)
+    }
+
+    /// A bytes local that is never read anywhere is the sole owner of its
+    /// buffer and must be admitted for the scope-exit `hew_bytes_drop` — the
+    /// sender-local leak shape this prover exists to close.
+    #[test]
+    fn derive_local_bytes_drop_allowed_admits_sole_owner_local() {
+        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        };
+        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        assert!(
+            allowed.contains(&binding),
+            "a never-read bytes local must earn its scope-exit drop; allowed: {allowed:?}"
+        );
+    }
+
+    /// A bytes local consumed by an actor `Send` is handed to the mailbox via
+    /// `memcpy` — the receive side / actor state owns the buffer from then on
+    /// (the probe-pinned ownership trace). The send terminator reads the place,
+    /// so the escape scan must exclude the binding even BEFORE the dataflow
+    /// `Consumed` filter (the belt-and-suspenders net) runs.
+    #[test]
+    fn derive_local_bytes_drop_allowed_excludes_send_consumed_local() {
+        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Send {
+                actor: Place::Local(9),
+                msg_type: 0,
+                value: Place::Local(1),
+                next: 1,
+                alias_mode: crate::model::SendAliasMode::Copy,
+            },
+        };
+        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        assert!(
+            !allowed.contains(&binding),
+            "a send-consumed bytes local must NOT earn a sender-side drop — the \
+             actor owns the buffer now (state_drop is its release); admitting it \
+             double-frees; allowed: {allowed:?}"
+        );
+    }
+
+    /// A receiver-borrowing bytes runtime op (`hew_bytes_len` as
+    /// `Instr::CallRuntimeAbi`) reads the triple as arg[0] but only borrows
+    /// it; the binding must stay admitted (otherwise every `b.len()` would
+    /// silently reintroduce the leak).
+    #[test]
+    fn derive_local_bytes_drop_allowed_admits_borrow_receiver_read() {
+        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+        let call = crate::model::RuntimeCall::new(
+            "hew_bytes_len",
+            vec![Place::Local(1)],
+            Some(Place::Local(2)),
+        )
+        .expect("hew_bytes_len is an allowlisted runtime symbol");
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::CallRuntimeAbi(call)],
+            terminator: Terminator::Return,
+        };
+        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        assert!(
+            allowed.contains(&binding),
+            "a borrow-listed receiver read must not exclude the binding; \
+             allowed: {allowed:?}"
+        );
+    }
+
+    /// A runtime call NOT on the bytes receiver-borrow allow-list that reads
+    /// the triple is an escape (default-deny): the binding leaks rather than
+    /// risking a free against an unverified ownership contract.
+    #[test]
+    fn derive_local_bytes_drop_allowed_excludes_unlisted_runtime_read() {
+        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+        let call =
+            crate::model::RuntimeCall::new("hew_task_scope_join_all", vec![Place::Local(1)], None)
+                .expect("hew_task_scope_join_all is an allowlisted runtime symbol");
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::CallRuntimeAbi(call)],
+            terminator: Terminator::Return,
+        };
+        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        assert!(
+            !allowed.contains(&binding),
+            "an unlisted runtime read must default-deny (leak, never \
+             double-free); allowed: {allowed:?}"
+        );
+    }
+
+    /// A bytes triple loaded OUT of a still-live aggregate
+    /// (`RecordFieldLoad` dest) byte-copies the triple with no refcount bump;
+    /// the parent's drop path owns the release, so the projection-tainted
+    /// binding must be excluded (dropping it too would double-free).
+    #[test]
+    fn derive_local_bytes_drop_allowed_excludes_projection_tainted_binding() {
+        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::RecordFieldLoad {
+                record: Place::Local(5),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            }],
+            terminator: Terminator::Return,
+        };
+        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        assert!(
+            !allowed.contains(&binding),
+            "a field-loaded bytes triple aliases its parent aggregate's buffer \
+             and must not earn its own drop; allowed: {allowed:?}"
+        );
+    }
+
+    /// A bytes triple moved into an aggregate (`RecordInit` operand — the
+    /// `spawn A(f: b)` ingress shape) is owned by the aggregate now; the
+    /// escape scan must exclude it so the aggregate's drop path remains the
+    /// sole release.
+    #[test]
+    fn derive_local_bytes_drop_allowed_excludes_aggregate_ingress() {
+        let (owned_locals, binding_locals, binding) = bytes_prover_fixture();
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::RecordInit {
+                ty: ResolvedTy::Named {
+                    name: "Holder".to_string(),
+                    args: vec![],
+                    builtin: None,
+                    is_opaque: false,
+                },
+                fields: vec![(FieldOffset(0), Place::Local(1))],
+                dest: Place::Local(3),
+            }],
+            terminator: Terminator::Return,
+        };
+        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        assert!(
+            !allowed.contains(&binding),
+            "an aggregate-ingress bytes triple must not earn a producer-side \
+             drop; allowed: {allowed:?}"
         );
     }
 }

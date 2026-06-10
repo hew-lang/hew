@@ -1730,20 +1730,28 @@ enum AnonContext {
 }
 
 /// Collect every `actor` declaration in the program (root items + each
-/// module-graph module). The walk is read-only so it can run after the
-/// checker has frozen its mutable state.
-fn collect_program_actors(program: &Program) -> Vec<&ActorDecl> {
-    let mut actors: Vec<&ActorDecl> = Vec::new();
+/// module-graph module), paired with its checker identity: the bare name
+/// for root actors, the dotted `{module_short}.{name}` form for module
+/// actors. The walk is read-only so it can run after the checker has
+/// frozen its mutable state.
+fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
+    let mut actors: Vec<(String, &ActorDecl)> = Vec::new();
     for (item, _) in &program.items {
         if let Item::Actor(ad) = item {
-            actors.push(ad);
+            actors.push((ad.name.clone(), ad));
         }
     }
     if let Some(mg) = &program.module_graph {
-        for module in mg.modules.values() {
+        for (mod_id, module) in &mg.modules {
+            if *mod_id == mg.root {
+                continue;
+            }
+            let module_short = mod_id.path.last().map(String::as_str);
             for (item, _) in &module.items {
                 if let Item::Actor(ad) = item {
-                    actors.push(ad);
+                    let identity = module_short
+                        .map_or_else(|| ad.name.clone(), |m| format!("{m}.{}", ad.name));
+                    actors.push((identity, ad));
                 }
             }
         }
@@ -1771,7 +1779,7 @@ fn build_actor_protocol_descriptors(
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
     let mut descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> =
         HashMap::new();
-    for ad in collect_program_actors(program) {
+    for (identity, ad) in collect_program_actors(program) {
         if ad.receive_fns.is_empty() {
             continue;
         }
@@ -1779,7 +1787,7 @@ fn build_actor_protocol_descriptors(
             Vec::with_capacity(ad.receive_fns.len());
         let mut all_signatures_resolved = true;
         for rf in &ad.receive_fns {
-            let key = format!("{}::{}", ad.name, rf.name);
+            let key = format!("{identity}::{}", rf.name);
             let Some(sig) = fn_sigs.get(&key) else {
                 all_signatures_resolved = false;
                 break;
@@ -1807,7 +1815,7 @@ fn build_actor_protocol_descriptors(
             // is self-describing. Downstream consumers may continue to
             // derive their own emit name today; subsequent Q87 slices route
             // codegen through this `symbol` field.
-            let symbol = format!("{}__{}", ad.name, rf.name);
+            let symbol = format!("{identity}__{}", rf.name);
             specs.push(crate::actor_protocol::ActorHandlerSpec {
                 name: rf.name.clone(),
                 param_tys,
@@ -1823,10 +1831,12 @@ fn build_actor_protocol_descriptors(
             continue;
         }
 
-        match crate::actor_protocol::ActorProtocolDescriptor::from_handlers(ad.name.clone(), &specs)
-        {
+        match crate::actor_protocol::ActorProtocolDescriptor::from_handlers(
+            identity.clone(),
+            &specs,
+        ) {
             Ok(descriptor) => {
-                descriptors.insert(ad.name.clone(), descriptor);
+                descriptors.insert(identity.clone(), descriptor);
             }
             Err(collision) => {
                 // Pin the diagnostic to the second-colliding handler's span

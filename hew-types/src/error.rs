@@ -738,6 +738,22 @@ pub enum TypeErrorKind {
         /// Number of type parameters the actor declaration declares.
         expected_arity: usize,
     },
+    /// A bare actor reference (e.g. `spawn Account(...)`) matches actors
+    /// exported by two or more modules, with no local actor of that name to
+    /// win the local-first resolution.
+    ///
+    /// Resolution is never silent first-wins: the user must qualify the
+    /// reference (`spawn bank.Account(...)`) to pick a module. Mirrors the
+    /// `per-module-type-identity` bare-name policy for `pub type`s.
+    ///
+    /// Envelope code: `E_AMBIGUOUS_ACTOR_REFERENCE`.
+    AmbiguousActorReference {
+        /// The bare actor name as written at the reference site.
+        actor_name: String,
+        /// Short names of every module exporting an actor of that name,
+        /// sorted for deterministic diagnostics.
+        candidate_modules: Vec<String>,
+    },
     /// A generic actor was spawned with the wrong number of type arguments.
     ///
     /// Envelope code: `E_ACTOR_TYPE_ARG_ARITY_MISMATCH`.
@@ -898,6 +914,7 @@ impl TypeErrorKind {
             Self::UnknownTraitBoundShape { .. } => "UnknownTraitBoundShape",
             Self::InvalidExternSymbolTemplate { .. } => "InvalidExternSymbolTemplate",
             Self::MissingActorTypeArgs { .. } => "MissingActorTypeArgs",
+            Self::AmbiguousActorReference { .. } => "AmbiguousActorReference",
             Self::ActorTypeArgArityMismatch { .. } => "ActorTypeArgArityMismatch",
             Self::TraitImplSignatureMismatch { .. } => "TraitImplSignatureMismatch",
             Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",

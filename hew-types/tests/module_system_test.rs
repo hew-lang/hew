@@ -949,28 +949,34 @@ fn test_actor_bare_import_registers_type_and_methods() {
         output.errors
     );
 
-    // Actor type should be registered (both qualified and unqualified)
-    assert!(
-        output.type_defs.contains_key("MyActor"),
-        "actor type 'MyActor' should be registered"
-    );
+    // The dotted `{module}.{name}` key is the actor's primary identity; the
+    // bare key is never written for module actors so a second same-named
+    // import cannot clobber another module's actor.
     assert!(
         output.type_defs.contains_key("mymod.MyActor"),
         "qualified 'mymod.MyActor' should be registered"
     );
+    assert!(
+        !output.type_defs.contains_key("MyActor"),
+        "bare 'MyActor' must not be registered for a module actor"
+    );
 
-    // Actor type should have the Actor kind
-    let def = output.type_defs.get("MyActor").unwrap();
+    // Actor type should have the Actor kind under its qualified identity
+    let def = output.type_defs.get("mymod.MyActor").unwrap();
     assert!(
         matches!(def.kind, TypeDefKind::Actor),
-        "MyActor should be TypeDefKind::Actor, got {:?}",
+        "mymod.MyActor should be TypeDefKind::Actor, got {:?}",
         def.kind
     );
 
-    // Receive fn should be registered as "MyActor::ping"
+    // Receive fn should be registered under the dotted actor identity
     assert!(
-        output.fn_sigs.contains_key("MyActor::ping"),
-        "receive fn should be registered as 'MyActor::ping'"
+        output.fn_sigs.contains_key("mymod.MyActor::ping"),
+        "receive fn should be registered as 'mymod.MyActor::ping'"
+    );
+    assert!(
+        !output.fn_sigs.contains_key("MyActor::ping"),
+        "bare 'MyActor::ping' must not be registered for a module actor"
     );
 }
 
@@ -1000,10 +1006,13 @@ fn test_actor_glob_import_registers_unqualified() {
         output.errors
     );
 
-    // Both qualified and unqualified access
-    assert!(output.type_defs.contains_key("Greeter"));
+    // The dotted key is the actor's identity even under a glob import;
+    // unqualified ACCESS resolves through the local-first bare-name
+    // resolution at spawn/annotation sites, not a bare registry copy.
     assert!(output.type_defs.contains_key("mymod.Greeter"));
-    assert!(output.fn_sigs.contains_key("Greeter::greet"));
+    assert!(!output.type_defs.contains_key("Greeter"));
+    assert!(output.fn_sigs.contains_key("mymod.Greeter::greet"));
+    assert!(!output.fn_sigs.contains_key("Greeter::greet"));
 }
 
 #[test]
@@ -1039,14 +1048,16 @@ fn test_actor_named_import_selective() {
         output.errors
     );
 
-    // Counter should be accessible qualified and unqualified
-    assert!(output.type_defs.contains_key("Counter"));
+    // Both actors register under their dotted identity only; the named
+    // import binding ("Counter") resolves through `unqualified_to_module`
+    // at reference sites rather than a bare registry copy.
     assert!(output.type_defs.contains_key("mymod.Counter"));
-    assert!(output.fn_sigs.contains_key("Counter::increment"));
+    assert!(!output.type_defs.contains_key("Counter"));
+    assert!(output.fn_sigs.contains_key("mymod.Counter::increment"));
+    assert!(!output.fn_sigs.contains_key("Counter::increment"));
 
-    // Timer should be qualified only (not named in import spec)
     assert!(output.type_defs.contains_key("mymod.Timer"));
-    assert!(output.type_defs.contains_key("Timer"));
+    assert!(!output.type_defs.contains_key("Timer"));
 }
 
 #[test]
@@ -1077,9 +1088,9 @@ fn test_actor_multiple_receive_fns() {
         output.errors
     );
 
-    assert!(output.fn_sigs.contains_key("Cache::get"));
-    assert!(output.fn_sigs.contains_key("Cache::set"));
-    assert!(output.fn_sigs.contains_key("Cache::delete"));
+    assert!(output.fn_sigs.contains_key("cache.Cache::get"));
+    assert!(output.fn_sigs.contains_key("cache.Cache::set"));
+    assert!(output.fn_sigs.contains_key("cache.Cache::delete"));
 }
 
 #[test]
@@ -1109,11 +1120,11 @@ fn test_actor_and_function_coexist_in_module() {
         output.errors
     );
 
-    // Actor registered
-    assert!(output.type_defs.contains_key("Worker"));
-    assert!(output.fn_sigs.contains_key("Worker::run"));
+    // Actor registered under its dotted identity
+    assert!(output.type_defs.contains_key("workers.Worker"));
+    assert!(output.fn_sigs.contains_key("workers.Worker::run"));
 
-    // Function registered
+    // Function registered (functions keep their bare glob-import binding)
     assert!(output.fn_sigs.contains_key("create_worker"));
     assert!(output.fn_sigs.contains_key("workers.create_worker"));
 }

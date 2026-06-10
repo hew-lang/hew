@@ -31377,6 +31377,7 @@ mod plain_vec_drop_interior_alias_and_escape {
             args: vec![Place::Local(receiver), Place::Local(value)],
             dest: None,
             next,
+            builtin: None,
         }
     }
 
@@ -31578,6 +31579,7 @@ mod plain_vec_drop_interior_alias_and_escape {
                     args: vec![Place::Local(11), Place::Local(1)],
                     dest: Some(Place::Local(12)),
                     next: 1,
+                    builtin: None,
                 },
             },
             // r = r_tmp (rebind), then a receiver-borrow read `r.len()`.
@@ -31593,6 +31595,7 @@ mod plain_vec_drop_interior_alias_and_escape {
                     args: vec![Place::Local(13)],
                     dest: Some(Place::Local(18)),
                     next: 2,
+                    builtin: None,
                 },
             },
             BasicBlock {
@@ -31686,6 +31689,7 @@ mod plain_vec_drop_interior_alias_and_escape {
                     args: vec![Place::Local(1)],
                     dest: Some(Place::Local(2)),
                     next: 2,
+                    builtin: None,
                 },
             },
             BasicBlock {

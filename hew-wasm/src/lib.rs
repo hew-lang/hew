@@ -539,13 +539,27 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
         // lets actors/machines pass HIR lowering while still catching
         // CheckerBoundaryViolation diagnostics that arise regardless of target.
         let hir_diagnostics = if tco.errors.is_empty() {
-            hew_hir::lower_program(
+            let lower_output = hew_hir::lower_program(
                 &parse_result.program,
                 &tco,
                 &hew_hir::ResolutionCtx,
                 hew_hir::TargetArch::X86_64,
-            )
-            .diagnostics
+            );
+            // Run the HIR verifier to catch Unsupported placeholders and other
+            // structural invariant violations that lower_program may not diagnose
+            // directly. Dedup by (kind, span) so each problem is reported once.
+            // Mirrors the native `hew check` path in hew-cli/src/main.rs.
+            let mut diags = lower_output.diagnostics;
+            let verifier_diags = hew_hir::verify_hir(&lower_output.module);
+            for diag in verifier_diags {
+                let already_present = diags
+                    .iter()
+                    .any(|d| d.kind == diag.kind && d.span == diag.span);
+                if !already_present {
+                    diags.push(diag);
+                }
+            }
+            diags
         } else {
             Vec::new()
         };

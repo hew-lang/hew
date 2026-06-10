@@ -8,14 +8,13 @@ fn main() {
     v.push(30);
     v.push(40);
     v.push(50);
-
     println(f"length: {v.len()}");
     println(f"first:  {v.get(0)}");
     println(f"third:  {v.get(2)}");
 
     // Iterate over all elements by index
     var total = 0;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         total = total + v.get(i);
     }
     println(f"sum:    {total}");

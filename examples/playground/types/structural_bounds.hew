@@ -18,9 +18,17 @@ fn quadrant(p: Point) -> string {
     let x = p.x;
     let y = p.y;
     if x > 0 {
-        if y > 0 { "Q1" } else { "Q4" }
+        if y > 0 {
+            "Q1"
+        } else {
+            "Q4"
+        }
     } else {
-        if y > 0 { "Q2" } else { "Q3" }
+        if y > 0 {
+            "Q2"
+        } else {
+            "Q3"
+        }
     }
 }
 

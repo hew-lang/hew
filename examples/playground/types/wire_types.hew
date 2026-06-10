@@ -27,7 +27,6 @@ fn main() {
     let origin = Point { x: 0, y: 0 };
     let dot = Dot(origin);
     println(area_description(dot));
-
     let centre = Point { x: 3, y: 4 };
     let ring = Ring(Circle { centre: centre, radius: 10 });
     println(area_description(ring));

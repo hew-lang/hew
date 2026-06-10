@@ -11442,6 +11442,18 @@ impl LowerCtx {
             } => {
                 return self.lower_await_deadline(timeout_inner, duration, &span, intent);
             }
+            // `b"AB"` — byte-string literal. The parser already decoded the
+            // escape sequences; `inner` is the raw byte sequence.
+            Expr::ByteStringLiteral(inner) => (
+                HirExprKind::Literal(HirLiteral::Bytes(inner.clone())),
+                ResolvedTy::Bytes,
+            ),
+            // `bytes[0x41, 0x42]` — byte-array literal. The parser validated
+            // each element is in 0..=255 and stored them as `Vec<u8>`.
+            Expr::ByteArrayLiteral(elems) => (
+                HirExprKind::Literal(HirLiteral::Bytes(elems.clone())),
+                ResolvedTy::Bytes,
+            ),
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (

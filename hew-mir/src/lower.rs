@@ -9271,6 +9271,19 @@ impl Builder {
                 });
                 Some(dest)
             }
+            HirLiteral::Bytes(data) => {
+                // Bytes literal — `bytes[0x41, 0x42]` or `b"AB"`.
+                // Allocate a `ResolvedTy::Bytes` local and emit `Instr::BytesLit`.
+                // Codegen will emit an LLVM global constant for the raw bytes and
+                // call `hew_bytes_from_static_raw(ptr, len, dst)` to build the
+                // refcounted `BytesTriple` at runtime.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::BytesLit {
+                    bytes: data.clone(),
+                    dest,
+                });
+                Some(dest)
+            }
         }
     }
 
@@ -21062,6 +21075,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         // Const-like producers write only their dest place.
         Instr::ConstI64 { dest, .. }
         | Instr::StringLit { dest, .. }
+        | Instr::BytesLit { dest, .. }
         | Instr::ConstGlobalLoad { dest, .. } => vec![*dest],
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
@@ -21342,6 +21356,7 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::ContextField { .. }
         | Instr::ConstI64 { .. }
         | Instr::StringLit { .. }
+        | Instr::BytesLit { .. }
         | Instr::ConstGlobalLoad { .. }
         | Instr::FloatLit { .. }
         | Instr::CharLit { .. }
@@ -21724,6 +21739,7 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::WitnessAlignOf { .. }
         | Instr::WitnessDropGlue { .. }
         | Instr::StringLit { .. }
+        | Instr::BytesLit { .. }
         | Instr::ConstGlobalLoad { .. }
         | Instr::RecordFieldLoad { .. }
         | Instr::TupleFieldLoad { .. }
@@ -21917,6 +21933,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::WitnessDropGlue { .. }
         | Instr::WitnessMove { .. }
         | Instr::StringLit { .. }
+        | Instr::BytesLit { .. }
         | Instr::ConstGlobalLoad { .. }
         | Instr::RecordInit { .. }
         | Instr::RecordFieldStore { .. }

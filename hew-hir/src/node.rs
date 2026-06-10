@@ -2197,4 +2197,11 @@ pub enum HirLiteral {
     Char(char),
     Duration(i64),
     Unit,
+    /// A `bytes` literal — `bytes[0x41, 0x42]` or `b"AB"`.
+    ///
+    /// Produced by `Expr::ByteArrayLiteral` and `Expr::ByteStringLiteral`
+    /// in HIR lowering. The byte sequence is already validated and decoded
+    /// by the parser (range 0..=255 for array elements; UTF-8 decode for
+    /// byte strings). MIR lowering emits `Instr::BytesLit`.
+    Bytes(Vec<u8>),
 }

@@ -3571,6 +3571,18 @@ pub enum Instr {
         bytes: Vec<u8>,
         dest: Place,
     },
+    /// A `bytes` literal — `bytes[0x41, 0x42]` or `b"AB"`.
+    ///
+    /// Produced from `HirLiteral::Bytes`. Codegen emits an LLVM global
+    /// constant holding the raw byte data, then calls
+    /// `hew_bytes_from_static_raw(ptr, len, dst)` to build the
+    /// refcounted `BytesTriple` at `dest`. The dest local carries
+    /// `ResolvedTy::Bytes`.
+    BytesLit {
+        /// Raw byte content of the literal; elements are in [0, 255].
+        bytes: Vec<u8>,
+        dest: Place,
+    },
     /// Load a module-level `const` global into `dest`.
     ///
     /// The global descriptor is owned by [`IrPipeline::user_consts`] and keyed

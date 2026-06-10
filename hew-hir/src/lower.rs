@@ -14450,10 +14450,20 @@ impl LowerCtx {
         ret_ty: &ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        let resolved_ref = self
-            .fn_registry
-            .get(&callee_name)
-            .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id));
+        // Mirror `lower_identifier`: a registry entry carrying a typed
+        // builtin family resolves to `ResolvedRef::Builtin(family)` so the
+        // for-await recv desugar's layout-witness callees reach MIR with
+        // their family (the codegen `Terminator::Call` intercepts dispatch
+        // on it — a bare Item resolution here is the producer gap the
+        // intercept backstop refuses).
+        let resolved_ref =
+            self.fn_registry
+                .get(&callee_name)
+                .map_or(ResolvedRef::Unresolved, |entry| {
+                    entry
+                        .builtin_family
+                        .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin)
+                });
         let callee_ty = ResolvedTy::Function {
             params: Vec::new(),
             ret: Box::new(ret_ty.clone()),

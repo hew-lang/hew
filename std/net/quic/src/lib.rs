@@ -21,8 +21,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
-use hew_cabi::vec::HewVec;
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig};
+
+type BytesTriple = hew_runtime::bytes::BytesTriple;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::RootCertStore;
@@ -403,9 +404,45 @@ fn connection_last_error(conn: &HewQuicConn) -> String {
         .map_or_else(String::new, |reason| reason.to_string())
 }
 
-fn empty_hwvec() -> *mut HewVec {
-    // SAFETY: hew_vec_new allocates a valid empty HewVec.
-    unsafe { hew_cabi::vec::hew_vec_new() }
+fn empty_bytes_triple() -> BytesTriple {
+    BytesTriple {
+        ptr: std::ptr::null_mut(),
+        offset: 0,
+        len: 0,
+    }
+}
+
+/// Helper: extract a byte slice from a `BytesTriple` by-pointer consumer argument.
+///
+/// Returns an empty slice for a null pointer or a zero-length triple.
+///
+/// # Safety
+///
+/// If non-null, `triple` must point to a live `BytesTriple` whose payload
+/// region is valid for at least `len` bytes.
+unsafe fn bytes_slice_from_triple<'a>(triple: *const BytesTriple) -> &'a [u8] {
+    if triple.is_null() {
+        return &[];
+    }
+    // SAFETY: caller guarantees triple is non-null and valid.
+    let t = unsafe { &*triple };
+    if t.len == 0 || t.ptr.is_null() {
+        return &[];
+    }
+    let offset = t.offset as usize;
+    let len = t.len as usize;
+    // SAFETY: triple.ptr + offset is valid for len bytes per BytesTriple invariant.
+    unsafe { std::slice::from_raw_parts(t.ptr.add(offset), len) }
+}
+
+/// Allocate a `BytesTriple` from a byte slice via the runtime allocator.
+fn bytes_triple_from_slice(data: &[u8]) -> BytesTriple {
+    if data.is_empty() {
+        return empty_bytes_triple();
+    }
+    let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+    // SAFETY: data is valid for len bytes; hew_bytes_from_static copies the slice.
+    unsafe { hew_runtime::bytes::hew_bytes_from_static(data.as_ptr(), len) }
 }
 
 fn event_ptr(kind: i32) -> *mut HewQuicEvent {
@@ -1138,25 +1175,28 @@ pub unsafe extern "C" fn hew_quic_conn_last_error(conn: *const HewQuicConn) -> *
 // ── Stream methods ────────────────────────────────────────────────────────────
 
 #[no_mangle]
-/// Send a Hew byte vector over a QUIC stream.
+/// Send a `bytes` value over a QUIC stream.
+///
+/// `data` is the address of the caller's `BytesTriple` alloca, passed via the
+/// by-pointer bytes consumer convention (`is_bytes_by_pointer_consumer`).
 ///
 /// # Safety
 ///
 /// `stream` must be null or a live stream pointer returned by this module.
-/// `data` must be null or a valid Hew byte vector pointer for the duration of
-/// this call. Ownership of `data` is not transferred.
+/// `data` must be null or a valid `*const BytesTriple` for the duration of
+/// this call. Ownership of the `bytes` allocation is not transferred.
 pub unsafe extern "C" fn hew_quic_stream_send(
     stream: *mut HewQuicStream,
-    data: *mut HewVec,
+    data: *const BytesTriple,
 ) -> c_int {
-    if stream.is_null() || data.is_null() {
+    if stream.is_null() {
         return -1;
     }
     // SAFETY: `stream` is non-null and must come from this module per caller
     // contract.
     let stream = unsafe { &*stream };
-    // SAFETY: `data` is a valid HewVec per caller contract.
-    let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+    // SAFETY: data is null or a valid BytesTriple pointer per caller contract.
+    let bytes = unsafe { bytes_slice_from_triple(data) }.to_vec();
 
     let Ok(mut send) = stream.send.lock() else {
         update_stream(stream, |state| {
@@ -1182,14 +1222,18 @@ pub unsafe extern "C" fn hew_quic_stream_send(
 }
 
 #[no_mangle]
-/// Receive one chunk of data from a QUIC stream as a Hew byte vector.
+/// Receive one chunk of data from a QUIC stream, returned as a `BytesTriple`.
+///
+/// Returns an empty triple on null stream, EOF, or error.  The caller must
+/// inspect [`hew_quic_stream_recv_closed`] or the stream event queue to
+/// distinguish EOF from an error.
 ///
 /// # Safety
 ///
 /// `stream` must be null or a live stream pointer returned by this module.
-pub unsafe extern "C" fn hew_quic_stream_recv(stream: *mut HewQuicStream) -> *mut HewVec {
+pub unsafe extern "C" fn hew_quic_stream_recv(stream: *mut HewQuicStream) -> BytesTriple {
     if stream.is_null() {
-        return empty_hwvec();
+        return empty_bytes_triple();
     }
     // SAFETY: `stream` is non-null and must come from this module per caller
     // contract.
@@ -1201,7 +1245,7 @@ pub unsafe extern "C" fn hew_quic_stream_recv(stream: *mut HewQuicStream) -> *mu
             state.last_error = String::from("stream recv lock poisoned");
         });
         let _ = stream.events.push(EVENT_ERROR);
-        return empty_hwvec();
+        return empty_bytes_triple();
     };
     match stream.rt.block_on(async { recv.read(&mut buf).await }) {
         Ok(Some(n)) => {
@@ -1209,8 +1253,7 @@ pub unsafe extern "C" fn hew_quic_stream_recv(stream: *mut HewQuicStream) -> *mu
                 state.bytes_received = state.bytes_received.saturating_add(to_i64_count(n));
                 state.last_error.clear();
             });
-            // SAFETY: `buf[..n]` is a valid slice of bytes.
-            unsafe { hew_cabi::vec::u8_to_hwvec(&buf[..n]) }
+            bytes_triple_from_slice(&buf[..n])
         }
         Ok(None) => {
             update_stream(stream, |state| {
@@ -1218,14 +1261,32 @@ pub unsafe extern "C" fn hew_quic_stream_recv(stream: *mut HewQuicStream) -> *mu
                 state.last_error.clear();
             });
             stream.notify_closed();
-            empty_hwvec()
+            empty_bytes_triple()
         }
         Err(err) => {
             update_stream(stream, |state| state.last_error = err.to_string());
             let _ = stream.events.push(EVENT_ERROR);
-            empty_hwvec()
+            empty_bytes_triple()
         }
     }
+}
+
+/// Out-pointer variant of [`hew_quic_stream_recv`] for Windows x64 MSVC sret
+/// compatibility.
+///
+/// # Safety
+///
+/// - `stream` must be null or a live stream pointer returned by this module.
+/// - `out` must be a valid, writable pointer to a `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_quic_stream_recv_raw(
+    stream: *mut HewQuicStream,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_quic_stream_recv(stream) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
 }
 
 #[no_mangle]
@@ -1247,17 +1308,18 @@ pub unsafe extern "C" fn hew_quic_stream_recv(stream: *mut HewQuicStream) -> *mu
 /// this call. Ownership of `data` is not transferred.
 pub unsafe extern "C" fn hew_quic_stream_send_timeout(
     stream: *mut HewQuicStream,
-    data: *mut HewVec,
+    data: *const BytesTriple,
     deadline_ms: i32,
 ) -> c_int {
-    if stream.is_null() || data.is_null() {
+    if stream.is_null() {
         return -1;
     }
     // SAFETY: `stream` is non-null and must come from this module per caller
     // contract.
     let stream = unsafe { &*stream };
-    // SAFETY: `data` is a valid HewVec per caller contract.
-    let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+    // SAFETY: `data` is null-or-valid per caller contract; bytes_slice_from_triple
+    // handles the null case by returning an empty slice.
+    let bytes = unsafe { bytes_slice_from_triple(data) }.to_vec();
 
     let Ok(mut send) = stream.send.lock() else {
         update_stream(stream, |state| {
@@ -1319,25 +1381,24 @@ pub unsafe extern "C" fn hew_quic_stream_send_timeout(
 ///
 /// `deadline_ms <= 0` disables the deadline (matches `hew_quic_stream_recv`).
 ///
-/// On success the heap-allocated `HewVec` is written through `out` and the
-/// caller takes ownership. The empty-vec (zero-length) case represents EOF
-/// and is reported via status code 0 with an empty vec — the caller
-/// distinguishes EOF from data by inspecting the vec length.
+/// On success a `BytesTriple` is written through `out` (the caller owns the
+/// allocation). An empty triple (`len == 0`) represents EOF — the caller
+/// distinguishes EOF from data by inspecting `out.len` after a 0 return.
 ///
 /// Returns:
-/// - 0 on success (bytes read, *out points to a fresh `HewVec`; empty = EOF)
-/// - -1 on receive error
-/// - -2 on deadline expiry; *out is unchanged
+/// - 0 on success (`*out` holds received bytes or an empty triple for EOF)
+/// - -1 on receive error; `*out` is unchanged
+/// - -2 on deadline expiry; `*out` is unchanged
 ///
 /// # Safety
 ///
 /// `stream` must be null or a live stream pointer returned by this module.
-/// `out` must be a valid pointer to a `*mut HewVec` slot the caller owns;
-/// on success the call writes a heap-allocated `HewVec` pointer there.
+/// `out` must be a valid, writable pointer to a `BytesTriple` slot the
+/// caller owns; on success the call writes an owned `BytesTriple` there.
 pub unsafe extern "C" fn hew_quic_stream_recv_timeout(
     stream: *mut HewQuicStream,
     deadline_ms: i32,
-    out: *mut *mut HewVec,
+    out: *mut BytesTriple,
 ) -> c_int {
     if stream.is_null() || out.is_null() {
         return -1;
@@ -1386,11 +1447,9 @@ pub unsafe extern "C" fn hew_quic_stream_recv_timeout(
                 state.bytes_received = state.bytes_received.saturating_add(to_i64_count(n));
                 state.last_error.clear();
             });
-            // SAFETY: `buf[..n]` is a valid slice of bytes.
-            let vec = unsafe { hew_cabi::vec::u8_to_hwvec(&buf[..n]) };
-            // SAFETY: `out` is a valid writable pointer slot per caller
+            // SAFETY: `out` is a valid writable BytesTriple slot per caller
             // contract.
-            unsafe { *out = vec };
+            unsafe { out.write(bytes_triple_from_slice(&buf[..n])) };
             0
         }
         Ok(None) => {
@@ -1399,9 +1458,9 @@ pub unsafe extern "C" fn hew_quic_stream_recv_timeout(
                 state.last_error.clear();
             });
             stream.notify_closed();
-            // SAFETY: `out` is a valid writable pointer slot per caller
-            // contract. Empty HewVec signals EOF on the success path.
-            unsafe { *out = empty_hwvec() };
+            // SAFETY: `out` is a valid writable BytesTriple slot per caller
+            // contract. An empty triple signals EOF on the success path.
+            unsafe { out.write(empty_bytes_triple()) };
             0
         }
         Err((timed_out, msg)) => {
@@ -1432,9 +1491,9 @@ fn set_last_recv_timed_out(v: bool) {
 }
 
 #[no_mangle]
-/// Hew-friendly `recv_timeout`: returns `*mut HewVec` (empty on timeout or
+/// Hew-friendly `recv_timeout`: returns a `BytesTriple` (empty on timeout or
 /// error). Hew callers query [`hew_quic_stream_last_recv_timed_out`] to
-/// distinguish timeout from EOF/error after a non-success outcome.
+/// distinguish a timeout from an EOF/error outcome.
 ///
 /// # Safety
 ///
@@ -1442,25 +1501,38 @@ fn set_last_recv_timed_out(v: bool) {
 pub unsafe extern "C" fn hew_quic_stream_recv_timeout_hew(
     stream: *mut HewQuicStream,
     deadline_ms: i32,
-) -> *mut HewVec {
+) -> BytesTriple {
     set_last_recv_timed_out(false);
-    let mut out: *mut HewVec = std::ptr::null_mut();
+    let mut out = empty_bytes_triple();
     // SAFETY: forwarded contract. `&raw mut out` is a valid writable slot.
     let status = unsafe { hew_quic_stream_recv_timeout(stream, deadline_ms, &raw mut out) };
     match status {
-        0 => {
-            if out.is_null() {
-                empty_hwvec()
-            } else {
-                out
-            }
-        }
+        0 => out,
         -2 => {
             set_last_recv_timed_out(true);
-            empty_hwvec()
+            empty_bytes_triple()
         }
-        _ => empty_hwvec(),
+        _ => empty_bytes_triple(),
     }
+}
+
+/// Out-pointer variant of [`hew_quic_stream_recv_timeout_hew`] for Windows
+/// x64 MSVC sret compatibility.
+///
+/// # Safety
+///
+/// - `stream` must be null or a live stream pointer returned by this module.
+/// - `out` must be a valid, writable pointer to a `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_quic_stream_recv_timeout_hew_raw(
+    stream: *mut HewQuicStream,
+    deadline_ms: i32,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_quic_stream_recv_timeout_hew(stream, deadline_ms) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
 }
 
 #[no_mangle]
@@ -1479,10 +1551,11 @@ pub extern "C" fn hew_quic_stream_last_recv_timed_out() -> i32 {
 /// # Safety
 ///
 /// `stream` must be null or a live stream pointer returned by this module.
-/// `data` must be null or a valid Hew byte vector pointer.
+/// `data` must be null or a valid `BytesTriple` pointer for the duration of
+/// this call. Ownership of `data` is not transferred.
 pub unsafe extern "C" fn hew_quic_stream_send_timeout_hew(
     stream: *mut HewQuicStream,
-    data: *mut HewVec,
+    data: *const BytesTriple,
     deadline_ms: i32,
 ) -> c_int {
     // SAFETY: forwarded contract.
@@ -1726,7 +1799,7 @@ mod tests {
     use std::ffi::{CStr, CString};
     use std::thread;
 
-    use hew_cabi::vec::{hew_vec_free, hwvec_to_u8, u8_to_hwvec};
+    use hew_runtime::bytes::hew_bytes_drop;
 
     unsafe fn take_event_kind(event: *mut HewQuicEvent) -> i32 {
         assert!(!event.is_null(), "event pointer must not be null");
@@ -1737,12 +1810,22 @@ mod tests {
         kind
     }
 
-    unsafe fn take_bytes(vec: *mut HewVec) -> Vec<u8> {
-        // SAFETY: vec comes from the QUIC API.
-        let bytes = unsafe { hwvec_to_u8(vec) };
-        // SAFETY: vec was allocated by the Hew runtime.
-        unsafe { hew_vec_free(vec) };
-        bytes
+    /// Consume a `BytesTriple` returned by the QUIC API, copying the bytes
+    /// into an owned `Vec<u8>` and dropping the runtime allocation.
+    unsafe fn take_bytes(triple: BytesTriple) -> Vec<u8> {
+        if triple.ptr.is_null() || triple.len == 0 {
+            return Vec::new();
+        }
+        // SAFETY: ptr+offset+len describe a valid allocation returned by this
+        // module; we copy before freeing.
+        let base = unsafe { triple.ptr.add(triple.offset as usize) };
+        // SAFETY: base is valid for triple.len bytes per the BytesTriple invariant.
+        let slice = unsafe { std::slice::from_raw_parts(base, triple.len as usize) };
+        let owned = slice.to_vec();
+        // SAFETY: triple was allocated by the Hew runtime; drop it now that
+        // we have a copy.
+        unsafe { hew_bytes_drop(triple.ptr) };
+        owned
     }
 
     unsafe fn take_string(ptr: *mut c_char) -> String {
@@ -1884,13 +1967,15 @@ mod tests {
             // SAFETY: connection telemetry getters are valid on a live connection.
             assert!(unsafe { hew_quic_conn_bytes_received(conn_ptr) } > 0);
 
-            // SAFETY: data slice is valid.
-            let reply = unsafe { u8_to_hwvec(&data) };
-            // SAFETY: stream_ptr and reply are valid.
-            let rc = unsafe { hew_quic_stream_send(stream_ptr, reply) };
+            // SAFETY: data slice is valid; BytesTriple borrows the slice for
+            // the duration of the call (no transfer of ownership).
+            let reply_triple = bytes_triple_from_slice(&data);
+            // SAFETY: stream_ptr and reply_triple are valid; borrow only.
+            let rc = unsafe { hew_quic_stream_send(stream_ptr, &raw const reply_triple) };
             assert_eq!(rc, 0, "server echo send must succeed");
-            // SAFETY: reply was allocated by the Hew runtime.
-            unsafe { hew_vec_free(reply) };
+            // SAFETY: reply_triple was allocated by bytes_triple_from_slice;
+            // drop the runtime allocation now that the send has consumed it.
+            unsafe { hew_bytes_drop(reply_triple.ptr) };
             assert_eq!(
                 // SAFETY: stream telemetry getters are valid on a live stream.
                 unsafe { hew_quic_stream_bytes_sent(stream_ptr) },
@@ -1982,12 +2067,14 @@ mod tests {
         // SAFETY: opened stream count is readable on a live connection.
         assert_eq!(unsafe { hew_quic_conn_opened_streams(conn_ptr) }, 1);
 
-        // SAFETY: byte slice is valid.
-        let msg = unsafe { u8_to_hwvec(b"hello quic") };
-        // SAFETY: stream_ptr and msg are valid.
-        assert_eq!(unsafe { hew_quic_stream_send(stream_ptr, msg) }, 0);
-        // SAFETY: msg was allocated by the Hew runtime.
-        unsafe { hew_vec_free(msg) };
+        // SAFETY: byte slice is valid; BytesTriple borrows for the duration of
+        // the send call.
+        let msg_triple = bytes_triple_from_slice(b"hello quic");
+        // SAFETY: stream_ptr is valid; msg_triple is a valid BytesTriple.
+        let send_rc = unsafe { hew_quic_stream_send(stream_ptr, &raw const msg_triple) };
+        assert_eq!(send_rc, 0);
+        // SAFETY: msg_triple was allocated by bytes_triple_from_slice.
+        unsafe { hew_bytes_drop(msg_triple.ptr) };
         // SAFETY: stream state getters are valid on a live stream.
         assert_eq!(unsafe { hew_quic_stream_bytes_sent(stream_ptr) }, 10);
         // SAFETY: stream state getters are valid on a live stream.
@@ -2349,7 +2436,7 @@ mod tests {
     #[test]
     fn stream_send_null() {
         // SAFETY: null is explicitly handled.
-        let rc = unsafe { hew_quic_stream_send(std::ptr::null_mut(), std::ptr::null_mut()) };
+        let rc = unsafe { hew_quic_stream_send(std::ptr::null_mut(), std::ptr::null()) };
         assert_eq!(rc, -1);
     }
 
@@ -2472,22 +2559,27 @@ mod tests {
         assert!(!stream_ptr.is_null(), "client must open stream");
 
         // Send a probe so the server can observe the stream via accept_stream.
-        // SAFETY: u8_to_hwvec is given a valid byte slice; the resulting
-        // HewVec is owned and freed below. hew_quic_stream_send takes a
-        // borrow per its contract.
-        let probe = unsafe { u8_to_hwvec(b"x") };
-        // SAFETY: stream_ptr and probe are both valid; ownership not transferred.
-        assert_eq!(unsafe { hew_quic_stream_send(stream_ptr, probe) }, 0);
-        // SAFETY: probe was allocated by u8_to_hwvec above.
-        unsafe { hew_vec_free(probe) };
+        // SAFETY: byte slice is valid; BytesTriple borrows for the duration of
+        // the send call.
+        let probe = bytes_triple_from_slice(b"x");
+        // SAFETY: stream_ptr is valid; probe is a valid BytesTriple (borrow).
+        let probe_rc = unsafe { hew_quic_stream_send(stream_ptr, &raw const probe) };
+        assert_eq!(probe_rc, 0);
+        // SAFETY: probe was allocated by bytes_triple_from_slice.
+        unsafe { hew_bytes_drop(probe.ptr) };
 
-        let mut out: *mut HewVec = std::ptr::null_mut();
+        // Use a zeroed-out sentinel to confirm the out slot is unchanged on timeout.
+        let mut out = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
         let start = std::time::Instant::now();
         // SAFETY: stream_ptr is valid; `&raw mut out` is a valid writable slot.
         let status = unsafe { hew_quic_stream_recv_timeout(stream_ptr, 200, &raw mut out) };
         let elapsed = start.elapsed();
         assert_eq!(status, -2, "expected timeout (-2), got {status}");
-        assert!(out.is_null(), "out pointer must be unchanged on timeout");
+        assert!(out.ptr.is_null(), "out triple must be unchanged on timeout");
         assert!(
             elapsed < std::time::Duration::from_secs(2),
             "200 ms deadline must fire well before 2 s; got {elapsed:?}"
@@ -2535,15 +2627,15 @@ mod tests {
         let server_thread = thread::spawn(move || {
             let server_ep_ptr = server_ep_addr as *mut HewQuicEndpoint;
             // SAFETY: server_ep_ptr is valid for this thread; conn_ptr,
-            // stream_ptr returned by accept calls; reply allocated by
-            // u8_to_hwvec; all freed below before thread exit.
+            // stream_ptr returned by accept calls; reply_triple allocated by
+            // bytes_triple_from_slice; all freed before thread exit.
             unsafe {
                 let conn_ptr = hew_quic_endpoint_accept(server_ep_ptr);
                 let stream_ptr = hew_quic_conn_accept_stream(conn_ptr);
                 let _ = hew_quic_stream_recv(stream_ptr);
-                let reply = u8_to_hwvec(b"y");
-                hew_quic_stream_send(stream_ptr, reply);
-                hew_vec_free(reply);
+                let reply_triple = bytes_triple_from_slice(b"y");
+                hew_quic_stream_send(stream_ptr, &raw const reply_triple);
+                hew_bytes_drop(reply_triple.ptr);
                 hew_quic_stream_finish(stream_ptr);
                 // Wait for the client to drain before tearing down —
                 // without this barrier the connection close races recv
@@ -2563,21 +2655,22 @@ mod tests {
         let (status, out, stream_ptr, conn_ptr) = unsafe {
             let conn_ptr = hew_quic_endpoint_connect(client_ep_ptr, addr.as_ptr(), sn.as_ptr());
             let stream_ptr = hew_quic_conn_open_stream(conn_ptr);
-            let probe = u8_to_hwvec(b"x");
-            hew_quic_stream_send(stream_ptr, probe);
-            hew_vec_free(probe);
-            let mut out: *mut HewVec = std::ptr::null_mut();
+            let probe = bytes_triple_from_slice(b"x");
+            hew_quic_stream_send(stream_ptr, &raw const probe);
+            hew_bytes_drop(probe.ptr);
+            let mut out = BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
             let status = hew_quic_stream_recv_timeout(stream_ptr, 0, &raw mut out);
             (status, out, stream_ptr, conn_ptr)
         };
         assert_eq!(status, 0, "deadline_ms=0 must succeed (got {status})");
-        assert!(!out.is_null());
-        // SAFETY: out is a valid HewVec pointer per the success contract,
-        // and is freed before this scope ends.
-        let len = unsafe { hew_cabi::vec::hew_vec_len(out) };
-        assert_eq!(len, 1, "expected one echoed byte");
+        assert!(!out.ptr.is_null(), "out triple must be non-null on success");
+        assert_eq!(out.len, 1, "expected one echoed byte");
         // SAFETY: out is owned by the caller per the recv_timeout contract.
-        unsafe { hew_vec_free(out) };
+        unsafe { hew_bytes_drop(out.ptr) };
 
         // Release the server now that the client has read the reply.
         barrier.wait();
@@ -2638,19 +2731,19 @@ mod tests {
         // window so write_all blocks waiting for the peer to advance it.
         let big_payload = vec![0xAB_u8; 8 * 1024 * 1024];
 
-        // SAFETY: client-side FFI with valid pointers; ownership tracked
-        // and freed within this scope.
+        // SAFETY: client-side FFI with valid pointers; BytesTriple allocations
+        // freed within this scope.
         let (status, elapsed, stream_ptr, conn_ptr) = unsafe {
             let conn_ptr = hew_quic_endpoint_connect(client_ep_ptr, addr.as_ptr(), sn.as_ptr());
             let stream_ptr = hew_quic_conn_open_stream(conn_ptr);
-            let probe = u8_to_hwvec(b"x");
-            hew_quic_stream_send(stream_ptr, probe);
-            hew_vec_free(probe);
-            let big = u8_to_hwvec(&big_payload);
+            let probe = bytes_triple_from_slice(b"x");
+            hew_quic_stream_send(stream_ptr, &raw const probe);
+            hew_bytes_drop(probe.ptr);
+            let big = bytes_triple_from_slice(&big_payload);
             let start = std::time::Instant::now();
-            let status = hew_quic_stream_send_timeout(stream_ptr, big, 200);
+            let status = hew_quic_stream_send_timeout(stream_ptr, &raw const big, 200);
             let elapsed = start.elapsed();
-            hew_vec_free(big);
+            hew_bytes_drop(big.ptr);
             (status, elapsed, stream_ptr, conn_ptr)
         };
 

@@ -16,11 +16,11 @@ use std::{
 
 use hew_hir::stdlib_catalog;
 use hew_hir::{
-    named_type_components, named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock,
-    HirConstValue, HirExpr, HirExprKind, HirFn, HirItem, HirJoin, HirLifecycleHookKind, HirLiteral,
-    HirMachineDecl, HirMachineTransition, HirModule, HirNodeId, HirSelect, HirSelectArmKind,
-    HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirVarSelfMethodTarget,
-    IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
+    named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock, HirConstValue, HirExpr,
+    HirExprKind, HirFn, HirItem, HirJoin, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
+    HirMachineTransition, HirModule, HirNodeId, HirSelect, HirSelectArmKind, HirStmt, HirStmtKind,
+    HirSupervisorChild, HirSupervisorDecl, HirVarSelfMethodTarget, IntentKind, ResolvedRef,
+    ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_types::{
@@ -4813,7 +4813,7 @@ fn push_unknown_type_diagnostics_for_layout_ty(
     reported: &mut HashSet<String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
-    for component in named_type_components(ty) {
+    for component in codegen_relevant_named_components(ty) {
         if component.builtin.is_some() || is_codegen_ready_user_name(&component.name, readiness) {
             continue;
         }
@@ -4925,11 +4925,113 @@ fn push_unknown_type_diagnostics(
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
     let readiness = builder.layout_readiness();
-    for component in named_type_components(ty) {
+    for component in codegen_relevant_named_components(ty) {
         if component.builtin.is_some() || is_codegen_ready_user_name(&component.name, &readiness) {
             continue;
         }
         push_unknown_type_diagnostic(component.name, reported, diagnostics);
+    }
+}
+
+/// `true` for the opaque actor-reference families whose single type argument is
+/// a phantom protocol/message marker. The pid itself is an opaque id/pointer;
+/// its argument never contributes to the handle's runtime layout and is erased
+/// before codegen. That marker is frequently a `trait` used purely for the
+/// `LocalPid<Actor>` → `LocalPid<Handler>` coercion surface
+/// (e.g. `LocalPid<ConnectionHandler>` / `LocalPid<WebSocketHandler>` in
+/// std/net), a trait that has — and needs — no layout. The readiness walk must
+/// not descend into these args or it would emit a spurious `UnknownType` for an
+/// erased trait marker. A genuinely-unknown actor type still surfaces as a
+/// checker-stage `UnresolvedType`; it is never first observed here.
+fn is_phantom_arg_pid(builtin: Option<BuiltinType>) -> bool {
+    matches!(
+        builtin,
+        Some(
+            BuiltinType::LocalPid
+                | BuiltinType::RemotePid
+                | BuiltinType::Pid
+                | BuiltinType::ActorRef
+        )
+    )
+}
+
+/// Named-type components codegen's layout graph must be able to resolve.
+/// Mirrors `hew_hir::named_type_components` but prunes the phantom type
+/// arguments of the opaque actor-reference families (see [`is_phantom_arg_pid`]).
+fn codegen_relevant_named_components(ty: &ResolvedTy) -> Vec<hew_hir::NamedTypeComponent> {
+    let mut components = Vec::new();
+    collect_codegen_relevant_components(ty, &mut components);
+    components
+}
+
+fn collect_codegen_relevant_components(
+    ty: &ResolvedTy,
+    components: &mut Vec<hew_hir::NamedTypeComponent>,
+) {
+    match ty {
+        ResolvedTy::Tuple(elems) => {
+            for elem in elems {
+                collect_codegen_relevant_components(elem, components);
+            }
+        }
+        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
+            collect_codegen_relevant_components(elem, components);
+        }
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            components.push(hew_hir::NamedTypeComponent {
+                name: name.clone(),
+                builtin: *builtin,
+                has_args: !args.is_empty(),
+            });
+            // Opaque actor-reference handles carry a phantom protocol marker
+            // (often a trait) in their type argument; it is erased before
+            // codegen and has no layout. Do not descend.
+            if is_phantom_arg_pid(*builtin) {
+                return;
+            }
+            for arg in args {
+                collect_codegen_relevant_components(arg, components);
+            }
+        }
+        ResolvedTy::Function { params, ret } => {
+            for param in params {
+                collect_codegen_relevant_components(param, components);
+            }
+            collect_codegen_relevant_components(ret, components);
+        }
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            for param in params {
+                collect_codegen_relevant_components(param, components);
+            }
+            collect_codegen_relevant_components(ret, components);
+            for capture in captures {
+                collect_codegen_relevant_components(capture, components);
+            }
+        }
+        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
+            collect_codegen_relevant_components(pointee, components);
+        }
+        ResolvedTy::TraitObject { traits } => {
+            for bound in traits {
+                for arg in &bound.args {
+                    collect_codegen_relevant_components(arg, components);
+                }
+                for (_, ty) in &bound.assoc_bindings {
+                    collect_codegen_relevant_components(ty, components);
+                }
+            }
+        }
+        ResolvedTy::Task(inner) => collect_codegen_relevant_components(inner, components),
+        _ => {}
     }
 }
 

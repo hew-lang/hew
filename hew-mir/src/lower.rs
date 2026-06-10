@@ -5474,14 +5474,25 @@ fn runtime_symbol_for_call_expr(
     let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
         return None;
     };
-    // Typed path: HIR resolved a checker-registered runtime builtin
-    // (`supervisor_stop`, `link`, `monitor`, `unlink`, `duplex_pair`) to
-    // its closed-set family. The C symbol is derived from the catalog
+    // Typed path: HIR resolved a checker-known runtime builtin (the
+    // no-AST-item builtins and every closed-set method-call rewrite) to
+    // its catalog family. The C symbol is derived from the catalog
     // bijection — no user-name reverse-mapping. A real user function
-    // that shadows one of those names resolves to `ResolvedRef::Item`
-    // in HIR and never reaches this arm.
+    // that shadows a builtin name resolves to `ResolvedRef::Item` in
+    // HIR and never reaches this arm.
+    //
+    // The allowlist gate preserves the producer routing split: families
+    // whose symbol is in `MIR_EMITTER_RUNTIME_SYMBOLS` lower to
+    // `Instr::CallRuntimeAbi`; pre-staged families (codegen
+    // `Terminator::Call` callee-name intercepts such as
+    // `hew_remote_pid_tell`) fall through to `module_fn_names` →
+    // `lower_direct_call`, exactly as their name-resolved form did.
     if let ResolvedRef::Builtin(family) = resolved {
-        return Some((family.c_symbol().to_string(), args, expr.site));
+        let symbol = family.c_symbol();
+        if crate::runtime_symbols::is_known_runtime_symbol(symbol) {
+            return Some((symbol.to_string(), args, expr.site));
+        }
+        return None;
     }
     if crate::runtime_symbols::is_known_runtime_symbol(name) {
         return Some((name.clone(), args, expr.site));
@@ -7558,7 +7569,7 @@ impl Builder {
                 if matches!(
                     callee.kind,
                     HirExprKind::BindingRef {
-                        resolved: ResolvedRef::Item(_),
+                        resolved: ResolvedRef::Item(_) | ResolvedRef::Builtin(_),
                         ..
                     }
                 ) {

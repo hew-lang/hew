@@ -9012,15 +9012,19 @@ impl LowerCtx {
     }
 
     /// True when the `await`'s inner expression is a suspending typed-stream
-    /// `send()` over a `Sink<bytes>` — i.e. the checker wired the method call to
-    /// the `hew_sink_write_bytes` runtime symbol. `await sink.send(x)` is a
-    /// unit-returning statement-position await (NEW-7): it lowers to the inner
-    /// send call whose MIR `SuspendingStreamSend` suspends on a full ring.
+    /// `send()` over a `Sink<bytes>` — i.e. the checker-resolved descriptor's
+    /// family classifies as [`AsyncSuspendKind::SinkSendBytes`]
+    /// (`hew_sink_write_bytes`). `await sink.send(x)` is a unit-returning
+    /// statement-position await (NEW-7): it lowers to the inner send call
+    /// whose MIR `SuspendingStreamSend` suspends on a full ring.
+    ///
+    /// [`AsyncSuspendKind::SinkSendBytes`]: hew_types::runtime_call::AsyncSuspendKind
     fn is_stream_send_await(&self, inner_key: &SpanKey) -> bool {
         matches!(
             self.method_call_rewrites.get(inner_key),
-            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                if c_symbol == "hew_sink_write_bytes"
+            Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
+                if d.is_async_suspending()
+                    == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSendBytes)
         )
     }
 
@@ -10769,14 +10773,16 @@ impl LowerCtx {
                     return ask_expr;
                 }
                 // `await actor.close()` — lambda-actor (Duplex) close is awaitable
-                // in statement position at any scope depth.  The checker records
-                // `hew_duplex_close` as the method rewrite; the `await` is stripped
-                // and the inner close call is lowered directly, matching the existing
+                // in statement position at any scope depth.  The checker-resolved
+                // descriptor's family classifies as `AsyncSuspendKind::DuplexClose`
+                // (`hew_duplex_close`); the `await` is stripped and the inner close
+                // call is lowered directly, matching the existing
                 // `ActorMethodKind::Ask` path above.
                 if matches!(
                     self.method_call_rewrites.get(&self.mk_key(&inner.1)),
-                    Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                        if c_symbol == "hew_duplex_close"
+                    Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
+                        if d.is_async_suspending()
+                            == Some(hew_types::runtime_call::AsyncSuspendKind::DuplexClose)
                 ) {
                     if !in_stmt_position {
                         self.diagnostics.push(HirDiagnostic::new(
@@ -15608,6 +15614,7 @@ impl LowerCtx {
             }
             Some(MethodCallRewrite::RewriteToFunction {
                 c_symbol,
+                descriptor,
                 consumes_receiver,
                 ..
             }) => {
@@ -15710,16 +15717,25 @@ impl LowerCtx {
                     params: Vec::new(),
                     ret: Box::new(ret_ty.clone()),
                 };
-                // Resolve the rewrite-target c_symbol against the seeded
-                // stdlib fn_registry (`seed_stdlib_fn_registry`), matching
-                // the `RewriteModuleQualifiedToFunction` arm just below.
-                // Without this, the BindingRef stays `Unresolved` and the
-                // verifier emits `UnresolvedSymbol(<c_symbol>)`, even though
-                // the catalog entry exists.
-                let resolved_ref = self
-                    .fn_registry
-                    .get(&c_symbol)
-                    .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id));
+                // Closed-set builtin rewrites carry the checker-resolved
+                // descriptor: resolve the callee to the typed family so MIR
+                // dispatches on the resolution, not the name string. Rewrites
+                // without a descriptor (open-set `#[extern_symbol]` methods,
+                // user `Type::method` keys, pre-catalog symbols) fall back to
+                // the seeded stdlib fn_registry (`seed_stdlib_fn_registry`),
+                // matching the `RewriteModuleQualifiedToFunction` arm just
+                // below. Without that fallback the BindingRef stays
+                // `Unresolved` and the verifier emits
+                // `UnresolvedSymbol(<c_symbol>)` even though the registry
+                // entry exists.
+                let resolved_ref = descriptor.as_ref().map_or_else(
+                    || {
+                        self.fn_registry
+                            .get(&c_symbol)
+                            .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id))
+                    },
+                    |d| ResolvedRef::Builtin(d.family()),
+                );
                 let callee = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
